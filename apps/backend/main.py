@@ -35,6 +35,7 @@ from routers import (
     apple_iap,
     automations,
     billing,
+    browser_view,
     channels,
     config,
     connections,
@@ -789,6 +790,10 @@ app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["we
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
+
+# Container browser live-view relay (direct browser WS via the ALB, like the
+# paperclip_proxy relay — NOT the API Gateway WebSocket path above)
+app.include_router(browser_view.router, prefix="/api/v1/browser-view", tags=["browser-view"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

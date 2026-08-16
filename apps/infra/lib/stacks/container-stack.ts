@@ -690,19 +690,33 @@ export class ContainerStack extends cdk.Stack {
       // config flip and change nothing until DISPLAY arrives, so the two
       // deploys are independent and either can roll back alone.
       //
-      // ONLY Xvfb starts here. x11vnc + websockify — the framebuffer-polling
-      // half that actually costs CPU — start on demand when an owner opens the
-      // live-view panel. Per-user containers already peak at 45-89% of their
-      // single vCPU with none of this running (CloudWatch, 2026-08-15/16), so
-      // the capture stack must not be a permanent tax on containers nobody is
-      // watching.
+      // What starts here is Xvfb plus two idle-cheap LISTENERS (websockify,
+      // socat) — never a resident x11vnc. x11vnc is the one process in this
+      // stack with a documented failure mode as a long-lived daemon: reports
+      // of exactly this containerized Xvfb setup show it degrading to high
+      // CPU after ~a day of uptime (docker-selenium #1027), and our paid
+      // containers are always-on boxes already peaking at 45-89% of their
+      // single vCPU (CloudWatch, 2026-08-15/16). So x11vnc runs in -inetd
+      // mode, spawned BY socat per viewer connection: browser connects →
+      // websockify dials 5900 → socat forks x11vnc for that one session, and
+      // it exits when the viewer disconnects. Process lifetime = viewing
+      // session, so the degrades-over-days class is structurally impossible,
+      // a crashed x11vnc self-heals on the next connection, and no start/stop
+      // RPC or exec path into the container is needed — the connection itself
+      // is the trigger.
       //
-      // Eager display + lazy capture is not an oversight, and the asymmetry
-      // cannot be removed: OpenClaw decides headless-vs-headful ONCE, at Chrome
-      // launch, from whether DISPLAY resolves — extensions/browser/src/browser/
-      // config.ts resolveManagedBrowserHeadlessMode evaluates its
-      // linux-no-DISPLAY branch BEFORE the configured browser.headless value.
-      // A display started after Chrome is useless to the Chrome already running.
+      // Eager display + connection-triggered capture is not an oversight, and
+      // the asymmetry cannot be removed: OpenClaw decides headless-vs-headful
+      // ONCE, at Chrome launch, from whether DISPLAY resolves —
+      // extensions/browser/src/browser/config.ts
+      // resolveManagedBrowserHeadlessMode evaluates its linux-no-DISPLAY
+      // branch BEFORE the configured browser.headless value. A display started
+      // after Chrome is useless to the Chrome already running.
+      //
+      // Ports: 6080 (websockify, container IP — reachable only from the
+      // backend SG, service-stack.ts ContainerFromServiceIngress) → 5900
+      // (socat, loopback only) → x11vnc stdio. The container is single-tenant
+      // and the only route in is the backend's Clerk-authed proxy.
       //
       // Fail loudly rather than at first browser use: DISPLAY set on an image
       // without Xvfb launches a headful Chrome against no X server, and surfaces
@@ -710,6 +724,17 @@ export class ContainerStack extends cdk.Stack {
       // tool call — arbitrarily long after boot and nowhere near the cause.
       '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ] || { echo "[boot] FATAL: DISPLAY is set but Xvfb is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs xvfb."; exit 1; }',
       '[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac -nolisten tcp & }',
+      // -forever is per-connection here (socat forks a fresh x11vnc each time);
+      // without it x11vnc's inetd mode is one-shot anyway, so it is omitted.
+      // -q keeps RFB's stdout channel clean of log noise (logs go to stderr →
+      // container logs). No -rfbauth: the backend proxy is the auth fence (see
+      // spec §6); a password would have to be minted here and independently
+      // derived by the backend, and 5900 is loopback-only regardless.
+      // No -display flag: x11vnc reads DISPLAY from the environment, which
+      // socat's EXEC child inherits, and Xvfb is already up from the line
+      // above — the display exists (blank) even before Chrome first draws.
+      "[ -z \"$DISPLAY\" ] || { socat TCP-LISTEN:5900,fork,reuseaddr,bind=127.0.0.1 EXEC:'x11vnc -inetd -q' & }",
+      '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover
@@ -762,6 +787,18 @@ export class ContainerStack extends cdk.Stack {
       workingDirectory: "/home/node",
       environment: {
         HOME: "/home/node",
+        // Turns on the Step C4 display block, and with it the headful browser
+        // that backs the live view. This is the switch that makes every
+        // container launch a headful Chrome on the Xvfb display instead of a
+        // headless one.
+        //
+        // NOT env-gated, and that is only safe because DISPLAY and the image
+        // tag live in the SAME task definition: one CDK deploy registers both,
+        // so no revision can exist where DISPLAY is set on an image without
+        // Xvfb — the combination the Step C4 guard kills the boot over. If you
+        // ever set this for an environment, promote that environment's tag in
+        // openclaw-version.json in the same commit.
+        DISPLAY: ":1",
         CHOKIDAR_USEPOLLING: "true",
         // Redirect clawhub installs to the OpenClaw managed-skills directory
         // (~/.openclaw/skills) so they're scanned by every agent. Without

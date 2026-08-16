@@ -152,8 +152,9 @@ class TestBrowserBounds:
         headless especially: upstream's default is FALSE, and we were relying
         on the implicit "no DISPLAY/WAYLAND_DISPLAY -> fall back to headless"
         path. That makes a load-bearing property depend on the ABSENCE of an
-        env var; anything that later sets DISPLAY launches a headful Chrome
-        with no X server.
+        env var — which is exactly what changed when the live view set DISPLAY
+        on the task definition. Setting it explicitly is what makes that a
+        deliberate flip rather than a silent one.
 
         Applies to every provider path — the browser is not provider-specific.
         """
@@ -164,13 +165,37 @@ class TestBrowserBounds:
             ("byo_key", {"byo_provider": "anthropic"}),
         ):
             browser = _cfg(choice, **kwargs)["browser"]
-            assert browser["headless"] is True, choice
+            # Now False fleet-wide: the live view runs Chrome headful on the
+            # Xvfb display. Still asserted explicitly rather than left implicit,
+            # which is the point the docstring above makes.
+            # See test_browser_is_headful_in_every_environment.
+            assert browser["headless"] is False, choice
             assert browser["noSandbox"] is True, choice
             assert browser["executablePath"] == "/usr/bin/chromium", choice
             # Schema caps both at 120_000; defaults (15s/8s) are the ones
             # upstream says to raise on slow storage.
             assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice
             assert 8_000 < browser["localCdpReadyTimeoutMs"] <= 120_000, choice
+
+    def test_browser_is_headful_in_every_environment(self):
+        """Containers run headful on the Xvfb display so the browser can be
+        watched and driven from the workspace panel.
+
+        Deliberately NOT environment-dependent: the matching DISPLAY on the task
+        definition (container-stack.ts) is unconditional too, and the pair must
+        agree everywhere. Upstream's resolveManagedBrowserHeadlessMode evaluates
+        its linux-no-DISPLAY branch BEFORE this value, so headless=False without
+        DISPLAY is silently forced back to headless, and DISPLAY without
+        headless=False is an Xvfb nobody ever draws on. Either half alone is a
+        no-op; only the pair does anything.
+
+        Asserted across environments so a future env-gate here cannot land
+        without also gating DISPLAY, which would silently disable the live view
+        in whichever environment was missed.
+        """
+        for env in ("dev", "prod", "staging", "local", ""):
+            with patch.object(config_module.settings, "ENVIRONMENT", env):
+                assert _cfg()["browser"]["headless"] is False, env
 
     def test_no_crash_reporter_flags(self):
         """Regression: --disable-breakpad + --crash-dumps-dir were added (#1594)

@@ -62,8 +62,13 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
       rfb = new RFB(mountRef.current, browserViewWsUrl(BACKEND_URL), {
         wsProtocols: ["binary", token],
       });
-      // Scale the container's fixed 1280x800 display to whatever size this
-      // dock panel currently has, rather than scrollbars/cropping.
+      // resizeSession: the panel drives the ACTUAL container display size —
+      // noVNC sends SetDesktopSize, Xvnc resizes, matchbox re-fits Chrome —
+      // so the browser renders edge-to-edge at native resolution instead of
+      // being scaled like a video. scaleViewport stays on as the fallback for
+      // the moments before the first resize lands (and for any server that
+      // rejects the request), where it scales rather than cropping.
+      rfb.resizeSession = true;
       rfb.scaleViewport = true;
       rfb.background = "transparent";
       rfb.addEventListener("connect", () => {

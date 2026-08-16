@@ -101,30 +101,36 @@ function expectDisplayGate(
   { displaySet }: { displaySet: boolean },
 ): void {
   const command = openclawStartupCommand(template, env);
-  const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ]');
-  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY"');
-  const socat = command.indexOf("socat TCP-LISTEN:5900,fork,reuseaddr,bind=127.0.0.1");
+  const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ]');
+  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
+  const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
   const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
   const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
 
   // The guard must precede the launch it protects, and everything must precede
   // the exec that replaces this shell — nothing can be appended after that.
+  // The WM must come after the X server line: X clients do not retry a missing
+  // socket, which is also why the command wraps it in a wait-for-socket loop.
   expect(guard).toBeGreaterThanOrEqual(0);
   expect(start).toBeGreaterThan(guard);
-  expect(socat).toBeGreaterThan(start);
-  expect(websockify).toBeGreaterThan(socat);
+  expect(wm).toBeGreaterThan(start);
+  expect(command).toContain("while [ ! -S /tmp/.X11-unix/X1 ]");
+  expect(websockify).toBeGreaterThan(wm);
   expect(websockify).toBeLessThan(boot);
 
-  // x11vnc must NEVER run as a resident daemon — as a long-lived process it
-  // has a documented degrades-to-high-CPU-after-a-day failure mode in exactly
-  // this containerized Xvfb setup, and these are always-on boxes already
-  // peaking at 45-89% of one vCPU. Its only appearance is inside socat's
-  // per-connection EXEC, in -inetd mode, so its lifetime is one viewing
-  // session. If x11vnc shows up outside that EXEC string, that property has
-  // been lost.
-  const x11vncOccurrences = command.split("x11vnc").length - 1;
-  expect(x11vncOccurrences).toBe(1);
-  expect(command).toContain("EXEC:'x11vnc -inetd");
+  // Xvnc must be resizable-by-client and loopback-only: SecurityTypes None is
+  // safe ONLY together with -localhost (the relay is the auth fence), so pin
+  // them as a pair — losing -localhost while keeping None would expose an
+  // unauthenticated VNC server to the VPC.
+  expect(command).toContain("-localhost -SecurityTypes None -rfbport 5900");
+
+  // x11vnc is GONE from the boot path — Xvnc replaced it precisely because a
+  // resident x11vnc degrades over days (it polls a foreign display; Xvnc IS
+  // the display and only encodes while a viewer is attached). It reappearing
+  // means someone resurrected the old chain.
+  expect(command).not.toContain("x11vnc");
+  expect(command).not.toContain("socat TCP-LISTEN:5900");
+  expect(command).not.toContain("Xvfb");
 
   expect(openclawContainerEnv(template, env).some(({ Name }) => Name === "DISPLAY")).toBe(displaySet);
 }

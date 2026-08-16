@@ -142,7 +142,7 @@ export interface AdminApiError {
 }
 
 // ---------------------------------------------------------------------------
-// Platform-ops envelope (mirrors the backend Ops DTO in routers/ops.py)
+// Admin diagnostics envelope (mirrors the backend Ops DTO in routers/ops.py)
 // ---------------------------------------------------------------------------
 
 export interface OpsEnvelope<T> {
@@ -570,7 +570,7 @@ export async function listAvailableImages(
 }
 
 // ---------------------------------------------------------------------------
-// Platform-ops reads (fleet + deploys)
+// Admin diagnostic reads (fleet, deployments, and alarms)
 // ---------------------------------------------------------------------------
 
 export async function getFleet(token: string): Promise<OpsEnvelope<FleetData> | null> {
@@ -584,4 +584,3 @@ export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]
 export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> | null> {
   return adminFetch<OpsEnvelope<AlarmRow[]>>(token, "/ops/alarms");
 }
-

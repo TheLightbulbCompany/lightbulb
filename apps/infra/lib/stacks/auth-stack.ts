@@ -28,6 +28,11 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
+  /**
+   * Retained through platform-ops removal phase one so the live CloudFormation
+   * export can outlast the Service stack's former import. Remove in phase two
+   * only after that service deployment is live in every environment.
+   */
   public readonly platformOpsTokenKey: secretsmanager.Secret;
   public readonly paperclipEventsWebhookSecret: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
@@ -119,8 +124,17 @@ export class AuthStack extends cdk.Stack {
       "PlatformOpsTokenKey",
       "platform_ops_token_key",
       { passwordLength: 64, excludePunctuation: true },
-      "Dedicated symmetric secret for signing/verifying platform_ops tokens (owner-scoped ops API).",
+      "Retained only during platform-ops token removal phase one.",
     );
+
+    // ServiceStack formerly imported this secret directly, which caused CDK to
+    // synthesize this export. The pipeline deploys Auth before Service, so keep
+    // the exact live logical ID and export name until Service no longer imports
+    // it everywhere. Phase two deletes the secret and this output together.
+    new cdk.CfnOutput(this, "ExportsOutputRefPlatformOpsTokenKeyAF16BB4E545E5253", {
+      value: this.platformOpsTokenKey.secretArn,
+      exportName: `${this.stackName}:ExportsOutputRefPlatformOpsTokenKeyAF16BB4E545E5253`,
+    });
 
     // Shared bearer secret between the isol8.notifications Paperclip plugin
     // and the backend's /webhooks/paperclip-events receiver. Generated here;

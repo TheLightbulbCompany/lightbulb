@@ -1,57 +1,18 @@
-"""Platform-ops API — operator console + owner-scoped agent access.
-
-Dual auth: a Clerk platform-admin JWT (the admin UI) OR a platform_ops token
-bound to settings.PLATFORM_OPS_OWNER_ID (the founder's agent). Default-deny.
-
-The same token is also accepted on the read-only /admin/* debug endpoints —
-see core/services/admin_access.py for that surface's dependency.
-"""
+"""Human operator diagnostics for the platform-admin console."""
 
 from __future__ import annotations
 
-import logging
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-from core.auth import get_current_user, require_platform_admin
-from core.config import settings
-from core.services import platform_ops_token
-from core.services.admin_access import verify_platform_ops_token
-from core.services.admin_audit import audit_admin_action
+from core.auth import AuthContext, require_platform_admin
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
-_bearer = HTTPBearer(auto_error=False)
-
-
-async def require_ops_access(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str:
-    """Allow Clerk platform-admins OR the platform_ops owner token.
-
-    Returns a short principal label ("admin" | "platform_ops"). Default-deny.
-    """
-    if creds is None or not creds.credentials:
-        raise HTTPException(status_code=401, detail="Missing credentials")
-
-    # Agent path first — cheap local HS256 verify, no network. Returns None
-    # (fall through to the admin path) on any failure or when unconfigured.
-    if verify_platform_ops_token(creds.credentials) is not None:
-        return "platform_ops"
-
-    # Admin path — Clerk JWT. get_current_user raises 401 on invalid tokens.
-    try:
-        auth = await get_current_user(credentials=creds)
-    except HTTPException:
-        raise HTTPException(status_code=401, detail="Invalid ops credentials")
-    return require_platform_admin(auth) and "admin"
 
 
 @router.get("/fleet")
-async def get_fleet(_principal: str = Depends(require_ops_access)):
+async def get_fleet(_auth: AuthContext = Depends(require_platform_admin)):
     # Single live read: fleet_counts_live() derives from fleet_grid() internally,
     # so read the grid ONCE and compute counts locally — avoids a redundant
     # second ECS/scan fan-out and a compound timeout. On failure the whole read
@@ -62,26 +23,12 @@ async def get_fleet(_principal: str = Depends(require_ops_access)):
 
 
 @router.get("/deploys")
-async def get_deploys(_principal: str = Depends(require_ops_access)):
+async def get_deploys(_auth: AuthContext = Depends(require_platform_admin)):
     data, state, errors = await env.read_source("cloudformation", deploys.list_stacks)
     return env.envelope(data if data is not None else [], source_state=state, errors=errors)
 
 
 @router.get("/alarms")
-async def get_alarms(_principal: str = Depends(require_ops_access)):
+async def get_alarms(_auth: AuthContext = Depends(require_platform_admin)):
     data, state, errors = await env.read_source("cloudwatch", alarms.alarms_in_alarm)
     return env.envelope(data if data is not None else [], source_state=state, errors=errors)
-
-
-@router.post("/token")
-@audit_admin_action("ops.mint_token", target_user_id_override="__platform__")
-async def mint_ops_token(auth=Depends(require_platform_admin)):
-    """Mint a platform_ops token for the configured platform owner.
-
-    Admin-only (NOT self-renewal by a bare ops token). Delivered to the
-    founder's container as a Secrets-Manager env var out of band.
-    """
-    if not settings.PLATFORM_OPS_OWNER_ID:
-        raise HTTPException(status_code=409, detail="PLATFORM_OPS_OWNER_ID not configured")
-    token = platform_ops_token.mint(settings.PLATFORM_OPS_OWNER_ID)
-    return {"token": token, "owner_id": settings.PLATFORM_OPS_OWNER_ID, "kind": "platform_ops"}

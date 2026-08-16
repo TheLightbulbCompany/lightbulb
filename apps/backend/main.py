@@ -877,8 +877,7 @@ app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=
 # a Meta app has ONE callback URL for every user. Routed by the asset id in the
 # payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
 app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
-# Platform-ops operator console + owner-scoped agent access (dual auth). See
-# routers/ops.py for the Clerk-admin OR platform_ops-token model.
+# Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 # Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
 # agents into the owner's container. See routers/agent_builder.py.

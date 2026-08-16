@@ -661,6 +661,55 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   Claude review, and an independent read-only audit settle. The required
   `@codex review` was requested again; connector review quota may still prevent
   a verdict.
+- 2026-08-15: The idempotent-caller work settled at PR #1812 head
+  `75a0dda81e83732254963229c236fca4a5223bd7`. Fresh Backend CI and Claude
+  review passed, the independent final audit found no remaining caller defect,
+  and the PR squash-merged as
+  `c3a21a76c1956d29551ec27027e080d191b7e50a`. Deployment run `31917883632`
+  is still in progress; do not treat the caller paths as live until dev and prod
+  stacks and the customer-path smokes finish.
+- 2026-08-15: Routine reviewer UI PR #1828 passed Backend CI, Frontend CI, and
+  Claude review, then squash-merged as
+  `6c4dd84ec42708804e07c9c2ac4c463a4d7ac306`. Its frontend/BFF code is included
+  in the later #1812 deployment. A disposable paused-routine reviewer set/clear
+  smoke in the dev company remains pending; no founder routine has been edited.
+- 2026-08-15: Platform-ops token removal Phase 1 PR #1829 passed focused
+  backend/infra tests and review, then merged as
+  `1efbe70030c0b0446d7dc7842a0634de2c958e9e`. Deploy run `31917224757`
+  completed every dev/prod stack and Vercel job successfully. Live dev and prod
+  backend task definitions contain no `PLATFORM_OPS` environment or secret
+  entry, both ECS services are 1/1 with completed primary rollouts, and
+  CloudFormation reports that neither retained AuthStack export is imported by
+  any stack. Phase 2 PR #1835 therefore removed only the now-unreferenced secret
+  and export; AuthStack tests passed 3/3, Claude found no issue, and it merged as
+  `3aace99c6a91380324484f5825118cfa7b1d8303`. Its deployment and live
+  secret/export absence checks are still pending.
+- 2026-08-15: Governed-creation wiring PR #1833 is intentionally draft on head
+  `334964e85b0b55ddb1a3517a29b4eb458fd261c7`. It is stacked on the merged
+  idempotent callers, enables the native Paperclip guard flag, and removes
+  direct `/agents` and `/agent-hires` instructions from the container skill.
+  Claude's stale `desiredSkills` guidance finding was fixed so new-agent skills
+  now travel through Atlas or a marketplace listing; focused CDK/skill tests
+  pass 22/22. It must not merge or promote before the native fork guard is
+  reviewed, Linux-tested, built, and pinned.
+- 2026-08-15: Paperclip fork PR #21 implements an opt-in, default-off external
+  creation boundary. With the flag enabled, only a non-agent direct create with
+  the already-canonical `Idempotency-Key` may create; native hire and indirect
+  creation paths fail closed, while a governed hire approval may activate a
+  pre-created same-company pending agent. Local server typecheck and 74 focused
+  tests pass at head `644730b6655e276bcf0330980e510bf892a3ad71`.
+  Independent review and the exact-SHA Linux release dry-run remain pending; no
+  merge, image build, pin, or environment enablement has occurred.
+- 2026-08-15: OpenClaw config-lock Phase 1 PR #1834 is on corrected head
+  `f5a4ffa04c82b43950dd62de399e38415f3df7ab`. It introduces the shared
+  backend guard and protocol handshake without deleting the legacy lock or
+  recovering owner tasks. Claude found an alternate task-definition clone path
+  that omitted the handshake; the path now replaces any stale marker with
+  exactly `guard-v1`, with regression coverage. The full backend unit suite
+  passed 6649 with 7 skipped before that narrow fix; the post-fix focused lock
+  suite passes 34/34 and Ruff/diff checks are clean. Fresh CI/review and the
+  two-environment Phase 1 steady-state deployment are pending. Phase 2 remains
+  local and must not merge before that steady-state boundary.
 
 ## Founder actions
 

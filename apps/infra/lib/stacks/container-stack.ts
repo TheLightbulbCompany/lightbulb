@@ -683,6 +683,33 @@ export class ContainerStack extends cdk.Stack {
       // dir holding a symlink, which works but re-migrates on every task start.
       "[ -e /home/node/.xurl ] && [ ! -L /home/node/.xurl ] && { mv /home/node/.xurl /home/node/.xurl.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.xurl /home/node/.xurl || exit 1",
+      // Step C4 — virtual display backing the browser live view.
+      //
+      // Gated entirely on DISPLAY, which this task definition does NOT set
+      // yet. That is deliberate: the image can ship xvfb ahead of the headful
+      // config flip and change nothing until DISPLAY arrives, so the two
+      // deploys are independent and either can roll back alone.
+      //
+      // ONLY Xvfb starts here. x11vnc + websockify — the framebuffer-polling
+      // half that actually costs CPU — start on demand when an owner opens the
+      // live-view panel. Per-user containers already peak at 45-89% of their
+      // single vCPU with none of this running (CloudWatch, 2026-08-15/16), so
+      // the capture stack must not be a permanent tax on containers nobody is
+      // watching.
+      //
+      // Eager display + lazy capture is not an oversight, and the asymmetry
+      // cannot be removed: OpenClaw decides headless-vs-headful ONCE, at Chrome
+      // launch, from whether DISPLAY resolves — extensions/browser/src/browser/
+      // config.ts resolveManagedBrowserHeadlessMode evaluates its
+      // linux-no-DISPLAY branch BEFORE the configured browser.headless value.
+      // A display started after Chrome is useless to the Chrome already running.
+      //
+      // Fail loudly rather than at first browser use: DISPLAY set on an image
+      // without Xvfb launches a headful Chrome against no X server, and surfaces
+      // as upstream's "No DISPLAY/X server was detected" at the first browser
+      // tool call — arbitrarily long after boot and nowhere near the cause.
+      '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ] || { echo "[boot] FATAL: DISPLAY is set but Xvfb is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs xvfb."; exit 1; }',
+      '[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac -nolisten tcp & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover

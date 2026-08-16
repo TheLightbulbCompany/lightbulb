@@ -396,21 +396,18 @@ async def evaluate_provision_gate(
 
     Thin wrapper over ``_evaluate_provision_gate_inner`` that owns the single,
     all-branches-covered metric emission. A non-None gate (provisioning blocked)
-    emits BOTH a dimensionless ``provision.gate.blocked`` (the W64 spike alarm
-    queries the {env,service} stream and — per EMF's one-stream-per-dim-set
-    rule — can only match a no-dim stream) AND a ``provision.gate.blocked{code}``
-    for the per-reason dashboard/Insights breakdown.
+    emits ONE ``provision.gate.blocked{code}`` — ``put_metric`` publishes the
+    {env,service} rollup alongside it, which is the stream the W64 spike alarm
+    reads. This used to be TWO calls, the second dimensionless, because the
+    emitter published a single dimension set and a coded emission was therefore
+    invisible to a {env,service} query. Re-adding that call would DOUBLE-COUNT
+    every block on the rollup and halve W64's effective threshold.
     """
     gate = await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
     if gate is not None:
         # Bounded ``code`` set → safe metric dimension. Best-effort: a metrics
         # outage must never block the gate decision (which is the request path).
         try:
-            # Dimensionless: the W64 spike alarm queries {env,service} and (per
-            # EMF one-stream-per-dim-set) can only match a no-dim stream.
-            put_metric("provision.gate.blocked")
-            # Coded: per-reason breakdown for dashboards/Insights. ``code`` is a
-            # bounded set, so it's a safe dimension.
             put_metric("provision.gate.blocked", dimensions={"code": gate.code})
         except Exception:  # noqa: BLE001 — telemetry must not break provisioning
             logger.debug("provision.gate.blocked metric emission failed", exc_info=True)

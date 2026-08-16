@@ -1116,14 +1116,12 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W64: provision-gate-block-spike.
-    // Backend emits provision.gate.blocked (dimensionless, plus a {code}
-    // breakdown stream) in core/services/provision_gate.py whenever the gate
-    // blocks an owner. This alarm passes NO dimensions, so it queries the
-    // {env,service} stream — matching the dimensionless emission (NOT the
-    // {code} streams, each of which only sees one code's blocks). A provider
-    // outage that silently gates all new chats shows as a spike in blocks, so
-    // the threshold is a spike (not >0 — some blocks are normal, e.g. a
-    // genuinely-unsubscribed user).
+    // Backend emits provision.gate.blocked{code} in core/services/provision_gate.py
+    // whenever the gate blocks an owner. This alarm passes NO dimensions, so it
+    // reads the {env,service} rollup put_metric publishes alongside the coded
+    // set — one datapoint per block, summed across every code. The gate used to
+    // ALSO emit a dimensionless copy for this alarm; that is now a double-count
+    // and was removed with the rollup.
     this.createAlarm({
       id: "W64",
       name: "provision-gate-block-spike",

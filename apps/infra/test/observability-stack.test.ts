@@ -187,7 +187,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "metronome.webhook": [["result"], ["blocked", "result"]],
   "operator.upstream.closed": [[]],
   "paperclip.upstream.error": [["kind"]],
-  "provision.gate.blocked": [[], ["code"]],
+  "provision.gate.blocked": [["code"]],
   "stripe.api.latency": [["op"]],
   "stripe.webhook.received": [["event_type"]],
   "stripe.webhook.sig_fail": [[]],

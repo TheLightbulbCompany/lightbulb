@@ -42,6 +42,11 @@ _DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_
 # exactly those two), so emitting the full set alone left those alarms watching
 # an identity nothing published: W2/W8/W10 could never fire. Emitting both sets
 # from the one record fixes that for every metric at once, present and future.
+#
+# The one trap this creates: NEVER emit the same metric twice for one event,
+# once dimensionless and once with dimensions. Both land on the rollup and the
+# event is counted twice. `provision.gate.blocked` did exactly that (to feed
+# W64 before the rollup existed) and the dimensionless call was deleted.
 _ROLLUP_KEYS = ["env", "service"]
 
 

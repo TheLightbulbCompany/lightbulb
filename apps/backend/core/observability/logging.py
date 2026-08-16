@@ -115,6 +115,15 @@ def configure_logging(level: str = "INFO") -> None:
     handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
 
+    # httpx logs every request at INFO as `HTTP Request: GET <full-url>`, query
+    # string included. Some provider endpoints only accept credentials as query
+    # params (Meta's token exchange documents GET with client_secret in the URL),
+    # so that line has written live secrets into CloudWatch in plaintext. WARNING
+    # keeps failures visible while dropping the URL line for every httpx call
+    # site, present and future — the one place that fixes the whole class.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 def bind_request_context(request_id: str, user_id: str | None = None) -> None:
     """Set contextvars for the current async task.

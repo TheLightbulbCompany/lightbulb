@@ -33,6 +33,23 @@ function openclawStartupCommand(template: Template, env: "dev" | "prod"): string
   return container?.Command?.[2] ?? "";
 }
 
+function openclawContainerEnv(
+  template: Template,
+  env: "dev" | "prod",
+): Array<{ Name?: string; Value?: string }> {
+  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
+    Properties?: {
+      Family?: string;
+      ContainerDefinitions?: Array<{
+        Name?: string;
+        Environment?: Array<{ Name?: string; Value?: string }>;
+      }>;
+    };
+  }>;
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  return taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw")?.Environment ?? [];
+}
+
 // The local-sqlite layout is unconditional — no per-env `storage` gate — so
 // both envs are asserted against the same shape. Extracted rather than
 // duplicated so a future divergence has to be written deliberately.
@@ -242,6 +259,31 @@ describe("ContainerStack — dev", () => {
     expect(move).toBeLessThan(mkdir);
     expect(mkdir).toBeLessThan(symlink);
     expect(symlink).toBeLessThan(boot);
+  });
+
+  // The display block ships AHEAD of the headful config flip, so the property
+  // that makes it safe to deploy is that it does NOTHING yet. Assert the
+  // inertness, not merely the presence: a stray DISPLAY on this task definition
+  // would turn every container in the fleet headful on its next deploy, and on
+  // an image without Xvfb that is a boot failure.
+  test("openclaw container gates the live-view display on DISPLAY, which is not set yet", () => {
+    const command = openclawStartupCommand(template, "dev");
+    const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ]');
+    const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY"');
+    const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+
+    // The guard must precede the launch it protects, and both must precede the
+    // exec that replaces this shell — nothing can be appended after that.
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(start).toBeGreaterThan(guard);
+    expect(start).toBeLessThan(boot);
+
+    // Capture starts on demand when a panel opens, never at boot: per-user
+    // containers already peak at 45-89% of their single vCPU without it.
+    expect(command).not.toContain("x11vnc");
+    expect(command).not.toContain("websockify");
+
+    expect(openclawContainerEnv(template, "dev").some(({ Name }) => Name === "DISPLAY")).toBe(false);
   });
 
   test("openclaw container performs a guarded one-time protocol transition", () => {

@@ -353,13 +353,21 @@ Carry across upstream's cost flags regardless: `--renderer-process-limit=2`,
 Our config already caps tabs aggressively (`config.py:1920` — 4 tabs, 30-minute
 idle) for the same reason.
 
-**Why this is not merely a performance concern.** CPU starvation on this
-container class has a documented failure mode: it surfaces as SQLite
-`database is locked` errors, not as slowness, and it previously forced
-`cpuCoreRatio` down from 0.9 to 0.12. A live view that saturates the vCPU would
-therefore not degrade gracefully — it would look like data-layer corruption.
-That is the argument for on-demand over always-on, and for watching this metric
-in dev before prod.
+**One adjacent failure mode, stated at its actual scope.** CPU starvation on
+this container class has produced SQLite `database is locked` rather than plain
+slowness — `ecs_manager.py:438-443` records a prod owner with 11 agents
+crash-looping on boot 2026-08-14, where 24 SQLite databases restoring and
+replicating concurrently saturated the single vCPU (the gateway got 13% of a
+core), blew OpenClaw's hardcoded 5s busy timeout, and tripped the ECS deployment
+circuit breaker after three failures.
+
+**That was a boot-time restore storm, and it is not evidence that a browser
+will do the same.** The load shapes differ: a burst of concurrent synchronous
+SQLite I/O at startup versus sustained rendering load well after boot, with no
+DB contention implied. It is cited here as the reason to *watch* CPU on this
+container class rather than assume slowness is the worst outcome — not as a
+prediction about the live view. Treat any claim that the live view will trigger
+it as unproven until §8 measures it.
 
 **Remaining open decision:** whether a *watched* container still fits in 1 vCPU.
 The split makes this plausible but does not prove it. Measure during §8 with a

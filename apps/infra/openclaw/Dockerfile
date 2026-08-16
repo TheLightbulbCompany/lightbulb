@@ -98,10 +98,23 @@ USER root
 # ---- Layer 1: runtime apt packages ----
 # Dropped from upstream extended image: build-essential, make (build-only).
 # Keeps git/curl/wget/gnupg — runtime tools (skills shell out, clawhub uses git).
+#
+# xvfb/x11vnc/novnc/websockify back the container browser live view. This is
+# upstream's own recipe for a watchable headful browser — see their
+# scripts/docker/sandbox/Dockerfile.browser, which installs exactly these
+# alongside chromium. We do NOT use their sandbox feature: it spawns a sibling
+# container via `docker run` (src/agents/sandbox/browser.ts), and Fargate has
+# no Docker daemon. We run the same processes in this one container instead,
+# which also means no CDP relay — their relay exists only to cross the
+# container boundary ours does not have.
+#
+# Installing these is inert until DISPLAY is set on the task definition; see
+# the display block in container-stack.ts startupCommand.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
       curl wget ca-certificates gnupg git unzip \
+      xvfb x11vnc novnc websockify \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----

@@ -16,7 +16,7 @@ from core.services import entitlement_teardown
 
 @pytest.fixture
 def _runtime():
-    """Stub the three side effects, so tests assert on intent not on AWS."""
+    """Stub the side effects, so tests assert on intent not on AWS."""
     with (
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
         patch("core.containers.get_ecs_manager") as ecs,
@@ -24,9 +24,19 @@ def _runtime():
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("paperclip unavailable in tests")),
         ),
+        patch("core.billing.bedrock_aip.delete_owner_aips", AsyncMock()) as aips,
+        patch("core.billing.bedrock_aip.delete_owner_bedrock_role", AsyncMock()) as role,
     ):
-        ecs.return_value.delete_user_service = AsyncMock()
-        yield MagicMock(facts=facts, ecs=ecs)
+        # Returns the containers row's ALL_OLD image — the only handle on the
+        # AIP arns once the row is gone.
+        ecs.return_value.delete_user_service = AsyncMock(
+            return_value={
+                "owner_id": "user_1",
+                "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
+                "bedrock_role_arn": "arn:aws:iam::1:role/isol8-prod-owner-bedrock-user_1",
+            }
+        )
+        yield MagicMock(facts=facts, ecs=ecs, aips=aips, role=role)
 
 
 @pytest.mark.parametrize("status", ["active", "trialing", "trial_local", "past_due"])
@@ -125,3 +135,68 @@ async def test_a_failing_step_does_not_abort_the_others(_runtime):
 
     # Facts still written despite the ECS failure.
     _runtime.facts.assert_awaited_once()
+
+
+async def _cancel(owner_id="user_1"):
+    with patch.object(
+        entitlement_teardown.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": owner_id, "subscription_status": "canceled"}),
+    ):
+        return await entitlement_teardown.teardown_if_unentitled(owner_id, trigger="test")
+
+
+@pytest.mark.asyncio
+async def test_teardown_reaps_the_per_owner_bedrock_role_and_aips(_runtime):
+    """IAM roles are capped at 1,000 per ACCOUNT, and `delete_user_service`
+    destroys the containers row that is the only handle on the AIP arns. Before
+    this, only the admin account-wipe deleted either, so every cancellation
+    leaked a role plus its inference profiles with nothing able to reach them
+    again."""
+    assert await _cancel() is True
+
+    _runtime.role.assert_awaited_once_with("user_1")
+    _runtime.aips.assert_awaited_once()
+    assert _runtime.aips.await_args.kwargs["aip_arns"] == [
+        "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_role_is_reaped_even_when_the_row_never_recorded_its_arn(_runtime):
+    """The role name derives from owner_id alone and the delete is idempotent,
+    so this must NOT be gated on a `bedrock_role_arn` field. Gating on the row
+    is precisely what stranded the roles already orphaned in prod: once the row
+    is gone, a row-gated delete can never reach them."""
+    _runtime.ecs.return_value.delete_user_service = AsyncMock(return_value=None)
+
+    assert await _cancel() is True
+
+    _runtime.role.assert_awaited_once_with("user_1")
+    _runtime.aips.assert_not_awaited()  # no arns to work from
+
+
+@pytest.mark.asyncio
+async def test_a_surviving_container_keeps_its_role(_runtime):
+    """If the ECS delete failed the task may still be running under this role,
+    and pulling it out from under a live container turns a retryable teardown
+    into a broken one. The next trigger re-runs this."""
+    _runtime.ecs.return_value.delete_user_service = AsyncMock(side_effect=RuntimeError("ECS down"))
+
+    assert await _cancel() is True
+
+    _runtime.role.assert_not_awaited()
+    _runtime.aips.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_role_delete_does_not_abort_the_teardown(_runtime):
+    """Best-effort like every other step — this runs from a webhook handler
+    where raising means a 5xx and a provider retry."""
+    _runtime.role.side_effect = RuntimeError("IAM down")
+    _runtime.aips.side_effect = RuntimeError("Bedrock down")
+
+    assert await _cancel() is True
+
+    _runtime.facts.assert_awaited_once()
+    _runtime.role.assert_awaited_once()

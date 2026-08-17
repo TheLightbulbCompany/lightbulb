@@ -1550,7 +1550,7 @@ def build_openclaw_config_dict(
                 # an agent sees ONLY itself (verified against the deployed tag:
                 # agents-list-tool.ts + subagent-target-policy.ts — undefined →
                 # [requesterAgentId]). That blinds every agent to the rest of the
-                # company: Atlas can't find a sibling (e.g. a user-made "Jarvis")
+                # company: Atlas can't find a sibling (e.g. a user-made "Forge")
                 # to build it out, and Friday can't enumerate its team to
                 # orchestrate. `["*"]` widens each agent to the full configured
                 # roster (agents.list[]). This governs the agents tool ONLY;
@@ -2157,7 +2157,7 @@ def build_openclaw_config_dict(
                 if binding not in bindings:
                     bindings.append(binding)
 
-    # ACP coding-harness runtime (Jarvis-style delegation: a native agent can
+    # ACP coding-harness runtime (Forge-style delegation: a native agent can
     # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). On
     # fleet-wide; ``acp_enabled=False`` is still passed by the marketplace
     # deploy path when a listing does not declare ``requires_acp``. Harnesses

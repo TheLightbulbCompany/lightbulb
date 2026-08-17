@@ -159,7 +159,8 @@ def test_staging_export_description_reaches_manifest(fake_staging):
     """The entry-level ``description`` (the only schema-legal home for it —
     IdentitySchema has no description field) feeds the manifest, which the
     agent-builder bridge threads into the Paperclip mint as capabilities.
-    jarvis shipped with null capabilities because this chain had no source."""
+    The founders' first built agent shipped with null capabilities because
+    this chain had no source."""
     owner_id, staging_agent_id, _ = fake_staging
     pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 

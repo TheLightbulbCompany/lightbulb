@@ -470,7 +470,7 @@ RUN chown -R root:root /app/dist/extensions/isol8-marketplace
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
-# (e.g. Jarvis) spawn external coding harnesses — Claude Code, Codex, Gemini —
+# (e.g. Forge) spawn external coding harnesses — Claude Code, Codex, Gemini —
 # over the Agent Client Protocol via sessions_spawn({runtime:"acp"}). Like the
 # slack/discord/bedrock plugins above, acpx is pruned from the published base
 # image (`!dist/extensions/acpx/**` in the fork's root package.json `files`, so

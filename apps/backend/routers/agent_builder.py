@@ -204,7 +204,7 @@ async def _register_built_agent(
     # Carry the built agent's description (from its entry's ``description``
     # field, surfaced in the manifest) into the Paperclip mint so capabilities
     # aren't empty. Warn instead of silently minting a blank org-chart card —
-    # the founders' first build (jarvis) shipped with null capabilities and
+    # the founders' first built agent shipped with null capabilities and
     # nobody knew until a roster audit.
     if not (package.manifest.get("description") or "").strip():
         warnings.append(

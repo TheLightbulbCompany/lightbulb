@@ -192,6 +192,21 @@ class TestOpenclawConfigShape:
         assert dreaming["phases"]["deep"] == {"enabled": False}
         assert set(entry["config"].keys()) == {"dreaming"}
 
+    def test_memory_wiki_shared_company_vault(self):
+        """memory-wiki (bundled in the base image) is enabled at provision as
+        the owner's company brain: ONE vault shared by every agent in the
+        container. vault.scope stays "global" explicitly — flipping it to
+        "agent" would silently fragment the shared vault per-agent, which
+        defeats the feature; renderMode "obsidian" writes [[wikilink]]
+        markdown. Only schema-legal keys may appear (the upstream configSchema
+        is additionalProperties:false at every level; vault accepts only
+        scope/path/renderMode) — a stray key bricks the container at boot."""
+        config = _cfg()
+        entry = config["plugins"]["entries"]["memory-wiki"]
+        assert entry["enabled"] is True
+        assert entry["config"]["vault"] == {"scope": "global", "renderMode": "obsidian"}
+        assert set(entry["config"].keys()) == {"vault"}
+
     def test_tools_exec_approval_policy(self):
         """mode="full" runs exec without an approval gate. Agents run
         autonomously via the Paperclip openclaw_gateway adapter with no

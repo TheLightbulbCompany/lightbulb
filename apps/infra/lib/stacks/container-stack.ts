@@ -729,7 +729,13 @@ export class ContainerStack extends cdk.Stack {
       // near the cause.
       '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ] || { echo "[boot] FATAL: DISPLAY is set but Xvnc is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs tigervnc-standalone-server."; exit 1; }',
       '[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -geometry 1280x800 -depth 24 -localhost -SecurityTypes None -rfbport 5900 & }',
-      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec matchbox-window-manager -use_titlebar no ) & }',
+      // On socket timeout: loud warning + skip the WM, never a boot failure.
+      // The live view is auxiliary — a dead Xvnc costs the Browser panel and
+      // headful Chrome, but chat/channels/everything else still works, and
+      // killing the whole agent container over it would invert priorities.
+      // (Skipping the exec also beats running matchbox against a dead
+      // display, where it would just exit after an X error.)
+      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
       '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot

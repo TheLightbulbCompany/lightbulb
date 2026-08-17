@@ -176,7 +176,9 @@ export function AgentRoster({
       <div className="agent-section-label">
         <span>My Agents</span>
         {attentionCount > 0 ? (
-          <b className="agent-section-label__attention">{attentionCount} needs you</b>
+          <b className="agent-section-label__attention">
+            {attentionCount} need{attentionCount === 1 ? "s" : ""} you
+          </b>
         ) : workingCount > 0 ? (
           <b className="agent-section-label__working">{workingCount} working</b>
         ) : (

@@ -161,11 +161,15 @@ describe("AgentRoster rendering", () => {
     expect(screen.getByText("Needs you")).toBeInTheDocument();
   });
 
-  it("leads the section label with what needs the human, then with live work", () => {
-    const { unmount } = render(<div />);
-    unmount();
+  it("leads the section label with what needs the human, ahead of live work", () => {
     renderRoster([entry("r", "Runner", "running"), entry("e", "Broken", "attention")]);
-    expect(screen.getByText("1 needs you")).toBeInTheDocument();
+    expect(screen.getByText(/1 needs you/)).toBeInTheDocument();
+    expect(screen.queryByText(/working/)).not.toBeInTheDocument();
+  });
+
+  it("agrees the verb with the count", () => {
+    renderRoster([entry("e", "Broken", "attention"), entry("f", "AlsoBroken", "attention")]);
+    expect(screen.getByText(/2 need you/)).toBeInTheDocument();
   });
 
   it("reports the working count when nothing is broken", () => {

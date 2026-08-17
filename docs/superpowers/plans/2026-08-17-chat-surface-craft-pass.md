@@ -34,24 +34,42 @@ The narration layer is separate and larger-leverage: upstream OpenClaw already s
 
 Verdicts are from reading the extracted source, not the marketing page. "Props" is what the component actually accepts.
 
-### Taking (7)
+### Taking (8)
 
 | # | Beautiful UI | Props | What we take | Lands in |
 |---|---|---|---|---|
 | 1 | **Tool Chips** | none | Row layout, hover-chevron reveal, expand-in-place, `createPortal(…, document.body)` for detail overlays | **new** `chat/ToolActivityTrace.tsx`, replacing `ToolPill`/`ToolUseIndicator` |
 | 2 | **Thinking** | `variant`, `onSettled` | Tense flip + settled duration + auto-collapse | `chat/MessageList.tsx:308` `ThinkingBlock` |
-| 3 | **Task Rows** | `variant` | Status row vocabulary: running → failed → **retry** → completed, staggered entry, per-row detail drop-down | `teams/panels/RunDetailPanel.tsx`, `RoutinesPanel.tsx` |
-| 4 | **Recommendation Card** | none | One primary recommendation + **Alternatives drawer**; picking one promotes it | `chat/HireCard.tsx` |
-| 5 | **Code Block** | none | Live copy affordance, per-line streaming render | `chat/MessageList.tsx:115` `CodeBlock`, `chat/FileContentViewer.tsx` |
-| 6 | **Selection Actions** | none | Contextual bar beneath selected text | **new** `chat/TranscriptSelectionBar.tsx` |
-| 7 | **Insight Cards** | none | Mini-visualization carousel that yields to user input | `teams/panels/DashboardPanel.tsx` |
+| 3 | **Streaming Text** | `loop`, `fill`, `onDone` | **Partial.** The settle-gated actions row and the reveal-on-arrival. Not its citations or follow-ups — no data. | `chat/MessageList.tsx:279` `StreamingMarkdownContent`, `:527` `AgentHead` |
+| 4 | **Task Rows** | `variant` | Status row vocabulary: running → failed → **retry** → completed, staggered entry, per-row detail drop-down | `teams/panels/RunDetailPanel.tsx`, `RoutinesPanel.tsx` |
+| 5 | **Recommendation Card** | none | One primary recommendation + **Alternatives drawer**; picking one promotes it | `chat/HireCard.tsx` |
+| 6 | **Code Block** | none | Live copy affordance, per-line streaming render | `chat/MessageList.tsx:115` `CodeBlock`, `chat/FileContentViewer.tsx` |
+| 7 | **Selection Actions** | none | Contextual bar beneath selected text | **new** `chat/TranscriptSelectionBar.tsx` |
+| 8 | **Insight Cards** | none | Mini-visualization carousel that yields to user input | `teams/panels/DashboardPanel.tsx` |
+
+#### Streaming Text, unbundled
+
+It was first judged as one component and rejected. That was wrong — it is four
+independent ideas wearing one demo harness, and they have four different verdicts:
+
+| idea | verdict |
+|---|---|
+| **Per-block reveal on arrival** + a caret while streaming | **Take** (Task 2). Cheap and safe — see the memoization analysis in that task. |
+| **Actions row gated on `done`**, not on hover | **Take** (Task 2). Fixes a live mobile bug — see below. |
+| **"10 sources" pill → expanding source list** | **Defer.** The pattern is right and pre-designed for us, but web-search results arrive as prose inside `tool_result` text. That is a parser, not a component. |
+| **Follow-up prompts** with staggered `fade-up` | **Defer.** No such field exists on our wire at all; producing them is a model-side change, not a UI one. |
+
+What is *not* taken from it in any form: `TOKENS` (a hardcoded word array), the
+55ms `WORD_MS` timer, `loop`, and `SOURCES` — the demo scaffolding. Note also
+that `@keyframes stream-in`, which its markup references by name, **is not
+shipped on their page**; we write our own regardless.
 
 ### Rejecting (13), with the reason
 
 | Beautiful UI | Why not |
 |---|---|
 | **Prompt Bar** / **Chat** (composer) | 658 lines, `demo = true` by default, imports `glimm` (WebGL shader, no public repo, unrelated maintainer) and an unresolvable `@/components/atoms/Button`. Our `ChatInput.tsx` (598 lines) already has the slash menu, attachments, send/stop, queueing and a model pill. Take only `parseToken` — `/(^|\s)([@/])([\w-]*)$/` — *if* we ever add @-mentions. |
-| **Streaming Text** | Has **no text prop**; word-streams a hardcoded `TOKENS` array on its own 55ms timer, and its citation chip is pinned to `SOURCES[0]`. Ours is driven by the real transport and is already correct. We also have no citation-shaped field on the wire, so the citation idea is a parser problem, not a component one — defer. |
+| **Streaming Text** | *Moved to Taking (partial) — see "Streaming Text, unbundled" above.* Its demo harness is unusable (no text prop, 55ms timer, citations pinned to `SOURCES[0]`), but two of its four ideas are worth taking and land in Task 2. |
 | **Loading State** | `useElapsed` counts from **mount**, with no `startedAt` prop, so it resets on every remount and panel re-dock. We stamp a real `startedAt` at `useAgentChat.ts:1554`; elapsed off a real timestamp is five lines and strictly better. |
 | **Approval Card** | The best-built of the twenty, but it solves a multi-question form, not approve/deny-a-shell-command. `ExecApprovalCards.tsx` stays. Add a "waiting for your approval" row in the trace that scrolls to it. |
 | **Records Table** | An AI spreadsheet grid (columns as AI properties with config popovers). We have no such surface and inventing one is out of scope. |
@@ -77,10 +95,13 @@ Verdicts are from reading the extracted source, not the marketing page. "Props" 
 - `docs/superpowers/plans/renders/*.html` — one comparison per component (delete with this plan when the work ships).
 
 **Modified**
-- `chat/MessageList.tsx` — group consecutive tool blocks; retokenize; `ThinkingBlock`; `CodeBlock`; delete `TOOL_STYLES`, `ToolPill`, `ToolUseIndicator`.
+- `chat/MessageList.tsx` — group consecutive tool blocks; retokenize; `StreamingMarkdownContent` reveal; `AgentHead` actions; `ThinkingBlock`; `CodeBlock`; delete `TOOL_STYLES`, `ToolPill`, `ToolUseIndicator`.
+- `app/globals.css` — add `@keyframes chat-block-in`; promote `.wf-type-cursor` (the landing page's caret, `:751-755`) to a shared class the real stream can use.
 - `chat/StreamingStatusBar.tsx` — drop `deriveStreamingLabel`.
 - `hooks/useAgentChat.ts` — one line: carry `startedAt` onto the emitted `tool_use` block.
 - `chat/HireCard.tsx`, `chat/FileContentViewer.tsx`, `teams/panels/RunDetailPanel.tsx`, `teams/panels/DashboardPanel.tsx`.
+
+Note `globals.css` is also touched by the open PR #1868. Keep the edit to an append near the existing keyframe block so the two do not collide.
 
 ---
 
@@ -194,7 +215,67 @@ it("converts a row with no terminal event to an explicit unknown state", () => {
 
 ---
 
-## Task 2: Thinking block
+## Task 2: Streaming reveal, the caret, and the settle-gated actions row
+
+**Files:** Modify `chat/MessageList.tsx` (`:279` `StreamingMarkdownContent`, `:527` `AgentHead`), `app/globals.css`; Test `chat/__tests__/MessageList.streaming.test.tsx`
+**Render:** `renders/streaming-text.html`
+
+**Why this is safe — the memoization analysis.** `StreamingMarkdownContent` splits the accumulated text into fence-aware blocks and renders each through the **memoized** `MarkdownContent`. Its own docstring (`:271`) states the invariant: *"every block except the growing tail is a frozen string, so per paint only the tail re-runs ReactMarkdown/Prism."* Two consequences decide the design:
+
+- Settled blocks memo-hit and never re-render, so a mount-triggered CSS animation on a block root fires **exactly once**, ever.
+- The tail block **re-renders** each chunk, but React reconciles the same DOM element in place — it does not remount it. CSS animations fire on mount, not on re-render, so the tail's animation also fires once, when the block first appears.
+
+So **per-block reveal costs nothing and cannot flicker.** Per-*word* reveal is a different matter and is deliberately NOT in this task: react-markdown re-parses the whole tail block per chunk with no stable per-word elements, and earlier text can restructure mid-stream (a `*` becomes emphasis once its pair arrives), remounting a span run and re-animating settled words. That is the flicker case. If per-word is wanted later, it needs a rehype plugin wrapping text nodes and a render to prove the flicker is absent — evaluate it in a comparison render, not in a plan.
+
+**The caret already exists in the house.** `globals.css:751-755` defines `.wf-type-cursor` — `2px × 1em`, `background: var(--forest)`, `animation: wf-cursor-blink .6s step-end infinite`. It is the **landing page's fake typing cursor**: the marketing site shows Friday typing with a forest caret that the real product never renders. Promote it to a shared class and use it for the real stream. Do not import Beautiful UI's `bg-ink` bar.
+
+**The actions bug this fixes.** `AgentHead` (`:536-544`) renders Copy, Regenerate and Share as three `<Button>`s with **no `onClick` on any of them**, revealed by `opacity-0 group-hover:opacity-100`. Two defects, not one: they are dead, and the reveal is hover-gated — so **on mobile they are both invisible and non-functional**, because touch has no hover. Beautiful UI's `opacity: done ? 1 : 0; pointerEvents: done ? "auto" : "none"` is the correct replacement: actions appear when the turn settles, on every input modality.
+
+- [ ] **Step 1: Comparison render + sign-off.** Show, at both widths: a block arriving with the reveal, the caret during stream, and the actions row appearing at settle. Include the mobile column specifically — that is where the current behaviour is broken.
+
+- [ ] **Step 2: Failing test — actions are gated on settle, not hover**
+
+```tsx
+it("exposes turn actions when the turn settles, on touch as well as pointer", () => {
+  const { rerender } = render(<AgentHead name="Friday" streaming />);
+  expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument();
+  rerender(<AgentHead name="Friday" streaming={false} />);
+  const copy = screen.getByRole("button", { name: /copy/i });
+  // No hover required: the control must be reachable without a pointer.
+  expect(copy).toBeVisible();
+  expect(copy).toBeEnabled();
+});
+```
+
+- [ ] **Step 3: Run it, confirm it fails** — `./node_modules/.bin/vitest run src/components/chat/__tests__/MessageList.streaming.test.tsx`. Expected: FAIL, the buttons render during streaming and carry no accessible name.
+
+- [ ] **Step 4: Failing test — copy actually copies**
+
+```tsx
+it("copies the message text", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.assign(navigator, { clipboard: { writeText } });
+  render(<AgentHead name="Friday" streaming={false} messageText="hello world" />);
+  await userEvent.click(screen.getByRole("button", { name: /copy/i }));
+  expect(writeText).toHaveBeenCalledWith("hello world");
+});
+```
+
+- [ ] **Step 5: Implement the actions row.** Give each button an `aria-label`, gate the group on settled rather than `group-hover`, and wire Copy (clipboard) and Share (existing share affordance). **Regenerate is real work — do not stub it.** Either wire it to the existing resend path or remove that one button; a control that looks live and does nothing is worse than an absent one.
+
+- [ ] **Step 6: Implement the reveal + caret.** Add `@keyframes chat-block-in` to `globals.css` next to the existing keyframe block (opacity + a small translate; no blur filter — `will-change: filter` on every streamed block is a real paint cost for a subtle effect). Apply it to the block root in `StreamingMarkdownContent`. Promote `.wf-type-cursor` to a shared caret class and render it at the tail while `streaming`.
+
+- [ ] **Step 7: Reduced motion.** `globals.css:1117` already collapses all animation to `0.01ms` under `prefers-reduced-motion: reduce`, so the reveal is covered by the existing global rule — **verify this rather than adding a second rule.** The caret must keep blinking, or become static, but must not vanish: it is a state indicator, not decoration.
+
+- [ ] **Step 8: Run tests — PASS**
+
+- [ ] **Step 9: Both viewports.** On mobile confirm the actions row is reachable with no pointer. Re-render `WorkspaceDemo` — this task touches the class its fake caret uses.
+
+- [ ] **Step 10: Commit** — `git commit -m "feat(chat): reveal streamed blocks, real caret, settle-gated turn actions"`
+
+---
+
+## Task 3: Thinking block
 
 **Files:** Modify `chat/MessageList.tsx:308`; Test `chat/__tests__/MessageList.thinking.test.tsx`
 **Render:** `renders/thinking.html`
@@ -219,7 +300,7 @@ it("reads past-tense with a duration once settled", () => {
 
 ---
 
-## Task 3: Retokenize `MessageList`
+## Task 4: Retokenize `MessageList`
 
 **Files:** Modify `chat/MessageList.tsx`; no new tests (visual — covered by the render check)
 **Render:** `renders/palette.html`
@@ -247,7 +328,7 @@ Most of the pink and green disappears with `TOOL_STYLES` in Task 1; this task fi
 
 ---
 
-## Task 4: Hire card → recommendation + alternatives
+## Task 5: Hire card → recommendation + alternatives
 
 **Files:** Modify `chat/HireCard.tsx`; Test `chat/__tests__/HireCard.test.tsx`
 **Render:** `renders/hire-card.html`
@@ -273,7 +354,7 @@ it("shows one recommendation and hides the rest behind a drawer", async () => {
 
 ---
 
-## Task 5: Code block
+## Task 6: Code block
 
 **Files:** Modify `chat/MessageList.tsx:115` `CodeBlock`, `chat/FileContentViewer.tsx`; Test `chat/__tests__/CodeBlock.test.tsx`
 **Render:** `renders/code-block.html`
@@ -287,7 +368,7 @@ it("shows one recommendation and hides the rest behind a drawer", async () => {
 
 ---
 
-## Task 6: Run status rows
+## Task 7: Run status rows
 
 **Files:** Modify `teams/panels/RunDetailPanel.tsx`, `teams/panels/RoutinesPanel.tsx`; Test `teams/panels/__tests__/RunDetailPanel.test.tsx`
 **Render:** `renders/task-rows.html`
@@ -312,7 +393,7 @@ it("shows a retry as its own row, preserving the failure", () => {
 
 ---
 
-## Task 7: Transcript selection bar
+## Task 8: Transcript selection bar
 
 **Files:** Create `chat/TranscriptSelectionBar.tsx`; Modify `chat/MessageList.tsx`; Test `chat/__tests__/TranscriptSelectionBar.test.tsx`
 **Render:** `renders/selection-actions.html`
@@ -328,7 +409,7 @@ New capability, not in #1871: select text in a transcript and act on it ("ask ab
 
 ---
 
-## Task 8: Insight cards
+## Task 9: Insight cards
 
 **Files:** Modify `teams/panels/DashboardPanel.tsx`; Test `teams/panels/__tests__/DashboardPanel.test.tsx`
 **Render:** `renders/insight-cards.html`
@@ -342,7 +423,7 @@ New capability, not in #1871: select text in a transcript and act on it ("ask ab
 
 ---
 
-## Task 9: Ship
+## Task 10: Ship
 
 - [ ] **Step 1: Full frontend suite** — `cd apps/frontend && pnpm test` (RAM-heavy; once, at the end)
 - [ ] **Step 2: Typecheck** — `pnpm exec tsc --noEmit` (CI typechecks test files too)
@@ -359,4 +440,4 @@ New capability, not in #1871: select text in a transcript and act on it ("ask ab
 1. **Task 8 (Insight Cards)** is the weakest fit and the most speculative. It is last so it can be cut without disturbing anything.
 2. **Sidebar Nav / Search** are deferred behind PR #1868, which is still OPEN and touches `WorkspaceSidebar.tsx` and `globals.css`. If #1868 lands first, revisit both.
 3. **Citations** have no field on the wire. Parallel's keyless MCP returns sources as prose inside `tool_result` text, so surfacing them is a parser, not a component. Out of scope here.
-4. **The `AgentHead` dead buttons** — copy / regenerate / share render with no `onClick` on every assistant bubble. Not in #1871. Recommend deleting them in Task 3 (one line each); wiring copy and share is trivial, regenerate is real work.
+4. **Regenerate** is the one action in Task 2 with real work behind it. Copy and Share are trivial; regenerate needs a resend path. If that turns out to be more than a small change, **remove that button rather than stubbing it** — the current state (a control that looks live and does nothing, invisible on touch) is the bug being fixed, and a stub reproduces it.

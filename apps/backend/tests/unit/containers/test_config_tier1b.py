@@ -171,7 +171,10 @@ class TestBrowserBounds:
             # See test_browser_is_headful_in_every_environment.
             assert browser["headless"] is False, choice
             assert browser["noSandbox"] is True, choice
-            assert browser["executablePath"] == "/usr/bin/chromium", choice
+            # Real Chrome (layer 9b), NOT /usr/bin/chromium — that symlink is
+            # Playwright's Chrome-for-Testing, whose permanent "automated
+            # testing only" banner faced the owner in the live-view panel.
+            assert browser["executablePath"] == "/usr/bin/google-chrome", choice
             # Schema caps both at 120_000; defaults (15s/8s) are the ones
             # upstream says to raise on slow storage.
             assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice

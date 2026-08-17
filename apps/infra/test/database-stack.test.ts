@@ -116,6 +116,11 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
       Engine: "aurora-postgresql",
       DatabaseName: "paperclip",
       StorageEncrypted: true,
+      // MaxCapacity is PAPERCLIP_DB_MAX_ACU (database-stack.ts). Asserted as a
+      // literal on purpose: raising the ceiling should fail here so the change
+      // is deliberate rather than incidental. If you are here because this
+      // failed after a ceiling change, the W66 saturation alarm's threshold
+      // moves with it — check apps/infra/test/observability-stack.test.ts too.
       ServerlessV2ScalingConfiguration: Match.objectLike({
         MinCapacity: 0,
         MaxCapacity: 4,

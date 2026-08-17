@@ -10,6 +10,7 @@ import {
   ObservabilityStack,
   ObservabilityStackProps,
 } from "../lib/stacks/observability-stack";
+import { PAPERCLIP_DB_MAX_ACU } from "../lib/stacks/database-stack";
 
 /**
  * Synthesize the stack for one environment.
@@ -21,7 +22,14 @@ import {
  * compiles through esbuild, which strips types without checking them, so
  * green tests are not evidence the prod path even compiles.
  */
-function buildTemplate(envName: "dev" | "prod"): Template {
+function buildTemplate(
+  envName: "dev" | "prod",
+  // Aurora ACU ceiling handed to the stack. Parameterized so the W66 threshold
+  // can be asserted at ceilings OTHER than today's — the 95% derivation is
+  // wrong for several plausible values if it is spelled `* 0.95` and rounded,
+  // and a suite that only ever synthesizes at 4 cannot see that.
+  paperclipDbMaxAcu: number = PAPERCLIP_DB_MAX_ACU,
+): Template {
   {
     const app = new cdk.App();
     const env = {
@@ -80,7 +88,10 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         }),
         writer: rds.ClusterInstance.serverlessV2("writer"),
         serverlessV2MinCapacity: 0,
-        serverlessV2MaxCapacity: 4,
+        // Mirrors the real cluster's ceiling (PAPERCLIP_DB_MAX_ACU in
+        // database-stack.ts). The W66 alarm reads the ceiling from props, not
+        // from this construct, so this value only keeps the mock honest.
+        serverlessV2MaxCapacity: paperclipDbMaxAcu,
         vpc,
         clusterIdentifier: "isol8-dev-paperclip-db",
       },
@@ -120,6 +131,7 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       paperclipDbCluster,
       paperclipService,
+      paperclipDbMaxAcu,
     };
 
     const obsStack = new ObservabilityStack(
@@ -381,23 +393,13 @@ describe("ObservabilityStack", () => {
     });
   });
 
-  // W66 watches for the Paperclip Aurora cluster sitting AT its Serverless v2
-  // ACU ceiling. Every property below is load-bearing:
-  //   - Statistic=Average, NOT Maximum. Measured on prod over the 7 days to
-  //     2026-08-17: at 5-min resolution, Maximum >= 3.8 breached 27 periods
-  //     across 24 separate runs (a ~24x/week pager), while Average >= 3.8
-  //     breached exactly ONE period and never two in a row. Maximum cannot
-  //     tell a normal burst from sustained saturation; Average can.
-  //   - EvaluationPeriods=3 at Period=300, i.e. 15 min sustained. Would have
-  //     fired ZERO times that week, and matches W60/W61/W62's window.
-  //   - Threshold 3.8 is 95% of the cluster's ACU ceiling, DERIVED in the stack
-  //     from PAPERCLIP_DB_MAX_ACU rather than hardcoded, so raising
-  //     serverlessV2MaxCapacity moves the alarm instead of leaving it pinned
-  //     to a stale number (which would breach permanently the day it goes up).
-  //     The literal here is therefore only right while the ceiling is 4 — a
-  //     raise fails this test on purpose, so the new value gets a conscious look.
-  //   - DBClusterIdentifier dimension: ServerlessDatabaseCapacity is a
-  //     per-cluster metric; without it the alarm reads nothing.
+  // W66 detects sustained near-ceiling Aurora load. The reasoning for every
+  // value below (why Average not Maximum, why 15 min, why 95%) lives in ONE
+  // place — the W66 comment block in observability-stack.ts. Not restated here.
+  // What this test pins: Statistic=Average and EvaluationPeriods=3 at
+  // Period=300 are the whole point of the alarm, and the DBClusterIdentifier
+  // dimension is mandatory (ServerlessDatabaseCapacity is per-cluster; without
+  // it the alarm reads nothing).
   test("W66 alarms on sustained Aurora ACU ceiling saturation", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "isol8-dev-W66-aurora-acu-ceiling",
@@ -405,13 +407,41 @@ describe("ObservabilityStack", () => {
       MetricName: "ServerlessDatabaseCapacity",
       Statistic: "Average",
       Period: 300,
-      Threshold: 3.8,
+      Threshold: 3.8, // 95% of the current ceiling of 4
       EvaluationPeriods: 3,
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       Dimensions: Match.arrayWith([
         Match.objectLike({ Name: "DBClusterIdentifier" }),
       ]),
     });
+  });
+
+  // The threshold must be exactly 95% of whatever ceiling it is given, for any
+  // ceiling — that is the entire reason the ACU cap is a shared constant rather
+  // than a literal. This synthesizes at ceilings OTHER than today's, which is
+  // the only way to tell a real derivation from one that merely happens to
+  // agree at 4.
+  //
+  // These specific values are regression cases, not arbitrary: with the obvious
+  // `Math.round(n * 0.95 * 10) / 10` spelling, IEEE-754 drift makes n=3 yield
+  // 2.8 (93.3%) and n=9 yield 8.5 (94.4%), and n=1 yields 1.0 — a threshold
+  // EQUAL to the cap, i.e. an alarm that can only fire once the cluster is
+  // already pegged. Integer-first `* 95 / 100` is exact for all of them.
+  test.each([
+    [1, 0.95],
+    [3, 2.85],
+    [4, 3.8],
+    [9, 8.55],
+  ])("W66 threshold is exactly 95%% of a %i ACU ceiling", (maxAcu, expected) => {
+    expect(expected).toBeCloseTo(maxAcu * 0.95, 10); // the case table is right
+    expect(expected).toBeLessThan(maxAcu); // never at/above the cap
+    buildTemplate("dev", maxAcu).hasResourceProperties(
+      "AWS::CloudWatch::Alarm",
+      {
+        AlarmName: "isol8-dev-W66-aurora-acu-ceiling",
+        Threshold: expected,
+      },
+    );
   });
 
   // -------------------------------------------------------------------

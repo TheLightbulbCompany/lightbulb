@@ -19,11 +19,14 @@ export interface DatabaseStackProps extends cdk.StackProps {
 /**
  * Aurora Serverless v2 ceiling for the Paperclip cluster, in ACU.
  *
- * Exported because ObservabilityStack's W66 alarm fires on capacity sitting AT
- * this ceiling and must move with it — `rds.IDatabaseCluster` does not expose
- * `serverlessV2MaxCapacity`, so a shared constant is the only way to keep the
- * alarm from silently pinning itself to a stale number when the ceiling is
- * raised. Change it HERE and both the cluster and the alarm follow.
+ * This is the single definition. `rds.IDatabaseCluster` does not expose
+ * `serverlessV2MaxCapacity`, so the W66 saturation alarm cannot read it back
+ * off the construct — `isol8-stage.ts` threads this value into
+ * ObservabilityStack instead, and the alarm derives its threshold from it.
+ * Change it HERE and the cluster and the alarm both follow.
+ *
+ * Why W66 needs it, and how the threshold is derived: see the W66 comment in
+ * `observability-stack.ts` (`createPaperclipTierAlarms`).
  */
 export const PAPERCLIP_DB_MAX_ACU = 4;
 
@@ -392,8 +395,10 @@ export class DatabaseStack extends cdk.Stack {
     // ─────────────────────────────────────────────────────────────────
     // Paperclip Aurora Serverless v2 cluster
     //
-    // Postgres 16.4 with pgvector available. Scale-to-zero (min 0 ACU,
-    // max 4 ACU). Subnet group on private-with-egress subnets. Security
+    // Postgres 16.4 with pgvector available. Scale-to-zero (min 0 ACU; the
+    // ceiling is PAPERCLIP_DB_MAX_ACU, defined above — deliberately not
+    // restated here so it cannot go stale when the ceiling moves).
+    // Subnet group on private-with-egress subnets. Security
     // group is restrictive — ingress is granted later (in paperclip-stack
     // / service-stack) only from the backend SG and the Paperclip task SG.
     //

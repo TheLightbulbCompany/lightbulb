@@ -17,7 +17,6 @@ import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
-import { PAPERCLIP_DB_MAX_ACU } from "./database-stack";
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds
@@ -69,6 +68,14 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   // Paperclip tier references (for Aurora + Paperclip-service alarms)
   paperclipDbCluster: rds.IDatabaseCluster;
   paperclipService: ecs.IBaseService;
+  /**
+   * The cluster's configured Serverless v2 ACU ceiling, for the W66 saturation
+   * alarm. Passed explicitly because `rds.IDatabaseCluster` does not expose
+   * `serverlessV2MaxCapacity` — there is no way to read it back off
+   * `paperclipDbCluster` above. Source of truth is `PAPERCLIP_DB_MAX_ACU` in
+   * database-stack.ts, wired in isol8-stage.ts.
+   */
+  paperclipDbMaxAcu: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1946,7 +1953,13 @@ def handler(event, _ctx):
       severity: "warn",
     });
 
-    // W66: Aurora pinned at its Serverless v2 ACU ceiling.
+    // W66: Aurora under sustained near-ceiling load. THE CANONICAL EXPLANATION
+    // for this alarm lives here — database-stack.ts's PAPERCLIP_DB_MAX_ACU
+    // JSDoc and the W66 test both point at this block rather than restating it.
+    //
+    // What it actually detects: a 15-minute AVERAGE at >=95% of the configured
+    // ACU ceiling. NOT "Maximum touched the cap" — see the description comment
+    // below for why that distinction matters on-call.
     //
     // WHY THIS EXISTS. Measured on prod `isol8-prod-paperclip-db` over the
     // 7 days to 2026-08-17: the cluster's hourly Maximum ACU touched the 4.0
@@ -1976,19 +1989,36 @@ def handler(event, _ctx):
     // CPU peak, because the peak is a single-minute sample inside a period
     // whose Average is 22.8%. Both alarms deliberately ignore bursts.
     //
-    // The threshold is derived from PAPERCLIP_DB_MAX_ACU, not hardcoded: 95% of
-    // the ceiling. Raising serverlessV2MaxCapacity in database-stack.ts moves
-    // this alarm with it instead of leaving it pinned to a stale 4.0 — which
-    // would be a permanently-breached alarm the day the ceiling goes up.
-    // Rounded to 1dp so a future ceiling that isn't a clean multiple of 20
-    // (e.g. 6 → 5.699999999999999) doesn't land a float artifact in the
-    // template and the alarm description.
-    const acuCeilingThreshold =
-      Math.round(PAPERCLIP_DB_MAX_ACU * 0.95 * 10) / 10;
+    // The threshold is 95% of the cluster's ceiling, DERIVED from
+    // props.paperclipDbMaxAcu rather than hardcoded. Raising
+    // serverlessV2MaxCapacity in database-stack.ts moves this alarm with it
+    // instead of leaving it pinned to a stale 4.0 — which would be a
+    // permanently-breached alarm the day the ceiling goes up.
+    //
+    // ARITHMETIC — `* 95 / 100`, never `* 0.95`. The obvious spelling,
+    // `Math.round(n * 0.95 * 10) / 10`, silently stops being 95% for many
+    // ceilings, because `n * 0.95` lands a hair BELOW a .1 boundary in
+    // IEEE-754 and round-to-1dp then truncates a whole tenth off:
+    //   n=3 → 2.8499999999999996 → 2.8  (93.3%, not 95%)
+    //   n=9 → 8.549999999999999  → 8.5  (94.4%)
+    //   n=5 → 4.75               → 4.8  (96.0%)
+    //   n=1 → 0.95               → 1.0  (100% — a threshold EQUAL to the cap,
+    //                                    so the alarm could only fire once the
+    //                                    cluster was already pegged)
+    // Only 2/4/6/8/10 happen to land clean, which is exactly the kind of bug
+    // that hides until someone changes the ceiling. Multiplying by the integer
+    // 95 first is exact for any ceiling (halves included — Aurora scales in
+    // 0.5 ACU steps), so the "95%" this comment and the alarm description both
+    // claim is actually true for every value.
+    const acuCeilingThreshold = (props.paperclipDbMaxAcu * 95) / 100;
     this.createAlarm({
       id: "W66",
       name: "aurora-acu-ceiling",
-      description: `Paperclip Aurora averaged >=${acuCeilingThreshold} of its ${PAPERCLIP_DB_MAX_ACU} ACU ceiling for 15 min — sustained saturation, not a burst. Queries are queueing on capacity; consider raising serverlessV2MaxCapacity. Average (not Maximum) is deliberate: ceiling touches are normal minute-scale bursts, ~24/week as measured.`,
+      // Wording matters for whoever gets this at 3am: it is an AVERAGE over
+      // 15 minutes, so it can trip while Maximum never touched the cap. An
+      // on-call engineer told "at the ceiling" would check Max, see it never
+      // hit 4.0, and dismiss a real alarm as a fluke.
+      description: `Paperclip Aurora averaged >=${acuCeilingThreshold} ACU — 95% of its ${props.paperclipDbMaxAcu} ACU ceiling — for 15 min. Sustained near-ceiling load, not a burst: queries are queueing on capacity. This is an AVERAGE, so it can fire even if Maximum never reached the cap. Consider raising serverlessV2MaxCapacity. Average (not Maximum) is deliberate: ceiling touches are normal minute-scale bursts, ~24/week as measured.`,
       metric: new cloudwatch.Metric({
         namespace: "AWS/RDS",
         metricName: "ServerlessDatabaseCapacity",

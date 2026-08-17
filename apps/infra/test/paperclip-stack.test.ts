@@ -81,6 +81,9 @@ function buildStackInstance(environment: "dev" | "prod") {
       version: rds.AuroraPostgresEngineVersion.VER_16_4,
     }),
     serverlessV2MinCapacity: 0,
+    // Mirrors PAPERCLIP_DB_MAX_ACU (database-stack.ts). Only a stand-in for the
+    // real cluster — PaperclipStack does not read the ceiling — but keep it in
+    // step so this mock stays an honest copy of what actually gets deployed.
     serverlessV2MaxCapacity: 4,
     writer: rds.ClusterInstance.serverlessV2("writer"),
     vpc,

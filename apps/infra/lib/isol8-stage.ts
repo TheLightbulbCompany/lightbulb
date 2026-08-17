@@ -5,7 +5,10 @@ import { AuthStack } from "./stacks/auth-stack";
 import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
 import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
-import { DatabaseStack } from "./stacks/database-stack";
+import {
+  DatabaseStack,
+  PAPERCLIP_DB_MAX_ACU,
+} from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
@@ -245,6 +248,10 @@ export class Isol8Stage extends cdk.Stage {
         authorizerFunctionName: `isol8-${env}-ws-authorizer`,
         paperclipDbCluster: database.paperclipDbCluster,
         paperclipService: paperclip.service,
+        // The cluster construct does not expose its own ACU ceiling, so the
+        // W66 saturation alarm gets it from the same constant the cluster is
+        // built with.
+        paperclipDbMaxAcu: PAPERCLIP_DB_MAX_ACU,
       },
     );
     observability.addDependency(database);

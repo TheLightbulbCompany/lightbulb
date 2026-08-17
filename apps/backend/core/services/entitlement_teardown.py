@@ -110,7 +110,13 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     if ecs_deleted:
         from core.billing.bedrock_aip import delete_owner_aips, delete_owner_bedrock_role
 
-        aip_arns = list(((row_at_death or {}).get("bedrock_aip_arns") or {}).values())
+        # Anything that is not the documented `dict | None` is treated as "no
+        # arns to reap" rather than allowed to raise. This runs from webhook
+        # handlers where an exception means a 5xx and a provider retry, and
+        # this extraction sits outside the per-call try blocks below — so an
+        # unexpected row shape here would take the whole teardown down with it.
+        row = row_at_death if isinstance(row_at_death, dict) else {}
+        aip_arns = list((row.get("bedrock_aip_arns") or {}).values())
         if aip_arns:
             try:
                 await delete_owner_aips(owner_id, aip_arns=aip_arns)

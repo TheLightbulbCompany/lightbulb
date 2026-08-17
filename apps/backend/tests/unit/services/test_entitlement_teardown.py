@@ -190,6 +190,21 @@ async def test_a_surviving_container_keeps_its_role(_runtime):
 
 
 @pytest.mark.asyncio
+async def test_an_unexpected_row_shape_does_not_take_the_teardown_down(_runtime):
+    """The arn extraction sits outside the per-call try blocks, and this runs
+    from webhook handlers where raising means a 5xx and a provider retry. A row
+    that is not the documented ``dict | None`` must degrade to "no arns", not
+    explode — an AsyncMock's ``.get()`` returns a coroutine, which is exactly
+    how this surfaced."""
+    _runtime.ecs.return_value.delete_user_service = AsyncMock(return_value=AsyncMock())
+
+    assert await _cancel() is True
+
+    _runtime.aips.assert_not_awaited()
+    _runtime.role.assert_awaited_once_with("user_1")  # role still reaped
+
+
+@pytest.mark.asyncio
 async def test_a_failing_role_delete_does_not_abort_the_teardown(_runtime):
     """Best-effort like every other step — this runs from a webhook handler
     where raising means a 5xx and a provider retry."""

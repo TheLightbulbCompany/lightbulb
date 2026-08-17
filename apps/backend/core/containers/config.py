@@ -950,7 +950,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
 
 
 def memory_plugin_entries() -> dict:
-    """The bundled ``memory-core`` extension with nightly LIGHT-phase dreaming,
+    """The bundled memory extensions (``memory-core`` + ``memory-wiki``),
     shared by the provision-time builder and the provider hot-swap path.
 
     Light-phase dreaming reads recent session transcripts off disk and writes
@@ -969,9 +969,24 @@ def memory_plugin_entries() -> dict:
     logs show no sqlite contention; recall is what lets agents remember beyond
     the always-loaded ``MEMORY.md``).
 
-    Keys are restricted to the upstream ``memory-core`` configSchema, which is
-    strict (``additionalProperties:false``) at every level: the only key under
-    ``config`` is ``dreaming``. A stray key crash-loops the container at boot.
+    ``memory-wiki`` is the owner's COMPANY BRAIN: a single vault shared by
+    every agent in the container (``vault.scope: "global"`` →
+    ``~/.openclaw/wiki/main``, markdown on EFS — its compiled snapshot goes to
+    the shared SQLite plugin state on the ext4 mount, not EFS). It sits beside
+    memory-core (which keeps recall/dreaming) and compiles durable knowledge
+    into provenance-tracked pages with ``wiki_search``/``wiki_get``/
+    ``wiki_apply`` tools; the plugin ships its own ``wiki-maintainer`` skill,
+    so agents learn the conventions from the image, not from us. ``scope`` is
+    set explicitly because the shared-vault semantic is the whole point — an
+    upstream default flip to per-agent vaults would silently fragment the
+    company brain. ``renderMode: "obsidian"`` writes Obsidian-flavored
+    ``[[wikilink]]`` markdown; the vault stays browsable in the file viewer.
+
+    Keys are restricted to the upstream configSchemas, which are strict
+    (``additionalProperties:false``) at every level — the only key under
+    memory-core's ``config`` is ``dreaming``, and memory-wiki's ``vault``
+    accepts only ``scope``/``path``/``renderMode``. A stray key crash-loops
+    the container at boot.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -992,6 +1007,15 @@ def memory_plugin_entries() -> dict:
                         # files (no embeddings), EFS-safe on the deployed image.
                         "rem": {"enabled": True},
                     },
+                },
+            },
+        },
+        "memory-wiki": {
+            "enabled": True,
+            "config": {
+                "vault": {
+                    "scope": "global",  # ONE shared vault = the company brain
+                    "renderMode": "obsidian",
                 },
             },
         },

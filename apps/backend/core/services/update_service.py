@@ -507,7 +507,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # playbook that reads their Paperclip key while never gaining
                     # the pattern that redacts it — the cohort that needs it most.
                     # Additive and behaviour-free, so it is safe on every owner.
-                    from core.containers.config import REDACT_PATTERNS
+                    from core.containers.config import REDACT_PATTERNS, memory_plugin_entries
                     from core.services.config_patcher import (
                         ensure_plugin_entries,
                         ensure_redact_patterns,
@@ -527,8 +527,19 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # are in the environment when nothing puts them there.
                     # Enabling it alone is harmless: an agent still reading the
                     # key file simply has the credentials twice.
+                    # memory-wiki rides along for the same reason: the plugin is
+                    # baked in the base image but a roll reuses the on-disk
+                    # config, so pre-existing owners would never gain the shared
+                    # company-brain vault. ensure_plugin_entries is additive-only,
+                    # so an owner who already configured memory-wiki keeps theirs.
                     try:
-                        await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
+                        await ensure_plugin_entries(
+                            owner_id,
+                            {
+                                **PAPERCLIP_CREDS_PLUGIN_PATCH["entries"],
+                                "memory-wiki": memory_plugin_entries()["memory-wiki"],
+                            },
+                        )
                     except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
                         logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
 

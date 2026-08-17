@@ -152,6 +152,59 @@ def test_skeleton_generator_draft_write_verify(tmp_path):
     assert not [p for p in out["artifact_paths"] if "lex-legal" in p], out["artifact_paths"]
 
 
+_TOKEN_DRIVER = r"""
+const g=require(process.env.GEN_PATH);
+const r=require(process.env.REG_PATH);
+process.env.ISOL8_AGENTS_DIR="/home/node/.openclaw";
+process.stdout.write(JSON.stringify({
+  plain: g.stagingIdFor("b1"),
+  long: g.stagingIdFor("x".repeat(300)),
+  traversal: g.stagingIdFor("../../etc/passwd"),
+  empty: g.stagingIdFor(""),
+  dir: g.stagingWorkspaceDir("b1"),
+  // The registrar must resolve the staging workspace through the generator's
+  // export, not a second copy of the derivation.
+  registrar_shares_derivation: r._stagingWorkspaceDir === g.stagingWorkspaceDir
+}));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_staging_token_is_always_a_legal_staging_agent_id(tmp_path):
+    # Build ids come from the agent loop and are free-form. The token derived
+    # from one still has to satisfy the bridge: agent_export._AGENT_ID_RE and
+    # RegisterBuiltAgentRequest.staging_agent_id (3-64 chars, [A-Za-z0-9._-],
+    # alphanumeric first char). An over-long or path-y build id must not turn a
+    # good build into a 422 — or a traversal.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", _TOKEN_DRIVER],
+        capture_output=True,
+        text=True,
+        env={
+            "GEN_PATH": str(_GEN),
+            "REG_PATH": str(_GEN.parent / "atlas-trigger-registrar.js"),
+            "PATH": str(bin_dir),
+        },
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+
+    from core.services.agent_export import _AGENT_ID_RE
+
+    assert out["plain"] == "atlas-staging-b1"
+    assert out["empty"] == "atlas-staging-unknown"
+    assert "/" not in out["traversal"] and ".." not in out["traversal"]
+    assert len(out["long"]) == 64
+    for key in ("plain", "long", "traversal", "empty"):
+        assert _AGENT_ID_RE.match(out[key]), (key, out[key])
+    assert out["dir"] == "/home/node/.openclaw/workspace-atlas-staging-b1"
+    assert out["registrar_shares_derivation"] is True
+
+
 # Driver for the verify-write schema gate: draft + write a minimal agent,
 # optionally poison the staged openclaw.json with a non-schema agent-entry key
 # (the exact class of key that bricked a prod container), then verify-write.

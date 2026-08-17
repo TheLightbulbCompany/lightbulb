@@ -68,9 +68,13 @@ function _buildIdOf(spec) {
 // The one handle everything on disk is keyed by. Build-scoped, NOT name-derived:
 // the display name never becomes a path, a config id, or a bridge argument.
 // `_safeName` keeps it inside the backend's agent-id charset ([A-Za-z0-9._-]),
-// so `workspace-{token}` is always a legal, non-traversing dir name.
+// so `workspace-{token}` is always a legal, non-traversing dir name. Build ids
+// come from the agent loop and are free-form, so the tail is capped to keep the
+// whole token within the bridge's 64-char staging_agent_id limit (which is also
+// agent_export's _AGENT_ID_RE ceiling) — an over-long build id must not turn a
+// good build into a 422 at register.
 function stagingIdFor(buildId) {
-  return STAGING_ID_PREFIX + _safeName(buildId, 'unknown');
+  return STAGING_ID_PREFIX + _safeName(buildId, 'unknown').slice(0, 64 - STAGING_ID_PREFIX.length);
 }
 
 // EFS user root inside the container (/home/node/.openclaw) — the same root the
@@ -964,6 +968,10 @@ module.exports = {
   UNIVERSAL_SKILL_CORE,
   STAGING_ID_PREFIX,
   stagingIdFor,
+  // Exported so sibling build tools resolve the staging workspace through the
+  // SAME derivation instead of re-deriving it — a second copy that drifts is
+  // how the pipeline and the bridge ended up reading different directories.
+  stagingWorkspaceDir: _stagingWorkspaceDir,
   renderUserStory,
   generateOpenclawJson,
   generateAgentsMd,

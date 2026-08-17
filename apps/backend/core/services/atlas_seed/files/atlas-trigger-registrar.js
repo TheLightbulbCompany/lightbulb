@@ -31,6 +31,13 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+// Resolve the staging workspace through the generator's own derivation rather
+// than a second copy of it. Two copies that drift is exactly how the build
+// pipeline and the backend bridge ended up reading different directories.
+// Both files are staged into this workspace together by the Atlas seeder;
+// the require is file-relative, so cwd doesn't matter.
+const { stagingWorkspaceDir: _stagingWorkspaceDir } = require('./atlas-skeleton-generator.js');
+
 function parseArgs(argv) {
   const args = { mode: 'register', buildId: null, agentId: null };
   for (const a of argv.slice(2)) {
@@ -39,18 +46,6 @@ function parseArgs(argv) {
     else if (a.startsWith('--agent-id=')) args.agentId = a.split('=')[1];
   }
   return args;
-}
-
-// EFS user root — same default as atlas-skeleton-generator.js _agentsRoot().
-function _agentsRoot() {
-  return process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
-}
-
-// The build's staging workspace. Same derivation as the generator's
-// stagingIdFor(); the two must agree or this reads a dir the build never wrote.
-function _stagingWorkspaceDir(buildId) {
-  const safe = String(buildId || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
-  return path.join(_agentsRoot(), `workspace-atlas-staging-${safe}`);
 }
 
 function _cronStorePath() {
@@ -254,4 +249,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { register, deregister, _buildCronJob, _loadCronStore };
+module.exports = { register, deregister, _buildCronJob, _loadCronStore, _stagingWorkspaceDir };

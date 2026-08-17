@@ -834,13 +834,25 @@ export function ProvisioningStepper({
   // "failed" ONLY — `dispatched` (fresh or stale-but-re-arming) and `sent` are
   // both recovered/completed by the dispatcher itself on the next status poll,
   // so showing them as failures would be a lie. See bootstrap_dispatcher.py.
+  //
+  // ONE positioning owner for both: each notice used to place itself at `fixed
+  // bottom-4 right-4`, so a container that is both Teams-degraded and
+  // first-run-failed would have stacked them at identical coordinates with the
+  // lower one unreadable. The corner stack owns the placement now; the notices
+  // own only their own card.
   if (phase === "ready") {
+    const teamsDegraded = container?.teams_state === "failed";
+    const firstRunFailed = derived?.bootstrap.state === "failed";
     return (
       <>
         {children}
-        {container?.teams_state === "failed" && <TeamsDegradedNotice />}
-        {derived?.bootstrap.state === "failed" && (
-          <FirstRunFailedNotice lastError={derived.bootstrap.last_error} />
+        {(teamsDegraded || firstRunFailed) && (
+          <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+            {firstRunFailed && (
+              <FirstRunFailedNotice lastError={derived?.bootstrap.last_error ?? null} />
+            )}
+            {teamsDegraded && <TeamsDegradedNotice />}
+          </div>
         )}
       </>
     );
@@ -1803,9 +1815,11 @@ export function ProvisioningStepper({
 /**
  * Non-blocking "Teams needs attention" affordance layered over the ready app
  * when /container/status reports `teams_state: "failed"` — Teams (Friday/Atlas)
- * seeding failed but the container is healthy and chat works. Fixed, small, and
+ * seeding failed but the container is healthy and chat works. Small and
  * dismissible so it never blocks the app. Owns its own dismiss state so the
  * ready branch stays a plain `children` return with no extra parent hook.
+ * PLACEMENT belongs to the ready branch's corner stack, not to this card — see
+ * the comment there.
  */
 function TeamsDegradedNotice() {
   const [dismissed, setDismissed] = useState(false);
@@ -1817,7 +1831,7 @@ function TeamsDegradedNotice() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+      className="max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">
@@ -1883,7 +1897,7 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 max-w-sm rounded-xl border border-[#e9b8b8] bg-[#fdf1f1] px-4 py-3 shadow-lg"
+      className="max-w-sm rounded-xl border border-[#e9b8b8] bg-[#fdf1f1] px-4 py-3 shadow-lg"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">

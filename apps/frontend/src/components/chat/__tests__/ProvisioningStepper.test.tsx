@@ -1037,6 +1037,36 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.queryByText(/Friday couldn't start/i)).not.toBeInTheDocument();
     });
 
+    it("stacks with the Teams notice instead of covering it when both fire", () => {
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "running",
+          runtime_phase: "ready",
+          onboarded: true,
+          teams_state: "failed",
+          bootstrap: { state: "failed", last_error: "chat.error" },
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: vi.fn(),
+      });
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+
+      // Both are readable. They used to place THEMSELVES at an identical
+      // `fixed bottom-4 right-4`, which put one card directly on top of the
+      // other; the ready branch's corner stack owns placement now.
+      const firstRun = screen.getByText(/Friday couldn't start/i);
+      const teams = screen.getByText(/Teams needs attention/i);
+      expect(firstRun).toBeInTheDocument();
+      expect(teams).toBeInTheDocument();
+      expect(document.querySelectorAll(".fixed")).toHaveLength(1);
+    });
+
     it("stays silent when the backend sends no bootstrap block at all", () => {
       useProvMock.mockReturnValue({
         phase: "normal",

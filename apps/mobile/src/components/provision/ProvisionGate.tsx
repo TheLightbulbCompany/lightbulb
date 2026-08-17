@@ -47,7 +47,7 @@
  * clears itself once the admin's workspace comes up.
  */
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@isol8/shared";
 import {
   ActivityIndicator,
@@ -261,11 +261,15 @@ function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
  * chat behind it is live, and talking to Friday directly is the one recovery
  * the owner actually has. There is deliberately NO retry action — the re-arm
  * lever (`reset_bootstrap_for_retry`) is platform-admin only, so a Retry here
- * would be a dead button. `error` is the operator-written reason, shown as a
- * second line so support has it without the owner relaying a screenshot.
+ * would be a dead button. `error` is the operator-written reason, expandable in
+ * place so support gets the WHOLE string — mirroring web's `<details>`. It
+ * starts clamped (this sits over live chat and the reasons run long), but a
+ * clamp with no way past it would swallow exactly the detail support needs,
+ * which is the failure this whole surface exists to stop.
  */
 function FirstRunFailedBanner({ error }: { error?: string | null }) {
   const insets = useSafeAreaInsets();
+  const [expanded, setExpanded] = useState(false);
   return (
     <View style={[styles.firstRunBanner, { paddingTop: insets.top }]}>
       <View style={styles.teamsBannerRow}>
@@ -275,9 +279,23 @@ function FirstRunFailedBanner({ error }: { error?: string | null }) {
             off, or contact support if she doesn’t answer.
           </Text>
           {error ? (
-            <Text style={styles.firstRunBannerDetail} numberOfLines={3}>
-              {error}
-            </Text>
+            <Pressable
+              onPress={() => setExpanded((v) => !v)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityState={{ expanded }}
+              accessibilityLabel={
+                expanded ? "Hide technical details" : "Show technical details"
+              }
+              style={({ pressed }) => [pressed && styles.pressed]}
+            >
+              <Text style={styles.firstRunBannerAction}>
+                {expanded ? "Hide technical details" : "Technical details"}
+              </Text>
+              {expanded ? (
+                <Text style={styles.firstRunBannerDetail}>{error}</Text>
+              ) : null}
+            </Pressable>
           ) : null}
         </View>
       </View>
@@ -652,6 +670,12 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.errorBorder,
   },
   firstRunBannerCopy: { flex: 1, gap: spacing.xs },
+  firstRunBannerAction: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.errorText,
+  },
   firstRunBannerText: {
     fontFamily: fonts.dmSans,
     fontSize: 13,
@@ -659,6 +683,7 @@ const styles = StyleSheet.create({
     color: colors.errorText,
   },
   firstRunBannerDetail: {
+    marginTop: spacing.xs,
     fontFamily: fonts.dmSans,
     fontSize: 11,
     lineHeight: 15,

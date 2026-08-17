@@ -575,7 +575,7 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
     );
   };
 
-  it("renders over the live children, with the reason, when bootstrapState is failed", async () => {
+  it("renders over the live children when bootstrapState is failed", async () => {
     await renderReady({
       bootstrapState: "failed",
       bootstrapError: "OAuth token refresh failed for openai (401)",
@@ -583,13 +583,37 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
 
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.getByText(/Friday couldn.t start her first run/)).toBeTruthy();
-    expect(screen.getByText(/OAuth token refresh failed for openai/)).toBeTruthy();
+    expect(screen.getByLabelText("Show technical details")).toBeTruthy();
   });
 
-  it("renders without a reason when none was recorded", async () => {
+  // The reason is what support acts on, so expanding must reveal the WHOLE
+  // string — a clamped preview that silently drops the tail would swallow the
+  // detail this surface exists to hand over.
+  it("expands to the complete reason, verbatim, however long it is", async () => {
+    const reason = [
+      "openai isn't accepting your saved login",
+      "(OAuth token refresh failed for openai:",
+      "OpenAI Codex token refresh failed (401))",
+      "dispatch_id=6f1c2b84-1f2a-4a9d-9f0e-0b2c9d1e77aa",
+      "attempts=5",
+    ].join("\n");
+    await renderReady({ bootstrapState: "failed", bootstrapError: reason });
+
+    // Collapsed by default — this sits over live chat.
+    expect(screen.queryByText(reason)).toBeNull();
+
+    await fireEvent.press(screen.getByLabelText("Show technical details"));
+
+    // Exact, complete value — not a substring match.
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.getByLabelText("Hide technical details")).toBeTruthy();
+  });
+
+  it("renders without a details control when no reason was recorded", async () => {
     await renderReady({ bootstrapState: "failed", bootstrapError: null });
 
     expect(screen.getByText(/Friday couldn.t start her first run/)).toBeTruthy();
+    expect(screen.queryByLabelText("Show technical details")).toBeNull();
   });
 
   // The transient/recoverable rungs of the post-#1820 ladder: the dispatcher

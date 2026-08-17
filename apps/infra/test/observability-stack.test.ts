@@ -352,6 +352,35 @@ describe("ObservabilityStack", () => {
     }
   });
 
+  // W65 is the availability half of "is Paperclip up?" — W63 only fires when a
+  // real backend call fails, so it is blind to an outage in a quiet window.
+  // Every property below is load-bearing; see the comment block on the alarm:
+  //   - LiveTaskCount, NOT RunningTaskCount. The latter is an
+  //     ECS/ContainerInsights metric and Container Insights is off on this
+  //     cluster, so it would never receive a datapoint.
+  //   - TreatMissingData=breaching. ECS stops publishing LiveTaskCount at zero
+  //     tasks instead of reporting 0, so absence IS the outage. Flipping this
+  //     to notBreaching silently restores the blind spot the alarm closes.
+  //   - Both ClusterName and ServiceName. LiveTaskCount is per-service; an
+  //     alarm scoped to the cluster alone would read the whole per-user fleet.
+  test("W65 alarms on the Paperclip service's native ECS task count", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "isol8-dev-W65-paperclip-no-running-task",
+      Namespace: "AWS/ECS",
+      MetricName: "LiveTaskCount",
+      Statistic: "Minimum",
+      Period: 60,
+      Threshold: 1,
+      EvaluationPeriods: 3,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "breaching",
+      Dimensions: Match.arrayWith([
+        Match.objectLike({ Name: "ClusterName" }),
+        Match.objectLike({ Name: "ServiceName" }),
+      ]),
+    });
+  });
+
   // -------------------------------------------------------------------
   // Alarm <-> emitter dimension contract
   // -------------------------------------------------------------------

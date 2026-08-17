@@ -36,19 +36,6 @@ export function Monogram({
   );
 }
 
-export function StatusDot({ status = "active" }: { status?: string }) {
-  const normalized = status.toLowerCase();
-  const className =
-    normalized === "thinking" || normalized === "running"
-      ? "status-dot status-dot--thinking"
-      : normalized === "paused" || normalized === "idle"
-        ? "status-dot status-dot--paused"
-        : normalized === "error"
-          ? "status-dot status-dot--error"
-          : "status-dot status-dot--active";
-  return <span className={className} aria-label={normalized} />;
-}
-
 export function AgentPill({
   children,
   tone = "neutral",

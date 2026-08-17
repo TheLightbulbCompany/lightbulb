@@ -52,6 +52,14 @@ vi.mock("posthog-js/react", () => ({
   // PostHog's actual provider.
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: () => ({ data: undefined }),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
     nodeConnected: false,
@@ -61,6 +69,7 @@ vi.mock("@/hooks/useGateway", () => ({
     // has to satisfy all three. (ExecApprovalsProvider no longer mounts
     // here; it was hoisted to the /chat page shell.)
     onEvent: () => () => {},
+    onChatMessage: () => () => {},
     sendReq: () => Promise.resolve(),
   }),
 }));

@@ -438,28 +438,6 @@
   box-shadow: 0 0 0 3px rgba(74, 158, 116, 0.18);
 }
 
-.status-dot--thinking {
-  background: var(--warn);
-  animation: pulse-dot 1.6s ease-in-out infinite;
-}
-
-.status-dot--paused {
-  background: var(--mute-soft);
-}
-
-.status-dot--error {
-  background: var(--danger);
-}
-
-@keyframes pulse-dot {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(176, 138, 42, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 0 5px rgba(176, 138, 42, 0);
-  }
-}
-
 /* ═══════════════════════════════════════════════
    AGENT GLYPH
    Rotates between upright 8 (idle) and horizontal ∞ (thinking).

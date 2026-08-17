@@ -189,6 +189,16 @@
   font-weight: 600;
   letter-spacing: 0;
 }
+/* The headline states, when there is news to report. Same mono/caps type as
+   the label itself — this is the label speaking, not a badge bolted onto it. */
+.agent-section-label__working {
+  color: var(--forest);
+  font-weight: 600;
+}
+.agent-section-label__attention {
+  color: var(--danger);
+  font-weight: 600;
+}
 .agent-item {
   display: flex;
   align-items: center;
@@ -212,6 +222,148 @@
   background: rgba(255,255,255,0.9);
   box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
+
+/* ── The row's click target ───────────────────────────────────────────────
+   A real <button> so the roster is keyboard-reachable (the row was a bare
+   `<div onClick>`). Native chrome is stripped back to nothing; it has to look
+   exactly like the text-and-avatar row it replaced. It fills everything the
+   per-row actions don't, so clicking anywhere in the row still selects. */
+.agent-item__main {
+  /* `flex-basis: 0`, NOT auto. The row is `flex-wrap: wrap` (so the session
+     list can drop to its own line), so a main that claims its max-content
+     width shoves the always-present-but-transparent action cluster onto a
+     second line and the row grows 32px — measured: every row with a name
+     longer than "Quill" did exactly that. Basis 0 makes it take what is left
+     after the actions instead. */
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-item__main:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* ── The duty rail ────────────────────────────────────────────────────────
+   A 2px stripe on the row's leading edge, carrying the agent's state colour.
+   It sits in the row's own left padding, so it reads as an edge marker rather
+   than content, and it is scoped to `__main` so it stops at the row and never
+   runs down the nested session list.
+
+   The point is the negative space: an idle agent gets NO rail, so a roster
+   with nothing happening has no stripes at all and the eye lands straight on
+   the rows that do. A marker on every row would be decoration — which is
+   exactly what the hardcoded green dot this replaces had become. */
+.agent-item__main::before {
+  content: "";
+  position: absolute;
+  /* Sits in the row's own 8px padding, a couple of px inside the hover card's
+     10px corner radius so it never collides with the rounded edge. */
+  left: -6px;
+  top: 1px;
+  bottom: 1px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+}
+.agent-item[data-state="running"] .agent-item__main::before {
+  background: var(--forest-soft);
+}
+.agent-item[data-state="attention"] .agent-item__main::before {
+  background: var(--danger);
+}
+.agent-item[data-state="paused"] .agent-item__main::before {
+  background: var(--mute-soft);
+}
+
+/* A paused/terminated agent is switched off on purpose — recede it rather
+   than colouring it, so "off" costs the eye nothing on the way past. */
+.agent-item[data-state="paused"] .agent-monogram {
+  opacity: 0.55;
+}
+
+/* Friday sits in a fixed top slot with a hairline under her, so "the one that
+   orchestrates the others" is legible as structure rather than as luck of the
+   sort order. Position and a rule do that work — deliberately NOT a larger
+   avatar or an accent glow, which would compete with the state colours for the
+   same visual channel. Suppressed when she is the only agent. */
+.agent-item[data-ceo="true"]:not(:last-child) {
+  margin-bottom: 9px;
+}
+.agent-item[data-ceo="true"]:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -5px;
+  height: 1px;
+  background: var(--edge);
+}
+
+/* Friday's rank. Mono caps at the roster label's scale — the same voice the
+   section header uses, so it reads as structure, not a badge. */
+.agent-rank {
+  flex: none;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--forest);
+  opacity: 0.75;
+}
+
+/* ── The state line ───────────────────────────────────────────────────────
+   Replaces the model name on line two whenever the agent has something to
+   report. Model is a fact about the machine; "Working" is a fact about the
+   work, and the work is what the owner opened the app for. */
+.agent-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.agent-state--running {
+  color: var(--forest);
+}
+.agent-state--attention {
+  color: var(--danger);
+}
+.agent-state--paused {
+  color: var(--mute);
+}
+/* Quiet states get a plain dot; `running` uses the shared LiveRunDot (the
+   forest ping every other Teams surface uses for a live run) so the roster
+   speaks the app's existing liveness language instead of a second one.
+
+   The three markers differ in FORM, not only in colour — expanding ping,
+   filled disc, hollow ring — so the state survives being read by someone who
+   cannot separate the hues. The state word beside each one is the primary
+   channel regardless; colour is the redundant one. */
+.agent-state__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.agent-state--paused .agent-state__dot {
+  background: none;
+  border: 1.5px solid currentColor;
+}
 .agent-avatar {
   width: 32px;
   height: 32px;
@@ -230,11 +382,23 @@
 .agent-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .agent-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
   color: var(--ink);
+}
+/* The name itself is the element that truncates — the rank chip beside it must
+   keep its full width, so the ellipsis has to live on the text, not the row. */
+.agent-name__text {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -246,13 +410,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.agent-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #2d8a4e;
-  flex-shrink: 0;
-}
 .agent-row-actions {
   display: flex;
   align-items: center;
@@ -261,8 +418,20 @@
   transition: opacity 0.15s;
   flex-shrink: 0;
 }
-.agent-item:hover .agent-row-actions {
+/* `:focus-within` is not a nicety here — the actions are `opacity: 0` until
+   hover, so without it a keyboard user tabs into rename/delete buttons that
+   are focused but invisible. Hover alone made them unusable without a mouse. */
+.agent-item:hover .agent-row-actions,
+.agent-item:focus-within .agent-row-actions {
   opacity: 1;
+}
+/* On a touch device there is no hover, so the roster's per-row actions were
+   permanently invisible in the mobile drawer while still reserving their
+   width. They already hold their space — showing them costs no layout. */
+@media (hover: none) {
+  .agent-row-actions {
+    opacity: 1;
+  }
 }
 .agent-row-action {
   display: flex;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 
 // --- Mocks -------------------------------------------------------------------
 // The controller is the whole point of this component: roster clicks and
@@ -43,7 +43,28 @@ vi.mock("@/lib/modelDisplay", () => ({
 }));
 
 vi.mock("@/hooks/useGatewayRpc", () => ({ useGatewayRpc: () => ({ data: undefined }) }));
-vi.mock("@/hooks/useGateway", () => ({ useGateway: () => ({ nodeConnected: false }) }));
+// `useRosterEntries` subscribes to the chat-frame fan-out for live `run_active`
+// frames. `emitChatMessage` lets a test push one and assert the row lights up.
+let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+vi.mock("@/hooks/useGateway", () => ({
+  useGateway: () => ({
+    nodeConnected: false,
+    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
+      emitChatMessage = h;
+      return () => {};
+    },
+  }),
+}));
+// Durable per-agent state from the Teams BFF roster; tests set it per case.
+let teamsAgents: { id: string; status?: string | null }[] = [];
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: () => ({ data: { agents: teamsAgents } }),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
 // Mutable so the plan-badge tests below can swap subscription_status/trial_end
 // per case; every other test in this file relies on the "active" default set
 // in beforeEach.
@@ -83,7 +104,6 @@ vi.mock("@/components/chat/InlineTeamsPanel", () => ({ TEAMS_PANEL_PREFIX: "team
 // Heavy children reduced to probes.
 vi.mock("@/components/agents/AgentIdentity", () => ({
   Monogram: () => <span data-testid="monogram" />,
-  StatusDot: () => <span data-testid="statusdot" />,
 }));
 vi.mock("@/lib/agentDesign", () => ({ fromInstalledAgent: (a: unknown) => a }));
 vi.mock("@/components/chat/HealthIndicator", () => ({
@@ -134,6 +154,7 @@ import { WorkspaceSidebar } from "../WorkspaceSidebar";
 beforeEach(() => {
   agents = [];
   defaultId = undefined;
+  teamsAgents = [];
   snapshot = { activePanelId: null, focusedChatAgentId: null };
   billingAccount = { subscription_status: "active" };
   openChatPanel.mockClear();
@@ -234,6 +255,75 @@ describe("WorkspaceSidebar", () => {
 
     fireEvent.click(screen.getByTestId("health"));
     expect(onRecoveryReprovision).toHaveBeenCalledTimes(1);
+  });
+
+  it("drives roster state from the Teams BFF roster, not a hardcoded dot", () => {
+    agents = [
+      { id: "a1", name: "One" },
+      { id: "a2", name: "Two" },
+      { id: "a3", name: "Three" },
+    ];
+    teamsAgents = [
+      { id: "a1", status: "running" },
+      { id: "a2", status: "error" },
+      { id: "a3", status: "idle" },
+    ];
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    const state = (n: string) =>
+      screen.getByText(n).closest(".agent-item")?.getAttribute("data-state");
+    expect(state("One")).toBe("running");
+    expect(state("Two")).toBe("attention");
+    expect(state("Three")).toBe("idle");
+    // An errored agent is hoisted; a running one is not (it would slide the
+    // row out from under the cursor for a transient condition).
+    expect(
+      Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map(
+        (n) => n.textContent,
+      ),
+    ).toEqual(["Two", "One", "Three"]);
+  });
+
+  it("lights a row from a live gateway run when the BFF still says idle", () => {
+    agents = [{ id: "a1", name: "One" }];
+    teamsAgents = [{ id: "a1", status: "idle" }];
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+    expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe("idle");
+
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a1" }));
+    expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe(
+      "running",
+    );
+
+    // `run_ended` clears it even if the matching `run_active: false` never lands.
+    act(() => emitChatMessage({ type: "run_ended", agent_id: "a1" }));
+    expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe("idle");
+  });
+
+  it("pins the default agent (Friday) first and marks her rank", () => {
+    agents = [
+      { id: "a1", name: "Zeta" },
+      { id: "friday", name: "Friday" },
+    ];
+    defaultId = "friday";
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    const rows = Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map(
+      (n) => n.textContent,
+    );
+    expect(rows).toEqual(["Friday", "Zeta"]);
+    expect(screen.getByText("Friday").closest(".agent-item")?.getAttribute("data-ceo")).toBe("true");
+    expect(screen.getByText("CEO")).toBeInTheDocument();
+  });
+
+  it("roster rows are keyboard-operable buttons, not bare click divs", () => {
+    agents = [{ id: "a1", name: "One" }];
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    const row = screen.getByRole("button", { name: "One" });
+    expect(row.tagName).toBe("BUTTON");
+    fireEvent.click(row);
+    expect(openChatPanel).toHaveBeenCalledWith("a1");
   });
 
   it("footer plan-badge maps trial_local to Free tier, never the raw enum", () => {

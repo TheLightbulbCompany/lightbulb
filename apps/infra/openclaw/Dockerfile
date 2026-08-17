@@ -318,7 +318,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 # dl.google.com serves only the CURRENT stable deb (no version pinning
 # available); the image tag pins what a rebuild picked up, same posture as
 # the apt-installed packages above. amd64-only, matching the AWS CLI layer.
-RUN curl -sSL -o /tmp/google-chrome.deb \
+RUN curl -fsSL -o /tmp/google-chrome.deb \
       "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends /tmp/google-chrome.deb && \

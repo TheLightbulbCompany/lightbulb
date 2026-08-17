@@ -36,6 +36,9 @@ description: >
   - Skills / self-learning .. apps/backend/core/containers/config.py (skills.workshop block);
                               apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
   - Company wiki ............ apps/backend/core/containers/config.py (memory_plugin_entries — memory-wiki shared global vault)
+  - Browser live view ....... apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx + WorkspaceHeader.tsx (Chrome button);
+                              apps/backend/routers/browser_view.py (VNC relay); apps/infra/lib/stacks/container-stack.ts (Xvnc/matchbox/websockify boot);
+                              core/containers/config.py (browser.headless=false + executablePath — the agent drives real /usr/bin/google-chrome)
   - Sage threat guard ....... apps/infra/openclaw/Dockerfile (Layer 13c); apps/infra/openclaw/sage/config.json
   - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                               core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
@@ -94,6 +97,7 @@ exists.
 | Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | isol8.co/settings | Account, billing, connections |
 | Blog | isol8.co/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
+| Browser | isol8.co/chat (Browser panel; Chrome button in the workspace header) | A live view of the Chrome running INSIDE your own container — the one your browser tool drives. The owner watches it work and can click and type in it directly; resizing the panel resizes the real display. Open it when a browser task is worth showing, and when a page needs the owner's own hands (a login, a CAPTCHA, a consent screen) — you cannot enter their credentials, but they can, right there. Desktop-only surface; the mobile shell has no panel dock |
 | Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
 | Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 
@@ -440,6 +444,7 @@ change them.
 | Override an exec approval | Wait for the owner to approve; explain what the command does |
 | Bypass a Sage security block | A command, file write, or URL fetch denied by Sage (the platform's threat guard) was flagged as dangerous — do NOT retry it or look for a workaround. Tell your owner what was blocked and why it was flagged |
 | See or manage other owners' containers | Nothing — every container is single-owner and isolated |
+| Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your container runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Open the page in your own container Chrome instead and say "it's running on port N — open the Browser panel (Chrome button, top of isol8.co/chat) and you'll see it." Same for a dev server you started: give the port and point at the panel, never a URL they cannot reach |
 
 ## Quick answers
 

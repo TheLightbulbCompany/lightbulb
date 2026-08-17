@@ -738,10 +738,18 @@ function writeDisk(buildId, artifacts) {
     const err = {
       success: false,
       error: 'staging_id_mismatch',
+      // Two different causes land here and they need different advice. A staged
+      // id that still carries the staging prefix means the DRAFT ran under a
+      // different build id than --build-id — telling that operator "you don't
+      // choose ids" sends them hunting for an id they never set.
       message:
         `Staged agents.list[0].id is ${JSON.stringify(stagedId)}, expected the build's staging token ` +
-        `${JSON.stringify(stagingAgentId)}. Atlas does not choose agent ids — the platform assigns one at ` +
-        'register. Regenerate the bundle with the generator instead of editing the id.',
+        `${JSON.stringify(stagingAgentId)}. ` +
+        (String(stagedId).startsWith(STAGING_ID_PREFIX)
+          ? 'That is a staging token from a DIFFERENT build — the draft and this write-disk ran under ' +
+            'different build ids. Re-draft with the same --build-id.'
+          : 'Atlas does not choose agent ids — the platform assigns one at register. Regenerate the ' +
+            'bundle with the generator instead of editing the id.'),
       staged_agent_id: stagingAgentId,
       found_agent_id: stagedId,
       build_id: buildId,
@@ -864,6 +872,19 @@ function validateStagedConfig(cfgPath) {
 }
 
 function verifyWrite(buildId) {
+  if (!buildId) {
+    // Same refusal as writeDisk. Without it an empty --build-id resolves to the
+    // `unknown` token and reports destination_dir_missing, which sends the
+    // build-verify notification chasing a missing-files problem that isn't there.
+    return {
+      success: false,
+      error: 'build_id_missing',
+      message: 'verify-write requires --build-id: the staging workspace is keyed by the build, not by the agent name.',
+      build_id: null,
+      staging_agent_id: null,
+      destination_dir: null
+    };
+  }
   const stagingAgentId = stagingIdFor(buildId);
   const destDir = _stagingWorkspaceDir(buildId);
   if (!fs.existsSync(destDir)) {

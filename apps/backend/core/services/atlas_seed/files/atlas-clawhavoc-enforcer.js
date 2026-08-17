@@ -9,6 +9,7 @@
 // Publish-time hit: HARD BLOCK with NO override path (Marketplace Boundary Contract).
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // ============================================================================
@@ -84,9 +85,9 @@ function main() {
     // ~/.openclaw/agents (an ephemeral local mount) and NOT ~/.openclaw/workspaces
     // (deleted by `openclaw doctor --fix` every boot). Build-id sanitization
     // matches the generator's `_safeName`.
-    const agentsRoot = process.env.ISOL8_AGENTS_DIR || `${process.env.HOME}/.openclaw`;
+    const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
     const safe = String(args.buildId).replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
-    bundlePath = `${agentsRoot}/.atlas-staging-${safe}`;
+    bundlePath = path.join(agentsRoot, `.atlas-staging-${safe}`);
   } else if (args.mode === 'publish') {
     if (!args.agentName) { console.error('--agent-name required for publish mode'); process.exit(2); }
     bundlePath = process.env.HOME + `/.openclaw/agents/${args.agentName}`;

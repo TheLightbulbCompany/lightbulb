@@ -153,9 +153,9 @@ def test_skeleton_generator_draft_write_verify(tmp_path):
 
 
 _TOKEN_DRIVER = r"""
+process.env.ISOL8_AGENTS_DIR="/home/node/.openclaw";
 const g=require(process.env.GEN_PATH);
 const r=require(process.env.REG_PATH);
-process.env.ISOL8_AGENTS_DIR="/home/node/.openclaw";
 process.stdout.write(JSON.stringify({
   plain: g.stagingIdFor("b1"),
   long: g.stagingIdFor("x".repeat(300)),
@@ -534,6 +534,17 @@ const out={
   dest_created:fs.existsSync(path.join(tmp,"workspace-atlas-staging-b1")),
   staging_left:fs.existsSync(path.join(tmp,".atlas-staging-b1")),
   no_build_id:(g.writeDisk("",draft.artifacts_to_stage)||{}).error||"",
+  no_build_id_verify:(g.verifyWrite("")||{}).error||"",
+  hand_picked_message:w1.message||"",
+  // A bundle drafted under a DIFFERENT build id also mismatches — but that is
+  // an argument disagreement, not an agent picking an id, and must say so.
+  wrong_build_message:(function(){
+    const other={...draft.artifacts_to_stage};
+    const c=JSON.parse(other["workspace/openclaw.json"]);
+    c.agents.list[0].id=g.stagingIdFor("b2");
+    other["workspace/openclaw.json"]=JSON.stringify(c,null,2);
+    return (g.writeDisk("b1",other)||{}).message||"";
+  })(),
 };
 fs.rmSync(tmp,{recursive:true,force:true});
 process.stdout.write(JSON.stringify(out));
@@ -566,9 +577,19 @@ def test_write_disk_refuses_a_build_chosen_agent_id(tmp_path):
     assert out["slug_dir_created"] is False
     assert out["dest_created"] is False
     assert out["staging_left"] is False
-    # And without a build id there is no staging identity at all — refuse rather
-    # than fall back to a name.
+    # And without a build id there is no staging identity at all — both actions
+    # refuse rather than fall back to a name (verify-write reporting
+    # destination_dir_missing instead would send the build-failure notification
+    # chasing missing files that were never supposed to exist).
     assert out["no_build_id"] == "build_id_missing"
+    assert out["no_build_id_verify"] == "build_id_missing"
+
+    # The two ways to land on staging_id_mismatch need different advice: an
+    # agent-chosen id vs. a draft/promote build-id disagreement. Telling the
+    # second one "you don't choose ids" sends it hunting for an id it never set.
+    assert "does not choose agent ids" in out["hand_picked_message"]
+    assert "different build ids" in out["wrong_build_message"]
+    assert "does not choose agent ids" not in out["wrong_build_message"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")

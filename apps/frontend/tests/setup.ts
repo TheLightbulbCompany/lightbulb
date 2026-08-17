@@ -1,11 +1,29 @@
 import '@testing-library/jest-dom';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+import { installStoragePolyfill } from '../src/test-utils/storagePolyfill';
+
+// Web storage, once, for every test file.
+//
+// Two things were wrong before. Whether `localStorage` works at all depended on
+// the Node version — jsdom's Storage is live on Node 20 (what CI pins) but
+// shadowed/absent on Node 22+ (what a dev machine may run), so storage-backed
+// code paths silently no-op locally and run for real in CI. And nothing reset
+// it between tests, so anything a test persisted leaked into the next one in
+// the same file: the inbox tab, the active chat session. That is invisible
+// while storage is a no-op and it is 13 failures when it isn't.
+//
+// Installing the Map-backed polyfill makes the behaviour identical everywhere;
+// clearing it in afterEach makes each test start from an empty store. A file
+// that installs its own polyfill in `beforeAll` still overrides this one.
+installStoragePolyfill();
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 // Mock ResizeObserver for jsdom (not available in jsdom)

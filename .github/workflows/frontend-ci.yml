@@ -8,6 +8,11 @@ on:
     branches: [main]
     paths:
       - 'apps/frontend/**'
+      # packages/shared resolves straight to ./src/index.ts with no build step,
+      # and the frontend suite exercises it (useAgentChat, useGateway, the Teams
+      # run-transcript modules). Without this, a shared-only PR could break the
+      # frontend tests and merge with them never having run.
+      - 'packages/**'
       - '.github/workflows/frontend-ci.yml'
       - 'pnpm-lock.yaml'
 
@@ -58,6 +63,13 @@ jobs:
 
       - name: Type check
         run: pnpm --filter @isol8/frontend exec tsc --noEmit
+
+      # ~380 jsdom files. vitest.config.ts caps the run at 2 worker threads,
+      # which matches the core count of the ubuntu-latest runner a private repo
+      # gets; measured peak RSS is well under a gigabyte, so the `test` script's
+      # 8 GB heap ceiling never binds. Raising maxThreads means re-measuring.
+      - name: Unit tests
+        run: pnpm --filter @isol8/frontend run test
 
       - name: Build
         env:

@@ -53,6 +53,12 @@ jobs:
       - name: Type check
         run: pnpm --filter @isol8/frontend exec tsc --noEmit
 
+      # vitest here is RAM-heavy (~380 jsdom files). The suite is already
+      # capped at 2 worker threads in vitest.config.ts and the `test` script
+      # raises the heap to 8 GB, which fits a 16 GB ubuntu-latest runner.
+      - name: Unit tests
+        run: pnpm --filter @isol8/frontend run test
+
       - name: Build
         env:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}

@@ -1958,14 +1958,18 @@ def build_openclaw_config_dict(
             # keep headless until then, which is also the rollback: revert this
             # to True and the next config write puts them back.
             "headless": False,
-            # executablePath: upstream's recipe pins the binary rather than
-            # relying on auto-detection. Ours resolves through
-            # findChromeExecutableLinux()'s candidate list, where
-            # /usr/bin/chromium (the Dockerfile layer-9 symlink) happens to
-            # win before the Playwright-cache fallback. Both point at the same
-            # file, so pinning changes no behaviour today — it just stops the
-            # choice being an accident of list order.
-            "executablePath": "/usr/bin/chromium",
+            # executablePath: REAL Google Chrome (Dockerfile layer 9b), not
+            # the Playwright Chrome-for-Testing build symlinked at
+            # /usr/bin/chromium. CfT self-labels with an "only for automated
+            # testing — Download Chrome" banner on every fresh profile, and
+            # the Browser live-view panel put that in front of the owner every
+            # session (the profile is on /tmp, wiped per restart, so it never
+            # went away). CfT itself STAYS in the image for Playwright-based
+            # MCPs, which hardcode the ms-playwright cache path and never read
+            # this setting. The resolver would prefer google-chrome on its own
+            # (findChromeExecutableLinux probes it first); the pin keeps the
+            # choice deliberate rather than an accident of list order.
+            "executablePath": "/usr/bin/google-chrome",
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that
             # Chrome's `chrome_crashpad_handler: --database is required` abort

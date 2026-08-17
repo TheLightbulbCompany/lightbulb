@@ -105,6 +105,19 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
+// The schedule is authored through the human picker now (frequency + time),
+// not a raw cron field — "0 9 * * *" -> "30 8 * * 1" in the picker's terms.
+async function pickWeeklyMondayAt0830(
+  user: ReturnType<typeof userEvent.setup>,
+  dialog: HTMLElement,
+) {
+  fireEvent.change(within(dialog).getByLabelText(/time of day/i), {
+    target: { value: "08:30" },
+  });
+  await user.click(within(dialog).getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: "Every week" }));
+}
+
 describe("RoutineDetailPanel — editable (A2)", () => {
   it("keeps the read-only view and exposes Edit + Add affordances", () => {
     render(<RoutineDetailPanel routineId="r1" />);
@@ -448,9 +461,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     render(<RoutineDetailPanel routineId="r1" />);
     await user.click(screen.getByRole("button", { name: /edit schedule/i }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
-      target: { value: "30 8 * * 1" },
-    });
+    await pickWeeklyMondayAt0830(user, dialog);
     await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
     await waitFor(() => expect(patch).toHaveBeenCalled());
     const [path, body] = patch.mock.calls[0];
@@ -480,9 +491,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
 
       // Editing only the cron leaves timezone unchanged (UTC) → it must NOT be sent,
       // so the schedule stays on the UTC the field displayed (no silent tz drift).
-      fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
-        target: { value: "30 8 * * 1" },
-      });
+      await pickWeeklyMondayAt0830(user, dialog);
       await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
       await waitFor(() => expect(patch).toHaveBeenCalled());
       const [path, body] = patch.mock.calls[0];

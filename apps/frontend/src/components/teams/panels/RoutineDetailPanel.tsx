@@ -43,6 +43,7 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
+import { ScheduleField } from "@/components/teams/shared/components/ScheduleField";
 import {
   routineReviewerAgentId,
   withRoutineReviewer,
@@ -1519,18 +1520,7 @@ function TriggerDialog({
         )}
         {kind === "schedule" ? (
           <>
-            <label className="block">
-              <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-              <input
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                placeholder="0 9 * * *"
-                className={cn(INPUT_CLASS, "font-mono")}
-              />
-              <span className="text-xs text-[var(--mute)]">
-                Cron expression — when the automation fires.
-              </span>
-            </label>
+            <ScheduleField value={cron} onChange={setCron} />
             <label className="block">
               <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
               <input

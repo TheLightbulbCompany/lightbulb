@@ -1097,6 +1097,16 @@ export class ObservabilityStack extends cdk.Stack {
     // the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target
     // group, so there is no HealthyHostCount to alarm on). Sum > 0 over a short
     // window, NOT_BREACHING (absent metric = healthy, no error emissions).
+    //
+    // W63 measures IMPACT, not availability, and NOT_BREACHING is correct for
+    // that: no error emissions genuinely means nothing is being hurt. The cost
+    // is that a Paperclip outage in a quiet window produces no failed calls, so
+    // W63 stays OK while Paperclip is down (seen live in the 2026-06-19 FIS S5
+    // paperclip-kill run). AVAILABILITY is covered by its complement,
+    // W65-paperclip-no-running-task (createPaperclipTierAlarms), which alarms on
+    // the AWS/ECS LiveTaskCount of the Paperclip service — published on a timer
+    // regardless of traffic. Keep both: W63 says "users are being hurt", W65
+    // says "the container is gone". Neither subsumes the other.
     this.createAlarm({
       id: "W63",
       name: "paperclip-down",
@@ -1802,7 +1812,7 @@ def handler(event, _ctx):
   }
 
   // =========================================================================
-  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62)
+  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62, W65)
   // =========================================================================
 
   private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
@@ -1885,12 +1895,55 @@ def handler(event, _ctx):
       severity: "warn",
     });
 
-    // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
-    // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group
-    // (it registers via cloudMapOptions and is reached through the backend), so
-    // there is no HealthyHostCount metric to alarm on. The down signal is the
-    // Part B `paperclip.upstream.error{kind:"unreachable"}` metric + its alarm
-    // (which keeps the W63 id), emitted from the backend's Paperclip-call paths.
+    // W65: Paperclip service has NO running task — the AVAILABILITY half of
+    // "is Paperclip up?". W63 (paperclip.upstream.error) is the IMPACT half: it
+    // only fires when the backend actually fails a call, so a Paperclip outage
+    // during a window with no Teams traffic emits nothing and W63 stays OK.
+    // Observed live: the 2026-06-19 FIS S5 (paperclip-kill) run killed the task
+    // for ~2 min and W63 never fired — no concurrent traffic to fail. W65 closes
+    // exactly that gap; the two are complementary, not redundant.
+    //
+    // Metric choice — READ BEFORE CHANGING. `LiveTaskCount` is a real AWS/ECS
+    // metric, dimensioned {ClusterName, ServiceName} exactly like W62's
+    // CPUUtilization, published once a minute whether or not anyone calls
+    // Paperclip. It is NOT `RunningTaskCount`, which lives in
+    // ECS/ContainerInsights — deliberately OFF on this cluster (see
+    // container-stack.ts) because Container Insights bills ~15 metrics per
+    // service and this cluster carries the whole per-user fleet. Verified
+    // against the live account: AWS/ECS publishes exactly CPUUtilization,
+    // MemoryUtilization, LiveTaskCount, and both paperclip services report it.
+    //
+    // treatMissingData BREACHING is LOAD-BEARING, not defensive boilerplate.
+    // ECS does not publish LiveTaskCount=0 when a service drops to zero tasks —
+    // it STOPS PUBLISHING (verified on a scaled-to-zero per-user service: the
+    // datapoints simply end). Absence IS the outage, so NOT_BREACHING would
+    // rebuild the exact quiet-window blind spot this alarm exists to close.
+    // The `< 1` comparison therefore almost never trips on a live datapoint;
+    // it is the honest statement of "below the desiredCount floor of 1"
+    // (paperclip-stack.ts) and covers the case where ECS does report a 0.
+    //
+    // 3 × 1 min: PaperclipStack sets minHealthyPercent=100, so a healthy rolling
+    // deploy never drops to zero tasks and cannot trip this. Three consecutive
+    // minutes rides out a single CloudWatch delivery gap while still catching a
+    // silently-dead container long before a user hits Teams.
+    this.createAlarm({
+      id: "W65",
+      name: "paperclip-no-running-task",
+      description:
+        "Paperclip Fargate service has no running task for 3 min — the BFF is gone or crash-looping. Native AWS/ECS availability signal, published regardless of traffic; complements W63, which only fires when a real backend call fails. Missing data = breaching: ECS stops publishing LiveTaskCount at zero tasks rather than reporting 0.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ECS",
+        metricName: "LiveTaskCount",
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
+      }),
+      threshold: 1,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
+    });
   }
 
   // =========================================================================

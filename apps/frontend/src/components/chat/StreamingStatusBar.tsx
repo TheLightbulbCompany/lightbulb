@@ -1,10 +1,8 @@
 import * as React from "react";
 import { AgentGlyph } from "./MessageList";
-import type { ChatRenderItem, ContentBlock } from "@/hooks/internal/types";
 
 interface StreamingStatusBarProps {
   isStreaming: boolean;
-  renderItems: ChatRenderItem[];
   /**
    * Server-truth "run is active" signal (see useAgentChat's `busy`), independent
    * of whether tokens are actively streaming in this tab. Keeps the bar lit
@@ -15,47 +13,24 @@ interface StreamingStatusBarProps {
   active?: boolean;
 }
 
-export function deriveStreamingLabel(items: ChatRenderItem[]): string {
-  // Pending approvals are surfaced by ExecApprovalCards (rendered above
-  // ChatInput, fed by useExecApprovals). They no longer flow through this
-  // status bar, so this label only reflects running tool execution and the
-  // "thinking" idle state.
-  //
-  // Walk the render items in reverse looking for the most recent
-  // assistant-side message item and check its content blocks for a
-  // tool_use without a matching tool_result (still running).
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.kind !== "message") continue;
-    if (item.message.role !== "assistant") continue;
-    const blocks: ContentBlock[] = Array.isArray(item.message.content)
-      ? item.message.content
-      : [];
-    for (let j = blocks.length - 1; j >= 0; j--) {
-      const b = blocks[j];
-      if (b?.type !== "tool_use") continue;
-      const hasResult = blocks.some(
-        (r) => r?.type === "tool_result" && r.tool_use_id === b.id,
-      );
-      if (!hasResult) return `Running ${b.name ?? "tool"}`;
-    }
-    // First assistant message we saw had no running tool — stop searching.
-    break;
-  }
-  return "Thinking";
-}
-
-export function StreamingStatusBar({
-  isStreaming,
-  renderItems,
-  active,
-}: StreamingStatusBarProps) {
-  if (!isStreaming && !active) return null;
-  // While tokens are actively streaming, keep the existing tool/thinking
-  // derivation. Otherwise we're in a silent-but-active window (server truth
-  // says the run is still going, this tab just isn't seeing stream events
-  // right now) — show a plain label rather than a stale/misleading derived one.
-  const label = isStreaming ? deriveStreamingLabel(renderItems) : "Working";
+/**
+ * The "something is happening" bar, shown under the transcript.
+ *
+ * It used to derive its own label by walking the render items backwards for an
+ * unfinished tool call and printing `Running ${b.name}` — the raw internal tool
+ * name, so users read `Running mcp__openclaw__web_search…`. That derivation is
+ * gone: ToolActivityTrace now narrates each step in place, in plain language,
+ * where the work actually appears in the transcript.
+ *
+ * What is left is the bar's one honest job — covering the window where the
+ * server says a run is active but this tab is seeing no stream events at all
+ * (reconnect, a silent gap, a resumed session). In that window there is no
+ * per-step truth to show, so it says only that work is in progress.
+ */
+export function StreamingStatusBar({ isStreaming, active }: StreamingStatusBarProps) {
+  // While tokens or tool rows are actively arriving, the transcript itself is
+  // the status — a second, vaguer indicator underneath it is noise.
+  if (isStreaming || !active) return null;
   return (
     <div
       data-testid="streaming-status-bar"
@@ -63,7 +38,7 @@ export function StreamingStatusBar({
     >
       <div className="flex items-center gap-2 text-xs text-[var(--mute)] bg-[var(--cream-deeper)]/80 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-sm">
         <AgentGlyph state="thinking" size={16} />
-        <span className="font-medium tracking-tight">{label}…</span>
+        <span className="font-medium tracking-tight">Working…</span>
       </div>
     </div>
   );

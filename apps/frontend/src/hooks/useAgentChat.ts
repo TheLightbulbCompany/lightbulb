@@ -771,37 +771,54 @@ export function useAgentChat(
 
   const syncToolStreamMessages = useCallback((force = false) => {
     const flush = () => {
-      const ordered: HistoryMessage[] = toolStreamOrderRef.current
+      const entries = toolStreamOrderRef.current
         .map((id) => toolStreamByIdRef.current.get(id))
-        .filter((e): e is ToolStreamEntry => Boolean(e))
-        .map((e) => ({
-          role: "assistant",
-          content: [
+        .filter((e): e is ToolStreamEntry => Boolean(e));
+
+      // ONE message carrying every live tool block, not one message per call.
+      // MessageBlocks groups consecutive tool_use blocks into a single
+      // ToolActivityTrace, and grouping can only see blocks that share a
+      // message — emitting a message per entry (as this did) put every call in
+      // its own bubble and made consolidation impossible on the live path.
+      // Folded history messages already carry many blocks, so this makes the
+      // two paths agree.
+      const blocks: ContentBlock[] = [];
+      for (const e of entries) {
+        blocks.push({
+          type: "tool_use",
+          id: e.toolCallId,
+          name: e.name,
+          args: e.args,
+          // Live incremental output (tool phase:update / command_output),
+          // shown in the running row until the terminal tool_result lands.
+          ...(e.progressText ? { progressText: e.progressText } : {}),
+          // Real timing for the row's duration. Only live turns have it.
+          startedAt: e.startedAt,
+          ...(e.status !== "running" ? { endedAt: e.updatedAt } : {}),
+        } as ContentBlock);
+        // Emit tool_result on terminal state regardless of payload —
+        // see foldLiveTurnIntoContent for rationale.
+        if (e.status !== "running") {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: e.toolCallId,
+            content: e.output ?? "",
+            ...(e.status === "error" ? { isError: true } : {}),
+          } as ContentBlock);
+        }
+      }
+
+      const last = entries[entries.length - 1];
+      const ordered: HistoryMessage[] = blocks.length
+        ? [
             {
-              type: "tool_use",
-              id: e.toolCallId,
-              name: e.name,
-              args: e.args,
-              // Live incremental output (tool phase:update / command_output),
-              // shown in the running pill until the terminal tool_result lands.
-              ...(e.progressText ? { progressText: e.progressText } : {}),
+              role: "assistant",
+              content: blocks,
+              timestamp: last?.updatedAt,
+              runId: last?.runId,
             },
-            // Emit tool_result on terminal state regardless of payload —
-            // see foldLiveTurnIntoContent for rationale.
-            ...(e.status !== "running"
-              ? [
-                  {
-                    type: "tool_result",
-                    tool_use_id: e.toolCallId,
-                    content: e.output ?? "",
-                    ...(e.status === "error" ? { isError: true } : {}),
-                  } as ContentBlock,
-                ]
-              : []),
-          ],
-          timestamp: e.updatedAt,
-          runId: e.runId,
-        }));
+          ]
+        : [];
       setChatToolMessages(ordered);
       toolStreamSyncTimerRef.current = null;
     };

@@ -28,6 +28,7 @@ import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
+import { ToolActivityTrace, type ToolCall } from "@/components/chat/ToolActivityTrace";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -46,9 +47,9 @@ import type {
   HistoryMessage,
 } from "@/hooks/internal/types";
 // Approval rendering moved to ExecApprovalDialog (mounted at chat-shell level
-// via useExecApprovals). Tool pills now only represent execution state —
-// running / done / error. See ExecApprovalDialog.tsx for the modal that
-// surfaces pending exec approvals from the global queue.
+// via useExecApprovals). Tool activity is rendered by ToolActivityTrace, which
+// represents execution state only — running / done / error. See
+// ExecApprovalDialog.tsx for the modal that surfaces pending exec approvals.
 
 export interface MessageListProps {
   renderGroups: RenderGroup[];
@@ -349,140 +350,6 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
   );
 }
 
-const TOOL_STYLES = {
-  running: {
-    pill: "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]",
-    dot: "bg-[#2d8a4e] animate-pulse",
-  },
-  done: {
-    pill: "bg-[var(--cream-deeper)] text-[var(--mute)] border-[var(--edge)]",
-    dot: "bg-[#cdc7ba]",
-  },
-  error: {
-    pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
-    dot: "bg-[#c62828]",
-  },
-} as const;
-
-/**
- * Render a tool_result block's content for display in the pill expansion.
- * `tool_result.content` may be a string OR an array of inner blocks
- * (Anthropic shape). We accept both. `result` is the legacy field name
- * pairToolBlocks falls back to.
- */
-function renderToolOutput(content: unknown): string | null {
-  if (content == null) return null;
-  if (typeof content === "string") return content || null;
-  if (!Array.isArray(content)) {
-    try {
-      return JSON.stringify(content, null, 2);
-    } catch {
-      return null;
-    }
-  }
-  const parts: string[] = [];
-  for (const b of content) {
-    if (!b || typeof b !== "object") continue;
-    const obj = b as { type?: string; text?: string; omitted?: boolean; bytes?: number };
-    if (obj.type === "text" && typeof obj.text === "string") parts.push(obj.text);
-    else if (obj.omitted) parts.push(`[${obj.type ?? "blob"} — ${obj.bytes ?? "?"} bytes, omitted]`);
-  }
-  return parts.join("\n\n") || null;
-}
-
-interface ToolPillState {
-  id: string;
-  name: string;
-  args: unknown;
-  result: unknown;
-  status: "running" | "done" | "error";
-  /** Live incremental output shown while the tool is still running, before
-   *  its terminal tool_result lands. */
-  progressText?: string;
-}
-
-function ToolPill({ tool }: { tool: ToolPillState }) {
-  const [open, setOpen] = React.useState(false);
-  const s = TOOL_STYLES[tool.status];
-  // Prefer the terminal tool_result output; fall back to the streamed progress
-  // text whenever there's no result — both while running (live output) AND for
-  // a completed tool whose terminal result was empty/absent. Mirrors upstream
-  // app-tool-stream's single entry.output: the result phase only overwrites the
-  // streamed output when it's non-empty, so streamed output survives when no
-  // real result lands (e.g. an aborted exec or a stream-only tool).
-  // Untrusted-content sentinels are stripped even inside the pill expansion —
-  // they are model-facing plumbing on any surface.
-  const rawOutput = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
-  const output = rawOutput === null ? null : stripExternalContentMarkers(rawOutput) || null;
-  const hasArgs = !!(
-    tool.args &&
-    typeof tool.args === "object" &&
-    Object.keys(tool.args as Record<string, unknown>).length > 0
-  );
-  const hasDetails = hasArgs || !!output;
-
-  return (
-    <div className="inline-block">
-      <button
-        type="button"
-        onClick={() => hasDetails && setOpen((v) => !v)}
-        disabled={!hasDetails}
-        className={cn(
-          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-          s.pill,
-          hasDetails ? "cursor-pointer hover:brightness-95" : "cursor-default",
-        )}
-        aria-expanded={open}
-      >
-        <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
-        <span>{tool.name}</span>
-        {tool.status === "error" && <span>failed</span>}
-        {hasDetails &&
-          (open ? (
-            <ChevronDown className="h-3 w-3 opacity-70" />
-          ) : (
-            <ChevronRight className="h-3 w-3 opacity-70" />
-          ))}
-      </button>
-      {open && hasDetails && (
-        <div className="mt-1.5 max-w-xl rounded-md border border-[var(--edge)] bg-[var(--cream)] p-2 text-xs space-y-2">
-          {hasArgs && (
-            <div>
-              <div className="font-medium text-[#302d28] mb-0.5">input</div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
-                {JSON.stringify(tool.args, null, 2)}
-              </pre>
-            </div>
-          )}
-          {output && (
-            <div>
-              <div className="font-medium text-[#302d28] mb-0.5">
-                {tool.status === "error" ? "error" : "output"}
-              </div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
-                {output}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Single-tool indicator. Plan §6 changes the prop from `toolUses: ToolUse[]`
- * to a single tool object — pairing now happens upstream in MessageBlocks
- * (one indicator per tool_use block), so this component renders one pill
- * per call.
- */
-function ToolUseIndicator({ tool }: { tool: ToolPillState }) {
-  return (
-    <div className="mb-3 flex flex-wrap gap-2 items-start">
-      <ToolPill tool={tool} />
-    </div>
-  );
-}
 
 export const AGENT_GLYPH_PATH =
     "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
@@ -573,6 +440,27 @@ function MessageBlocks({
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];
+
+  // Consecutive tool calls accumulate here and flush as ONE trace. Any non-tool
+  // block (text, thinking, a hire card) is a step boundary and flushes first, so
+  // "tool, tool, text, tool" renders as two traces around the prose rather than
+  // three scattered indicators — which is what the old one-pill-per-call did.
+  let pendingCalls: ToolCall[] = [];
+  const flushTrace = () => {
+    if (pendingCalls.length === 0) return;
+    const calls = pendingCalls;
+    pendingCalls = [];
+    rendered.push(
+      <ToolActivityTrace
+        key={`trace:${calls[0]!.id}`}
+        calls={calls}
+        // A trace is settled once every call in it has a terminal status. The
+        // live turn's tail group keeps its rows; older groups fold.
+        settled={calls.every((c) => c.status !== "running")}
+      />,
+    );
+  };
+
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (isToolResultBlock(b)) {
@@ -599,23 +487,22 @@ function MessageBlocks({
             ? parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)
             : null;
         if (hireSuggestion) {
+          // A hire card is prose-weight content, not a step — it ends the run.
+          flushTrace();
           rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
           renderedToolIds.delete(id);
           continue;
         }
-        rendered.push(
-          <ToolUseIndicator
-            key={`tool:${id}`}
-            tool={{
-              id,
-              name: b.name ?? "tool",
-              args: resolveToolArgs(b),
-              result: resultBlock?.content ?? resultBlock?.result,
-              status,
-              progressText: (b as ContentBlock).progressText,
-            }}
-          />
-        );
+        pendingCalls.push({
+          id,
+          name: b.name ?? "tool",
+          args: resolveToolArgs(b),
+          result: resultBlock?.content ?? resultBlock?.result,
+          status,
+          progressText: (b as ContentBlock).progressText,
+          startedAt: (b as ContentBlock).startedAt,
+          endedAt: (b as ContentBlock).endedAt,
+        });
         renderedToolIds.delete(id);
       }
       continue;
@@ -623,6 +510,7 @@ function MessageBlocks({
     if (isThinkingBlock(b)) {
       const text = (b.thinking ?? b.text ?? "") as string;
       if (text.length > 0) {
+        flushTrace();
         rendered.push(<ThinkingBlock key={`think:${i}`} content={text} />);
       }
       continue;
@@ -630,6 +518,7 @@ function MessageBlocks({
     if (isTextBlock(b)) {
       const text = (b.text ?? "") as string;
       if (text.length > 0) {
+        flushTrace();
         // Surface terminal agent errors via the typed card when the message
         // carries an errorCode, otherwise just render plain markdown.
         if (message.errorCode && text.startsWith("Error: ")) {
@@ -655,6 +544,9 @@ function MessageBlocks({
     }
     // Unknown block — skip.
   }
+  // A turn that ends on tool calls (still running, or finished with no closing
+  // prose) still has to render them.
+  flushTrace();
   return <>{rendered}</>;
 }
 

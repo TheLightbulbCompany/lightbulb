@@ -1,8 +1,8 @@
 /**
- * ToolPill live-progress rendering (C-track).
+ * Trace-row live-progress rendering (C-track).
  *
  * A running tool (tool_use block with no matching tool_result yet) that carries
- * a live `progressText` must surface that output in the pill's expansion so the
+ * a live `progressText` must surface that output in the row's expansion so the
  * user sees streaming command output while the tool is still executing.
  */
 
@@ -77,7 +77,7 @@ function groupWithCompletedEmptyResultProgress(): RenderGroup[] {
   ];
 }
 
-describe("ToolPill — live progress (C)", () => {
+describe("ToolActivityTrace — live progress (C)", () => {
   it("shows progressText output while the tool is still running", () => {
     render(
       <MessageList
@@ -88,8 +88,9 @@ describe("ToolPill — live progress (C)", () => {
         onOpenFile={() => {}}
       />,
     );
-    // Expand the pill, then assert the live output is rendered.
-    fireEvent.click(screen.getByText("bash"));
+    // Expand the row, then assert the live output is rendered. Addressed by
+    // the plain-language label — the raw name "bash" is never on screen.
+    fireEvent.click(screen.getByRole("button", { name: /Running make/i }));
     expect(screen.getByText(/compiling\.\.\./)).toBeInTheDocument();
   });
 
@@ -103,8 +104,8 @@ describe("ToolPill — live progress (C)", () => {
         onOpenFile={() => {}}
       />,
     );
-    // Expand the pill, then assert the streamed output survives into history.
-    fireEvent.click(screen.getByText("bash"));
+    // Expand the row, then assert the streamed output survives into history.
+    fireEvent.click(screen.getByRole("button", { name: /Ran make/i }));
     expect(screen.getByText(/streamed line/)).toBeInTheDocument();
   });
 });

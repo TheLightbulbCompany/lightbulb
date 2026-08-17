@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat surface — today vs proposed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,400&family=Lora:ital,wght@0,400..600;1,400&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Tokens copied verbatim from apps/frontend/src/app/globals.css */
+:root{
+  --cream:#faf7f2; --cream-deeper:#f3efe6; --cream-deepest:#ebe5d6;
+  --edge:#e0dbd0; --edge-soft:#ebe6da; --edge-forest:#d4e6dc;
+  --forest:#06402B; --forest-soft:#4a9e74; --forest-tint:#e6efe9;
+  --gold:#c2a378; --ink:#1a1a1a; --ink-soft:#3d3d3d;
+  --mute:#767061; --mute-soft:#8a8578; --warn:#c47a1d; --danger:#b32424;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--cream); color:var(--ink);
+  font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:32px;
+}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;max-width:1500px;margin:0 auto;align-items:start}
+.col{min-width:0}
+.colhead{
+  display:flex;align-items:baseline;gap:10px;
+  padding-bottom:10px;margin-bottom:20px;border-bottom:1px solid var(--edge);
+}
+.colhead h2{font-family:Lora,Georgia,serif;font-size:17px;font-weight:600;letter-spacing:-.01em}
+.colhead .tag{
+  font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute);
+  border:1px solid var(--edge);border-radius:999px;padding:2px 8px;
+}
+.pane{border:1px solid var(--edge);border-radius:10px;background:var(--cream);padding:22px 20px}
+
+/* ---- shared transcript chrome (identical both sides, so only the trace differs) ---- */
+.userrow{display:flex;justify-content:flex-end;margin-bottom:20px}
+.userbubble{
+  background:var(--cream-deepest);border:1px solid var(--edge);
+  border-radius:12px 12px 3px 12px;padding:9px 13px;font-size:14px;line-height:1.5;
+  color:var(--ink);max-width:78%;
+}
+.agentline{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.agentname{font-size:12.5px;font-weight:600;color:var(--ink);letter-spacing:-.005em}
+.glyph{flex:none}
+.body{font-size:14px;line-height:1.62;margin-top:4px}
+.body p+p{margin-top:10px}
+.body code{font-family:"Geist Mono",ui-monospace,monospace;font-size:12.5px;
+  background:var(--cream-deeper);border-radius:3px;padding:1px 4px}
+
+/* ================= LEFT: today, reproduced from origin/main ================= */
+/* ThinkingBlock — MessageList.tsx:324 */
+.t-think{margin-bottom:16px;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.t-think .hd{
+  width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:var(--cream-deeper);text-align:left;border:0;cursor:pointer;
+}
+.t-think .hd span{font-size:14px;color:var(--mute);font-style:italic;
+  font-family:"DM Sans",sans-serif}
+/* ToolUseIndicator — one pill per call, each its own mb-3 block (:479) */
+.t-toolrow{margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
+.t-pill{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;
+  font-size:12px;line-height:16px;font-weight:500;border:1px solid;
+  font-family:"DM Sans",sans-serif;
+}
+.t-pill .dot{width:6px;height:6px;border-radius:999px;flex:none}
+/* TOOL_STYLES — MessageList.tsx:352 */
+.t-run{background:#e8f5e9;color:#2d8a4e;border-color:#c8e6c9}
+.t-run .dot{background:#2d8a4e;animation:pulse 2s cubic-bezier(.4,0,.6,1) infinite}
+.t-done{background:var(--cream-deeper);color:var(--mute);border-color:var(--edge)}
+.t-done .dot{background:#cdc7ba}
+.t-err{background:#fce4ec;color:#a5311f;border-color:#f8bbd0}
+.t-err .dot{background:#c62828}
+@keyframes pulse{50%{opacity:.5}}
+.t-body{color:#302d28}  /* hardcoded assistant body colour, MessageList.tsx */
+/* StreamingStatusBar — StreamingStatusBar.tsx:61 */
+.t-status{display:flex;justify-content:center;padding:8px 16px 4px}
+.t-status .inner{
+  display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mute);
+  background:rgba(243,239,230,.8);border-radius:999px;padding:6px 12px;
+  box-shadow:0 1px 2px rgba(0,0,0,.05);font-weight:500;letter-spacing:-.01em;
+}
+
+/* ================= RIGHT: proposed ================= */
+/* Thinking — same shell, tense fixed + duration */
+.p-think{margin-bottom:16px}
+.p-think .hd{
+  display:inline-flex;align-items:center;gap:7px;padding:0;background:none;border:0;
+  cursor:pointer;color:var(--mute);font-size:13px;font-family:"DM Sans",sans-serif;
+}
+.p-think .hd .lab{font-style:italic}
+.p-think .hd .dur{font-variant-numeric:tabular-nums;color:var(--mute-soft);font-size:12px}
+
+/* The trace: rows hanging off a single hairline, no chips, no icon column. */
+.trace{margin:2px 0 16px;padding-left:13px;border-left:1px solid var(--edge);position:relative}
+.trace.settled{border-left-color:var(--edge-soft)}
+.trow{
+  display:flex;align-items:baseline;gap:10px;
+  padding:3px 0;font-size:13px;line-height:1.5;min-height:22px;
+}
+.trow .txt{flex:1 1 auto;min-width:0;color:var(--ink-soft)}
+.trow .txt .det{color:var(--mute)}
+.trow .txt .mono{font-family:"Geist Mono",ui-monospace,monospace;font-size:12px;color:var(--mute)}
+.trow .dur{
+  flex:none;width:38px;text-align:right;font-size:11px;color:var(--mute-soft);
+  font-variant-numeric:tabular-nums;
+}
+/* live row: the ONE mark, reusing the house forest dot */
+.trow.live{position:relative}
+.trow.live::before{
+  content:"";position:absolute;left:-17px;top:9px;width:5px;height:5px;border-radius:999px;
+  background:var(--forest-soft);box-shadow:0 0 0 3px var(--forest-tint);
+  animation:pulse 1.8s ease-in-out infinite;
+}
+.trow.live .txt{color:var(--ink)}
+/* failure: the only coloured row */
+.trow.fail .txt{color:var(--danger)}
+.trow.fail::before{
+  content:"";position:absolute;left:-14px;top:6px;bottom:6px;width:1px;background:var(--danger);
+}
+.trow.fail{position:relative}
+.failnote{
+  margin:1px 0 5px;padding:6px 9px;border-left:2px solid var(--danger);
+  background:#fbf3f2;border-radius:0 4px 4px 0;
+  font-family:"Geist Mono",ui-monospace,monospace;font-size:11.5px;line-height:1.5;color:#8f2020;
+}
+/* settled summary line */
+.tsum{
+  display:inline-flex;align-items:center;gap:7px;margin:2px 0 14px;padding:0;
+  background:none;border:0;cursor:pointer;
+  font-size:12.5px;color:var(--mute);font-family:"DM Sans",sans-serif;
+}
+.tsum .dur{font-variant-numeric:tabular-nums;color:var(--mute-soft);font-size:11.5px}
+.tsum:hover{color:var(--ink-soft)}
+.chev{flex:none;color:var(--mute-soft)}
+.p-body{color:var(--ink)}
+.p-status .inner{
+  display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mute);
+  background:rgba(243,239,230,.8);border-radius:999px;padding:6px 12px;
+  box-shadow:0 1px 2px rgba(0,0,0,.05);font-weight:500;letter-spacing:-.01em;
+}
+.note{
+  margin-top:14px;font-size:11.5px;line-height:1.6;color:var(--mute);
+  border-top:1px dashed var(--edge);padding-top:10px;
+}
+.note b{color:var(--ink-soft);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ========================= TODAY ========================= -->
+  <div class="col">
+    <div class="colhead"><h2>Today</h2><span class="tag">origin/main</span></div>
+    <div class="pane">
+
+      <div class="userrow"><div class="userbubble">the dev deploy failed again — can you work out why?</div></div>
+
+      <div class="agentline">
+        <svg class="glyph" width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3">
+          <path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/>
+        </svg>
+        <span class="agentname">Friday</span>
+      </div>
+
+      <div class="t-think">
+        <div class="hd">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#767061" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span>Thinking...</span>
+        </div>
+      </div>
+
+      <div class="t-toolrow"><span class="t-pill t-done"><span class="dot"></span>read<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="t-toolrow"><span class="t-pill t-done"><span class="dot"></span>bash<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="t-toolrow"><span class="t-pill t-err"><span class="dot"></span>bash failed<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="t-toolrow"><span class="t-pill t-done"><span class="dot"></span>mcp__openclaw__web_search<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="t-toolrow"><span class="t-pill t-done"><span class="dot"></span>read<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="t-toolrow"><span class="t-pill t-run"><span class="dot"></span>edit<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="m9 18 6-6-6-6"/></svg></span></div>
+
+      <div class="body t-body">
+        <p>The Spot capacity pool for <code>us-east-1b</code> was exhausted, so the task never placed and the deploy timed out. I've set the fallback to on-demand.</p>
+      </div>
+
+      <div class="t-status"><div class="inner">
+        <svg width="16" height="16" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span>Running edit…</span>
+      </div></div>
+
+      <div class="note">
+        <b>Raw tool names</b> shown verbatim — <code>mcp__openclaw__web_search</code>.
+        <b>One pill per call</b>, each on its own line, so the turn scatters.
+        <b>Material green &amp; pink</b> chips against a cream/forest page.
+        <b>"Thinking..."</b> stays present-tense forever. No durations. No sense of what was actually done.
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================= PROPOSED ========================= -->
+  <div class="col">
+    <div class="colhead"><h2>Proposed</h2><span class="tag">live turn</span></div>
+    <div class="pane">
+
+      <div class="userrow"><div class="userbubble">the dev deploy failed again — can you work out why?</div></div>
+
+      <div class="agentline">
+        <svg class="glyph" width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3">
+          <path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/>
+        </svg>
+        <span class="agentname">Friday</span>
+      </div>
+
+      <div class="p-think">
+        <button class="hd">
+          <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+          <span class="lab">Thought</span><span class="dur">8s</span>
+        </button>
+      </div>
+
+      <div class="trace">
+        <div class="trow"><span class="txt">Read <span class="det">…/infra/ecs_manager.py</span></span><span class="dur">0.3s</span></div>
+        <div class="trow"><span class="txt">Ran <span class="mono">aws ecs describe-services --cluster isol8-dev</span></span><span class="dur">2.1s</span></div>
+        <div class="trow fail"><span class="txt">Ran <span class="mono">aws ecs describe-capacity-providers</span></span><span class="dur">0.8s</span></div>
+        <div class="failnote">AccessDeniedException: not authorized to perform ecs:DescribeCapacityProviders</div>
+        <div class="trow"><span class="txt">Searched the web <span class="det">for “fargate spot capacity unavailable us-east-1b” (top 5)</span></span><span class="dur">1.9s</span></div>
+        <div class="trow"><span class="txt">Read <span class="det">lines 240-279 from …/containers/ecs_manager.py</span></span></div>
+        <div class="trow live"><span class="txt">Editing <span class="det">…/containers/ecs_manager.py</span></span><span class="dur"></span></div>
+      </div>
+
+      <div class="body p-body">
+        <p>The Spot capacity pool for <code>us-east-1b</code> was exhausted, so the task never placed and the deploy timed out. I've set the fallback to on-demand.</p>
+      </div>
+
+      <div class="note">
+        <b>Plain language, from upstream's own map</b> — <code>web_search</code> → “Searched the web”, and
+        <code>mcp__openclaw__</code> is stripped so <code>claude-cli</code> containers read the same.
+        <b>One trace per turn</b>, rows appended, hanging off a single rule.
+        <b>Absence is the signal</b> — success is uncoloured; the failure is the only red thing on screen and keeps its place.
+        Durations from the <code>startedAt</code> we already stamp, hidden under ~2s.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="wrap" style="margin-top:34px">
+  <div class="col">
+    <div class="colhead"><h2>Proposed — settled</h2><span class="tag">turn finished, folded</span></div>
+    <div class="pane">
+      <div class="agentline">
+        <svg class="glyph" width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span class="agentname">Friday</span>
+      </div>
+      <div class="p-think"><button class="hd">
+        <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        <span class="lab">Thought</span><span class="dur">8s</span></button></div>
+      <button class="tsum">
+        <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        Read 2 files · ran 2 commands · 1 search · edited 1 file · 1 failed<span class="dur">7.4s</span>
+      </button>
+      <div class="body p-body">
+        <p>The Spot capacity pool for <code>us-east-1b</code> was exhausted, so the task never placed and the deploy timed out. I've set the fallback to on-demand.</p>
+      </div>
+      <div class="note">
+        Past three calls the trace folds to one line, so a long session scrolls as <b>question → answer</b>.
+        Nothing is destroyed — expanding restores every row, and expanding a row still shows raw args and output.
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="colhead"><h2>Same turn, scrolled back</h2><span class="tag">what a session looks like</span></div>
+    <div class="pane">
+      <div class="userrow"><div class="userbubble">and can you check the prod one too?</div></div>
+      <div class="agentline">
+        <svg class="glyph" width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span class="agentname">Friday</span>
+      </div>
+      <button class="tsum">
+        <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        Read 4 files · ran 1 command<span class="dur">3.1s</span>
+      </button>
+      <div class="body p-body"><p>Prod is clean — every service is on-demand there, so it never hits the Spot pool.</p></div>
+
+      <div class="userrow" style="margin-top:20px"><div class="userbubble">thanks. open a PR for the fallback change</div></div>
+      <div class="agentline">
+        <svg class="glyph" width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="#767061" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span class="agentname">Friday</span>
+      </div>
+      <div class="trace">
+        <div class="trow"><span class="txt">Ran <span class="mono">git checkout -b fix/spot-fallback</span></span></div>
+        <div class="trow live"><span class="txt">Running <span class="mono">gh pr create --fill</span></span><span class="dur"></span></div>
+      </div>
+      <div class="note">
+        A two-call turn <b>stays as rows</b> — folding something that short would cost a click to reveal nothing.
+        Threshold is more than three calls.
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -48,6 +48,10 @@ function seedReads(overrides: Record<string, ReadStub> = {}) {
       data: {
         id: "r1",
         title: "Nightly digest",
+        // Every stored variable is referenced as {{name}} in the template —
+        // Paperclip's sync drops any that isn't, so this is the only shape a
+        // persisted routine can actually have.
+        description: "Summarize activity as of {{asOf}}.",
         status: "active",
         priority: "medium",
         assigneeAgentId: "ag_1",
@@ -547,5 +551,116 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     ).toBeInTheDocument();
     // Dialog stays open on failure so the user can retry / adjust.
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+// Paperclip re-derives a routine's variables from its template on every update,
+// keeping only the definitions referenced as {{NAME}}. A definition the text
+// never mentions is dropped behind a 200 — the dialog has to say so up front.
+describe("EditRoutineDialog — variable validation", () => {
+  async function openEditorAndAddVar(name: string) {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /add variable/i }));
+    const nameInputs = within(dialog).getAllByPlaceholderText("name");
+    fireEvent.change(nameInputs[nameInputs.length - 1], { target: { value: name } });
+    return { user, dialog };
+  }
+
+  it("blocks Save and names the unreferenced placeholder", async () => {
+    const { user, dialog } = await openEditorAndAddVar("GTM_GOAL_ID");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      /\{\{GTM_GOAL_ID\}\} is not used in the title or description/,
+    );
+    const save = within(dialog).getByRole("button", { name: /^Save$/ });
+    expect(save).toBeDisabled();
+    await user.click(save);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("saves once the variable is referenced in the description", async () => {
+    const { user, dialog } = await openEditorAndAddVar("GTM_GOAL_ID");
+    fireEvent.change(within(dialog).getByLabelText("Description"), {
+      target: { value: "Summarize as of {{asOf}} against {{GTM_GOAL_ID}}." },
+    });
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const [, body] = patch.mock.calls[0];
+    expect(body.variables).toEqual([
+      { name: "asOf", type: "date", required: true },
+      { name: "GTM_GOAL_ID", type: "text", required: true },
+    ]);
+  });
+
+  it("accepts a markdown-escaped placeholder, matching upstream's matcher", async () => {
+    // WYSIWYG markdown editors store `{{pr_url}}` as `{{pr\_url}}`; upstream
+    // unescapes before matching, so the dialog must not flag it as unreferenced.
+    const { dialog } = await openEditorAndAddVar("pr_url");
+    fireEvent.change(within(dialog).getByLabelText("Description"), {
+      target: { value: "Review {{asOf}} and {{pr\\_url}}." },
+    });
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /^Save$/ })).toBeEnabled();
+  });
+});
+
+// jsdom has no layout engine, so reachability is asserted on the structural
+// contract that makes it viewport-independent: the dialog is height-bounded,
+// the body is the only scroller, and the footer sits outside it.
+describe.each([
+  ["desktop 1280x720", 1280, 720],
+  ["mobile 390x844", 390, 844],
+])("EditRoutineDialog footer reachability — %s", (_label, width, height) => {
+  beforeEach(() => {
+    window.innerWidth = width;
+    window.innerHeight = height;
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Wide digest",
+          description: Array.from({ length: 7 }, (_, i) => `{{var_${i}}}`).join(" "),
+          status: "active",
+          priority: "medium",
+          assigneeAgentId: "ag_1",
+          triggers: [],
+          variables: Array.from({ length: 7 }, (_, i) => ({
+            name: `var_${i}`,
+            type: "text",
+            required: true,
+          })),
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-02T00:00:00Z",
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+  });
+
+  it("keeps Save outside the scrolling body with seven variable rows", async () => {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getAllByPlaceholderText("name")).toHaveLength(7);
+
+    const body = dialog.querySelector("[data-dialog-body]");
+    expect(body).toHaveClass("overflow-y-auto");
+    expect(body).toHaveClass("min-h-0");
+    // The dialog itself is height-capped, so the body — not the page — absorbs
+    // the overflow.
+    expect(dialog).toHaveClass("max-h-[85svh]");
+
+    const save = within(dialog).getByRole("button", { name: /^Save$/ });
+    expect(save).toBeEnabled();
+    expect(body).not.toContainElement(save);
+    expect(body).not.toContainElement(
+      within(dialog).getByRole("button", { name: /^Cancel$/ }),
+    );
   });
 });

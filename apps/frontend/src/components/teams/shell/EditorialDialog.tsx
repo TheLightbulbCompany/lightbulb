@@ -35,7 +35,13 @@ export function EditorialDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)] sm:max-w-[520px]",
+          // Bounded height + a scrolling BODY (below), so a long form can never
+          // push the footer past the fold: the dialog is centre-anchored and
+          // `fixed`, so an overflowing one has nothing to scroll it back into
+          // view and its Cancel/Save become unclickable (7 routine-variable rows
+          // at 1280x720 did exactly that). `flex` overrides the base `grid` via
+          // tailwind-merge, which keeps the footer content-sized at any row count.
+          "flex max-h-[85svh] flex-col overflow-hidden border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)] sm:max-w-[520px]",
           className,
         )}
       >
@@ -53,9 +59,13 @@ export function EditorialDialog({
             </DialogDescription>
           )}
         </DialogHeader>
-        {children != null && <div className="space-y-3 py-2">{children}</div>}
+        {children != null && (
+          <div data-dialog-body className="min-h-0 flex-1 space-y-3 overflow-y-auto py-2">
+            {children}
+          </div>
+        )}
         {footer && (
-          <div className="flex items-center justify-end gap-2 border-t border-[var(--edge)] pt-3">
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--edge)] pt-3">
             {footer}
           </div>
         )}

@@ -255,6 +255,37 @@ function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
 }
 
 /**
+ * Friday's server-dispatched first-run kickoff FAILED (`bootstrap.state ===
+ * "failed"` on a `ready` body) — the owner submitted their brief, the container
+ * came up, and the kickoff died anyway. NON-blocking, same as the Teams banner:
+ * chat behind it is live, and talking to Friday directly is the one recovery
+ * the owner actually has. There is deliberately NO retry action — the re-arm
+ * lever (`reset_bootstrap_for_retry`) is platform-admin only, so a Retry here
+ * would be a dead button. `error` is the operator-written reason, shown as a
+ * second line so support has it without the owner relaying a screenshot.
+ */
+function FirstRunFailedBanner({ error }: { error?: string | null }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.firstRunBanner, { paddingTop: insets.top }]}>
+      <View style={styles.teamsBannerRow}>
+        <View style={styles.firstRunBannerCopy}>
+          <Text style={styles.firstRunBannerText}>
+            Friday couldn’t start her first run. Message her here to kick things
+            off, or contact support if she doesn’t answer.
+          </Text>
+          {error ? (
+            <Text style={styles.firstRunBannerDetail} numberOfLines={3}>
+              {error}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/**
  * PaywallScreen wired to the authenticated API client.
  *
  * The screen takes `post` as a prop so it stays testable without Clerk; this
@@ -473,6 +504,14 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         {status.kind === "ready" && status.teamsStatus === "failed" ? (
           <TeamsDegradedBanner onRetry={onRetry} />
         ) : null}
+        {/* First-run kickoff failed — same fixed-index, non-blocking rule as
+            the Teams banner above (index 1; the stepper stays the last child),
+            so toggling it never remounts the tab navigator. "failed" ONLY:
+            `dispatched` (fresh or stale-but-re-arming) and `sent` are recovered
+            by the dispatcher on the next poll and are not failures. */}
+        {status.kind === "ready" && status.bootstrapState === "failed" ? (
+          <FirstRunFailedBanner error={status.bootstrapError} />
+        ) : null}
         <ProvisioningStepper status={status} onRetry={onRetry}>
           {children}
         </ProvisioningStepper>
@@ -604,5 +643,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
+  },
+  // First-run failure — a real failure, not a "needs attention" nudge, so it
+  // reuses the banner geometry with the error tokens instead of the amber ones.
+  firstRunBanner: {
+    backgroundColor: colors.errorBg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.errorBorder,
+  },
+  firstRunBannerCopy: { flex: 1, gap: spacing.xs },
+  firstRunBannerText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.errorText,
+  },
+  firstRunBannerDetail: {
+    fontFamily: fonts.dmSans,
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.errorText,
+    opacity: 0.8,
   },
 });

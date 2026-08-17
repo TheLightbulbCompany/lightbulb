@@ -429,6 +429,21 @@ describe("PaperclipStack — prod public URL", () => {
     expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
   });
 
+  test("prod leaves governed agent creation off until dev has validated it", () => {
+    // Dev-first rollout: this flips to "1" in a follow-up PR, after dev has
+    // run a full provision and a marketplace hire under the fence.
+    const tasks = template.findResources("AWS::ECS::TaskDefinition", {
+      Properties: { Family: "isol8-prod-paperclip-server" },
+    });
+    const td = Object.values(tasks)[0] as { Properties: any };
+    const envArr = td.Properties.ContainerDefinitions[0].Environment as Array<{
+      Name: string;
+      Value: string;
+    }>;
+    const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
+    expect(envMap.PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION).toBe("0");
+  });
+
   test("prod log group uses RETAIN removal policy", () => {
     const logGroups = template.findResources("AWS::Logs::LogGroup", {
       Properties: { LogGroupName: "/isol8/prod/paperclip" },

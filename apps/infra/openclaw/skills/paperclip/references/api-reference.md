@@ -642,10 +642,11 @@ Some actions require board approval. You cannot bypass these gates.
 
 ### Requesting a hire
 
-Paperclip's native `/agents` and `/agent-hires` creation routes are not an
-agent-facing hiring path in Isol8. Isol8 must apply the plan's agent cap,
-materialize the OpenClaw workspace, and bind the approval to the same
-pre-created agent.
+Paperclip's native `/agents` and `/agent-hires` creation routes reject agent
+callers in Isol8 (403), and a `hire_agent` approval you file yourself is
+rejected unless the platform pre-created the agent it names. Isol8 must apply
+the plan's agent cap, materialize the OpenClaw workspace, and bind the approval
+to that pre-created agent.
 
 Search the live marketplace with `marketplace_search` and send a one-click
 card with `recommend_agents`. If no listing fits, create a child issue for
@@ -1077,7 +1078,7 @@ safe helper commands are in `attention-decisions-search.md`.
 | ------ | -------------------------------------------- | ---------------------------------- |
 | GET    | `/api/companies/:companyId/approvals`        | List approvals (`?status=pending`) |
 | POST   | `/api/companies/:companyId/approvals`        | Create approval request            |
-| POST   | `/api/companies/:companyId/agent-hires`      | Native route disabled in Isol8; use the governed marketplace/Atlas flow |
+| POST   | `/api/companies/:companyId/agent-hires`      | Rejected for agent callers in Isol8; use the marketplace/Atlas flow |
 | GET    | `/api/approvals/:approvalId`                 | Approval details                   |
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |

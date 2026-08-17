@@ -254,46 +254,27 @@ RUN npm i -g opencode-ai@1.18.15 && opencode --version >/dev/null
 # Fast.io SaaS, never wired into mcp.servers — so workflows use `state.*`, not `fast-io`.)
 ENV LOBSTER_STATE_DIR=/home/node/.openclaw/lobster-state
 
-# ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
-# Upstream openclaw:2026.6.1 ships the playwright npm package (at
-# /app/node_modules/playwright-core, v1.60.0) but NOT the Chromium binary
-# and NOT the GUI libs Chromium needs to launch. The chromium install is
-# gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
-# which is empty by default; the published image is built without it.
+# ---- Layer 9: (REMOVED) Playwright Chrome-for-Testing binary ----
+# History, because this WILL come up again: PR #596 baked Playwright's
+# Chrome-for-Testing here when the image had NO browser at all (upstream
+# gates its install behind OPENCLAW_INSTALL_BROWSER, empty by default) --
+# one install then served BOTH the browser tool and Playwright-based MCPs,
+# and pre-baking closed a ~6-minute first-use download (#443). Real Chrome
+# (layer 9b) now serves the browser tool, whose Playwright usage is
+# connectOverCDP ONLY -- a library call against the already-running Chrome
+# that never needs the CfT binary (playwright-core the LIBRARY still ships
+# in /app; only the ~170MB browser download is gone).
 #
-# This image now has two browser-using audiences, each with its own
-# (incompatible) idea of where Chromium lives:
+# What this costs, knowingly accepted (2026-08-17): an owner who connects a
+# Playwright-based MCP (none ship by default; marketplace hires can carry
+# them, e.g. Resy-style) gets Playwright's own runtime download at first
+# use, re-fetched per task restart since ~/.cache is ephemeral. If such
+# MCPs become common, re-add the bake rather than debugging slow first-runs.
 #
-#   1. Third-party Playwright-based MCPs (Resy, etc.) call
-#      `chromium.launch()`, which Playwright hardcodes to find its bundled
-#      binary at `$HOME/.cache/ms-playwright/chromium-<rev>/...`. Playwright
-#      ignores system Chromium by design.
-#
-#   2. OpenClaw's `browser` plugin spawns Chrome directly via CDP
-#      (`extensions/browser/src/browser/chrome.ts:417`), using a resolver
-#      that probes `/usr/bin/google-chrome`, `/usr/bin/chromium`, etc. It
-#      does NOT check Playwright's cache.
-#
-# We satisfy both by installing playwright-core's pinned Chromium into
-# Playwright's expected cache path (audience #1), then symlinking that
-# binary into `/usr/bin/chromium` (audience #2). One binary, two access
-# paths, no duplicated apt-installed Chromium.
-#
-# The `chromium-*` glob in the symlink target re-resolves at every image
-# rebuild — when upstream bumps playwright-core, the revision dir name
-# changes (e.g. chromium-1217 → chromium-1219) and the symlink picks up
-# the new dir automatically. Only one revision dir exists per build, so
-# the glob is unambiguous.
-#
-# --with-deps installs the GUI libs Chromium needs (libatk-1.0, libnss3,
-# libgbm, libxkbcommon, libasound, etc.) at the system level. These cover
-# any future MCP that brings a different Playwright version too — they
-# only need to download their own Chromium binary, not re-install libs.
-RUN mkdir -p /home/node/.cache/ms-playwright && \
-    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
-      node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-    chown -R node:node /home/node/.cache/ms-playwright && \
-    ln -sf /home/node/.cache/ms-playwright/chromium-*/chrome-linux64/chrome /usr/bin/chromium
+# The GUI libs the old --with-deps installed now arrive as the Chrome deb's
+# dependencies; the FONTS it installed do NOT (the deb only Recommends
+# them and layer 9b installs with --no-install-recommends), so they are
+# installed explicitly in 9b below -- without them Chrome renders tofu.
 
 # ---- Layer 9b: real Google Chrome for the browser tool (audience #2) ----
 # Chrome for Testing self-labels with a "only for automated testing —
@@ -318,10 +299,18 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 # dl.google.com serves only the CURRENT stable deb (no version pinning
 # available); the image tag pins what a rebuild picked up, same posture as
 # the apt-installed packages above. amd64-only, matching the AWS CLI layer.
+# NO /usr/bin/chromium compat symlink, by explicit owner decision
+# (2026-08-17): configs that still pin the old path are fixed for real via
+# the admin fleet config patch BEFORE any container rolls onto this image.
+# ORDERING IS LOAD-BEARING: rolling a container here with an unpatched
+# config leaves executablePath pointing at a binary this image does not
+# have, and the browser tool dies at launch.
 RUN curl -fsSL -o /tmp/google-chrome.deb \
       "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
     apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends /tmp/google-chrome.deb && \
+    apt-get install -y -qq --no-install-recommends \
+      /tmp/google-chrome.deb \
+      fonts-liberation fonts-noto-cjk fonts-noto-color-emoji && \
     rm -f /tmp/google-chrome.deb && rm -rf /var/lib/apt/lists/* && \
     test -x /usr/bin/google-chrome
 

@@ -26,7 +26,7 @@
 // chevron and manual ordering asks the user to maintain what the sort already
 // derives. See the PR for the full argument.
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Pencil, Trash2, ListTodo, SlidersHorizontal } from "lucide-react";
 
 import { Monogram } from "@/components/agents/AgentIdentity";
@@ -159,7 +159,10 @@ export function AgentRoster({
   onDelete,
   renderSessions,
 }: AgentRosterProps): React.ReactElement {
-  const modelNames = buildModelNameMap(configSnapshot);
+  // Memoized as it was in both hosts before the extraction: the roster now
+  // re-renders on every live run start/stop, and walking the model catalog on
+  // each of those would be work for a value that only changes with `config.get`.
+  const modelNames = useMemo(() => buildModelNameMap(configSnapshot), [configSnapshot]);
   const ordered = orderRoster(entries);
   const workingCount = entries.filter((e) => e.state === "running").length;
   const attentionCount = entries.filter((e) => e.state === "attention").length;

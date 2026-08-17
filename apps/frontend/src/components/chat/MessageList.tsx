@@ -719,6 +719,105 @@ const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   groupEquals(prev.group, next.group),
 );
 
+/** One rendered slot: either a normal item, or a run of coalesced tool calls. */
+type Renderable =
+  | { kind: "item"; item: ChatRenderItem }
+  | { kind: "tool-run"; key: string; calls: ToolCall[] };
+
+/**
+ * Extracts a message's tool calls, or null if it is not a pure tool message.
+ *
+ * "Pure" matters: a message mixing prose with tool calls must keep its own
+ * renderer, because MessageBlocks already groups tool blocks WITHIN a message
+ * and knows where the prose sits between them. Only whole tool-only messages
+ * are eligible to merge with their neighbours.
+ */
+function toolCallsOfPureToolMessage(message: HistoryMessage): ToolCall[] | null {
+  const blocks = resolveMessageBlocks(message);
+  if (blocks.length === 0) return null;
+  if (message.errorCode) return null;
+  const pairs = pairToolBlocks(blocks);
+  if (pairs.length === 0) return null;
+
+  const calls: ToolCall[] = [];
+  for (const b of blocks) {
+    if (isToolResultBlock(b)) continue;
+    if (!isToolUseBlock(b)) return null; // prose/thinking present — not pure
+    const id = resolveToolUseId(b);
+    if (!id) return null;
+    const pair = pairs.find((p) => p.toolUseId === id);
+    if (!pair) return null;
+    const resultBlock = pair.toolResultBlock as
+      | { content?: unknown; result?: unknown; isError?: boolean }
+      | undefined;
+    const status: ToolCall["status"] = resultBlock
+      ? resultBlock.isError
+        ? "error"
+        : "done"
+      : "running";
+    // A completed recommend_agents call renders as a hire card, which is prose-
+    // weight content — leave the whole message to the normal renderer.
+    if (status === "done" && parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)) {
+      return null;
+    }
+    calls.push({
+      id,
+      name: b.name ?? "tool",
+      args: resolveToolArgs(b),
+      result: resultBlock?.content ?? resultBlock?.result,
+      status,
+      progressText: (b as ContentBlock).progressText,
+      startedAt: (b as ContentBlock).startedAt,
+      endedAt: (b as ContentBlock).endedAt,
+    });
+  }
+  return calls.length > 0 ? calls : null;
+}
+
+/**
+ * Merges consecutive tool-only messages into one trace, so a multi-step turn
+ * reads as a single run instead of one indicator per call.
+ *
+ * This happens at RENDER time, deliberately. The live path emits one message
+ * per tool call and that 1:1 shape is load-bearing upstream — buildChatItems
+ * interleaves narration segments with tool messages by index, and per-message
+ * timestamps are what keep React keys stable across progress ticks. Collapsing
+ * the data instead of the view broke both (stranded narration, and every
+ * expanded row snapping shut whenever any sibling call ticked).
+ *
+ * Anything that is not a pure tool message — prose, thinking, a stream segment,
+ * an error card, a hire card — ends the run, which is also what makes the
+ * grouping semantically right: the trace covers the steps taken between two
+ * things the agent said.
+ */
+function coalesceToolRuns(items: ChatRenderItem[]): Renderable[] {
+  const out: Renderable[] = [];
+  let run: { key: string; calls: ToolCall[] } | null = null;
+  const flush = () => {
+    if (run) out.push({ kind: "tool-run", ...run });
+    run = null;
+  };
+
+  for (const item of items) {
+    const calls = item.kind === "message" ? toolCallsOfPureToolMessage(item.message) : null;
+    if (!calls) {
+      flush();
+      out.push({ kind: "item", item });
+      continue;
+    }
+    if (run) {
+      run.calls.push(...calls);
+    } else {
+      // Keyed on the first call's id, not the message key: a toolCallId is
+      // immutable, while a message key carries a timestamp that moves on every
+      // progress tick and would remount the whole trace.
+      run = { key: `tool-run:${calls[0]!.id}`, calls: [...calls] };
+    }
+  }
+  flush();
+  return out;
+}
+
 function BubbleGroupImpl({
   group,
   agentName,
@@ -779,6 +878,7 @@ function BubbleGroupImpl({
   const hasErrorCard = group.items.some(
     (item) => item.kind === "message" && Boolean(item.message.errorCode),
   );
+  const renderables = coalesceToolRuns(group.items);
   return (
     <div className="flex w-full justify-start" data-role="assistant">
       <div
@@ -792,10 +892,17 @@ function BubbleGroupImpl({
           state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}
         />
         <div className="relative text-sm leading-7 text-[#302d28] w-full">
-          {group.items.map((item, idx) => (
+          {renderables.map((entry) =>
+            entry.kind === "tool-run" ? (
+              <ToolActivityTrace
+                key={entry.key}
+                calls={entry.calls}
+                settled={entry.calls.every((c) => c.status !== "running")}
+              />
+            ) : (
             <ItemRenderer
-              key={item.key}
-              item={item}
+              key={entry.item.key}
+              item={entry.item}
               onOpenFile={onOpenFile}
               // Exactly ONE item in the whole transcript may render the live
               // paywall: the newest trial-coded error card (paywallItemKey,
@@ -807,9 +914,10 @@ function BubbleGroupImpl({
               // scenario it exists for (observed live in prod). The
               // one-key rule still prevents stacked pickers with divergent
               // credit-amount state.
-              interactive={item.key === paywallItemKey}
+              interactive={entry.item.key === paywallItemKey}
             />
-          ))}
+            ),
+          )}
         </div>
       </div>
     </div>

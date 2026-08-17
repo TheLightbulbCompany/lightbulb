@@ -329,8 +329,12 @@ export function toolRowLabel(display: ToolDisplay, running: boolean): string {
   return display.detail ? `${verb} ${display.detail}` : verb;
 }
 
+// Verbs are stored LOWERCASE without exception — the join below capitalizes
+// only the first clause, so a capitalized verb here would read "Ran 3 commands
+// · Read 2 files" with a stray capital mid-sentence. ("Read" is the trap: it is
+// spelled the same in both tenses, so a capital looks right in isolation.)
 const KIND_NOUNS: Record<ToolKind, { one: string; many: string; verb: string }> = {
-  read: { one: "file", many: "files", verb: "Read" },
+  read: { one: "file", many: "files", verb: "read" },
   write: { one: "file", many: "files", verb: "wrote" },
   edit: { one: "file", many: "files", verb: "edited" },
   command: { one: "command", many: "commands", verb: "ran" },

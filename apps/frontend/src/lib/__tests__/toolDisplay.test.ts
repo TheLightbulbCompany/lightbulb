@@ -136,3 +136,18 @@ describe("summarizeToolRun", () => {
     );
   });
 });
+
+describe("summarizeToolRun — clause capitalization", () => {
+  it("capitalizes only the first clause, whichever kind leads", () => {
+    // Regression: `read`'s verb was stored capitalized ("Read"), which reads
+    // correctly when it leads but produces "Ran 3 commands · Read 2 files"
+    // when it does not. Every verb is stored lowercase; the join capitalizes.
+    const summary = summarizeToolRun([
+      { display: resolveToolDisplay("bash", { command: "a" }) },
+      { display: resolveToolDisplay("bash", { command: "b" }) },
+      { display: resolveToolDisplay("read", { path: "x.ts" }) },
+      { display: resolveToolDisplay("read", { path: "y.ts" }) },
+    ]);
+    expect(summary).toBe("Ran 2 commands · read 2 files");
+  });
+});

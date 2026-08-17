@@ -97,9 +97,34 @@ function _loadManifest(buildId) {
   try { return JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { return null; }
 }
 
+// Whether `relPath` names a .lobster pipeline that actually lives inside THIS
+// build's staging workspace.
+//
+// `relPath` comes from the build manifest's triggers[], which the agent loop
+// authors — so it is untrusted input reaching a filesystem path. `path.join`
+// happily resolves `..`, so a pipeline like `../../other-build/workspace/x.lobster`
+// would satisfy a bare existsSync outside this workspace and then get baked into
+// a cron row's `Run <pipeline>` payload. Confine it: relative, `.lobster`, and
+// still under workspace/ after the symlinks are resolved.
 function _workspaceHasFile(buildId, relPath) {
-  const full = path.join(_stagingWorkspaceDir(buildId), 'workspace', relPath);
-  return fs.existsSync(full);
+  if (typeof relPath !== 'string' || !relPath.endsWith('.lobster') || path.isAbsolute(relPath)) {
+    return false;
+  }
+  // resolve() both sides: ISOL8_AGENTS_DIR may be relative, and comparing a
+  // resolved path against an unresolved root never matches.
+  const root = path.resolve(_stagingWorkspaceDir(buildId), 'workspace');
+  const full = path.resolve(root, relPath);
+  if (full !== root && !full.startsWith(root + path.sep)) return false;
+  if (!fs.existsSync(full)) return false;
+  // realpath AFTER the existence check (it throws on a missing path): a symlink
+  // inside the workspace must not point out of it either.
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realFull = fs.realpathSync(full);
+    return realFull.startsWith(realRoot + path.sep);
+  } catch (e) {
+    return false;
+  }
 }
 
 function _updateTriggersJson(buildId, registeredEntries) {

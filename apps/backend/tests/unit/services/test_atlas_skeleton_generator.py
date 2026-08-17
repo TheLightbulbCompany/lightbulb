@@ -205,6 +205,63 @@ def test_staging_token_is_always_a_legal_staging_agent_id(tmp_path):
     assert out["registrar_shares_derivation"] is True
 
 
+_TRIGGER_CONFINE_DRIVER = r"""
+const os=require("os"),fs=require("fs"),path=require("path");
+const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-trig-test-"));
+process.env.ISOL8_AGENTS_DIR=tmp;
+const r=require(process.env.REG_PATH);
+const ws=path.join(tmp,"workspace-atlas-staging-b1","workspace");
+fs.mkdirSync(ws,{recursive:true});
+fs.writeFileSync(path.join(ws,"real.lobster"),"name: real\n");
+// A file that exists OUTSIDE the build workspace, and one inside with a
+// non-lobster extension.
+fs.writeFileSync(path.join(tmp,"outside.lobster"),"name: outside\n");
+fs.writeFileSync(path.join(ws,"notes.md"),"# notes\n");
+const has=r._workspaceHasFile;
+const out={
+  in_workspace: has("b1","real.lobster"),
+  traversal: has("b1","../../outside.lobster"),
+  absolute: has("b1",path.join(tmp,"outside.lobster")),
+  wrong_ext: has("b1","notes.md"),
+  empty: has("b1",""),
+  non_string: has("b1",null),
+  missing: has("b1","nope.lobster"),
+};
+fs.rmSync(tmp,{recursive:true,force:true});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_trigger_pipelines_are_confined_to_the_build_workspace(tmp_path):
+    # triggers[].pipeline is authored by the agent loop, so it is untrusted
+    # input reaching a filesystem path — and it ends up inside a cron row's
+    # "Run <pipeline>" payload. path.join resolves `..`, so without a
+    # confinement check a pipeline outside this build's workspace could satisfy
+    # the existence gate and get registered.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", _TRIGGER_CONFINE_DRIVER],
+        capture_output=True,
+        text=True,
+        env={"REG_PATH": str(_GEN.parent / "atlas-trigger-registrar.js"), "PATH": str(bin_dir)},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["in_workspace"] is True
+    assert out["traversal"] is False
+    assert out["absolute"] is False
+    # The cron branch used to accept any existing file type; the payload is a
+    # lobster run, so only .lobster counts.
+    assert out["wrong_ext"] is False
+    assert out["empty"] is False
+    assert out["non_string"] is False
+    assert out["missing"] is False
+
+
 # Driver for the verify-write schema gate: draft + write a minimal agent,
 # optionally poison the staged openclaw.json with a non-schema agent-entry key
 # (the exact class of key that bricked a prod container), then verify-write.

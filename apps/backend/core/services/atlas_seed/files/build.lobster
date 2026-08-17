@@ -113,7 +113,10 @@ steps:
       ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
-  # Step 6.8 — Verify post-write file count + per-file SHA256 against staged hashes.
+  # Step 6.8 — Re-validate the promoted openclaw.json against the installed schema
+  #            and record the post-write file count + per-file SHA256. The digests
+  #            are a record, NOT a comparison — nothing diffs them against the
+  #            staged hashes. `success` here gates the bridge call below.
   - id: verify-write
     condition: $file-write-gate.approved
     command: node atlas-skeleton-generator.js --action=verify-write --build-id="$LOBSTER_ARG_BUILD_ID"

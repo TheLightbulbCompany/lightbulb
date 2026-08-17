@@ -81,7 +81,7 @@ Every Node script is `stdin-JSON → stdout-JSON`, a bare `node` step, exit 0|1,
 | `atlas-stack-overlap.js` | Reads `~/.openclaw/agents/*/openclaw.json` structured fields only → `{overlap_score, conflicting_agents, recommendation}` |
 | `atlas-cookbook-reader.js` | Two-source cookbook (docs cache + agent snapshots); drives the daily refresh (`diff-index`/`fetch-pages`/`snapshot-agents`) |
 | `atlas-failure-case-router.js` | Filters the corpus by archetype; refuses any case whose source URL isn't `verified`; `--refresh` re-verifies the corpus |
-| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` (takes `--build-id` only — no agent name) gates the promote on both the staged openclaw.json's schema AND its id being the build's staging token, then atomically materializes into `workspace-atlas-staging-{build_id}/` (nothing invalid is ever promoted, so a corrected rebuild is never blocked); `verify-write` checks count + per-file SHA256 + re-validates the schema and returns `staging_agent_id` |
+| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` (takes `--build-id` only — no agent name) gates the promote on both the staged openclaw.json's schema AND its id being the build's staging token, then atomically materializes into `workspace-atlas-staging-{build_id}/` (nothing invalid is ever promoted, so a corrected rebuild is never blocked); `verify-write` re-validates the schema against the promoted config, reports the observed file count + per-file SHA256, and returns `staging_agent_id`. It does NOT diff those hashes against the staged ones — nothing compares them, so treat the digests as a record, not a tamper check; the promote's atomicity (`rename(2)`) is what guarantees the tree |
 | `atlas-det-llm-classifier.js` | Per-requirement deterministic / LLM / hybrid classification with rationale |
 | `atlas-skill-recommender.js` | Archetype + requirements → skill list + deny list; skill-vetter first; refuses any ClawHavoc-listed skill |
 | `atlas-requirement-walker.js` | Step 4 vet: `present-next`/`apply-trigger-edits`/`check-loop`; refuses to advance past an unresolved row; H6 fuzzy match |
@@ -119,7 +119,7 @@ A URL claiming verification is run through `skill-vetter`; only a vetter pass ma
 
 ## Atomic Write Contract
 
-`atlas-skeleton-generator.js --action=write-disk` writes all files into `$ISOL8_AGENTS_DIR/.atlas-staging-{build_id}/`, verifies count + per-file SHA256, then `mv`s to `$ISOL8_AGENTS_DIR/workspace-atlas-staging-{build_id}/` (atomic on POSIX via `fs.renameSync`); on failure it `rm -rf`s staging and emits a structured error report. Atomicity is at the `mv` — half-atomicity is worse than none, so don't half-implement it. Both dirs sit under the same EFS root on purpose: `rename(2)` across filesystems is `EXDEV`, and `~/.openclaw/agents` is an ephemeral local mount, not EFS.
+`atlas-skeleton-generator.js --action=write-disk` writes all files into `$ISOL8_AGENTS_DIR/.atlas-staging-{build_id}/`, records the count + per-file SHA256 (for the error report — they are not diffed against anything), then `mv`s to `$ISOL8_AGENTS_DIR/workspace-atlas-staging-{build_id}/` (atomic on POSIX via `fs.renameSync`); on failure it `rm -rf`s staging and emits a structured error report. Atomicity is at the `mv` — half-atomicity is worse than none, so don't half-implement it. Both dirs sit under the same EFS root on purpose: `rename(2)` across filesystems is `EXDEV`, and `~/.openclaw/agents` is an ephemeral local mount, not EFS.
 
 ## Universal Skill Core
 

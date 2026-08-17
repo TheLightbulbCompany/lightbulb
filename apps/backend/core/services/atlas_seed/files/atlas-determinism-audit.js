@@ -134,8 +134,20 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
       // (recap runs before build's write-disk); the declared binding is enough
       // here, and verify-write enforces actual file presence at build time.
       if (!workspaceMaterialized) continue;
-      const pipelinePath = path.join(workspaceDir, t.pipeline);
-      if (!fs.existsSync(pipelinePath)) {
+      // Confine the declared path to the staging workspace. triggers[] is
+      // agent-authored, and path.join resolves `..` — an out-of-workspace path
+      // that happens to exist would otherwise SUPPRESS the pipeline_missing
+      // failure and let a deterministic requirement clear S9.5 with no real
+      // in-workspace pipeline behind it. Same rule as the trigger registrar.
+      // resolve() both sides — ISOL8_AGENTS_DIR (or --staging-dir) may be
+      // relative, and a resolved path never matches an unresolved root.
+      const workspaceRoot = path.resolve(workspaceDir);
+      const pipelinePath = path.resolve(workspaceRoot, t.pipeline);
+      const confined =
+        !path.isAbsolute(t.pipeline) &&
+        String(t.pipeline).endsWith('.lobster') &&
+        pipelinePath.startsWith(workspaceRoot + path.sep);
+      if (!confined || !fs.existsSync(pipelinePath)) {
         failures.push({
           req_id: reqId,
           reason: 'pipeline_missing',

@@ -685,55 +685,57 @@ export class ContainerStack extends cdk.Stack {
       "ln -sfn /home/node/.openclaw/.xurl /home/node/.xurl || exit 1",
       // Step C4 — virtual display backing the browser live view.
       //
-      // Gated entirely on DISPLAY, which this task definition does NOT set
-      // yet. That is deliberate: the image can ship xvfb ahead of the headful
-      // config flip and change nothing until DISPLAY arrives, so the two
-      // deploys are independent and either can roll back alone.
+      // Gated entirely on DISPLAY so image and boot stay independently
+      // deployable: an image carrying these binaries is inert until the task
+      // definition sets DISPLAY, and either can roll back alone.
       //
-      // What starts here is Xvfb plus two idle-cheap LISTENERS (websockify,
-      // socat) — never a resident x11vnc. x11vnc is the one process in this
-      // stack with a documented failure mode as a long-lived daemon: reports
-      // of exactly this containerized Xvfb setup show it degrading to high
-      // CPU after ~a day of uptime (docker-selenium #1027), and our paid
-      // containers are always-on boxes already peaking at 45-89% of their
-      // single vCPU (CloudWatch, 2026-08-15/16). So x11vnc runs in -inetd
-      // mode, spawned BY socat per viewer connection: browser connects →
-      // websockify dials 5900 → socat forks x11vnc for that one session, and
-      // it exits when the viewer disconnects. Process lifetime = viewing
-      // session, so the degrades-over-days class is structurally impossible,
-      // a crashed x11vnc self-heals on the next connection, and no start/stop
-      // RPC or exec path into the container is needed — the connection itself
-      // is the trigger.
+      // Xvnc (TigerVNC) is the X server AND the VNC server in one resident
+      // process — it replaced the Xvfb + socat-spawned-x11vnc chain because
+      // panel-driven resize needs the VNC server to honor client
+      // SetDesktopSize, which x11vnc cannot. Resident is safe where resident
+      // x11vnc was not: x11vnc degrades over days because it POLLS a foreign
+      // display for damage (docker-selenium #1027); Xvnc IS the display and
+      // only encodes updates while a viewer is attached — no viewer, no work.
       //
-      // Eager display + connection-triggered capture is not an oversight, and
-      // the asymmetry cannot be removed: OpenClaw decides headless-vs-headful
-      // ONCE, at Chrome launch, from whether DISPLAY resolves —
-      // extensions/browser/src/browser/config.ts
+      // matchbox is the kiosk window manager: without one, Chrome floats at
+      // its default window size over an unpainted (black) X root — the
+      // "watching a movie of a browser" effect. matchbox keeps every window
+      // borderless-fullscreen and re-fits it when the display resizes, which
+      // is what makes noVNC's resizeSession (panel size -> display size)
+      // end-to-end useful. It must connect AFTER the X socket exists — X
+      // clients do not retry — hence the bounded wait-for-socket subshell
+      // (the socket name X1 is pinned to DISPLAY=:1, same as -geometry's
+      // assumptions elsewhere in this block).
+      //
+      // -SecurityTypes None + -localhost: the backend relay is the auth fence
+      // (Clerk-validated upgrade, owner-scoped) and 5900 never leaves
+      // loopback; a VNC password here would have to be minted at boot and
+      // independently derived by the backend for zero added exclusion.
+      //
+      // Eager display + lazy encoding is not an oversight, and the asymmetry
+      // cannot be removed: OpenClaw decides headless-vs-headful ONCE, at
+      // Chrome launch, from whether DISPLAY resolves —
       // resolveManagedBrowserHeadlessMode evaluates its linux-no-DISPLAY
-      // branch BEFORE the configured browser.headless value. A display started
-      // after Chrome is useless to the Chrome already running.
+      // branch BEFORE the configured browser.headless value. A display
+      // started after Chrome is useless to the Chrome already running.
       //
       // Ports: 6080 (websockify, container IP — reachable only from the
-      // backend SG, service-stack.ts ContainerFromServiceIngress) → 5900
-      // (socat, loopback only) → x11vnc stdio. The container is single-tenant
-      // and the only route in is the backend's Clerk-authed proxy.
+      // backend SG + the :8081 ALB path rule) → 5900 (Xvnc, loopback only).
       //
       // Fail loudly rather than at first browser use: DISPLAY set on an image
-      // without Xvfb launches a headful Chrome against no X server, and surfaces
-      // as upstream's "No DISPLAY/X server was detected" at the first browser
-      // tool call — arbitrarily long after boot and nowhere near the cause.
-      '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ] || { echo "[boot] FATAL: DISPLAY is set but Xvfb is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs xvfb."; exit 1; }',
-      '[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac -nolisten tcp & }',
-      // -forever is per-connection here (socat forks a fresh x11vnc each time);
-      // without it x11vnc's inetd mode is one-shot anyway, so it is omitted.
-      // -q keeps RFB's stdout channel clean of log noise (logs go to stderr →
-      // container logs). No -rfbauth: the backend proxy is the auth fence (see
-      // spec §6); a password would have to be minted here and independently
-      // derived by the backend, and 5900 is loopback-only regardless.
-      // No -display flag: x11vnc reads DISPLAY from the environment, which
-      // socat's EXEC child inherits, and Xvfb is already up from the line
-      // above — the display exists (blank) even before Chrome first draws.
-      "[ -z \"$DISPLAY\" ] || { socat TCP-LISTEN:5900,fork,reuseaddr,bind=127.0.0.1 EXEC:'x11vnc -inetd -q' & }",
+      // without Xvnc launches a headful Chrome against no X server, and
+      // surfaces as upstream's "No DISPLAY/X server was detected" at the
+      // first browser tool call — arbitrarily long after boot and nowhere
+      // near the cause.
+      '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ] || { echo "[boot] FATAL: DISPLAY is set but Xvnc is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs tigervnc-standalone-server."; exit 1; }',
+      '[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -geometry 1280x800 -depth 24 -localhost -SecurityTypes None -rfbport 5900 & }',
+      // On socket timeout: loud warning + skip the WM, never a boot failure.
+      // The live view is auxiliary — a dead Xvnc costs the Browser panel and
+      // headful Chrome, but chat/channels/everything else still works, and
+      // killing the whole agent container over it would invert priorities.
+      // (Skipping the exec also beats running matchbox against a dead
+      // display, where it would just exit after an X error.)
+      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
       '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot

@@ -17,6 +17,7 @@ import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
+import { PAPERCLIP_DB_MAX_ACU } from "./database-stack";
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds
@@ -1812,7 +1813,7 @@ def handler(event, _ctx):
   }
 
   // =========================================================================
-  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62, W65)
+  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62, W65, W66)
   // =========================================================================
 
   private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
@@ -1942,6 +1943,63 @@ def handler(event, _ctx):
       evaluationPeriods: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
+    });
+
+    // W66: Aurora pinned at its Serverless v2 ACU ceiling.
+    //
+    // WHY THIS EXISTS. Measured on prod `isol8-prod-paperclip-db` over the
+    // 7 days to 2026-08-17: the cluster's hourly Maximum ACU touched the 4.0
+    // ceiling in 21 of 168 hours, while overall average ACU was 0.53 and peak
+    // DB CPU hit 100%. User-facing impact was nil (ONE
+    // paperclip.upstream.error{kind:unreachable} all week), so the ceiling was
+    // deliberately NOT raised — spending on headroom for a symptom nobody has
+    // felt is the wrong trade. This alarm is the other half of that decision:
+    // don't spend, but don't fly blind either. If the burst pattern ever turns
+    // into a sustained stall, this fires before users notice.
+    //
+    // THRESHOLD SHAPE — READ BEFORE RETUNING. The naive alarm here is
+    // "Maximum >= 3.9 for 5 min", and it is wrong. At 5-minute resolution over
+    // that same week, Maximum >= 3.8 breached in 27 periods across 24 separate
+    // runs — a ~24×/week pager that gets muted inside a month. The ceiling
+    // touches are minute-scale SPIKES, which is exactly what Serverless v2
+    // burst capacity is FOR. Average over the period is the statistic that
+    // tells spikes apart from saturation: it only approaches the ceiling when
+    // the cluster was pinned for essentially the whole period. Same week,
+    // Average >= 3.8 breached exactly ONE 5-minute period and never two in a
+    // row — so 3 consecutive periods (15 min) would have fired ZERO times.
+    // That is the point: silent against today's traffic, loud the moment a
+    // burst becomes a queue.
+    //
+    // 15 min also matches the rest of the Paperclip tier (W60/W61/W62 are all
+    // 5 min × 3) and W60's philosophy — W60 has never fired despite that 100%
+    // CPU peak, because the peak is a single-minute sample inside a period
+    // whose Average is 22.8%. Both alarms deliberately ignore bursts.
+    //
+    // The threshold is derived from PAPERCLIP_DB_MAX_ACU, not hardcoded: 95% of
+    // the ceiling. Raising serverlessV2MaxCapacity in database-stack.ts moves
+    // this alarm with it instead of leaving it pinned to a stale 4.0 — which
+    // would be a permanently-breached alarm the day the ceiling goes up.
+    // Rounded to 1dp so a future ceiling that isn't a clean multiple of 20
+    // (e.g. 6 → 5.699999999999999) doesn't land a float artifact in the
+    // template and the alarm description.
+    const acuCeilingThreshold =
+      Math.round(PAPERCLIP_DB_MAX_ACU * 0.95 * 10) / 10;
+    this.createAlarm({
+      id: "W66",
+      name: "aurora-acu-ceiling",
+      description: `Paperclip Aurora averaged >=${acuCeilingThreshold} of its ${PAPERCLIP_DB_MAX_ACU} ACU ceiling for 15 min — sustained saturation, not a burst. Queries are queueing on capacity; consider raising serverlessV2MaxCapacity. Average (not Maximum) is deliberate: ceiling touches are normal minute-scale bursts, ~24/week as measured.`,
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/RDS",
+        metricName: "ServerlessDatabaseCapacity",
+        statistic: "Average",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { DBClusterIdentifier: dbId },
+      }),
+      threshold: acuCeilingThreshold,
+      evaluationPeriods: 3,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       severity: "warn",
     });
   }

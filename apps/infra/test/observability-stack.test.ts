@@ -381,6 +381,39 @@ describe("ObservabilityStack", () => {
     });
   });
 
+  // W66 watches for the Paperclip Aurora cluster sitting AT its Serverless v2
+  // ACU ceiling. Every property below is load-bearing:
+  //   - Statistic=Average, NOT Maximum. Measured on prod over the 7 days to
+  //     2026-08-17: at 5-min resolution, Maximum >= 3.8 breached 27 periods
+  //     across 24 separate runs (a ~24x/week pager), while Average >= 3.8
+  //     breached exactly ONE period and never two in a row. Maximum cannot
+  //     tell a normal burst from sustained saturation; Average can.
+  //   - EvaluationPeriods=3 at Period=300, i.e. 15 min sustained. Would have
+  //     fired ZERO times that week, and matches W60/W61/W62's window.
+  //   - Threshold 3.8 is 95% of the cluster's ACU ceiling, DERIVED in the stack
+  //     from PAPERCLIP_DB_MAX_ACU rather than hardcoded, so raising
+  //     serverlessV2MaxCapacity moves the alarm instead of leaving it pinned
+  //     to a stale number (which would breach permanently the day it goes up).
+  //     The literal here is therefore only right while the ceiling is 4 — a
+  //     raise fails this test on purpose, so the new value gets a conscious look.
+  //   - DBClusterIdentifier dimension: ServerlessDatabaseCapacity is a
+  //     per-cluster metric; without it the alarm reads nothing.
+  test("W66 alarms on sustained Aurora ACU ceiling saturation", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "isol8-dev-W66-aurora-acu-ceiling",
+      Namespace: "AWS/RDS",
+      MetricName: "ServerlessDatabaseCapacity",
+      Statistic: "Average",
+      Period: 300,
+      Threshold: 3.8,
+      EvaluationPeriods: 3,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      Dimensions: Match.arrayWith([
+        Match.objectLike({ Name: "DBClusterIdentifier" }),
+      ]),
+    });
+  });
+
   // -------------------------------------------------------------------
   // Alarm <-> emitter dimension contract
   // -------------------------------------------------------------------

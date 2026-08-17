@@ -16,6 +16,17 @@ export interface DatabaseStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
 }
 
+/**
+ * Aurora Serverless v2 ceiling for the Paperclip cluster, in ACU.
+ *
+ * Exported because ObservabilityStack's W66 alarm fires on capacity sitting AT
+ * this ceiling and must move with it — `rds.IDatabaseCluster` does not expose
+ * `serverlessV2MaxCapacity`, so a shared constant is the only way to keep the
+ * alarm from silently pinning itself to a stale number when the ceiling is
+ * raised. Change it HERE and both the cluster and the alarm follow.
+ */
+export const PAPERCLIP_DB_MAX_ACU = 4;
+
 const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
   dev: { removalPolicy: cdk.RemovalPolicy.DESTROY },
   prod: { removalPolicy: cdk.RemovalPolicy.RETAIN },
@@ -408,7 +419,7 @@ export class DatabaseStack extends cdk.Stack {
         version: rds.AuroraPostgresEngineVersion.VER_16_4,
       }),
       serverlessV2MinCapacity: 0, // scale-to-zero
-      serverlessV2MaxCapacity: 4,
+      serverlessV2MaxCapacity: PAPERCLIP_DB_MAX_ACU,
       writer: rds.ClusterInstance.serverlessV2("writer"),
       vpc: props.vpc,
       subnetGroup: paperclipDbSubnetGroup,

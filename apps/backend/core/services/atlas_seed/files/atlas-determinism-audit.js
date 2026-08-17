@@ -56,11 +56,12 @@ function _defaultIoAdapter() {
 }
 
 function _defaultStagingDir(buildId) {
-  // Default to 'workspaces' to match the deployed ISOL8_AGENTS_DIR
-  // (build.lobster sets /home/node/.openclaw/workspaces) so a direct invocation
-  // without the env resolves the same root the runtime uses.
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'workspaces');
-  return path.join(agentsRoot, `.atlas-staging-${buildId}`);
+  // Match the deployed ISOL8_AGENTS_DIR (build.lobster and recap-and-cost.lobster
+  // both set the EFS user root, /home/node/.openclaw) so a direct invocation
+  // without the env resolves the same dir atlas-skeleton-generator.js writes.
+  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+  const safe = String(buildId || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+  return path.join(agentsRoot, `.atlas-staging-${safe}`);
 }
 
 function audit({ buildId, stagingDir, _ioAdapter }) {

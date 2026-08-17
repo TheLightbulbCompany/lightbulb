@@ -19,6 +19,12 @@
 //
 // Cron-job naming (per spec Q3): name = `{build_id}-{req_id}-{n}` (1-indexed
 // across the build's triggers list for that req_id); id is a fresh UUID v4.
+//
+// `--agent-id` is the id the BACKEND BRIDGE assigned at register (the
+// Paperclip-minted uuid) — never a name Atlas picked. A cron row keyed to
+// anything else addresses an agent that does not exist and silently never
+// fires. Everything else here (manifest, pipeline files) is read out of the
+// build's staging workspace, which is keyed by the build id.
 
 const fs = require('fs');
 const os = require('os');
@@ -26,17 +32,25 @@ const path = require('path');
 const crypto = require('crypto');
 
 function parseArgs(argv) {
-  const args = { mode: 'register', buildId: null, agentName: null };
+  const args = { mode: 'register', buildId: null, agentId: null };
   for (const a of argv.slice(2)) {
     if (a.startsWith('--mode=')) args.mode = a.split('=')[1];
     else if (a.startsWith('--build-id=')) args.buildId = a.split('=')[1];
-    else if (a.startsWith('--agent-name=')) args.agentName = a.split('=')[1];
+    else if (a.startsWith('--agent-id=')) args.agentId = a.split('=')[1];
   }
   return args;
 }
 
+// EFS user root — same default as atlas-skeleton-generator.js _agentsRoot().
 function _agentsRoot() {
-  return process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
+  return process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+}
+
+// The build's staging workspace. Same derivation as the generator's
+// stagingIdFor(); the two must agree or this reads a dir the build never wrote.
+function _stagingWorkspaceDir(buildId) {
+  const safe = String(buildId || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+  return path.join(_agentsRoot(), `workspace-atlas-staging-${safe}`);
 }
 
 function _cronStorePath() {
@@ -66,11 +80,11 @@ function _writeCronStore(store) {
   fs.renameSync(tmp, p);
 }
 
-function _buildCronJob({ buildId, reqId, n, agentName, schedule, tz, pipeline }) {
+function _buildCronJob({ buildId, reqId, n, agentId, schedule, tz, pipeline }) {
   const name = `${buildId}-${reqId}-${n}`;
   return {
     id: crypto.randomUUID(),
-    agentId: agentName,
+    agentId,
     name,
     enabled: true,
     schedule: { kind: 'cron', expr: schedule, tz: tz || null },
@@ -82,20 +96,20 @@ function _buildCronJob({ buildId, reqId, n, agentName, schedule, tz, pipeline })
   };
 }
 
-function _loadManifest(agentName) {
-  const manifestPath = path.join(_agentsRoot(), agentName, 'build-manifest.json');
+function _loadManifest(buildId) {
+  const manifestPath = path.join(_stagingWorkspaceDir(buildId), 'build-manifest.json');
   if (!fs.existsSync(manifestPath)) return null;
   try { return JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { return null; }
 }
 
-function _workspaceHasFile(agentName, relPath) {
-  const full = path.join(_agentsRoot(), agentName, 'workspace', relPath);
+function _workspaceHasFile(buildId, relPath) {
+  const full = path.join(_stagingWorkspaceDir(buildId), 'workspace', relPath);
   return fs.existsSync(full);
 }
 
-function _updateTriggersJson(agentName, registeredEntries) {
+function _updateTriggersJson(buildId, registeredEntries) {
   // registeredEntries: [{req_id, kind, registered_as}]
-  const triggersPath = path.join(_agentsRoot(), agentName, 'workspace', 'triggers.json');
+  const triggersPath = path.join(_stagingWorkspaceDir(buildId), 'workspace', 'triggers.json');
   if (!fs.existsSync(triggersPath)) return;
   let data;
   try { data = JSON.parse(fs.readFileSync(triggersPath, 'utf8')); } catch (e) { return; }
@@ -112,13 +126,13 @@ function _updateTriggersJson(agentName, registeredEntries) {
   fs.writeFileSync(triggersPath, JSON.stringify(data, null, 2));
 }
 
-function register({ buildId, agentName }) {
-  if (!buildId || !agentName) {
-    return { success: false, error: 'build_id_or_agent_name_missing', registered: [] };
+function register({ buildId, agentId }) {
+  if (!buildId || !agentId) {
+    return { success: false, error: 'build_id_or_agent_id_missing', registered: [] };
   }
-  const manifest = _loadManifest(agentName);
+  const manifest = _loadManifest(buildId);
   if (!manifest) {
-    return { success: false, error: 'manifest_not_found', agent_name: agentName, registered: [] };
+    return { success: false, error: 'manifest_not_found', agent_id: agentId, registered: [] };
   }
   const triggers = Array.isArray(manifest.triggers) ? manifest.triggers : [];
 
@@ -138,12 +152,12 @@ function register({ buildId, agentName }) {
         errors.push({ req_id: reqId, kind: 'cron', error: 'missing schedule or pipeline' });
         break;
       }
-      if (!_workspaceHasFile(agentName, t.pipeline)) {
+      if (!_workspaceHasFile(buildId, t.pipeline)) {
         errors.push({ req_id: reqId, kind: 'cron', error: `pipeline file not in workspace: ${t.pipeline}` });
         break;
       }
       const job = _buildCronJob({
-        buildId, reqId, n, agentName,
+        buildId, reqId, n, agentId,
         schedule: t.schedule, tz: t.tz, pipeline: t.pipeline
       });
       const store = _loadCronStore();
@@ -156,7 +170,7 @@ function register({ buildId, agentName }) {
         errors.push({ req_id: reqId, kind: 'hook', error: 'hook requires .lobster pipeline' });
         break;
       }
-      if (!_workspaceHasFile(agentName, t.pipeline)) {
+      if (!_workspaceHasFile(buildId, t.pipeline)) {
         errors.push({ req_id: reqId, kind: 'hook', error: `pipeline file not in workspace: ${t.pipeline}` });
         break;
       }
@@ -168,7 +182,7 @@ function register({ buildId, agentName }) {
           errors.push({ req_id: reqId, kind: 'agent-call', error: 'agent-call pipeline must be null or .lobster' });
           break;
         }
-        if (!_workspaceHasFile(agentName, t.pipeline)) {
+        if (!_workspaceHasFile(buildId, t.pipeline)) {
           errors.push({ req_id: reqId, kind: 'agent-call', error: `pipeline file not in workspace: ${t.pipeline}` });
           break;
         }
@@ -184,19 +198,19 @@ function register({ buildId, agentName }) {
     return {
       success: false,
       build_id: buildId,
-      agent_name: agentName,
+      agent_id: agentId,
       registered,
       errors,
       message: 'register-triggers aborted at first failure; partially-registered entries preserved for rollback'
     };
   }
 
-  _updateTriggersJson(agentName, registered);
+  _updateTriggersJson(buildId, registered);
 
   return {
     success: true,
     build_id: buildId,
-    agent_name: agentName,
+    agent_id: agentId,
     registered,
     cron_registered_count: registered.filter(r => r.kind === 'cron').length,
     hook_asserted_count: registered.filter(r => r.kind === 'hook').length,
@@ -204,14 +218,14 @@ function register({ buildId, agentName }) {
   };
 }
 
-function deregister({ buildId, agentName }) {
-  if (!buildId || !agentName) {
-    return { success: false, error: 'build_id_or_agent_name_missing' };
+function deregister({ buildId, agentId }) {
+  if (!buildId || !agentId) {
+    return { success: false, error: 'build_id_or_agent_id_missing' };
   }
   const store = _loadCronStore();
   const before = store.jobs.length;
   const namePrefix = `${buildId}-`;
-  store.jobs = store.jobs.filter(j => !(j.agentId === agentName && typeof j.name === 'string' && j.name.startsWith(namePrefix)));
+  store.jobs = store.jobs.filter(j => !(j.agentId === agentId && typeof j.name === 'string' && j.name.startsWith(namePrefix)));
   const removed = before - store.jobs.length;
   if (removed > 0) {
     _writeCronStore(store);
@@ -219,7 +233,7 @@ function deregister({ buildId, agentName }) {
   return {
     success: true,
     build_id: buildId,
-    agent_name: agentName,
+    agent_id: agentId,
     cron_removed: removed
   };
 }
@@ -228,9 +242,9 @@ function main() {
   const args = parseArgs(process.argv);
   let result;
   if (args.mode === 'register') {
-    result = register({ buildId: args.buildId, agentName: args.agentName });
+    result = register({ buildId: args.buildId, agentId: args.agentId });
   } else if (args.mode === 'deregister') {
-    result = deregister({ buildId: args.buildId, agentName: args.agentName });
+    result = deregister({ buildId: args.buildId, agentId: args.agentId });
   } else {
     result = { success: false, error: `unknown mode: ${args.mode}` };
   }

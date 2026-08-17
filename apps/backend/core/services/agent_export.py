@@ -808,16 +808,24 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
     ``build-manifest.json`` sits OUTSIDE ``workspace/`` so it never reaches the
     shipped tarball (it documents the build, not the runtime workspace).
 
+    **The build never supplies an agent id.** ``staging_agent_id`` is a
+    build-scoped staging TOKEN (``atlas-staging-{build_id}``, minted by
+    ``atlas-skeleton-generator.js``) that names a directory, not an agent. Any
+    ``id`` in the staged ``agents.list[0]`` is normalized to that token before
+    slicing, and the real id is assigned downstream by the Paperclip mint. So a
+    build that writes a display-name slug into its own config cannot make that
+    slug an agent id — it can only name its own staging dir contents.
+
     Args:
         owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
             plays in ``export_agent_from_efs``).
-        staging_agent_id: The ``workspace-{id}/`` dir name Atlas built into.
+        staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
 
     Raises:
         InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
         AgentNotFoundError: no staging dir at workspace-{staging_agent_id}.
         BuiltAgentConfigError: the staging dir has no parseable openclaw.json
-            (or its config carries no ``agents.list[].id``).
+            (or its config carries no ``agents.list[]`` entry).
         CredentialLeakError: a credential survived scrubbing in the built slice.
     """
     # Resolve the staging workspace dir on EFS. owner_id is the EFS dir owner,
@@ -843,20 +851,30 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
             f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
             "the build did not write its config (expected workspace/openclaw.json)"
         )
-    agents = [a for a in _agents_list(staging_config) if isinstance(a, dict) and a.get("id")]
+    agents = [a for a in _agents_list(staging_config) if isinstance(a, dict)]
     if not agents:
-        raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[].id")
+        raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[] entry")
     if len(agents) > 1:
         # The skeleton generator always emits a single-agent config. More than
         # one means a malformed build — fail loud rather than silently snapshot
         # agents[0] and discard the rest.
-        ids = [a["id"] for a in agents]
+        names = [a.get("name") or a.get("id") for a in agents]
         raise BuiltAgentConfigError(
-            f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({ids}); "
+            f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({names}); "
             "a built agent must be single-agent"
         )
     agent_entry = agents[0]
-    built_agent_id = agent_entry["id"]
+    # THE BUILD DOES NOT GET TO CHOOSE AN AGENT ID. Whatever the staged entry
+    # carries in ``id`` — a display-name slug, a guessed uuid, nothing at all —
+    # is overwritten here with the staging handle the platform itself resolved,
+    # and the real id is assigned later (the Paperclip uuid pinned by
+    # ``deploy_from_artifact``, which sets ``agent_entry["id"] = new_agent_id``).
+    # The generator emits this same token, so the happy path is a no-op; the
+    # normalization is what makes an improvised id inert rather than adopted.
+    # A ``product-analytics-scorecard``-shaped slug reaching production as a live
+    # agent id is exactly the incident this closes.
+    built_agent_id = staging_agent_id
+    agent_entry["id"] = built_agent_id
 
     workspace_skill_names = _enumerate_workspace_skill_names(tar_root)
     try:
@@ -890,10 +908,14 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
 
     safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
 
-    # Name comes from the built agent's own entry (the skeleton-generator sets
-    # agents.list[0].id = the display name); fall back through identity → id.
+    # Display name comes from the built agent's own entry — ``name``, then the
+    # identity block. Deliberately NOT falling back to the entry's id: that is
+    # the build's staging token now, and "atlas-staging-build_042" is a worse
+    # display name than none. The register router passes the caller's ``name``
+    # to the Paperclip mint anyway, and ``deploy_from_artifact`` only reads this
+    # manifest name as its third-choice fallback.
     identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
-    name = agent_entry.get("name") or identity.get("name") or built_agent_id
+    name = agent_entry.get("name") or identity.get("name") or ""
     # Entry-level ``description`` is the only schema-legal home for this text
     # (IdentitySchema is .strict() with name/theme/emoji/avatar only, so the
     # identity.* fallbacks can only ever match in an unvalidated staging file).
@@ -904,6 +926,8 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
         "description": description,
         "format": "openclaw",
         "exported_at": int(time.time()),
+        # The staging handle, not an agent id — the real one is minted after this
+        # snapshot and pinned by ``deploy_from_artifact``.
         "agent_id": built_agent_id,
         "file_count": len(contents),
         "safety_flags": safety_flags,

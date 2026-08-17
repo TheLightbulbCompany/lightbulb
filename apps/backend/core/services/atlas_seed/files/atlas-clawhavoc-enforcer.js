@@ -79,7 +79,14 @@ function main() {
   let bundlePath;
   if (args.mode === 'build') {
     if (!args.buildId) { console.error('--build-id required for build mode'); process.exit(2); }
-    bundlePath = process.env.HOME + `/.openclaw/agents/.atlas-staging-${args.buildId}`;
+    // Same staging dir atlas-skeleton-generator.js writeDisk materializes into:
+    // the EFS user root (ISOL8_AGENTS_DIR = /home/node/.openclaw), NOT
+    // ~/.openclaw/agents (an ephemeral local mount) and NOT ~/.openclaw/workspaces
+    // (deleted by `openclaw doctor --fix` every boot). Build-id sanitization
+    // matches the generator's `_safeName`.
+    const agentsRoot = process.env.ISOL8_AGENTS_DIR || `${process.env.HOME}/.openclaw`;
+    const safe = String(args.buildId).replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+    bundlePath = `${agentsRoot}/.atlas-staging-${safe}`;
   } else if (args.mode === 'publish') {
     if (!args.agentName) { console.error('--agent-name required for publish mode'); process.exit(2); }
     bundlePath = process.env.HOME + `/.openclaw/agents/${args.agentName}`;

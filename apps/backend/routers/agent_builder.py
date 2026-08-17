@@ -51,8 +51,13 @@ class RegisterBuiltAgentRequest(BaseModel):
     # new agent's files into. The backend snapshots this dir. min_length=3 to
     # match the path-validation regex (_AGENT_ID_RE) inside _resolve_agent_dir,
     # so a short-but-valid id reaches that gate instead of a confusing 422.
+    #
+    # This is a build-scoped STAGING TOKEN (``atlas-staging-{build_id}``), not a
+    # proposed agent id: it selects a directory and nothing else. The agent's id
+    # is minted here (Paperclip) and returned in the response — the caller has no
+    # way to propose one, by design.
     staging_agent_id: str = Field(..., min_length=3, max_length=64)
-    # Display name for the new agent.
+    # Display name for the new agent. The ONE identity field the builder chooses.
     name: str = Field(..., min_length=1, max_length=120)
     # Optional org placement (Paperclip agent id the new hire reports to).
     # None defaults to the owner's apex CEO (Friday) so built agents never

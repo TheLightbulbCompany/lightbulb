@@ -23,21 +23,24 @@ import pytest  # noqa: E402
 from core.services import agent_export  # noqa: E402
 
 
-def _staging_openclaw_config() -> dict:
+def _staging_openclaw_config(agent_id: str = "atlas-staging-build-001") -> dict:
     """A skeleton-generator-shaped openclaw.json for the built agent.
 
-    Mirrors atlas-skeleton-generator.js ``generateOpenclawJson``: the agent's
-    id IS its display name, skills live on the agent entry + skills.entries,
-    and lobster/llm-task plugins are enabled.
+    Mirrors atlas-skeleton-generator.js ``generateOpenclawJson``: the entry's
+    ``id`` is the build's STAGING TOKEN (never the display name — Atlas names
+    agents, the platform assigns ids), skills live on the agent entry +
+    skills.entries, and lobster/llm-task plugins are enabled.
+
+    ``agent_id`` is parameterized so tests can plant an Atlas-minted id and
+    prove the export refuses to adopt it.
     """
     return {
         "agents": {
-            "defaults": {"workspace": "~/.openclaw/agents/lex-legal/workspace"},
+            "defaults": {},
             "list": [
                 {
-                    "id": "lex-legal",
+                    "id": agent_id,
                     "name": "lex-legal",
-                    "workspace": "~/.openclaw/agents/lex-legal/workspace",
                     "model": "claude-haiku-4-5",
                     # Old bundles carried this non-schema key; the deploy-side
                     # sanitizer strips it, the export must tolerate it.
@@ -134,8 +137,8 @@ def test_staging_export_slice_from_own_config(fake_staging):
     owner_id, staging_agent_id, _ = fake_staging
     pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
-    # Manifest keys off the built agent's id (= its display name).
-    assert pkg.manifest["agent_id"] == "lex-legal"
+    # Manifest keys off the STAGING TOKEN, never an id the build chose.
+    assert pkg.manifest["agent_id"] == staging_agent_id
     assert pkg.manifest["name"] == "lex-legal"
     assert "safety_flags" in pkg.manifest
     assert pkg.manifest["file_count"] == len(pkg.tarball_contents)
@@ -196,7 +199,61 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
     assert "./openclaw.json" in names, names
     assert "./AGENTS.md" in names, names
     assert not any("build-manifest.json" in n for n in names), names
-    assert pkg.manifest["agent_id"] == "lex-legal"
+    assert pkg.manifest["agent_id"] == staging_agent_id
+
+
+def test_staging_export_never_adopts_a_build_chosen_agent_id(tmp_path: Path):
+    """A staged config carrying an id the BUILD picked (the display-name slug
+    that put ``product-analytics-scorecard`` into prod) is not adopted: the
+    export normalizes it to the staging handle the platform resolved, and the
+    slice strips it entirely so the deploy mints its own.
+    """
+    owner_id = "org_owner_slug"
+    staging_agent_id = "atlas-staging-build-042"
+    user_root = tmp_path / "users" / owner_id
+    workspace_subdir = user_root / f"workspace-{staging_agent_id}" / "workspace"
+    workspace_subdir.mkdir(parents=True)
+    (workspace_subdir / "openclaw.json").write_text(
+        json.dumps(_staging_openclaw_config(agent_id="product-analytics-scorecard")), encoding="utf-8"
+    )
+    (workspace_subdir / "AGENTS.md").write_text("# slug id\n", encoding="utf-8")
+
+    from core.containers import workspace as workspace_module
+
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+
+    assert pkg.manifest["agent_id"] == staging_agent_id
+    assert "product-analytics-scorecard" not in json.dumps(pkg.manifest)
+    assert "id" not in pkg.openclaw_slice["agent"]
+    assert "product-analytics-scorecard" not in json.dumps(pkg.openclaw_slice)
+    # The NAME the build chose survives — that is the one identity field it owns.
+    assert pkg.manifest["name"] == "lex-legal"
+
+
+def test_staging_export_accepts_a_bundle_with_no_agent_id(tmp_path: Path):
+    """The ideal bundle carries no id at all. The schema requires the field so
+    the generator emits the staging token, but the export must not depend on it:
+    the platform is the assigner either way."""
+    owner_id = "org_owner_noid"
+    staging_agent_id = "atlas-staging-build-077"
+    user_root = tmp_path / "users" / owner_id
+    workspace_subdir = user_root / f"workspace-{staging_agent_id}" / "workspace"
+    workspace_subdir.mkdir(parents=True)
+    cfg = _staging_openclaw_config()
+    cfg["agents"]["list"][0].pop("id")
+    (workspace_subdir / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
+    (workspace_subdir / "AGENTS.md").write_text("# no id\n", encoding="utf-8")
+
+    from core.containers import workspace as workspace_module
+
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+
+    assert pkg.manifest["agent_id"] == staging_agent_id
+    assert pkg.openclaw_slice["agent"].get("name") == "lex-legal"
 
 
 def test_staging_export_missing_config_raises(tmp_path: Path):

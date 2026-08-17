@@ -12,7 +12,12 @@ name: build
 #    scan flags + file list + bundle SHA256 in the prompt and approves the whole write.
 #  - The agent's files are assembled from the per-build matrix the agent loop enriched
 #    (atlas/requirement-matrix[build_id]) + the intake + brief, then materialized to
-#    `workspaces/{agentName}/` (ISOL8_AGENTS_DIR) where files land under `workspace/`.
+#    `workspace-atlas-staging-{build_id}/` under the EFS user root (ISOL8_AGENTS_DIR =
+#    /home/node/.openclaw) where files land under `workspace/`.
+#  - ATLAS NEVER PICKS AN AGENT ID. Every path here is keyed by the build's staging
+#    token; the id is assigned by the bridge (Paperclip mint) and comes back in the
+#    response. The staging root is deliberately the EFS user root and NOT
+#    `~/.openclaw/workspaces`, which `openclaw doctor --fix` deletes on every boot.
 #  - CREATE is a curl to the backend bridge (register-built-agent), which snapshots the
 #    staging workspace, mints a Paperclip agent, and deploys it live. ${OPENCLAW_HOOK_TOKEN}
 #    is the per-container webhook token (a real process env var). The bridge URL on the
@@ -32,11 +37,15 @@ steps:
   #            S10 gate below rather than a separate agentgate).
   - id: clawhavoc-scan
     command: node atlas-clawhavoc-enforcer.js --mode=build --build-id="$LOBSTER_ARG_BUILD_ID"
+    env:
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.2 — Sensitive-data sniff (WARN; surfaced in the gate prompt, audit-logged).
   - id: sensitive-sniff
     command: node atlas-sensitive-sniff.js --mode=build --build-id="$LOBSTER_ARG_BUILD_ID"
+    env:
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.3 — S10 file-write gate (sync hard block). Presents the scan flags, the file
@@ -91,28 +100,31 @@ steps:
     on_error: continue
 
   # Step 6.7 — Atomic file generation via staging-dir-then-mv. ISOL8_AGENTS_DIR points at
-  #            the EFS workspaces root, so the built agent lands at
-  #            `workspaces/{agentName}/` with files under `workspace/` — exactly where the
-  #            bridge's export_built_agent_from_staging reads and tars.
+  #            the EFS user root, so the build lands at
+  #            `workspace-atlas-staging-{build_id}/` with files under `workspace/` —
+  #            exactly where the bridge's export_built_agent_from_staging reads and tars
+  #            (it resolves `{user root}/workspace-{staging_agent_id}`). No --agent-name:
+  #            the destination is keyed by the BUILD, never by the name Atlas chose.
   - id: file-generate
     condition: $file-write-gate.approved
-    command: node atlas-skeleton-generator.js --action=write-disk --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
+    command: node atlas-skeleton-generator.js --action=write-disk --build-id="$LOBSTER_ARG_BUILD_ID"
     stdin: $assemble-draft.stdout
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw/workspaces
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.8 — Verify post-write file count + per-file SHA256 against staged hashes.
   - id: verify-write
     condition: $file-write-gate.approved
-    command: node atlas-skeleton-generator.js --action=verify-write --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
+    command: node atlas-skeleton-generator.js --action=verify-write --build-id="$LOBSTER_ARG_BUILD_ID"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw/workspaces
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.9 — Register the built agent via the backend bridge (the gateway-free CREATE).
-  #            The bridge snapshots workspaces/{staging_agent_id}/, mints a Paperclip agent,
-  #            and deploys it into the container live. Returns {agent_id, registered:true}.
+  #            The bridge snapshots workspace-{staging_agent_id}/, mints a Paperclip agent,
+  #            and deploys it into the container live. Returns {agent_id, registered:true} —
+  #            THIS is where the agent's id comes from. Nothing before this step has one.
   - id: register-built-agent
     condition: $verify-write.json.success == true
     # Build the JSON body with node (JSON.stringify) and pipe it to curl --data @-,
@@ -126,18 +138,22 @@ steps:
       -H "Content-Type: application/json"
       --data @-
     env:
-      # CONTRACT: the bridge snapshots workspaces/{staging_agent_id}/, so STAGING_ID
-      # must be the on-disk workspace dir name. verify-write returns agent_name =
-      # agents.list[0].id, and write-disk renames the staging dir to exactly that id
-      # (atlas-skeleton-generator.js writeDisk) — so .agent_name IS the dir name. If
-      # writeDisk's naming ever diverges from agents.list[0].id, update both together.
-      STAGING_ID: $verify-write.json.agent_name
+      # CONTRACT: the bridge resolves `{EFS user root}/workspace-{staging_agent_id}`,
+      # so STAGING_ID must be the staging token write-disk promoted to. Both sides
+      # derive it from the build id alone (atlas-skeleton-generator.js stagingIdFor),
+      # so there is no name in the loop to drift.
+      STAGING_ID: $verify-write.json.staging_agent_id
     on_error: continue
 
   # Step 6.10 — Register triggers (cron rows + hook/agent-call asserts) once registered.
+  #            --agent-id is the id the BRIDGE assigned; cron rows keyed to anything
+  #            else (the display name, say) address an agent that does not exist and
+  #            never fire.
   - id: register-triggers
     condition: $register-built-agent.json.registered == true
-    command: node atlas-trigger-registrar.js --mode=register --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
+    command: node atlas-trigger-registrar.js --mode=register --build-id="$LOBSTER_ARG_BUILD_ID" --agent-id="$register-built-agent.json.agent_id"
+    env:
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.12 — Central build status (always runs; defaults all inputs so it never refs a
@@ -178,7 +194,9 @@ steps:
   #            success field, which a crash leaves null (so == false would miss it).
   - id: deregister-triggers
     condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == false"
-    command: node atlas-trigger-registrar.js --mode=deregister --build-id="$LOBSTER_ARG_BUILD_ID" --agent-name="$LOBSTER_ARG_AGENT_NAME"
+    command: node atlas-trigger-registrar.js --mode=deregister --build-id="$LOBSTER_ARG_BUILD_ID" --agent-id="$build-status.json.agent_id"
+    env:
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.13a — Verify-failure notification. When the gate WAS approved (write was

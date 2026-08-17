@@ -24,7 +24,12 @@ env:
 jobs:
   lint-and-build:
     name: Lint & Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
+    # This job had no cap at all, which on a hosted runner only meant a wasted
+    # 6-hour bill. On the shared self-hosted box it means a wedged `next build`
+    # camps a runner slot that every other workflow is queueing for, so the cap
+    # is now load-bearing. Lint + tsc + build is a ~10m job; 30m bounds a hang.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,10 +37,11 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          # Per-job install dir. Kept from the self-hosted era, where jobs
-          # shared one runner home and raced the default ~/setup-pnpm
-          # (ENOTEMPTY on rmdir) when this and mobile-ci fired on the same
-          # PR. Harmless on hosted runners; left in place, not load-bearing.
+          # Per-job install dir, and load-bearing again now that this job is
+          # back on the self-hosted box: several runner instances share one
+          # home there, so two concurrent jobs installing pnpm into the
+          # default ~/setup-pnpm race each other (ENOTEMPTY on rmdir).
+          # `runner.temp` is per-runner-instance, so this keeps them apart.
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js

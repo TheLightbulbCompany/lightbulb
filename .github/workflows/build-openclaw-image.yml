@@ -49,13 +49,38 @@ jobs:
   # nothing for weeks, undetected.
   boot-chain-smoke:
     name: local-sqlite boot chain smoke tests
-    runs-on: ubuntu-latest
+    # `needs: boot-chain-smoke` below makes this the gate for the whole image
+    # pipeline, so when hosted runners went unavailable this 7-second job took
+    # the image build down with it. It follows CI_RUNNER; the build itself
+    # does not (see below).
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      # The boot script under test shells out to `sqlite3` and `jq`, and the
+      # harness drives it through `sqlite3` directly. Both are preinstalled on
+      # GitHub's Ubuntu image and neither is guaranteed on a self-hosted box,
+      # so the suite would fail on a missing binary rather than on a real
+      # regression. `command -v` makes this a no-op wherever they already
+      # exist — including every hosted run and every box run after the first.
+      - name: Ensure sqlite3 and jq
+        run: |
+          set -eu
+          missing=""
+          command -v sqlite3 >/dev/null 2>&1 || missing="$missing sqlite3"
+          command -v jq      >/dev/null 2>&1 || missing="$missing jq"
+          if [ -n "$missing" ]; then
+            echo "installing:$missing"
+            sudo apt-get update -qq
+            # shellcheck disable=SC2086
+            sudo apt-get install -y -qq $missing
+          fi
+          sqlite3 --version
+          jq --version
+
       - name: Run smoke suite
         run: |
           sh apps/infra/openclaw/local-sqlite/smoke-test.sh \
@@ -66,12 +91,14 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
-    # Back on the box. Every build on a standard hosted runner since the
-    # `doctor` compile-cache bake was restored OOM-killed the 7 GB VM — the
-    # annotation reads "the hosted runner lost communication with the server",
-    # with no failed step and no uploaded logs. The box has the memory, the
-    # disk, and a warm layer cache. The rest of Linux CI stays on hosted
-    # runners (#1706); this job is the memory-hungry outlier.
+    # Pinned to the box, deliberately NOT `vars.CI_RUNNER`. Every build on a
+    # standard hosted runner since the `doctor` compile-cache bake was restored
+    # OOM-killed the 7 GB VM — the annotation reads "the hosted runner lost
+    # communication with the server", with no failed step and no uploaded logs.
+    # The box has the memory, the disk, and a warm layer cache. CI_RUNNER is a
+    # two-way switch and this job has only one working value, so it must not
+    # follow the switch: flipping CI_RUNNER back to hosted to escape a box
+    # outage would silently reintroduce the OOM here.
     runs-on: [self-hosted, isol8-wsl]
     # A hang bound, not a runtime budget: the box finishes in ~3m warm, while
     # a cold from-scratch rebuild of this ~7.8 GB image (bake included) ran

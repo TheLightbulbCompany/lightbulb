@@ -60,7 +60,7 @@ beforeEach(() => {
 async function openAddDialogAsWebhook() {
   const user = userEvent.setup();
   render(<RoutineDetailPanel routineId="r1" />);
-  await user.click(screen.getByRole("button", { name: /add schedule/i }));
+  await user.click(screen.getByRole("button", { name: /add trigger/i }));
   const dialog = await screen.findByRole("dialog");
   await user.selectOptions(within(dialog).getByLabelText(/trigger type/i), "webhook");
   return { user, dialog };

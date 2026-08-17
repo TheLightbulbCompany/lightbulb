@@ -295,6 +295,36 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
     chown -R node:node /home/node/.cache/ms-playwright && \
     ln -sf /home/node/.cache/ms-playwright/chromium-*/chrome-linux64/chrome /usr/bin/chromium
 
+# ---- Layer 9b: real Google Chrome for the browser tool (audience #2) ----
+# Chrome for Testing self-labels with a "only for automated testing —
+# Download Chrome" banner on every fresh profile, which the Browser live-view
+# panel puts in front of the OWNER on every session (the profile lives on
+# /tmp and is wiped each task restart, so the banner never goes away). Real
+# Chrome has no such banner.
+#
+# This ADDS Chrome for audience #2 (OpenClaw's browser tool, launched via
+# executablePath in the generated openclaw.json); it must never REPLACE the
+# Playwright install above — audience #1 (Playwright-based MCPs) hardcodes
+# the ms-playwright cache path and ignores system Chrome by design. Both
+# browsers coexist; the GUI libs are shared (--with-deps above installed
+# them system-wide).
+#
+# Inert until the config generator's executablePath flips to
+# /usr/bin/google-chrome (config.py): the browser tool's resolver would
+# prefer google-chrome over chromium on its own, but the explicit pin wins,
+# so shipping this image changes nothing until the config PR lands — same
+# image-first decoupling as every other layer here.
+#
+# dl.google.com serves only the CURRENT stable deb (no version pinning
+# available); the image tag pins what a rebuild picked up, same posture as
+# the apt-installed packages above. amd64-only, matching the AWS CLI layer.
+RUN curl -sSL -o /tmp/google-chrome.deb \
+      "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
+    apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends /tmp/google-chrome.deb && \
+    rm -f /tmp/google-chrome.deb && rm -rf /var/lib/apt/lists/* && \
+    test -x /usr/bin/google-chrome
+
 # ---- Layer 10: externalized channel plugins (Slack, Discord) ----
 # Upstream OpenClaw externalized these channel plugins out of the core image
 # (@openclaw/slack and @openclaw/discord are pruned from the published ghcr

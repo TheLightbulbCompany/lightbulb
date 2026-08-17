@@ -780,16 +780,29 @@ async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None)
     client = _bedrock_client()
     table = _aip_owners_table()
     removed: list[str] = []
+    failure: Exception | None = None
     for arn in arns_to_delete:
         try:
-            await run_in_thread(client.delete_inference_profile, inferenceProfileIdentifier=arn)
-        except ClientError as e:
-            # See revoke_owner_bedrock for why a single `except ClientError`
-            # covers both the real typed exception and the test's generic one.
-            if e.response["Error"]["Code"] != "ResourceNotFoundException":
-                raise
-        await run_in_thread(table.delete_item, Key={"aip_arn": arn})
-        removed.append(arn)
+            try:
+                await run_in_thread(client.delete_inference_profile, inferenceProfileIdentifier=arn)
+            except ClientError as e:
+                # See revoke_owner_bedrock for why a single `except ClientError`
+                # covers both the real typed exception and the test's generic one.
+                if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                    raise
+            await run_in_thread(table.delete_item, Key={"aip_arn": arn})
+            removed.append(arn)
+        except Exception as e:  # noqa: BLE001 — re-raised below, after every arn is tried
+            # EVERY arn is attempted before giving up, mirroring
+            # delete_gate_token_rows. By the time teardown calls this the
+            # containers row that named these is already gone, so aborting the
+            # loop on a transient throttle at arn #2 strands arn #3 forever —
+            # nothing can ever name it again. The reverse row is deliberately
+            # LEFT for a failed arn: it is then the only surviving record that
+            # the profile is still out there.
+            failure = failure or e
+    if failure is not None:
+        raise failure
     return removed
 
 
@@ -842,6 +855,113 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
     except ClientError as e:
         if e.response["Error"]["Code"] != "NoSuchEntity":
             raise
+
+
+async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) -> str:
+    """SHARED CONTRACT (every teardown path): destroy the per-owner Bedrock
+    footprint that the containers row was the only handle on.
+
+    Called from ``ecs_manager.delete_user_service`` — the seam EVERY teardown
+    crosses (entitlement cancellation, admin account-wipe, ``DELETE
+    /debug/provision``, ``DELETE /debug/user-data``) — so no path can forget it
+    and none needs its own copy. It runs immediately after the containers row is
+    deleted, against that row's own ALL_OLD image, because that image is the
+    last thing in the system that names any of this:
+
+    * **gate-token rows** — the tokens table has NO owner index, so the row's
+      ``bedrock_gate_token_hash`` plus its superseded list is the only handle
+      that exists. Left behind they are unreachable, un-denyable and
+      un-expirable forever: a captured bearer hash would stay valid against the
+      gate with no revocation path (four were stranded exactly this way in
+      prod, all at ``denied=False``).
+    * **AIPs** — named only by ``bedrock_aip_arns``.
+    * **the IAM role** — the one resource with a deterministic name
+      (``isol8-{env}-owner-bedrock-{owner_id}``), so it is reaped
+      UNCONDITIONALLY rather than gated on ``bedrock_role_arn`` being present
+      on the row. Gating on that field is precisely what let legacy rows skip
+      it silently.
+
+    Dev, staging and prod share ONE AWS account, so a leak on any path spends
+    the same account-wide IAM role quota (1,000) this exists to protect.
+
+    Best-effort and idempotent per resource, but every failure is collected and
+    the first re-raised, so an audited caller reports a partial reap rather
+    than claiming success.
+    """
+    from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
+    from core.observability.metrics import put_metric
+
+    row = row_image if isinstance(row_image, dict) else {}
+    aip_map = row.get("bedrock_aip_arns")
+    aip_arns = list(aip_map.values()) if isinstance(aip_map, dict) else []
+    gate_hashes = owner_gate_token_hashes(row)
+
+    # A ChatGPT-OAuth or BYOK owner never had any of this. IAM write TPS is low,
+    # and four no-op calls for every cancelling owner is enough to throttle IAM
+    # account-wide during a bulk-churn event and stall legitimate provisioning.
+    # No evidence on the row means nothing was ever minted: skip without
+    # touching AWS at all.
+    if not (aip_arns or gate_hashes or row.get("bedrock_role_arn")):
+        return "skipped (no Bedrock footprint on the row)"
+
+    # FENCE — do not reap resources that belong to a LIVE container.
+    #
+    # Every identifier here is deterministic or re-minted under the same owner,
+    # so a resubscribe's provision re-creates the very things this reap would
+    # delete. A cancellation webhook redelivered after that resubscribe (both
+    # Stripe and Apple retry on 5xx) would otherwise strip a paying owner's
+    # running container of its Bedrock access — and the AIPs have NO self-heal,
+    # because the provision that re-created them already returned success, so
+    # nothing retries and the owner's chat just hard-fails on Bedrock.
+    #
+    # The containers row was deleted moments ago. If one exists again, a
+    # provision has run since and these are ITS resources now, not the dead
+    # generation's. Strongly consistent because a stale empty read here is
+    # exactly the wrong answer.
+    live = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if live is not None:
+        put_metric("bedrock.reap", dimensions={"outcome": "fenced"})
+        logger.warning(
+            "bedrock reap FENCED for owner %s: a containers row exists again (generation=%s) — "
+            "a provision raced this teardown, so its Bedrock resources are left alone",
+            owner_id,
+            live.get("provision_generation"),
+        )
+        return "skipped (fenced: reprovisioned mid-teardown)"
+
+    failure: Exception | None = None
+    done: list[str] = []
+
+    # Credential first: it is the security-critical one, and the only one whose
+    # residue is a still-valid bearer token rather than a quota row.
+    if gate_hashes:
+        try:
+            done.append(f"{await delete_gate_token_rows(gate_hashes)} gate-token row(s)")
+        except Exception as e:  # noqa: BLE001 — re-raised below
+            failure = failure or e
+            put_metric("bedrock.reap", dimensions={"outcome": "failed", "resource": "gate_tokens"})
+            logger.exception("bedrock reap: gate-token rows failed for owner %s", owner_id)
+
+    if aip_arns:
+        try:
+            done.append(f"{len(await delete_owner_aips(owner_id, aip_arns=aip_arns))} AIP(s)")
+        except Exception as e:  # noqa: BLE001 — re-raised below
+            failure = failure or e
+            put_metric("bedrock.reap", dimensions={"outcome": "failed", "resource": "aips"})
+            logger.exception("bedrock reap: AIPs failed for owner %s", owner_id)
+
+    try:
+        await delete_owner_bedrock_role(owner_id)
+        done.append("IAM role")
+    except Exception as e:  # noqa: BLE001 — re-raised below
+        failure = failure or e
+        put_metric("bedrock.reap", dimensions={"outcome": "failed", "resource": "role"})
+        logger.exception("bedrock reap: IAM role failed for owner %s", owner_id)
+
+    if failure is not None:
+        raise failure
+    put_metric("bedrock.reap", dimensions={"outcome": "ok"})
+    return "reaped " + ", ".join(done)
 
 
 async def restore_owner_bedrock(owner_id: str) -> None:

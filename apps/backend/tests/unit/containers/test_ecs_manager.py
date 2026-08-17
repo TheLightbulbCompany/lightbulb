@@ -1279,6 +1279,47 @@ class TestDeleteUserService:
             mock_repo.delete.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    async def test_the_bedrock_footprint_is_reaped_here_off_the_all_old_image(self, manager, mock_ecs_client):
+        """THE SEAM. Every teardown in the system reaches AWS through this
+        function — entitlement cancellation, the admin account-wipe, DELETE
+        /debug/provision, DELETE /debug/user-data. Three of those four leaked a
+        per-owner IAM role and its inference profiles until the reap moved here,
+        into the same account-wide 1,000-role quota (dev, staging and prod share
+        one AWS account).
+
+        It has to be THIS function because the row it deletes is the only handle
+        on those resources, and it must be the row's own ALL_OLD image rather
+        than the read above it — that read is eventually consistent."""
+        row_at_death = _make_container_dict(status="running")
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.billing.bedrock_aip.reap_owner_bedrock_resources", new_callable=AsyncMock) as reap,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)  # stale read
+            mock_repo.delete = AsyncMock(return_value=row_at_death)
+            reap.return_value = "reaped"
+
+            await manager.delete_user_service("user_test_123")
+
+            reap.assert_awaited_once_with("user_test_123", row_at_death)
+
+    @pytest.mark.asyncio
+    async def test_a_partial_reap_fails_the_teardown_rather_than_passing_silently(self, manager, mock_ecs_client):
+        """Residue that nothing can name again is worse than a visible failure:
+        the caller retries (every step is idempotent), and the audited wipe
+        reports a partial teardown instead of claiming success."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.billing.bedrock_aip.reap_owner_bedrock_resources", new_callable=AsyncMock) as reap,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.delete = AsyncMock(return_value=_make_container_dict(status="running"))
+            reap.side_effect = RuntimeError("IAM throttled")
+
+            with pytest.raises(RuntimeError):
+                await manager.delete_user_service("user_test_123")
+
+    @pytest.mark.asyncio
     async def test_delete_no_db_record(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service with no repo record still deletes ECS service —
         and still issues the row delete.

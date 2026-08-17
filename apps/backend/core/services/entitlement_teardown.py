@@ -85,53 +85,39 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     except Exception:
         logger.exception("entitlement.teardown owner-facts refresh failed for owner %s", owner_id)
 
-    row_at_death: dict[str, Any] | None = None
-    ecs_deleted = False
+    # RE-CHECK, immediately before the destructive call. The entitlement read at
+    # the top of this function is already several awaits old by now — an owner
+    # facts write, and whatever the caller did before us. Two ways that gap
+    # bites, both of which end with a PAYING owner's container destroyed:
+    #
+    #   * they resubscribe while this is in flight, or
+    #   * a cancellation webhook is redelivered after they resubscribed (Stripe
+    #     and Apple both retry on 5xx).
+    #
+    # Destroying the container self-heals — the next /container/status poll
+    # reprovisions. The Bedrock resources `delete_user_service` reaps behind it
+    # do NOT: the resubscribe's provision has already returned success, so
+    # nothing retries, and the owner's chat just hard-fails on Bedrock. Cheap
+    # strongly-consistent read against that.
+    if still_entitled(await billing_repo.get_by_owner_id(owner_id, consistent_read=True)):
+        logger.warning(
+            "entitlement.teardown ABORTED for owner %s trigger=%s — became entitled again "
+            "mid-teardown (resubscribe or redelivered webhook); leaving the runtime alone",
+            owner_id,
+            trigger,
+        )
+        put_metric("entitlement.teardown", dimensions={"trigger": trigger, "outcome": "aborted_raced"})
+        return False
+
     try:
         from core.containers import get_ecs_manager
 
-        row_at_death = await get_ecs_manager().delete_user_service(owner_id)
-        ecs_deleted = True
+        # Reaps the owner's Bedrock footprint (gate-token rows, AIPs, IAM role)
+        # internally — that is the seam every teardown path shares, so there is
+        # nothing to duplicate here. See reap_owner_bedrock_resources.
+        await get_ecs_manager().delete_user_service(owner_id)
     except Exception:
         logger.exception("entitlement.teardown container delete failed for owner %s", owner_id)
-
-    # The per-owner Bedrock AIPs and IAM role are account-wide-quota'd AWS
-    # resources (IAM roles cap at 1,000), and `delete_user_service` destroys the
-    # containers row that is the only handle on the AIP arns — so if they are not
-    # reaped HERE, off that row's own ALL_OLD image, nothing can ever reach them
-    # again. Until now only the admin account-wipe deleted them, so every
-    # cancellation leaked a role plus its inference profiles. Both re-mint
-    # idempotently (`ensure_owner_bedrock_role`) if the owner comes back.
-    #
-    # Gated on the ECS delete having SUCCEEDED: if the service survived, its task
-    # may still be running under this role, and pulling the role out from under a
-    # live container turns a retryable teardown into a confusing broken one. The
-    # next trigger (or the idle reaper) re-runs this.
-    if ecs_deleted:
-        from core.billing.bedrock_aip import delete_owner_aips, delete_owner_bedrock_role
-
-        # Anything that is not the documented `dict | None` is treated as "no
-        # arns to reap" rather than allowed to raise. This runs from webhook
-        # handlers where an exception means a 5xx and a provider retry, and
-        # this extraction sits outside the per-call try blocks below — so an
-        # unexpected row shape here would take the whole teardown down with it.
-        row = row_at_death if isinstance(row_at_death, dict) else {}
-        aip_arns = list((row.get("bedrock_aip_arns") or {}).values())
-        if aip_arns:
-            try:
-                await delete_owner_aips(owner_id, aip_arns=aip_arns)
-            except Exception:
-                logger.exception("entitlement.teardown Bedrock AIP delete failed for owner %s", owner_id)
-
-        # Unconditional and un-gated on the row: the role name derives from
-        # owner_id alone, and the delete is idempotent (every step swallows
-        # NoSuchEntity). Gating on a `bedrock_role_arn` field the way the
-        # account-wipe does is exactly what makes a role unreachable once its
-        # row is gone.
-        try:
-            await delete_owner_bedrock_role(owner_id)
-        except Exception:
-            logger.exception("entitlement.teardown Bedrock role delete failed for owner %s", owner_id)
 
     # Disable Paperclip with a 30-day grace window — the cleanup cron purges the
     # Paperclip-side artifacts after the grace elapses. Only THIS owner is

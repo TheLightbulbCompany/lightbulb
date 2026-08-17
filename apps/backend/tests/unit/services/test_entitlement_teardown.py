@@ -114,10 +114,12 @@ async def test_teardown_reads_the_row_itself_rather_than_trusting_a_caller(_runt
     with patch.object(entitlement_teardown.billing_repo, "get_by_owner_id", read):
         await entitlement_teardown.teardown_if_unentitled("user_1", trigger="test")
 
-    read.assert_awaited_once()
+    # Twice, not once: the entry check, then the recheck immediately before the
+    # destructive call (see test_a_resubscribe_mid_teardown_aborts...).
+    assert read.await_count == 2
     # Strongly consistent: an eventually consistent read here could observe the
     # pre-cancellation row and skip a teardown that should have happened.
-    assert read.await_args.kwargs.get("consistent_read") is True
+    assert all(c.kwargs.get("consistent_read") is True for c in read.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -147,74 +149,75 @@ async def _cancel(owner_id="user_1"):
 
 
 @pytest.mark.asyncio
-async def test_teardown_reaps_the_per_owner_bedrock_role_and_aips(_runtime):
-    """IAM roles are capped at 1,000 per ACCOUNT, and `delete_user_service`
-    destroys the containers row that is the only handle on the AIP arns. Before
-    this, only the admin account-wipe deleted either, so every cancellation
-    leaked a role plus its inference profiles with nothing able to reach them
-    again."""
+async def test_the_bedrock_reap_is_delegated_to_the_seam(_runtime):
+    """Teardown does not reap anything itself.
+
+    It used to, and that was the bug: it was ONE of four teardown paths, and the
+    other three (admin account-wipe, DELETE /debug/provision, DELETE
+    /debug/user-data) kept leaking into the same account-wide IAM role quota —
+    dev, staging and prod share one AWS account. The reap now lives inside
+    ``delete_user_service``, the seam all four cross, so this path gets it by
+    crossing the seam rather than by carrying its own copy."""
     assert await _cancel() is True
 
-    _runtime.role.assert_awaited_once_with("user_1")
-    _runtime.aips.assert_awaited_once()
-    assert _runtime.aips.await_args.kwargs["aip_arns"] == [
-        "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_the_role_is_reaped_even_when_the_row_never_recorded_its_arn(_runtime):
-    """The role name derives from owner_id alone and the delete is idempotent,
-    so this must NOT be gated on a `bedrock_role_arn` field. Gating on the row
-    is precisely what stranded the roles already orphaned in prod: once the row
-    is gone, a row-gated delete can never reach them."""
-    _runtime.ecs.return_value.delete_user_service = AsyncMock(return_value=None)
-
-    assert await _cancel() is True
-
-    _runtime.role.assert_awaited_once_with("user_1")
-    _runtime.aips.assert_not_awaited()  # no arns to work from
-
-
-@pytest.mark.asyncio
-async def test_a_surviving_container_keeps_its_role(_runtime):
-    """If the ECS delete failed the task may still be running under this role,
-    and pulling it out from under a live container turns a retryable teardown
-    into a broken one. The next trigger re-runs this."""
-    _runtime.ecs.return_value.delete_user_service = AsyncMock(side_effect=RuntimeError("ECS down"))
-
-    assert await _cancel() is True
-
+    _runtime.ecs.return_value.delete_user_service.assert_awaited_once_with("user_1")
+    _runtime.aips.assert_not_awaited()
     _runtime.role.assert_not_awaited()
-    _runtime.aips.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_an_unexpected_row_shape_does_not_take_the_teardown_down(_runtime):
-    """The arn extraction sits outside the per-call try blocks, and this runs
-    from webhook handlers where raising means a 5xx and a provider retry. A row
-    that is not the documented ``dict | None`` must degrade to "no arns", not
-    explode — an AsyncMock's ``.get()`` returns a coroutine, which is exactly
-    how this surfaced."""
-    _runtime.ecs.return_value.delete_user_service = AsyncMock(return_value=AsyncMock())
+async def test_a_resubscribe_mid_teardown_aborts_before_anything_is_destroyed():
+    """THE customer-impacting race. The entitlement read at the top of teardown
+    is several awaits stale by the time the destructive call happens, and two
+    things land in that gap: a resubscribe, or a cancellation webhook
+    redelivered after one (Stripe and Apple both retry on 5xx).
 
-    assert await _cancel() is True
+    Losing the container self-heals — the next /container/status poll
+    reprovisions. The Bedrock resources reaped behind it do NOT: the
+    resubscribe's provision already returned success, so nothing retries and the
+    owner's chat hard-fails on Bedrock. So the recheck has to happen BEFORE the
+    destructive call, not after."""
+    # Unentitled on entry, entitled by the time the recheck runs.
+    reads = AsyncMock(
+        side_effect=[
+            {"owner_id": "user_1", "subscription_status": "canceled"},
+            {"owner_id": "user_1", "subscription_status": "active"},
+        ]
+    )
+    with (
+        patch("core.services.owner_facts.write_owner_facts", AsyncMock()),
+        patch("core.containers.get_ecs_manager") as ecs,
+        patch.object(entitlement_teardown.billing_repo, "get_by_owner_id", reads),
+    ):
+        ecs.return_value.delete_user_service = AsyncMock()
+        ran = await entitlement_teardown.teardown_if_unentitled("user_1", trigger="subscription_deleted")
 
-    _runtime.aips.assert_not_awaited()
-    _runtime.role.assert_awaited_once_with("user_1")  # role still reaped
+    assert ran is False
+    # Nothing destructive ran — no container delete, so no reap behind it.
+    ecs.return_value.delete_user_service.assert_not_awaited()
+    assert reads.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_a_failing_role_delete_does_not_abort_the_teardown(_runtime):
-    """Best-effort like every other step — this runs from a webhook handler
-    where raising means a 5xx and a provider retry."""
-    _runtime.role.side_effect = RuntimeError("IAM down")
-    _runtime.aips.side_effect = RuntimeError("Bedrock down")
+async def test_the_pre_teardown_recheck_is_strongly_consistent(_runtime):
+    """An eventually consistent read here would happily return the
+    pre-resubscribe row and wave the teardown through — the exact failure the
+    recheck exists to prevent."""
+    reads = AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "canceled"})
+    with patch.object(entitlement_teardown.billing_repo, "get_by_owner_id", reads):
+        await entitlement_teardown.teardown_if_unentitled("user_1", trigger="test")
+
+    assert reads.await_count == 2
+    assert all(c.kwargs.get("consistent_read") is True for c in reads.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_seam_does_not_abort_the_rest_of_the_teardown(_runtime):
+    """Best-effort: this runs from a webhook handler where raising means a 5xx
+    and a provider retry, and retrying re-enters calls that half-succeeded. The
+    seam raises on a partial reap, so this covers that too."""
+    _runtime.ecs.return_value.delete_user_service = AsyncMock(side_effect=RuntimeError("reap incomplete"))
 
     assert await _cancel() is True
 
     _runtime.facts.assert_awaited_once()
-    # Both were attempted: a raising AIP delete must not skip the role delete,
-    # which is the half that actually frees the account-wide quota.
-    _runtime.aips.assert_awaited_once()
-    _runtime.role.assert_awaited_once()

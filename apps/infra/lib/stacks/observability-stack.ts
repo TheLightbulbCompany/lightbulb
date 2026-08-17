@@ -288,6 +288,47 @@ export class ObservabilityStack extends cdk.Stack {
     return alarm;
   }
 
+  /**
+   * A Sum over the [env, service, status] rollup put_metric publishes
+   * (core/observability/metrics.py, _STATUS_ROLLUP_KEYS).
+   *
+   * Reach for this when an alarm cares about ONE dimension value
+   * (status="error") but the emitter also tags a qualifier the alarm has no
+   * business enumerating (op, provider). Binding the full set literally would
+   * name a metric identity per qualifier value -- a permanently silent alarm
+   * the moment a new provider appears. The { env, service } rollup is no help
+   * either: it collapses the very dimension being filtered on, so an error
+   * alarm would count successes too.
+   *
+   * This was a `SUM(SEARCH(...))` metric-math expression, which reads like the
+   * natural answer and cannot work: CloudWatch rejects it with "SEARCH is not
+   * supported on Metric Alarms" and rolled this stack back on EVERY deploy,
+   * which also skipped every prod stage behind it. The limitation is at the
+   * alarm layer with no workaround, so the aggregate has to be a real published
+   * dimension set instead -- hence the emitter change rather than a cleverer
+   * expression here. New qualifier values are still picked up automatically,
+   * because they all land on the same rollup.
+   */
+  private statusSum(opts: {
+    metricName: string;
+    status: string;
+    periodMinutes: number;
+    label: string;
+  }): cloudwatch.Metric {
+    return new cloudwatch.Metric({
+      namespace: "Isol8",
+      metricName: opts.metricName,
+      statistic: "Sum",
+      period: cdk.Duration.minutes(opts.periodMinutes),
+      dimensionsMap: {
+        env: this.envName,
+        service: "isol8-backend",
+        status: opts.status,
+      },
+      label: opts.label,
+    });
+  }
+
   // =========================================================================
   // Page-tier alarms
   // =========================================================================
@@ -614,16 +655,21 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W3: container-efs-access-point-fail
+    // The emitter tags { op, status } (op = create | delete), so a literal
+    // { status: "error" } bound a set nothing publishes. Search across ops.
     this.createAlarm({
       id: "W3",
       name: "container-efs-access-point-fail",
-      metricName: "container.efs.access_point",
+      metric: this.statusSum({
+        metricName: "container.efs.access_point",
+        status: "error",
+        periodMinutes: 1,
+        label: "EFS access point errors (all ops)",
+      }),
       threshold: 0,
       evaluationPeriods: 1,
-      periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "EFS access point operation failed",
     });
@@ -814,16 +860,21 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Channels (W13-W15) --
 
     // W13: channel-rpc-error-rate
+    // Both channel metrics are tagged { provider, status }, so the old literal
+    // { status: "error" } bound a set nothing publishes. Use the status rollup.
     this.createAlarm({
       id: "W13",
       name: "channel-rpc-error-rate",
-      metricName: "channel.rpc",
+      metric: this.statusSum({
+        metricName: "channel.rpc",
+        status: "error",
+        periodMinutes: 60,
+        label: "Channel RPC errors (all providers)",
+      }),
       threshold: 10,
       evaluationPeriods: 1,
-      periodMinutes: 60,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "Channel RPC errors exceed 10 per hour",
     });
@@ -832,13 +883,16 @@ export class ObservabilityStack extends cdk.Stack {
     this.createAlarm({
       id: "W14",
       name: "channel-configure-fail",
-      metricName: "channel.configure",
+      metric: this.statusSum({
+        metricName: "channel.configure",
+        status: "error",
+        periodMinutes: 1,
+        label: "Channel configure failures (all providers)",
+      }),
       threshold: 0,
       evaluationPeriods: 1,
-      periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "Channel configure step failed",
     });
@@ -1043,6 +1097,16 @@ export class ObservabilityStack extends cdk.Stack {
     // the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target
     // group, so there is no HealthyHostCount to alarm on). Sum > 0 over a short
     // window, NOT_BREACHING (absent metric = healthy, no error emissions).
+    //
+    // W63 measures IMPACT, not availability, and NOT_BREACHING is correct for
+    // that: no error emissions genuinely means nothing is being hurt. The cost
+    // is that a Paperclip outage in a quiet window produces no failed calls, so
+    // W63 stays OK while Paperclip is down (seen live in the 2026-06-19 FIS S5
+    // paperclip-kill run). AVAILABILITY is covered by its complement,
+    // W65-paperclip-no-running-task (createPaperclipTierAlarms), which alarms on
+    // the AWS/ECS LiveTaskCount of the Paperclip service — published on a timer
+    // regardless of traffic. Keep both: W63 says "users are being hurt", W65
+    // says "the container is gone". Neither subsumes the other.
     this.createAlarm({
       id: "W63",
       name: "paperclip-down",
@@ -1060,14 +1124,12 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W64: provision-gate-block-spike.
-    // Backend emits provision.gate.blocked (dimensionless, plus a {code}
-    // breakdown stream) in core/services/provision_gate.py whenever the gate
-    // blocks an owner. This alarm passes NO dimensions, so it queries the
-    // {env,service} stream — matching the dimensionless emission (NOT the
-    // {code} streams, each of which only sees one code's blocks). A provider
-    // outage that silently gates all new chats shows as a spike in blocks, so
-    // the threshold is a spike (not >0 — some blocks are normal, e.g. a
-    // genuinely-unsubscribed user).
+    // Backend emits provision.gate.blocked{code} in core/services/provision_gate.py
+    // whenever the gate blocks an owner. This alarm passes NO dimensions, so it
+    // reads the {env,service} rollup put_metric publishes alongside the coded
+    // set — one datapoint per block, summed across every code. The gate used to
+    // ALSO emit a dimensionless copy for this alarm; that is now a double-count
+    // and was removed with the rollup.
     this.createAlarm({
       id: "W64",
       name: "provision-gate-block-spike",
@@ -1750,7 +1812,7 @@ def handler(event, _ctx):
   }
 
   // =========================================================================
-  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62)
+  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62, W65)
   // =========================================================================
 
   private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
@@ -1833,12 +1895,55 @@ def handler(event, _ctx):
       severity: "warn",
     });
 
-    // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
-    // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group
-    // (it registers via cloudMapOptions and is reached through the backend), so
-    // there is no HealthyHostCount metric to alarm on. The down signal is the
-    // Part B `paperclip.upstream.error{kind:"unreachable"}` metric + its alarm
-    // (which keeps the W63 id), emitted from the backend's Paperclip-call paths.
+    // W65: Paperclip service has NO running task — the AVAILABILITY half of
+    // "is Paperclip up?". W63 (paperclip.upstream.error) is the IMPACT half: it
+    // only fires when the backend actually fails a call, so a Paperclip outage
+    // during a window with no Teams traffic emits nothing and W63 stays OK.
+    // Observed live: the 2026-06-19 FIS S5 (paperclip-kill) run killed the task
+    // for ~2 min and W63 never fired — no concurrent traffic to fail. W65 closes
+    // exactly that gap; the two are complementary, not redundant.
+    //
+    // Metric choice — READ BEFORE CHANGING. `LiveTaskCount` is a real AWS/ECS
+    // metric, dimensioned {ClusterName, ServiceName} exactly like W62's
+    // CPUUtilization, published once a minute whether or not anyone calls
+    // Paperclip. It is NOT `RunningTaskCount`, which lives in
+    // ECS/ContainerInsights — deliberately OFF on this cluster (see
+    // container-stack.ts) because Container Insights bills ~15 metrics per
+    // service and this cluster carries the whole per-user fleet. Verified
+    // against the live account: AWS/ECS publishes exactly CPUUtilization,
+    // MemoryUtilization, LiveTaskCount, and both paperclip services report it.
+    //
+    // treatMissingData BREACHING is LOAD-BEARING, not defensive boilerplate.
+    // ECS does not publish LiveTaskCount=0 when a service drops to zero tasks —
+    // it STOPS PUBLISHING (verified on a scaled-to-zero per-user service: the
+    // datapoints simply end). Absence IS the outage, so NOT_BREACHING would
+    // rebuild the exact quiet-window blind spot this alarm exists to close.
+    // The `< 1` comparison therefore almost never trips on a live datapoint;
+    // it is the honest statement of "below the desiredCount floor of 1"
+    // (paperclip-stack.ts) and covers the case where ECS does report a 0.
+    //
+    // 3 × 1 min: PaperclipStack sets minHealthyPercent=100, so a healthy rolling
+    // deploy never drops to zero tasks and cannot trip this. Three consecutive
+    // minutes rides out a single CloudWatch delivery gap while still catching a
+    // silently-dead container long before a user hits Teams.
+    this.createAlarm({
+      id: "W65",
+      name: "paperclip-no-running-task",
+      description:
+        "Paperclip Fargate service has no running task for 3 min — the BFF is gone or crash-looping. Native AWS/ECS availability signal, published regardless of traffic; complements W63, which only fires when a real backend call fails. Missing data = breaching: ECS stops publishing LiveTaskCount at zero tasks rather than reporting 0.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ECS",
+        metricName: "LiveTaskCount",
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
+      }),
+      threshold: 1,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
+    });
   }
 
   // =========================================================================

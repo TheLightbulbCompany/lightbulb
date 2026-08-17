@@ -81,10 +81,10 @@ describe("OverviewPanel — Subscription InfoRow", () => {
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
   });
 
-  it("passes other statuses through unmapped", () => {
+  it("capitalizes other statuses via planLabel", () => {
     billingAccount = { subscription_status: "active" };
     render(<OverviewPanel />);
-    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 
   it("shows the em-dash placeholder when there is no account yet", () => {

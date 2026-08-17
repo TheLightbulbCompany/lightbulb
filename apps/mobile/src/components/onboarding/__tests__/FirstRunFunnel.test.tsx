@@ -24,6 +24,9 @@ jest.mock("@isol8/shared", () => ({
   createApiClient: () => ({ post: mockPost }),
 }));
 
+import { Linking } from "react-native";
+import { ApiError } from "@isol8/shared";
+
 import { FirstRunFunnel } from "../FirstRunFunnel";
 
 // NOTE: fireEvent.press does not reach Pressable through this screen's
@@ -153,31 +156,25 @@ describe("FirstRunFunnel", () => {
   });
 
   it("does not dismiss the funnel on a 2xx body with no recognised status", async () => {
-    // Deploy-skew guard: an OLDER backend 202s "team workspace provisioning"
-    // while Paperclip warms, and the api client resolves any 2xx. Dismissing
-    // on that would discard the answer, so the body is still checked. The
-    // skew shim retries first, then the error branch takes over — and
-    // briefSubmitted must NOT be stamped, or the funnel is gone for good with
-    // nothing saved.
-    jest.useFakeTimers();
-    try {
-      mockPost.mockReset().mockResolvedValue({ status: "provisioning" });
-      const u = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
-      await render(<FirstRunFunnel />);
-      await u.press(screen.getByRole("button", { name: "Grow my business" }));
-      await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
-      await u.press(screen.getByRole("button", { name: "Continue →" }));
+    // The api client resolves any 2xx, so the BODY is what says the answer
+    // landed. A 2xx carrying no recognised status means it did not, and the
+    // error branch takes over — and briefSubmitted must NOT be stamped, or the
+    // funnel is gone for good with nothing saved. No retry: the endpoint is
+    // intake-only and answers "staged"/"already_submitted" on every success
+    // path, so an unrecognised body is a real failure to show, not a race to
+    // wait out.
+    mockPost.mockReset().mockResolvedValue({ status: "provisioning" });
+    const u = userEvent.setup();
+    await render(<FirstRunFunnel />);
+    await u.press(screen.getByRole("button", { name: "Grow my business" }));
+    await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+    await u.press(screen.getByRole("button", { name: "Continue →" }));
 
-      await waitFor(() => expect(mockPost).toHaveBeenCalled());
-      await jest.advanceTimersByTimeAsync(20000);
-
-      // "Retry" only renders on the error branch (the copy around it is split
-      // across Text nodes, so match the link rather than the sentence).
-      expect(await screen.findByText("Retry")).toBeTruthy();
-      expect(mockUpdate).not.toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
-    }
+    // "Retry" only renders on the error branch (the copy around it is split
+    // across Text nodes, so match the link rather than the sentence).
+    expect(await screen.findByText("Retry")).toBeTruthy();
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   // brief must still leave a wrong-account user an exit. A non-409 failure
@@ -208,5 +205,61 @@ describe("FirstRunFunnel", () => {
     expect(mockSignOut).toHaveBeenCalledTimes(1);
 
     alertSpy.mockRestore();
+  });
+
+  it("escalates to the upstream detail + support after 3 same-error failures", async () => {
+    // Parity with the web funnel (FirstRunSteps PERSISTENT_FAILURE_THRESHOLD):
+    // the same upstream error three times running is not transient, so stop
+    // offering a Retry that cannot work and show what actually broke.
+    mockPost
+      .mockReset()
+      .mockRejectedValue(new ApiError(500, { detail: "brief store unavailable" }));
+    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
+    const u = userEvent.setup();
+
+    await render(<FirstRunFunnel />);
+    await u.press(screen.getByRole("button", { name: "Grow my business" }));
+    await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+    await u.press(screen.getByRole("button", { name: "Continue →" }));
+
+    // Failures 1 and 2 stay on the generic transient line.
+    await u.press(await screen.findByText("Retry"));
+    await u.press(await screen.findByText("Retry"));
+
+    // Third consecutive same-error failure flips to the persistent state.
+    expect(await screen.findByText("We couldn’t save your brief.")).toBeTruthy();
+    expect(screen.getByText("brief store unavailable")).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(mockPost).toHaveBeenCalledTimes(3);
+
+    await u.press(screen.getByText("contact support"));
+    expect(openURL).toHaveBeenCalledWith("mailto:support@isol8.co");
+
+    openURL.mockRestore();
+  });
+
+  it("resets the failure streak when the upstream error changes", async () => {
+    // The streak counts CONSECUTIVE identical failures. A different error is
+    // a different problem, so the transient line comes back rather than the
+    // user being told to email support about an error they saw once.
+    mockPost
+      .mockReset()
+      .mockRejectedValueOnce(new ApiError(500, { detail: "first fault" }))
+      .mockRejectedValueOnce(new ApiError(500, { detail: "first fault" }))
+      .mockRejectedValue(new ApiError(503, { detail: "different fault" }));
+    const u = userEvent.setup();
+
+    await render(<FirstRunFunnel />);
+    await u.press(screen.getByRole("button", { name: "Grow my business" }));
+    await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+    await u.press(screen.getByRole("button", { name: "Continue →" }));
+
+    await u.press(await screen.findByText("Retry"));
+    // Third failure overall, but only the FIRST of the new error.
+    await u.press(await screen.findByText("Retry"));
+
+    expect(await screen.findByText("Retry")).toBeTruthy();
+    expect(screen.queryByText("We couldn’t save your brief.")).toBeNull();
+    expect(mockPost).toHaveBeenCalledTimes(3);
   });
 });

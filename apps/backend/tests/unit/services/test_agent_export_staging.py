@@ -116,6 +116,18 @@ def test_staging_export_tars_workspace_subdir_at_root(fake_staging):
     assert not any("build-manifest.json" in n for n in names), names
 
 
+def test_staging_export_manifest_never_carries_snippets(fake_staging):
+    """The built-agent manifest lands in S3 + the DDB listing row exactly like
+    the seller path's, so it gets the same snippet strip."""
+    owner_id, staging_agent_id, staging_dir = fake_staging
+    (staging_dir / "workspace" / "MEMORY.md").write_text("key AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+    pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    flags = pkg.manifest["safety_flags"]
+    assert flags, "expected the planted AWS key to flag"
+    assert all("snippet" not in f for f in flags), flags
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(pkg.manifest)
+
+
 def test_staging_export_slice_from_own_config(fake_staging):
     """The slice carries the built agent's dict (skills + identity) and the
     plugins block, sourced from the staging dir's OWN openclaw.json."""

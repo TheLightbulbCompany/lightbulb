@@ -9,6 +9,7 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from typing import Annotated
 
 import boto3
@@ -33,6 +34,7 @@ from core.services import (
     company_deploy_service,
     curator,
     marketplace_hire,
+    marketplace_safety,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -124,6 +126,11 @@ async def _recreate_routines_for_buyer(
             # as UTC, so a routine the seller set for 9am local fired at the
             # wrong hour the moment the buyer enabled it.
             "timezone": r.get("timezone"),
+            # Variable definitions (with defaults) — without them, Paperclip
+            # re-syncs {{NAME}} references in the description as required
+            # defaultless variables and the dormant schedule trigger 422s,
+            # rolling back the whole deploy.
+            "variables": _json_safe_variables(r.get("variables")),
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")
@@ -154,6 +161,29 @@ async def _recreate_routines_for_buyer(
         )
     finally:
         await http.aclose()
+
+
+def _json_safe_variables(raw: object) -> list[dict] | None:
+    """Manifest variables with DDB ``Decimal`` defaults coerced to int/float.
+
+    The manifest rides ``manifest_json`` in DynamoDB and boto3 returns every
+    DDB Number as ``Decimal``, which the admin client's ``json.dumps`` refuses
+    — the same write-boundary coercion ``catalog_service`` does for
+    ``manifest["version"]``. Integral values stay ints so Paperclip's number
+    variables round-trip exactly.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for var in raw:
+        if not isinstance(var, dict):
+            continue
+        safe = dict(var)
+        default = safe.get("defaultValue")
+        if isinstance(default, Decimal):
+            safe["defaultValue"] = int(default) if default == default.to_integral_value() else float(default)
+        out.append(safe)
+    return out or None
 
 
 def _pending_automations(manifest_routines: list) -> list[dict]:
@@ -230,6 +260,20 @@ def _compact_items(items: list[dict]) -> list[dict]:
         }
         for item in items
     ]
+
+
+def _public_row(listing: dict) -> dict:
+    """Listing row with safety-scan snippets stripped from ``manifest_json``.
+
+    The row itself is returned by the UNAUTHENTICATED search + detail routes
+    under ``Cache-Control: public``, and it carries the whole manifest — so
+    the read side has to scrub what already-published (immutable) artifacts
+    persisted before the write-side strip landed. Returns the original object
+    untouched when there is nothing to strip, so clean rows aren't copied.
+    """
+    manifest = listing.get("manifest_json")
+    scrubbed = marketplace_safety.manifest_without_snippets(manifest)
+    return listing if scrubbed is manifest else {**listing, "manifest_json": scrubbed}
 
 
 def _fetch_agent_artifact(listing: dict) -> tuple[bytes, dict]:
@@ -382,6 +426,14 @@ async def search_listings(
         default=None,
         description="Optional category filter, compared case-insensitively against listing.category.",
     ),
+    free_only: bool = Query(
+        default=False,
+        description=(
+            "Keep only listings that cost the caller nothing — free rows, plus the caller's"
+            " own paid rows (which deploy free). Applied before the limit slice. The mobile"
+            " app passes this — iOS hires free agents only."
+        ),
+    ),
     status_in: str | None = Query(
         default=None,
         description=(
@@ -412,10 +464,17 @@ async def search_listings(
     include_unpublished = (
         seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
     )
+    # free_only spares the caller their OWN paid listings, so the response
+    # depends on who asked, not just on the URL.
+    viewer_id = auth.user_id if (free_only and auth is not None) else None
     if include_unpublished:
         # Seller-scoped reads can include drafts/review/retired rows that
         # must never be cached by a CDN — those are private to the seller.
         response.headers["Cache-Control"] = "private, max-age=0, no-store"
+    elif viewer_id:
+        # Caller-dependent body: a shared cache would hand one seller's paid
+        # rows to the next viewer. The browser may still hold its own copy.
+        response.headers["Cache-Control"] = "private, max-age=60"
     else:
         response.headers["Cache-Control"] = "public, max-age=60"
     # Push status_in down to the search service so it's applied BEFORE the
@@ -431,6 +490,8 @@ async def search_listings(
         limit=limit,
         seller_id=seller_id,
         category=category,
+        free_only=free_only,
+        viewer_id=viewer_id,
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
@@ -439,7 +500,7 @@ async def search_listings(
         # extra round trip whose output the compact projection drops anyway.
         return {"items": _compact_items(items)}
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/featured-listings")
@@ -474,7 +535,7 @@ async def featured_listings(
         return {"items": []}
     items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/me/installed-templates")
@@ -577,7 +638,9 @@ async def get_listing(listing_id: str, response: Response):
             )
             manifest = None
 
-    return {"listing": listing, "manifest": manifest}
+    # Both copies of the manifest reach this unauthenticated, publicly-cached
+    # response — the S3 one and the one carried on the row.
+    return {"listing": _public_row(listing), "manifest": marketplace_safety.manifest_without_snippets(manifest)}
 
 
 def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:

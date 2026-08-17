@@ -8,7 +8,7 @@ import asyncio
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -2537,7 +2537,7 @@ class TestResizeUserContainer:
         """
         base_def = {
             "family": "isol8-dev-openclaw",
-            "taskRoleArn": "",
+            "taskRoleArn": "arn:aws:iam::123:role/shared-base",
             "executionRoleArn": "",
             "networkMode": "awsvpc",
             "containerDefinitions": [
@@ -2574,6 +2574,7 @@ class TestResizeUserContainer:
         prior_def = {
             **base_def,
             "family": "isol8-dev-openclaw-user",
+            "taskRoleArn": "arn:aws:iam::123:role/prior-owner",
             "containerDefinitions": [
                 {
                     "name": "openclaw",
@@ -2653,6 +2654,55 @@ class TestResizeUserContainer:
             assert len(secrets_entries) == len(secrets), "duplicate secret names registered"
             # New image still stamped on the openclaw container
             assert call_kwargs["containerDefinitions"][0]["image"] == "ecr/openclaw-extended:new"
+            assert call_kwargs["taskRoleArn"] == "arn:aws:iam::123:role/prior-owner"
+
+    @pytest.mark.asyncio
+    async def test_resize_row_task_role_wins_over_prior_revision(self, manager, mock_ecs_client):
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        row_role = "arn:aws:iam::123:role/row-owner"
+        prior_role = "arn:aws:iam::123:role/prior-owner"
+        base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
+        prior = {**base, "taskRoleArn": prior_role}
+
+        def describe_side_effect(taskDefinition):
+            return {"taskDefinition": prior if taskDefinition == prior_arn else base}
+
+        mock_ecs_client.describe_task_definition.side_effect = describe_side_effect
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"desiredCount": 0, "deployments": []}],
+        }
+        row = _make_container_dict(task_definition_arn=prior_arn)
+        row["bedrock_role_arn"] = row_role
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.update_fields = AsyncMock()
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="4096")
+
+        assert mock_ecs_client.register_task_definition.call_args.kwargs["taskRoleArn"] == row_role
+
+    @pytest.mark.asyncio
+    async def test_resize_keeps_base_task_role_when_row_and_prior_have_none(self, manager, mock_ecs_client):
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
+        base_role = base["taskRoleArn"]
+        prior = dict(base)
+        prior.pop("taskRoleArn")
+
+        def describe_side_effect(taskDefinition):
+            return {"taskDefinition": prior if taskDefinition == prior_arn else base}
+
+        mock_ecs_client.describe_task_definition.side_effect = describe_side_effect
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"desiredCount": 0, "deployments": []}],
+        }
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(task_definition_arn=prior_arn))
+            mock_repo.update_fields = AsyncMock()
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="4096")
+
+        assert mock_ecs_client.register_task_definition.call_args.kwargs["taskRoleArn"] == base_role
 
     @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
@@ -2846,6 +2896,174 @@ class TestResizeUserContainer:
             await _asyncio.sleep(0)
 
             mock_await.assert_called_once_with("user_test_123")
+
+
+# ---------------------------------------------------------------------------
+# config-lock protocol rollout
+# ---------------------------------------------------------------------------
+
+
+class TestConfigLockProtocolRollout:
+    @pytest.mark.asyncio
+    async def test_reclones_current_size_and_waits_for_service_stability(self, manager, mock_ecs_client):
+        manager.current_container_size = AsyncMock(return_value=("2048", "8192"))
+        manager.resize_user_container = AsyncMock(return_value="arn:task-def:new")
+        manager._update_container = AsyncMock()
+        waiter = MagicMock()
+        mock_ecs_client.get_waiter.return_value = waiter
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                        "environment": [
+                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
+                        ],
+                    }
+                ]
+            }
+        }
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "taskDefinition": "arn:task-def:new",
+                    "deployments": [
+                        {
+                            "status": "PRIMARY",
+                            "taskDefinition": "arn:task-def:new",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread:
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            result = await manager.rollout_config_lock_protocol(
+                "user_test_123",
+                timeout_s=31,
+                poll_interval_s=10,
+            )
+
+        assert result == "arn:task-def:new"
+        manager.resize_user_container.assert_awaited_once_with(
+            "user_test_123",
+            new_cpu="2048",
+            new_memory="8192",
+            _register_only=True,
+        )
+        update_kwargs = mock_ecs_client.update_service.call_args.kwargs
+        assert update_kwargs["taskDefinition"] == "arn:task-def:new"
+        assert "forceNewDeployment" not in update_kwargs
+        mock_ecs_client.get_waiter.assert_called_once_with("services_stable")
+        waiter.wait.assert_called_once_with(
+            cluster=manager._cluster,
+            services=[manager._service_name("user_test_123")],
+            WaiterConfig={"Delay": 10, "MaxAttempts": 4},
+        )
+
+    @pytest.mark.asyncio
+    async def test_refuses_circuit_breaker_rollback_reported_as_stable(self, manager, mock_ecs_client):
+        manager.current_container_size = AsyncMock(return_value=("1024", "4096"))
+        manager.resize_user_container = AsyncMock(return_value="arn:task-def:new")
+        manager._update_container = AsyncMock()
+        waiter = MagicMock()
+        mock_ecs_client.get_waiter.return_value = waiter
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                        "environment": [
+                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
+                        ],
+                    }
+                ]
+            }
+        }
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "taskDefinition": "arn:task-def:old",
+                    "deployments": [
+                        {
+                            "status": "PRIMARY",
+                            "taskDefinition": "arn:task-def:old",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread:
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            with pytest.raises(EcsManagerError, match="stabilized on a different task definition"):
+                await manager.rollout_config_lock_protocol("user_test_123")
+
+        assert manager._update_container.await_args_list == [
+            call("user_test_123", task_definition_arn="arn:task-def:new"),
+            call("user_test_123", task_definition_arn="arn:task-def:old"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_requires_registered_task_definition(self, manager):
+        manager._ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                    }
+                ]
+            }
+        }
+        manager.current_container_size = AsyncMock(return_value=None)
+        manager.resize_user_container = AsyncMock()
+
+        with pytest.raises(EcsManagerError, match="No registered task definition"):
+            await manager.rollout_config_lock_protocol("user_test_123")
+
+        manager.resize_user_container.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_rollout_before_recovery_base_is_deployed(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {"name": "openclaw", "command": ["sh", "-c", "exec openclaw gateway"]},
+                ]
+            }
+        }
+        manager.current_container_size = AsyncMock(return_value=("1024", "4096"))
+        manager.resize_user_container = AsyncMock()
+
+        with pytest.raises(EcsManagerError, match="does not contain fail-fast config-lock recovery"):
+            await manager.rollout_config_lock_protocol("user_test_123")
+
+        manager.current_container_size.assert_not_awaited()
+        manager.resize_user_container.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -3878,17 +4096,58 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
 
 
 @pytest.mark.asyncio
-async def test_wait_for_service_drained_returns_true_when_zero(manager, mock_ecs_client):
-    """Returns True as soon as the service reports 0 running + 0 pending."""
+async def test_wait_for_service_drained_returns_true_when_no_tasks(manager, mock_ecs_client):
+    """No task records at all (never started / long expired) — drained."""
+    mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+    assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_true_when_all_tasks_stopped(manager, mock_ecs_client):
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "STOPPED" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "STOPPED"}]}
+    assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_not_fooled_by_stopping_task(manager, mock_ecs_client):
+    """A task in STOPPING is NOT drained, whatever the service counts say.
+
+    runningCount hits 0 the moment the task leaves RUNNING, but it then sits
+    in STOPPING for up to its 120s stopTimeout while litestream performs the
+    final replica sync. Draining on counts let the replica-prefix delete and
+    the OAuth seed harvest act on a replica missing that final sync — the
+    harvest would then write a rotated-past-the-seed but already-SPENT
+    refresh token back to DDB."""
     mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 0, "pendingCount": 0}]}
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "STOPPED" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "STOPPING"}]}
+    with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
+        assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_service_record_gone_reads_drained(manager, mock_ecs_client):
+    """ServiceNotFound = ECS garbage-collected the service record, long after
+    its tasks stopped — a retried wipe must not hang on it."""
+    mock_ecs_client.list_tasks.side_effect = ClientError(
+        {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}}, "ListTasks"
+    )
     assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
 
 
 @pytest.mark.asyncio
 async def test_wait_for_service_drained_times_out_returns_false(manager, mock_ecs_client):
-    """If the service never drains, returns False so the caller proceeds rather
+    """If the task never stops, returns False so the caller proceeds rather
     than wedging an admin reprovision on a task that refuses to stop."""
-    mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 1, "pendingCount": 0}]}
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "RUNNING" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "RUNNING"}]}
     with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
         assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False
 

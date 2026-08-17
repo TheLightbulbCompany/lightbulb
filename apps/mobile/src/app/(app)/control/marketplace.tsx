@@ -1,3 +1,4 @@
+import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
 import { useEffect, useRef, useState, type ReactElement } from "react";
@@ -15,6 +16,7 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   formatPrice,
+  isFreeToHire,
   listingByline,
   listingSummary,
   useMarketplaceSearch,
@@ -89,6 +91,7 @@ function ListingRow({ item }: { item: Listing }) {
 
 export default function MarketplacePanel() {
   const { state, search } = useMarketplaceSearch();
+  const { userId } = useAuth();
   const [query, setQuery] = useState("");
 
   // Debounce keystrokes → one search per 300ms of quiet. The ref keeps the
@@ -122,7 +125,11 @@ export default function MarketplacePanel() {
   } else if (state.kind === "loading") {
     body = <SkeletonRows />;
   } else {
-    const items = state.items;
+    // Same rule the server applied via free_only (there it runs before the
+    // ranked limit, which is what keeps free listings from being truncated
+    // away). This copy only bites if the app outruns a backend that ignores
+    // the param — a paid row must never reach a shelf with no way to buy.
+    const items = state.items.filter((l) => isFreeToHire(l, userId));
     body = (
       <FlatList
         data={items}

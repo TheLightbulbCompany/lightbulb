@@ -88,13 +88,25 @@ export function WorkspaceShell(): React.ReactElement {
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
   const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable
-  const { defaultId, isSettled: agentsSettled } = useAgents();
+  const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
   useEffect(() => {
     defaultIdRef.current = defaultId;
     agentsSettledRef.current = agentsSettled;
   });
+  // Roster for the layout restore's dead-panel prune. A value, not a ref, and
+  // it rides in onReady's deps: dockview's onReady fires from the dock's own
+  // mount effect (a CHILD of this component), which runs BEFORE this
+  // component's effects — so a ref synced in an effect would still be empty at
+  // the one moment the restore reads it. Closing over the mount render's value
+  // is what's wanted. Re-creating onReady later is inert: dockview reads the
+  // prop once, in a `[]`-deps mount effect. Empty while unsettled is the
+  // contract sanitizeLayout expects ("roster unknown" → prune nothing).
+  const loadedAgentIds = useMemo(
+    () => (agentsSettled ? agents.map((a) => a.id) : []),
+    [agentsSettled, agents],
+  );
   // Sentinel re-resolution: the snapshot resolves chat:__default__ through
   // defaultIdRef at recompute time, and the roster arriving is not a dockview
   // event — without this, a cold load leaves focusedChatAgentId /
@@ -190,7 +202,11 @@ export function WorkspaceShell(): React.ReactElement {
 
       // Restore the persisted layout, or build Mission Control. A corrupt
       // blob that survives the sanitizer still must not brick the dock.
-      const saved = readLayout(scopeId);
+      // Chat panels for agents that no longer exist (post-wipe / reprovision)
+      // are pruned here when the roster is already warm. On a cold load it
+      // isn't, and the restore keeps them — ChatPanel's agent-gone fallback
+      // covers that until the next restore.
+      const saved = readLayout(scopeId, loadedAgentIds);
       if (saved) {
         try {
           api.fromJSON(saved);
@@ -270,7 +286,7 @@ export function WorkspaceShell(): React.ReactElement {
         },
       });
     },
-    [scopeId, runReconciler],
+    [scopeId, runReconciler, loadedAgentIds],
   );
 
   // Dock teardown (unmount OR shell unmount): flush the pending write while

@@ -597,15 +597,17 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
     """Strip hop-by-hop headers from the upstream response.
 
     ``Content-Length`` is also dropped because the brand-rewrite step
-    can change body length. FastAPI/Starlette will recompute it from
-    the new body when the Response is serialized. ``Set-Cookie`` is
-    handled separately (we may rewrite the Domain= attribute) and
-    re-attached by the caller, so we drop it here to avoid duplicates.
+    can change body length. ``httpx`` decodes compressed upstream bodies
+    before exposing ``response.content``, so ``Content-Encoding`` must not
+    describe those decoded bytes. FastAPI/Starlette will recompute the
+    length when the Response is serialized. ``Set-Cookie`` is handled
+    separately (we may rewrite the Domain= attribute) and re-attached by
+    the caller, so we drop it here to avoid duplicates.
     """
     out: dict[str, str] = {}
     for name, value in headers.items():
         lower = name.lower()
-        if lower in _HOP_BY_HOP_HEADERS or lower in {"content-length", "set-cookie"}:
+        if lower in _HOP_BY_HOP_HEADERS or lower in {"content-encoding", "content-length", "set-cookie"}:
             continue
         out[name] = value
     return out

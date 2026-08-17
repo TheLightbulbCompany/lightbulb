@@ -13,10 +13,12 @@ from typing import Any, Callable
 
 from core.config import settings
 from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
     chown_uid_1000_best_effort,
     get_file_lock,
     open_lock_fd,
+    openclaw_config_sidecar_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,28 +97,39 @@ async def _locked_rmw(
     owner_id: str,
     mutate_fn: Callable[[dict], bool],
     log_context: str,
+    *,
+    enforce_schema: bool = False,
 ) -> None:
     """Locked read-modify-write skeleton for openclaw.json on EFS.
 
     Resolves the owner's config path, raises ConfigPatchError if missing,
-    acquires an exclusive fcntl.lockf on openclaw.json, reads + parses JSON,
+    acquires the guarded rollout-aware sidecar, reads + parses JSON, and
     invokes ``mutate_fn(current)`` to apply per-call mutation logic in place.
 
     ``mutate_fn`` returns True if the config was modified and a write is
     needed, or False to signal a no-op (skip backup + write entirely).
 
-    On a write, takes a .bak backup, validates serializability, atomically
-    renames a tempfile into place, and chowns to uid/gid 1000 if running
-    as root. Releases the lock in a finally block. Logs success with
-    ``log_context``.
+    On a write, takes a .bak backup, validates serializability AND the merged
+    document against the vendored OpenClaw schema, atomically renames a
+    tempfile into place, and chowns to uid/gid 1000 if running as root.
+    Releases the lock in a finally block. Logs success with ``log_context``.
+
+    This is the ONLY chokepoint every config writer passes through, which is why
+    the schema gate lives here rather than in each caller (issue #941 — a
+    schema-invalid config persists silently and crash-loops the container at its
+    next restart). ``enforce_schema=True`` rejects a violating write outright;
+    otherwise the gate follows ``settings.OPENCLAW_CONFIG_SCHEMA_MODE``, which
+    defaults to audit. Callers merging UNTRUSTED input must pass
+    ``enforce_schema=True`` — see ``apply_deploy_aux_mutations``. A rejection
+    surfaces as ``ConfigPatchError`` and happens BEFORE the .bak + rename, so
+    the on-disk config is untouched.
 
     Locking uses the shared two-layer discipline (see ``efs_file_lock``): a
-    per-owner in-process ``threading.Lock`` serializes threads in this worker
-    (POSIX ``fcntl`` is process-scoped, so it alone can't), and an exclusive
-    ``fcntl.lockf`` on a SEPARATE ``openclaw.json.lock`` file guards
-    cross-process writers. The file lock is deliberately NOT on openclaw.json
-    itself — the atomic ``os.rename`` swaps that inode out, so a lock held on
-    it would not fence a racing rename.
+    per-owner in-process ``threading.Lock`` serializes threads in this worker,
+    then ``openclaw_config_sidecar_lock`` preserves the legacy fcntl protocol
+    until boot recovery publishes the transition marker, after which it uses
+    pinned OpenClaw's ephemeral ``O_EXCL`` protocol. The sidecar is separate
+    from openclaw.json because the atomic ``os.rename`` swaps the data inode.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
@@ -126,16 +139,20 @@ async def _locked_rmw(
     def _do_rmw():
         if not os.path.exists(config_path):
             raise ConfigPatchError(f"Config not found for owner {owner_id}")
-        lock_fd = open_lock_fd(config_dir, lock_path)
-        try:
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-
+        with openclaw_config_sidecar_lock(config_dir, lock_path):
             with open(config_path, "r") as f:
                 current = json.load(f)
 
             changed = mutate_fn(current)
             if not changed:
                 return  # no-op: skip backup + write
+
+            # Gate BEFORE the backup + rename so a rejected write leaves both
+            # openclaw.json and openclaw.json.bak exactly as they were.
+            try:
+                gate_config(current, owner_id=owner_id, context=log_context, enforce=enforce_schema)
+            except ConfigSchemaError as exc:
+                raise ConfigPatchError(str(exc)) from exc
 
             shutil.copy2(config_path, backup_path)
             json.dumps(current)  # validate serializable
@@ -149,11 +166,7 @@ async def _locked_rmw(
             except Exception:
                 os.unlink(tmp_path)
                 raise
-
             logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
-        finally:
-            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
 
     def _do_rmw_locked():
         with get_file_lock(lock_path):
@@ -529,7 +542,7 @@ async def append_to_openclaw_config_list(
     - If `path` doesn't exist, create nested dicts as needed and initialize the
       list with `[value]`.
     - If the list already contains `value`, this is a no-op (dedup).
-    - Acquires the same fcntl.lockf exclusive lock on openclaw.json as
+    - Acquires the same OpenClaw-compatible sidecar as
       `patch_openclaw_config` to serialize concurrent writes.
     """
     if not path:
@@ -566,7 +579,8 @@ async def remove_from_openclaw_config_list(
     - If `path` doesn't exist or isn't a list, no-op (no error).
     - Predicate-match approach supports both string matching (e.g. allowFrom)
       and structural matching (e.g. bindings dict entries).
-    - Acquires the same fcntl.lockf exclusive lock as append_to_openclaw_config_list.
+    - Acquires the same OpenClaw-compatible sidecar as
+      append_to_openclaw_config_list.
     """
     if not path:
         raise ConfigPatchError("path must not be empty")
@@ -716,6 +730,11 @@ async def apply_deploy_aux_mutations(
         _mutate,
         f"deploy aux merge agent_entry={bool(agent_entry)} plugins={bool(plugins_patch)} "
         f"mcp={bool(mcp_patch)} skills={bool(skills_patch)}",
+        # The only writer merging UNTRUSTED input: these subtrees come from a
+        # marketplace seller's openclaw-slice.json. A slice that would not load
+        # is rejected rather than audited — the buyer loses a deploy, not their
+        # container at its next restart.
+        enforce_schema=True,
     )
 
 
@@ -822,7 +841,7 @@ async def delete_openclaw_config_path(
     - If the parent dict is empty after removal, it is left as `{}` rather
       than being pruned recursively. OpenClaw treats empty dicts the same
       as missing keys for `channels.*.accounts`.
-    - Acquires the same fcntl.lockf exclusive lock as the other helpers.
+    - Acquires the same OpenClaw-compatible sidecar as the other helpers.
     """
     if not path:
         raise ConfigPatchError("path must not be empty")
@@ -1006,7 +1025,7 @@ async def set_openclaw_config_path(
     - If an intermediate segment exists but is not a dict, it is replaced
       with a dict (consistent with treating the path as authoritative).
     - No-op if the leaf already equals `value` (skips write + chokidar reload).
-    - Same fcntl.lockf exclusive lock as the other helpers.
+    - Same OpenClaw-compatible sidecar as the other helpers.
 
     Used for "replace this entire subtree" semantics that deep-merge cannot
     express (e.g. PUT /integrations/mcp/servers wipes any server not in the

@@ -17,6 +17,8 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.config_schema import gate_config
+from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -948,7 +950,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
 
 
 def memory_plugin_entries() -> dict:
-    """The bundled ``memory-core`` extension with nightly LIGHT-phase dreaming,
+    """The bundled memory extensions (``memory-core`` + ``memory-wiki``),
     shared by the provision-time builder and the provider hot-swap path.
 
     Light-phase dreaming reads recent session transcripts off disk and writes
@@ -967,9 +969,24 @@ def memory_plugin_entries() -> dict:
     logs show no sqlite contention; recall is what lets agents remember beyond
     the always-loaded ``MEMORY.md``).
 
-    Keys are restricted to the upstream ``memory-core`` configSchema, which is
-    strict (``additionalProperties:false``) at every level: the only key under
-    ``config`` is ``dreaming``. A stray key crash-loops the container at boot.
+    ``memory-wiki`` is the owner's COMPANY BRAIN: a single vault shared by
+    every agent in the container (``vault.scope: "global"`` →
+    ``~/.openclaw/wiki/main``, markdown on EFS — its compiled snapshot goes to
+    the shared SQLite plugin state on the ext4 mount, not EFS). It sits beside
+    memory-core (which keeps recall/dreaming) and compiles durable knowledge
+    into provenance-tracked pages with ``wiki_search``/``wiki_get``/
+    ``wiki_apply`` tools; the plugin ships its own ``wiki-maintainer`` skill,
+    so agents learn the conventions from the image, not from us. ``scope`` is
+    set explicitly because the shared-vault semantic is the whole point — an
+    upstream default flip to per-agent vaults would silently fragment the
+    company brain. ``renderMode: "obsidian"`` writes Obsidian-flavored
+    ``[[wikilink]]`` markdown; the vault stays browsable in the file viewer.
+
+    Keys are restricted to the upstream configSchemas, which are strict
+    (``additionalProperties:false``) at every level — the only key under
+    memory-core's ``config`` is ``dreaming``, and memory-wiki's ``vault``
+    accepts only ``scope``/``path``/``renderMode``. A stray key crash-loops
+    the container at boot.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -990,6 +1007,15 @@ def memory_plugin_entries() -> dict:
                         # files (no embeddings), EFS-safe on the deployed image.
                         "rem": {"enabled": True},
                     },
+                },
+            },
+        },
+        "memory-wiki": {
+            "enabled": True,
+            "config": {
+                "vault": {
+                    "scope": "global",  # ONE shared vault = the company brain
+                    "renderMode": "obsidian",
                 },
             },
         },
@@ -1932,24 +1958,42 @@ def build_openclaw_config_dict(
             # Chrome CDP on port 18800" — the exact error our containers
             # throw). We had only `enabled` + `noSandbox` of it.
             #
-            # headless: upstream's default is FALSE. We were getting headless
-            # only via the implicit fallback ("local managed profiles fall
-            # back to headless on Linux when both DISPLAY and WAYLAND_DISPLAY
-            # are unset"). That happens to hold today — neither var is set in
-            # container-stack.ts or the Dockerfile — but it makes a load-
-            # bearing property depend on the ABSENCE of env vars, and any
-            # future image that sets DISPLAY (xvfb, a GUI dep pulling one in)
-            # silently launches a headful Chrome with no X server. Upstream's
-            # recipe sets it explicitly; so do we.
-            "headless": True,
-            # executablePath: upstream's recipe pins the binary rather than
-            # relying on auto-detection. Ours resolves through
-            # findChromeExecutableLinux()'s candidate list, where
-            # /usr/bin/chromium (the Dockerfile layer-9 symlink) happens to
-            # win before the Playwright-cache fallback. Both point at the same
-            # file, so pinning changes no behaviour today — it just stops the
-            # choice being an accident of list order.
-            "executablePath": "/usr/bin/chromium",
+            # headless: upstream's default is FALSE, and this key is set
+            # explicitly rather than left to the implicit fallback ("local
+            # managed profiles fall back to headless on Linux when both DISPLAY
+            # and WAYLAND_DISPLAY are unset"). Leaving it implicit would make a
+            # load-bearing property depend on the ABSENCE of an env var.
+            #
+            # That absence is no longer true anywhere: every container now runs
+            # headful on the Xvfb display so the browser can be watched and
+            # driven from the workspace panel.
+            #
+            # BOTH HALVES ARE REQUIRED, and neither is sufficient alone —
+            # upstream's resolveManagedBrowserHeadlessMode (extensions/browser/
+            # src/browser/config.ts) evaluates its linux-no-DISPLAY branch
+            # BEFORE this configured value:
+            #   - headless False with no DISPLAY  -> forced back to headless
+            #   - DISPLAY set with headless True  -> stays headless, Xvfb idles
+            # The matching DISPLAY lives on the task definition in
+            # container-stack.ts.
+            #
+            # Note this only reaches a container when openclaw.json is
+            # (re)written — a provision or a config patch. Existing containers
+            # keep headless until then, which is also the rollback: revert this
+            # to True and the next config write puts them back.
+            "headless": False,
+            # executablePath: REAL Google Chrome (Dockerfile layer 9b), not
+            # the Playwright Chrome-for-Testing build symlinked at
+            # /usr/bin/chromium. CfT self-labels with an "only for automated
+            # testing — Download Chrome" banner on every fresh profile, and
+            # the Browser live-view panel put that in front of the owner every
+            # session (the profile is on /tmp, wiped per restart, so it never
+            # went away). CfT itself STAYS in the image for Playwright-based
+            # MCPs, which hardcode the ms-playwright cache path and never read
+            # this setting. The resolver would prefer google-chrome on its own
+            # (findChromeExecutableLinux probes it first); the pin keeps the
+            # choice deliberate rather than an accident of list order.
+            "executablePath": "/usr/bin/google-chrome",
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that
             # Chrome's `chrome_crashpad_handler: --database is required` abort
@@ -2198,9 +2242,26 @@ async def write_openclaw_config(
         acp_enabled=acp_enabled,
     )
 
+    # Full-file write — this path does NOT go through config_patcher._locked_rmw,
+    # so it carries its own schema gate (issue #941). Audit-only on purpose: the
+    # input here is our own generator, whose output the chaos suite already
+    # validates against the same vendored schema in CI, so a violation means the
+    # schema or the generator drifted and we want the alarm, not a provisioning
+    # outage on top of it.
+    # Inside the thread, not on the event loop: validating a real config against
+    # the ~280 KB schema is non-trivial CPU, and every other gate call site runs
+    # inside `asyncio.to_thread` already (config_patcher._do_rmw).
     def _write() -> None:
+        gate_config(config, owner_id=user_id, context="write_openclaw_config")
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config, indent=2))
+        lock_path = f"{config_path}.lock"
+        # This generator is also used by update paths while the owner task is
+        # still running. Take the same transition-aware sidecar as hot patches:
+        # legacy fcntl before boot recovery, OpenClaw-compatible O_EXCL after.
+        # The process-local gate additionally serializes backend threads.
+        with get_file_lock(lock_path):
+            with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
+                config_path.write_text(json.dumps(config, indent=2))
 
     await asyncio.to_thread(_write)
 

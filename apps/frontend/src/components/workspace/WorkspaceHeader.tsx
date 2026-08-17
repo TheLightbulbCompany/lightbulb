@@ -11,7 +11,7 @@
 import "./workspace.css";
 
 import { UserButton } from "@clerk/nextjs";
-import { FolderOpen, HelpCircle, CreditCard, RotateCcw } from "lucide-react";
+import { Chrome, FolderOpen, HelpCircle, CreditCard, RotateCcw } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -35,6 +35,14 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
         aria-label="Browse workspace files"
       >
         <FolderOpen size={18} />
+      </button>
+      <button
+        onClick={() => { capture("browser_view_opened"); openPanel("browser"); }}
+        className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1"
+        title="Watch your agents' browser"
+        aria-label="Watch your agents' browser"
+      >
+        <Chrome size={18} />
       </button>
       <button
         onClick={onResetLayout}

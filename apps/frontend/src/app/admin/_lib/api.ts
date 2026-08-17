@@ -419,6 +419,10 @@ export interface AdminProvisioning {
     bootstrap_last_error?: string | null;
     bootstrap_dispatch_id?: string | null;
     bootstrap_dispatched_at?: string | null;
+    /** Write-ahead of chat.send. Set with no `bootstrap_sent_at` on a stuck
+     * row = the send may already have been accepted (never auto-retried). */
+    bootstrap_send_attempted_at?: string | null;
+    bootstrap_sent_at?: string | null;
     bootstrap_delivered_at?: string | null;
     created_at?: string | null;
     updated_at?: string | null;

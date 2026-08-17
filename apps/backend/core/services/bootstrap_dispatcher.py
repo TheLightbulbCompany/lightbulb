@@ -78,6 +78,59 @@ what flips ``bootstrap_state`` to ``delivered`` on ``chat.final`` (and
 ``error``/``aborted``, or a chat.send that never reaches OpenClaw at all,
 marks ``bootstrap_state`` ``failed`` with the reason recorded.
 
+THREE STAMPS, EACH WRITTEN AT THE MOMENT IT BECOMES TRUE. The claim used
+to be the only stamp before the terminal one, which meant a row sat at
+``dispatched`` across the whole ~3-minute connect ladder AND the entire
+first agent run -- and if the backend process died anywhere in that window
+(deploy, OOM, scale-in) the row stayed ``dispatched`` FOREVER: nothing read
+``bootstrap_dispatched_at``, there was no lease TTL, and the admin lever
+was fenced on ``failed``. The ladder is now:
+
+  1. ``not_started -> dispatched`` + ``bootstrap_dispatched_at`` -- CLAIMED
+     (``claim_bootstrap_dispatch``).
+  2. ``bootstrap_send_attempted_at`` -- written IMMEDIATELY BEFORE the
+     chat.send RPC (``mark_bootstrap_send_attempted``), i.e. write-ahead of
+     an outcome nobody knows yet.
+  3. ``dispatched -> sent`` + ``bootstrap_sent_at`` -- DELIVERED, written
+     the instant the send RPC returns its ack (``mark_bootstrap_sent``).
+     The terminal ``delivered``/``failed`` transitions sit on top of this
+     one unchanged (both marks accept ``dispatched`` or ``sent``).
+
+The stamps exist to make a dead claimant's row READABLE by whoever finds
+it next, which is what turns "stuck forever" into "recovered on the next
+poll" -- see the staleness rule below.
+
+LAZY STALENESS EXPIRY -- no sweeper, no cron. ``maybe_dispatch_bootstrap``
+is already called on every ``/container/status`` poll with the onboarding
+dict in hand, so the check costs ZERO extra reads and needs no second
+mechanism to keep alive. A ``dispatched`` row older than
+``STALE_DISPATCH_AFTER_S`` splits by stamp 2:
+
+* **No ``bootstrap_send_attempted_at`` -> PROVABLY UNSENT.** The claimant
+  died before writing anything to the socket, so a fresh dispatch cannot
+  double-run Friday. Re-armed to ``not_started``
+  (``rearm_bootstrap_dispatch``) and re-claimed by THIS same call. Both
+  recovery writes carry the fence for what they concluded from a stale READ,
+  not just generation + ``bootstrap_dispatch_id``: the re-arm requires the
+  write-ahead stamp to still be ABSENT, the failed-settle requires no ack
+  (``only_if_unacked``). That is what makes the rule safe against a claimant
+  that was merely SLOW rather than dead and woke up mid-window — without it,
+  it could send while this poll re-armed and re-claimed underneath it.
+* **``bootstrap_send_attempted_at`` set, never acked -> AMBIGUOUS.** The
+  send may already have been accepted by OpenClaw. Exactly the case the
+  post-connect classifier already refuses to re-arm, so it is NOT re-sent:
+  the row is marked ``failed`` with that explanation, which makes it
+  visible and hands it to the admin lever instead of leaving it stuck.
+  A provably-unsent claim that is out of ``MAX_BOOTSTRAP_ATTEMPTS`` lands
+  the same way (re-arming it would strand the row at ``not_started``, which
+  no lever accepts).
+* **``sent`` -> LEFT ALONE.** Delivery happened; only the completion
+  bookkeeping was lost, and re-sending would double-run Friday.
+
+``routers/container.py``'s pre-gate therefore admits ``dispatched`` rows
+too (a stuck claim can only be found by a poll that actually calls in);
+the dispatcher returns immediately for a fresh one.
+
 CRITICAL UX invariant this dispatcher must never break: dispatching
 chat.send from the BACKEND instead of a browser tab does NOT change where
 Friday's work is SEEN. The gateway pool's ``_forward_to_frontends`` /
@@ -141,9 +194,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from core.gateway.connection_pool import GatewayReconnectThrottled
+from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services.onboarding_brief import build_first_run_message
 
@@ -166,6 +221,37 @@ MAX_BOOTSTRAP_ATTEMPTS = 5
 # ladder (~3 min of waiting across 9 connect attempts) is sized to outlast
 # that boot window so a normal cold boot never burns a bootstrap attempt.
 _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
+
+# How long a ``dispatched`` claim may sit before a later poll may treat its
+# claimant as DEAD (see the module docstring's staleness rule). Derived from
+# the in-dispatch budget it has to clear: the connect ladder above is ~185s
+# worst case, and the chat.send ack adds its own timeout on top, so a LIVE
+# claimant reaches stamp 2 or 3 inside ~4 minutes. Ten minutes leaves that
+# comfortably behind, so anything older is a claim no process is holding.
+# Shared with the admin lever (``routers/admin.py``'s reset-bootstrap), which
+# must refuse a claim this rule would still consider live.
+STALE_DISPATCH_AFTER_S = 600
+
+# Retry ladder for the ``sent`` stamp (~7.5s total). Short and bounded: it runs
+# inline in the dispatch task, after delivery, so it must not hold the task open
+# for minutes -- but it must outlast a DDB blip, because losing this write turns
+# a KNOWN-delivered kickoff into a row that reads as an unacked send (terminal,
+# and admin-retryable into a double delivery). See ``_settle_ack``.
+_ACK_STAMP_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2, 5)
+
+# Recorded on ``bootstrap_last_error`` by the staleness rule. Written for a
+# human (the admin surface renders it verbatim), so they say what happened and
+# what the operator's next move is.
+_STALE_UNSENT_ERROR = (
+    "dispatch claim expired with no chat.send attempted — the claiming process died before "
+    "sending; re-armed for the next poll"
+)
+_STALE_ATTEMPTED_ERROR = (
+    "send attempted, ack never recorded — process died mid-send; use admin reset to retry, may double-deliver"
+)
+_STALE_UNSENT_CAPPED_ERROR = (
+    "dispatch claim expired with no chat.send attempted, and the attempt budget is spent — use admin reset to retry"
+)
 
 # Failure classes the dispatcher treats as TRANSIENT: connection-level
 # failures (``OSError`` covers ConnectionRefusedError/ConnectionResetError/
@@ -239,6 +325,209 @@ async def _ensure_connection_with_retry(pool, owner_id: str, ip: str, token: str
             await asyncio.sleep(delay_s)
     # Last attempt: let whatever it raises propagate to the classifier.
     await pool.ensure_connection(owner_id, ip, token)
+
+
+def is_dispatch_stale(dispatched_at) -> bool:
+    """Is a ``dispatched`` claim older than ``STALE_DISPATCH_AFTER_S``?
+
+    Takes whatever the caller already holds -- an ISO string (the
+    ``get_onboarding_state`` bridge dict) or a ``datetime`` (the
+    ``PaperclipCompany`` dataclass the admin lever reads) -- so both sides of
+    the "is this claim dead" question answer it with the SAME threshold and
+    the same parsing.
+
+    An absent or unparseable stamp is NOT stale: a claim we cannot date is one
+    we must leave alone rather than guess at (fail closed -- the cost of a
+    wrong "stale" is a double-dispatched kickoff).
+    """
+    if isinstance(dispatched_at, str):
+        try:
+            dispatched_at = datetime.fromisoformat(dispatched_at)
+        except ValueError:
+            return False
+    if not isinstance(dispatched_at, datetime):
+        return False
+    if dispatched_at.tzinfo is None:
+        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - dispatched_at > timedelta(seconds=STALE_DISPATCH_AFTER_S)
+
+
+async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> bool:
+    """Lazy expiry for a ``dispatched`` row whose claimant never came back.
+
+    Called from ``maybe_dispatch_bootstrap``'s own state guard -- the poll
+    that finds the row is the one that recovers it (see the module docstring
+    for why there is no sweeper). Returns True ONLY when the row was re-armed
+    to ``not_started`` and this caller should go on to re-claim it.
+
+    Both writes are conditional on the row still being ``dispatched`` under
+    the SAME ``bootstrap_dispatch_id`` this dict was read at, so two
+    concurrent pollers cannot both act. Each also carries the fence for the
+    thing it just concluded from a STALE read: the re-arm requires
+    ``bootstrap_send_attempted_at`` to still be absent, the failed-settle
+    requires no ack (``only_if_unacked``). The time threshold says the
+    claimant is *probably* dead; those two clauses are what make it safe when
+    it was merely SLOW and woke up mid-window -- otherwise a live claimant
+    could send while this poll re-armed and re-claimed underneath it, running
+    Friday twice.
+    """
+    if not is_dispatch_stale(onboarding.get("bootstrap_dispatched_at")):
+        return False
+
+    row_user_id = onboarding.get("user_id")
+    generation = onboarding.get("onboarding_generation")
+    dispatch_id = onboarding.get("bootstrap_dispatch_id")
+    if not (row_user_id and generation and dispatch_id):
+        # No fencing token to write against (a legacy/degraded row). Leave it
+        # for the admin lever rather than write unfenced.
+        logger.warning("bootstrap_dispatcher: stale dispatch for %s carries no fencing token", owner_id)
+        return False
+
+    attempted = onboarding.get("bootstrap_send_attempted_at")
+    attempts = onboarding.get("bootstrap_attempts") or 0
+    if not attempted and attempts < MAX_BOOTSTRAP_ATTEMPTS:
+        # PROVABLY UNSENT: the write-ahead stamp is missing, so nothing was
+        # ever written to the socket. Safe to re-dispatch from scratch.
+        logger.warning(
+            "bootstrap_dispatcher: expired dispatch claim for %s (dispatch_id=%s, nothing sent) — re-arming",
+            owner_id,
+            dispatch_id,
+        )
+        await repo.rearm_bootstrap_dispatch(
+            row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id, reason=_STALE_UNSENT_ERROR
+        )
+        return True
+
+    # Two ways to land here, and both are recorded ``failed`` -- terminal but
+    # VISIBLE and admin-recoverable, which is the whole improvement over a row
+    # stuck at ``dispatched`` forever:
+    #
+    #   * AMBIGUOUS -- the send was attempted and never acked, so OpenClaw may
+    #     already have taken the run. Re-dispatching would mint a fresh run_id
+    #     / idempotencyKey it cannot dedup, the same reason the post-connect
+    #     classifier refuses to re-arm.
+    #   * OUT OF ATTEMPTS -- re-arming would drop the row at ``not_started``
+    #     with nothing willing to claim it (the cap stands every later poll
+    #     down) and no lever able to take it, since the admin reset accepts
+    #     only ``failed`` or a stale ``dispatched``. Marking failed at the cap
+    #     is exactly what the in-dispatch classifier does, and the lever's
+    #     failed path zeroes the counter.
+    logger.warning(
+        "bootstrap_dispatcher: expired dispatch claim for %s (dispatch_id=%s, attempted=%s, attempts=%d) "
+        "— marking failed, NOT re-sending",
+        owner_id,
+        dispatch_id,
+        bool(attempted),
+        attempts,
+    )
+    await repo.mark_bootstrap_failed(
+        row_user_id,
+        onboarding_generation=generation,
+        dispatch_id=dispatch_id,
+        reason=_STALE_ATTEMPTED_ERROR if attempted else _STALE_UNSENT_CAPPED_ERROR,
+        # A claim we judged dead may be merely SLOW and land its ack in the
+        # window between the read above and this write. Refuse to settle a row
+        # that acked in the meantime — mislabelling a DELIVERED kickoff failed
+        # is what would invite an admin reset into a double delivery.
+        only_if_unacked=True,
+    )
+    return False
+
+
+async def _stamp_sent_with_retry(repo, row_user_id: str, *, owner_id: str, generation: str, dispatch_id: str) -> bool:
+    """Advance the row to ``sent``, retrying transient write failures.
+
+    Same ladder-then-final-attempt shape as ``_ensure_connection_with_retry``.
+    Returns whether the stamp actually LANDED — which is not the same as "no
+    exception". The two ways to miss are handled differently:
+
+    * **The write failed** (throttle, timeout, transport) — retryable, so it
+      rides the ladder.
+    * **The write was REFUSED by its own guard** (``mark_bootstrap_sent``
+      returns False: the row moved on under this claim — a stale-claim
+      recovery already settled it ``failed``, an admin reset, a superseded
+      generation). A CAS that failed on STATE cannot be fixed by trying it
+      again, so this returns immediately — but it returns *False*, because the
+      delivery is just as unrecorded as an outright failure and the caller's
+      loud "unrecorded delivery" path is exactly what that row needs.
+    """
+    for attempt, delay_s in enumerate(_ACK_STAMP_RETRY_DELAYS_S, start=1):
+        try:
+            return bool(
+                await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+            )
+        except Exception as e:  # noqa: BLE001 — retryable until the ladder is spent
+            logger.warning(
+                "bootstrap_dispatcher: sent stamp failed for %s (attempt %d/%d, retrying in %.1fs): %s",
+                owner_id,
+                attempt,
+                len(_ACK_STAMP_RETRY_DELAYS_S) + 1,
+                delay_s,
+                e,
+            )
+            await asyncio.sleep(delay_s)
+    try:
+        return bool(
+            await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+        )
+    except Exception:  # noqa: BLE001 — the caller decides what an unrecorded delivery means
+        logger.exception("bootstrap_dispatcher: sent stamp exhausted its retries for %s", owner_id)
+        return False
+
+
+async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str, dispatch_id: str) -> None:
+    """Ack-time bookkeeping. NEVER raises.
+
+    Everything here runs AFTER OpenClaw acked the chat.send, i.e. after the
+    kickoff is delivered — so a failure in it must never reach the dispatch
+    failure classifier, which would mark a delivered kickoff ``failed`` (and,
+    worse, hand it to a recovery path as if it were retryable).
+
+    The ``sent`` stamp is RETRIED rather than dropped on the first error,
+    because it is the only durable record that this kickoff was delivered: a
+    row that loses it reads — to the staleness rule, to the admin lever, to a
+    human — exactly like a send that was never acked, which is terminal and
+    admin-retryable into a DOUBLE delivery. A DDB blip must not be able to
+    cost that.
+
+    If the stamp does not land — the ladder is exhausted, or the write is
+    REFUSED because the row moved on under this claim (a stale-claim recovery
+    settled it, an admin reset) — the delivery is UNRECORDED, and there is no
+    second durable place to put it (the table that would hold it is the one
+    that just failed or disowned us), so this ends in a loud ERROR plus the
+    ``bootstrap.ack_unrecorded`` metric — the signal an operator needs BEFORE
+    pressing reset. Two things still catch that case in practice: the
+    run-completion observer resolves the row on ``chat.final``
+    (``mark_bootstrap_delivered`` accepts a still-``dispatched`` row), and the
+    staleness rule's own ``failed`` reason says in as many words that a retry
+    may double-deliver.
+    """
+    if not await _stamp_sent_with_retry(
+        repo, row_user_id, owner_id=owner_id, generation=generation, dispatch_id=dispatch_id
+    ):
+        put_metric("bootstrap.ack_unrecorded")
+        logger.error(
+            "bootstrap_dispatcher: UNRECORDED DELIVERY for %s dispatch_id=%s — the kickoff WAS acked by "
+            "OpenClaw but bootstrap_state could not be advanced to 'sent' (write failed, or refused "
+            "because the row moved on under this claim). The row therefore reads as an unacked send: "
+            "staleness recovery will settle it 'failed', and an admin reset would DOUBLE-DELIVER "
+            "Friday's kickoff. Do not reset this row.",
+            owner_id,
+            dispatch_id,
+        )
+
+    # DELIVERY, not completion, is what retires the pending-brief sentinel: the
+    # kickoff carrying that brief has been accepted, so the item can never be
+    # looked at again, and one that outlives this moment would silently block
+    # the owner's next brief (its put-if-absent key) — e.g. after a reprovision.
+    # It used to be swept from the run-completion observer, which never fired at
+    # all if the run never terminated. Normally the drain has already deleted it
+    # and this is a no-op. Guarded separately from the stamp above: delivery
+    # happened either way, so one failing must not skip the other.
+    try:
+        await repo.delete_pending_brief(owner_id)
+    except Exception:  # noqa: BLE001 — post-delivery bookkeeping must never fail the dispatch
+        logger.exception("bootstrap_dispatcher: pending-brief sweep failed for %s", owner_id)
 
 
 async def _resolve_default_agent_id(owner_id: str) -> str | None:
@@ -378,7 +667,11 @@ async def _maybe_nudge_first_contact(
 
 async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = None) -> None:
     """Best-effort: dispatch Friday's first-run kickoff if it is this
-    caller's turn to (INV-5) and the runtime is reachable right now.
+    caller's turn to (INV-5) and the runtime is reachable right now -- and,
+    on the way in, expire a ``dispatched`` claim whose process died (the lazy
+    staleness rule; see the module docstring). Making a claim's turn come
+    round again is the same code path as taking a turn, so recovery needs no
+    sweeper of its own.
 
     ``onboarding``: an already-resolved ``get_onboarding_state``-shaped
     dict (see module docstring) -- pass this to avoid a redundant
@@ -403,15 +696,27 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
     if onboarding.get("funnel_state") != "submitted":
         # not_started: nothing to dispatch yet. complete: already delivered.
         return
-    if (onboarding.get("bootstrap_state") or "not_started") != "not_started":
-        # dispatched: a peer holds the claim (possibly mid connect-retry).
-        # delivered: done. failed: terminal -- a DETERMINISTIC connect
-        # failure, the attempts cap, OR an AMBIGUOUS post-connect failure
-        # (chat.send may already have been accepted; re-arming could double
-        # -run Friday -- see the failure classifier below). Only TRANSIENT
-        # connect-phase failures re-arm back to not_started, so "failed"
-        # means a re-dispatch is unsafe or pointless and it needs a human /
-        # the next onboarding_generation, not another poll.
+    bootstrap_state = onboarding.get("bootstrap_state") or "not_started"
+    if bootstrap_state == "dispatched":
+        # A peer holds the claim (possibly mid connect-retry) -- UNLESS its
+        # process is gone. This is the lazy staleness expiry (module
+        # docstring): off the dict this poll already read, so a fresh claim
+        # costs one comparison and returns. A stale one is either re-armed
+        # here (provably unsent) and re-claimed by the lines below, or
+        # settled ``failed`` (ambiguous) and stood down from.
+        if not await _recover_stale_dispatch(repo, onboarding, owner_id=owner_id):
+            return
+    elif bootstrap_state != "not_started":
+        # sent: the chat.send was ACKED -- delivery happened, and only the
+        # completion bookkeeping can still be outstanding; re-sending would
+        # double-run Friday. delivered: done. failed: terminal -- a
+        # DETERMINISTIC connect failure, the attempts cap, an AMBIGUOUS
+        # post-connect failure (chat.send may already have been accepted; see
+        # the failure classifier below), or an expired ambiguous claim. Only
+        # TRANSIENT connect-phase failures and provably-unsent expired claims
+        # go back to not_started, so "failed" means a re-dispatch is unsafe or
+        # pointless and it needs the admin lever / the next
+        # onboarding_generation, not another poll.
         return
     if (onboarding.get("bootstrap_attempts") or 0) >= MAX_BOOTSTRAP_ATTEMPTS:
         logger.warning(
@@ -475,17 +780,14 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
     async def _on_terminal(state: str, payload: dict) -> None:
         try:
             if state == "final":
+                # Both of these are COMPLETION-dependent and stay here: the
+                # delivered/complete marks describe a run that ENDED, and the
+                # nudge asks why it ended without a first email. The one thing
+                # that moved to ack time is delete_pending_brief (see
+                # ``_settle_ack``) — it depends on DELIVERY, not completion.
                 await repo.mark_bootstrap_delivered(
                     row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
                 )
-                # Onboarding is now COMPLETE, which is exactly the state that
-                # makes `get_onboarding_state` stop reading the pending-brief
-                # sentinel. Sweep it here, at that boundary: an item that
-                # outlives this moment is one nothing will ever look at again,
-                # and its put-if-absent key would silently block the owner's
-                # next brief (after a reprovision, say). Normally the drain
-                # has already deleted it and this is a no-op delete.
-                await repo.delete_pending_brief(owner_id)
                 await _maybe_nudge_first_contact(
                     repo,
                     row_user_id,
@@ -540,6 +842,16 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # above are unchanged. Absent brief_text (the "you pick" path, or a
         # legacy row) degrades to FIRST_RUN_NO_BRIEF_MESSAGE inside the builder.
         message = build_first_run_message(onboarding.get("onboarding_brief_text"))
+        # WRITE-AHEAD of the send (stamp 2): recorded while the outcome is
+        # still unknown, because after a process death it is the ONLY evidence
+        # of which side of the socket write we died on. A False return means
+        # the row moved on under this claim (superseded generation, admin
+        # reset, a stale-claim recovery) -- we no longer hold it, so we must
+        # not send at all.
+        if not await repo.mark_bootstrap_send_attempted(
+            row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
+        ):
+            raise RuntimeError("bootstrap claim no longer held (row moved on) — refusing to send")
         await pool.send_rpc(
             user_id=owner_id,
             req_id=f"bootstrap-dispatch-{dispatch_id}",
@@ -553,6 +865,10 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
             ip=ip,
             token=container["gateway_token"],
         )
+        # ACKED: OpenClaw accepted the run. Stamp 3 + the delivery-dependent
+        # side effects, inside a helper that never raises -- past this point
+        # nothing may re-classify a DELIVERED kickoff as a failed dispatch.
+        await _settle_ack(repo, row_user_id, owner_id=owner_id, generation=generation, dispatch_id=dispatch_id)
         logger.info("bootstrap_dispatcher: dispatched kickoff for %s dispatch_id=%s", owner_id, dispatch_id)
     except Exception as e:  # noqa: BLE001 — dispatch failed at connect or send
         logger.warning("bootstrap_dispatcher: dispatch failed for %s: %s", owner_id, e)

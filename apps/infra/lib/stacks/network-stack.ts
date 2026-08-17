@@ -133,5 +133,40 @@ export class NetworkStack extends cdk.Stack {
       defaultTargetGroups: [this.targetGroup],
     });
     this.albHttpListenerArn = httpListener.listenerArn;
+
+    // -------------------------------------------------------------------------
+    // Browser-view listener (:8081) — the ONLY WebSocket-capable door to the
+    // backend. api[-env].isol8.co is an API Gateway HTTP API, and HTTP APIs do
+    // not pass WebSocket upgrades (verified live: the upgrade dies with an ALB
+    // 400 and never reaches uvicorn), so the container-browser live view
+    // (routers/browser_view.py) rides CloudFront → VPC origin → this listener
+    // instead (api-stack.ts, BrowserViewDistribution).
+    //
+    // A dedicated port because path scoping must live HERE: CloudFront VPC
+    // origins put their ENIs behind an AWS-managed security group that only
+    // exists after the first deploy, so the ALB ingress rule below has to
+    // admit the VPC CIDR — meaning anything in-VPC (per-user containers
+    // included) can reach this port. The fixed-404 default + single path rule
+    // cap that at exactly the one Clerk-authenticated relay route, which is
+    // the same exposure the public CloudFront door grants anyway. Widening
+    // this listener's routing widens what a hostile container can reach.
+    const browserViewListener = this.alb.addListener("BrowserViewListener", {
+      port: 8081,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultAction: elbv2.ListenerAction.fixedResponse(404, {
+        contentType: "application/json",
+        messageBody: '{"detail":"Not found"}',
+      }),
+    });
+    browserViewListener.addAction("BrowserViewRelay", {
+      priority: 10,
+      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/browser-view/*"])],
+      action: elbv2.ListenerAction.forward([this.targetGroup]),
+    });
+    this.albSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+      ec2.Port.tcp(8081),
+      "CloudFront VPC origin to browser-view relay (path-capped by listener rule)",
+    );
   }
 }

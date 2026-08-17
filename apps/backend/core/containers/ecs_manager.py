@@ -10,6 +10,7 @@ for data isolation. Task IPs are discovered via AWS Cloud Map
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import secrets
 import socket
@@ -177,6 +178,10 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
     except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
         logger.exception("preserving channel accounts failed for %s; continuing", owner_id)
         return {}
+
+
+_CONFIG_LOCK_PROTOCOL_ENV = "ISOL8_CONFIG_LOCK_PROTOCOL"
+_CONFIG_LOCK_PROTOCOL_VERSION = "guard-v1"
 
 
 def _build_per_user_environment(
@@ -602,15 +607,25 @@ class EcsManager:
                 # is provided, inject it as OPENCLAW_HOOK_TOKEN — the helper
                 # also de-dupes any stale entry the caller supplied (matters
                 # for the backfill story).
-                base_env = list(cd_copy.get("environment") or [])
-                per_user_env = list(environment_for_task or [])
+                base_env = [
+                    entry
+                    for entry in (cd_copy.get("environment") or [])
+                    if entry.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+                ]
+                per_user_env = [
+                    entry for entry in (environment_for_task or []) if entry.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+                ]
                 if hook_token:
                     per_user_env = _build_per_user_environment(
                         hook_token=hook_token,
                         existing=per_user_env,
                     )
-                if per_user_env:
-                    cd_copy["environment"] = base_env + per_user_env
+                # Rollout handshake: the CDK base task definition is published
+                # before ServiceStack updates the backend. The new boot recovery
+                # refuses to run without this marker, which only a backend that
+                # participates in the recovery guard can add while cloning.
+                per_user_env.append({"name": _CONFIG_LOCK_PROTOCOL_ENV, "value": _CONFIG_LOCK_PROTOCOL_VERSION})
+                cd_copy["environment"] = base_env + per_user_env
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
@@ -778,11 +793,16 @@ class EcsManager:
         # curl resolve the seeded Friday identity; identity is now per-agent
         # (each agent reads its own claimed-key file), so the legacy shared env
         # must not survive a refresh and re-seed Friday's credentials fleet-wide.
-        existing_env = [e for e in existing_env if not e.get("name", "").startswith("PAPERCLIP_")]
+        existing_env = [
+            e
+            for e in existing_env
+            if not e.get("name", "").startswith("PAPERCLIP_") and e.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+        ]
         new_env = _build_per_user_environment(
             hook_token=container.get("hook_token") or "",
             existing=existing_env,
         )
+        new_env.append({"name": _CONFIG_LOCK_PROTOCOL_ENV, "value": _CONFIG_LOCK_PROTOCOL_VERSION})
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
@@ -1525,6 +1545,8 @@ class EcsManager:
         new_cpu: str | None = None,
         new_memory: str | None = None,
         new_image: str | None = None,
+        *,
+        _register_only: bool = False,
     ) -> str:
         """Update a user's container with new CPU/memory/image and force redeploy.
 
@@ -1612,10 +1634,23 @@ class EcsManager:
                     reg_kwargs["containerDefinitions"],
                     prior_resp["taskDefinition"].get("containerDefinitions", []),
                 )
+                # Rows created before the per-owner Bedrock role was persisted
+                # can still be running a correctly scoped role on their live
+                # task definition. Preserve that role as the fallback instead
+                # of silently reverting the clone to the shared base role.
+                if not bedrock_task_role_arn and prior_resp["taskDefinition"].get("taskRoleArn"):
+                    reg_kwargs["taskRoleArn"] = prior_resp["taskDefinition"]["taskRoleArn"]
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
             new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)
+
+            # The durable config-lock rollout persists this ARN on its fenced
+            # pending-update row before it changes the ECS service. Keeping the
+            # registration and deployment phases separate closes the crash
+            # window where a retry could only guess which revision to resume.
+            if _register_only:
+                return new_task_def_arn
 
             # Update service to use new task def + force redeploy
             await asyncio.to_thread(
@@ -1687,32 +1722,234 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
-    async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
-        """Poll until the user's ECS service has no running or pending tasks.
+    async def prepare_config_lock_protocol_task_definition(self, user_id: str) -> str:
+        """Register, but do not deploy, one owner's guarded base clone."""
 
-        Returns True once the service is drained, or False on timeout (the
-        caller proceeds anyway — a stuck describe is not worth wedging an
-        admin reprovision). Enforces the single-writer invariant on the
-        reprovision path, which scales to 0 and then re-creates the task; the
-        new task must not start until the old one is fully stopped, or both
-        would hold the EFS WAL database open at once.
+        base_resp = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=self._base_task_def_family,
+        )
+        base_defs = (base_resp.get("taskDefinition") or {}).get("containerDefinitions") or []
+        base_openclaw = next((definition for definition in base_defs if definition.get("name") == "openclaw"), None)
+        base_command = " ".join((base_openclaw or {}).get("command") or [])
+        required_fragments = (
+            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            'protocol_path = lock_path + ".isol8-protocol"',
+            "|| exit 1",
+        )
+        if not all(fragment in base_command for fragment in required_fragments):
+            raise EcsManagerError(
+                "CDK base task definition does not contain fail-fast config-lock recovery",
+                user_id,
+            )
+
+        current_size = await self.current_container_size(user_id)
+        if current_size is None:
+            raise EcsManagerError(f"No registered task definition for user {user_id}", user_id)
+        return await self.resize_user_container(
+            user_id,
+            new_cpu=current_size[0],
+            new_memory=current_size[1],
+            _register_only=True,
+        )
+
+    async def rollout_config_lock_protocol(
+        self,
+        user_id: str,
+        *,
+        target_task_definition_arn: str | None = None,
+        timeout_s: float = 900.0,
+        poll_interval_s: float = 15.0,
+    ) -> str:
+        """Converge one owner onto a prepared protocol task definition.
+
+        ContainerStack updates only the CDK base task definition; existing
+        per-user clones do not inherit its startup command. If no target is
+        supplied, this method prepares one from the latest base while retaining
+        the owner's current size and per-user state. Durable fleet callers pass
+        a target already persisted on their fenced update row.
+
+        ECS is updated without ``forceNewDeployment``. The task-definition ARN
+        is the desired-state idempotency key: replaying the same target after a
+        backend crash does not manufacture a second replacement deployment.
+
+        The ECS waiter is part of the contract: fleet callers may bound their
+        concurrency around this method knowing a slot remains occupied until
+        the stop-first replacement is stable (or the bounded waiter fails).
+        A stopped service is already stable; its new revision runs recovery on
+        the next ordinary scale-up.
+        """
+
+        if timeout_s <= 0 or poll_interval_s <= 0:
+            raise ValueError("timeout_s and poll_interval_s must be positive")
+
+        required_fragments = (
+            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            'protocol_path = lock_path + ".isol8-protocol"',
+            "|| exit 1",
+        )
+
+        async def _describe(task_definition: str) -> dict:
+            response = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=task_definition,
+            )
+            return response.get("taskDefinition") or {}
+
+        def _openclaw_definition(task_definition: dict) -> dict:
+            definitions = task_definition.get("containerDefinitions") or []
+            return next((definition for definition in definitions if definition.get("name") == "openclaw"), {})
+
+        if target_task_definition_arn is None:
+            target_task_definition_arn = await self.prepare_config_lock_protocol_task_definition(user_id)
+
+        target = await _describe(target_task_definition_arn)
+        target_openclaw = _openclaw_definition(target)
+        target_command = " ".join(target_openclaw.get("command") or [])
+        target_env = {entry.get("name"): entry.get("value") for entry in target_openclaw.get("environment") or []}
+        if (
+            not all(fragment in target_command for fragment in required_fragments)
+            or target_env.get(_CONFIG_LOCK_PROTOCOL_ENV) != _CONFIG_LOCK_PROTOCOL_VERSION
+        ):
+            raise EcsManagerError(
+                "Target task definition does not contain the guarded config-lock protocol",
+                user_id,
+            )
+
+        # A changed taskDefinition starts a deployment by itself. Omitting
+        # forceNewDeployment makes replaying this exact target convergent.
+        await asyncio.to_thread(
+            self._ecs.update_service,
+            cluster=self._cluster,
+            service=self._service_name(user_id),
+            taskDefinition=target_task_definition_arn,
+            deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+        )
+
+        pre_wait_response = await asyncio.to_thread(
+            self._ecs.describe_services,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+        )
+        pre_wait_services = pre_wait_response.get("services") or []
+        desired_count = pre_wait_services[0].get("desiredCount", 0) if pre_wait_services else 0
+        if desired_count > 0:
+            await self._update_container(
+                user_id,
+                task_definition_arn=target_task_definition_arn,
+                status="provisioning",
+            )
+            asyncio.create_task(self._await_running_transition(user_id))
+        else:
+            await self._update_container(user_id, task_definition_arn=target_task_definition_arn)
+
+        waiter = self._ecs.get_waiter("services_stable")
+        max_attempts = max(1, math.ceil(timeout_s / poll_interval_s))
+        await asyncio.to_thread(
+            waiter.wait,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+            WaiterConfig={"Delay": max(1, math.ceil(poll_interval_s)), "MaxAttempts": max_attempts},
+        )
+        service_resp = await asyncio.to_thread(
+            self._ecs.describe_services,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+        )
+        services = service_resp.get("services") or []
+        service = services[0] if services else {}
+        primary = next(
+            (deployment for deployment in service.get("deployments") or [] if deployment.get("status") == "PRIMARY"),
+            {},
+        )
+        actual_task_def_arn = primary.get("taskDefinition") or service.get("taskDefinition")
+        if primary.get("rolloutState") == "FAILED":
+            raise EcsManagerError("Config-lock protocol rollout failed its ECS deployment", user_id)
+        if actual_task_def_arn != target_task_definition_arn:
+            if actual_task_def_arn:
+                # A circuit-breaker rollback can satisfy services_stable on the
+                # prior revision. Keep the DDB pointer honest before surfacing
+                # failure so a retry reads the task definition that will run.
+                await self._update_container(user_id, task_definition_arn=actual_task_def_arn)
+            raise EcsManagerError(
+                "Config-lock protocol rollout stabilized on a different task definition",
+                user_id,
+            )
+        # Deliberately no direct status="running" write here: the
+        # _await_running_transition poller spawned above owns the
+        # provisioning -> running transition and only flips after its
+        # gateway reachability check. A direct write would change the DDB
+        # status out of "provisioning" and make that poller exit silently
+        # before the check, recording an ECS-stable but gateway-unreachable
+        # container as running.
+        return target_task_definition_arn
+
+    def _tasks_fully_stopped_blocking(self, service_name: str) -> bool:
+        """Blocking: whether every task of the service has reached lastStatus
+        STOPPED — the only signal equivalent to "the container has exited".
+
+        Service-level counts are NOT that signal: ``runningCount`` drops the
+        moment a task leaves RUNNING, but the task then sits in STOPPING for
+        up to its 120s stopTimeout while the entrypoint (litestream) performs
+        its final replica sync — and a DELETED service describes as absent
+        while its last task is still stopping. Either window lets a caller
+        that trusted the counts race writes that have not landed yet (the
+        replica-prefix delete, the OAuth seed harvest, the single-writer
+        reprovision).
+
+        A per-user service runs at most one task and stopped-task records are
+        retained ~1h, so one unpaginated page per desiredStatus is enough.
+        ServiceNotFoundException means ECS has garbage-collected the service
+        record itself — long after its tasks stopped — and reads as drained.
+        (Residual risk: if ECS also raises it for a fresh INACTIVE service,
+        a task could still be STOPPING; the harvest's freshness check is the
+        backstop for that narrow window.) ``describe_tasks`` failures with
+        reason MISSING are expired stopped records — not running — so only
+        the returned tasks are checked.
+        """
+        arns: list[str] = []
+        for desired in ("RUNNING", "STOPPED"):
+            try:
+                resp = self._ecs.list_tasks(
+                    cluster=self._cluster,
+                    serviceName=service_name,
+                    desiredStatus=desired,
+                )
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                if code == "ServiceNotFoundException":
+                    return True
+                raise
+            arns.extend(resp.get("taskArns", []))
+        if not arns:
+            return True
+        for i in range(0, len(arns), 100):
+            desc = self._ecs.describe_tasks(cluster=self._cluster, tasks=arns[i : i + 100])
+            if any(t.get("lastStatus") != "STOPPED" for t in desc.get("tasks", [])):
+                return False
+        return True
+
+    async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
+        """Poll until every task of the user's service has actually STOPPED.
+
+        Returns True once drained, or False on timeout (the caller proceeds
+        anyway — a stuck poll is not worth wedging an admin reprovision).
+        Verifies task ``lastStatus`` rather than service running/pending
+        counts — see ``_tasks_fully_stopped_blocking`` for why the counts lie
+        during the STOPPING window. Enforces the single-writer invariant on
+        the reprovision path and the write-ordering the wipe flows depend on
+        (replica delete + OAuth seed harvest must postdate litestream's
+        final sync, which only lands when the container exits).
         """
         service_name = self._service_name(user_id)
         interval_s = 3.0
         attempts = max(1, int(timeout_s / interval_s))
         for _ in range(attempts):
             try:
-                resp = await asyncio.to_thread(
-                    self._ecs.describe_services,
-                    cluster=self._cluster,
-                    services=[service_name],
-                )
-                services = resp.get("services", [])
-                svc = services[0] if services else {}
-                if svc.get("runningCount", 0) == 0 and svc.get("pendingCount", 0) == 0:
+                if await asyncio.to_thread(self._tasks_fully_stopped_blocking, service_name):
                     return True
             except Exception:
-                logger.warning("describe_services failed while draining %s; will retry", service_name)
+                logger.warning("task-termination check failed while draining %s; will retry", service_name)
             await asyncio.sleep(interval_s)
         logger.warning(
             "Service %s did not drain within %.0fs; proceeding with reprovision",
@@ -2217,10 +2454,15 @@ class EcsManager:
         # default agent's auth row here: the container's per-agent SQLite auth
         # store is the source of truth for the LIVE (rotating) token, and this
         # DDB-sourced seed is a stale snapshot the instant the container's first
-        # refresh rotates it. The container's store-row-absent import gate
-        # already consumes this seed ONLY for a container with no credential yet
-        # (fresh provision) and ignores it on a populated store — so re-staging
-        # on a reprovision/recover/config-rewrite never clobbers a live token.
+        # refresh rotates it. The seed stays viable across wipe-and-reprovision
+        # because the flows that destroy the live store's replica harvest the
+        # rotated chain back into the DDB row first (oauth_service.
+        # harvest_rotated_oauth_seed) — so this stage always writes the
+        # freshest credential the backend has seen. The container's
+        # store-row-absent import gate already consumes this seed ONLY for a
+        # container with no credential yet (fresh provision) and ignores it on
+        # a populated store — so re-staging on a reprovision/recover/
+        # config-rewrite never clobbers a live token.
         # Force-reimport (clear_default_agent_auth_profile_row) happens ONLY on a
         # genuine fresh-token event: reconnect (routers/oauth.py /poll) and
         # provider switch (_hot_swap_provider). See

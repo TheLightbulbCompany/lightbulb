@@ -40,7 +40,12 @@ export function ProvisioningActionsPanel({
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
 
-  const resetBootstrapDisabled = bootstrapState !== "failed";
+  // "dispatched" is offered too — that is the stuck-claim case the lever now
+  // recovers. Whether the claim is actually EXPIRED is the server's call (it
+  // has the timestamp and the threshold); a still-in-flight one comes back
+  // 409 into the error banner rather than being guessed at here.
+  const resetBootstrapDisabled =
+    bootstrapState !== "failed" && bootstrapState !== "dispatched";
 
   function clearStatus() {
     setError(null);
@@ -102,10 +107,12 @@ export function ProvisioningActionsPanel({
             Reset bootstrap
           </h3>
           <p className="text-xs text-zinc-400">
-            Re-arms a failed onboarding kickoff (attempts exhausted or
-            chat.error). The kickoff re-dispatches on the user&apos;s next
-            /container/status poll — delivery needs their chat surface
-            online.
+            Re-arms a stuck onboarding kickoff: a failed one (attempts
+            exhausted or chat.error), or a &apos;dispatched&apos; one whose
+            claim expired — including the send-attempted-never-acked case,
+            which may double-deliver. The kickoff re-dispatches on the
+            user&apos;s next /container/status poll — delivery needs their
+            chat surface online.
           </p>
           <ConfirmActionDialog
             confirmText={userId}
@@ -119,7 +126,7 @@ export function ProvisioningActionsPanel({
               disabled={resetBootstrapDisabled}
               title={
                 resetBootstrapDisabled
-                  ? 'Only available when bootstrap_state is "failed".'
+                  ? 'Only available when bootstrap_state is "failed" or "dispatched".'
                   : undefined
               }
             >

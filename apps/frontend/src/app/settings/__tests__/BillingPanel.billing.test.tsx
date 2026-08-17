@@ -100,6 +100,35 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 
+  it("org status chip renders the humanized planLabel, not the raw enum", () => {
+    // Regression guard for the org-context status chip: it used to render
+    // `{subscriptionStatus}` directly under `textTransform: capitalize`,
+    // which can't fix an underscore — "past_due" rendered "Past_due" (only
+    // the first character capitalizes; there's no whitespace word boundary).
+    // Routing through the shared `statusChipLabel`/`planLabel` — the same
+    // source the personal card uses (:504-507) — humanizes the underscore
+    // away so the chip reads "Past due".
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 1,
+      lifetime_spend: 2,
+      subscription_status: "past_due",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: 7,
+      team_seat_price_usd: 20,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
+    expect(screen.getByText("Past due")).toBeInTheDocument();
+    expect(screen.queryByText("past_due")).not.toBeInTheDocument();
+  });
+
   it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {
     billing.isSubscribed = true;
     billing.account = {

@@ -1,4 +1,10 @@
+import * as cdk from "aws-cdk-lib";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as route53 from "aws-cdk-lib/aws-route53";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import { ApiStack } from "../lib/stacks/api-stack";
+import { NetworkStack } from "../lib/stacks/network-stack";
 import { synthApiStack } from "./helpers";
 
 // Hoist a single ApiStack synthesis and reuse across tests.
@@ -23,6 +29,27 @@ describe("ApiStack — ws-connections owner-keyed fan-out", () => {
           },
         }),
       ]),
+    });
+  });
+});
+
+describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
+  // The WS authorizer is the second door for Clerk tokens; without this env
+  // the azp check silently no-ops (empty allowlist = off). Mode pins the
+  // audit rollout default.
+  test.each([
+    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
+    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+  ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
+    const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: `isol8-${envName}-ws-authorizer`,
+      Environment: {
+        Variables: Match.objectLike({
+          CLERK_AUTHORIZED_PARTIES: parties,
+          CLERK_AZP_MODE: "audit",
+        }),
+      },
     });
   });
 });
@@ -62,5 +89,77 @@ describe("ApiStack — API Gateway account CloudWatch role (access/execution log
 
   test("dev stack does NOT own the account-level singleton", () => {
     API_TEMPLATE.resourceCountIs("AWS::ApiGateway::Account", 0);
+  });
+});
+
+describe("ApiStack — browser-view CloudFront door", () => {
+  // The distribution only synthesizes when cert + zone are provided (same
+  // gate as the HTTP API custom domain), so this needs its own harness —
+  // the shared one deliberately passes neither.
+  function synthWithDomain(environment: "dev" | "prod"): Template {
+    const app = new cdk.App();
+    const env = { account: "877352799272", region: "us-east-1" };
+    const network = new NetworkStack(app, `Network-${environment}`, { env, environment });
+    const support = new cdk.Stack(app, `Support-${environment}`, { env });
+    const containersTable = new dynamodb.Table(support, "Containers", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+    const api = new ApiStack(app, `Api-${environment}`, {
+      env,
+      environment,
+      vpc: network.vpc,
+      alb: network.alb,
+      albHttpListenerArn: network.albHttpListenerArn,
+      albSecurityGroup: network.albSecurityGroup,
+      certificate: acm.Certificate.fromCertificateArn(
+        support,
+        "Cert",
+        "arn:aws:acm:us-east-1:877352799272:certificate/test-cert",
+      ),
+      hostedZone: route53.HostedZone.fromHostedZoneAttributes(support, "Zone", {
+        hostedZoneId: "Z0TEST",
+        zoneName: "isol8.co",
+      }),
+      paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
+      paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
+      wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
+      containersTable,
+    });
+    return Template.fromStack(api);
+  }
+
+  test("distribution targets the ALB VPC origin on 8081, never :80", () => {
+    // :80's default action is the whole backend target group; the path cap
+    // lives only on the 8081 listener. A distribution pointed at 80 would
+    // silently hand CloudFront the entire FastAPI surface.
+    const template = synthWithDomain("dev");
+    template.hasResourceProperties("AWS::CloudFront::VpcOrigin", {
+      VpcOriginEndpointConfig: Match.objectLike({
+        HTTPPort: 8081,
+        OriginProtocolPolicy: "http-only",
+      }),
+    });
+    template.hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({
+        Aliases: ["bv-dev.isol8.co"],
+        DefaultCacheBehavior: Match.objectLike({
+          // CachingDisabled + AllViewer managed policy ids — a cached or
+          // header-stripped relay is a broken relay.
+          CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+          OriginRequestPolicyId: "216adef6-5c7f-47e4-b989-5492eafa07d3",
+          ViewerProtocolPolicy: "https-only",
+        }),
+      }),
+    });
+  });
+
+  test("prod alias is bv.isol8.co", () => {
+    synthWithDomain("prod").hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({ Aliases: ["bv.isol8.co"] }),
+    });
+  });
+
+  test("no cert/zone -> no distribution (unknown-env synth stays clean)", () => {
+    API_TEMPLATE.resourceCountIs("AWS::CloudFront::Distribution", 0);
   });
 });

@@ -18,9 +18,11 @@ The scheduled worker also runs two Paperclip-related passes (T13):
 import asyncio
 import logging
 import time
+import uuid
 
 from core.observability.metrics import put_metric
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
+from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
 from core.services.friday_identity import heal_seeded_files
@@ -35,12 +37,28 @@ logger = logging.getLogger(__name__)
 # the right amount of paranoia. Public name (no underscore) since both
 # the webhook router and tests import it.
 PAPERCLIP_RETRY_KIND = "paperclip_provision"
+TASK_DEFINITION_REFRESH_KIND = "task_definition_refresh"
+TASK_DEFINITION_REFRESH_CHANGE = "refresh_from_base"
+# Any changes.* key that re-registers the per-owner ECS task definition. Two
+# in-flight updates carrying any of these race on the task def (last writer
+# wins image/size), so queueing and force-apply both treat a row carrying any
+# of them as a conflict. Shared with routers/admin.py — keep the sets in sync
+# by importing this, not by copying it.
+TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory", TASK_DEFINITION_REFRESH_CHANGE)
 
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
 
 # Inter-iteration wait for run_scheduled_worker, in seconds.
 _WORKER_INTERVAL_S = 60
+
+# A refresh normally checkpoints every 30 seconds while its ECS waiter is
+# active. Three missed checkpoints mean the backend worker is gone and another
+# worker may take over the same durable target.
+_APPLY_HEARTBEAT_S = 30
+_APPLY_STALE_S = 3 * _APPLY_HEARTBEAT_S
+# Stale refresh rows reclaimed per worker tick (see the recovery pass).
+_RECOVERY_MAX_PER_TICK = 3
 
 # Cooperative stop signal for run_scheduled_worker. Created LAZILY inside
 # run_scheduled_worker so the Event binds to the loop that actually runs the
@@ -111,6 +129,65 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
 
     logger.info("Queued fleet image update for %d owners, image=%s", count, new_image)
     return count
+
+
+async def queue_fleet_task_definition_refresh(description: str | None = None) -> tuple[int, int]:
+    """Schedule a durable, sequential base-clone refresh for every owner.
+
+    The update worker processes due rows one at a time. Each apply waits for
+    the owner's ECS service to become stable, so this is a bounded fleet roll
+    rather than a burst of detached deployments. Existing task-definition
+    updates are skipped to preserve the per-owner single-roll invariant.
+    """
+
+    rows = await container_repo.scan_all()
+    scheduled_at = utc_now_iso()
+    queued = skipped = 0
+    for row in rows:
+        item = await queue_task_definition_refresh_for_owner(row, description=description, scheduled_at=scheduled_at)
+        if item is None:
+            skipped += 1
+        else:
+            queued += 1
+
+    logger.info("Scheduled task-definition refresh for %d owners (%d skipped)", queued, skipped)
+    return queued, skipped
+
+
+async def queue_task_definition_refresh_for_owner(
+    row: dict,
+    *,
+    description: str | None = None,
+    scheduled_at: str | None = None,
+) -> dict | None:
+    """Queue one owner's base-clone refresh row, or None when ineligible.
+
+    Ineligible means the container row is incomplete, mid-provision, or an
+    update carrying any task-definition-rolling change is already in flight
+    (the per-owner single-roll invariant). Callers: the fleet queue above and
+    the single-owner ``POST /container/updates`` path.
+    """
+    owner_id = row.get("owner_id")
+    status = row.get("status")
+    complete = all(row.get(field) for field in ("owner_id", "service_name", "access_point_id", "task_definition_arn"))
+    unclaimed_error = (
+        status == "error" and not row.get("provision_claim_id") and not row.get("provision_execution_name")
+    )
+    if not complete or (status not in {"running", "stopped"} and not unclaimed_error) or row.get("needs_provision"):
+        return None
+    in_flight = await update_repo.get_in_flight(owner_id)
+    if any(
+        isinstance(update.get("changes"), dict) and any(key in update["changes"] for key in TASKDEF_ROLL_CHANGE_KEYS)
+        for update in in_flight
+    ):
+        return None
+    return await update_repo.create(
+        owner_id=owner_id,
+        update_type=TASK_DEFINITION_REFRESH_KIND,
+        description=description or "Refresh task definition for config-lock recovery",
+        changes={TASK_DEFINITION_REFRESH_CHANGE: True},
+        scheduled_at=scheduled_at or utc_now_iso(),
+    )
 
 
 # Keys upstream removed from the strict OpenClaw schema that an older
@@ -318,48 +395,45 @@ async def reapply_owner_config(owner_id: str) -> dict:
     }
 
 
-async def apply_update(owner_id: str, update_id: str) -> bool:
-    """Apply a single pending update.
+async def _heartbeat_apply_claim(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    stop: asyncio.Event,
+) -> None:
+    """Keep a long ECS wait owned; stop if a successor takes the claim."""
 
-    1. Conditionally set status to 'applying' (prevents double-apply).
-    2. Apply config patch if present.
-    3. Apply ECS changes if present (resize_user_container).
-    4. Mark as applied on success, failed on error.
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_APPLY_HEARTBEAT_S)
+        except asyncio.TimeoutError:
+            try:
+                held = await update_repo.heartbeat_apply(owner_id, update_id, claim_id)
+            except Exception:
+                logger.exception(
+                    "Apply heartbeat failed (owner=%s update=%s)",
+                    owner_id,
+                    update_id,
+                )
+                return
+            if not held:
+                logger.warning(
+                    "Apply claim moved while heartbeat was active (owner=%s update=%s)",
+                    owner_id,
+                    update_id,
+                )
+                return
 
-    Returns True if applied, False if already being applied or failed precondition.
-    """
-    # Step 1: conditional write
-    acquired = await update_repo.set_status_conditional(owner_id, update_id, "applying", ["pending", "scheduled"])
-    if not acquired:
-        logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
-        return False
+
+async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
+    """Apply a row already fenced by ``claim_id``."""
+
+    owner_id = update["owner_id"]
+    update_id = update["update_id"]
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task = asyncio.create_task(_heartbeat_apply_claim(owner_id, update_id, claim_id, heartbeat_stop))
 
     try:
-        # Re-fetch the update to get its details
-        from core.dynamodb import get_table, run_in_thread
-        from boto3.dynamodb.conditions import Key
-
-        table = get_table("pending-updates")
-        # Strongly consistent: we just conditionally flipped this row to
-        # "applying", and callers can create-then-immediately-apply (admin
-        # force-apply), so an eventually-consistent read could miss the row we
-        # just wrote — which would return False here while leaving it stuck in
-        # "applying" and blocking the owner's future rolls.
-        response = await run_in_thread(
-            table.query,
-            KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("update_id").eq(update_id),
-            ConsistentRead=True,
-        )
-        items = response.get("Items", [])
-        if not items:
-            # Should be unreachable after the strongly-consistent read above, but
-            # if it ever happens the row was already flipped to "applying" — clear
-            # it back to a terminal state so it can't wedge the owner's guard.
-            logger.error("Update %s not found after acquiring lock (owner=%s)", update_id, owner_id)
-            await update_repo.set_status_conditional(owner_id, update_id, "failed", ["applying"])
-            return False
-
-        update = items[0]
         changes = update.get("changes", {})
         update_type = update.get("update_type", "")
 
@@ -374,96 +448,146 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         new_cpu = changes.get("new_cpu")
         new_memory = changes.get("new_memory")
 
-        if new_image or new_cpu or new_memory:
+        refresh_from_base = changes.get(TASK_DEFINITION_REFRESH_CHANGE) is True
+        if refresh_from_base and (new_image or new_cpu or new_memory):
+            raise ValueError("refresh_from_base cannot be combined with image or size changes")
+
+        if refresh_from_base or new_image or new_cpu or new_memory:
             from core.containers import get_ecs_manager
 
             ecs = get_ecs_manager()
 
-            # An image roll reuses the container's existing on-disk
-            # openclaw.json. Strip keys the new image's strict schema no
-            # longer accepts so the rolled gateway doesn't crash-loop at
-            # boot. No-op on a config already free of them.
-            if new_image:
-                await migrate_removed_config_keys(owner_id)
+            if refresh_from_base:
+                target_task_definition_arn = update.get("target_task_definition_arn")
+                if not target_task_definition_arn:
+                    target_task_definition_arn = await ecs.prepare_config_lock_protocol_task_definition(owner_id)
+                    stored = await update_repo.set_apply_target(
+                        owner_id,
+                        update_id,
+                        claim_id,
+                        target_task_definition_arn,
+                    )
+                    if not stored:
+                        logger.warning(
+                            "Prepared task definition %s but apply claim moved (owner=%s update=%s)",
+                            target_task_definition_arn,
+                            owner_id,
+                            update_id,
+                        )
+                        return False
 
-                # Carry redaction rules onto already-provisioned containers.
-                # Nothing else does: the strip above only REMOVES keys, and
-                # replace_provider_block rebuilds provider/plugin subtrees but
-                # never `logging`. Without this an existing owner keeps the
-                # playbook that reads their Paperclip key while never gaining
-                # the pattern that redacts it — the cohort that needs it most.
-                # Additive and behaviour-free, so it is safe on every owner.
-                from core.containers.config import REDACT_PATTERNS
-                from core.services.config_patcher import (
-                    ensure_plugin_entries,
-                    ensure_redact_patterns,
+                # This is the last ownership checkpoint before ECS. If a
+                # takeover races after it, both workers still set the SAME
+                # target without forceNewDeployment, so the remote mutation is
+                # idempotent and terminal DDB writes remain fenced.
+                if not await update_repo.heartbeat_apply(owner_id, update_id, claim_id):
+                    return False
+                await ecs.rollout_config_lock_protocol(
+                    owner_id,
+                    target_task_definition_arn=target_task_definition_arn,
                 )
-                from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
+                logger.info(
+                    "Task-definition refresh reached ECS stability for owner=%s (update=%s target=%s)",
+                    owner_id,
+                    update_id,
+                    target_task_definition_arn,
+                )
+            else:
+                # An image roll reuses the container's existing on-disk
+                # openclaw.json. Strip keys the new image's strict schema no
+                # longer accepts so the rolled gateway doesn't crash-loop at
+                # boot. No-op on a config already free of them.
+                if new_image:
+                    await migrate_removed_config_keys(owner_id)
 
-                try:
-                    await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
-                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
-                    logger.exception("update_service: redact-pattern patch failed for owner=%s", owner_id)
+                    # Carry redaction rules onto already-provisioned containers.
+                    # Nothing else does: the strip above only REMOVES keys, and
+                    # replace_provider_block rebuilds provider/plugin subtrees but
+                    # never `logging`. Without this an existing owner keeps the
+                    # playbook that reads their Paperclip key while never gaining
+                    # the pattern that redacts it — the cohort that needs it most.
+                    # Additive and behaviour-free, so it is safe on every owner.
+                    from core.containers.config import REDACT_PATTERNS, memory_plugin_entries
+                    from core.services.config_patcher import (
+                        ensure_plugin_entries,
+                        ensure_redact_patterns,
+                    )
+                    from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
 
-                # Enable the credential plugin on the way in. The roll bakes
-                # the extension but reuses the on-disk config, so without this
-                # an existing owner carries a plugin that never activates —
-                # and any later path that writes the new playbook (a company
-                # import, a marketplace hire) would be claiming credentials
-                # are in the environment when nothing puts them there.
-                # Enabling it alone is harmless: an agent still reading the
-                # key file simply has the credentials twice.
-                try:
-                    await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
-                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
-                    logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+                    try:
+                        await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: redact-pattern patch failed for owner=%s", owner_id)
 
-                # Image rolls are the fleet's routine touch-point, but they
-                # never rewrite configs — so the seeded-file heal pass that
-                # rides the provision/config-rewrite path would otherwise
-                # never reach an already-provisioned Friday. Run it here so a
-                # promotion carries playbook fixes fleet-wide. Best-effort by
-                # contract (never raises).
-                from core.containers import get_workspace
+                    # Enable the credential plugin on the way in. The roll bakes
+                    # the extension but reuses the on-disk config, so without this
+                    # an existing owner carries a plugin that never activates —
+                    # and any later path that writes the new playbook (a company
+                    # import, a marketplace hire) would be claiming credentials
+                    # are in the environment when nothing puts them there.
+                    # Enabling it alone is harmless: an agent still reading the
+                    # key file simply has the credentials twice.
+                    # memory-wiki rides along for the same reason: the plugin is
+                    # baked in the base image but a roll reuses the on-disk
+                    # config, so pre-existing owners would never gain the shared
+                    # company-brain vault. ensure_plugin_entries is additive-only,
+                    # so an owner who already configured memory-wiki keeps theirs.
+                    try:
+                        await ensure_plugin_entries(
+                            owner_id,
+                            {
+                                **PAPERCLIP_CREDS_PLUGIN_PATCH["entries"],
+                                "memory-wiki": memory_plugin_entries()["memory-wiki"],
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
 
-                await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
+                    # Image rolls are the fleet's routine touch-point, but they
+                    # never rewrite configs — so the seeded-file heal pass that
+                    # rides the provision/config-rewrite path would otherwise
+                    # never reach an already-provisioned Friday. Run it here so a
+                    # promotion carries playbook fixes fleet-wide. Best-effort by
+                    # contract (never raises).
+                    from core.containers import get_workspace
 
-            # An image-only roll carries NO size — queue_image_update /
-            # queue_fleet_image_update write {"new_image": X} only. Passing the
-            # resulting None/None straight through would default the re-register
-            # to the standard PER_USER_* box and silently shrink an Ultra Pro
-            # owner's container on every routine image bump / fleet-force-apply
-            # — the exact revert plan-derived sizing exists to prevent. Fill the
-            # gap from the owner's plan ONLY when the change specifies neither
-            # dimension; a real resize (explicit cpu/memory) is left untouched.
-            if new_cpu is None and new_memory is None:
-                new_cpu, new_memory = await ecs._size_for_owner(owner_id)
+                    await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
 
-            await ecs.resize_user_container(
-                user_id=owner_id,
-                new_cpu=new_cpu,
-                new_memory=new_memory,
-                new_image=new_image,
-            )
-            logger.info(
-                "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
-                owner_id,
-                new_image,
-                new_cpu,
-                new_memory,
-                update_id,
-            )
+                # An image-only roll carries NO size — queue_image_update /
+                # queue_fleet_image_update write {"new_image": X} only. Passing the
+                # resulting None/None straight through would default the re-register
+                # to the standard PER_USER_* box and silently shrink an Ultra Pro
+                # owner's container on every routine image bump / fleet-force-apply
+                # — the exact revert plan-derived sizing exists to prevent. Fill the
+                # gap from the owner's plan ONLY when the change specifies neither
+                # dimension; a real resize (explicit cpu/memory) is left untouched.
+                if new_cpu is None and new_memory is None:
+                    new_cpu, new_memory = await ecs._size_for_owner(owner_id)
 
-        # Step 4: mark as applied. The ECS/config changes above already took
-        # effect, so the apply itself succeeded regardless of this flip — but if
-        # the status write is rejected, surface it rather than silently leaving
-        # the row stuck in "applying" (the invisible-failure trap this hit when
-        # mark_applied's condition did not accept the "applying" state).
-        marked = await update_repo.mark_applied(owner_id, update_id)
+                await ecs.resize_user_container(
+                    user_id=owner_id,
+                    new_cpu=new_cpu,
+                    new_memory=new_memory,
+                    new_image=new_image,
+                )
+                logger.info(
+                    "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
+                    owner_id,
+                    new_image,
+                    new_cpu,
+                    new_memory,
+                    update_id,
+                )
+
+        marked = await update_repo.finish_claimed_apply(
+            owner_id,
+            update_id,
+            claim_id,
+            status="applied",
+        )
         if not marked:
             logger.warning(
-                "Update %s changes took effect but status was not flipped to "
-                "'applied' (owner=%s, type=%s); row left in 'applying'",
+                "Update %s changes took effect but its apply claim moved (owner=%s, type=%s)",
                 update_id,
                 owner_id,
                 update_type,
@@ -472,14 +596,40 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
             logger.info("Update %s applied successfully (owner=%s, type=%s)", update_id, owner_id, update_type)
         return True
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to apply update %s (owner=%s)", update_id, owner_id)
-        # Mark as failed
         try:
-            await update_repo.set_status_conditional(owner_id, update_id, "failed", ["applying"])
+            await update_repo.finish_claimed_apply(
+                owner_id,
+                update_id,
+                claim_id,
+                status="failed",
+                failure_reason=str(exc),
+            )
         except Exception:
             logger.exception("Failed to mark update %s as failed", update_id)
         return False
+    finally:
+        heartbeat_stop.set()
+        await heartbeat_task
+
+
+async def apply_update(owner_id: str, update_id: str) -> bool:
+    """Apply a single pending update.
+
+    1. Conditionally set status to 'applying' (prevents double-apply).
+    2. Apply config patch if present.
+    3. Apply ECS changes if present (resize_user_container).
+    4. Mark as applied on success, failed on error.
+
+    Returns True if applied, False if already being applied or failed precondition.
+    """
+    claim_id = uuid.uuid4().hex
+    update = await update_repo.claim_apply(owner_id, update_id, claim_id)
+    if update is None:
+        logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
+        return False
+    return await _apply_claimed_update(update, claim_id)
 
 
 def _build_paperclip_provisioning():
@@ -691,6 +841,49 @@ async def _paperclip_provision_retry_pass() -> None:
         put_metric("paperclip.retry_pass.failed", value=nonretryable)
 
 
+async def _recover_stale_task_definition_refreshes() -> None:
+    """Resume abandoned fleet refreshes from their durable ECS target."""
+
+    stale_before = int(time.time()) - _APPLY_STALE_S
+    updates = await update_repo.list_stale_applying(
+        TASK_DEFINITION_REFRESH_KIND,
+        stale_before_epoch=stale_before,
+    )
+    # Each reclaimed row waits for ECS stability (bounded at ~15 min), so an
+    # unbounded batch could absorb the worker for hours. Recover a few per
+    # tick; the rest stay stale and are picked up on later ticks.
+    if len(updates) > _RECOVERY_MAX_PER_TICK:
+        logger.warning(
+            "Deferring %d stale task-definition refreshes to later worker ticks",
+            len(updates) - _RECOVERY_MAX_PER_TICK,
+        )
+        updates = updates[:_RECOVERY_MAX_PER_TICK]
+    for update in updates:
+        changes = update.get("changes") or {}
+        if changes.get(TASK_DEFINITION_REFRESH_CHANGE) is not True:
+            continue
+        owner_id = update.get("owner_id")
+        update_id = update.get("update_id")
+        if not owner_id or not update_id:
+            continue
+        claim_id = uuid.uuid4().hex
+        claimed = await update_repo.claim_stale_apply(
+            owner_id,
+            update_id,
+            claim_id,
+            stale_before_epoch=stale_before,
+        )
+        if claimed is None:
+            continue
+        logger.warning(
+            "Reclaimed stale task-definition refresh (owner=%s update=%s target=%s)",
+            owner_id,
+            update_id,
+            claimed.get("target_task_definition_arn") or "unprepared",
+        )
+        await _apply_claimed_update(claimed, claim_id)
+
+
 async def run_scheduled_worker() -> None:
     """Background worker: poll for due scheduled updates and apply them.
 
@@ -705,6 +898,13 @@ async def run_scheduled_worker() -> None:
     while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
+            # Isolated like the passes below: a persistent recovery failure
+            # (e.g. a scan error) must not starve the due-update or Paperclip
+            # passes for the life of the process.
+            try:
+                await _recover_stale_task_definition_refreshes()
+            except Exception:
+                logger.exception("task-definition refresh recovery pass crashed")
             due_updates = await update_repo.get_due_scheduled()
             if due_updates:
                 logger.info("Found %d due scheduled updates", len(due_updates))

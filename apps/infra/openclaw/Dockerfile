@@ -98,11 +98,46 @@ USER root
 # ---- Layer 1: runtime apt packages ----
 # Dropped from upstream extended image: build-essential, make (build-only).
 # Keeps git/curl/wget/gnupg — runtime tools (skills shell out, clawhub uses git).
+#
+# The VNC/display packages back the container browser live view (the workspace
+# Browser panel). Two generations coexist here so one image tag serves both
+# boot commands during the transition — the same decoupling that let the
+# original xvfb layer ship ahead of its DISPLAY flip:
+#
+#   current: tigervnc (Xvnc = X server + VNC server in ONE resident process,
+#            with native client-driven SetDesktopSize resize — the thing
+#            x11vnc cannot do, and what lets the dock panel resize the actual
+#            display) + matchbox (kiosk window manager: every window
+#            borderless-fullscreen, re-fit on display resize — without it
+#            Chrome floats at its default size on a black root window)
+#   legacy:  xvfb + x11vnc (+ socat spawn-per-connection), kept until no
+#            pinned tag's boot command references them, then removable
+#
+# Upstream's sandbox recipe (scripts/docker/sandbox/Dockerfile.browser) uses
+# the xvfb+x11vnc generation; we do NOT use their sandbox feature — it spawns
+# a sibling container via `docker run`, and Fargate has no Docker daemon. We
+# run the processes in this one container, which also drops their CDP relay
+# (it exists only to cross a container boundary ours does not have).
+#
+# Debian ships TigerVNC's server binary as Xtigervnc; the boot command guards
+# on and launches /usr/bin/Xvnc, so pin that name to a real path via the
+# update-alternatives symlink the package installs (asserted by the ln -sf
+# below in case the alternatives link ever changes shape).
+#
+# All of this is inert until DISPLAY is set on the task definition; see the
+# display block in container-stack.ts startupCommand.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
       curl wget ca-certificates gnupg git unzip \
-    && rm -rf /var/lib/apt/lists/*
+      xvfb x11vnc novnc websockify \
+      tigervnc-standalone-server matchbox-window-manager \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/Xtigervnc /usr/bin/Xvnc \
+    # ln -sf happily creates a DANGLING link if the package ever renames its
+    # binary; test -x follows the link, turning that into a failed image build
+    # here instead of a fleet-wide boot FATAL at the next deploy.
+    && test -x /usr/bin/Xvnc
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \
@@ -161,7 +196,8 @@ RUN ln -s /usr/local/bin/notesmd-cli /usr/local/bin/obsidian-cli
 RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sh
 
 # ---- Layer 8: Node packages ----
-# All globals install with --ignore-scripts (faster, no build deps).
+# Globals install with --ignore-scripts (faster, no build deps) EXCEPT the three
+# below that fetch a native binary in postinstall (claude-code, xurl, opencode).
 # qmd was previously installed here; removed 2026-05-02. qmd's
 # better-sqlite3 store on EFS deadlocked the gateway's V8 main thread
 # (`rpc_wait_bit_killable` — Linux NFS client retries forever).
@@ -185,9 +221,17 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
-      @anthropic-ai/claude-code @google/gemini-cli \
+      @google/gemini-cli \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
+
+# Claude Code: the ACP coding harness for bedrock_claude owners (see backend
+# _build_bedrock_acp_harness_env). Its platform binary arrives via a postinstall
+# hook, so like xurl and opencode below it stays outside the --ignore-scripts
+# install above — with scripts skipped the `claude` wrapper is present but every
+# invocation dies with "claude native binary not installed", so the harness could
+# never launch. The smoke test fails the build if the binary didn't materialize.
+RUN npm i -g @anthropic-ai/claude-code && claude --version >/dev/null
 
 # xurl downloads its native Go binary in npm postinstall. Keep it outside the
 # --ignore-scripts global install above; otherwise the JS wrapper is present but
@@ -210,46 +254,65 @@ RUN npm i -g opencode-ai@1.18.15 && opencode --version >/dev/null
 # Fast.io SaaS, never wired into mcp.servers — so workflows use `state.*`, not `fast-io`.)
 ENV LOBSTER_STATE_DIR=/home/node/.openclaw/lobster-state
 
-# ---- Layer 9: Playwright Chromium + Chromium system libs + /usr/bin symlink ----
-# Upstream openclaw:2026.6.1 ships the playwright npm package (at
-# /app/node_modules/playwright-core, v1.60.0) but NOT the Chromium binary
-# and NOT the GUI libs Chromium needs to launch. The chromium install is
-# gated behind upstream Dockerfile's `OPENCLAW_INSTALL_BROWSER` build arg,
-# which is empty by default; the published image is built without it.
+# ---- Layer 9: (REMOVED) Playwright Chrome-for-Testing binary ----
+# History, because this WILL come up again: PR #596 baked Playwright's
+# Chrome-for-Testing here when the image had NO browser at all (upstream
+# gates its install behind OPENCLAW_INSTALL_BROWSER, empty by default) --
+# one install then served BOTH the browser tool and Playwright-based MCPs,
+# and pre-baking closed a ~6-minute first-use download (#443). Real Chrome
+# (layer 9b) now serves the browser tool, whose Playwright usage is
+# connectOverCDP ONLY -- a library call against the already-running Chrome
+# that never needs the CfT binary (playwright-core the LIBRARY still ships
+# in /app; only the ~170MB browser download is gone).
 #
-# This image now has two browser-using audiences, each with its own
-# (incompatible) idea of where Chromium lives:
+# What this costs, knowingly accepted (2026-08-17): an owner who connects a
+# Playwright-based MCP (none ship by default; marketplace hires can carry
+# them, e.g. Resy-style) gets Playwright's own runtime download at first
+# use, re-fetched per task restart since ~/.cache is ephemeral. If such
+# MCPs become common, re-add the bake rather than debugging slow first-runs.
 #
-#   1. Third-party Playwright-based MCPs (Resy, etc.) call
-#      `chromium.launch()`, which Playwright hardcodes to find its bundled
-#      binary at `$HOME/.cache/ms-playwright/chromium-<rev>/...`. Playwright
-#      ignores system Chromium by design.
+# The GUI libs the old --with-deps installed now arrive as the Chrome deb's
+# dependencies; the FONTS it installed do NOT (the deb only Recommends
+# them and layer 9b installs with --no-install-recommends), so they are
+# installed explicitly in 9b below -- without them Chrome renders tofu.
+
+# ---- Layer 9b: real Google Chrome for the browser tool (audience #2) ----
+# Chrome for Testing self-labels with a "only for automated testing —
+# Download Chrome" banner on every fresh profile, which the Browser live-view
+# panel puts in front of the OWNER on every session (the profile lives on
+# /tmp and is wiped each task restart, so the banner never goes away). Real
+# Chrome has no such banner.
 #
-#   2. OpenClaw's `browser` plugin spawns Chrome directly via CDP
-#      (`extensions/browser/src/browser/chrome.ts:417`), using a resolver
-#      that probes `/usr/bin/google-chrome`, `/usr/bin/chromium`, etc. It
-#      does NOT check Playwright's cache.
+# This ADDS Chrome for audience #2 (OpenClaw's browser tool, launched via
+# executablePath in the generated openclaw.json); it must never REPLACE the
+# Playwright install above — audience #1 (Playwright-based MCPs) hardcodes
+# the ms-playwright cache path and ignores system Chrome by design. Both
+# browsers coexist; the GUI libs are shared (--with-deps above installed
+# them system-wide).
 #
-# We satisfy both by installing playwright-core's pinned Chromium into
-# Playwright's expected cache path (audience #1), then symlinking that
-# binary into `/usr/bin/chromium` (audience #2). One binary, two access
-# paths, no duplicated apt-installed Chromium.
+# Inert until the config generator's executablePath flips to
+# /usr/bin/google-chrome (config.py): the browser tool's resolver would
+# prefer google-chrome over chromium on its own, but the explicit pin wins,
+# so shipping this image changes nothing until the config PR lands — same
+# image-first decoupling as every other layer here.
 #
-# The `chromium-*` glob in the symlink target re-resolves at every image
-# rebuild — when upstream bumps playwright-core, the revision dir name
-# changes (e.g. chromium-1217 → chromium-1219) and the symlink picks up
-# the new dir automatically. Only one revision dir exists per build, so
-# the glob is unambiguous.
-#
-# --with-deps installs the GUI libs Chromium needs (libatk-1.0, libnss3,
-# libgbm, libxkbcommon, libasound, etc.) at the system level. These cover
-# any future MCP that brings a different Playwright version too — they
-# only need to download their own Chromium binary, not re-install libs.
-RUN mkdir -p /home/node/.cache/ms-playwright && \
-    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
-      node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-    chown -R node:node /home/node/.cache/ms-playwright && \
-    ln -sf /home/node/.cache/ms-playwright/chromium-*/chrome-linux64/chrome /usr/bin/chromium
+# dl.google.com serves only the CURRENT stable deb (no version pinning
+# available); the image tag pins what a rebuild picked up, same posture as
+# the apt-installed packages above. amd64-only, matching the AWS CLI layer.
+# NO /usr/bin/chromium compat symlink, by explicit owner decision
+# (2026-08-17): configs that still pin the old path are fixed for real via
+# the admin fleet config patch BEFORE any container rolls onto this image.
+# ORDERING IS LOAD-BEARING: rolling a container here with an unpatched
+# config leaves executablePath pointing at a binary this image does not
+# have, and the browser tool dies at launch.
+RUN curl -fsSL -o /tmp/google-chrome.deb \
+      "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
+    apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      /tmp/google-chrome.deb \
+      fonts-liberation fonts-noto-cjk fonts-noto-color-emoji && \
+    rm -f /tmp/google-chrome.deb && rm -rf /var/lib/apt/lists/* && \
+    test -x /usr/bin/google-chrome
 
 # ---- Layer 10: externalized channel plugins (Slack, Discord) ----
 # Upstream OpenClaw externalized these channel plugins out of the core image

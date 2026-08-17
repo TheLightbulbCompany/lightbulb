@@ -139,7 +139,12 @@ export interface FeedbackVote {
  * whitelists ``status`` and ``workMode`` (camelCase aliases) and forwards both
  * to upstream Paperclip's createIssueSchema, so the composer can preset the
  * starting status + execution mode without a follow-up PATCH. Both are
- * optional: omit them and the server defaults to backlog/standard.
+ * optional, but omitting `status` is NOT "defaults to backlog": upstream's
+ * resolveCreateIssueStatusDefault picks `todo` when the body carries an
+ * assignee and `backlog` only when it does not — and `todo` + an assignee
+ * DISPATCHES a run. Omit `status` on an assigned create and you have started
+ * an agent, not filed a task (this is what caused #1426). `workMode` does
+ * default to standard.
  */
 export interface IssueCreateInput {
   title: string;

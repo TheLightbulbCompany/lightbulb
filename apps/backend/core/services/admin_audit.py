@@ -8,6 +8,9 @@ Per CEO review S1:
     * the response is annotated audit_status="panic" so the UI can warn.
 - The decorator never raises from its own audit logic; it only re-raises
   exceptions originating in the wrapped handler.
+- A 200 is not automatically a success: if the handler returns a dict with a
+  truthy ``failed`` count (fan-out endpoints that patch many owners), the row
+  records result="error" plus the count. See the derivation in ``wrapped``.
 
 Usage:
 
@@ -207,6 +210,20 @@ def audit_admin_action(
                 error_message = getattr(e, "detail", None) or str(e)
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
+
+            # A handler that fans out over many targets can return 200 with
+            # some of them failed (routers/updates.py's fleet config patch
+            # catches per-owner errors and reports a count). "Returned
+            # normally" is not "did what it was asked" — take the handler's
+            # own failure count as the verdict, or the trail reads clean on a
+            # half-applied fleet mutation. Deliberately reuses the
+            # success/error vocabulary: the audit UI narrows anything else to
+            # "success" (frontend _lib/narrow.ts), so a third label would
+            # render green. http_status stays 200 — the row carries both the
+            # response code and what actually happened.
+            if result_label == "success" and isinstance(handler_result, dict) and handler_result.get("failed"):
+                result_label = "error"
+                error_message = f"{handler_result['failed']} of {handler_result.get('total', '?')} targets failed"
 
             audit_status = "written"
             try:

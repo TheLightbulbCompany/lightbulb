@@ -25,9 +25,14 @@ auth.json shape on EFS is unchanged — only the orchestration changed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import shutil
+import sqlite3
+import subprocess
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -39,6 +44,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.encryption import get_fernet
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 
 
@@ -541,3 +547,198 @@ async def revoke_user_oauth(*, user_id: str, purpose: str = PURPOSE_PROVIDER) ->
     """Delete the user's OAuth row. Caller is responsible for also
     deleting any pre-staged auth file on EFS (see workspace.py)."""
     _table().delete_item(Key={"user_id": _row_key(user_id, purpose)})
+
+
+# ---------------------------------------------------------------------------
+# Rotated-seed harvest
+# ---------------------------------------------------------------------------
+# The DDB row is a connect-time SEED: once the container imports it, the
+# in-container OAuth manager rotates the refresh token in place and the DDB
+# copy is spent (OpenAI refresh tokens are single-use). The live chain lives
+# in the DEFAULT agent's SQLite auth store on container-LOCAL disk, reachable
+# by the backend only through its Litestream S3 replica. A wipe/reprovision
+# that destroys that replica and then re-stages the spent seed hands the new
+# container a credential OpenAI rejects — while ``has_active_oauth`` (row
+# existence) keeps reporting Connected. So the flows that destroy the replica
+# harvest the rotated chain back into the row FIRST (see
+# litestream_replicas.delete_replica_prefix), keeping the seed the freshest
+# credential the backend has ever seen and making reprovision come back alive
+# without a re-auth.
+
+# Profile id OpenClaw builds from the staged credentials/oauth.json — provider
+# key "openai", default profile (see workspace._OAUTH_PROVIDER_KEY).
+_LIVE_PROFILE_ID: Final = "openai:default"
+# The DEFAULT agent's auth store, relative to the owner's replica prefix. It
+# is the single credential source — every other agent reads through it
+# (workspace._DEFAULT_AGENT_DIR), so no other agent DB needs harvesting.
+_MAIN_AGENT_DB_RELPATH: Final = "agents/main/agent/openclaw-agent.sqlite"
+
+
+def _restore_replica_db(bucket: str, owner_id: str, dest_dir: str) -> str | None:
+    """Blocking: ``litestream restore`` the default agent's DB replica.
+
+    Returns the restored file's path, or None when the litestream binary is
+    not installed (local dev/tests), no replica exists, or the restore fails.
+    The binary is baked into the backend image pinned to the SAME version the
+    fleet's containers replicate with (see apps/backend/Dockerfile).
+    """
+    binary = shutil.which("litestream")
+    if not binary:
+        logger.info("oauth seed harvest: litestream binary not installed — skipping")
+        return None
+    dest = os.path.join(dest_dir, "openclaw-agent.sqlite")
+    replica_url = f"s3://{bucket}/{owner_id}/{_MAIN_AGENT_DB_RELPATH}"
+    proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+        [binary, "restore", "-if-replica-exists", "-o", dest, replica_url],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        logger.warning(
+            "oauth seed harvest: litestream restore failed for %s: %s",
+            owner_id,
+            (proc.stderr or proc.stdout).strip()[:300],
+        )
+        return None
+    # -if-replica-exists: no replica is a clean exit with no output file.
+    return dest if os.path.exists(dest) else None
+
+
+def _read_live_profile_from_db(db_path: str) -> dict | None:
+    """Extract the rotated ``openai:default`` OAuth credential from a restored
+    auth store DB (table ``auth_profile_store``, row ``store_key='primary'``,
+    JSON cell ``store_json`` — the schema the fleet's OpenClaw writes).
+
+    None on any miss — absent table/row/profile are all normal states for a
+    non-chatgpt owner or a container that never imported a credential.
+    """
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT store_json FROM auth_profile_store WHERE store_key = 'primary'").fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        logger.info("oauth seed harvest: unreadable auth store — %s", e)
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        store = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(store, dict):
+        return None
+    profile = (store.get("profiles") or {}).get(_LIVE_PROFILE_ID)
+    if not isinstance(profile, dict) or profile.get("type") != "oauth":
+        return None
+    if not profile.get("access") or not profile.get("refresh"):
+        return None
+    return profile
+
+
+def _live_profile_is_fresher(profile: Mapping[str, Any], stored: Mapping[str, Any]) -> bool:
+    """Whether the harvested credential should replace the stored seed.
+
+    Same refresh token = the container never rotated past the seed — nothing
+    to write. Otherwise compare ``expires`` (ms epoch): both writers stamp it
+    from OpenAI's expires_in at write time, so it orders the two credentials.
+    A lagged replica must LOSE to a newer reconnect grant (the user re-ran the
+    device-code flow while this container was down) — that grant's expires_at
+    postdates anything the old chain ever wrote.
+    """
+    if profile.get("refresh") == stored.get("refresh_token"):
+        return False
+    return int(profile.get("expires") or 0) > int(stored.get("expires_at") or 0)
+
+
+async def harvest_rotated_oauth_seed(*, owner_id: str) -> bool:
+    """Persist the container's rotated ChatGPT tokens back to the DDB seed row.
+
+    Called at the last moment the rotated chain is backend-reachable — right
+    before the owner's Litestream replica prefix is destroyed. Callers should
+    have drained the container first so litestream's final sync has landed;
+    an undrained harvest still works but may read a slightly lagged chain,
+    which the freshness check then discards.
+
+    Best-effort by contract: True only when a fresher credential was written.
+    Every miss (no replica, no profile, non-chatgpt owner, lost race to a
+    fresh reconnect, unconfirmed task termination) is a logged no-op, not an
+    error.
+    """
+    bucket = settings.LITESTREAM_BUCKET
+    if not bucket:
+        return False
+
+    # The final Litestream sync only lands when the container EXITS — a
+    # replica read while the task is still stopping can hold a chain that is
+    # rotated past the seed yet already spent (its refresh token was used to
+    # mint the one in the unsynced tail). Confirm actual task termination
+    # (lastStatus STOPPED, not service counts — see
+    # ecs_manager._tasks_fully_stopped_blocking) before trusting the replica.
+    # Callers have normally drained already, so this returns on its first
+    # poll; when termination cannot be confirmed, skip LOUDLY and leave the
+    # seed alone — the freshness check would not catch a spent-but-newer
+    # chain.
+    from core.containers import get_ecs_manager
+
+    if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=60.0):
+        logger.error(
+            "oauth seed harvest SKIPPED for %s — task termination unconfirmed, the replica "
+            "may predate the final sync; leaving the DDB seed untouched",
+            owner_id,
+        )
+        put_metric("oauth.seed_harvest_skipped_undrained")
+        return False
+
+    # Restore BEFORE touching DDB: the binary check is the cheap bail for
+    # local/test environments, and a non-chatgpt owner's store simply has no
+    # openai profile to extract.
+    with tempfile.TemporaryDirectory(prefix="oauth-harvest-") as tmp:
+        db_path = await asyncio.to_thread(_restore_replica_db, bucket, owner_id, tmp)
+        if not db_path:
+            return False
+        profile = _read_live_profile_from_db(db_path)
+    if not profile:
+        return False
+
+    token_owner = await resolve_token_owner(owner_id=owner_id)
+    row = _table().get_item(Key={"user_id": _row_key(token_owner, PURPOSE_PROVIDER)}).get("Item")
+    if not row or row.get("state") != "active" or not _row_belongs_to(row, owner_id):
+        return False
+
+    stored = json.loads(get_fernet().decrypt(bytes(row["encrypted_tokens"])).decode())
+    if not _live_profile_is_fresher(profile, stored):
+        return False
+
+    # Overwrite only the credential triple; identity fields (id_token,
+    # account_id, email) keep their connect-time values.
+    merged = {
+        **stored,
+        "access_token": profile["access"],
+        "refresh_token": profile["refresh"],
+        "expires_at": int(profile.get("expires") or 0),
+    }
+    encrypted = get_fernet().encrypt(json.dumps(merged).encode())
+    try:
+        # CAS on the blob we read: a reconnect landing mid-harvest wrote a
+        # brand-new grant that must not be clobbered by this old chain.
+        _table().update_item(
+            Key={"user_id": _row_key(token_owner, PURPOSE_PROVIDER)},
+            UpdateExpression="SET encrypted_tokens = :tok",
+            ConditionExpression="#s = :active AND encrypted_tokens = :old",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={":tok": encrypted, ":active": "active", ":old": row["encrypted_tokens"]},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info("oauth seed harvest: row changed mid-harvest for %s — keeping the newer write", owner_id)
+            return False
+        raise
+    logger.info(
+        "oauth_seed_harvested",
+        extra={"owner_id": owner_id, "token_owner": token_owner, "expires_at": merged["expires_at"]},
+    )
+    put_metric("oauth.seed_harvested")
+    return True

@@ -20,6 +20,36 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(containerStack);
 }
 
+function openclawStartupCommand(template: Template, env: "dev" | "prod"): string {
+  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
+    Properties?: {
+      Family?: string;
+      ContainerDefinitions?: Array<{ Name?: string; Command?: string[] }>;
+    };
+  }>;
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  const container = taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw");
+  expect(container?.Command?.slice(0, 2)).toEqual(["sh", "-c"]);
+  return container?.Command?.[2] ?? "";
+}
+
+function openclawContainerEnv(
+  template: Template,
+  env: "dev" | "prod",
+): Array<{ Name?: string; Value?: string }> {
+  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
+    Properties?: {
+      Family?: string;
+      ContainerDefinitions?: Array<{
+        Name?: string;
+        Environment?: Array<{ Name?: string; Value?: string }>;
+      }>;
+    };
+  }>;
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  return taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw")?.Environment ?? [];
+}
+
 // The local-sqlite layout is unconditional — no per-env `storage` gate — so
 // both envs are asserted against the same shape. Extracted rather than
 // duplicated so a future divergence has to be written deliberately.
@@ -56,6 +86,55 @@ function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
 // Mount ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so
 // the EFS mount must precede the nested ephemeral mounts or EFS covers them and
 // every commit silently goes back to NFS.
+// The display block ships AHEAD of the headful config flip, so the property
+// that makes it safe to deploy is that it does NOTHING yet — hence asserting
+// the inertness, not merely the presence.
+//
+// Asserted per-environment ON PURPOSE, with `displaySet` a parameter rather
+// than a constant: the environments are pinned separately so one can be rolled
+// back without the other. DISPLAY reaching an environment whose
+// openclaw-version.json tag predates the Xvfb apt layer is a fleet-wide boot
+// failure, so each env asserts its own value rather than inheriting a shared one.
+function expectDisplayGate(
+  template: Template,
+  env: "dev" | "prod",
+  { displaySet }: { displaySet: boolean },
+): void {
+  const command = openclawStartupCommand(template, env);
+  const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ]');
+  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
+  const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
+  const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
+  const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+
+  // The guard must precede the launch it protects, and everything must precede
+  // the exec that replaces this shell — nothing can be appended after that.
+  // The WM must come after the X server line: X clients do not retry a missing
+  // socket, which is also why the command wraps it in a wait-for-socket loop.
+  expect(guard).toBeGreaterThanOrEqual(0);
+  expect(start).toBeGreaterThan(guard);
+  expect(wm).toBeGreaterThan(start);
+  expect(command).toContain("while [ ! -S /tmp/.X11-unix/X1 ]");
+  expect(websockify).toBeGreaterThan(wm);
+  expect(websockify).toBeLessThan(boot);
+
+  // Xvnc must be resizable-by-client and loopback-only: SecurityTypes None is
+  // safe ONLY together with -localhost (the relay is the auth fence), so pin
+  // them as a pair — losing -localhost while keeping None would expose an
+  // unauthenticated VNC server to the VPC.
+  expect(command).toContain("-localhost -SecurityTypes None -rfbport 5900");
+
+  // x11vnc is GONE from the boot path — Xvnc replaced it precisely because a
+  // resident x11vnc degrades over days (it polls a foreign display; Xvnc IS
+  // the display and only encodes while a viewer is attached). It reappearing
+  // means someone resurrected the old chain.
+  expect(command).not.toContain("x11vnc");
+  expect(command).not.toContain("socat TCP-LISTEN:5900");
+  expect(command).not.toContain("Xvfb");
+
+  expect(openclawContainerEnv(template, env).some(({ Name }) => Name === "DISPLAY")).toBe(displaySet);
+}
+
 function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
   template.hasResourceProperties("AWS::S3::Bucket", {
     BucketName: `isol8-${env}-openclaw-replicas`,
@@ -215,38 +294,42 @@ describe("ContainerStack — dev", () => {
   });
 
   test("openclaw container migrates legacy /home/node/.openclaw/browser and symlinks it to ephemeral storage", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          // ECS Command array for command=["sh","-c",<startupCommand>]
-          // renders as exactly those three array elements in synthesized
-          // CFN. Three ordered segments separated by `.*`:
-          //   1) the archive-rename guard for a legacy REAL directory
-          //   2) the actual mv to a timestamped archive path
-          //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
-          //      then `exec` into the baked local-sqlite boot chain, which
-          //      owns doctor + gateway as a litestream-supervised child.
-          Command: [
-            "sh",
-            "-c",
-            Match.stringLikeRegexp(
-              // Migration step + mandatory `|| exit 1` on each required
-              // action so an NFS hiccup that fails `mv` doesn't let
-              // Step B silently nest the symlink inside the legacy real
-              // directory. `\\|` escapes the regex alternation operator
-              // so we match a literal `|`.
-              "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
-              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
-              + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
-              + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
-              + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
-            ),
-          ],
-        }),
-      ]),
-    });
+    const command = openclawStartupCommand(template, "dev");
+    const recovery = command.indexOf("python3 -c");
+    const migration = command.indexOf("[ -e /home/node/.openclaw/browser ]");
+    const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
+    const mkdir = command.indexOf("mkdir -p /tmp/openclaw-browser || exit 1");
+    const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
+    const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+
+    expect([recovery, migration, move, mkdir, symlink, boot].every((index) => index >= 0)).toBe(true);
+    expect(recovery).toBeLessThan(migration);
+    expect(migration).toBeLessThan(move);
+    expect(move).toBeLessThan(mkdir);
+    expect(mkdir).toBeLessThan(symlink);
+    expect(symlink).toBeLessThan(boot);
+  });
+
+  test("openclaw container sets DISPLAY so the live-view display starts", () => {
+    expectDisplayGate(template, "dev", { displaySet: true });
+    expect(
+      openclawContainerEnv(template, "dev").find(({ Name }) => Name === "DISPLAY")?.Value,
+    ).toBe(":1");
+  });
+
+  test("openclaw container performs a guarded one-time protocol transition", () => {
+    const command = openclawStartupCommand(template, "dev");
+    expect(command).toMatch(/^if \[ "\$\{ISOL8_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);
+    expect(command).toContain('guard_path = lock_path + ".isol8-guard"');
+    expect(command).toContain('protocol_path = lock_path + ".isol8-protocol"');
+    expect(command).toContain("acquire_until(guard_fd, deadline");
+    expect(command).toContain("fcntl.LOCK_EX | fcntl.LOCK_NB");
+    expect(command).toContain("current.st_ino == opened.st_ino");
+    expect(command).toContain("write_protocol(migrating_protocol)");
+    expect(command).toContain("write_protocol(ephemeral_protocol)");
+    expect(command).toContain("recovered abandoned ephemeral openclaw.json.lock");
+    expect(command).toContain("|| exit 1; else echo '[boot] config lock recovery skipped");
+    expect(command).not.toContain("rm -f /home/node/.openclaw/openclaw.json.lock");
   });
 
   test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
@@ -570,6 +653,13 @@ describe("ContainerStack — prod", () => {
   // local-sqlite shape dev does.
   test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
     expectBootChainGuard(template, "prod");
+  });
+
+  test("openclaw container sets DISPLAY so the live-view display starts", () => {
+    expectDisplayGate(template, "prod", { displaySet: true });
+    expect(
+      openclawContainerEnv(template, "prod").find(({ Name }) => Name === "DISPLAY")?.Value,
+    ).toBe(":1");
   });
 
   test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {

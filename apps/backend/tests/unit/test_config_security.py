@@ -38,14 +38,14 @@ def in_fargate(monkeypatch):
 
 @pytest.mark.parametrize("env", ["", "local", "test"])
 def test_non_deployed_env_skips_security_checks(env):
-    _settings(ENVIRONMENT=env, WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE=None)
+    _settings(ENVIRONMENT=env, WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUTHORIZED_PARTIES="")
 
 
 def test_out_of_task_cli_with_prod_env_and_no_ws_is_ok():
     # scripts.bedrock_gate_break_glass / reapply_openclaw_config set
     # ENVIRONMENT=prod to target prod but run outside Fargate and carry no WS
     # secret — they must import cleanly, or the break-glass tool is bricked.
-    _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE=None)
+    _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUTHORIZED_PARTIES="")
 
 
 # ---- ENVIRONMENT value hygiene (applies everywhere) ----
@@ -74,21 +74,48 @@ def test_fargate_without_deployed_env_rejected(in_fargate):
 
 def test_fargate_requires_ws_enforcement(in_fargate):
     with pytest.raises(ValueError, match="WS internal-caller"):
-        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE="aud")
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="")
 
 
 def test_fargate_requires_ws_secret_even_when_enforced(in_fargate):
     with pytest.raises(ValueError, match="WS internal-caller"):
-        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="", CLERK_AUDIENCE="aud")
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="")
 
 
-def test_fargate_missing_clerk_audience_warns_not_raises(in_fargate, caplog):
-    # CLERK_AUDIENCE is not wired in the CDK yet; a hard failure here would crash
-    # every backend deploy on boot. It must warn, not raise.
+# ---- SEC-8: azp (token-origin) verification rollout knobs ----
+
+
+def test_fargate_azp_audit_mode_warns_not_raises(in_fargate, caplog):
+    # Audit mode (the rollout default) must boot and warn — a hard failure
+    # before the allowlist is validated in the wild would crash every deploy.
     with caplog.at_level(logging.WARNING):
-        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="s", CLERK_AUDIENCE=None)
-    assert any("CLERK_AUDIENCE is unset" in r.message for r in caplog.records)
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="s", CLERK_AZP_MODE="audit")
+    assert any("AUDIT mode" in r.message for r in caplog.records)
+
+
+def test_fargate_enforce_without_parties_rejected(in_fargate):
+    # Enforce mode with an empty allowlist verifies nothing while looking
+    # secure — refuse to boot.
+    with pytest.raises(ValueError, match="CLERK_AUTHORIZED_PARTIES"):
+        _settings(
+            ENVIRONMENT="prod",
+            WS_ENFORCE_INTERNAL_SECRET=True,
+            WS_INTERNAL_SECRET="s",
+            CLERK_AZP_MODE="enforce",
+            CLERK_AUTHORIZED_PARTIES="",
+        )
+
+
+def test_bad_azp_mode_rejected():
+    with pytest.raises(ValueError, match="CLERK_AZP_MODE"):
+        _settings(CLERK_AZP_MODE="on")
 
 
 def test_fargate_fully_configured_ok(in_fargate):
-    _settings(ENVIRONMENT="staging", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="s", CLERK_AUDIENCE="aud")
+    _settings(
+        ENVIRONMENT="staging",
+        WS_ENFORCE_INTERNAL_SECRET=True,
+        WS_INTERNAL_SECRET="s",
+        CLERK_AZP_MODE="enforce",
+        CLERK_AUTHORIZED_PARTIES="https://dev.isol8.co",
+    )

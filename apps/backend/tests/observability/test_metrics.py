@@ -41,6 +41,46 @@ def test_put_metric_auto_injects_env_and_service(capsys):
     assert "service" in data["_aws"]["CloudWatchMetrics"][0]["Dimensions"][0]
 
 
+def test_put_metric_emits_the_env_service_rollup_alongside_the_full_set(capsys):
+    """Extra dimensions must not hide the metric from {env, service} queries.
+
+    CloudWatch treats each dimension set as its own metric, so alarms binding
+    { env, service } (which is every alarm createAlarm builds) saw nothing at
+    all while the emitter published only [env, service, reason].
+    """
+    put_metric("chat.error", dimensions={"reason": "timeout", "reclassified": "false"})
+    data = json.loads(capsys.readouterr().out.strip())
+    dimension_sets = data["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+
+    assert dimension_sets == [
+        ["env", "service", "reason", "reclassified"],
+        ["env", "service"],
+    ]
+
+
+def test_put_metric_does_not_duplicate_the_rollup_when_dimensionless(capsys):
+    """No extra dims ⇒ ONE set. A repeated set would double-count the metric."""
+    put_metric("chat.message.count")
+    data = json.loads(capsys.readouterr().out.strip())
+    assert data["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["env", "service"]]
+
+
+def test_timing_and_gauge_get_the_rollup_too(capsys):
+    """Both helpers route through put_metric — W2 alarms on timing()'s rollup."""
+    with timing("container.lifecycle.latency", {"op": "start"}):
+        pass
+    assert json.loads(capsys.readouterr().out.strip())["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [
+        ["env", "service", "op"],
+        ["env", "service"],
+    ]
+
+    gauge("gateway.connection.open", 42, {"pool": "primary"})
+    assert json.loads(capsys.readouterr().out.strip())["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [
+        ["env", "service", "pool"],
+        ["env", "service"],
+    ]
+
+
 def test_put_metric_rejects_high_cardinality_dimensions():
     """user_id, container_id, request_id, owner_id must raise ValueError."""
     with pytest.raises(ValueError, match="high-cardinality"):

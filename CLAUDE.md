@@ -15,7 +15,7 @@ The OpenClaw container image Isol8 runs is an **extended image** built from the 
 
 Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `isol8`). The `isol8` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update its SKILL.md (anchors listed in its maintenance header). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/isol8-facts.json`, written by `core/services/owner_facts.py`.
 
-The Isol8 repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `Isol8AI/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Isol8's patches (e.g. the MCP non-blocking-materialization + shared-runtime fixes) do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/isol8ai/agent`. The writable fork workspace is checked out at `~/Desktop/agent` (origin = `Isol8AI/agent`, upstream = `openclaw/openclaw`). A separate **read-only** vanilla-upstream checkout sits at `~/Desktop/openclaw` (sibling of `~/Desktop/isol8.nosync`). Treat both as outside this repo — do not commit either into it.
+The Isol8 repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `Isol8AI/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Isol8's patches (e.g. the MCP non-blocking-materialization + shared-runtime fixes) do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/isol8ai/agent`. The writable fork workspace is checked out at `~/dev/agent-fork` (origin = `Isol8AI/agent`, upstream = `openclaw/openclaw`; moved off iCloud-synced `~/Desktop/agent`, where git ops hung on iCloud hydration). Treat it as outside this repo — do not commit it into it.
 
 Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
 
@@ -233,8 +233,10 @@ you cannot guess from the filename:
   row (watch loop in `service-stack.ts`) and takes the ECS leg over on
   error or after its tick backstop — custody never depends on a client poll.
 - `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
-- `config_patcher.py` — EFS-safe JSON deep-merge under NFS-compatible
-  `fcntl.lockf` (not `flock`).
+- `config_patcher.py` — EFS-safe JSON deep-merge. `openclaw.json` writers take
+  the persistent `.isol8-guard` and select the lock protocol recorded in
+  `.isol8-protocol`; backend-only files use NFS-compatible `fcntl.lockf` (not
+  `flock`).
 - `clerk_admin.py` — Clerk REST wrapper for the admin surface. New Clerk calls
   **should** go through here, but two predate it and still hit `api.clerk.com`
   inline via httpx: `routers/billing.py` and `routers/desktop_auth.py`. A
@@ -472,7 +474,15 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 ### Config Patching Notes
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
-- `fcntl.lockf()` for file locking (not `flock()` -- incompatible with NFS)
+- `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
+  sidecar. Boot recovery takes the persistent `.isol8-guard`, publishes a
+  resumable `.isol8-protocol` transition, removes the legacy inode, and then
+  backend hot patches use OpenClaw's ephemeral `O_EXCL` protocol. Never unlink
+  the sidecar outside boot recovery while holding that guard. After the
+  transition, boot recovery also removes an ephemeral sidecar abandoned by a
+  crashed backend or the stopped prior OpenClaw task.
+- Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
+  with NFS).
 - `chown` to UID 1000 after write (OpenClaw runs as node)
 
 ---

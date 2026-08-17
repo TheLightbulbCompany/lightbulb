@@ -256,8 +256,8 @@ export class ServiceStack extends cdk.Stack {
     // wipe/reprovision and agent-delete flows must prefix-delete
     // s3://isol8-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
-    // with live OAuth tokens). List+Delete only — the backend never reads
-    // replica bytes.
+    // with live OAuth tokens). List+Delete only across the bucket — the
+    // backend's sole READ is the statement below.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
@@ -270,6 +270,24 @@ export class ServiceStack extends cdk.Stack {
         sid: "LitestreamReplicaDelete",
         actions: ["s3:DeleteObject"],
         resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*`],
+      }),
+    );
+    // The one read path: the OAuth seed harvest litestream-restores the
+    // DEFAULT agent's auth-store DB right before the prefix delete, to copy
+    // the rotated ChatGPT refresh token back to DynamoDB
+    // (oauth_service.harvest_rotated_oauth_seed) — without it, every
+    // wipe-and-reprovision re-stages a spent seed. Scoped to that single
+    // database's key shape (<owner>/agents/main/agent/openclaw-agent.sqlite/
+    // <level>/<txid>.ltx), so the backend cannot read session/state DBs or
+    // any non-default agent's replica. It still spans owners: the shared
+    // backend role serves every tenant, the same floor as the delete grant
+    // and the DynamoDB grants — per-tenant narrowing would need per-tenant
+    // roles, which this service does not have.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "LitestreamReplicaAuthDbRead",
+        actions: ["s3:GetObject"],
+        resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
       }),
     );
 
@@ -1169,6 +1187,22 @@ export class ServiceStack extends cdk.Stack {
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
       CORS_ORIGINS: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+      // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
+      // backend validates the `azp` (authorized party) claim against this
+      // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
+      // MINT origin, not the calling origin: admin-host sessions call the API
+      // via server actions (no CORS), the paperclip-proxy bootstrap page
+      // handshakes Clerk sessions on the company.isol8.co hosts, and
+      // localhost frontends point at the dev API during development. Native
+      // (mobile) tokens carry no azp and always pass.
+      // Rollout: ships in audit mode (log + metric, never
+      // reject); flip CLERK_AZP_MODE to "enforce" per env once the
+      // auth.azp.mismatch metric shows zero legitimate mismatches.
+      CLERK_AUTHORIZED_PARTIES:
+        env === "prod"
+          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+      CLERK_AZP_MODE: "audit",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
       // encrypt operator device seeds + gateway tokens at rest. Reuses the
       // same CMK as the BYOK Fernet layer since the blast radius is the same

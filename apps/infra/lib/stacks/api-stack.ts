@@ -8,6 +8,8 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketApi, WebSocketStage } from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
@@ -15,6 +17,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
@@ -327,7 +330,14 @@ export class ApiStack extends cdk.Stack {
                   const srcDir = path.join(__dirname, "..", "..", "lambda", "websocket-authorizer");
                   execSync(`pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q`, { stdio: "inherit" });
                   for (const f of fs.readdirSync(srcDir)) {
-                    fs.copyFileSync(path.join(srcDir, f), path.join(outputDir, f));
+                    // Files only: backend pytest imports index.py in place
+                    // (tests/unit/test_ws_authorizer_*.py) and leaves a
+                    // __pycache__/ dir behind; copyFileSync throws EISDIR on
+                    // it, silently demoting every synth to the docker path.
+                    const src = path.join(srcDir, f);
+                    if (fs.statSync(src).isFile()) {
+                      fs.copyFileSync(src, path.join(outputDir, f));
+                    }
                   }
                   return true;
                 } catch {
@@ -346,6 +356,14 @@ export class ApiStack extends cdk.Stack {
         CLERK_JWKS_URL: isProd
           ? "https://clerk.isol8.co/.well-known/jwks.json"
           : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
+        // SEC-8 token-origin fence — same allowlist + mode as the backend
+        // task (service-stack.ts). azp is the origin that MINTED the token;
+        // native (mobile/desktop-node) tokens carry no azp and always pass.
+        // Ships in audit mode; flip to "enforce" once AzpMismatch is clean.
+        CLERK_AUTHORIZED_PARTIES: isProd
+          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+        CLERK_AZP_MODE: "audit",
         // Owner row holding paired_devices[deviceId].publicKey for device-key
         // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
         // same shape as the Secrets Manager call the authorizer already makes).
@@ -672,5 +690,66 @@ export class ApiStack extends cdk.Stack {
       description: "WebSocket API ID (for IAM ManageConnections ARN)",
       exportName: `isol8-${env}-ws-api-id`,
     });
+
+    // =========================================================================
+    // Browser-view door: CloudFront → VPC origin → internal ALB :8081
+    //
+    // The container-browser live view (routers/browser_view.py) is a raw
+    // binary WebSocket relay, and NEITHER existing public door can carry it:
+    // the HTTP API above does not pass WebSocket upgrades at all, and the
+    // WebSocket API's Management-API push model is per-message HTTP — wrong
+    // by orders of magnitude for a VNC framebuffer stream. CloudFront passes
+    // WebSockets natively, and a VPC origin reaches the internal ALB without
+    // making the ALB public.
+    //
+    // Path scoping is enforced at the ALB listener (network-stack.ts,
+    // BrowserViewListener: fixed-404 default, one /api/v1/browser-view/*
+    // rule), not here — the listener is what an in-VPC caller can reach
+    // directly, so the cap must live there to mean anything.
+    //
+    // Same env gate as the HTTP API custom domain: no cert/zone (unit-test
+    // synth, unknown envs) → no distribution.
+    // =========================================================================
+    if (props.certificate && props.hostedZone) {
+      const browserViewDomain = isProd ? "bv.isol8.co" : `bv-${env}.isol8.co`;
+      const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
+        comment: `isol8 ${env} container-browser live view relay`,
+        domainNames: [browserViewDomain],
+        // The wildcard *.isol8.co cert works here because the deploy region IS
+        // us-east-1 (CloudFront only accepts us-east-1 ACM certs).
+        certificate: props.certificate,
+        defaultBehavior: {
+          origin: origins.VpcOrigin.withApplicationLoadBalancer(props.alb, {
+            // The dedicated listener — NOT :80. Hitting :80 would bypass the
+            // path cap and hand CloudFront the whole FastAPI surface.
+            httpPort: 8081,
+            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+            // A WS connection is long-lived but CloudFront's origin read
+            // timeout only bounds quiet gaps between reads; 60s of silence on
+            // a VNC session means the viewer is idle — noVNC's client-side
+            // keepalive traffic keeps real sessions well under it.
+            readTimeout: cdk.Duration.seconds(60),
+          }),
+          // A relay must never be cached, and the viewer's headers (cookies,
+          // websocket negotiation) must reach the backend verbatim.
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+        },
+      });
+
+      new route53.ARecord(this, "BrowserViewDnsRecord", {
+        zone: props.hostedZone,
+        recordName: browserViewDomain,
+        target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(distribution)),
+      });
+
+      new cdk.CfnOutput(this, "BrowserViewUrlOutput", {
+        value: `wss://${browserViewDomain}/api/v1/browser-view/ws`,
+        description: "Container-browser live view relay endpoint",
+        exportName: `isol8-${env}-browser-view-url`,
+      });
+    }
   }
 }

@@ -428,7 +428,10 @@ def catalog_efs_dir():
         os.makedirs(user_dir)
         config = {
             "agents": {"list": [{"id": "existing_agent", "name": "Existing"}]},
-            "plugins": {"memory": {"enabled": True}},
+            # Real plugin shape (plugins.entries.<name>) — this fixture feeds
+            # apply_deploy_aux_mutations, whose writes are schema-ENFORCED, so a
+            # made-up shape here would fail the gate rather than the assertion.
+            "plugins": {"entries": {"memory-core": {"enabled": True}}},
             "tools": {"allowed": ["web-search"]},
         }
         with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
@@ -661,7 +664,7 @@ async def test_apply_deploy_aux_mutations_merges_plugins(catalog_efs_dir):
         result = json.load(f)
 
     # Plugins deep-merged under entries.{name} (real OpenClaw schema).
-    assert result["plugins"]["memory"]["enabled"] is True
+    assert result["plugins"]["entries"]["memory-core"]["enabled"] is True
     assert result["plugins"]["entries"]["browser"]["enabled"] is True
     # agents.list NOT touched (aux mutation never writes there now).
     assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent"]
@@ -2057,11 +2060,10 @@ async def test_replace_provider_block_creates_web_search_path_when_missing(efs_d
 
 @pytest.mark.asyncio
 async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
-    """Two layers of the shared lock must hold: the per-file threading.Lock
-    serializes same-process ``asyncio.to_thread`` writers, and the fcntl lock
-    lives on a SEPARATE .lock file so the atomic os.rename (inode swap) can't
-    discard it. With the old no-op lock (fcntl on the swapped inode, no thread
-    gate) concurrent read-modify-writes drop each other's appends.
+    """The thread gate plus sidecar protocol must survive data-inode swaps.
+
+    With the old no-op lock (fcntl on the swapped data inode, no thread gate),
+    concurrent read-modify-writes dropped each other's appends.
     """
     import asyncio
 
@@ -2072,5 +2074,8 @@ async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
         cfg = json.load(f)
     got = sorted(entry["id"] for entry in cfg["plugins"]["list"])
     assert got == list(range(n)), f"lost concurrent appends: {len(got)}/{n} landed"
-    # The lock is a dedicated sibling file, never openclaw.json itself.
-    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
+    # Phase-one rollout preserves the legacy persistent sidecar until boot
+    # recovery publishes the protocol marker. This keeps backend mutations
+    # available while every backend replica learns the recovery guard.
+    assert os.path.isfile(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
+    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock.isol8-guard"))

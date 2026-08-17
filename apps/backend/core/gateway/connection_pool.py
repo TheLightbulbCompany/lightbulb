@@ -2058,7 +2058,11 @@ class GatewayConnection:
                             "reason": err_kind or "agent_error",
                             # Makes mislabelling VISIBLE. If we ever start
                             # reclassifying real AWS throttles, this spikes
-                            # instead of failing silently.
+                            # instead of failing silently. EVERY chat.error
+                            # emitter carries this dimension (the others hard-
+                            # code "false") — a partial rollout would fork the
+                            # metric identity and silently drop whichever
+                            # emitters lack it from any reason-keyed query.
                             "reclassified": "true" if upstream_msg else "false",
                         },
                     )
@@ -2077,7 +2081,7 @@ class GatewayConnection:
                         fwd["session_id"] = session_id
                     await self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
-                    put_metric("chat.error", dimensions={"reason": "aborted"})
+                    put_metric("chat.error", dimensions={"reason": "aborted", "reclassified": "false"})
                     fwd = {"type": "error", "message": "Agent run was cancelled"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id

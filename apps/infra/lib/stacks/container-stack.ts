@@ -14,6 +14,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
+import { openclawConfigLockRecoveryCommand } from "../openclaw-config-lock-recovery";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
@@ -538,6 +539,18 @@ export class ContainerStack extends cdk.Stack {
     // Startup command — almost everything (apt packages, pip, npm globals,
     // gh, uv) is baked into the extended OpenClaw image. The boot sequence:
     //
+    // Step 0 (lock recovery): perform the one-time transition away from the
+    // backend's retired permanent-fcntl sidecar. The helper takes the backend's
+    // persistent recovery guard, publishes a resumable protocol marker, then
+    // fcntl-locks and identity-checks the legacy sidecar before unlinking it.
+    // Thus a backend hot patch cannot open/wait on an inode that recovery
+    // detaches from the pathname. Per-user service updates use
+    // SINGLE_WRITER_DEPLOYMENT_CONFIG (min=0/max=100), so the old OpenClaw task
+    // is fully stopped before this command runs. Later boots use the completed
+    // marker to recover a sidecar abandoned by either O_EXCL writer while the
+    // same guard still excludes every prepared backend writer. Unexpected
+    // filesystem objects and a still-held legacy fcntl lock fail closed.
+    //
     // Step A (migration): rename a legacy real `~/.openclaw/browser`
     // directory aside. This handles the first boot per per-user EFS
     // access point after this change deploys — without it, Step B's
@@ -586,6 +599,9 @@ export class ContainerStack extends cdk.Stack {
     // `real-dir/target -> ...` rather than replacing `real-dir`),
     // shipping a no-op that LOOKS deployed.
     const startupCommand = [
+      // Step 0 — recover only while holding the same guard every backend
+      // config writer takes. Python + fcntl are present in the pinned image.
+      openclawConfigLockRecoveryCommand(),
       // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)`,
       // and `{ ... ; }` are all portable to `sh -c`. The trailing
       // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
@@ -667,6 +683,60 @@ export class ContainerStack extends cdk.Stack {
       // dir holding a symlink, which works but re-migrates on every task start.
       "[ -e /home/node/.xurl ] && [ ! -L /home/node/.xurl ] && { mv /home/node/.xurl /home/node/.xurl.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.xurl /home/node/.xurl || exit 1",
+      // Step C4 — virtual display backing the browser live view.
+      //
+      // Gated entirely on DISPLAY so image and boot stay independently
+      // deployable: an image carrying these binaries is inert until the task
+      // definition sets DISPLAY, and either can roll back alone.
+      //
+      // Xvnc (TigerVNC) is the X server AND the VNC server in one resident
+      // process — it replaced the Xvfb + socat-spawned-x11vnc chain because
+      // panel-driven resize needs the VNC server to honor client
+      // SetDesktopSize, which x11vnc cannot. Resident is safe where resident
+      // x11vnc was not: x11vnc degrades over days because it POLLS a foreign
+      // display for damage (docker-selenium #1027); Xvnc IS the display and
+      // only encodes updates while a viewer is attached — no viewer, no work.
+      //
+      // matchbox is the kiosk window manager: without one, Chrome floats at
+      // its default window size over an unpainted (black) X root — the
+      // "watching a movie of a browser" effect. matchbox keeps every window
+      // borderless-fullscreen and re-fits it when the display resizes, which
+      // is what makes noVNC's resizeSession (panel size -> display size)
+      // end-to-end useful. It must connect AFTER the X socket exists — X
+      // clients do not retry — hence the bounded wait-for-socket subshell
+      // (the socket name X1 is pinned to DISPLAY=:1, same as -geometry's
+      // assumptions elsewhere in this block).
+      //
+      // -SecurityTypes None + -localhost: the backend relay is the auth fence
+      // (Clerk-validated upgrade, owner-scoped) and 5900 never leaves
+      // loopback; a VNC password here would have to be minted at boot and
+      // independently derived by the backend for zero added exclusion.
+      //
+      // Eager display + lazy encoding is not an oversight, and the asymmetry
+      // cannot be removed: OpenClaw decides headless-vs-headful ONCE, at
+      // Chrome launch, from whether DISPLAY resolves —
+      // resolveManagedBrowserHeadlessMode evaluates its linux-no-DISPLAY
+      // branch BEFORE the configured browser.headless value. A display
+      // started after Chrome is useless to the Chrome already running.
+      //
+      // Ports: 6080 (websockify, container IP — reachable only from the
+      // backend SG + the :8081 ALB path rule) → 5900 (Xvnc, loopback only).
+      //
+      // Fail loudly rather than at first browser use: DISPLAY set on an image
+      // without Xvnc launches a headful Chrome against no X server, and
+      // surfaces as upstream's "No DISPLAY/X server was detected" at the
+      // first browser tool call — arbitrarily long after boot and nowhere
+      // near the cause.
+      '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ] || { echo "[boot] FATAL: DISPLAY is set but Xvnc is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs tigervnc-standalone-server."; exit 1; }',
+      '[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -geometry 1280x800 -depth 24 -localhost -SecurityTypes None -rfbport 5900 & }',
+      // On socket timeout: loud warning + skip the WM, never a boot failure.
+      // The live view is auxiliary — a dead Xvnc costs the Browser panel and
+      // headful Chrome, but chat/channels/everything else still works, and
+      // killing the whole agent container over it would invert priorities.
+      // (Skipping the exec also beats running matchbox against a dead
+      // display, where it would just exit after an X error.)
+      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
+      '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover
@@ -719,6 +789,18 @@ export class ContainerStack extends cdk.Stack {
       workingDirectory: "/home/node",
       environment: {
         HOME: "/home/node",
+        // Turns on the Step C4 display block, and with it the headful browser
+        // that backs the live view. This is the switch that makes every
+        // container launch a headful Chrome on the Xvfb display instead of a
+        // headless one.
+        //
+        // NOT env-gated, and that is only safe because DISPLAY and the image
+        // tag live in the SAME task definition: one CDK deploy registers both,
+        // so no revision can exist where DISPLAY is set on an image without
+        // Xvfb — the combination the Step C4 guard kills the boot over. If you
+        // ever set this for an environment, promote that environment's tag in
+        // openclaw-version.json in the same commit.
+        DISPLAY: ":1",
         CHOKIDAR_USEPOLLING: "true",
         // Redirect clawhub installs to the OpenClaw managed-skills directory
         // (~/.openclaw/skills) so they're scanned by every agent. Without

@@ -100,6 +100,21 @@ def test_build_kwargs_defaults_to_base_role_when_none(manager, mock_ecs_client):
     assert kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/shared-task-role"
 
 
+def test_build_kwargs_marks_backend_config_lock_protocol(manager, mock_ecs_client):
+    kwargs = manager._build_register_kwargs_from_base(
+        "fsap-user",
+        environment_for_task=[
+            {"name": "CODEX_HOME", "value": "/state/codex"},
+            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "stale-value"},
+        ],
+    )
+    environment = kwargs["containerDefinitions"][0]["environment"]
+    assert {"name": "CODEX_HOME", "value": "/state/codex"} in environment
+    assert [entry for entry in environment if entry["name"] == "ISOL8_CONFIG_LOCK_PROTOCOL"] == [
+        {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
+    ]
+
+
 def test_register_task_definition_passes_owner_role(manager, mock_ecs_client):
     manager._register_task_definition(
         "fsap-user", task_role_arn="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"

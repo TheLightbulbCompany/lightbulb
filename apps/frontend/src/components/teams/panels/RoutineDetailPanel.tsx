@@ -1043,6 +1043,22 @@ function variablesEqual(a: RoutineVariable[], b: RoutineVariable[]): boolean {
   return true;
 }
 
+// Placeholder matcher mirroring upstream Paperclip's (`routine-variables.ts`):
+// inner whitespace and markdown-escaped underscores (`{{pr\_url}}`, how WYSIWYG
+// editors serialize `_`) both count as a reference.
+const VAR_PLACEHOLDER_RE = /\{\{\s*([A-Za-z](?:\\_|[A-Za-z0-9_])*)\s*\}\}/g;
+
+// Names referenced as `{{NAME}}` across the routine's title + description.
+function referencedVariableNames(title: string, description: string): Set<string> {
+  const names = new Set<string>();
+  for (const source of [title, description]) {
+    for (const m of source.matchAll(VAR_PLACEHOLDER_RE)) {
+      names.add(m[1].replace(/\\_/g, "_"));
+    }
+  }
+  return names;
+}
+
 function EditRoutineDialog({
   routine,
   agents,
@@ -1097,7 +1113,14 @@ function EditRoutineDialog({
   }
 
   const namedVars = vars.filter((v) => v.name.trim() !== "");
-  const canSave = title.trim() !== "";
+  // Paperclip re-derives the variable set from the template on EVERY update
+  // (`syncRoutineVariablesWithTemplate`), keeping only definitions the title or
+  // description references as `{{NAME}}` — including on a save that doesn't send
+  // `variables` at all. An unreferenced definition therefore vanishes behind a
+  // 200, so block Save here rather than let it round-trip into silence.
+  const referenced = referencedVariableNames(title, description);
+  const unreferenced = namedVars.filter((v) => !referenced.has(v.name.trim()));
+  const canSave = title.trim() !== "" && unreferenced.length === 0;
   const reviewerAgents = agents.filter(
     (agent) =>
       agent.id === reviewerAgentId ||
@@ -1236,9 +1259,18 @@ function EditRoutineDialog({
               Add variable
             </EditorialButton>
           </div>
+          {unreferenced.length > 0 && (
+            <p role="alert" className="text-xs" style={{ color: "var(--danger)" }}>
+              {unreferenced.map((v) => `{{${v.name.trim()}}}`).join(", ")}{" "}
+              {unreferenced.length === 1 ? "is" : "are"} not used in the title or
+              description. Add the placeholder there, or remove the variable — an
+              automation only keeps variables its own text references.
+            </p>
+          )}
           {vars.length === 0 ? (
             <p className="text-xs italic" style={{ color: "var(--mute)" }}>
-              No variables. Add one to prompt for input at dispatch time.
+              No variables. Add one — and reference it as {"{{name}}"} in the title
+              or description — to prompt for input at dispatch time.
             </p>
           ) : (
             <ul className="flex flex-col gap-3">

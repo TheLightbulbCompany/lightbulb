@@ -199,4 +199,7 @@ async def test_a_failing_role_delete_does_not_abort_the_teardown(_runtime):
     assert await _cancel() is True
 
     _runtime.facts.assert_awaited_once()
+    # Both were attempted: a raising AIP delete must not skip the role delete,
+    # which is the half that actually frees the account-wide quota.
+    _runtime.aips.assert_awaited_once()
     _runtime.role.assert_awaited_once()

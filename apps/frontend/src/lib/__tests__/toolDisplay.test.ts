@@ -63,6 +63,15 @@ describe("resolveToolDisplay", () => {
     expect(toolRowLabel(d, false)).toBe("Read lines 40-79 from …/core/connection_pool.py");
   });
 
+  it("treats an offset of 0 as a real value, not an absent one", () => {
+    // A falsy-zero check here previously dropped offset:0 entirely, so
+    // reading from the top of a file rendered as "first 40 lines of a.ts"
+    // instead of the correct "lines 0-39 from a.ts".
+    expect(resolveToolDisplay("read", { path: "a.ts", offset: 0, limit: 40 }).detail).toBe(
+      "lines 0-39 from a.ts",
+    );
+  });
+
   it("shows shell commands verbatim and collapses long pipelines", () => {
     expect(resolveToolDisplay("bash", { command: "git status" }).detail).toBe("git status");
     expect(

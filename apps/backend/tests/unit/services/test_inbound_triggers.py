@@ -17,7 +17,15 @@ import pytest
 from core.services.inbound_triggers import seed_trigger_routine
 
 
-def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", secret_material=None, trigger_id=None):
+def _fake_admin(
+    *,
+    friday_id="friday_1",
+    routine_id="rt_1",
+    public_id="pub_1",
+    secret_material=None,
+    trigger_id=None,
+    description="Chase every failed invoice personally. Never mention the word dunning.",
+):
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=[{"id": friday_id, "role": "ceo"}])
     admin.create_routine = AsyncMock(return_value={"id": routine_id})
@@ -38,6 +46,9 @@ def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", s
     # target with the same knob it names a created routine.
     admin.list_routines = AsyncMock(return_value=[{"id": routine_id, "title": "Revenue recovery"}])
     admin.delete_routine_trigger = AsyncMock(return_value={})
+    # The APPEND path reads the routine's current description before patching
+    # it — a hand-written body the platform block must land AFTER, not over.
+    admin.get_routine = AsyncMock(return_value={"id": routine_id, "description": description})
     return admin
 
 
@@ -1742,18 +1753,234 @@ async def test_attach_accepts_an_enveloped_routine_list():
     assert out["routine_id"] == "rt_env"
 
 
+# --- append, never overwrite (the shapes that write the routine's body) -----
+#
+# auto_google_watch / owner_setup / poll keep their automation alive by
+# writing instructions into its description. On the CREATE path they compose
+# the whole thing; on an ATTACH the body is the owner's, so the same text
+# lands as a delimited block at the END. Refusing instead (what this
+# replaced) was a dead end: the machinery already supports the attach.
+
+_OWNER_WORDS = "Chase every failed invoice personally. Never mention the word dunning."
+
+
+def _appended_block(desc: str) -> str:
+    """The platform block out of a patched description — and proof the owner's
+    words came first and whole."""
+    from core.services.inbound_triggers import _PLATFORM_BLOCK_END, _PLATFORM_BLOCK_START
+
+    assert desc.startswith(_OWNER_WORDS), desc
+    head, _, tail = desc.partition(_PLATFORM_BLOCK_START)
+    assert head.strip() == _OWNER_WORDS
+    body, end, rest = tail.partition(_PLATFORM_BLOCK_END)
+    assert end and rest.strip() == ""
+    return body.strip()
+
+
 @pytest.mark.asyncio
-async def test_attach_refuses_the_shapes_that_write_the_routines_own_body():
-    """auto_google_watch / gmail push / gmail poll keep their automation alive
-    by writing maintenance instructions into its description (and attaching a
-    renewal schedule). That is exactly what an attach promises not to do, so
-    they stay create-only rather than arming a watch nothing renews."""
-    admin = _fake_admin(routine_id="rt_x")
+async def test_attach_google_watch_appends_the_clause_after_the_owners_words(tmp_path):
+    """Calendar watch on a hand-written routine: the renewal clause is
+    APPENDED as a delimited block, the owner's instructions survive verbatim
+    and stay first, and the renewal schedule is still attached (without it the
+    ≤7-day channel dies silently)."""
+    admin = _fake_admin(routine_id="rt_mine", secret_material=_GOOG_SECRET, description=_OWNER_WORDS)
     p_repo, p_cookie, p_client = _env(admin)
-    for event_id in ("calendar.changed", "gmail.message", "gmail.poll"):
-        with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="can't be added to an existing"):
-            await seed_trigger_routine("owner_1", "google", event_id, resource="a@b.com", routine_id="rt_x")
-    admin.create_routine_trigger.assert_not_awaited()
+    run_gog = MagicMock(return_value=_channel_response(resource_id="res_cal_1"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _efs_root_patch(tmp_path),
+        _channels_get_patch(),
+        _channels_set_patch(),
+    ):
+        out = await seed_trigger_routine(
+            "owner_1", "google", "calendar.changed", resource="ada@example.com", routine_id="rt_mine"
+        )
+
+    admin.create_routine.assert_not_awaited()
+    assert out["routine_id"] == "rt_mine"
+
+    block = _appended_block(admin.patch_routine.await_args.kwargs["body"]["description"])
+    assert block.startswith("Every run, FIRST do maintenance")
+    assert "/home/node/.openclaw/google-watch/pub_1.json" in block
+    assert "pcsec_g1" not in block  # the channel token stays in the 0600 state file
+
+    # The renewal schedule is what makes the watch self-renewing — attached
+    # here exactly as it is on the create path.
+    assert admin.create_routine_trigger.await_count == 2
+    assert admin.create_routine_trigger.await_args_list[1].kwargs["body"] == _RENEWAL_TRIGGER_BODY
+
+
+@pytest.mark.asyncio
+async def test_attach_gmail_push_appends_the_clause_after_the_owners_words(tmp_path):
+    admin = _fake_admin(routine_id="rt_mine", secret_material=_GOOG_SECRET, description=_OWNER_WORDS)
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch(
+            "core.services.google_watch._run_gog", MagicMock(return_value=json.dumps({"expiration": "1799999999000"}))
+        ),
+        _efs_root_patch(tmp_path),
+        _channels_get_patch(),
+        _channels_set_patch(),
+    ):
+        await seed_trigger_routine(
+            "owner_1",
+            "google",
+            "gmail.message",
+            resource="ada@example.com",
+            topic="projects/my-project/topics/isol8-gmail",
+            routine_id="rt_mine",
+        )
+
+    admin.create_routine.assert_not_awaited()
+    block = _appended_block(admin.patch_routine.await_args.kwargs["body"]["description"])
+    assert block.startswith("Every run, FIRST do maintenance")
+    assert "gog gmail watch renew -a ada@example.com" in block
+
+
+@pytest.mark.asyncio
+async def test_attach_gmail_poll_appends_the_starter_prompt():
+    """poll has no webhook and no clause — its whole behaviour IS the starter
+    prompt, so an attach appends that instead, alongside the schedule that
+    fires it."""
+    admin = _fake_admin(routine_id="rt_mine", description=_OWNER_WORDS)
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _google_accounts_patch():
+        out = await seed_trigger_routine(
+            "owner_1", "google", "gmail.poll", resource="ada@example.com", routine_id="rt_mine"
+        )
+
+    admin.create_routine.assert_not_awaited()
+    assert out["poll"] is True
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["cronExpression"] == "*/10 * * * *"
+    block = _appended_block(admin.patch_routine.await_args.kwargs["body"]["description"])
+    assert block.startswith("Scheduled inbox check (account: ada@example.com)")
+
+
+@pytest.mark.asyncio
+async def test_attach_never_patches_a_description_it_could_not_read():
+    """The append reads the CURRENT description first. If that read fails,
+    nothing is patched — a blind patch would erase the body it exists to
+    preserve — and the triggers this call added are unwound."""
+    admin = _fake_admin(routine_id="rt_mine", description=_OWNER_WORDS, trigger_id="trg_new")
+    admin.get_routine = AsyncMock(side_effect=RuntimeError("upstream down"))
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(RuntimeError):
+        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com", routine_id="rt_mine")
+
+    admin.patch_routine.assert_not_awaited()
+    admin.delete_routine.assert_not_awaited()
+    admin.delete_routine_trigger.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_attach_rollback_deletes_the_renewal_trigger_too(tmp_path):
+    """A google attach adds TWO triggers. Unwinding only the webhook would
+    leave the owner's routine waking twice a week to renew a watch that no
+    longer exists."""
+    admin = _fake_admin(routine_id="rt_mine", secret_material=_GOOG_SECRET, description=_OWNER_WORDS)
+    admin.create_routine_trigger = AsyncMock(
+        side_effect=[
+            {"trigger": {"id": "trg_hook", "publicId": "pub_1"}, "secretMaterial": _GOOG_SECRET},
+            {"trigger": {"id": "trg_renewal", "publicId": "pub_2"}},
+        ]
+    )
+    # The state-file write fails AFTER both triggers exist.
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", MagicMock(return_value=_channel_response())),
+        patch("core.services.inbound_triggers._write_watch_state", side_effect=OSError("efs down")),
+        patch("core.services.google_watch.stop_watch", AsyncMock()),
+        _channels_get_patch(),
+        _channels_set_patch(),
+        pytest.raises(OSError),
+    ):
+        await seed_trigger_routine(
+            "owner_1", "google", "calendar.changed", resource="ada@example.com", routine_id="rt_mine"
+        )
+
+    admin.delete_routine.assert_not_awaited()
+    deleted = {c.kwargs["trigger_id"] for c in admin.delete_routine_trigger.await_args_list}
+    assert deleted == {"trg_hook", "trg_renewal"}
+    # And the owner's description was never touched — the append is last.
+    admin.patch_routine.assert_not_awaited()
+
+
+# --- owner-written title / description overrides ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_overrides_win_over_the_registry_template():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine(
+            "owner_1",
+            "stripe",
+            "invoice.payment_failed",
+            title="Dunning desk",
+            description="Email the customer, then tell me.",
+        )
+
+    body = admin.create_routine.await_args.kwargs["body"]
+    assert body["title"] == "Dunning desk"
+    assert body["description"] == "Email the customer, then tell me."
+    # The trigger's label follows the routine's name, not the template's.
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["label"] == "Dunning desk"
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_draft_is_byte_identical_to_the_template_path():
+    """PARITY. The frontend pre-fills an editable draft from the same template
+    the seed renders; when the owner types nothing it sends no override at
+    all, and the router forwards None. That path must produce exactly what the
+    1-click flow produced before overrides existed — asserted both against the
+    literal rendering and against a no-override call."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", title=None, description=None)
+    with_nones = admin.create_routine.await_args.kwargs["body"]
+
+    admin2 = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin2)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+    without = admin2.create_routine.await_args.kwargs["body"]
+
+    assert with_nones == without
+    assert with_nones["title"] == "Stripe: Invoice payment failed"
+    from core.services.credentials import registry
+
+    template = registry.get_provider("stripe").inbound.template
+    assert with_nones["description"] == template.starter_prompt.format(event_label="Invoice payment failed", account="")
+
+
+@pytest.mark.asyncio
+async def test_a_blanked_override_falls_back_to_the_template():
+    """An empty string means "use the default", not "name this nothing"."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", title="   ", description="")
+
+    body = admin.create_routine.await_args.kwargs["body"]
+    assert body["title"] == "Stripe: Invoice payment failed"
+    assert body["description"]
 
 
 @pytest.mark.asyncio

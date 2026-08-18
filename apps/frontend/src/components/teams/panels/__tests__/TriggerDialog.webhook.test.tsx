@@ -62,7 +62,10 @@ async function openAddDialogAsWebhook() {
   render(<RoutineDetailPanel routineId="r1" />);
   await user.click(screen.getByRole("button", { name: /add trigger/i }));
   const dialog = await screen.findByRole("dialog");
-  await user.selectOptions(within(dialog).getByLabelText(/trigger type/i), "webhook");
+  // "Any other app" is the raw signed-URL webhook rung — the same three-way
+  // "what starts this?" picker the New-automation dialog shows, now that
+  // Add-trigger offers every kind an automation can take.
+  await user.click(within(dialog).getByRole("radio", { name: /any other app/i }));
   return { user, dialog };
 }
 

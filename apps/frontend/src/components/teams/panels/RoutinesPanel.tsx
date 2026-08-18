@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { notifyApiError, notifyConversionGate, notifySuccess } from "@/lib/notify";
-import { ArrowUpDown, Blocks, Cable, Check, ChevronDown, Clock, Repeat } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
@@ -14,23 +13,24 @@ import {
   PanelToolbar,
   type PanelDataColumn,
 } from "@/components/teams/shell";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
-import { AutomationGoogleAccount } from "@/components/teams/panels/AutomationGoogleAccount";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { useApi } from "@/lib/api";
-import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { triggerSentence } from "@/components/teams/shared/triggerSentence";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
 import { ScheduleField } from "@/components/teams/shared/components/ScheduleField";
+import {
+  ConnectedAppFields,
+  ConnectedAppResultDialog,
+  StartRungPicker,
+  gateMessage,
+  useConnectedAppTrigger,
+  type StartRung,
+} from "@/components/teams/shared/components/ConnectedAppTrigger";
 import { withRoutineReviewer } from "@/components/teams/panels/routineExecutionPolicy";
 import {
   SIGNING_MODE_OPTIONS,
@@ -90,19 +90,6 @@ interface Routine {
 }
 
 /* ── field accessors (tolerant of upstream + legacy shapes) ──────────────── */
-
-/** Human copy for a blocked-gate 402 (e.g. routines_require_subscription).
- *
- * The shared API client now promotes a structured `{blocked, code, message}`
- * detail's message to `ApiError.message` too, so for ApiErrors this is
- * equivalent to reading `e.message` — kept because it also covers non-ApiError
- * values via the `String(e)` fallback at the call sites below.
- */
-function gateMessage(e: unknown): string {
-  const body = (e as { body?: { detail?: { message?: string } } })?.body;
-  const msg = body?.detail?.message;
-  return typeof msg === "string" && msg ? msg : String(e);
-}
 
 function routineName(r: Routine): string {
   return r.title ?? r.name ?? "Untitled automation";
@@ -855,277 +842,10 @@ function SortMenu({
   );
 }
 
-/* ── create dialog: "what should start this?" trigger-type picker ───────── */
-
-// The three ways a routine can be kicked off today. (Email intake and
-// agent-watch triggers are on the roadmap but deliberately not surfaced here —
-// a picker padded with disabled "coming soon" options is clutter, not a
-// feature; they'll appear when they actually work.)
-type StartRung = "connected_app" | "webhook" | "schedule";
-
-const START_RUNGS: ReadonlyArray<{
-  value: StartRung;
-  label: string;
-  hint: string;
-  icon: LucideIcon;
-}> = [
-  {
-    value: "connected_app",
-    label: "A connected app",
-    hint: "When something happens in a connected app like Stripe.",
-    icon: Blocks,
-  },
-  {
-    value: "webhook",
-    label: "Any other app",
-    hint: "Give any service a signed URL to call when its event fires.",
-    icon: Cable,
-  },
-  {
-    value: "schedule",
-    label: "On a schedule",
-    hint: "Run automatically on a repeating cadence — hourly, daily, weekly.",
-    icon: Clock,
-  },
-];
-
-// What the auto-registering shapes' third dropdown picks — the provider-side
-// resource the backend hooks ("owner/repo" for GitHub, a project for Vercel,
-// a connected Google account email for Google watch channels).
-// The label heads the dropdown; the plural feeds its placeholder copy.
-// Keyed by registration shape, with an optional "<shape>:<provider>" override:
-// auto_meta is the one shape two providers share, and its resource is a Page
-// for Meta Ads but an account for Instagram.
-const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
-  auto_github: { label: "Repository", plural: "repositories" },
-  auto_vercel: { label: "Project", plural: "projects" },
-  auto_google_watch: { label: "Google account", plural: "accounts" },
-  "auto_meta:meta_ads": { label: "Page", plural: "Pages" },
-  "auto_meta:instagram": { label: "Instagram account", plural: "accounts" },
-};
-
-// Registration shapes that can only ever CREATE their own automation, never
-// arm an existing one — mirrors the backend's _ATTACHABLE_REGISTRATIONS
-// (core/services/inbound_triggers.py). All three write the routine's own
-// instructions as part of their setup (the Google watch shapes prepend a
-// renewal-maintenance clause; poll's whole behaviour IS its starter prompt),
-// which is exactly what attaching to someone's hand-written routine must not
-// do. The picker hides the choice for them rather than offering a 400.
-const NON_ATTACHABLE_REGISTRATIONS = new Set([
-  "auto_google_watch",
-  "poll",
-  "owner_setup",
-]);
-
 // The target-picker's "create a new one" option. A sentinel rather than an
 // empty string because EditorialSelect (Radix) treats "" as no-value, which
 // would render the placeholder instead of this deliberate default.
 const NEW_ROUTINE = "__new__";
-
-// POST /automations/from-integration's response (core/services/
-// inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
-// paste the proxy URL into the provider's own dashboard and then paste back
-// the signing secret it hands them. `secret_hint` names the provider's term
-// for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
-// becomes the paste input's placeholder. `webhook_secret` -> the REVERSE-
-// guided variant (PostHog): the secret flows the other way — the owner sets
-// it as the provider-side Authorization header, shown once here with no
-// paste-back step, so Done is never gated on it. `resource` echoes the
-// auto-registered target ("owner/repo" for GitHub, the project id for
-// Vercel) so the success copy can name it. `poll` -> a schedule-backed
-// automation (gmail.poll): no webhook exists, so trigger_public_id/proxy_url
-// are null. Non-guided results may still carry `instructions`
-// (gmail.message's one-time Pub/Sub setup) — informational only, Done is
-// never gated on them.
-interface FromIntegrationResult {
-  routine_id: string;
-  trigger_public_id: string | null;
-  proxy_url: string | null;
-  guided: boolean;
-  instructions?: string | null;
-  secret_hint?: string | null;
-  webhook_secret?: string | null;
-  resource?: string | null;
-  poll?: boolean;
-}
-
-// Every guided provider's providers.yaml `instructions` template splices in
-// the literal `{proxy_url}` exactly once (Stripe/Sentry/Linear/Attio/
-// PostHog). Rendered as plain text that URL is one unbroken token that
-// overflows past the dialog's edge instead of wrapping, so pull it into its
-// own break-all span — matching SecretField's own convention for raw
-// URLs/secrets — and leave the rest of the (already-wrapping) sentence
-// alone. Falls back to the plain string if the URL isn't found in it.
-function renderInstructions(instructions: string, proxyUrl: string | null) {
-  const idx = proxyUrl ? instructions.indexOf(proxyUrl) : -1;
-  if (idx === -1 || !proxyUrl) return instructions;
-  return (
-    <>
-      {instructions.slice(0, idx)}
-      <code className="break-all">{proxyUrl}</code>
-      {instructions.slice(idx + proxyUrl.length)}
-    </>
-  );
-}
-
-// Searchable single-select for the event catalog. Providers now carry their
-// FULL event lists (Stripe ~265), so the plain dropdown stopped scaling. With
-// no filter and a big catalog: a "Popular" group (the first PINNED_EVENT_COUNT
-// registry entries — providers.yaml orders the curated picks first) then the
-// rest alphabetized. Typing collapses to one flat list matched
-// case-insensitively against label AND id. Small catalogs (≤8) skip the
-// grouping and list in registry order.
-//
-// The list lives in a POPOVER, not inline. Inline it was 260px of always-open
-// scroller wedged into a dialog that doesn't scroll, so every field below it
-// (repository, and the create actions) sat past the viewport edge with the
-// only scrollable thing under the cursor being the event list itself — the
-// form became unreachable after picking an app. A popover also puts the list
-// on its own dismissable layer, which is what makes Escape close the LIST
-// rather than the whole New-automation dialog (Radix dismisses the topmost
-// layer and stops there), instead of discarding every selection made so far.
-const PINNED_EVENT_COUNT = 3;
-
-function EventPicker({
-  events,
-  value,
-  onSelect,
-}: {
-  events: { id: string; label: string }[];
-  value: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  // Roving focus over the options (same idiom as the rung radiogroup): Arrow
-  // keys move focus, Enter/Space activate the focused option button natively.
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const searchRef = useRef<HTMLInputElement | null>(null);
-  const q = query.trim().toLowerCase();
-  const filtered = q
-    ? events.filter(
-        (e) =>
-          e.label.toLowerCase().includes(q) || e.id.toLowerCase().includes(q),
-      )
-    : null;
-  const grouped = filtered === null && events.length > 8;
-  const popular = grouped ? events.slice(0, PINNED_EVENT_COUNT) : [];
-  const rest = grouped
-    ? [...events.slice(PINNED_EVENT_COUNT)].sort((a, b) =>
-        a.id.localeCompare(b.id),
-      )
-    : (filtered ?? events);
-  const visible = [...popular, ...rest];
-  const selectedIndex = visible.findIndex((e) => e.id === value);
-
-  function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
-    const i = optionRefs.current.findIndex(
-      (el) => el === document.activeElement,
-    );
-    const next =
-      e.key === "ArrowDown"
-        ? Math.min(i + 1, visible.length - 1)
-        : Math.max(i - 1, 0);
-    optionRefs.current[next]?.focus();
-  }
-
-  const groupHeading = (text: string) => (
-    <div className="px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
-      {text}
-    </div>
-  );
-
-  const selectedLabel = events.find((e) => e.id === value)?.label ?? null;
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center justify-between gap-2 rounded border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--ink)]"
-        >
-          <span className={cn("truncate", !selectedLabel && "text-[var(--mute)]")}>
-            {selectedLabel ?? "Select an event…"}
-          </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--mute)]" aria-hidden="true" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-[var(--radix-popover-trigger-width)] p-2"
-        // The search input owns focus on open, so typing filters immediately
-        // instead of landing on the trigger's own focus restore.
-        onOpenAutoFocus={(e) => {
-          e.preventDefault();
-          searchRef.current?.focus();
-        }}
-      >
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search events…"
-          aria-label="Search events"
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]"
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              optionRefs.current[0]?.focus();
-            }
-          }}
-        />
-        <div
-          role="listbox"
-          aria-label="Event"
-          onKeyDown={onListKeyDown}
-          className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
-        >
-          {visible.length === 0 && (
-            <p className="px-3 py-2 text-sm text-[var(--mute)]">
-              No events match &ldquo;{query.trim()}&rdquo;.
-            </p>
-          )}
-          {visible.map((e, i) => (
-            <div key={e.id}>
-              {grouped && i === 0 && groupHeading("Popular")}
-              {grouped && i === popular.length && groupHeading("All events")}
-              <button
-                ref={(el) => {
-                  optionRefs.current[i] = el;
-                }}
-                type="button"
-                role="option"
-                aria-selected={value === e.id}
-                tabIndex={i === (selectedIndex === -1 ? 0 : selectedIndex) ? 0 : -1}
-                onClick={() => {
-                  onSelect(e.id);
-                  setOpen(false);
-                }}
-                className={cn(
-                  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-                  value === e.id
-                    ? "bg-[var(--forest-tint)] text-[var(--ink)]"
-                    : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
-                )}
-              >
-                <span className="truncate">{e.label}</span>
-                {value === e.id && (
-                  <Check
-                    size={14}
-                    strokeWidth={2}
-                    className="shrink-0 text-[var(--forest)]"
-                  />
-                )}
-              </button>
-            </div>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 function CreateRoutineDialog({
   agents,
@@ -1141,16 +861,7 @@ function CreateRoutineDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
-  // The connected-app rung talks straight to the app API — automations
-  // endpoints (routers/automations.py) are mounted under /api/v1, not the
-  // Teams BFF that `post` above proxies through.
-  const automationsApi = useApi();
-  const { connections } = useConnections();
   const [rung, setRung] = useState<StartRung>("schedule");
-  // Roving tabindex for the rung radiogroup (WAI-ARIA APG pattern): only the
-  // checked radio is a tab stop; Arrow keys move both the selection and DOM
-  // focus between rungs, wrapping at the ends.
-  const rungRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [title, setTitle] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
   const [signingMode, setSigningMode] = useState("bearer");
@@ -1168,90 +879,15 @@ function CreateRoutineDialog({
   const [createdWebhook, setCreatedWebhook] =
     useState<RoutineTriggerSecretMaterial | null>(null);
 
-  // "A connected app" rung state — a provider + one of its events, submitted
-  // straight to POST /automations/from-integration (no title/assignee/
-  // description: the registry template supplies all of that server-side).
-  const [connProvider, setConnProvider] = useState<string | null>(null);
-  const [connEventId, setConnEventId] = useState<string | null>(null);
-  const [connResult, setConnResult] = useState<FromIntegrationResult | null>(
-    null,
-  );
-  const [whsecInput, setWhsecInput] = useState("");
-  const [whsecSubmitting, setWhsecSubmitting] = useState(false);
-  const [whsecSaved, setWhsecSaved] = useState(false);
-  // Auto-register state — the provider-side resource (repo/project) to hook,
-  // and the picker feed fetched lazily once such a provider is selected.
-  // resourceOptions null = not loaded yet (also what re-arms the fetch effect).
-  const [connResource, setConnResource] = useState<string | null>(null);
-  const [resourceOptions, setResourceOptions] = useState<
-    { id: string; label: string }[] | null
-  >(null);
-  const [resourceError, setResourceError] = useState<string | null>(null);
-  // owner_setup state (gmail.message) — the owner's own Pub/Sub topic.
-  const [connTopic, setConnTopic] = useState("");
-  // Which automation the trigger lands on: NEW_ROUTINE (the default, and the
-  // unchanged 1-click path) or an existing routine's id, which attaches the
-  // trigger to it and leaves everything else about it alone.
+  // Which automation the connected-app trigger lands on: NEW_ROUTINE (the
+  // default, and the unchanged 1-click path) or an existing routine's id,
+  // which attaches the trigger to it and leaves its own work alone.
   const [connRoutineId, setConnRoutineId] = useState<string>(NEW_ROUTINE);
-
-  // Trigger-capable = connected AND the registry declares inbound events for
-  // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
-  const triggerableConnections = connections.filter(
-    (c) => c.status === "connected" && (c.inbound?.events.length ?? 0) > 0,
-  );
-  const selectedConnection =
-    triggerableConnections.find((c) => c.provider === connProvider) ?? null;
-  const connEvents = selectedConnection?.inbound?.events ?? [];
-  const isAutoRegister =
-    selectedConnection?.inbound?.webhook_registration?.startsWith("auto_") ??
-    false;
-  // The selected EVENT's registration override — "owner_setup" adds the
-  // Pub/Sub topic input below (the account picker still comes from the
-  // block-level auto_google_watch shape).
-  const selectedEvent = connEvents.find((e) => e.id === connEventId) ?? null;
-  const isOwnerSetup = selectedEvent?.registration === "owner_setup";
-  const registrationShape =
-    selectedConnection?.inbound?.webhook_registration ?? "";
-  // Per-event override wins, same precedence the backend applies.
-  const effectiveRegistration =
-    selectedEvent?.registration ?? registrationShape;
-  const canAttachToExisting =
-    !NON_ATTACHABLE_REGISTRATIONS.has(effectiveRegistration);
-  // The chosen target, normalized: the sentinel and any shape that can't
-  // attach both mean "create a new automation".
-  const attachRoutineId =
-    canAttachToExisting && connRoutineId !== NEW_ROUTINE ? connRoutineId : null;
-  const resourceNoun = AUTO_RESOURCE_NOUNS[
-    `${registrationShape}:${connProvider}`
-  ] ??
-    AUTO_RESOURCE_NOUNS[registrationShape] ?? {
-      label: "Resource",
-      plural: "resources",
-    };
-
-  useEffect(() => {
-    if (
-      !isAutoRegister ||
-      !connProvider ||
-      resourceOptions !== null ||
-      resourceError !== null
-    )
-      return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const resources = (await automationsApi.get(
-          `/automations/providers/${connProvider}/resources`,
-        )) as { id: string; label: string }[];
-        if (!cancelled) setResourceOptions(resources);
-      } catch (e) {
-        if (!cancelled) setResourceError(gateMessage(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isAutoRegister, connProvider, resourceOptions, resourceError, automationsApi]);
+  const attachRoutineId = connRoutineId === NEW_ROUTINE ? null : connRoutineId;
+  // Everything else about "a connected app fires this" — the app/event
+  // picker, the provider-side wiring and the finish dialog — is shared with
+  // RoutineDetailPanel's Add-trigger door.
+  const conn = useConnectedAppTrigger({ routineId: attachRoutineId });
 
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
@@ -1262,12 +898,12 @@ function CreateRoutineDialog({
       replayWindowNum <= 86400);
   const canSubmit =
     rung === "connected_app"
-      ? connProvider != null &&
-        connEventId != null &&
-        (!isAutoRegister || connResource != null) &&
-        (!isOwnerSetup || connTopic.trim() !== "")
+      ? conn.canSubmit
       : title.trim() !== "" &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
+  // The connected-app rung owns its own error state (different API); the
+  // other two share the dialog's.
+  const shownErr = rung === "connected_app" ? conn.err : err;
   const reviewerAgents = agents.filter(
     (agent) => agent.id !== agentId && agent.status !== "terminated",
   );
@@ -1277,80 +913,10 @@ function CreateRoutineDialog({
     if (nextAgentId === reviewerAgentId) setReviewerAgentId(null);
   }
 
-  function moveRung(delta: 1 | -1) {
-    const i = START_RUNGS.findIndex((r) => r.value === rung);
-    const next = (i + delta + START_RUNGS.length) % START_RUNGS.length;
-    setRung(START_RUNGS[next].value);
-    rungRefs.current[next]?.focus();
-  }
-
-  function onRungKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      e.preventDefault();
-      moveRung(1);
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      e.preventDefault();
-      moveRung(-1);
-    }
-  }
-
-  // "A connected app" — one call seeds BOTH the routine and its trigger from
-  // the registry template (core/services/inbound_triggers.py), so none of
-  // the title/assignee/description fields the other two rungs use apply here.
-  async function submitConnectedApp() {
-    if (!connProvider || !connEventId) return;
-    setSubmitting(true);
-    setErr(null);
-    try {
-      const body = {
-        provider: connProvider,
-        event_id: connEventId,
-        // Only the auto-register shapes carry a resource; guided providers'
-        // bodies stay exactly as before.
-        ...(connResource ? { resource: connResource } : {}),
-        // Only the owner_setup shape (gmail.message) carries a topic.
-        ...(isOwnerSetup && connTopic.trim() ? { topic: connTopic.trim() } : {}),
-        // Only an attach carries a target — the create path's body is
-        // byte-for-byte what it always was.
-        ...(attachRoutineId ? { routine_id: attachRoutineId } : {}),
-      };
-      const result = (await automationsApi.post(
-        "/automations/from-integration",
-        body,
-      )) as FromIntegrationResult;
-      setConnResult(result);
-    } catch (e) {
-      if (notifyConversionGate(e) === null) {
-        setErr(gateMessage(e));
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function saveWebhookSecret() {
-    if (!connResult || whsecInput.trim() === "") return;
-    setWhsecSubmitting(true);
-    setErr(null);
-    try {
-      await automationsApi.put(
-        `/automations/${connResult.trigger_public_id}/webhook-secret`,
-        { webhook_secret: whsecInput.trim() },
-      );
-      setWhsecSaved(true);
-    } catch (e) {
-      if (notifyConversionGate(e) === null) {
-        setErr(gateMessage(e));
-      }
-    } finally {
-      setWhsecSubmitting(false);
-    }
-  }
-
   async function submit() {
     if (!canSubmit) return;
     if (rung === "connected_app") {
-      await submitConnectedApp();
+      await conn.submit();
       return;
     }
     setSubmitting(true);
@@ -1429,141 +995,8 @@ function CreateRoutineDialog({
     );
   }
 
-  if (connResult) {
-    const providerName =
-      selectedConnection?.display_name ?? connProvider ?? "the app";
-    // Prefer the picker's human label for the registered resource — the
-    // backend echoes the id it hooked (a GitHub "owner/repo" reads fine, but
-    // a Vercel "prj_…" id doesn't), and the picker already knows the name.
-    const resourceLabel = connResult.resource
-      ? (resourceOptions?.find((r) => r.id === connResult.resource)?.label ??
-        connResult.resource)
-      : null;
-    // Guided (Stripe) results aren't armed until the owner pastes the whsec
-    // back via saveWebhookSecret — closing before that leaves an active,
-    // unsigned automation with no UI left to finish it (the detail panel
-    // treats a "none"-signing trigger as non-rotatable). Auto (GitHub/
-    // Vercel) results are already fully armed by the time this dialog shows.
-    // Reverse-guided (webhook_secret present) results have no paste-back —
-    // the trigger is born armed with its own secret and the owner wires the
-    // provider side by hand — so Done is never gated for them either.
-    const isReverseGuided = !!connResult.webhook_secret;
-    const mustSaveSecretFirst =
-      connResult.guided && !isReverseGuided && !whsecSaved;
-    // Poll results (gmail.poll) are schedule-backed: nothing to wire, no URL.
-    const isPoll = connResult.poll === true;
-    // Non-guided results carrying instructions (gmail.message) still need a
-    // one-time owner-side setup — informational only, Done is never gated.
-    const needsOwnerSetup = !connResult.guided && !isPoll && !!connResult.instructions;
-    return (
-      <EditorialDialog
-        open
-        onOpenChange={(o) => !o && !mustSaveSecretFirst && onCreated()}
-        title={
-          connResult.guided || needsOwnerSetup
-            ? "Finish setup"
-            : "Automation registered"
-        }
-        description={
-          connResult.guided
-            ? isReverseGuided
-              ? `Copy this URL and Authorization header value into ${providerName} — the secret is shown only once.`
-              : `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
-            : isPoll
-              ? `Checks ${resourceLabel ?? "the account"}'s inbox every 10 minutes — this automation is live.`
-              : needsOwnerSetup
-                ? "One-time setup in your Google Cloud project points push notifications at this URL — follow the steps below."
-                : `${providerName} registered the webhook${resourceLabel ? ` on ${resourceLabel}` : " automatically"} — this automation is live.`
-        }
-        footer={
-          <EditorialButton
-            variant="primary"
-            size="sm"
-            onClick={onCreated}
-            disabled={mustSaveSecretFirst}
-            title={
-              mustSaveSecretFirst
-                ? "Save the signing secret first"
-                : undefined
-            }
-          >
-            Done
-          </EditorialButton>
-        }
-      >
-        <div className="flex flex-col gap-3">
-          {/* Poll results have no webhook — nothing to copy. */}
-          {connResult.proxy_url && (
-            <SecretField label="Webhook URL" value={connResult.proxy_url} />
-          )}
-          {/* Reverse-guided: the FULL header value ("Bearer <secret>"), not
-              the bare secret — copying it whole eliminates the classic
-              forgot-the-Bearer-prefix failure. */}
-          {connResult.webhook_secret && (
-            <SecretField
-              label="Authorization header value"
-              value={`Bearer ${connResult.webhook_secret}`}
-            />
-          )}
-          {connResult.instructions && (
-            <p className="text-xs text-[var(--mute)]">
-              {renderInstructions(connResult.instructions, connResult.proxy_url)}
-            </p>
-          )}
-          {connResult.guided && !isReverseGuided ? (
-            <>
-              <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
-                  Paste your {providerName} signing secret
-                </span>
-                <input
-                  type="password"
-                  value={whsecInput}
-                  onChange={(e) => setWhsecInput(e.target.value)}
-                  placeholder={connResult.secret_hint ?? "Signing secret"}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-                />
-              </label>
-              {whsecSaved ? (
-                <p className="text-sm" style={{ color: "var(--forest)" }}>
-                  Secret saved.
-                </p>
-              ) : (
-                <EditorialButton
-                  variant="secondary"
-                  size="sm"
-                  disabled={whsecSubmitting || whsecInput.trim() === ""}
-                  onClick={saveWebhookSecret}
-                >
-                  {whsecSubmitting ? "Saving…" : "Save secret"}
-                </EditorialButton>
-              )}
-            </>
-          ) : (
-            // Reverse-guided is guided-but-unwired: "Registered." would claim
-            // a liveness the owner's PostHog-side setup hasn't earned yet.
-            !connResult.guided && (
-              <p className="text-sm" style={{ color: "var(--forest)" }}>
-                Registered.
-              </p>
-            )
-          )}
-          {err && (
-            <div
-              className="text-[var(--danger)] text-sm rounded px-3 py-2"
-              style={{
-                border:
-                  "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
-                background:
-                  "color-mix(in srgb, var(--danger) 6%, transparent)",
-              }}
-            >
-              {err}
-            </div>
-          )}
-        </div>
-      </EditorialDialog>
-    );
+  if (conn.result) {
+    return <ConnectedAppResultDialog ctl={conn} onDone={onCreated} />;
   }
 
   return (
@@ -1573,76 +1006,12 @@ function CreateRoutineDialog({
       title="New automation"
     >
       <div className="flex flex-col gap-4">
-        <div className="block">
-          <span className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
-            What starts this?
-          </span>
-          <div
-            role="radiogroup"
-            aria-label="What starts this automation?"
-            className="mt-2 flex flex-col gap-1.5"
-            onKeyDown={onRungKeyDown}
-          >
-            {START_RUNGS.map((r, i) => {
-              const Icon = r.icon;
-              const active = rung === r.value;
-              return (
-                <button
-                  key={r.value}
-                  ref={(el) => {
-                    rungRefs.current[i] = el;
-                  }}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  tabIndex={active ? 0 : -1}
-                  onClick={() => setRung(r.value)}
-                  className={cn(
-                    "flex items-start gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
-                    active
-                      ? "border-[var(--forest)] bg-[var(--forest-tint)]"
-                      : "border-[var(--edge)] hover:bg-[var(--cream-deeper)]",
-                  )}
-                >
-                  <span
-                    className="mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-                    style={{
-                      background: active
-                        ? "color-mix(in srgb, var(--forest) 12%, transparent)"
-                        : "var(--cream-deeper)",
-                      color: active ? "var(--forest)" : "var(--mute)",
-                    }}
-                  >
-                    <Icon size={15} strokeWidth={1.75} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span
-                      className={cn(
-                        "block text-sm font-medium",
-                        active ? "text-[var(--ink)]" : "text-[var(--ink-soft)]",
-                      )}
-                    >
-                      {r.label}
-                    </span>
-                    <span className="block text-xs leading-snug text-[var(--mute)]">
-                      {r.hint}
-                    </span>
-                  </span>
-                  {active && (
-                    <Check
-                      size={16}
-                      strokeWidth={2}
-                      className="mt-px shrink-0 text-[var(--forest)]"
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        {/* Title/Assignee only apply to the schedule/webhook rungs — the
-            connected-app rung's registry template supplies both server-side
-            (POST /automations/from-integration). */}
+        <StartRungPicker value={rung} onChange={setRung} />
+        {/* Title/Assignee/Description belong to a routine this dialog CREATES.
+            The connected-app rung has its own pair (pre-filled from the
+            registry template, and editable) inside ConnectedAppFields, plus a
+            target picker that can send the trigger to an automation that
+            already has all three. */}
         {rung !== "connected_app" && (
           <>
             <label className="block">
@@ -1686,138 +1055,16 @@ function CreateRoutineDialog({
         )}
 
         {rung === "connected_app" && (
-          <>
-            <label className="block">
-              <span className="text-sm text-[var(--ink-soft)]">
-                Connected app
-              </span>
-              <div className="mt-1">
-                <EditorialSelect
-                  options={triggerableConnections.map((c) => ({
-                    value: c.provider,
-                    label: c.display_name,
-                  }))}
-                  value={connProvider ?? undefined}
-                  onValueChange={(next) => {
-                    setConnProvider(next);
-                    setConnEventId(null);
-                    setConnResource(null);
-                    setConnTopic("");
-                    setConnRoutineId(NEW_ROUTINE);
-                    // Resource feeds are per-provider — clearing re-arms the
-                    // lazy fetch for the newly selected one.
-                    setResourceOptions(null);
-                    setResourceError(null);
-                  }}
-                  placeholder={
-                    triggerableConnections.length === 0
-                      ? "No connected apps can trigger automations yet"
-                      : "Select an app…"
-                  }
-                  disabled={triggerableConnections.length === 0}
-                />
-              </div>
-            </label>
-            {selectedConnection && (
-              <div className="block">
-                <span className="text-sm text-[var(--ink-soft)]">Event</span>
-                <div className="mt-1">
-                  {/* Keyed by provider so switching apps resets the filter. */}
-                  <EventPicker
-                    key={connProvider}
-                    events={connEvents}
-                    value={connEventId}
-                    onSelect={setConnEventId}
-                  />
-                </div>
-              </div>
-            )}
-            {/* The auto-register shapes' third step — which repo/project to
-                hook. The backend registers the webhook there itself, so
-                unlike guided providers there is no paste step after Create. */}
-            {isAutoRegister && connEventId != null && (
-              <div className="flex flex-col gap-1.5">
-              <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
-                  {resourceNoun.label}
-                </span>
-                <div className="mt-1">
-                  <EditorialSelect
-                    options={(resourceOptions ?? []).map((r) => ({
-                      value: r.id,
-                      label: r.label,
-                    }))}
-                    value={connResource ?? undefined}
-                    onValueChange={setConnResource}
-                    placeholder={
-                      resourceError
-                        ? `Couldn't load ${resourceNoun.plural}`
-                        : resourceOptions === null
-                          ? `Loading ${resourceNoun.plural}…`
-                          : resourceOptions.length === 0
-                            ? `No ${resourceNoun.plural} found`
-                            : `Select a ${resourceNoun.label.toLowerCase()}…`
-                    }
-                    disabled={
-                      resourceOptions === null || resourceOptions.length === 0
-                    }
-                  />
-                </div>
-                {resourceError && (
-                  <span className="text-xs text-[var(--danger)]">
-                    {resourceError}
-                  </span>
-                )}
-              </label>
-                {/* Google's "resource" is an identity, not a repo — which
-                    agent reads whose mailbox. That deserves a stated
-                    consequence and a reconciliation with the per-agent
-                    assignment, neither of which a bare dropdown carries. A
-                    sibling of the <label>, not a child: it holds its own
-                    buttons, which a label would hijack. */}
-                {connProvider === "google" && (
-                  <AutomationGoogleAccount
-                    agents={agents}
-                    account={connResource}
-                    accountOptions={resourceOptions}
-                    onSelectAccount={setConnResource}
-                  />
-                )}
-              </div>
-            )}
-            {/* owner_setup (gmail.message) — the owner's own Pub/Sub topic.
-                The one-time topic/subscription wiring instructions come back
-                in the finish dialog after Create. */}
-            {isOwnerSetup && (
-              <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
-                  Pub/Sub topic
-                </span>
-                <input
-                  value={connTopic}
-                  onChange={(e) => setConnTopic(e.target.value)}
-                  placeholder="projects/my-project/topics/isol8-gmail"
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-                />
-                <span className="text-xs text-[var(--mute)]">
-                  A topic in your own Google Cloud project — you&apos;ll wire
-                  it up after Create.
-                </span>
-              </label>
-            )}
+          <ConnectedAppFields ctl={conn} agents={agents}>
             {/* Where the trigger lands. "Create a new automation" is the
                 default, so the existing one-click path is unchanged; picking
                 an automation the owner already wrote ADDS the trigger to it
-                and touches nothing else — its instructions, assignee,
-                reviewers, variables and schedule stay exactly as written.
-                Last in the block so it reads as the final question, and
-                hidden for the shapes that can only create (they seed the
-                automation's own instructions as part of their setup). */}
-            {connEventId != null && canAttachToExisting && routines.length > 0 && (
+                and leaves their instructions, assignee, reviewers, variables
+                and schedule as written (the shapes that need maintenance text
+                append a clearly-marked block, disclosed below). */}
+            {conn.eventId != null && routines.length > 0 && (
               <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
-                  Automation
-                </span>
+                <span className="text-sm text-[var(--ink-soft)]">Automation</span>
                 <div className="mt-1">
                   <EditorialSelect
                     options={[
@@ -1838,7 +1085,7 @@ function CreateRoutineDialog({
                 </span>
               </label>
             )}
-          </>
+          </ConnectedAppFields>
         )}
 
         {rung === "schedule" && <ScheduleField value={cron} onChange={setCron} />}
@@ -1895,7 +1142,7 @@ function CreateRoutineDialog({
             />
           </label>
         )}
-        {err && (
+        {shownErr && (
           <div
             className="text-[var(--danger)] text-sm rounded px-3 py-2"
             style={{
@@ -1905,7 +1152,7 @@ function CreateRoutineDialog({
                 "color-mix(in srgb, var(--danger) 6%, transparent)",
             }}
           >
-            {err}
+            {shownErr}
           </div>
         )}
         <div className="flex justify-end gap-2 mt-2">

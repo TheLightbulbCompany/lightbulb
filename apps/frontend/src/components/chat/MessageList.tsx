@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
-import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
@@ -28,6 +28,7 @@ import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
+import { ToolActivityTrace, type ToolCall } from "@/components/chat/ToolActivityTrace";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -46,9 +47,9 @@ import type {
   HistoryMessage,
 } from "@/hooks/internal/types";
 // Approval rendering moved to ExecApprovalDialog (mounted at chat-shell level
-// via useExecApprovals). Tool pills now only represent execution state —
-// running / done / error. See ExecApprovalDialog.tsx for the modal that
-// surfaces pending exec approvals from the global queue.
+// via useExecApprovals). Tool activity is rendered by ToolActivityTrace, which
+// represents execution state only — running / done / error. See
+// ExecApprovalDialog.tsx for the modal that surfaces pending exec approvals.
 
 export interface MessageListProps {
   renderGroups: RenderGroup[];
@@ -112,18 +113,54 @@ export function resolveHighlightLanguage(language: string): string {
   return REGISTERED_LANGUAGES.has(normalized) ? normalized : PLAIN_LANGUAGE;
 }
 
-function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
+/**
+ * Exported (was module-private) so CodeBlock.test.tsx can exercise the copy
+ * affordance directly, matching how AgentHead/ThinkingBlock are exported for
+ * their own tests.
+ */
+export function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
   const match = /language-(\w+)/.exec(className || "");
-  const codeString = String(children).replace(/\n$/, "");
+  // Exact source, trailing newline(s) included — this is what gets copied.
+  // `codeString` below strips exactly one trailing newline for RENDER only
+  // (Prism otherwise shows a trailing blank line); the two must stay
+  // separate or copy silently loses a byte the fence actually had.
+  const rawSource = String(children);
+  const codeString = rawSource.replace(/\n$/, "");
+  const [copied, setCopied] = React.useState(false);
+  const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  React.useEffect(() => () => clearTimeout(copyTimerRef.current), []);
 
   if (!match) {
     // Inline code
     return (
-      <code className="bg-[#e8e3d9] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
+      <code className="bg-[var(--cream-deepest)] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
         {children}
       </code>
     );
   }
+
+  const handleCopy = async () => {
+    // navigator.clipboard is undefined on insecure origins (plain http, not
+    // localhost) — a bare call throws instead of silently failing.
+    if (!navigator.clipboard) return;
+    try {
+      // `await`, not `.writeText(...).then(...)` — a browser/extension that
+      // patches `clipboard.writeText` to return something non-promise (or
+      // undefined) makes `.then` throw synchronously inside this click
+      // handler. `await` has no such requirement: it resolves a plain value
+      // as itself instead of demanding a `.then` method, so a nonconformant
+      // implementation degrades to "treated as succeeded" instead of an
+      // uncaught TypeError. A genuine rejection (real clipboard failure)
+      // still lands in the catch below and sets no success state.
+      await navigator.clipboard.writeText(rawSource);
+      setCopied(true);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard write failed — no success state.
+    }
+  };
 
   // Fenced code block
   return (
@@ -131,10 +168,19 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       <div className="flex items-center justify-between px-4 py-2 bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
         <span className="text-xs text-[var(--mute)]">{match[1]}</span>
         <button
-          onClick={() => { navigator.clipboard.writeText(codeString).catch(() => {}); }}
-          className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors flex items-center gap-1"
+          onClick={handleCopy}
+          aria-label={copied ? "Copied" : "Copy code"}
+          className={cn(
+            "chat-code-copy-btn text-xs transition-colors flex items-center gap-1",
+            copied ? "text-[var(--forest)]" : "text-[var(--mute)] hover:text-[var(--ink)]",
+          )}
         >
-          <Copy className="h-3 w-3" />
+          {/* Icon swaps Copy -> Check; the "Copy" label never changes text,
+              so the button's width never shifts (the brief's "reserve the
+              space" and "don't swap text of differing width" are the same
+              fix here: don't swap the text at all). aria-label still flips
+              to "Copied" so the confirmation reaches screen readers too. */}
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           Copy
         </button>
       </div>
@@ -142,7 +188,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
         style={oneDark}
         language={resolveHighlightLanguage(match[1])}
         PreTag="div"
-        customStyle={{ margin: 0, borderRadius: 0, background: "#f8f5f0" }}
+        customStyle={{ margin: 0, borderRadius: 0, background: "var(--cream)" }}
       >
         {codeString}
       </SyntaxHighlighter>
@@ -275,20 +321,40 @@ export function splitMarkdownBlocks(content: string): string[] {
  * cost that used to grow with message length. History messages keep the
  * plain whole-message MarkdownContent (their memo already never re-parses,
  * and one piece avoids block-split artifacts in the durable render).
+ *
+ * Each block mounts inside a `.chat-block-in` wrapper — a one-shot reveal
+ * animation (globals.css). This is safe BECAUSE of the memoization above:
+ * settled blocks memo-hit and never re-render, and the growing tail block is
+ * reconciled in place (same key, same position) rather than remounted, so
+ * the animation fires exactly once per block, ever. It cannot re-trigger or
+ * flicker on subsequent chunks.
+ *
+ * `streaming` is true only for the live growing tail (`kind:"stream"`, see
+ * ItemRenderer) — it renders the blinking caret after the last block. Past
+ * `stream-segment`s and the thinking panel never set it.
  */
 const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
   content,
   onOpenFile,
+  streaming,
 }: {
   content: string;
   onOpenFile?: (path: string) => void;
+  streaming?: boolean;
 }) {
   const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  const lastIndex = blocks.length - 1;
   return (
     <>
-      {blocks.map((block, i) => (
-        <MarkdownContent key={i} content={block} onOpenFile={onOpenFile} />
-      ))}
+      {blocks.map((block, i) => {
+        const isTail = streaming && i === lastIndex;
+        return (
+          <div key={i} className={cn("chat-block-in", isTail && "chat-tail")}>
+            <MarkdownContent content={block} onOpenFile={onOpenFile} />
+            {isTail && <span className="chat-caret" aria-hidden="true" />}
+          </div>
+        );
+      })}
     </>
   );
 });
@@ -305,10 +371,29 @@ export function splitCollidedHeaders(content: string): string {
   return content.replace(/\*\*(?=\*\*)/g, "**\n\n");
 }
 
-function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
+/** Whole seconds only — a reasoning duration reads as "Thought for 23s", not
+ *  "23.0s"; sub-second precision is noise here. */
+function formatThinkingDuration(ms: number): string {
+  return `${Math.round(ms / 1000)}s`;
+}
+
+export function ThinkingBlock({
+  content,
+  streaming,
+  durationMs,
+}: {
+  content: string;
+  streaming?: boolean;
+  /** Wall-clock ms the reasoning phase took. NOT carried on the wire today —
+   *  OpenClaw sends no start/end timestamp for thinking the way it does for
+   *  tool calls (ContentBlock.startedAt/endedAt). Callers pass this only when
+   *  a real value is derivable; omit it rather than approximate — the label
+   *  falls back to the tenseless "Thought" instead of a wrong duration. */
+  durationMs?: number;
+}) {
   const text = splitCollidedHeaders(content);
   // Live (streaming) thinking mounts EXPANDED so reasoning is visible as it
-  // flows — a collapsed "Thinking..." pill reads as dead air during long
+  // flows — a collapsed "Thinking…" pill reads as dead air during long
   // thinking phases. The folded history block mounts collapsed as before.
   const [isExpanded, setIsExpanded] = React.useState(!!streaming);
   const userToggledRef = React.useRef(false);
@@ -320,24 +405,32 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
     if (!streaming && !userToggledRef.current) setIsExpanded(false);
   }, [streaming]);
 
+  // Present tense only while actually live; a settled thought reads in the
+  // past, same as a finished tool call ("Read", not "Reading").
+  const label = streaming
+    ? "Thinking…"
+    : durationMs
+      ? `Thought for ${formatThinkingDuration(durationMs)}`
+      : "Thought";
+
   return (
-    <div className="mb-4 border border-[var(--edge)] rounded-lg overflow-hidden">
+    <div className="mb-4 chat-block-in">
       <button
         onClick={() => {
           userToggledRef.current = true;
           setIsExpanded(!isExpanded);
         }}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-[var(--cream-deeper)] hover:bg-[#ece7dc] transition-colors text-left"
+        className="chat-thinking-trigger flex items-center gap-1.5 text-left text-[var(--mute)] hover:text-[var(--ink-soft)] transition-colors"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-[var(--mute)]" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-[var(--mute)]" />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
         )}
-        <span className="text-sm text-[var(--mute)] italic">Thinking...</span>
+        <span className="text-sm italic">{label}</span>
       </button>
       {isExpanded && (
-        <div className="px-3 py-2 text-sm text-[var(--mute)] border-t border-[var(--edge)]">
+        <div className="mt-1.5 pl-5 border-l border-[var(--edge-soft)] text-sm text-[var(--mute)]">
           {streaming ? (
             <StreamingMarkdownContent content={text} />
           ) : (
@@ -349,140 +442,6 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
   );
 }
 
-const TOOL_STYLES = {
-  running: {
-    pill: "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]",
-    dot: "bg-[#2d8a4e] animate-pulse",
-  },
-  done: {
-    pill: "bg-[var(--cream-deeper)] text-[var(--mute)] border-[var(--edge)]",
-    dot: "bg-[#cdc7ba]",
-  },
-  error: {
-    pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
-    dot: "bg-[#c62828]",
-  },
-} as const;
-
-/**
- * Render a tool_result block's content for display in the pill expansion.
- * `tool_result.content` may be a string OR an array of inner blocks
- * (Anthropic shape). We accept both. `result` is the legacy field name
- * pairToolBlocks falls back to.
- */
-function renderToolOutput(content: unknown): string | null {
-  if (content == null) return null;
-  if (typeof content === "string") return content || null;
-  if (!Array.isArray(content)) {
-    try {
-      return JSON.stringify(content, null, 2);
-    } catch {
-      return null;
-    }
-  }
-  const parts: string[] = [];
-  for (const b of content) {
-    if (!b || typeof b !== "object") continue;
-    const obj = b as { type?: string; text?: string; omitted?: boolean; bytes?: number };
-    if (obj.type === "text" && typeof obj.text === "string") parts.push(obj.text);
-    else if (obj.omitted) parts.push(`[${obj.type ?? "blob"} — ${obj.bytes ?? "?"} bytes, omitted]`);
-  }
-  return parts.join("\n\n") || null;
-}
-
-interface ToolPillState {
-  id: string;
-  name: string;
-  args: unknown;
-  result: unknown;
-  status: "running" | "done" | "error";
-  /** Live incremental output shown while the tool is still running, before
-   *  its terminal tool_result lands. */
-  progressText?: string;
-}
-
-function ToolPill({ tool }: { tool: ToolPillState }) {
-  const [open, setOpen] = React.useState(false);
-  const s = TOOL_STYLES[tool.status];
-  // Prefer the terminal tool_result output; fall back to the streamed progress
-  // text whenever there's no result — both while running (live output) AND for
-  // a completed tool whose terminal result was empty/absent. Mirrors upstream
-  // app-tool-stream's single entry.output: the result phase only overwrites the
-  // streamed output when it's non-empty, so streamed output survives when no
-  // real result lands (e.g. an aborted exec or a stream-only tool).
-  // Untrusted-content sentinels are stripped even inside the pill expansion —
-  // they are model-facing plumbing on any surface.
-  const rawOutput = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
-  const output = rawOutput === null ? null : stripExternalContentMarkers(rawOutput) || null;
-  const hasArgs = !!(
-    tool.args &&
-    typeof tool.args === "object" &&
-    Object.keys(tool.args as Record<string, unknown>).length > 0
-  );
-  const hasDetails = hasArgs || !!output;
-
-  return (
-    <div className="inline-block">
-      <button
-        type="button"
-        onClick={() => hasDetails && setOpen((v) => !v)}
-        disabled={!hasDetails}
-        className={cn(
-          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
-          s.pill,
-          hasDetails ? "cursor-pointer hover:brightness-95" : "cursor-default",
-        )}
-        aria-expanded={open}
-      >
-        <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
-        <span>{tool.name}</span>
-        {tool.status === "error" && <span>failed</span>}
-        {hasDetails &&
-          (open ? (
-            <ChevronDown className="h-3 w-3 opacity-70" />
-          ) : (
-            <ChevronRight className="h-3 w-3 opacity-70" />
-          ))}
-      </button>
-      {open && hasDetails && (
-        <div className="mt-1.5 max-w-xl rounded-md border border-[var(--edge)] bg-[var(--cream)] p-2 text-xs space-y-2">
-          {hasArgs && (
-            <div>
-              <div className="font-medium text-[#302d28] mb-0.5">input</div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
-                {JSON.stringify(tool.args, null, 2)}
-              </pre>
-            </div>
-          )}
-          {output && (
-            <div>
-              <div className="font-medium text-[#302d28] mb-0.5">
-                {tool.status === "error" ? "error" : "output"}
-              </div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
-                {output}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Single-tool indicator. Plan §6 changes the prop from `toolUses: ToolUse[]`
- * to a single tool object — pairing now happens upstream in MessageBlocks
- * (one indicator per tool_use block), so this component renders one pill
- * per call.
- */
-function ToolUseIndicator({ tool }: { tool: ToolPillState }) {
-  return (
-    <div className="mb-3 flex flex-wrap gap-2 items-start">
-      <ToolPill tool={tool} />
-    </div>
-  );
-}
 
 export const AGENT_GLYPH_PATH =
     "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
@@ -524,24 +483,69 @@ export function AgentGlyph({
     );
 }
 
-function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "thinking" }) {
+/**
+ * Copy/Share appear once the turn SETTLES, not on hover. The old
+ * `opacity-0 group-hover:opacity-100` reveal had two defects, not one: the
+ * buttons carried no `onClick` (dead), and hover never fires on touch, so on
+ * every phone they were also permanently invisible. Settle-gating fixes both
+ * — reachable on every input modality — and Regenerate was dropped rather
+ * than shipped as a third dead button (see MessageList.tsx module notes / PR
+ * description for why: it has no resend-this-turn path without new
+ * cross-component plumbing and backend session-mutation semantics that
+ * don't exist yet).
+ */
+export function AgentHead({
+    name,
+    state = "idle",
+    streaming = false,
+    messageText = "",
+}: {
+    name: string;
+    state?: "idle" | "thinking";
+    /** True only while this is the actively-streaming tail turn. */
+    streaming?: boolean;
+    /** Copyable plain text for this turn, e.g. from groupCopyText(group). */
+    messageText?: string;
+}) {
+    const settled = !streaming;
     return (
         <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-semibold text-[#302d28] tracking-tight">
+            <span className="text-xs font-semibold text-[var(--ink)] tracking-tight">
                 {name}
             </span>
             <span className="inline-flex items-center justify-center w-5 h-5">
                 <AgentGlyph state={state} size={18} />
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
-                <Copy className="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
-                <RefreshCw className="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
-                <Share2 className="h-3 w-3" />
-            </Button>
+            {settled && (
+                <div className="flex items-center gap-0.5 ml-1 chat-block-in">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Copy"
+                        onClick={() => {
+                            navigator.clipboard?.writeText(messageText).catch(() => {});
+                        }}
+                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                    >
+                        <Copy className="h-3 w-3" />
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Share"
+                        onClick={() => {
+                            if (typeof navigator.share === "function") {
+                                navigator.share({ text: messageText }).catch(() => {});
+                            } else {
+                                navigator.clipboard?.writeText(messageText).catch(() => {});
+                            }
+                        }}
+                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                    >
+                        <Share2 className="h-3 w-3" />
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }
@@ -573,6 +577,27 @@ function MessageBlocks({
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];
+
+  // Consecutive tool calls accumulate here and flush as ONE trace. Any non-tool
+  // block (text, thinking, a hire card) is a step boundary and flushes first, so
+  // "tool, tool, text, tool" renders as two traces around the prose rather than
+  // three scattered indicators — which is what the old one-pill-per-call did.
+  let pendingCalls: ToolCall[] = [];
+  const flushTrace = () => {
+    if (pendingCalls.length === 0) return;
+    const calls = pendingCalls;
+    pendingCalls = [];
+    rendered.push(
+      <ToolActivityTrace
+        key={`trace:${calls[0]!.id}`}
+        calls={calls}
+        // A trace is settled once every call in it has a terminal status. The
+        // live turn's tail group keeps its rows; older groups fold.
+        settled={calls.every((c) => c.status !== "running")}
+      />,
+    );
+  };
+
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (isToolResultBlock(b)) {
@@ -599,23 +624,22 @@ function MessageBlocks({
             ? parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)
             : null;
         if (hireSuggestion) {
+          // A hire card is prose-weight content, not a step — it ends the run.
+          flushTrace();
           rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
           renderedToolIds.delete(id);
           continue;
         }
-        rendered.push(
-          <ToolUseIndicator
-            key={`tool:${id}`}
-            tool={{
-              id,
-              name: b.name ?? "tool",
-              args: resolveToolArgs(b),
-              result: resultBlock?.content ?? resultBlock?.result,
-              status,
-              progressText: (b as ContentBlock).progressText,
-            }}
-          />
-        );
+        pendingCalls.push({
+          id,
+          name: b.name ?? "tool",
+          args: resolveToolArgs(b),
+          result: resultBlock?.content ?? resultBlock?.result,
+          status,
+          progressText: (b as ContentBlock).progressText,
+          startedAt: (b as ContentBlock).startedAt,
+          endedAt: (b as ContentBlock).endedAt,
+        });
         renderedToolIds.delete(id);
       }
       continue;
@@ -623,6 +647,7 @@ function MessageBlocks({
     if (isThinkingBlock(b)) {
       const text = (b.thinking ?? b.text ?? "") as string;
       if (text.length > 0) {
+        flushTrace();
         rendered.push(<ThinkingBlock key={`think:${i}`} content={text} />);
       }
       continue;
@@ -630,6 +655,7 @@ function MessageBlocks({
     if (isTextBlock(b)) {
       const text = (b.text ?? "") as string;
       if (text.length > 0) {
+        flushTrace();
         // Surface terminal agent errors via the typed card when the message
         // carries an errorCode, otherwise just render plain markdown.
         if (message.errorCode && text.startsWith("Error: ")) {
@@ -655,6 +681,9 @@ function MessageBlocks({
     }
     // Unknown block — skip.
   }
+  // A turn that ends on tool calls (still running, or finished with no closing
+  // prose) still has to render them.
+  flushTrace();
   return <>{rendered}</>;
 }
 
@@ -669,7 +698,7 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <div className="relative text-sm leading-7 bg-[#f0ebe2] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
+        <div className="relative text-sm leading-7 bg-[var(--cream-deeper)] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
       </div>
@@ -737,7 +766,15 @@ const ItemRenderer = React.memo(
       );
     }
     if (item.kind === "stream" || item.kind === "stream-segment") {
-      return <StreamingMarkdownContent content={item.text} onOpenFile={onOpenFile} />;
+      // Only "stream" is the live growing tail — "stream-segment"s are past
+      // text a tool call already interrupted, so they never carry the caret.
+      return (
+        <StreamingMarkdownContent
+          content={item.text}
+          onOpenFile={onOpenFile}
+          streaming={item.kind === "stream"}
+        />
+      );
     }
     if (item.kind === "live-thinking") {
       return <ThinkingBlock content={item.text} streaming />;
@@ -757,7 +794,7 @@ const ItemRenderer = React.memo(
  * A `/btw` (detached side-channel) answer rendered as a distinct, non-thread
  * side card — labeled "BTW · not saved" (it is never written to the transcript
  * / history), the question in muted text, the answer as the body. Error styling
- * reuses the existing chat error tokens (#fce4ec / #a5311f / #f8bbd0). Mirrors
+ * reuses the existing chat error tokens (var(--danger) text/border, a low-alpha danger tint fill). Mirrors
  * OpenClaw's "Not saved to chat history" side card.
  */
 function BtwSideCard({
@@ -776,22 +813,22 @@ function BtwSideCard({
       data-testid="btw-card"
       className={cn(
         "rounded-lg border px-3 py-2.5 text-sm",
-        isError ? "border-[#f8bbd0] bg-[#fce4ec]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
+        isError ? "border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
       )}
     >
       <div className="flex items-center gap-1.5 mb-1.5">
         <span
           className={cn(
             "text-[11px] font-semibold uppercase tracking-wide",
-            isError ? "text-[#a5311f]" : "text-[var(--forest)]",
+            isError ? "text-[var(--danger)]" : "text-[var(--forest)]",
           )}
         >
           BTW
         </span>
-        <span className="text-[11px] text-[#b5ae9e]">· not saved</span>
+        <span className="text-[11px] text-[var(--mute)]">· not saved</span>
       </div>
       {question && <div className="text-xs text-[var(--mute)] mb-1.5">{question}</div>}
-      <div className={cn("leading-7", isError ? "text-[#a5311f]" : "text-[#302d28]")}>
+      <div className={cn("leading-7", isError ? "text-[var(--danger)]" : "text-[var(--ink-soft)]")}>
         <MarkdownContent content={text} onOpenFile={onOpenFile} />
       </div>
     </div>
@@ -826,6 +863,127 @@ const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.onOpenFile === next.onOpenFile &&
   groupEquals(prev.group, next.group),
 );
+
+/** One rendered slot: either a normal item, or a run of coalesced tool calls. */
+type Renderable =
+  | { kind: "item"; item: ChatRenderItem }
+  | { kind: "tool-run"; key: string; calls: ToolCall[] };
+
+/**
+ * Extracts a message's tool calls, or null if it is not a pure tool message.
+ *
+ * "Pure" matters: a message mixing prose with tool calls must keep its own
+ * renderer, because MessageBlocks already groups tool blocks WITHIN a message
+ * and knows where the prose sits between them. Only whole tool-only messages
+ * are eligible to merge with their neighbours.
+ */
+function toolCallsOfPureToolMessage(message: HistoryMessage): ToolCall[] | null {
+  const blocks = resolveMessageBlocks(message);
+  if (blocks.length === 0) return null;
+  if (message.errorCode) return null;
+  const pairs = pairToolBlocks(blocks);
+  if (pairs.length === 0) return null;
+
+  const calls: ToolCall[] = [];
+  for (const b of blocks) {
+    if (isToolResultBlock(b)) continue;
+    if (!isToolUseBlock(b)) return null; // prose/thinking present — not pure
+    const id = resolveToolUseId(b);
+    if (!id) return null;
+    const pair = pairs.find((p) => p.toolUseId === id);
+    if (!pair) return null;
+    const resultBlock = pair.toolResultBlock as
+      | { content?: unknown; result?: unknown; isError?: boolean }
+      | undefined;
+    const status: ToolCall["status"] = resultBlock
+      ? resultBlock.isError
+        ? "error"
+        : "done"
+      : "running";
+    // A completed recommend_agents call renders as a hire card, which is prose-
+    // weight content — leave the whole message to the normal renderer.
+    if (status === "done" && parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)) {
+      return null;
+    }
+    calls.push({
+      id,
+      name: b.name ?? "tool",
+      args: resolveToolArgs(b),
+      result: resultBlock?.content ?? resultBlock?.result,
+      status,
+      progressText: (b as ContentBlock).progressText,
+      startedAt: (b as ContentBlock).startedAt,
+      endedAt: (b as ContentBlock).endedAt,
+    });
+  }
+  return calls.length > 0 ? calls : null;
+}
+
+/**
+ * Merges consecutive tool-only messages into one trace, so a multi-step turn
+ * reads as a single run instead of one indicator per call.
+ *
+ * This happens at RENDER time, deliberately. The live path emits one message
+ * per tool call and that 1:1 shape is load-bearing upstream — buildChatItems
+ * interleaves narration segments with tool messages by index, and per-message
+ * timestamps are what keep React keys stable across progress ticks. Collapsing
+ * the data instead of the view broke both (stranded narration, and every
+ * expanded row snapping shut whenever any sibling call ticked).
+ *
+ * Anything that is not a pure tool message — prose, thinking, a stream segment,
+ * an error card, a hire card — ends the run, which is also what makes the
+ * grouping semantically right: the trace covers the steps taken between two
+ * things the agent said.
+ */
+function coalesceToolRuns(items: ChatRenderItem[]): Renderable[] {
+  const out: Renderable[] = [];
+  let run: { key: string; calls: ToolCall[] } | null = null;
+  const flush = () => {
+    if (run) out.push({ kind: "tool-run", ...run });
+    run = null;
+  };
+
+  for (const item of items) {
+    const calls = item.kind === "message" ? toolCallsOfPureToolMessage(item.message) : null;
+    if (!calls) {
+      flush();
+      out.push({ kind: "item", item });
+      continue;
+    }
+    if (run) {
+      run.calls.push(...calls);
+    } else {
+      // Keyed on the first call's id, not the message key: a toolCallId is
+      // immutable, while a message key carries a timestamp that moves on every
+      // progress tick and would remount the whole trace.
+      run = { key: `tool-run:${calls[0]!.id}`, calls: [...calls] };
+    }
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Copyable plain text for one assistant bubble group, in transcript order.
+ * Tool calls, thinking, and hire cards carry no text of their own and are
+ * skipped — this only has to be a faithful plain-text copy of what the
+ * agent said, not a pixel match of the rendered bubble.
+ */
+function groupCopyText(group: RenderGroup): string {
+  const parts: string[] = [];
+  for (const item of group.items) {
+    if (item.kind === "message") {
+      const text = resolveMessageBlocks(item.message)
+        .filter(isTextBlock)
+        .map((b) => (b.text ?? "") as string)
+        .join("");
+      if (text) parts.push(text);
+    } else if (item.kind === "stream" || item.kind === "stream-segment") {
+      if (item.text) parts.push(item.text);
+    }
+  }
+  return parts.join("\n\n");
+}
 
 function BubbleGroupImpl({
   group,
@@ -887,23 +1045,33 @@ function BubbleGroupImpl({
   const hasErrorCard = group.items.some(
     (item) => item.kind === "message" && Boolean(item.message.errorCode),
   );
+  const renderables = coalesceToolRuns(group.items);
   return (
     <div className="flex w-full justify-start" data-role="assistant">
       <div
         className={cn(
-          "flex flex-col min-w-0 max-w-[85%] group relative",
+          "flex flex-col min-w-0 max-w-[85%] relative",
           hasErrorCard && "w-full",
         )}
       >
         <AgentHead
           name={agentName || "Assistant"}
           state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}
+          streaming={Boolean(isStreaming && isLastAssistantGroup)}
+          messageText={groupCopyText(group)}
         />
-        <div className="relative text-sm leading-7 text-[#302d28] w-full">
-          {group.items.map((item, idx) => (
+        <div className="relative text-sm leading-7 text-[var(--ink-soft)] w-full">
+          {renderables.map((entry) =>
+            entry.kind === "tool-run" ? (
+              <ToolActivityTrace
+                key={entry.key}
+                calls={entry.calls}
+                settled={entry.calls.every((c) => c.status !== "running")}
+              />
+            ) : (
             <ItemRenderer
-              key={item.key}
-              item={item}
+              key={entry.item.key}
+              item={entry.item}
               onOpenFile={onOpenFile}
               // Exactly ONE item in the whole transcript may render the live
               // paywall: the newest trial-coded error card (paywallItemKey,
@@ -915,9 +1083,10 @@ function BubbleGroupImpl({
               // scenario it exists for (observed live in prod). The
               // one-key rule still prevents stacked pickers with divergent
               // credit-amount state.
-              interactive={item.key === paywallItemKey}
+              interactive={entry.item.key === paywallItemKey}
             />
-          ))}
+            ),
+          )}
         </div>
       </div>
     </div>
@@ -931,7 +1100,7 @@ function TypingPlaceholder({ agentName }: { agentName?: string }) {
       className="flex w-full justify-start"
     >
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <AgentHead name={agentName || "Assistant"} state="thinking" />
+        <AgentHead name={agentName || "Assistant"} state="thinking" streaming />
       </div>
     </div>
   );
@@ -1131,7 +1300,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[var(--mute)] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
+                className="text-[11px] text-[var(--mute)] hover:text-[var(--ink-soft)] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

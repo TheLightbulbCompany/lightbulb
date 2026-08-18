@@ -71,8 +71,10 @@ describe("MessageList /btw side card", () => {
       />,
     );
     const card = screen.getByTestId("btw-card");
-    // Reuses the existing chat error tokens (bg #fce4ec / text #a5311f).
-    expect(card.className).toContain("#fce4ec");
+    // Reuses the existing chat error tokens (border/text var(--danger), a
+    // low-alpha danger-tinted fill — see ToolActivityTrace.tsx for the same
+    // color-mix pattern).
+    expect(card.className).toContain("color-mix(in_srgb,var(--danger)_6%,var(--cream))");
   });
 
   it("renders without error styling by default", () => {
@@ -86,6 +88,6 @@ describe("MessageList /btw side card", () => {
       />,
     );
     const card = screen.getByTestId("btw-card");
-    expect(card.className).not.toContain("#fce4ec");
+    expect(card.className).not.toContain("color-mix(in_srgb,var(--danger)_6%,var(--cream))");
   });
 });

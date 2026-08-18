@@ -49,12 +49,11 @@ describe("ChatLayout.tsx Inspect-agent roster action", () => {
     expect(layoutSource).not.toMatch(/unifiedNav/);
   });
 
-  it("calls openAgentInspector with the agent id and stops row-click propagation", () => {
-    expect(layoutSource).toMatch(/openAgentInspector\?\.\(agent\.id\)/);
-    expect(layoutSource).toMatch(/e\.stopPropagation\(\);\s*openAgentInspector/);
-  });
-
-  it("labels the action Inspect with the agent name", () => {
-    expect(layoutSource).toMatch(/Inspect \$\{agentDisplayName\(agent\)\}/);
+  it("hands openAgentInspector to the roster as its onInspect handler", () => {
+    // The row markup (and the `Inspect {name}` label) moved into AgentRoster,
+    // which is covered by render tests. What ChatLayout still owns is this
+    // hand-off; there is no `stopPropagation` to assert any more because the
+    // action buttons are siblings of the row button, not nested inside it.
+    expect(layoutSource).toMatch(/onInspect=\{\(id\) => openAgentInspector\?\.\(id\)\}/);
   });
 });

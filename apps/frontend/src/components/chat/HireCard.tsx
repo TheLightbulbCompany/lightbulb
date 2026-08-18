@@ -1,18 +1,28 @@
 "use client";
 
 import { useState } from "react";
+import { ChevronRight } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 /**
  * The one-click hire card.
  *
  * Rendered from the `recommend_agents` tool result. The agent that produced it
- * has no ability to hire — this button is the approval gate, and it deploys
- * through the ordinary authenticated marketplace route carrying the viewer's
- * own session. Nothing agent-side ever mutates the roster.
+ * has no ability to hire — the Deploy button is the approval gate, and it
+ * deploys through the ordinary authenticated marketplace route carrying the
+ * viewer's own session. Nothing agent-side ever mutates the roster.
+ *
+ * Shape: one Recommended card (the only one with a Deploy button) plus the
+ * rest of Atlas's suggestions collapsed behind an "N alternatives" drawer, one
+ * line each. Clicking an alternative PROMOTES it to Recommended — it only
+ * swaps which listing is primary in local state; it is not, and must never
+ * become, a deploy trigger. Five equal cards with five equal buttons told the
+ * user nothing about which agent Atlas actually thought they wanted; this
+ * keeps the roster mutation gated behind exactly one button.
  */
 
 export interface HireListing {
@@ -71,7 +81,8 @@ function priceLabel(cents: number): string {
   return cents === 0 ? "Free" : `$${(cents / 100).toFixed(2)}`;
 }
 
-function ListingRow({ listing }: { listing: HireListing }) {
+/** The primary card — full detail, and the only place Deploy appears. */
+function PrimaryListing({ listing }: { listing: HireListing }) {
   const api = useApi();
   const [state, setState] = useState<"idle" | "deploying" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -94,10 +105,13 @@ function ListingRow({ listing }: { listing: HireListing }) {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3">
+    <article aria-label={listing.name} className="rounded-lg border border-border bg-card p-3">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[.09em] text-[var(--mute)]">
+        Recommended
+      </div>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="font-medium">{listing.name}</div>
+          <div className="text-[15px] font-semibold">{listing.name}</div>
           {listing.summary && (
             <div className="text-sm text-muted-foreground">{listing.summary}</div>
           )}
@@ -125,19 +139,99 @@ function ListingRow({ listing }: { listing: HireListing }) {
         </Button>
         {error && <span className="text-xs text-destructive">{error}</span>}
       </div>
-    </div>
+    </article>
+  );
+}
+
+/**
+ * One alternative, collapsed to a single line. No Deploy button — the whole
+ * row is a promote action, and promoting only changes local `primaryId`
+ * state. It never calls the API, so browsing alternatives can never be
+ * mistaken for hiring one.
+ */
+function AlternativeRow({ listing, onPromote }: { listing: HireListing; onPromote: () => void }) {
+  return (
+    <li>
+      <article aria-label={listing.name}>
+        <button
+          type="button"
+          onClick={onPromote}
+          aria-label={`Make ${listing.name} the recommendation`}
+          className="chat-hire-alt-btn group flex w-full items-baseline justify-between gap-2.5 py-1.5 text-left"
+        >
+          <span className="min-w-0 truncate text-[13px] leading-[1.5]">
+            <span className="font-medium text-[var(--ink-soft)] group-hover:text-[var(--ink)]">
+              {listing.name}
+            </span>
+            {listing.summary && (
+              <span className="text-[var(--mute)]"> — {listing.summary}</span>
+            )}
+          </span>
+          <span className="shrink-0 text-[11px] tabular-nums text-[var(--mute)]">
+            {priceLabel(listing.price_cents)}
+          </span>
+        </button>
+      </article>
+    </li>
   );
 }
 
 export function HireCard({ suggestion }: { suggestion: unknown }) {
   const parsed = parseHireSuggestion(suggestion);
+  // Which listing_id is primary. Null until the user promotes one, which
+  // means "Atlas's own first pick" — listings[] arrives in Atlas's ranked
+  // order, so index 0 is the recommendation until overridden locally.
+  const [primaryId, setPrimaryId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
   if (!parsed) return null;
+
+  const primary = parsed.listings.find((l) => l.listing_id === primaryId) ?? parsed.listings[0]!;
+  const alternatives = parsed.listings.filter((l) => l.listing_id !== primary.listing_id);
+
+  function promote(listing: HireListing) {
+    setPrimaryId(listing.listing_id);
+    setOpen(false);
+  }
+
   return (
     <div className="my-2 space-y-2">
       {parsed.reason && <div className="text-sm text-muted-foreground">{parsed.reason}</div>}
-      {parsed.listings.map((listing) => (
-        <ListingRow key={listing.listing_id} listing={listing} />
-      ))}
+      <PrimaryListing key={primary.listing_id} listing={primary} />
+      {alternatives.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="inline-flex items-center gap-1.5 text-[12.5px] text-[var(--mute)] transition-colors hover:text-[var(--ink-soft)]"
+          >
+            <ChevronRight
+              aria-hidden
+              className={cn("h-3 w-3 shrink-0 text-[var(--mute-soft)] transition-transform", open && "rotate-90")}
+            />
+            {alternatives.length} alternative{alternatives.length === 1 ? "" : "s"}
+          </button>
+          {open && (
+            <>
+              <ul className="chat-hire-alt-list mt-2 list-none space-y-1 border-l border-[var(--edge)] pl-[13px]">
+                {alternatives.map((listing) => (
+                  <AlternativeRow
+                    key={listing.listing_id}
+                    listing={listing}
+                    onPromote={() => promote(listing)}
+                  />
+                ))}
+              </ul>
+              {/* --mute-soft is non-text-only (3.44:1 on cream), so this
+                  reuses --mute rather than the mock's literal token. */}
+              <div className="mt-1.5 text-[11.5px] italic text-[var(--mute)]">
+                Picking one promotes it to Recommended. It does not deploy.
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

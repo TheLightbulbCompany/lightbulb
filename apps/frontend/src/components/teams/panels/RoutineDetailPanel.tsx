@@ -37,9 +37,11 @@ import {
   EditorialSelect,
 } from "@/components/teams/shell";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { isActiveStatus, statusColor as runStatusColor } from "@/components/teams/shared/lib/runStatus";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
@@ -71,13 +73,6 @@ import type {
   RoutineVariableType,
   RoutineVariableValue,
 } from "@/components/teams/shared/types";
-
-function runStatusColor(status: string): string {
-  const s = status.toLowerCase();
-  if (s === "failed" || s === "error" || s === "cancelled") return "var(--danger)";
-  if (s === "succeeded" || s === "completed" || s === "done") return "var(--forest)";
-  return "var(--mute)";
-}
 
 // Retheme-mapped onto the editorial palette (mirrors GoalStatusIcon):
 //   active   -> --forest  (running / live)
@@ -724,6 +719,15 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       >
                         {r.source}
                       </span>
+                      {isActiveStatus(r.status) && (
+                        // Decorative — the status text right after it already
+                        // reads "running" / "scheduled retry", so a retry row
+                        // isn't announced twice. No per-run silence signal
+                        // exists at this list granularity (unlike the live-run
+                        // feed), so this always renders the default "running"
+                        // tone rather than guessing at "stalled".
+                        <LiveRunDot decorative testId={`routine-run-live-dot-${r.id}`} />
+                      )}
                       <span
                         className="text-xs capitalize flex-shrink-0"
                         style={{ color: runStatusColor(r.status) }}

@@ -1,12 +1,12 @@
 "use client";
 
 import "./ChatLayout.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useSearchParams } from "next/navigation";
-import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, HelpCircle, ListTodo, SlidersHorizontal, Pause, Play } from "lucide-react";
+import { Settings, Plus, CheckCircle, CreditCard, Menu, X, FolderOpen, HelpCircle, ListTodo, SlidersHorizontal, Pause, Play } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -15,8 +15,7 @@ import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
-import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
+import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { CompanyNav } from "@/components/chat/CompanyNav";
@@ -24,8 +23,8 @@ import { FileViewer } from "@/components/chat/FileViewer";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
-import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
-import { fromInstalledAgent } from "@/lib/agentDesign";
+import { AgentRoster } from "@/components/agents/AgentRoster";
+import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
@@ -95,7 +94,10 @@ export function ChatLayout({
   // application-inference-profile ARNs to display names ("Claude Opus 4.6")
   // — the raw ARN's last segment is an opaque random suffix.
   const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
-  const modelNames = useMemo(() => buildModelNameMap(configSnapshot?.config), [configSnapshot?.config]);
+  // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
+  // runs). Shares the `/teams/agents` SWR key the pause/resume control below
+  // already reads, so this adds no request on this shell.
+  const rosterEntries = useRosterEntries(agents);
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
@@ -329,116 +331,42 @@ export function ChatLayout({
                   `.sidebar-scroll` region so the roster keeps its natural
                   height instead of collapsing under CompanyNav's own scroll. */}
               <div className="sidebar-scroll">
-              <div className="agent-list">
-                <div className="agent-section-label">
-                  <span>My Agents</span>
-                  <b>{agents.length}</b>
-                </div>
-                {agents.map((agent) => {
-                  const isDefault = agent.id === defaultId;
-                  const isNewArrival = drawerState.freshlyInstalledAgentId === agent.id;
-                  const displayAgent = fromInstalledAgent(agent);
-                  return (
-                    <div
-                      key={agent.id}
-                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}${isNewArrival ? " new-arrival" : ""}`}
-                      onClick={() => handleSelectAgent(agent.id)}
-                    >
-                      <span className="relative inline-flex">
-                        <Monogram agent={displayAgent} size={28} radius={8} />
-                        {publishedAgentIds.has(agent.id) && (
-                          <span
-                            className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[var(--gold)] border-2 border-[var(--cream)]"
-                            aria-label="Published to marketplace"
-                            title="Published to marketplace"
-                          />
-                        )}
-                      </span>
-                      <div className="agent-info">
-                        <div className="agent-name">{agentDisplayName(agent)}</div>
-                        {(() => {
-                          // `agent.model` can be a string OR a
-                          // `{primary, fallbacks}` object (OpenClaw 4.5
-                          // returns the structured shape from agents.list).
-                          // Direct `.split` calls here used to crash the
-                          // chat UI with `TypeError: e.model.split is not a
-                          // function` after sign-in.
-                          const modelStr = getAgentModelString(agent);
-                          const display = displayModelName(modelStr, modelNames);
-                          if (!display) return null;
-                          return <div className="agent-model">{display}</div>;
-                        })()}
-                      </div>
-                      <div className="agent-row-actions">
-                        {/* "See her work →": deep-link into the inline Issues
-                            panel filtered to this agent. */}
-                        <button
-                          type="button"
-                          className="agent-row-action"
-                          aria-label={`See ${agentDisplayName(agent)}'s work`}
-                          title={`See ${agentDisplayName(agent)}'s work`}
-                          onClick={(e) => { e.stopPropagation(); openAgentIssues?.(agent.id); }}
-                        >
-                          <ListTodo size={13} />
-                        </button>
-                        {/* "Inspect agent": open the per-agent inspector shell
-                            (Overview / Tools / Channels). */}
-                        <button
-                          type="button"
-                          className="agent-row-action"
-                          aria-label={`Inspect ${agentDisplayName(agent)}`}
-                          title={`Inspect ${agentDisplayName(agent)}`}
-                          onClick={(e) => { e.stopPropagation(); openAgentInspector?.(agent.id); }}
-                        >
-                          <SlidersHorizontal size={13} />
-                        </button>
-                        <button
-                          type="button"
-                          className="agent-row-action"
-                          aria-label={`Rename ${agentDisplayName(agent)}`}
-                          onClick={(e) => { e.stopPropagation(); setRenameTarget(agent); }}
-                        >
-                          <Pencil size={13} />
-                        </button>
-                        {!isDefault && (
-                          <button
-                            type="button"
-                            className="agent-row-action agent-row-action--danger"
-                            aria-label={`Delete ${agentDisplayName(agent)}`}
-                            onClick={(e) => { e.stopPropagation(); setDeleteTarget(agent); }}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        )}
-                      </div>
-                      <StatusDot status="active" />
-                      {currentAgentId === agent.id && (
-                        <SessionList
-                          sessions={agentSessions}
-                          activeSessionId={activeSessionId}
-                          onSelect={(sid) => {
-                            selectSession(sid);
-                            // Like handleSelectAgent: the view is derived from
-                            // ?panel, so picking a session from a panel view
-                            // must drop ?panel to land back on the chat.
-                            onClearPanel?.();
-                            setSidebarOpen(false);
-                          }}
-                          onNew={() => {
-                            newSession();
-                            onClearPanel?.();
-                            setSidebarOpen(false);
-                          }}
-                          onRename={(s, label) => {
-                            void renameSession(s.key, label);
-                          }}
-                          onDelete={(s) => setDeleteSessionTarget(s)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <AgentRoster
+                entries={rosterEntries}
+                activeAgentId={currentAgentId}
+                defaultAgentId={defaultId}
+                publishedAgentIds={publishedAgentIds}
+                freshlyInstalledAgentId={drawerState.freshlyInstalledAgentId}
+                configSnapshot={configSnapshot?.config}
+                onSelect={handleSelectAgent}
+                onOpenWork={(id) => openAgentIssues?.(id)}
+                onInspect={(id) => openAgentInspector?.(id)}
+                onRename={setRenameTarget}
+                onDelete={setDeleteTarget}
+                renderSessions={() => (
+                  <SessionList
+                    sessions={agentSessions}
+                    activeSessionId={activeSessionId}
+                    onSelect={(sid) => {
+                      selectSession(sid);
+                      // Like handleSelectAgent: the view is derived from
+                      // ?panel, so picking a session from a panel view
+                      // must drop ?panel to land back on the chat.
+                      onClearPanel?.();
+                      setSidebarOpen(false);
+                    }}
+                    onNew={() => {
+                      newSession();
+                      onClearPanel?.();
+                      setSidebarOpen(false);
+                    }}
+                    onRename={(s, label) => {
+                      void renameSession(s.key, label);
+                    }}
+                    onDelete={(s) => setDeleteSessionTarget(s)}
+                  />
+                )}
+              />
               {/* CompanyNav (Dashboard / Inbox / Work / Company) plus the
                   marketplace block (GallerySection) — Browse + Publish buttons
                   that open the MarketplaceDrawer. The drawer (mounted on the

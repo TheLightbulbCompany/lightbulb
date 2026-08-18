@@ -9,7 +9,9 @@ import { MessageList } from "@/components/chat/MessageList";
 import { buildChatItems } from "@/hooks/internal/buildChatItems";
 import { groupBySide } from "@/hooks/internal/groupBySide";
 import { EditorialButton } from "@/components/teams/shell";
-import { formatSilenceAgeMs } from "@/components/teams/shared/lib/liveRuns";
+import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
+import { formatSilenceAgeMs, liveRunActivity, liveRunTitle } from "@/components/teams/shared/lib/liveRuns";
+import { isActiveStatus, statusColor } from "@/components/teams/shared/lib/runStatus";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
@@ -18,20 +20,6 @@ import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/share
 // (events are seq-ordered ascending, so the default page is the OLDEST 200).
 // Full seq-paging is deliberately out of scope at v1 scale.
 const RUN_EVENTS_LIMIT = 1000;
-
-// Free upstream string — color the known vocabulary, default to mute.
-function statusColor(status: string | null | undefined): string {
-  const s = (status ?? "").toLowerCase();
-  if (s === "succeeded" || s === "done" || s === "completed") return "var(--forest)";
-  if (s === "failed" || s === "error" || s === "cancelled" || s === "timed_out") return "var(--danger)";
-  if (s === "running" || s === "queued" || s === "scheduled_retry") return "var(--forest)";
-  return "var(--mute)";
-}
-
-function isActiveStatus(status: string | null | undefined): boolean {
-  const s = (status ?? "").toLowerCase();
-  return s === "running" || s === "queued" || s === "scheduled_retry";
-}
 
 function nonEmptyString(v: unknown): string | null {
   return typeof v === "string" && v ? v : null;
@@ -278,6 +266,18 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             Run — {agentName}
           </h1>
           <div className="flex items-center gap-2 text-sm">
+            {isActiveStatus(run.status) && (
+              // Decorative: the status text right next to it already reads
+              // "running" / "queued" / "scheduled retry" — the dot would
+              // double-announce the same state to a screen reader. Mirrors
+              // ActiveAgentsPanel's own live-dot-next-to-status-text case.
+              <LiveRunDot
+                state={liveRunActivity(run)}
+                title={liveRunTitle(run)}
+                decorative
+                testId="run-detail-live-dot"
+              />
+            )}
             <span className="capitalize" style={{ color: statusColor(run.status) }}>
               {statusLabel}
             </span>

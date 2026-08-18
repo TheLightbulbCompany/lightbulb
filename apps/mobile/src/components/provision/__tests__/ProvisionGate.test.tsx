@@ -550,6 +550,92 @@ describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
   });
 });
 
+// Issue #1468: a failed first-run kickoff rendered NOTHING to the owner — the
+// reason was on the contract and only the admin page read it. Non-blocking, the
+// same shape as the Teams affordance above: the container is healthy, chat
+// works, and messaging Friday directly is the recovery the owner actually has.
+describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
+  beforeEach(() => {
+    mockRefetch.mockReset();
+    mockUseContainerStatus.mockReset();
+    mockOrganization = null;
+    mockOrgLoaded = true;
+    mockIapAvailable = false;
+  });
+
+  const renderReady = async (extra: Record<string, unknown>) => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "ready", onboarded: true, ...extra },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+  };
+
+  it("renders over the live children when bootstrapState is failed", async () => {
+    await renderReady({
+      bootstrapState: "failed",
+      bootstrapError: "OAuth token refresh failed for openai (401)",
+    });
+
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.getByText(/Friday couldn.t start her first run/)).toBeTruthy();
+    expect(screen.getByLabelText("Show technical details")).toBeTruthy();
+  });
+
+  // The reason is what support acts on, so expanding must reveal the WHOLE
+  // string — a clamped preview that silently drops the tail would swallow the
+  // detail this surface exists to hand over.
+  it("expands to the complete reason, verbatim, however long it is", async () => {
+    const reason = [
+      "openai isn't accepting your saved login",
+      "(OAuth token refresh failed for openai:",
+      "OpenAI Codex token refresh failed (401))",
+      "dispatch_id=6f1c2b84-1f2a-4a9d-9f0e-0b2c9d1e77aa",
+      "attempts=5",
+    ].join("\n");
+    await renderReady({ bootstrapState: "failed", bootstrapError: reason });
+
+    // Collapsed by default — this sits over live chat.
+    expect(screen.queryByText(reason)).toBeNull();
+
+    await fireEvent.press(screen.getByLabelText("Show technical details"));
+
+    // Exact, complete value — not a substring match.
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.getByLabelText("Hide technical details")).toBeTruthy();
+  });
+
+  it("renders without a details control when no reason was recorded", async () => {
+    await renderReady({ bootstrapState: "failed", bootstrapError: null });
+
+    expect(screen.getByText(/Friday couldn.t start her first run/)).toBeTruthy();
+    expect(screen.queryByLabelText("Show technical details")).toBeNull();
+  });
+
+  // The transient/recoverable rungs of the post-#1820 ladder: the dispatcher
+  // re-arms or completes these itself on the next poll.
+  it.each(["not_started", "dispatched", "sent", "delivered"])(
+    "stays silent for bootstrapState=%s",
+    async (bootstrapState) => {
+      await renderReady({ bootstrapState, bootstrapError: "connection refused" });
+
+      expect(screen.getByText("APP")).toBeTruthy();
+      expect(screen.queryByText(/Friday couldn.t start her first run/)).toBeNull();
+    },
+  );
+
+  it("stays silent when the backend sends no bootstrap block at all", async () => {
+    await renderReady({});
+
+    expect(screen.getByText("APP")).toBeTruthy();
+    expect(screen.queryByText(/Friday couldn.t start her first run/)).toBeNull();
+  });
+});
+
 // PR-review finding: the paywall sells the PERSONAL flat plan — one Apple
 // product, one Stripe flat price. An org pays base + per-seat. Routing an org
 // into it takes real money through StoreKit for a plan that cannot be

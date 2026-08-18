@@ -1,7 +1,7 @@
 /**
  * Kickoff-transcript presentation (#1425): tool results restored from
- * chat.history must render as the collapsed ToolPill (expansion shows the
- * output), never inline prose — and the internal
+ * chat.history must render as a collapsed ToolActivityTrace row (expansion
+ * shows the output), never inline prose — and the internal
  * <<<EXTERNAL_UNTRUSTED_CONTENT…>>> injection-defense sentinels are stripped
  * wherever they'd surface (pill output AND assistant markdown).
  */
@@ -84,8 +84,11 @@ describe("MessageList — tool results & sentinel stripping (#1425)", () => {
     );
     // Collapsed by default: the raw output is not on screen.
     expect(screen.queryByText(/Acme Corp makes anvils/)).toBeNull();
-    // Expand the pill — output appears WITHOUT the sentinels.
-    fireEvent.click(screen.getByText("web_search"));
+    // Expand the row — output appears WITHOUT the sentinels. The row is
+    // addressed by its plain-language label; the raw tool name is never
+    // rendered, which is the whole point of the trace.
+    expect(screen.queryByText("web_search")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Searched the web/i }));
     expect(screen.getByText(/Acme Corp makes anvils/)).toBeInTheDocument();
     expect(screen.queryByText(/EXTERNAL_UNTRUSTED_CONTENT/)).toBeNull();
   });

@@ -955,6 +955,137 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByText(/Teams needs attention/i)).toBeInTheDocument();
   });
 
+  // Issue #1468: a first run that dies leaves the owner on an empty chat with
+  // no explanation — the reason was computed, shipped on the contract, and
+  // rendered ONLY on the admin page. These pin the owner-facing surface.
+  describe("first-run (bootstrap) failure notice", () => {
+    const readyWithBootstrap = (bootstrap: Record<string, unknown>) => {
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "running",
+          runtime_phase: "ready",
+          onboarded: true,
+          funnel: { state: "submitted" },
+          bootstrap,
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: vi.fn(),
+      });
+      return render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+    };
+
+    it("renders the failure over the live chat, with the reason verbatim", () => {
+      readyWithBootstrap({
+        state: "failed",
+        last_error:
+          "openai isn't accepting your saved login (OAuth token refresh failed for openai: 401)",
+      });
+
+      // Chat is NOT blocked — the container is healthy and talking to Friday
+      // directly is the recovery this card points at.
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.getByText(/Friday couldn't start/i)).toBeInTheDocument();
+      // The raw reason is preserved, not swallowed — support needs it.
+      expect(
+        screen.getByText(/OAuth token refresh failed for openai/i),
+      ).toBeInTheDocument();
+    });
+
+    it("offers support, never a Retry — the only re-arm lever is admin-only", () => {
+      readyWithBootstrap({ state: "failed", last_error: "chat.error" });
+
+      expect(
+        screen.getByRole("link", { name: /contact support/i }),
+      ).toHaveAttribute("href", "mailto:support@isol8.co");
+      // A Retry button here could not re-dispatch anything
+      // (`claim_bootstrap_dispatch` admits only `not_started`, and
+      // `reset_bootstrap_for_retry` is behind require_platform_admin) — a dead
+      // button is the same bug in a new costume.
+      expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+    });
+
+    it("still renders when the reason is missing (older row / degraded write)", () => {
+      readyWithBootstrap({ state: "failed", last_error: null });
+
+      expect(screen.getByText(/Friday couldn't start/i)).toBeInTheDocument();
+      expect(screen.queryByText(/technical details/i)).not.toBeInTheDocument();
+    });
+
+    // The transient/recoverable rungs of the post-#1820 ladder. `dispatched`
+    // (fresh OR stale-but-re-arming) and `sent` are both resolved by the
+    // dispatcher itself on the next /container/status poll — rendering them as
+    // failures would be a lie the owner can't act on.
+    it.each([
+      ["not_started", { state: "not_started", last_error: null }],
+      ["dispatched (fresh)", { state: "dispatched", last_error: null }],
+      [
+        "dispatched (stale, re-arming — carries a last_error from the prior attempt)",
+        { state: "dispatched", last_error: "connection refused" },
+      ],
+      ["sent", { state: "sent", last_error: null }],
+      ["delivered", { state: "delivered", last_error: null }],
+    ])("stays silent for bootstrap.state=%s", (_label, bootstrap) => {
+      readyWithBootstrap(bootstrap);
+
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.queryByText(/Friday couldn't start/i)).not.toBeInTheDocument();
+    });
+
+    it("stacks with the Teams notice instead of covering it when both fire", () => {
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "running",
+          runtime_phase: "ready",
+          onboarded: true,
+          teams_state: "failed",
+          bootstrap: { state: "failed", last_error: "chat.error" },
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: vi.fn(),
+      });
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+
+      // Both are readable. They used to place THEMSELVES at an identical
+      // `fixed bottom-4 right-4`, which put one card directly on top of the
+      // other; the ready branch's corner stack owns placement now.
+      const firstRun = screen.getByText(/Friday couldn't start/i);
+      const teams = screen.getByText(/Teams needs attention/i);
+      expect(firstRun).toBeInTheDocument();
+      expect(teams).toBeInTheDocument();
+      expect(document.querySelectorAll(".fixed")).toHaveLength(1);
+    });
+
+    it("stays silent when the backend sends no bootstrap block at all", () => {
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: { container_status: "running", runtime_phase: "ready", onboarded: true },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: vi.fn(),
+      });
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.queryByText(/Friday couldn't start/i)).not.toBeInTheDocument();
+    });
+  });
+
   it("does not render the Teams-degraded notice on a healthy ready container", () => {
     useProvMock.mockReturnValue({
       phase: "normal",

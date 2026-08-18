@@ -826,11 +826,34 @@ export function ProvisioningStepper({
   // but the container itself is healthy and chat works — so we render the
   // app as normal and layer a small dismissible "Teams needs attention"
   // notice over it, never a blocking interstitial.
+  //
+  // `bootstrap.state === "failed"` is the same shape of fact for the FIRST
+  // RUN: the owner submitted their brief, the container came up, and Friday's
+  // server-dispatched kickoff died anyway. Read off `derived.bootstrap` (which
+  // defaults an absent block for an older backend) and matched against
+  // "failed" ONLY — `dispatched` (fresh or stale-but-re-arming) and `sent` are
+  // both recovered/completed by the dispatcher itself on the next status poll,
+  // so showing them as failures would be a lie. See bootstrap_dispatcher.py.
+  //
+  // ONE positioning owner for both: each notice used to place itself at `fixed
+  // bottom-4 right-4`, so a container that is both Teams-degraded and
+  // first-run-failed would have stacked them at identical coordinates with the
+  // lower one unreadable. The corner stack owns the placement now; the notices
+  // own only their own card.
   if (phase === "ready") {
+    const teamsDegraded = container?.teams_state === "failed";
+    const firstRunFailed = derived?.bootstrap.state === "failed";
     return (
       <>
         {children}
-        {container?.teams_state === "failed" && <TeamsDegradedNotice />}
+        {(teamsDegraded || firstRunFailed) && (
+          <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+            {firstRunFailed && (
+              <FirstRunFailedNotice lastError={derived?.bootstrap.last_error ?? null} />
+            )}
+            {teamsDegraded && <TeamsDegradedNotice />}
+          </div>
+        )}
       </>
     );
   }
@@ -1792,9 +1815,11 @@ export function ProvisioningStepper({
 /**
  * Non-blocking "Teams needs attention" affordance layered over the ready app
  * when /container/status reports `teams_state: "failed"` — Teams (Friday/Atlas)
- * seeding failed but the container is healthy and chat works. Fixed, small, and
+ * seeding failed but the container is healthy and chat works. Small and
  * dismissible so it never blocks the app. Owns its own dismiss state so the
  * ready branch stays a plain `children` return with no extra parent hook.
+ * PLACEMENT belongs to the ready branch's corner stack, not to this card — see
+ * the comment there.
  */
 function TeamsDegradedNotice() {
   const [dismissed, setDismissed] = useState(false);
@@ -1806,7 +1831,7 @@ function TeamsDegradedNotice() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+      className="max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">
@@ -1830,6 +1855,83 @@ function TeamsDegradedNotice() {
           aria-label="Dismiss"
           onClick={() => setDismissed(true)}
           className="text-lg leading-none text-[#b08a5a] hover:text-[#7a4a12]"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Non-blocking "Friday couldn't start" affordance layered over the ready app
+ * when /container/status reports `bootstrap.state: "failed"` — the owner's
+ * brief was submitted, the container is healthy, and the server-dispatched
+ * first-run kickoff died anyway. Before this, that state rendered NOTHING to
+ * the owner (only the admin provisioning page read it) and they sat on an
+ * empty chat waiting for an agent that was never coming.
+ *
+ * NO retry button, deliberately. `bootstrap_state: "failed"` is terminal by
+ * construction — `claim_bootstrap_dispatch` admits only `not_started`, so no
+ * amount of polling re-dispatches it — and the ONLY re-arm lever
+ * (`reset_bootstrap_for_retry`) is behind `require_platform_admin` on
+ * /admin/users/{id}/provisioning/reset-bootstrap. A "Retry" here would be a
+ * dead button, which is the same bug in a new costume. What the owner CAN
+ * genuinely do is talk to Friday themselves — the chat surface behind this
+ * notice is live — so that is what it says.
+ *
+ * `lastError` is rendered VERBATIM behind a native <details>, not classified
+ * into tiers: #1460 tried the classifier and was reverted (#1463) for being
+ * too much machinery with its own defects. The reason strings are written for
+ * operators, so they stay collapsed under "Technical details" rather than
+ * leading — but they are never swallowed, because support needs them.
+ */
+function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    capture("first_run_failed_notice_shown");
+  }, []);
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="max-w-sm rounded-xl border border-[#e9b8b8] bg-[#fdf1f1] px-4 py-3 shadow-lg"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-medium text-[#8a2c2c]">Friday couldn&apos;t start</p>
+          <p className="mt-1 text-xs text-[#8a5a5a]">
+            Your workspace is ready, but her first run didn&apos;t get going.
+            Send her a message here to kick things off — if that doesn&apos;t
+            work either, contact support and we&apos;ll get it sorted.
+          </p>
+          {lastError && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs font-medium text-[#8a5a5a]">
+                Technical details
+              </summary>
+              <p className="mt-1 break-words font-mono text-[11px] leading-snug text-[#8a5a5a]">
+                {lastError}
+              </p>
+            </details>
+          )}
+          <a
+            href="mailto:support@isol8.co"
+            onClick={() =>
+              capture("support_contact_clicked", { source: "first_run_failed_notice" })
+            }
+            className="mt-2 inline-block text-xs font-medium text-[var(--forest)] underline"
+          >
+            Contact support
+          </a>
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+          className="text-lg leading-none text-[#c08a8a] hover:text-[#8a2c2c]"
         >
           ×
         </button>

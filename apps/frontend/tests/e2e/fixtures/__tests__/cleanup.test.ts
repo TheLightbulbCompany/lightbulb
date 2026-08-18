@@ -1,30 +1,30 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../e2e/fixtures/clerk-admin', () => ({
+vi.mock('../clerk-admin', () => ({
   createUser: vi.fn(),
   deleteUser: vi.fn(),
   deleteOrg: vi.fn(),
   findUserByEmail: vi.fn(),
 }));
 
-vi.mock('../../e2e/fixtures/stripe-admin', () => ({
+vi.mock('../stripe-admin', () => ({
   cancelSubsAndDeleteCustomer: vi.fn(),
   findCustomerByEmail: vi.fn(),
   findCustomersByOwnerId: vi.fn(),
 }));
 
-import { cleanupUser, type E2EUser } from '../../e2e/fixtures/user';
-import { AuthedFetchError } from '../../e2e/fixtures/api';
+import { cleanupUser, type E2EUser } from '../user';
+import { AuthedFetchError } from '../api';
 import {
   deleteUser,
   deleteOrg,
   findUserByEmail,
-} from '../../e2e/fixtures/clerk-admin';
+} from '../clerk-admin';
 import {
   cancelSubsAndDeleteCustomer,
   findCustomerByEmail,
   findCustomersByOwnerId,
-} from '../../e2e/fixtures/stripe-admin';
+} from '../stripe-admin';
 
 const ENV_KEYS = {
   STRIPE_SECRET_KEY: 'sk_test_stripe',

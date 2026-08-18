@@ -16,7 +16,7 @@ permissions:
 jobs:
   build-and-push:
     name: Build and push extended Paperclip image
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -31,7 +31,13 @@ jobs:
       # run 31560625232 failed with "no space left on device" mid-ztoc. The
       # `Reclaim container storage` step at the end of this job cannot help —
       # it runs AFTER the convert. Free the space up front instead.
+      #
+      # Hosted-only, and the guard is not cosmetic: these are paths of the
+      # GitHub-hosted Ubuntu image. `rm -rf`-ing them on the self-hosted box
+      # would delete real, persistent host toolchains rather than a VM that is
+      # about to be discarded. The box has the disk this step exists to free.
       - name: Reclaim disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/.ghcup /usr/local/share/powershell \
@@ -124,11 +130,15 @@ jobs:
 
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
-      # Vestigial since this job moved to hosted runners, where the whole VM is
-      # discarded at job end. Kept because it is `if: always()` and harmless,
-      # and it still reports the post-convert disk figure. It is NOT what keeps
-      # the convert from running out of space — that is the `Reclaim disk` step
-      # up top, which runs before anything allocates.
+      # Load-bearing again now that this job runs on the self-hosted box: the
+      # container stores there are NOT discarded at job end, so the three
+      # copies the SOCI path leaves behind (docker's, plus IMAGE_REF and
+      # IMAGE_REF-soci-staging in nerdctl's `default` namespace) accumulate
+      # forever. That is what filled the box's disk for the OpenClaw build —
+      # see the same step in build-openclaw-image.yml. On hosted runners it is
+      # merely harmless. It is still NOT what keeps the convert from running
+      # out of space: that is `Reclaim disk` up top, which runs before
+      # anything allocates.
       - name: Reclaim container storage
         if: always()
         env:

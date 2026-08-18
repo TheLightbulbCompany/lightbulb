@@ -177,7 +177,10 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
  * role and (optional) orgId can be set per-spec. Kept as load-bearing
  * documentation for future contributors who go looking for `test.e2eUser`.
  */
-export const test = base.extend<Record<string, never>, { e2eUser: E2EUser }>({
+// `object`, not `Record<string, never>`: the latter's string index signature
+// makes Playwright resolve `e2eUser` against the *test*-scoped branch (value
+// type `never`) instead of the worker-scoped one declared here.
+export const test = base.extend<object, { e2eUser: E2EUser }>({
   e2eUser: [
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async ({ browser: _browser }, use) => {

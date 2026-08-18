@@ -8,9 +8,16 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
-    include: ['tests/**/*.test.{ts,tsx}', 'src/**/__tests__/**/*.test.{ts,tsx}'],
+    // One convention: tests live in a `__tests__/` dir next to the code they
+    // cover. The old parallel `tests/unit/**` mirror of `src/` is gone — a
+    // grep of the source dir now finds every test that touches it.
+    // `tests/e2e/**/__tests__/` is the same rule applied to the Playwright
+    // fixtures/helpers, which are themselves source.
+    include: ['{src,tests/e2e}/**/__tests__/**/*.test.{ts,tsx}'],
     exclude: [
-      'tests/e2e/**/*',
+      // Playwright's own specs + setup — vitest must not collect them.
+      'tests/e2e/**/*.spec.ts',
+      'tests/e2e/global.setup.ts',
       'node_modules/**/*',
     ],
     // Use threads pool with limited workers
@@ -33,9 +40,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
+      // A user-supplied exclude REPLACES vitest's defaults, which is why
+      // `**/__tests__/**` has to be spelled out — without it the ~380
+      // co-located test files count as covered source and inflate the number.
       exclude: [
         'node_modules/',
         'tests/',
+        '**/__tests__/**',
         '.next/',
         '*.config.*',
       ],

@@ -85,7 +85,23 @@ import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
-  | { kind: "ready"; onboarded?: boolean; teamsStatus?: string }
+  | {
+      kind: "ready";
+      onboarded?: boolean;
+      teamsStatus?: string;
+      /**
+       * `bootstrap.state` from the composed contract — Friday's server-
+       * dispatched first-run kickoff. `"failed"` is the ONLY value acted on
+       * (ProvisionGate's non-blocking first-run banner): `dispatched` (fresh
+       * or stale-but-re-arming) and `sent` are recovered by the dispatcher
+       * itself on the next poll, so they are not failures. Surfaced on `ready`
+       * only, alongside `teamsStatus` — a kickoff can only have run against a
+       * container that came up.
+       */
+      bootstrapState?: string;
+      /** `bootstrap.last_error`, verbatim — operator-written, shown as detail. */
+      bootstrapError?: string | null;
+    }
   | {
       kind: "starting";
       phase?: string;
@@ -223,7 +239,15 @@ function fromClassified(
           // fired a wake in parallel (gateway provider), so this is transient.
           return { kind: "parked" };
         case "ready":
-          return { kind: "ready", onboarded: info.onboarded, teamsStatus };
+          // `derived.bootstrap` already defaults an absent block (older
+          // backend) to `state: "not_started"` — no second null-check needed.
+          return {
+            kind: "ready",
+            onboarded: info.onboarded,
+            teamsStatus,
+            bootstrapState: derived.bootstrap.state,
+            bootstrapError: derived.bootstrap.last_error,
+          };
         case "error":
           // Defensive: deriveUIPhase can only reach "error" via
           // lifecycle==="error", which the info.status==="error" branch

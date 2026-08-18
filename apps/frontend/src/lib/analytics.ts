@@ -92,6 +92,7 @@ export type AnalyticsEvent =
   | "file_browser_opened"
   | "browser_view_opened"
   | "teams_degraded_notice_shown"
+  | "first_run_failed_notice_shown"
   | "update_applied"
   | "update_scheduled"
   // Desktop app

@@ -510,7 +510,7 @@ export function AgentHead({
     const settled = !streaming;
     return (
         <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-semibold text-[#302d28] tracking-tight">
+            <span className="text-xs font-semibold text-[var(--ink)] tracking-tight">
                 {name}
             </span>
             <span className="inline-flex items-center justify-center w-5 h-5">
@@ -698,7 +698,7 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <div className="relative text-sm leading-7 bg-[#f0ebe2] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
+        <div className="relative text-sm leading-7 bg-[var(--cream-deeper)] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
       </div>
@@ -794,7 +794,7 @@ const ItemRenderer = React.memo(
  * A `/btw` (detached side-channel) answer rendered as a distinct, non-thread
  * side card — labeled "BTW · not saved" (it is never written to the transcript
  * / history), the question in muted text, the answer as the body. Error styling
- * reuses the existing chat error tokens (#fce4ec / #a5311f / #f8bbd0). Mirrors
+ * reuses the existing chat error tokens (var(--danger) text/border, a low-alpha danger tint fill). Mirrors
  * OpenClaw's "Not saved to chat history" side card.
  */
 function BtwSideCard({
@@ -813,22 +813,22 @@ function BtwSideCard({
       data-testid="btw-card"
       className={cn(
         "rounded-lg border px-3 py-2.5 text-sm",
-        isError ? "border-[#f8bbd0] bg-[#fce4ec]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
+        isError ? "border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
       )}
     >
       <div className="flex items-center gap-1.5 mb-1.5">
         <span
           className={cn(
             "text-[11px] font-semibold uppercase tracking-wide",
-            isError ? "text-[#a5311f]" : "text-[var(--forest)]",
+            isError ? "text-[var(--danger)]" : "text-[var(--forest)]",
           )}
         >
           BTW
         </span>
-        <span className="text-[11px] text-[#b5ae9e]">· not saved</span>
+        <span className="text-[11px] text-[var(--mute)]">· not saved</span>
       </div>
       {question && <div className="text-xs text-[var(--mute)] mb-1.5">{question}</div>}
-      <div className={cn("leading-7", isError ? "text-[#a5311f]" : "text-[#302d28]")}>
+      <div className={cn("leading-7", isError ? "text-[var(--danger)]" : "text-[var(--ink-soft)]")}>
         <MarkdownContent content={text} onOpenFile={onOpenFile} />
       </div>
     </div>
@@ -1060,7 +1060,7 @@ function BubbleGroupImpl({
           streaming={Boolean(isStreaming && isLastAssistantGroup)}
           messageText={groupCopyText(group)}
         />
-        <div className="relative text-sm leading-7 text-[#302d28] w-full">
+        <div className="relative text-sm leading-7 text-[var(--ink-soft)] w-full">
           {renderables.map((entry) =>
             entry.kind === "tool-run" ? (
               <ToolActivityTrace
@@ -1300,7 +1300,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[var(--mute)] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
+                className="text-[11px] text-[var(--mute)] hover:text-[var(--ink-soft)] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

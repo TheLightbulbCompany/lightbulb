@@ -274,4 +274,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { register, deregister, _buildCronJob, _loadCronStore, _stagingWorkspaceDir };
+module.exports = { register, deregister, _buildCronJob, _loadCronStore, _stagingWorkspaceDir, _workspaceHasFile };

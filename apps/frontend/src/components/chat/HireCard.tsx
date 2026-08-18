@@ -197,7 +197,7 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
   return (
     <div className="my-2 space-y-2">
       {parsed.reason && <div className="text-sm text-muted-foreground">{parsed.reason}</div>}
-      <PrimaryListing listing={primary} />
+      <PrimaryListing key={primary.listing_id} listing={primary} />
       {alternatives.length > 0 && (
         <div>
           <button

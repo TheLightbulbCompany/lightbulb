@@ -207,6 +207,31 @@ describe("HireCard — multiple listings", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("resets deploy state on promotion — a stale 'Added to your team' must not survive it", async () => {
+    // Regression: PrimaryListing carried local deploy state with no `key`,
+    // so React reused the same instance across a promotion and the new
+    // primary inherited the old one's "done" state — rendering an agent
+    // that was never deployed as already-deployed and permanently
+    // un-deployable.
+    render(
+      <HireCard
+        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /deploy/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /added/i })).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /4 alternatives/i }));
+    await userEvent.click(screen.getByRole("button", { name: /make agent 3 the recommendation/i }));
+
+    // The newly-promoted card must be a fresh, actionable Deploy button —
+    // not a leaked "Added to your team" it never earned.
+    const deployButton = screen.getByRole("button", { name: /deploy to my team/i });
+    expect(deployButton).toBeInTheDocument();
+    expect(deployButton).not.toBeDisabled();
+    expect(screen.queryByRole("button", { name: /added/i })).not.toBeInTheDocument();
+  });
+
   it("folds the old primary back into the alternatives after a promotion", async () => {
     render(
       <HireCard

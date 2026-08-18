@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import * as fs from "fs";
+import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import { ShellStep } from "aws-cdk-lib/pipelines";
 import {
@@ -35,7 +37,25 @@ function expressionRunner(runsOn: string): Runner {
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
+const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
+const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
+const CDKOUT_OIDC_STEP = {
+  name: "Authenticate Via OIDC Role",
+  uses: "aws-actions/configure-aws-credentials@v4",
+  with: {
+    "aws-region": "us-west-2",
+    "role-duration-seconds": 1800,
+    "role-skip-session-tagging": true,
+    "role-to-assume": "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
+  },
+};
+
 const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
+  // postBuildSteps is injected immediately before the cdk.out upload
+  // (cdk-pipelines-github pipeline.js:458), so the credentials the S3 upload
+  // needs are added through the supported API rather than a positional patch.
+  // Build-Synth otherwise has id-token: write but never assumes a role.
+  postBuildSteps: [CDKOUT_OIDC_STEP],
   synth: new ShellStep("Synth", {
     commands: [
       "cd apps/infra",
@@ -239,5 +259,74 @@ pipeline.workflowFile.patch(
   // upload specifically.
   JsonPatch.add("/jobs/Build-Synth/steps/2/with/retention-days", 1),
 );
+
+
+
+// ---------------------------------------------------------------------------
+// cdk.out transport: S3 instead of GitHub Actions artifacts.
+//
+// cdk-pipelines-github hardcodes actions/upload-artifact + download-artifact
+// (node_modules/cdk-pipelines-github/lib/pipeline.js:21,502,511,607,628) and
+// exposes NO option to change it -- `artifact` appears nowhere in its public
+// pipeline.d.ts. So the transport is swapped here, by patching the generated
+// workflow, the same mechanism the cdk.out retention cap uses.
+//
+// WHY: Actions artifact storage is a shared account-wide quota (Actions +
+// Packages). Every deploy uploaded a fresh ~33 MB cdk.out across 6218 files;
+// once the quota is hit, `Upload cdk.out` fails and ALL 29 downstream jobs
+// skip -- backend, infra, AND both Vercel jobs, since Vercel deploys through
+// this pipeline (prod-DeployVercelProd), not through Vercel's Git
+// integration. Deleting artifacts frees the space immediately but the quota
+// figure lags 6-12h (reported up to 24-48h), so a reclaim does not unblock.
+// Moving the transport to S3 removes this pipeline from the quota entirely.
+//
+// WHERE: the CDK bootstrap assets bucket, which the OIDC role the asset jobs
+// already assume can write. Deliberately NOT a new bucket: creating one needs
+// a CDK deploy, and CDK deploys are what this unblocks.
+//
+// Job names are read from the committed workflow rather than hardcoded: the
+// Assets-FileAssetN set changes whenever assets are added or removed, and a
+// stale hardcoded list would silently skip a job's download. CI's workflow
+// drift check fails loudly if this enumeration goes stale.
+
+
+
+const assetJobNames = (): string[] => {
+  const workflowPath = path.join(__dirname, "..", "..", "..", ".github", "workflows", "deploy.yml");
+  if (!fs.existsSync(workflowPath)) return [];
+  return [
+    ...new Set(
+      fs
+        .readFileSync(workflowPath, "utf8")
+        .split("\n")
+        .map((line) => /^ {2}(Assets-[A-Za-z0-9]+):\s*$/.exec(line)?.[1])
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ];
+};
+
+const cdkoutPatches: JsonPatch[] = [
+  // Build-Synth steps after postBuildSteps injection:
+  // [Checkout, Build, Authenticate, Upload cdk.out]. Only the upload needs
+  // patching -- the construct offers no hook for the artifact step itself
+  // (pipeline.js:502,511 hardcode actions/upload-artifact).
+  JsonPatch.replace("/jobs/Build-Synth/steps/3", {
+    name: "Upload cdk.out to S3",
+    run: `aws s3 cp apps/infra/cdk.out ${CDKOUT_S3_URI}/ --recursive --only-show-errors`,
+  }),
+];
+for (const job of assetJobNames()) {
+  // Asset jobs are [Download cdk.out, Install, Authenticate, Publish]. The
+  // download runs BEFORE credentials exist, so it is removed from the front
+  // and re-inserted after the auth step rather than swapped in place.
+  cdkoutPatches.push(JsonPatch.remove(`/jobs/${job}/steps/0`));
+  cdkoutPatches.push(
+    JsonPatch.add(`/jobs/${job}/steps/2`, {
+      name: "Download cdk.out from S3",
+      run: `aws s3 cp ${CDKOUT_S3_URI}/ cdk.out/ --recursive --only-show-errors`,
+    }),
+  );
+}
+pipeline.workflowFile.patch(...cdkoutPatches);
 
 app.synth();

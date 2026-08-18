@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
-import { Copy, Share2, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
@@ -113,18 +113,46 @@ export function resolveHighlightLanguage(language: string): string {
   return REGISTERED_LANGUAGES.has(normalized) ? normalized : PLAIN_LANGUAGE;
 }
 
-function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
+/**
+ * Exported (was module-private) so CodeBlock.test.tsx can exercise the copy
+ * affordance directly, matching how AgentHead/ThinkingBlock are exported for
+ * their own tests.
+ */
+export function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
   const match = /language-(\w+)/.exec(className || "");
-  const codeString = String(children).replace(/\n$/, "");
+  // Exact source, trailing newline(s) included — this is what gets copied.
+  // `codeString` below strips exactly one trailing newline for RENDER only
+  // (Prism otherwise shows a trailing blank line); the two must stay
+  // separate or copy silently loses a byte the fence actually had.
+  const rawSource = String(children);
+  const codeString = rawSource.replace(/\n$/, "");
+  const [copied, setCopied] = React.useState(false);
+  const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  React.useEffect(() => () => clearTimeout(copyTimerRef.current), []);
 
   if (!match) {
     // Inline code
     return (
-      <code className="bg-[#e8e3d9] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
+      <code className="bg-[var(--cream-deepest)] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
         {children}
       </code>
     );
   }
+
+  const handleCopy = () => {
+    // navigator.clipboard is undefined on insecure origins (plain http,
+    // not localhost) — a bare call throws instead of silently failing.
+    if (!navigator.clipboard) return;
+    navigator.clipboard
+      .writeText(rawSource)
+      .then(() => {
+        setCopied(true);
+        clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  };
 
   // Fenced code block
   return (
@@ -132,10 +160,19 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       <div className="flex items-center justify-between px-4 py-2 bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
         <span className="text-xs text-[var(--mute)]">{match[1]}</span>
         <button
-          onClick={() => { navigator.clipboard.writeText(codeString).catch(() => {}); }}
-          className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors flex items-center gap-1"
+          onClick={handleCopy}
+          aria-label={copied ? "Copied" : "Copy code"}
+          className={cn(
+            "chat-code-copy-btn text-xs transition-colors flex items-center gap-1",
+            copied ? "text-[var(--forest)]" : "text-[var(--mute)] hover:text-[var(--ink)]",
+          )}
         >
-          <Copy className="h-3 w-3" />
+          {/* Icon swaps Copy -> Check; the "Copy" label never changes text,
+              so the button's width never shifts (the brief's "reserve the
+              space" and "don't swap text of differing width" are the same
+              fix here: don't swap the text at all). aria-label still flips
+              to "Copied" so the confirmation reaches screen readers too. */}
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           Copy
         </button>
       </div>
@@ -143,7 +180,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
         style={oneDark}
         language={resolveHighlightLanguage(match[1])}
         PreTag="div"
-        customStyle={{ margin: 0, borderRadius: 0, background: "#f8f5f0" }}
+        customStyle={{ margin: 0, borderRadius: 0, background: "var(--cream)" }}
       >
         {codeString}
       </SyntaxHighlighter>

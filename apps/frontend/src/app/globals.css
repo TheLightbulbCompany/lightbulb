@@ -796,6 +796,16 @@ button:focus-visible { border-radius: 999px; }
 @media (pointer: coarse) {
   .chat-action-btn { width: 32px; height: 32px; }
   .chat-thinking-trigger { margin: 0 -12px -12px; padding: 0 12px 12px; }
+  /* .chat-code-copy-btn (CodeBlock) — same technique as .chat-thinking-trigger
+     above: negative margin + matching padding grows the clickable box without
+     growing the layout box, so it can't widen a code block past its own
+     overflow-x scroll container. Same DOWNWARD AND SIDEWAYS ONLY, never up:
+     a code fence can open a turn directly (no prose between it and
+     AgentHead's Copy/Share row above), and this button can't tell which
+     case it's in from CSS alone, so it only ever grows into its own header
+     row's padding and the code pane below it — never toward whatever sits
+     above the block. */
+  .chat-code-copy-btn { margin: 0 -12px -12px; padding: 0 12px 12px; }
 }
 .wf-seq .wf-conn-line { transform-origin: top; transform: scaleY(0); transition: transform .35s cubic-bezier(.16,1,.3,1); }
 .wf-seq .wf-conn-line[data-wf-on] { transform: scaleY(1); }

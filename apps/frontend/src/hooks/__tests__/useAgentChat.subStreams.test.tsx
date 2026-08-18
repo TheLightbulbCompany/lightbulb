@@ -465,17 +465,34 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           runId: RUN,
         } as ChatIncomingMessage);
       });
+      // Read the LIVE block (written by syncToolStreamMessages) before the
+      // done-handler folds the turn into history.
+      const live = findToolUseBlock(result.current.renderItems, "t1");
+      expect(live).toBeTruthy();
+      const liveStartedAt = live!.startedAt;
+      const liveEndedAt = live!.endedAt;
+      expect(liveStartedAt).toBeDefined();
+      expect(liveEndedAt).toBeDefined();
+
       act(() => {
         emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
       });
       act(() => {
         vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
       });
-      const block = findToolUseBlock(result.current.renderItems, "t1");
-      expect(block).toBeTruthy();
-      expect(block!.startedAt).toBeDefined();
-      expect(block!.endedAt).toBeDefined();
-      expect(block!.endedAt!).toBeGreaterThan(block!.startedAt!);
+      const folded = findToolUseBlock(result.current.renderItems, "t1");
+      expect(folded).toBeTruthy();
+      expect(folded!.startedAt).toBeDefined();
+      expect(folded!.endedAt).toBeDefined();
+      // The claim under test is that the fold CARRIES the live stamps, not that
+      // wall-clock time passed. Asserting a delta would depend on the fake
+      // clock actually advancing Date.now() (it does not here), which made an
+      // earlier `endedAt > startedAt` version flake red in CI while the fix it
+      // guards was working. Comparing against the live values is deterministic
+      // and tests the real invariant: history keeps exactly what the live path
+      // showed, so a rendered duration cannot evaporate when the turn settles.
+      expect(folded!.startedAt).toBe(liveStartedAt);
+      expect(folded!.endedAt).toBe(liveEndedAt);
     } finally {
       vi.useRealTimers();
     }

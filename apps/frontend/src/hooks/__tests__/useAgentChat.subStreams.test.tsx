@@ -442,6 +442,45 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     }
   });
 
+  // The live writer (syncToolStreamMessages) stamps startedAt/endedAt on every
+  // terminal tool_use block so ToolActivityTrace can show a real duration.
+  // foldLiveTurnIntoContent is the done-handler's OWN writer for the exact
+  // same shape — it has to carry the same fields, or a duration that renders
+  // live evaporates the instant the turn settles into history.
+  it("keeps startedAt/endedAt on the folded tool_use block once the turn settles", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+      act(() => {
+        startTool();
+      });
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+        emit({
+          type: "tool_end",
+          tool: "bash",
+          toolCallId: "t1",
+          result: [{ type: "text", text: "ok" }],
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+      });
+      act(() => {
+        emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      });
+      act(() => {
+        vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
+      });
+      const block = findToolUseBlock(result.current.renderItems, "t1");
+      expect(block).toBeTruthy();
+      expect(block!.startedAt).toBeDefined();
+      expect(block!.endedAt).toBeDefined();
+      expect(block!.endedAt!).toBeGreaterThan(block!.startedAt!);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

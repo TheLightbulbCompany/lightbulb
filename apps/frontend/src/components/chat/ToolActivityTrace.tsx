@@ -42,6 +42,11 @@ export interface ToolCall {
   /** Wall-clock ms. Present on live turns only — history carries no timing. */
   startedAt?: number;
   endedAt?: number;
+  /** "activity" for a non-tool activity pill (plan/patch/item/acp) — these
+   *  already carry a human sentence in `name` and must bypass the tool-name
+   *  resolver below rather than being re-labeled from it. Absent/"tool" for
+   *  a real tool call. */
+  kind?: "tool" | "activity";
 }
 
 /**
@@ -64,6 +69,18 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.round((ms % 60_000) / 1000);
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+/**
+ * Display for a non-tool activity pill. `resolveToolDisplay` looks up its
+ * config by TOOL NAME, and an activity's `name` is already a human sentence
+ * from the backend ("Applied a patch to 3 files") — running it through that
+ * resolver Title-Cases the sentence and can append an unrelated raw id from
+ * `CONFIG.fallback.detailKeys`. The old pill printed the name verbatim; this
+ * does the same by never calling the resolver at all.
+ */
+function activityDisplay(name: string): ToolDisplay {
+  return { title: name, gerund: name, past: name, kind: "generic" };
 }
 
 /** Renders a tool_result payload as text. Mirrors the old ToolPill's reader. */
@@ -206,7 +223,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
       </button>
 
       {call.status === "error" && output && (
-        <div className="mb-1 mt-px border-l-2 border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[11.5px] leading-[1.5] text-[var(--danger)]">
+        <div className="mb-1 mt-px max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[11.5px] leading-[1.5] text-[var(--danger)]">
           {output}
         </div>
       )}
@@ -235,19 +252,20 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
   );
 }
 
-export function ToolActivityTrace({
-  calls,
-  settled = false,
-}: {
-  calls: ToolCall[];
-  /** The turn has finished. Drives folding and the past-tense summary. */
-  settled?: boolean;
-}) {
-  const displays = React.useMemo(
-    () => calls.map((c) => resolveToolDisplay(c.name, c.args)),
-    [calls],
+export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
+  // `calls` is a fresh array on every parent render at both call sites (a
+  // literal in MessageList's flushTrace, coalesceToolRuns' output), so a
+  // referential memo here never hits — just map plainly.
+  const displays = calls.map((c) =>
+    c.kind === "activity" ? activityDisplay(c.name) : resolveToolDisplay(c.name, c.args),
   );
 
+  // A trace is settled once every call in it has reached a terminal status.
+  // Both call sites used to compute this identically and pass it down as a
+  // `settled` prop — derived here instead so there's one place to get it
+  // right (and vacuously true for an empty list, harmless since that also
+  // short-circuits to `null` below).
+  const settled = calls.every((c) => c.status !== "running");
   const shouldFold = settled && calls.length > FOLD_THRESHOLD;
   const [userOpened, setUserOpened] = React.useState(false);
   // A turn that folds while the user has it open stays open — the fold is a
@@ -286,10 +304,29 @@ export function ToolActivityTrace({
   }
 
   return (
-    <ul className="mb-4 mt-0.5 list-none border-l border-[var(--edge)] pl-[13px]">
-      {calls.map((call, i) => (
-        <TraceRow key={call.id} call={call} display={displays[i]!} />
-      ))}
-    </ul>
+    <>
+      {/* Folding is a default, not a one-way trip: a settled trace over the
+          fold threshold that the user opened (userOpened) can still be sent
+          back to its one-line summary. Only shown when it would actually
+          re-fold (shouldFold) — a short or still-running trace was never
+          folded, so there's nothing to collapse it back to. Sits OUTSIDE the
+          `<ul>` below — it's a trace-level control, not a row. */}
+      {shouldFold && (
+        <button
+          type="button"
+          onClick={() => setUserOpened(false)}
+          aria-expanded={true}
+          className="mb-1 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--mute)] transition-colors hover:text-[var(--ink-soft)]"
+        >
+          <ChevronRight aria-hidden className="h-3 w-3 shrink-0 rotate-90 text-[var(--mute-soft)]" />
+          Collapse
+        </button>
+      )}
+      <ul className="mb-4 mt-0.5 list-none border-l border-[var(--edge)] pl-[13px]">
+        {calls.map((call, i) => (
+          <TraceRow key={call.id} call={call} display={displays[i]!} />
+        ))}
+      </ul>
+    </>
   );
 }

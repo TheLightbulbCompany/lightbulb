@@ -47,6 +47,28 @@ describe("ToolActivityTrace", () => {
     expect(screen.queryByText(/mcp__openclaw__/)).not.toBeInTheDocument();
   });
 
+  it("renders an activity pill's own label verbatim, bypassing the tool-name resolver", () => {
+    // `name` here is already the human sentence the backend sent — running
+    // it through resolveToolDisplay Title-Cases it and can append an
+    // unrelated raw id from CONFIG.fallback.detailKeys (the bug this kind
+    // flag exists to prevent).
+    render(
+      <ToolActivityTrace
+        calls={[
+          call({
+            id: "1",
+            kind: "activity",
+            name: "applied patch to 3 files",
+            args: { itemId: "itm_01H0000000000000000000" },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("applied patch to 3 files")).toBeInTheDocument();
+    expect(screen.queryByText(/Applied Patch/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/itm_01H/)).not.toBeInTheDocument();
+  });
+
   it("uses present tense while running and past tense once done", () => {
     const { rerender } = render(
       <ToolActivityTrace calls={[call({ id: "1", status: "running", result: null })]} />,
@@ -57,27 +79,39 @@ describe("ToolActivityTrace", () => {
   });
 
   it("folds past three calls when settled, stays open at three or fewer", () => {
+    // `call()` defaults to status "done" — settled is derived from that, so
+    // a settled trace needs no explicit prop.
     const three = [1, 2, 3].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    const { rerender } = render(<ToolActivityTrace calls={three} settled />);
+    const { rerender } = render(<ToolActivityTrace calls={three} />);
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
 
     const four = [1, 2, 3, 4].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    rerender(<ToolActivityTrace calls={four} settled />);
+    rerender(<ToolActivityTrace calls={four} />);
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
     expect(screen.getByText(/Read 4 files/)).toBeInTheDocument();
   });
 
   it("does not fold while the turn is still running", () => {
-    const calls = [1, 2, 3, 4, 5].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    render(<ToolActivityTrace calls={calls} settled={false} />);
+    // Settled is derived from call status — mark the last call still
+    // running so `calls.every(status !== "running")` reads false.
+    const calls = [1, 2, 3, 4, 5].map((i) =>
+      call({ id: `${i}`, args: { path: `f${i}.ts` }, ...(i === 5 ? { status: "running" as const } : {}) }),
+    );
+    render(<ToolActivityTrace calls={calls} />);
     expect(screen.getAllByRole("listitem")).toHaveLength(5);
   });
 
-  it("folding is a default, not an override — expanding survives", async () => {
+  it("folding is a default, not an override — expanding survives, and re-collapses on request", async () => {
     const calls = [1, 2, 3, 4].map((i) => call({ id: `${i}`, args: { path: `f${i}.ts` } }));
-    render(<ToolActivityTrace calls={calls} settled />);
+    render(<ToolActivityTrace calls={calls} />);
     await userEvent.click(screen.getByRole("button", { expanded: false }));
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
+
+    // The fold is a two-way affordance, not a one-shot reveal: a still-eligible
+    // (settled, over-threshold) trace the user opened can be sent back.
+    await userEvent.click(screen.getByRole("button", { name: /collapse/i }));
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getByText(/Read 4 files/)).toBeInTheDocument();
   });
 
   it("keeps a failure visible, in place, with its error inline", () => {
@@ -101,7 +135,11 @@ describe("ToolActivityTrace", () => {
     // Position preserved — a failure does not get hoisted or dropped.
     expect(rows[1]).toHaveTextContent("aws ecs describe-capacity-providers");
     // Error text is inline and not behind a click.
-    expect(screen.getByText(/AccessDeniedException/)).toBeInTheDocument();
+    const errorOutput = screen.getByText(/AccessDeniedException/);
+    expect(errorOutput).toBeInTheDocument();
+    // ...but height-capped and scrollable, like every other output path in
+    // this file — a 300-line stack trace must not flood the transcript.
+    expect(errorOutput).toHaveClass("max-h-48", "overflow-auto");
   });
 
   it("hides sub-2s durations and shows longer ones", () => {
@@ -118,7 +156,7 @@ describe("ToolActivityTrace", () => {
   });
 
   it("renders without durations when history carries no timing", () => {
-    render(<ToolActivityTrace calls={[call({ id: "1" })]} settled />);
+    render(<ToolActivityTrace calls={[call({ id: "1" })]} />);
     expect(screen.getByRole("listitem")).toBeInTheDocument();
     expect(screen.queryByText(/\ds$/)).not.toBeInTheDocument();
   });

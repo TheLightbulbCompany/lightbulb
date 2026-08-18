@@ -323,6 +323,15 @@ function foldLiveTurnIntoContent(params: {
           // streamed output but ended without a real result keeps it in the
           // final folded bubble instead of only during execution.
           ...(e.progressText ? { progressText: e.progressText } : {}),
+          // Same real timing syncToolStreamMessages stamps on every terminal
+          // tool_use block — without this, a duration renders live and then
+          // evaporates the instant the turn folds into history.
+          startedAt: e.startedAt,
+          ...(e.status !== "running" ? { endedAt: e.updatedAt } : {}),
+          // Non-tool activity pills (plan/patch/item/acp) carry their own
+          // human label already — see ToolStreamEntry.kind and
+          // ToolActivityTrace's passthrough for activity-kind calls.
+          ...(e.kind === "activity" ? { kind: "activity" as const } : {}),
         },
       ];
       // Emit tool_result whenever the tool has reached a terminal state,
@@ -807,6 +816,9 @@ export function useAgentChat(
               // duration rather than a wrong one.
               startedAt: e.startedAt,
               ...(e.status !== "running" ? { endedAt: e.updatedAt } : {}),
+              // Non-tool activity pills carry their own human label already —
+              // see ToolStreamEntry.kind and foldLiveTurnIntoContent above.
+              ...(e.kind === "activity" ? { kind: "activity" as const } : {}),
             } as ContentBlock,
             // Emit tool_result on terminal state regardless of payload —
             // see foldLiveTurnIntoContent for rationale.

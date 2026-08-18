@@ -116,6 +116,57 @@ describe("RoutineDetailPanel", () => {
     expect(screen.getByText("succeeded")).toBeInTheDocument();
   });
 
+  it("shows a retry as its own row, preserving the run it retried", () => {
+    // Task 7: Run history used to carry its OWN status vocabulary (no
+    // running/queued/scheduled_retry handling — everything but
+    // succeeded/failed fell through to --mute). A retry firing after a
+    // failure must read as a NEW row with its own outcome, never a rewrite
+    // of the failed row it followed.
+    reads["/routines/r1"] = {
+      data: { id: "r1", title: "Nightly digest", status: "active" },
+      isLoading: false,
+      error: undefined,
+    };
+    reads["/routines/r1/runs"] = {
+      data: {
+        runs: [
+          { id: "run2", source: "cron", status: "scheduled_retry" },
+          { id: "run1", source: "cron", status: "failed", failureReason: "gateway timeout" },
+        ],
+      },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<RoutineDetailPanel routineId="r1" />);
+
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.getByText("gateway timeout")).toBeInTheDocument();
+    expect(screen.getByText("scheduled retry")).toBeInTheDocument();
+    // A live dot marks the retry as still in flight; the failure it
+    // followed stays static — nothing merges the two rows into one.
+    expect(screen.getByTestId("routine-run-live-dot-run2")).toBeInTheDocument();
+    expect(screen.queryByTestId("routine-run-live-dot-run1")).not.toBeInTheDocument();
+  });
+
+  it("colors a timed-out run as a failure, not the default mute", () => {
+    // Regression: the deleted local runStatusColor only recognized
+    // failed/error/cancelled as a failure — a timed-out run (a real failure
+    // mode in RunDetailPanel's own vocabulary) fell through to --mute,
+    // reading as neutral instead of red.
+    reads["/routines/r1"] = {
+      data: { id: "r1", title: "Nightly digest", status: "active" },
+      isLoading: false,
+      error: undefined,
+    };
+    reads["/routines/r1/runs"] = {
+      data: { runs: [{ id: "run1", source: "cron", status: "timed_out" }] },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(screen.getByText("timed out")).toHaveStyle({ color: "var(--danger)" });
+  });
+
   it("names each webhook trigger so its destructive controls are distinguishable", () => {
     // Founder-reported (#1887): a routine with three Stripe triggers rendered
     // three identical "WEBHOOK · paused" rows, each carrying rotate-secret and

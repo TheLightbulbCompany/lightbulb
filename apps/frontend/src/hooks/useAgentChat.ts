@@ -771,6 +771,23 @@ export function useAgentChat(
 
   const syncToolStreamMessages = useCallback((force = false) => {
     const flush = () => {
+      // ONE MESSAGE PER TOOL CALL. This 1:1 shape is load-bearing in two
+      // places and must not be collapsed here:
+      //
+      //  - buildChatItems interleaves `chatStreamSegments[i]` with
+      //    `chatToolMessages[i]` BY INDEX, under the contract "segments[i] is
+      //    the text accumulated before tool[i]" (upheld by
+      //    commitStreamBeforePill). Merging the calls into one message leaves
+      //    only index 0 paired, so every later narration segment renders after
+      //    the whole run instead of between the calls it was spoken between.
+      //  - messageKey() keys off `timestamp`. One shared message would have to
+      //    carry one shared timestamp, changing on every progress tick of any
+      //    call — remounting the whole subtree and slamming shut any row the
+      //    user had expanded. Per-call messages each churn only their own key.
+      //
+      // Consolidating the VISUAL is done at render time instead:
+      // BubbleGroupImpl coalesces consecutive tool-only messages into one
+      // ToolActivityTrace, which needs no change to this shape.
       const ordered: HistoryMessage[] = toolStreamOrderRef.current
         .map((id) => toolStreamByIdRef.current.get(id))
         .filter((e): e is ToolStreamEntry => Boolean(e))
@@ -783,9 +800,14 @@ export function useAgentChat(
               name: e.name,
               args: e.args,
               // Live incremental output (tool phase:update / command_output),
-              // shown in the running pill until the terminal tool_result lands.
+              // shown in the running row until the terminal tool_result lands.
               ...(e.progressText ? { progressText: e.progressText } : {}),
-            },
+              // Real timing for the row's duration. Live turns only — messages
+              // replayed from chat.history carry none, and the trace renders no
+              // duration rather than a wrong one.
+              startedAt: e.startedAt,
+              ...(e.status !== "running" ? { endedAt: e.updatedAt } : {}),
+            } as ContentBlock,
             // Emit tool_result on terminal state regardless of payload —
             // see foldLiveTurnIntoContent for rationale.
             ...(e.status !== "running"

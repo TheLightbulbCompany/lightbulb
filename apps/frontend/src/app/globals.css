@@ -753,6 +753,74 @@ button:focus-visible { border-radius: 999px; }
   margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
 }
 @keyframes wf-cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── CHAT STREAM: caret + block reveal (MessageList.tsx) ──
+   .chat-caret promotes .wf-type-cursor above (the landing page's fake
+   typing cursor) to a shared class the real chat stream can use too.
+   Reuses @keyframes wf-cursor-blink — do not duplicate it.
+   .chat-block-in fires once per streamed block on mount: settled blocks
+   memo-hit and never re-render, and the growing tail block is reconciled
+   in place rather than remounted, so this can never re-trigger or flicker.
+   Opacity + a small translate only — no blur filter, `will-change: filter`
+   on every streamed block is a real paint cost for a subtle effect.
+   Covered by the reduced-motion rule below (no second rule needed).
+   .chat-tail fuses the caret onto the same line as the last line of prose
+   for the common case (a block that ends in a single paragraph); it's a
+   no-op for blocks ending in a list/table/code fence, where the caret
+   falls to its own line instead — an acceptable degrade rather than
+   forcing every block shape inline. */
+.chat-caret {
+  display: inline-block; width: 2px; height: 1em; background: var(--forest);
+  margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
+}
+@keyframes chat-block-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.chat-block-in { animation: chat-block-in 380ms cubic-bezier(.22,.61,.25,1) both; }
+.chat-tail > p:last-child { display: inline; }
+/* Turn-action buttons (Copy/Share, AgentHead) — 24px is under the 44px
+   touch-target guidance; bump the hit area on coarse (touch) pointers.
+   .chat-thinking-trigger (ThinkingBlock) is inline content, not a fixed
+   icon box, so it can't grow the same way without shifting the settled
+   "one quiet line" it sits on — padding widens the actual clickable
+   border-box, and the matching negative margin cancels the flow-layout shift
+   so the rendered line stays put on desktop too.
+
+   The growth is DOWNWARD AND SIDEWAYS ONLY, never up. A symmetric expansion is
+   sized to the largest neighbour gap, but collision is decided by the smallest,
+   and above this trigger the smallest is ZERO: MarkdownContent paragraphs use
+   `mb-3 last:mb-0`, so a thinking block following prose has no buffer at all,
+   and AgentHead's row leaves only `mb-2` (8px). A symmetric 12px grow put this
+   hit-box 4px inside AgentHead's 32px Copy/Share buttons, so a tap aimed at
+   Copy on a turn that opened with reasoning hit the Thinking toggle instead —
+   trading one touch bug for a worse one. Downward there IS room (`mb-4`, 16px
+   > 12px), which lands the same 32px height as .chat-action-btn above. */
+@media (pointer: coarse) {
+  .chat-action-btn { width: 32px; height: 32px; }
+  .chat-thinking-trigger { margin: 0 -12px -12px; padding: 0 12px 12px; }
+  /* .chat-code-copy-btn (CodeBlock) — same technique as .chat-thinking-trigger
+     above: negative margin + matching padding grows the clickable box without
+     growing the layout box, so it can't widen a code block past its own
+     overflow-x scroll container. Same DOWNWARD AND SIDEWAYS ONLY, never up:
+     a code fence can open a turn directly (no prose between it and
+     AgentHead's Copy/Share row above), and this button can't tell which
+     case it's in from CSS alone, so it only ever grows into its own header
+     row's padding and the code pane below it — never toward whatever sits
+     above the block. */
+  .chat-code-copy-btn { margin: 0 -12px -12px; padding: 0 12px 12px; }
+  /* .chat-hire-alt-btn (HireCard alternatives drawer) — rows are stacked
+     with `space-y-1` (4px), the smallest guaranteed gap in the drawer: it's
+     the same 4px between every pair of rows, by construction. The bump must
+     use THAT gap, not the (unguaranteed) space below the last row where the
+     drawer ends — growing the last row down too would eat into whatever
+     content follows the card, which we don't control. So :not(:last-child)
+     excludes it, and every other row claims its own 4px gap once, downward
+     only (10px = the 6px `py-1.5` base + the 4px gap), same technique as
+     .chat-thinking-trigger above: negative margin cancels padding's push on
+     the surrounding flow, so neighbouring rows don't shift. */
+  .chat-hire-alt-list > li:not(:last-child) .chat-hire-alt-btn {
+    margin-bottom: -4px;
+    padding-bottom: 10px;
+  }
+}
 .wf-seq .wf-conn-line { transform-origin: top; transform: scaleY(0); transition: transform .35s cubic-bezier(.16,1,.3,1); }
 .wf-seq .wf-conn-line[data-wf-on] { transform: scaleY(1); }
 .wf-seq .wf-conn-badge { opacity: 0; transform: scale(.7); transition: opacity .3s, transform .35s cubic-bezier(.34,1.56,.64,1); }

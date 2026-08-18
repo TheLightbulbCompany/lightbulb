@@ -42,8 +42,14 @@ export interface ContentBlock {
   arguments?: unknown;
   input?: unknown;
   /** Live incremental output (tool phase:update / command_output) shown in the
-   *  tool pill while running; superseded by the tool_result block on terminal. */
+   *  trace row while running; superseded by the tool_result block on terminal. */
   progressText?: string;
+  /** Wall-clock ms for the call, carried from the live ToolStreamEntry so the
+   *  trace can show a real duration. LIVE TURNS ONLY — messages replayed from
+   *  chat.history have no timing, and the trace renders no duration rather than
+   *  a wrong one. */
+  startedAt?: number;
+  endedAt?: number;
   // tool_result-flavored
   tool_use_id?: string;
   toolUseId?: string;

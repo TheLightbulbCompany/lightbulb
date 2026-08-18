@@ -215,4 +215,35 @@ describe("RunDetailPanel", () => {
     render(<RunDetailPanel runId="r1" />);
     expect(screen.queryByText(/silent for/i)).not.toBeInTheDocument();
   });
+
+  // Task 7: run status rows. RunDetailPanel already models the canonical
+  // active-vs-terminal vocabulary (isActiveStatus); these pin the LiveRunDot
+  // reuse against it rather than a re-derived spinner.
+  it.each(["running", "queued", "scheduled_retry"])(
+    "shows a live dot next to a %s run's status",
+    (status) => {
+      mockReads({
+        "/heartbeat-runs/r1/log": { content: "" },
+        "/heartbeat-runs/r1/events": { events: [] },
+        "/heartbeat-runs/r1": { id: "r1", status },
+        "/agents": { agents: [] },
+      });
+      render(<RunDetailPanel runId="r1" />);
+      expect(screen.getByTestId("run-detail-live-dot")).toBeInTheDocument();
+    },
+  );
+
+  it.each(["succeeded", "failed", "timed_out", "cancelled"])(
+    "shows no live dot once a run has reached a terminal status (%s)",
+    (status) => {
+      mockReads({
+        "/heartbeat-runs/r1/log": { content: "" },
+        "/heartbeat-runs/r1/events": { events: [] },
+        "/heartbeat-runs/r1": { id: "r1", status },
+        "/agents": { agents: [] },
+      });
+      render(<RunDetailPanel runId="r1" />);
+      expect(screen.queryByTestId("run-detail-live-dot")).not.toBeInTheDocument();
+    },
+  );
 });

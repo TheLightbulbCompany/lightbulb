@@ -269,7 +269,6 @@ export function AgentChatWindow({
   }, [isTrialLocal, organization?.id, userId]);
   const {
     renderGroups,
-    renderItems,
     isStreaming,
     busy,
     sendMessage,
@@ -525,7 +524,7 @@ export function AgentChatWindow({
         onLoadOlder={loadOlderMessages}
       />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} renderItems={renderItems} active={busy} />
+      <StreamingStatusBar isStreaming={isStreaming} active={busy} />
       <ExecApprovalCards />
       <ChatInput
         onSend={handleSend}

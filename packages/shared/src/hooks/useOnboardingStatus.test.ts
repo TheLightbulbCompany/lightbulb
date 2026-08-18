@@ -314,6 +314,44 @@ describe("useOnboardingStatus", () => {
     }
   });
 
+  it("keeps its cadence when a consumer re-renders faster than the poll interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
+      global.fetch = fetchSpy;
+      // The web stepper ticks an elapsed counter once a second for the whole
+      // cold start. SWR's polling effect lists `refreshInterval` in its deps
+      // and clears the pending tick on cleanup, so an unstable identity there
+      // re-armed the 5s timer every second and it never fired — leaving the
+      // status poll running at whatever the backstop rescued.
+      const { result } = renderHook(
+        () => {
+          const [, setTick] = React.useState(0);
+          React.useEffect(() => {
+            const id = setInterval(() => setTick((t) => t + 1), 1_000);
+            return () => clearInterval(id);
+          }, []);
+          return useOnboardingStatus({ api: makeApi(), enabled: true });
+        },
+        { wrapper },
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(result.current.derived?.phase).toBe("cold_start");
+
+      const before = fetchSpy.mock.calls.length;
+      // Deliberately NOT inside act(): act batches the 1s tick's re-renders,
+      // which is precisely the render churn this test exists to expose.
+      await vi.advanceTimersByTimeAsync(30_000);
+      // 30s at the 5s fast cadence is ~6 polls. The backstop alone (it only
+      // fires once an attempt is cadence+3s stale) yields ~3.
+      expect(fetchSpy.mock.calls.length - before).toBeGreaterThanOrEqual(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refresh() forces an immediate revalidation and resets the fast-poll window", async () => {
     const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
     global.fetch = fetchSpy;

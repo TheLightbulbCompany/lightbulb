@@ -116,6 +116,68 @@ describe("RoutineDetailPanel", () => {
     expect(screen.getByText("succeeded")).toBeInTheDocument();
   });
 
+  it("names each webhook trigger so its destructive controls are distinguishable", () => {
+    // Founder-reported (#1887): a routine with three Stripe triggers rendered
+    // three identical "WEBHOOK · paused" rows, each carrying rotate-secret and
+    // delete controls — so the only way to pick a row was to guess.
+    reads["/routines/r1"] = {
+      data: {
+        id: "r1",
+        title: "Revenue recovery",
+        status: "active",
+        triggers: [
+          {
+            id: "t1",
+            kind: "webhook",
+            label: "Stripe invoice.payment_failed",
+            enabled: false,
+            publicId: "pub_aaa11111",
+            signingMode: "bearer",
+          },
+          {
+            id: "t2",
+            kind: "webhook",
+            label: "Stripe customer.subscription.deleted",
+            enabled: false,
+            publicId: "pub_bbb22222",
+            signingMode: "bearer",
+          },
+          {
+            id: "t3",
+            kind: "webhook",
+            // Unlabeled: still identifiable by the public id that differs in
+            // its fire URL, never a bare repeat of the kind chip.
+            enabled: false,
+            publicId: "pub_ccc33333",
+            signingMode: "bearer",
+          },
+        ],
+      },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<RoutineDetailPanel routineId="r1" />);
+
+    expect(screen.getByText("Stripe invoice.payment_failed")).toBeInTheDocument();
+    expect(screen.getByText("Stripe customer.subscription.deleted")).toBeInTheDocument();
+    expect(screen.getByText("Webhook pub_ccc3")).toBeInTheDocument();
+    // Each row's public id is shown, so a row can be matched against the
+    // endpoint configured provider-side.
+    expect(screen.getByText(/pub_aaa11111/)).toBeInTheDocument();
+
+    // The destructive controls name their own row.
+    expect(
+      screen.getByRole("button", { name: "Delete Stripe invoice.payment_failed" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Rotate to a new random secret for Stripe customer.subscription.deleted",
+      }),
+    ).toBeInTheDocument();
+    // The section holds webhooks, so it can't be headed "Schedule".
+    expect(screen.getByText("Triggers")).toBeInTheDocument();
+  });
+
   it("shows a run-history error when the runs read fails", () => {
     reads["/routines/r1"] = {
       data: { id: "r1", title: "Nightly digest", status: "active", triggers: [] },

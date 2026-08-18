@@ -192,15 +192,27 @@ export function useOnboardingStatus(
 
   const key = enabled ? swrKey : null;
 
+  // STABLE identity, deliberately. SWR lists `refreshInterval` in its polling
+  // effect's dependency array and the effect's cleanup CLEARS the pending
+  // tick, so an inline closure (a new identity every render) tears the timer
+  // down and re-arms a fresh `setTimeout(cadence)` on every render of every
+  // consumer. A consumer that re-renders faster than the cadence therefore
+  // resets the timer before it can ever fire — and the web stepper ticks an
+  // elapsed counter once a SECOND for the entire cold start, i.e. exactly
+  // while the readiness poll matters most. Measured: 3 polls per 30s (only
+  // what the backstop below rescued) vs the 6 the 5s cadence declares. Reads
+  // refs only, so it never needs to change identity.
+  const refreshIntervalFn = useCallback(
+    (latest?: Outcome) => cadenceFor(isSettledReady(latest), windowStartRef.current, Date.now()),
+    [],
+  );
+
   const { data, mutate, isLoading } = useSWR<Outcome>(key, fetcher, {
     // Visibility resume is handled explicitly below (uniformly across web +
     // mobile via the injected adapter) instead of SWR's own DOM-coupled
     // revalidateOnFocus, which mobile has no equivalent of.
     revalidateOnFocus: false,
-    refreshInterval: (latest) => {
-      const ready = isSettledReady(latest);
-      return cadenceFor(ready, windowStartRef.current, Date.now());
-    },
+    refreshInterval: refreshIntervalFn,
   });
 
   // Cadence reads the LIVE outcome, never the sticky last-good below: a blip

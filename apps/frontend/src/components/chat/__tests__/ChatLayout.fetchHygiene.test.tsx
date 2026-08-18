@@ -44,10 +44,19 @@ vi.mock("posthog-js/react", () => ({
   usePostHog: () => ({ capture: vi.fn() }),
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: () => ({ data: undefined }),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
     nodeConnected: false,
     onEvent: () => () => {},
+    onChatMessage: () => () => {},
     sendReq: () => Promise.resolve(),
   }),
 }));

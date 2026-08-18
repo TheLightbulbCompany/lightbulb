@@ -56,8 +56,10 @@ describe("ChatLayout.tsx See-her-work roster action", () => {
     expect(layoutSource).not.toMatch(/unifiedNav/);
   });
 
-  it("calls openAgentIssues with the agent id and stops row-click propagation", () => {
-    expect(layoutSource).toMatch(/openAgentIssues\?\.\(agent\.id\)/);
-    expect(layoutSource).toMatch(/See .*work/);
+  it("hands openAgentIssues to the roster as its onOpenWork handler", () => {
+    // The row markup (and the "See {name}'s work" label) moved into
+    // AgentRoster, which is covered by render tests; the hand-off is what
+    // ChatLayout still owns.
+    expect(layoutSource).toMatch(/onOpenWork=\{\(id\) => openAgentIssues\?\.\(id\)\}/);
   });
 });

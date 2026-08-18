@@ -1,0 +1,135 @@
+// @vitest-environment jsdom
+//
+// The hook both shells share. These assert the guarantees that must hold
+// REGARDLESS of which host mounts it — the mobile roster (ChatLayout) sits
+// outside TeamsEventsProvider, so anything this hook leans on an ancestor for
+// silently does not work on a phone.
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+
+let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+vi.mock("@/hooks/useGateway", () => ({
+  useGateway: () => ({
+    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
+      emitChatMessage = h;
+      return () => {};
+    },
+  }),
+}));
+
+interface TeamsRow {
+  id: string;
+  status?: string | null;
+  role?: string | null;
+  seeded?: boolean;
+}
+let teamsAgents: TeamsRow[] = [];
+let lastSwrOpts: Record<string, unknown> | undefined;
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: (_path: string, opts?: Record<string, unknown>) => {
+      lastSwrOpts = opts;
+      return { data: { agents: teamsAgents } };
+    },
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  }),
+}));
+
+import { useRosterEntries } from "../useRosterEntries";
+import type { Agent } from "@/hooks/useAgents";
+
+const agent = (id: string, name: string): Agent => ({ id, name });
+
+beforeEach(() => {
+  teamsAgents = [];
+  lastSwrOpts = undefined;
+});
+
+describe("useRosterEntries", () => {
+  it("owns its own liveness instead of relying on an ancestor provider", () => {
+    // ChatLayout's roster is NOT inside TeamsEventsProvider, and SwrProvider
+    // disables focus revalidation globally — so without these the mobile
+    // roster fetched `/teams/agents` once at mount and never again.
+    renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    expect(lastSwrOpts?.refreshInterval).toBeGreaterThan(0);
+    expect(lastSwrOpts?.revalidateOnFocus).toBe(true);
+    // Must clear the read layer's 15s dedup window or ticks are swallowed.
+    expect(lastSwrOpts?.refreshInterval as number).toBeGreaterThan(15_000);
+  });
+
+  it("maps durable BFF status onto roster state", () => {
+    teamsAgents = [
+      { id: "a", status: "error" },
+      { id: "b", status: "terminated" },
+      { id: "c", status: "thinking" },
+    ];
+    const { result } = renderHook(() =>
+      useRosterEntries([agent("a", "Ada"), agent("b", "Bo"), agent("c", "Cy")]),
+    );
+    expect(result.current.map((e) => e.state)).toEqual(["attention", "terminated", "running"]);
+  });
+
+  it("derives the CEO from the Paperclip role, never from list position", () => {
+    teamsAgents = [
+      { id: "a", status: "idle" },
+      { id: "b", status: "idle", role: "ceo", seeded: true },
+    ];
+    const { result } = renderHook(() => useRosterEntries([agent("a", "Ada"), agent("b", "Friday")]));
+    expect(result.current.find((e) => e.agent.id === "b")?.isCeo).toBe(true);
+    expect(result.current.find((e) => e.agent.id === "a")?.isCeo).toBe(false);
+    expect(result.current.find((e) => e.agent.id === "b")?.isSeeded).toBe(true);
+  });
+
+  it("claims no CEO at all when the roster read has not landed", () => {
+    const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    expect(result.current[0].isCeo).toBe(false);
+    expect(result.current[0].state).toBe("idle");
+  });
+
+  it("lights an idle agent from a live gateway run, and clears on run_ended", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    expect(result.current[0].state).toBe("idle");
+
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    expect(result.current[0].state).toBe("running");
+
+    act(() => emitChatMessage({ type: "run_ended", agent_id: "a", session_id: "s1" }));
+    expect(result.current[0].state).toBe("idle");
+  });
+
+  it("keeps an agent lit while ANY of its sessions is still running", () => {
+    // A flat per-agent boolean cleared the rail when either of two concurrent
+    // sessions finished. `run_active` carries session_id, so key on it.
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s2" }));
+    act(() => emitChatMessage({ type: "run_active", active: false, agent_id: "a", session_id: "s1" }));
+    expect(result.current[0].state).toBe("running");
+
+    act(() => emitChatMessage({ type: "run_active", active: false, agent_id: "a", session_id: "s2" }));
+    expect(result.current[0].state).toBe("idle");
+  });
+
+  it("never lets a live run override a state that wants a human", () => {
+    teamsAgents = [{ id: "a", status: "error" }];
+    const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    expect(result.current[0].state).toBe("attention");
+  });
+
+  it("returns a referentially stable array when nothing relevant changed", () => {
+    // Host re-renders (dialog state, drawer toggles) must not hand the roster
+    // a fresh `entries` identity and defeat its memos.
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const agents = [agent("a", "Ada")];
+    const { result, rerender } = renderHook(() => useRosterEntries(agents));
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
+  });
+});

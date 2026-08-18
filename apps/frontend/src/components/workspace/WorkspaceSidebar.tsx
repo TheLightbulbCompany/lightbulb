@@ -19,23 +19,22 @@
 import "@/components/chat/ChatLayout.css";
 import "./workspace.css";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { Settings, Plus, Pencil, Trash2, ListTodo, SlidersHorizontal } from "lucide-react";
+import { Settings, Plus } from "lucide-react";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
-import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
+import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { CompanyNav } from "@/components/chat/CompanyNav";
 import { Logo } from "@/components/Logo";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
-import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
-import { fromInstalledAgent } from "@/lib/agentDesign";
+import { AgentRoster } from "@/components/agents/AgentRoster";
+import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
@@ -65,7 +64,11 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6").
   const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
-  const modelNames = useMemo(() => buildModelNameMap(configSnapshot?.config), [configSnapshot?.config]);
+  // Per-agent runtime state (Teams roster status ∪ live gateway runs). This
+  // shell sits inside `TeamsEventsProvider` (see WorkspaceShell), which
+  // revalidates `/teams/agents` on `teams.agent.status`, so the rows stay live
+  // without polling from here.
+  const rosterEntries = useRosterEntries(agents);
 
   // Delta 1: focus is owned by the dock. The active row / nested SessionList
   // derive from the store snapshot's focused chat panel, not local state.
@@ -184,98 +187,31 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
       {/* Roster + CompanyNav + Gallery share a single `.sidebar-scroll` region
           so the roster keeps its natural height. */}
       <div className="sidebar-scroll">
-        <div className="agent-list">
-          <div className="agent-section-label">
-            <span>My Agents</span>
-            <b>{agents.length}</b>
-          </div>
-          {agents.map((agent) => {
-            const isDefault = agent.id === defaultId;
-            const isNewArrival = drawerState.freshlyInstalledAgentId === agent.id;
-            const displayAgent = fromInstalledAgent(agent);
-            return (
-              <div
-                key={agent.id}
-                className={`agent-item${currentAgentId === agent.id ? " active" : ""}${isNewArrival ? " new-arrival" : ""}`}
-                onClick={() => handleSelectAgent(agent.id)}
-              >
-                <span className="relative inline-flex">
-                  <Monogram agent={displayAgent} size={28} radius={8} />
-                  {publishedAgentIds.has(agent.id) && (
-                    <span
-                      className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[var(--gold)] border-2 border-[var(--cream)]"
-                      aria-label="Published to marketplace"
-                      title="Published to marketplace"
-                    />
-                  )}
-                </span>
-                <div className="agent-info">
-                  <div className="agent-name">{agentDisplayName(agent)}</div>
-                  {(() => {
-                    const modelStr = getAgentModelString(agent);
-                    const display = displayModelName(modelStr, modelNames);
-                    if (!display) return null;
-                    return <div className="agent-model">{display}</div>;
-                  })()}
-                </div>
-                <div className="agent-row-actions">
-                  {/* "See her work →": deep-link into the Tasks panel filtered
-                      to this agent. */}
-                  <button
-                    type="button"
-                    className="agent-row-action"
-                    aria-label={`See ${agentDisplayName(agent)}'s work`}
-                    title={`See ${agentDisplayName(agent)}'s work`}
-                    onClick={(e) => { e.stopPropagation(); openPanel("teams-issues", { agent: agent.id }, { pushUrl: true }); }}
-                  >
-                    <ListTodo size={13} />
-                  </button>
-                  {/* "Inspect agent": open the per-agent inspector shell. */}
-                  <button
-                    type="button"
-                    className="agent-row-action"
-                    aria-label={`Inspect ${agentDisplayName(agent)}`}
-                    title={`Inspect ${agentDisplayName(agent)}`}
-                    onClick={(e) => { e.stopPropagation(); openPanel("agent-inspector", { agent: agent.id }, { pushUrl: true }); }}
-                  >
-                    <SlidersHorizontal size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className="agent-row-action"
-                    aria-label={`Rename ${agentDisplayName(agent)}`}
-                    onClick={(e) => { e.stopPropagation(); setRenameTarget(agent); }}
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  {!isDefault && (
-                    <button
-                      type="button"
-                      className="agent-row-action agent-row-action--danger"
-                      aria-label={`Delete ${agentDisplayName(agent)}`}
-                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(agent); }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  )}
-                </div>
-                <StatusDot status="active" />
-                {currentAgentId === agent.id && (
-                  <SessionList
-                    sessions={agentSessions}
-                    activeSessionId={activeSessionId}
-                    onSelect={(sid) => selectSession(sid)}
-                    onNew={() => newSession()}
-                    onRename={(s, label) => {
-                      void renameSession(s.key, label);
-                    }}
-                    onDelete={(s) => setDeleteSessionTarget(s)}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <AgentRoster
+          entries={rosterEntries}
+          activeAgentId={currentAgentId}
+          defaultAgentId={defaultId}
+          publishedAgentIds={publishedAgentIds}
+          freshlyInstalledAgentId={drawerState.freshlyInstalledAgentId}
+          configSnapshot={configSnapshot?.config}
+          onSelect={handleSelectAgent}
+          onOpenWork={(id) => openPanel("teams-issues", { agent: id }, { pushUrl: true })}
+          onInspect={(id) => openPanel("agent-inspector", { agent: id }, { pushUrl: true })}
+          onRename={setRenameTarget}
+          onDelete={setDeleteTarget}
+          renderSessions={() => (
+            <SessionList
+              sessions={agentSessions}
+              activeSessionId={activeSessionId}
+              onSelect={(sid) => selectSession(sid)}
+              onNew={() => newSession()}
+              onRename={(s, label) => {
+                void renameSession(s.key, label);
+              }}
+              onDelete={(s) => setDeleteSessionTarget(s)}
+            />
+          )}
+        />
         {/* CompanyNav (Dashboard / Inbox / Work / Company) plus the marketplace
             block (GallerySection). */}
         <CompanyNav

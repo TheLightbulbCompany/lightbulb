@@ -326,10 +326,29 @@ export function splitCollidedHeaders(content: string): string {
   return content.replace(/\*\*(?=\*\*)/g, "**\n\n");
 }
 
-function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
+/** Whole seconds only — a reasoning duration reads as "Thought for 23s", not
+ *  "23.0s"; sub-second precision is noise here. */
+function formatThinkingDuration(ms: number): string {
+  return `${Math.round(ms / 1000)}s`;
+}
+
+export function ThinkingBlock({
+  content,
+  streaming,
+  durationMs,
+}: {
+  content: string;
+  streaming?: boolean;
+  /** Wall-clock ms the reasoning phase took. NOT carried on the wire today —
+   *  OpenClaw sends no start/end timestamp for thinking the way it does for
+   *  tool calls (ContentBlock.startedAt/endedAt). Callers pass this only when
+   *  a real value is derivable; omit it rather than approximate — the label
+   *  falls back to the tenseless "Thought" instead of a wrong duration. */
+  durationMs?: number;
+}) {
   const text = splitCollidedHeaders(content);
   // Live (streaming) thinking mounts EXPANDED so reasoning is visible as it
-  // flows — a collapsed "Thinking..." pill reads as dead air during long
+  // flows — a collapsed "Thinking…" pill reads as dead air during long
   // thinking phases. The folded history block mounts collapsed as before.
   const [isExpanded, setIsExpanded] = React.useState(!!streaming);
   const userToggledRef = React.useRef(false);
@@ -341,24 +360,32 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
     if (!streaming && !userToggledRef.current) setIsExpanded(false);
   }, [streaming]);
 
+  // Present tense only while actually live; a settled thought reads in the
+  // past, same as a finished tool call ("Read", not "Reading").
+  const label = streaming
+    ? "Thinking…"
+    : durationMs
+      ? `Thought for ${formatThinkingDuration(durationMs)}`
+      : "Thought";
+
   return (
-    <div className="mb-4 border border-[var(--edge)] rounded-lg overflow-hidden">
+    <div className="mb-4 chat-block-in">
       <button
         onClick={() => {
           userToggledRef.current = true;
           setIsExpanded(!isExpanded);
         }}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-[var(--cream-deeper)] hover:bg-[#ece7dc] transition-colors text-left"
+        className="flex items-center gap-1.5 text-left text-[var(--mute)] hover:text-[var(--ink-soft)] transition-colors"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-[var(--mute)]" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-[var(--mute)]" />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
         )}
-        <span className="text-sm text-[var(--mute)] italic">Thinking...</span>
+        <span className="text-sm italic">{label}</span>
       </button>
       {isExpanded && (
-        <div className="px-3 py-2 text-sm text-[var(--mute)] border-t border-[var(--edge)]">
+        <div className="mt-1.5 pl-5 border-l border-[var(--edge-soft)] text-sm text-[var(--mute)]">
           {streaming ? (
             <StreamingMarkdownContent content={text} />
           ) : (

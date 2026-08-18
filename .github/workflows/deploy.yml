@@ -44,6 +44,7 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+          retention-days: 1
       - name: Upload cdk.out to S3
         run: aws s3 cp apps/infra/cdk.out
           s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{

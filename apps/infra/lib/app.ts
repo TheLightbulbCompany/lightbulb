@@ -37,7 +37,25 @@ function expressionRunner(runsOn: string): Runner {
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
+const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
+const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
+const CDKOUT_OIDC_STEP = {
+  name: "Authenticate Via OIDC Role",
+  uses: "aws-actions/configure-aws-credentials@v4",
+  with: {
+    "aws-region": "us-west-2",
+    "role-duration-seconds": 1800,
+    "role-skip-session-tagging": true,
+    "role-to-assume": "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
+  },
+};
+
 const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
+  // postBuildSteps is injected immediately before the cdk.out upload
+  // (cdk-pipelines-github pipeline.js:458), so the credentials the S3 upload
+  // needs are added through the supported API rather than a positional patch.
+  // Build-Synth otherwise has id-token: write but never assumes a role.
+  postBuildSteps: [CDKOUT_OIDC_STEP],
   synth: new ShellStep("Synth", {
     commands: [
       "cd apps/infra",
@@ -270,18 +288,8 @@ pipeline.workflowFile.patch(
 // Assets-FileAssetN set changes whenever assets are added or removed, and a
 // stale hardcoded list would silently skip a job's download. CI's workflow
 // drift check fails loudly if this enumeration goes stale.
-const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
-const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
-const CDKOUT_OIDC_STEP = {
-  name: "Authenticate Via OIDC Role",
-  uses: "aws-actions/configure-aws-credentials@v4",
-  with: {
-    "aws-region": "us-west-2",
-    "role-duration-seconds": 1800,
-    "role-skip-session-tagging": true,
-    "role-to-assume": "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
-  },
-};
+
+
 
 const assetJobNames = (): string[] => {
   const workflowPath = path.join(__dirname, "..", "..", "..", ".github", "workflows", "deploy.yml");
@@ -298,10 +306,10 @@ const assetJobNames = (): string[] => {
 };
 
 const cdkoutPatches: JsonPatch[] = [
-  // Build-Synth: steps are [Checkout, Build, Upload cdk.out]. The job has
-  // id-token: write but no credentials step, so one is inserted before the
-  // upload is replaced.
-  JsonPatch.add("/jobs/Build-Synth/steps/2", CDKOUT_OIDC_STEP),
+  // Build-Synth steps after postBuildSteps injection:
+  // [Checkout, Build, Authenticate, Upload cdk.out]. Only the upload needs
+  // patching -- the construct offers no hook for the artifact step itself
+  // (pipeline.js:502,511 hardcode actions/upload-artifact).
   JsonPatch.replace("/jobs/Build-Synth/steps/3", {
     name: "Upload cdk.out to S3",
     run: `aws s3 cp apps/infra/cdk.out ${CDKOUT_S3_URI}/ --recursive --only-show-errors`,

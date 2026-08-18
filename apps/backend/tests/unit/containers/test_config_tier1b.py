@@ -213,7 +213,8 @@ class TestBrowserBounds:
         the ban was always about these two flags, not the key.
         """
         extra_args = _cfg()["browser"].get("extraArgs", [])
-        assert not [a for a in extra_args if "breakpad" in a or "crash-dumps-dir" in a]
+        crash_reporter_tokens = ("breakpad", "crashpad", "crash-reporter", "crash-dumps-dir")
+        assert not [a for a in extra_args if any(t in a for t in crash_reporter_tokens)]
 
     def test_webgl_flags_present(self):
         """Chrome 137 removed the automatic SwiftShader fallback and prod runs

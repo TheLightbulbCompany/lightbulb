@@ -2,14 +2,14 @@
  * TranscriptSelectionBar — the floating Copy action for text selected
  * inside a transcript.
  *
- * jsdom does no real layout: every element (and every Range) reports
- * `getBoundingClientRect()` as all-zeros, and `offsetWidth`/`offsetHeight`
- * are always 0. So instead of pretending jsdom can verify true on-screen
- * geometry, the positioning tests below stub `Range.prototype.
- * getBoundingClientRect` with a specific, known rect and assert the
- * component's own clamping math against it — that's a real test of the
- * logic this file owns (never covering the selection, never overflowing
- * the viewport), not a claim that jsdom rendered real pixels.
+ * jsdom does no real layout: `offsetWidth`/`offsetHeight` are always 0, and
+ * jsdom's `Range` doesn't implement `getBoundingClientRect()` at ALL (not
+ * "implements it as all-zero" — the method is simply absent, so `vi.spyOn`
+ * has nothing to wrap and throws). The positioning tests below install it
+ * directly with a specific, known rect and assert the component's own
+ * clamping math against it — that's a real test of the logic this file owns
+ * (never covering the selection, never overflowing the viewport), not a
+ * claim that jsdom rendered real pixels.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -62,7 +62,11 @@ function stubRect(rect: Partial<DOMRect>) {
     },
     ...rect,
   };
-  vi.spyOn(Range.prototype, "getBoundingClientRect").mockReturnValue(full);
+  // Direct assignment, not vi.spyOn: jsdom's Range has no
+  // getBoundingClientRect to spy on (spyOn requires an existing method to
+  // wrap), so it throws "does not exist". A fresh vi.fn() each call needs no
+  // restore — there's no real implementation underneath to restore to.
+  Range.prototype.getBoundingClientRect = vi.fn().mockReturnValue(full);
 }
 
 function selectContents(el: Element) {
@@ -87,7 +91,7 @@ function selectAndShow(el: Element, rect: Partial<DOMRect> = { top: 100, bottom:
   });
 }
 
-function Harness() {
+function Harness({ isAutoScrollingRef }: { isAutoScrollingRef?: React.RefObject<boolean> }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   return (
     <div>
@@ -95,7 +99,7 @@ function Harness() {
         <p data-testid="in-transcript">Selectable transcript text</p>
       </div>
       <p data-testid="outside">Sidebar text outside the transcript</p>
-      <TranscriptSelectionBar containerRef={containerRef} />
+      <TranscriptSelectionBar containerRef={containerRef} isAutoScrollingRef={isAutoScrollingRef} />
     </div>
   );
 }
@@ -151,6 +155,29 @@ describe("TranscriptSelectionBar — dismissal", () => {
     selectAndShow(screen.getByTestId("in-transcript"));
     expect(screen.getByRole("toolbar")).toBeInTheDocument();
 
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+  });
+
+  it("survives a scroll caused by MessageList's own autoscroll (isAutoScrollingRef)", () => {
+    // A run streaming ~10 chunks/sec pins the transcript to the bottom via a
+    // direct scrollTop write, which fires this exact same capture-phase
+    // scroll event. Without the flag, selecting text mid-answer would have
+    // its bar destroyed before a click could ever land.
+    const isAutoScrollingRef = { current: true };
+    render(<Harness isAutoScrollingRef={isAutoScrollingRef} />);
+    selectAndShow(screen.getByTestId("in-transcript"));
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+
+    // A REAL user scroll — the flag cleared — still dismisses as normal.
+    isAutoScrollingRef.current = false;
     act(() => {
       window.dispatchEvent(new Event("scroll"));
     });

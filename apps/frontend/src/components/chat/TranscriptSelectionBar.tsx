@@ -8,8 +8,14 @@ import { cn } from "@/lib/utils";
 /** Clearance kept between the bar and both the selection rect and the
  *  viewport edges. */
 const GUTTER = 8;
-/** Used only before the bar has ever mounted (so `barRef.current` is still
- *  null) — real browsers report `offsetWidth`/`offsetHeight` after that. */
+/** Used only before the bar has EVER mounted in this session. Every show
+ *  after the first reads a real size — either from the currently-mounted
+ *  bar, or (while it's unmounted between selections) from `lastSizeRef`,
+ *  cached by a layout effect the last time it *was* mounted. The bar
+ *  unmounts on every `hide()` (see the component doc comment for why: this
+ *  keeps its one-shot entrance animation replaying on every reappearance),
+ *  which resets `barRef.current` to null each time — without the cache,
+ *  every show after the first would silently keep using this estimate. */
 const ESTIMATED_WIDTH = 96;
 const ESTIMATED_HEIGHT = 32;
 
@@ -37,17 +43,26 @@ interface BarCoords {
  */
 export function TranscriptSelectionBar({
   containerRef,
+  isAutoScrollingRef,
 }: {
   /** The transcript scroll container. A selection only surfaces the bar
    *  when it lives entirely inside this element — the composer, the
    *  sidebar, and anything else on the page must not trigger it. */
-  containerRef: React.RefObject<HTMLElement>;
+  containerRef: React.RefObject<HTMLElement | null>;
+  /** True for the brief window around a PROGRAMMATIC scrollTop write (the
+   *  transcript's autoscroll). The capture-phase scroll listener below fires
+   *  for those writes too — without this it destroys the bar on every
+   *  streamed chunk, before a mid-answer selection can ever be clicked. */
+  isAutoScrollingRef?: React.RefObject<boolean>;
 }) {
   const [finePointer, setFinePointer] = React.useState(false);
   const [coords, setCoords] = React.useState<BarCoords | null>(null);
   const [selectedText, setSelectedText] = React.useState("");
   const [copied, setCopied] = React.useState(false);
   const barRef = React.useRef<HTMLDivElement>(null);
+  /** Last real `offsetWidth`/`offsetHeight` measured while the bar was
+   *  mounted — see the ESTIMATED_WIDTH doc comment above. */
+  const lastSizeRef = React.useRef<{ width: number; height: number } | null>(null);
   const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   React.useEffect(() => {
@@ -94,8 +109,8 @@ export function TranscriptSelectionBar({
     const rect = sel.getRangeAt(0).getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return hide();
 
-    const barWidth = barRef.current?.offsetWidth || ESTIMATED_WIDTH;
-    const barHeight = barRef.current?.offsetHeight || ESTIMATED_HEIGHT;
+    const barWidth = barRef.current?.offsetWidth || lastSizeRef.current?.width || ESTIMATED_WIDTH;
+    const barHeight = barRef.current?.offsetHeight || lastSizeRef.current?.height || ESTIMATED_HEIGHT;
 
     // Prefer sitting clear above the selection; flip below it when there
     // isn't room, so it never covers the text just selected.
@@ -139,10 +154,19 @@ export function TranscriptSelectionBar({
     // phase on window. The bar's coordinates are a snapshot of the
     // selection's viewport rect at measure time — once anything scrolls,
     // that snapshot is stale, so it dismisses rather than drifting away
-    // from the text it was anchored to. This never touches scrollTop itself
-    // and never calls scrollIntoView, so it cannot fight MessageList's own
-    // autoscroll.
-    const onScroll = () => hide();
+    // from the text it was anchored to.
+    //
+    // MessageList's own autoscroll writes `scrollTop` directly on this same
+    // container while a run streams (~10/s), and that write fires this exact
+    // scroll event too — without the guard below, selecting text mid-answer
+    // gets its bar destroyed before a click can ever land on it.
+    // `isAutoScrollingRef` is set for the brief window around that write (see
+    // useScrollToBottom's markAutoScroll), so a REAL user scroll — which
+    // never touches the flag — still dismisses as before.
+    const onScroll = () => {
+      if (isAutoScrollingRef?.current) return;
+      hide();
+    };
     const onMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (barRef.current?.contains(target)) return; // let the button's own click land
@@ -163,9 +187,18 @@ export function TranscriptSelectionBar({
       document.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("scroll", onScroll, true);
     };
-  }, [finePointer, measure, hide, containerRef]);
+  }, [finePointer, measure, hide, containerRef, isAutoScrollingRef]);
 
   React.useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+
+  // Runs after the bar commits with real coords, i.e. exactly when it's
+  // mounted — capture its true size for the NEXT measure(), which will run
+  // after this instance has unmounted and zeroed barRef.current.
+  React.useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    lastSizeRef.current = { width: bar.offsetWidth, height: bar.offsetHeight };
+  }, [coords]);
 
   if (!finePointer || !coords) return null;
 

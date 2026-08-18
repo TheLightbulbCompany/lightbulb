@@ -86,6 +86,13 @@ const AGENTS = [
   { id: "a2", name: "Atlas" },
 ];
 
+// The event catalog lives in a popover now (it used to be an always-open
+// 260px list that pushed the rest of the form past the viewport edge), so a
+// pick is: open the trigger, then choose the option.
+async function openEventList(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /select an event/i }));
+}
+
 describe("RoutinesPanel", () => {
   beforeEach(() => {
     mockPost.mockReset();
@@ -332,10 +339,13 @@ describe("RoutinesPanel", () => {
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Weekly review" },
     });
-    // Substring match — the wrapping label also contains the cron hint text.
-    fireEvent.change(screen.getByLabelText(/Schedule/), {
-      target: { value: "0 10 * * 1" },
+    // The schedule is a frequency + time picker now, not a cron field:
+    // "Every week" on Monday at 10:00 is the "0 10 * * 1" this asserts below.
+    fireEvent.change(screen.getByLabelText(/time of day/i), {
+      target: { value: "10:00" },
     });
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Every week" }));
     // Pick an agent through the AssigneePicker (no more raw "Agent ID" input).
     // The picker is a Radix Popover → needs the full userEvent pointer sequence,
     // and its options portal to document.body. Both the toolbar filter and the
@@ -522,9 +532,9 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
 
-    // The picker lists the events inline (no dropdown to open) with a search
-    // input above.
+    // The popover lists the events with a search input above.
     expect(await screen.findByRole("option", { name: "Invoice payment failed" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Charge refunded" })).toBeInTheDocument();
     expect(screen.getByLabelText("Search events")).toBeInTheDocument();
@@ -541,6 +551,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     const user = await openConnectedAppRung();
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
 
     // Label match narrows to the one refund event.
     await user.type(screen.getByLabelText("Search events"), "refund");
@@ -579,6 +590,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     const user = await openConnectedAppRung();
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
 
     expect(screen.getByText("Popular")).toBeInTheDocument();
     expect(screen.getByText("All events")).toBeInTheDocument();
@@ -611,6 +623,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
 
     await user.click(screen.getByText("Create"));
@@ -651,6 +664,54 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
+  it("guided (Stripe): an instructions string embedding the proxy URL renders it as a wrapped code span, not raw inline text", async () => {
+    connectionsData = [connection()];
+    const proxyUrl =
+      "https://api.isol8.co/api/v1/hooks/t/org_3H3viGAfq2SXc9dIdcatmGXg8Td/b9b40b9a392b15fa77ddf1fa";
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: proxyUrl,
+      guided: true,
+      // Mirrors providers.yaml's real Stripe template, which splices the
+      // literal proxy_url into the sentence — the shape that used to overflow
+      // the dialog when rendered as one unbroken text node.
+      instructions:
+        `In your Stripe Dashboard, open Developers → Webhooks and add an endpoint ` +
+        `pointed at ${proxyUrl} listening for the 'Charge refunded' event ` +
+        `(charge.refunded). Stripe then shows the endpoint's signing secret — ` +
+        `paste it back here to finish arming this automation.`,
+      secret_hint: "whsec_…",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+
+    // The URL is pulled out into its own break-all <code> span inside the
+    // instructions paragraph — distinct from the SecretField "Webhook URL"
+    // block above, which renders the same URL in its own <code>.
+    await screen.findAllByText(proxyUrl);
+    const urlCodes = screen.getAllByText(proxyUrl).filter((el) => el.tagName === "CODE");
+    expect(urlCodes).toHaveLength(2);
+    const instructionsCode = urlCodes.find((el) => el.className === "break-all");
+    expect(instructionsCode).toBeDefined();
+
+    // ...while the surrounding operational copy (event name + dashboard
+    // path) is untouched — the fix must not drop or reword instructions.
+    expect(
+      screen.getByText(/open Developers → Webhooks and add an endpoint/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/'Charge refunded' event \(charge\.refunded\)/),
+    ).toBeInTheDocument();
+  });
+
   it("guided (Stripe): a whsec save failure renders inline in the finish dialog and stays retryable", async () => {
     connectionsData = [connection()];
     mockAutomationsPost.mockResolvedValue({
@@ -665,6 +726,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
     await user.click(screen.getByText("Create"));
     await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1");
@@ -720,6 +782,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "PostHog" }));
+    await openEventList(user);
     await user.click(
       await screen.findByRole("option", { name: "Exception captured" }),
     );
@@ -791,6 +854,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "GitHub" }));
+    await openEventList(user);
     await user.click(
       await screen.findByRole("option", { name: "Pull request opened or changed" }),
     );
@@ -906,6 +970,7 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Vercel" }));
+    await openEventList(user);
     await user.click(
       await screen.findByRole("option", { name: "Deployment failed" }),
     );
@@ -999,6 +1064,7 @@ describe("RoutinesPanel — auto_meta asset picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Meta Ads" }));
+    await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "New lead" }));
 
     await waitFor(() =>
@@ -1041,6 +1107,7 @@ describe("RoutinesPanel — auto_meta asset picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Instagram" }));
+    await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "New comment" }));
 
     await waitFor(() =>
@@ -1105,6 +1172,7 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     await user.click(
       await screen.findByRole("option", { name: "Google Workspace" }),
     );
+    await openEventList(user);
     await user.click(
       await screen.findByRole("option", { name: "Calendar changed" }),
     );
@@ -1280,7 +1348,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
     await user.click(
       await screen.findByRole("option", { name: "Google Workspace" }),
     );
-    await user.click(screen.getAllByRole("combobox")[1]);
+    await openEventList(user);
     await user.click(await screen.findByRole("option", { name: label }));
     // Account picker — the block-level auto shape's resource, common to both
     // gmail events.

@@ -14,8 +14,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/__tests__/**/*.test.{ts,tsx}'],
-    exclude: ['tests/e2e/**/*', 'node_modules/**/*'],
+    include: ['{src,tests/e2e}/**/__tests__/**/*.test.{ts,tsx}'],
+    exclude: ['tests/e2e/**/*.spec.ts', 'tests/e2e/global.setup.ts', 'node_modules/**/*'],
     testTimeout: 30000,
   },
   resolve: {

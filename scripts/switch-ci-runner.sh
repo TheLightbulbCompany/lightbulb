@@ -4,12 +4,18 @@
 # workflow run — no PR, no re-synth, no redeploy.
 #
 #   CI_RUNNER     -> the hand-authored workflows (Backend CI, Frontend CI,
-#                    Claude reviews, e2e, image builds)
+#                    Infra CI, Claude reviews, e2e, image builds)
 #   DEPLOY_RUNNER -> the CDK deploy pipeline (.github/workflows/deploy.yml)
 #
 # Both reference the variable in `runs-on:`. `isol8-wsl` targets the
-# self-hosted WSL runner (its Linux minutes are free on this private repo);
-# `ubuntu-latest` targets GitHub-hosted runners.
+# self-hosted WSL runner (its Linux minutes are free on this private repo, and
+# are therefore not subject to the org Actions budget); `ubuntu-latest` targets
+# GitHub-hosted runners.
+#
+# ONE job deliberately does not follow CI_RUNNER: `build-and-push` in
+# build-openclaw-image.yml is hardcoded to [self-hosted, isol8-wsl] because it
+# OOM-kills a hosted runner. `hosted` therefore means "everything that can run
+# either way", not "everything".
 #
 # Usage:
 #   scripts/switch-ci-runner.sh hosted             # both -> ubuntu-latest

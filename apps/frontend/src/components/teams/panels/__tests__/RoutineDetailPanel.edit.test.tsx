@@ -105,19 +105,32 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
+// The schedule is authored through the human picker now (frequency + time),
+// not a raw cron field — "0 9 * * *" -> "30 8 * * 1" in the picker's terms.
+async function pickWeeklyMondayAt0830(
+  user: ReturnType<typeof userEvent.setup>,
+  dialog: HTMLElement,
+) {
+  fireEvent.change(within(dialog).getByLabelText(/time of day/i), {
+    target: { value: "08:30" },
+  });
+  await user.click(within(dialog).getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: "Every week" }));
+}
+
 describe("RoutineDetailPanel — editable (A2)", () => {
   it("keeps the read-only view and exposes Edit + Add affordances", () => {
     render(<RoutineDetailPanel routineId="r1" />);
     expect(screen.getByRole("heading", { name: "Nightly digest" })).toBeInTheDocument();
     expect(screen.getByText("0 9 * * *")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /edit automation/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /add schedule/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add trigger/i })).toBeInTheDocument();
   });
 
   it("adds a schedule trigger via POST /routines/{id}/triggers", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /add schedule/i }));
+    await user.click(screen.getByRole("button", { name: /add trigger/i }));
     const dialog = await screen.findByRole("dialog");
     // Cron defaults to "0 9 * * *"; just submit.
     await user.click(within(dialog).getByRole("button", { name: /^Add$/ }));
@@ -130,7 +143,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
   it("deletes a trigger via DELETE after confirm", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /delete schedule/i }));
+    await user.click(screen.getByRole("button", { name: /delete every day at 09:00/i }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/routines/r1/triggers/t1"));
   });
 
@@ -433,7 +446,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
   it("sends only { enabled: false } when a trigger is disabled without other edits", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+    await user.click(screen.getByRole("button", { name: /edit every day at 09:00/i }));
     const dialog = await screen.findByRole("dialog");
     // Uncheck Enabled and save nothing else — cron/timezone stay untouched.
     await user.click(within(dialog).getByLabelText("Enabled"));
@@ -446,11 +459,9 @@ describe("RoutineDetailPanel — editable (A2)", () => {
   it("sends cron_expression (and not timezone) when the schedule actually changes", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+    await user.click(screen.getByRole("button", { name: /edit every day at 09:00/i }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
-      target: { value: "30 8 * * 1" },
-    });
+    await pickWeeklyMondayAt0830(user, dialog);
     await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
     await waitFor(() => expect(patch).toHaveBeenCalled());
     const [path, body] = patch.mock.calls[0];
@@ -472,7 +483,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     try {
       const user = userEvent.setup();
       render(<RoutineDetailPanel routineId="r1" />);
-      await user.click(screen.getByRole("button", { name: /edit schedule/i }));
+      await user.click(screen.getByRole("button", { name: /edit every day at 09:00/i }));
       const dialog = await screen.findByRole("dialog");
       // Honest field: shows what actually fires (UTC), not the browser zone.
       expect(within(dialog).getByDisplayValue("UTC")).toBeInTheDocument();
@@ -480,9 +491,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
 
       // Editing only the cron leaves timezone unchanged (UTC) → it must NOT be sent,
       // so the schedule stays on the UTC the field displayed (no silent tz drift).
-      fireEvent.change(within(dialog).getByPlaceholderText("0 9 * * *"), {
-        target: { value: "30 8 * * 1" },
-      });
+      await pickWeeklyMondayAt0830(user, dialog);
       await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
       await waitFor(() => expect(patch).toHaveBeenCalled());
       const [path, body] = patch.mock.calls[0];

@@ -43,6 +43,7 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
+import { ScheduleField } from "@/components/teams/shared/components/ScheduleField";
 import {
   routineReviewerAgentId,
   withRoutineReviewer,
@@ -151,6 +152,32 @@ function triggerHasSecret(t: RoutineTriggerSummary): boolean {
   // Known signing mode (bearer/hmac) → rotatable. If signingMode wasn't
   // projected, fall back to publicId so a signed webhook is never hidden.
   return t.signingMode != null || t.publicId != null;
+}
+
+// What a trigger row is CALLED. Every control on that row is destructive or
+// arming (rotate secret, set secret, delete) and a routine routinely carries
+// several webhook triggers — one per provider event — so a row that reads only
+// "WEBHOOK · paused" is a footgun: three identical rows, and rotating the wrong
+// one silently unarms a different event. The seeded label ("Stripe
+// invoice.payment_failed") is the identity to show; a schedule falls back to
+// its own sentence, and an unlabeled webhook to its public id, which is the
+// part of its fire URL that differs per trigger.
+function triggerTitle(t: RoutineTriggerSummary): string {
+  const label = t.label?.trim();
+  if (label) return label;
+  if (t.cronExpression) return describeCron(t.cronExpression);
+  if (t.kind === "webhook" && t.publicId) return `Webhook ${t.publicId.slice(0, 8)}`;
+  return t.kind === "webhook" ? "Webhook" : t.kind;
+}
+
+// The identifying detail under the title: a schedule's raw cron (unchanged), or
+// a webhook's public id + how it is signed — enough to match a row against the
+// endpoint configured on the provider's side.
+function triggerDetail(t: RoutineTriggerSummary): string | null {
+  if (t.cronExpression) return t.cronExpression;
+  if (t.kind !== "webhook") return null;
+  const signing = SIGNING_MODE_OPTIONS.find(([value]) => value === t.signingMode)?.[1];
+  return [t.publicId, signing].filter(Boolean).join(" · ") || null;
 }
 
 const INPUT_CLASS =
@@ -536,8 +563,10 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
 
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-2">
+            {/* "Triggers", not "Schedule": this section holds webhooks too,
+                and a routine can have no schedule at all. */}
             <h2 className="section-label">
-              <b>Schedule</b>
+              <b>Triggers</b>
             </h2>
             <EditorialButton
               variant="ghost"
@@ -547,7 +576,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                 setActionError(null);
                 setTriggerDialog({ mode: "add" });
               }}
-              aria-label="Add schedule"
+              aria-label="Add trigger"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               Add
@@ -567,16 +596,16 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                   >
                     {t.kind}
                   </span>
-                  {t.cronExpression && (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-xs text-[var(--ink)]">
-                        {describeCron(t.cronExpression)}
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span className="truncate text-xs text-[var(--ink)]">
+                      {triggerTitle(t)}
+                    </span>
+                    {triggerDetail(t) && (
+                      <span className="truncate font-mono text-xs text-[var(--mute)]">
+                        {triggerDetail(t)}
                       </span>
-                      <span className="font-mono text-xs text-[var(--mute)]">
-                        {t.cronExpression}
-                      </span>
-                    </div>
-                  )}
+                    )}
+                  </div>
                   {t.timezone && (
                     <span className="text-xs text-[var(--mute)]">{t.timezone}</span>
                   )}
@@ -598,7 +627,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                         setTriggerDialog({ mode: "edit", trigger: t });
                       }}
                       className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Edit ${t.label ?? "schedule"}`}
+                      aria-label={`Edit ${triggerTitle(t)}`}
                       title="Edit"
                     >
                       <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
@@ -610,7 +639,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       disabled={busy}
                       onClick={() => rotateSecret(t.id)}
                       className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Rotate to a new random secret for ${t.label ?? "webhook"}`}
+                      aria-label={`Rotate to a new random secret for ${triggerTitle(t)}`}
                       title="Rotate to a new random secret"
                     >
                       <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
@@ -625,7 +654,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                         setSecretDialogTrigger(t);
                       }}
                       className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Set signing secret for ${t.label ?? "webhook"}`}
+                      aria-label={`Set signing secret for ${triggerTitle(t)}`}
                       title="Set signing secret"
                     >
                       <KeySquare className="h-3.5 w-3.5" aria-hidden="true" />
@@ -636,7 +665,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     disabled={busy}
                     onClick={() => deleteTrigger(t.id)}
                     className="text-[var(--mute)] hover:text-[var(--danger)] disabled:opacity-50"
-                    aria-label={`Delete ${t.label ?? "schedule"}`}
+                    aria-label={`Delete ${triggerTitle(t)}`}
                     title="Delete"
                   >
                     <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1519,18 +1548,7 @@ function TriggerDialog({
         )}
         {kind === "schedule" ? (
           <>
-            <label className="block">
-              <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-              <input
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                placeholder="0 9 * * *"
-                className={cn(INPUT_CLASS, "font-mono")}
-              />
-              <span className="text-xs text-[var(--mute)]">
-                Cron expression — when the automation fires.
-              </span>
-            </label>
+            <ScheduleField value={cron} onChange={setCron} />
             <label className="block">
               <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
               <input

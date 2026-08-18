@@ -199,7 +199,22 @@ jobs:
 
           # Convert to a SOCI v2 image. Requires src != dst, so we stage
           # under a -soci-staging suffix and re-tag onto the deploy ref.
-          sudo soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
+          #
+          # TMPDIR is load-bearing. `soci convert` spills one ztoc temp file
+          # per layer, and on this box /tmp is a small separate filesystem
+          # while / has ~690 GB free. A ~16 GB image exhausted /tmp mid-convert
+          # and killed the run with a wall of "write /tmp/tmp.NNNN: no space
+          # left on device" while `df /` reported 28% used (2026-08-18, sha
+          # 8dad643). The disk graph looks healthy, so this failure does NOT
+          # present as a space problem — check the filesystem /tmp is on, not /.
+          #
+          # sudo resets the environment (env_reset), so exporting TMPDIR in the
+          # step `env:` block does NOT reach soci. It must ride the sudo
+          # command line, as below.
+          SOCI_TMPDIR=/var/tmp/soci-build
+          sudo rm -rf "${SOCI_TMPDIR}"
+          sudo mkdir -p "${SOCI_TMPDIR}"
+          sudo TMPDIR="${SOCI_TMPDIR}" soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
           sudo nerdctl rmi "${IMAGE_REF}" || true
           sudo nerdctl tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
 
@@ -230,8 +245,14 @@ jobs:
           # Docker's own copy plus the layer cache this build populated.
           docker image rm -f "${IMAGE_REF}" 2>/dev/null || true
           docker builder prune -af --filter until=168h 2>&1 | tail -2 || true
+          # The ztoc spill dir. Nothing else collects it, and a convert that
+          # dies partway leaves the most behind — which would then eat the
+          # headroom the NEXT run needs, making one failure sticky.
+          sudo rm -rf /var/tmp/soci-build || true
           echo "disk after reclaim:"
-          df -h / | tail -1
+          # / alone hid the 2026-08-18 failure: it read 28% used while /tmp was
+          # full. Print every filesystem the convert actually writes to.
+          df -h / /tmp /var/tmp 2>/dev/null | tail -4
 
       - name: Summary
         run: |

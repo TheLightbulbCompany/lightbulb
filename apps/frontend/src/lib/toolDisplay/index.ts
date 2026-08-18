@@ -164,8 +164,12 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function positiveInt(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
+// Named for what it actually accepts, not "positiveInt" — 0 is a real,
+// meaningful value here (an offset of 0 is "from the top of the file"), and
+// treating it as absent silently misrenders read/search details ("first 40
+// lines" instead of "lines 0-39").
+function nonNegativeInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : undefined;
 }
@@ -187,8 +191,8 @@ function readDetail(args: Record<string, unknown>): string | undefined {
   const path = firstString(args.path, args.file_path, args.filePath);
   if (!path) return undefined;
   const short = shortenPath(path);
-  const offset = positiveInt(args.offset);
-  const limit = positiveInt(args.limit);
+  const offset = nonNegativeInt(args.offset);
+  const limit = nonNegativeInt(args.limit);
   if (offset !== undefined && limit !== undefined) {
     return `lines ${offset}-${offset + limit - 1} from ${short}`;
   }
@@ -213,11 +217,11 @@ function searchDetail(args: Record<string, unknown>): string | undefined {
   const query = firstString(args.query, args.q, args.search, args.searchQuery, args.text, args.prompt);
   if (!query) return undefined;
   const count =
-    positiveInt(args.count) ??
-    positiveInt(args.max_results) ??
-    positiveInt(args.num_results) ??
-    positiveInt(args.limit) ??
-    positiveInt(args.top_k);
+    nonNegativeInt(args.count) ??
+    nonNegativeInt(args.max_results) ??
+    nonNegativeInt(args.num_results) ??
+    nonNegativeInt(args.limit) ??
+    nonNegativeInt(args.top_k);
   return count !== undefined ? `for “${query}” (top ${count})` : `for “${query}”`;
 }
 
@@ -268,7 +272,7 @@ function detailFromKeys(
       const trimmed = value.trim().split(/\r?\n/)[0]!.trim();
       if (trimmed) return trimmed.length > 72 ? `${trimmed.slice(0, 71)}…` : trimmed;
     }
-    if (typeof value === "number" && Number.isFinite(value) && value !== 0) return String(value);
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
   return undefined;
 }

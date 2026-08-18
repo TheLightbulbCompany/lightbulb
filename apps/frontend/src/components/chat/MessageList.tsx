@@ -29,6 +29,7 @@ import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typesc
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
 import { ToolActivityTrace, type ToolCall } from "@/components/chat/ToolActivityTrace";
+import { TranscriptSelectionBar } from "@/components/chat/TranscriptSelectionBar";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -38,6 +39,7 @@ import {
   resolveToolUseId,
   resolveToolArgs,
   resolveMessageBlocks,
+  type ToolBlockPair,
 } from "@/hooks/internal/toolBlockExtract";
 import type {
   ChatRenderItem,
@@ -371,25 +373,12 @@ export function splitCollidedHeaders(content: string): string {
   return content.replace(/\*\*(?=\*\*)/g, "**\n\n");
 }
 
-/** Whole seconds only — a reasoning duration reads as "Thought for 23s", not
- *  "23.0s"; sub-second precision is noise here. */
-function formatThinkingDuration(ms: number): string {
-  return `${Math.round(ms / 1000)}s`;
-}
-
 export function ThinkingBlock({
   content,
   streaming,
-  durationMs,
 }: {
   content: string;
   streaming?: boolean;
-  /** Wall-clock ms the reasoning phase took. NOT carried on the wire today —
-   *  OpenClaw sends no start/end timestamp for thinking the way it does for
-   *  tool calls (ContentBlock.startedAt/endedAt). Callers pass this only when
-   *  a real value is derivable; omit it rather than approximate — the label
-   *  falls back to the tenseless "Thought" instead of a wrong duration. */
-  durationMs?: number;
 }) {
   const text = splitCollidedHeaders(content);
   // Live (streaming) thinking mounts EXPANDED so reasoning is visible as it
@@ -406,12 +395,11 @@ export function ThinkingBlock({
   }, [streaming]);
 
   // Present tense only while actually live; a settled thought reads in the
-  // past, same as a finished tool call ("Read", not "Reading").
-  const label = streaming
-    ? "Thinking…"
-    : durationMs
-      ? `Thought for ${formatThinkingDuration(durationMs)}`
-      : "Thought";
+  // past, same as a finished tool call ("Read", not "Reading"). No duration:
+  // OpenClaw sends no start/end timestamp for thinking the way it does for
+  // tool calls (ContentBlock.startedAt/endedAt), so there's nothing real to
+  // show — a fabricated number would be worse than none.
+  const label = streaming ? "Thinking…" : "Thought";
 
   return (
     <div className="mb-4 chat-block-in">
@@ -522,8 +510,17 @@ export function AgentHead({
                         variant="ghost"
                         size="icon"
                         aria-label="Copy"
-                        onClick={() => {
-                            navigator.clipboard?.writeText(messageText).catch(() => {});
+                        onClick={async () => {
+                            // await, not `.writeText(...).catch(...)` — see CodeBlock's
+                            // handleCopy for why a patched clipboard.writeText that
+                            // returns something non-promise would otherwise throw
+                            // synchronously inside this click handler.
+                            if (!navigator.clipboard) return;
+                            try {
+                                await navigator.clipboard.writeText(messageText);
+                            } catch {
+                                // Clipboard write failed — no success state to reset.
+                            }
                         }}
                         className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
                     >
@@ -533,11 +530,21 @@ export function AgentHead({
                         variant="ghost"
                         size="icon"
                         aria-label="Share"
-                        onClick={() => {
+                        onClick={async () => {
                             if (typeof navigator.share === "function") {
-                                navigator.share({ text: messageText }).catch(() => {});
-                            } else {
-                                navigator.clipboard?.writeText(messageText).catch(() => {});
+                                try {
+                                    await navigator.share({ text: messageText });
+                                } catch {
+                                    // Cancelled or unsupported — nothing to recover.
+                                }
+                                return;
+                            }
+                            // Same await-not-.then rationale as the Copy button above.
+                            if (!navigator.clipboard) return;
+                            try {
+                                await navigator.clipboard.writeText(messageText);
+                            } catch {
+                                // Clipboard write failed — no success state to reset.
                             }
                         }}
                         className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
@@ -548,6 +555,44 @@ export function AgentHead({
             )}
         </div>
     );
+}
+
+/**
+ * Builds one ToolCall from a tool_use block + its paired tool_result (if
+ * any). Extracted after Finding 3/12 of the 2026-08-17 craft-pass review: two
+ * independent copies of this exact 9-field mapping (here and in
+ * `toolCallsOfPureToolMessage`) had already drifted once — one copy carried
+ * `startedAt`/`endedAt`, the other silently didn't. One helper, one place to
+ * add a field.
+ */
+function toolCallFromPair(block: ContentBlock, pairs: ToolBlockPair[]): ToolCall | null {
+  const id = resolveToolUseId(block);
+  if (!id) return null;
+  const pair = pairs.find((p) => p.toolUseId === id);
+  if (!pair) return null;
+  const resultBlock = pair.toolResultBlock as
+    | { content?: unknown; result?: unknown; isError?: boolean }
+    | undefined;
+  const status: ToolCall["status"] = resultBlock
+    ? resultBlock.isError
+      ? "error"
+      : "done"
+    : "running";
+  return {
+    id,
+    name: block.name ?? "tool",
+    args: resolveToolArgs(block),
+    result: resultBlock?.content ?? resultBlock?.result,
+    status,
+    // Non-tool activity pills (plan/patch/item/acp) reuse the tool_use block
+    // shape via a synthetic id — see ToolStreamEntry.kind. They carry their
+    // own human label already and must not be re-labeled by ToolActivityTrace's
+    // tool-name resolver.
+    kind: block.kind === "activity" ? "activity" : "tool",
+    progressText: block.progressText,
+    startedAt: block.startedAt,
+    endedAt: block.endedAt,
+  };
 }
 
 /**
@@ -588,13 +633,7 @@ function MessageBlocks({
     const calls = pendingCalls;
     pendingCalls = [];
     rendered.push(
-      <ToolActivityTrace
-        key={`trace:${calls[0]!.id}`}
-        calls={calls}
-        // A trace is settled once every call in it has a terminal status. The
-        // live turn's tail group keeps its rows; older groups fold.
-        settled={calls.every((c) => c.status !== "running")}
-      />,
+      <ToolActivityTrace key={`trace:${calls[0]!.id}`} calls={calls} />,
     );
   };
 
@@ -607,40 +646,22 @@ function MessageBlocks({
     if (isToolUseBlock(b)) {
       const id = resolveToolUseId(b);
       if (id && renderedToolIds.has(id)) {
-        const pair = pairs.find((p) => p.toolUseId === id)!;
-        const resultBlock = pair.toolResultBlock as
-          | { content?: unknown; result?: unknown; isError?: boolean }
-          | undefined;
-        const status: "running" | "done" | "error" = resultBlock
-          ? resultBlock.isError
-            ? "error"
-            : "done"
-          : "running";
-        // A completed recommend_agents call renders as a hire card instead of
-        // a tool pill. parseHireSuggestion returns null for every other tool
-        // result, so anything else falls through untouched.
-        const hireSuggestion =
-          status === "done"
-            ? parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)
-            : null;
-        if (hireSuggestion) {
-          // A hire card is prose-weight content, not a step — it ends the run.
-          flushTrace();
-          rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
+        const call = toolCallFromPair(b, pairs);
+        if (call) {
+          // A completed recommend_agents call renders as a hire card instead
+          // of a tool pill. parseHireSuggestion returns null for every other
+          // tool result, so anything else falls through untouched.
+          const hireSuggestion =
+            call.status === "done" ? parseHireSuggestion(call.result) : null;
+          if (hireSuggestion) {
+            // A hire card is prose-weight content, not a step — it ends the run.
+            flushTrace();
+            rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
+          } else {
+            pendingCalls.push(call);
+          }
           renderedToolIds.delete(id);
-          continue;
         }
-        pendingCalls.push({
-          id,
-          name: b.name ?? "tool",
-          args: resolveToolArgs(b),
-          result: resultBlock?.content ?? resultBlock?.result,
-          status,
-          progressText: (b as ContentBlock).progressText,
-          startedAt: (b as ContentBlock).startedAt,
-          endedAt: (b as ContentBlock).endedAt,
-        });
-        renderedToolIds.delete(id);
       }
       continue;
     }
@@ -888,33 +909,12 @@ function toolCallsOfPureToolMessage(message: HistoryMessage): ToolCall[] | null 
   for (const b of blocks) {
     if (isToolResultBlock(b)) continue;
     if (!isToolUseBlock(b)) return null; // prose/thinking present — not pure
-    const id = resolveToolUseId(b);
-    if (!id) return null;
-    const pair = pairs.find((p) => p.toolUseId === id);
-    if (!pair) return null;
-    const resultBlock = pair.toolResultBlock as
-      | { content?: unknown; result?: unknown; isError?: boolean }
-      | undefined;
-    const status: ToolCall["status"] = resultBlock
-      ? resultBlock.isError
-        ? "error"
-        : "done"
-      : "running";
+    const call = toolCallFromPair(b, pairs);
+    if (!call) return null;
     // A completed recommend_agents call renders as a hire card, which is prose-
     // weight content — leave the whole message to the normal renderer.
-    if (status === "done" && parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)) {
-      return null;
-    }
-    calls.push({
-      id,
-      name: b.name ?? "tool",
-      args: resolveToolArgs(b),
-      result: resultBlock?.content ?? resultBlock?.result,
-      status,
-      progressText: (b as ContentBlock).progressText,
-      startedAt: (b as ContentBlock).startedAt,
-      endedAt: (b as ContentBlock).endedAt,
-    });
+    if (call.status === "done" && parseHireSuggestion(call.result)) return null;
+    calls.push(call);
   }
   return calls.length > 0 ? calls : null;
 }
@@ -1063,11 +1063,7 @@ function BubbleGroupImpl({
         <div className="relative text-sm leading-7 text-[var(--ink-soft)] w-full">
           {renderables.map((entry) =>
             entry.kind === "tool-run" ? (
-              <ToolActivityTrace
-                key={entry.key}
-                calls={entry.calls}
-                settled={entry.calls.every((c) => c.status !== "running")}
-              />
+              <ToolActivityTrace key={entry.key} calls={entry.calls} />
             ) : (
             <ItemRenderer
               key={entry.item.key}
@@ -1115,7 +1111,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     { renderGroups, isStreaming, isTyping, agentName, onOpenFile, hasOlder, isLoadingOlder, onLoadOlder },
     ref
   ) {
-    const { containerRef, scrollToBottom } = useScrollToBottom();
+    const { containerRef, scrollToBottom, isAutoScrollingRef, markAutoScroll } = useScrollToBottom();
 
     // Loading an older page prepends messages at the top of a bottom-anchored
     // transcript, which would otherwise shove the viewport down by the height
@@ -1129,10 +1125,13 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       Promise.resolve(onLoadOlder?.()).then(() => {
         requestAnimationFrame(() => {
           const el = containerRef.current;
-          if (el && before !== null) el.scrollTop = el.scrollHeight - before;
+          if (el && before !== null) {
+            markAutoScroll();
+            el.scrollTop = el.scrollHeight - before;
+          }
         });
       });
-    }, [onLoadOlder, containerRef]);
+    }, [onLoadOlder, containerRef, markAutoScroll]);
 
     // Track whether the user is at (or near) the bottom of the scroll
     // container. While true, incoming streamed chunks pull the view down.
@@ -1224,8 +1223,11 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
 
       // Snap by setting scrollTop on the container — never scrollIntoView,
       // which also scrolls outer scrollable ancestors (that once yanked the
-      // whole workspace shell out of the viewport).
+      // whole workspace shell out of the viewport). markAutoScroll flags the
+      // write so TranscriptSelectionBar's scroll-dismissal (which shares
+      // this same container) can tell it apart from a real user scroll.
       const snapToBottom = () => {
+        markAutoScroll();
         container.scrollTop = container.scrollHeight;
       };
 
@@ -1241,7 +1243,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       prevTotalItemsRef.current = totalItems;
       prevLastTailLengthRef.current = lastTailLength;
       prevLastSideRef.current = lastSide;
-    }, [totalItems, lastTailLength, lastSide, containerRef]);
+    }, [totalItems, lastTailLength, lastSide, containerRef, markAutoScroll]);
 
     // The "typing placeholder" shows the agent header (animated thinking
     // glyph) during the window between `sendMessage` and the first
@@ -1291,6 +1293,11 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
         data-lenis-prevent
       >
+        {/* Selecting text anywhere inside this container surfaces a floating
+            Copy action — portaled to document.body, so it doesn't render as
+            a DOM descendant here despite mounting from this ref. See
+            TranscriptSelectionBar.tsx. */}
+        <TranscriptSelectionBar containerRef={containerRef} isAutoScrollingRef={isAutoScrollingRef} />
         {/* `chat-transcript` occludes off-screen groups (content-visibility) —
             see globals.css. Keeps a long history off the layout hot path. */}
         <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">

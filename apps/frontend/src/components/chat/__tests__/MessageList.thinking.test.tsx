@@ -3,14 +3,13 @@
  *
  * The bug this guards: the block rendered the literal string "Thinking..."
  * forever — present tense even in scrollback for reasoning that finished an
- * hour ago. A settled thought now reads in the past ("Thought" / "Thought
- * for Ns"), and only while `streaming` is true does it read as live.
+ * hour ago. A settled thought now reads in the past ("Thought"), and only
+ * while `streaming` is true does it read as live.
  *
  * No real elapsed time is on the wire for thinking (unlike tool calls'
- * startedAt/endedAt) — callers never pass `durationMs` today, so the settled
- * fallback ("Thought", no number) is what actually ships. `durationMs` is
- * exercised directly here so a future caller that DOES have a real duration
- * gets the right format, without the component ever inventing one itself.
+ * startedAt/endedAt), so the settled label never carries a duration — a
+ * `durationMs` prop for a future wire caller that never arrived was removed
+ * as dead code (no call site ever passed it).
  */
 
 import { describe, it, expect } from "vitest";
@@ -18,25 +17,16 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ThinkingBlock } from "../MessageList";
 
 describe("ThinkingBlock — settled tense", () => {
-  it("reads past-tense with a duration once settled", () => {
-    render(<ThinkingBlock content="reasoning" durationMs={23_000} />);
-    expect(screen.getByText(/Thought for 23s/)).toBeInTheDocument();
-    expect(screen.queryByText(/Thinking\.\.\./)).not.toBeInTheDocument();
-  });
-
   it("reads present-tense while actually streaming", () => {
     render(<ThinkingBlock content="reasoning" streaming />);
     expect(screen.getByText("Thinking…")).toBeInTheDocument();
     expect(screen.queryByText(/Thought/)).not.toBeInTheDocument();
   });
 
-  it("falls back to a tenseless label when settled with no real duration", () => {
-    // This is the shape both real call sites use today — no durationMs is
-    // derivable from the wire, so the label must not fabricate one.
+  it("falls back to a tenseless label once settled", () => {
     render(<ThinkingBlock content="reasoning" />);
     expect(screen.getByText("Thought")).toBeInTheDocument();
     expect(screen.queryByText(/Thinking\.\.\./)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
   });
 });
 

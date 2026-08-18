@@ -50,6 +50,13 @@ export interface ContentBlock {
    *  a wrong one. */
   startedAt?: number;
   endedAt?: number;
+  /** Distinguishes a real tool call from a non-tool activity pill
+   *  (plan/patch/item/acp) that reuses this block shape via a synthetic id.
+   *  Only useAgentChat's agent_activity branch sets "activity"; a real tool
+   *  call carries no value here (read as "tool"). Activity entries already
+   *  carry a human label in `name` and must bypass the tool-name resolver
+   *  entirely — see ToolActivityTrace. */
+  kind?: "tool" | "activity";
   // tool_result-flavored
   tool_use_id?: string;
   toolUseId?: string;

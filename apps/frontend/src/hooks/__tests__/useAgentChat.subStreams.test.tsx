@@ -442,6 +442,62 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     }
   });
 
+  // The live writer (syncToolStreamMessages) stamps startedAt/endedAt on every
+  // terminal tool_use block so ToolActivityTrace can show a real duration.
+  // foldLiveTurnIntoContent is the done-handler's OWN writer for the exact
+  // same shape — it has to carry the same fields, or a duration that renders
+  // live evaporates the instant the turn settles into history.
+  it("keeps startedAt/endedAt on the folded tool_use block once the turn settles", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useAgentChat(AGENT, "main"));
+      act(() => {
+        startTool();
+      });
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+        emit({
+          type: "tool_end",
+          tool: "bash",
+          toolCallId: "t1",
+          result: [{ type: "text", text: "ok" }],
+          agent_id: AGENT,
+          runId: RUN,
+        } as ChatIncomingMessage);
+      });
+      // Read the LIVE block (written by syncToolStreamMessages) before the
+      // done-handler folds the turn into history.
+      const live = findToolUseBlock(result.current.renderItems, "t1");
+      expect(live).toBeTruthy();
+      const liveStartedAt = live!.startedAt;
+      const liveEndedAt = live!.endedAt;
+      expect(liveStartedAt).toBeDefined();
+      expect(liveEndedAt).toBeDefined();
+
+      act(() => {
+        emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      });
+      act(() => {
+        vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
+      });
+      const folded = findToolUseBlock(result.current.renderItems, "t1");
+      expect(folded).toBeTruthy();
+      expect(folded!.startedAt).toBeDefined();
+      expect(folded!.endedAt).toBeDefined();
+      // The claim under test is that the fold CARRIES the live stamps, not that
+      // wall-clock time passed. Asserting a delta would depend on the fake
+      // clock actually advancing Date.now() (it does not here), which made an
+      // earlier `endedAt > startedAt` version flake red in CI while the fix it
+      // guards was working. Comparing against the live values is deterministic
+      // and tests the real invariant: history keeps exactly what the live path
+      // showed, so a rendered duration cannot evaporate when the turn settles.
+      expect(folded!.startedAt).toBe(liveStartedAt);
+      expect(folded!.endedAt).toBe(liveEndedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops sub-stream events for a different agent", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {

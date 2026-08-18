@@ -1085,9 +1085,11 @@ function CreateRoutineDialog({
                   />
                 </div>
                 <span className="text-xs text-[var(--mute)]">
-                  {attachRoutineId
-                    ? "Adds this trigger to that automation. Its instructions, assignee and schedule stay as they are."
-                    : "Writes a new automation from this event's template."}
+                  {!attachRoutineId
+                    ? "Writes a new automation from this event's template."
+                    : conn.attachDisclosure
+                      ? "Adds this trigger to that automation. Its assignee, reviewers and schedule stay as they are."
+                      : "Adds this trigger to that automation. Its instructions, assignee and schedule stay as they are."}
                 </span>
               </label>
             )}

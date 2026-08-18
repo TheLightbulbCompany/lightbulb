@@ -37,13 +37,18 @@ jobs:
           cd apps/infra
           npm ci
           npx cdk synth
-      - name: Upload cdk.out
-        uses: actions/upload-artifact@v4
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          name: cdk.out
-          path: apps/infra/cdk.out
-          include-hidden-files: true
-          retention-days: 1
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Upload cdk.out to S3
+        run: aws s3 cp apps/infra/cdk.out
+          s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ --recursive
+          --only-show-errors
   Assets-DockerAsset1:
     name: Publish Assets Assets-DockerAsset1
     needs:
@@ -55,11 +60,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -69,6 +69,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-DockerAsset1
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-DockerAsset1-step.sh
@@ -83,11 +87,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -97,6 +96,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset1
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset1-step.sh
@@ -111,11 +114,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -125,6 +123,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset10
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset10-step.sh
@@ -139,11 +141,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -153,6 +150,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset11
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset11-step.sh
@@ -167,11 +168,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -181,6 +177,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset12
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset12-step.sh
@@ -195,11 +195,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -209,6 +204,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset13
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset13-step.sh
@@ -223,11 +222,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -237,6 +231,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset14
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset14-step.sh
@@ -251,11 +249,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -265,6 +258,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset15
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset15-step.sh
@@ -279,11 +276,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -293,6 +285,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset16
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset16-step.sh
@@ -307,11 +303,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -321,6 +312,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset17
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset17-step.sh
@@ -335,11 +330,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -349,6 +339,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset18
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset18-step.sh
@@ -363,11 +357,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -377,6 +366,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset19
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset19-step.sh
@@ -391,11 +384,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -405,6 +393,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset2
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset2-step.sh
@@ -419,11 +411,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -433,6 +420,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset20
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset20-step.sh
@@ -447,11 +438,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -461,6 +447,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset21
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset21-step.sh
@@ -475,11 +465,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -489,6 +474,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset22
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset22-step.sh
@@ -503,11 +492,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -517,6 +501,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset23
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset23-step.sh
@@ -531,11 +519,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -545,6 +528,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset24
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset24-step.sh
@@ -559,11 +546,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -573,6 +555,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset25
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset25-step.sh
@@ -587,11 +573,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -601,6 +582,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset26
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset26-step.sh
@@ -615,11 +600,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -629,6 +609,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset27
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset27-step.sh
@@ -643,11 +627,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -657,6 +636,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset28
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset28-step.sh
@@ -671,11 +654,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -685,6 +663,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset29
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset29-step.sh
@@ -699,11 +681,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -713,6 +690,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset3
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset3-step.sh
@@ -727,11 +708,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -741,6 +717,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset30
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset30-step.sh
@@ -755,11 +735,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -769,6 +744,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset31
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset31-step.sh
@@ -783,11 +762,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -797,6 +771,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset32
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset32-step.sh
@@ -811,11 +789,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -825,6 +798,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset33
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset33-step.sh
@@ -839,11 +816,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -853,6 +825,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset34
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset34-step.sh
@@ -867,11 +843,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -881,6 +852,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset35
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset35-step.sh
@@ -895,11 +870,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -909,6 +879,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset36
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset36-step.sh
@@ -923,11 +897,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -937,6 +906,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset37
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset37-step.sh
@@ -951,11 +924,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -965,6 +933,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset4
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset4-step.sh
@@ -979,11 +951,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -993,6 +960,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset5
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset5-step.sh
@@ -1007,11 +978,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -1021,6 +987,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset6
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset6-step.sh
@@ -1035,11 +1005,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -1049,6 +1014,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset7
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset7-step.sh
@@ -1063,11 +1032,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -1077,6 +1041,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset8
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset8-step.sh
@@ -1091,11 +1059,6 @@ jobs:
     outputs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
-      - name: Download cdk.out
-        uses: actions/download-artifact@v4
-        with:
-          name: cdk.out
-          path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
@@ -1105,6 +1068,10 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset9
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset9-step.sh

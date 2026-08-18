@@ -233,6 +233,127 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(screen.queryByRole("button", { name: /rotate to a new random secret/i })).not.toBeInTheDocument();
   });
 
+  // Arming an EXISTING webhook trigger means pasting its fire URL into the
+  // provider's dashboard. The guided create-flow shows that URL once; without
+  // it on the trigger projection here, a hand-written routine could only be
+  // armed through the API (#1888). The value is server-owned — asserted as the
+  // exact string the BFF projected, never one this panel rebuilt.
+  it("shows each webhook trigger's server-projected fire URL with a copy affordance", () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Revenue recovery",
+          status: "active",
+          triggers: [
+            {
+              id: "wh1",
+              kind: "webhook",
+              label: "Stripe invoice.payment_failed",
+              signingMode: "hmac_sha256",
+              publicId: "pub_1",
+              fireUrl: "https://api.isol8.co/api/v1/hooks/t/org_1/pub_1",
+              enabled: true,
+            },
+            { id: "t1", kind: "schedule", cronExpression: "0 9 * * *", enabled: true },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(
+      screen.getByText("https://api.isol8.co/api/v1/hooks/t/org_1/pub_1"),
+    ).toBeInTheDocument();
+    // Exactly one — the schedule trigger has no fire URL.
+    expect(screen.getAllByText("Fire URL")).toHaveLength(1);
+    expect(
+      screen.getByRole("button", {
+        name: "Copy fire URL for Stripe invoice.payment_failed",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  // The motivating case: one routine, several webhook triggers (one per provider
+  // event). Every URL differs only by public id, and each row's copy button is
+  // otherwise labelled identically — so without `copyLabel` a screen-reader user
+  // gets N buttons all reading "Copy Fire URL" and no way to tell which event
+  // they are arming. Same reason the rotate/delete controls name their trigger.
+  it("gives each webhook trigger's copy button a label naming that trigger", () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Revenue recovery",
+          status: "active",
+          triggers: [
+            {
+              id: "wh1",
+              kind: "webhook",
+              label: "Stripe invoice.payment_failed",
+              signingMode: "hmac_sha256",
+              publicId: "pub_1",
+              fireUrl: "https://api.isol8.co/api/v1/hooks/t/org_1/pub_1",
+              enabled: true,
+            },
+            {
+              id: "wh2",
+              kind: "webhook",
+              label: "Stripe charge.dispute.created",
+              signingMode: "hmac_sha256",
+              publicId: "pub_2",
+              fireUrl: "https://api.isol8.co/api/v1/hooks/t/org_1/pub_2",
+              enabled: true,
+            },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(screen.getAllByText("Fire URL")).toHaveLength(2);
+    // Both URLs rendered, and each copy button is uniquely addressable.
+    expect(
+      screen.getByText("https://api.isol8.co/api/v1/hooks/t/org_1/pub_1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("https://api.isol8.co/api/v1/hooks/t/org_1/pub_2"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy fire URL for Stripe invoice.payment_failed" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy fire URL for Stripe charge.dispute.created" }),
+    ).toBeInTheDocument();
+  });
+
+  // Negative branch of the server-side guard, seen from the client: a webhook
+  // trigger the BFF did not stamp (no publicId) renders no Fire URL field at all
+  // rather than an empty or half-built one.
+  it("renders no fire URL for a webhook trigger the server did not stamp", () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Hook routine",
+          status: "active",
+          triggers: [
+            { id: "wh1", kind: "webhook", signingMode: "hmac_sha256", publicId: null, enabled: true },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    render(<RoutineDetailPanel routineId="r1" />);
+    expect(screen.queryByText("Fire URL")).not.toBeInTheDocument();
+  });
+
   it("renders revisions and restores one via POST", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);

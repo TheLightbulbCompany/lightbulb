@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
+import { describe, it, expect, beforeEach } from "vitest";
 import type { SerializedDockview } from "dockview-react";
 import {
   layoutStorageKey,
@@ -9,8 +8,6 @@ import {
   sanitizeLayout,
 } from "../layoutStorage";
 
-const restore = installStoragePolyfill();
-afterAll(restore);
 beforeEach(() => window.localStorage.clear());
 
 function minimalLayout(panels: SerializedDockview["panels"]): SerializedDockview {

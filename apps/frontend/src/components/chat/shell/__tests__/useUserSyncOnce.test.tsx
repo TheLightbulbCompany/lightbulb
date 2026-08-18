@@ -1,14 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 
 const syncUser = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser }) }));
 
 import { useUserSyncOnce } from "../useUserSyncOnce";
 
-const restore = installStoragePolyfill();
-afterAll(restore);
 beforeEach(() => {
   syncUser.mockReset();
   window.sessionStorage.clear();

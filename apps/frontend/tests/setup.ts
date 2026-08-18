@@ -1,27 +1,37 @@
 import '@testing-library/jest-dom';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
-import { installStoragePolyfill } from '../src/test-utils/storagePolyfill';
-
-// Web storage, once, for every test file.
+// Point `localStorage`/`sessionStorage` at jsdom's real Storage instances.
 //
-// Two things were wrong before. Whether `localStorage` works at all depended on
-// the Node version — jsdom's Storage is live on Node 20 (what CI pins) but
-// shadowed/absent on Node 22+ (what a dev machine may run), so storage-backed
-// code paths silently no-op locally and run for real in CI. And nothing reset
-// it between tests, so anything a test persisted leaked into the next one in
-// the same file: the inbox tab, the active chat session. That is invisible
-// while storage is a no-op and it is 13 failures when it isn't.
+// jsdom implements Storage correctly and always has. The reason tests saw
+// `localStorage === undefined` is vitest's jsdom global bridge: its KEYS
+// allowlist copies the `Storage` *class* onto globalThis but not the
+// `localStorage`/`sessionStorage` instances, and it skips any name already
+// `in globalThis`. Node 22+ defines stub global accessors under both names, so
+// the bridge saw them as present and left the stubs in place. Nothing was
+// broken about Storage — nothing was pointing at it.
 //
-// Installing the Map-backed polyfill makes the behaviour identical everywhere;
-// clearing it in afterEach makes each test start from an empty store. A file
-// that installs its own polyfill in `beforeAll` still overrides this one.
-installStoragePolyfill();
+// Re-pointing at `jsdom.window.*` is therefore the whole fix. It keeps real
+// `Storage` instances, so `vi.spyOn(Storage.prototype, "setItem")` observes
+// calls made through `localStorage` — no reimplementation, no prototype
+// patching, nothing to restore.
+const jsdomWindow = (globalThis as unknown as { jsdom?: { window: Window } }).jsdom?.window;
+if (jsdomWindow) {
+  for (const name of ['localStorage', 'sessionStorage'] as const) {
+    Object.defineProperty(globalThis, name, {
+      get: () => jsdomWindow[name],
+      configurable: true,
+    });
+  }
+}
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  // Storage outlives a test unless cleared, and a leaked value is invisible
+  // until it changes another test's starting state — a persisted inbox tab or
+  // active chat session silently broke 13 tests before this line existed.
   localStorage.clear();
   sessionStorage.clear();
 });

@@ -13,13 +13,10 @@ export default defineConfig({
     // grep of the source dir now finds every test that touches it.
     // `tests/e2e/**/__tests__/` is the same rule applied to the Playwright
     // fixtures/helpers, which are themselves source.
+    // No `exclude` — vitest's default already drops node_modules/dist/etc, and
+    // a supplied exclude would REPLACE that default. Playwright's `*.spec.ts`
+    // and `global.setup.ts` cannot match this include glob anyway.
     include: ['{src,tests/e2e}/**/__tests__/**/*.test.{ts,tsx}'],
-    exclude: [
-      // Playwright's own specs + setup — vitest must not collect them.
-      'tests/e2e/**/*.spec.ts',
-      'tests/e2e/global.setup.ts',
-      'node_modules/**/*',
-    ],
     // Use threads pool with limited workers
     pool: 'threads',
     poolOptions: {

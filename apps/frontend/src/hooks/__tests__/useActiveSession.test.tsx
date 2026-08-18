@@ -1,12 +1,9 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 
 // Node's built-in localStorage needs a flag vitest doesn't pass, so install the
 // shared Map-backed polyfill (persists across vi.resetModules(), which is how we
 // simulate a full page refresh: fresh module = fresh Map, same localStorage).
-const restoreStorage = installStoragePolyfill();
-afterAll(restoreStorage);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

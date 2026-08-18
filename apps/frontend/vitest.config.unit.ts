@@ -4,23 +4,22 @@
  *
  * Tests that need DOM rendering can opt-in via `// @vitest-environment jsdom`
  * at the top of the test file. The react plugin is included for JSX transforms.
+ *
+ * Derived from the main config so the include glob and aliases have exactly one
+ * definition — they drifted into byte-identical copies once before.
  */
-import { defineConfig } from 'vitest/config';
-import react from '@vitejs/plugin-react';
-import path from 'path';
+import { defineConfig, mergeConfig, type UserConfig } from 'vitest/config';
+import base from './vitest.config';
 
-export default defineConfig({
-  plugins: [react()],
-  test: {
-    globals: true,
-    environment: 'node',
-    include: ['{src,tests/e2e}/**/__tests__/**/*.test.{ts,tsx}'],
-    exclude: ['tests/e2e/**/*.spec.ts', 'tests/e2e/global.setup.ts', 'node_modules/**/*'],
-    testTimeout: 30000,
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-});
+const config: UserConfig = mergeConfig(
+  base,
+  defineConfig({ test: { environment: 'node' } }),
+);
+
+// mergeConfig CONCATENATES arrays, so setupFiles has to be replaced outright
+// rather than merged: tests/setup.ts is jsdom-only (React Testing Library
+// cleanup, jsdom-backed storage) and throws under this config's node
+// environment — which is the whole reason this config exists.
+config.test!.setupFiles = [];
+
+export default config;

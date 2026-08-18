@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import {
   loadInboxFilterPreferences,
   saveInboxFilterPreferences,
@@ -13,66 +13,6 @@ import {
   saveBandCollapsed,
 } from "@/components/teams/shared/lib/inboxStorage";
 import { defaultIssueFilterState } from "@/components/teams/shared/lib/issueFilters";
-
-// Node 22+ ships a built-in `localStorage` that requires `--localstorage-file`
-// to actually function. In our vitest+jsdom setup it shadows jsdom's
-// localStorage and exposes a stub that throws on `.clear()` / `.setItem()`.
-// Install a Map-backed polyfill on both `globalThis` and `Storage.prototype`
-// so production code (which calls `localStorage.{getItem,setItem,...}`) and
-// tests (which `vi.spyOn(Storage.prototype, ...)`) both work.
-beforeAll(() => {
-  const store = new Map<string, string>();
-  const polyfill: Storage = {
-    getItem: (k) => (store.has(k) ? (store.get(k) as string) : null),
-    setItem: (k, v) => {
-      store.set(k, String(v));
-    },
-    removeItem: (k) => {
-      store.delete(k);
-    },
-    clear: () => {
-      store.clear();
-    },
-    key: (i) => Array.from(store.keys())[i] ?? null,
-    get length() {
-      return store.size;
-    },
-  };
-  Object.defineProperty(globalThis, "localStorage", {
-    value: polyfill,
-    writable: true,
-    configurable: true,
-  });
-  if (typeof window !== "undefined") {
-    Object.defineProperty(window, "localStorage", {
-      value: polyfill,
-      writable: true,
-      configurable: true,
-    });
-  }
-  // Route Storage.prototype methods through the polyfill so vi.spyOn hooks
-  // observed by `localStorage.getItem(...)` calls actually fire.
-  Storage.prototype.getItem = function (k: string) {
-    return polyfill.getItem(k);
-  };
-  Storage.prototype.setItem = function (k: string, v: string) {
-    polyfill.setItem(k, v);
-  };
-  Storage.prototype.removeItem = function (k: string) {
-    polyfill.removeItem(k);
-  };
-  Storage.prototype.clear = function () {
-    polyfill.clear();
-  };
-});
-
-beforeEach(() => {
-  localStorage.clear();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 describe("inboxStorageKey", () => {
   test("namespaces per company", () => {
@@ -236,8 +176,6 @@ describe("loadReadInboxItems / saveReadInboxItems", () => {
 });
 
 describe("triage storage helpers", () => {
-  beforeEach(() => localStorage.clear());
-
   test("ack-runs round-trips a Set and isolates per company", () => {
     saveAckRuns("co1", new Set(["r1", "r2"]));
     expect(loadAckRuns("co1")).toEqual(new Set(["r1", "r2"]));

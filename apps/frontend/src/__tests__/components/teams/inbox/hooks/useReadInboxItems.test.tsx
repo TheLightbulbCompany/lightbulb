@@ -2,63 +2,12 @@ import {
   describe,
   test,
   expect,
-  beforeAll,
   beforeEach,
   afterEach,
   vi,
 } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
-
-// Node 22+ ships a built-in `localStorage` that requires `--localstorage-file`
-// to actually function. In our vitest+jsdom setup it shadows jsdom's
-// localStorage and exposes a stub that throws on `.clear()` / `.setItem()`.
-// Install a Map-backed polyfill on both `globalThis` and `Storage.prototype`
-// so production code (which calls `localStorage.{getItem,setItem,...}`) and
-// tests (which `vi.spyOn(Storage.prototype, ...)`) both work.
-beforeAll(() => {
-  const store = new Map<string, string>();
-  const polyfill: Storage = {
-    getItem: (k) => (store.has(k) ? (store.get(k) as string) : null),
-    setItem: (k, v) => {
-      store.set(k, String(v));
-    },
-    removeItem: (k) => {
-      store.delete(k);
-    },
-    clear: () => {
-      store.clear();
-    },
-    key: (i) => Array.from(store.keys())[i] ?? null,
-    get length() {
-      return store.size;
-    },
-  };
-  Object.defineProperty(globalThis, "localStorage", {
-    value: polyfill,
-    writable: true,
-    configurable: true,
-  });
-  if (typeof window !== "undefined") {
-    Object.defineProperty(window, "localStorage", {
-      value: polyfill,
-      writable: true,
-      configurable: true,
-    });
-  }
-  Storage.prototype.getItem = function (k: string) {
-    return polyfill.getItem(k);
-  };
-  Storage.prototype.setItem = function (k: string, v: string) {
-    polyfill.setItem(k, v);
-  };
-  Storage.prototype.removeItem = function (k: string) {
-    polyfill.removeItem(k);
-  };
-  Storage.prototype.clear = function () {
-    polyfill.clear();
-  };
-});
 
 beforeEach(() => {
   localStorage.clear();
@@ -138,34 +87,26 @@ describe("useReadInboxItems", () => {
   });
 
   test("markManyRead is single update + single save", () => {
-    // Wrap localStorage.setItem directly — production code calls
-    // `localStorage.setItem(...)` which hits the polyfill object, not
-    // Storage.prototype, so spying on the prototype wouldn't observe it.
-    const original = localStorage.setItem.bind(localStorage);
-    const writes: Array<[string, string]> = [];
-    localStorage.setItem = (k: string, v: string) => {
-      writes.push([k, v]);
-      original(k, v);
-    };
-    try {
-      const { result } = renderHook(() => useReadInboxItems("co_1"));
-      writes.length = 0; // ignore any setItem from initial render
-      act(() => result.current.markManyRead(["iss_1", "iss_2", "iss_3"]));
-      expect(result.current.readItemKeys.size).toBe(3);
-      expect(result.current.isRead("iss_1")).toBe(true);
-      expect(result.current.isRead("iss_2")).toBe(true);
-      expect(result.current.isRead("iss_3")).toBe(true);
-      const readItemWrites = writes.filter(
-        ([k]) => k === "paperclip:inbox:co_1:read-items",
-      );
-      expect(readItemWrites.length).toBe(1);
-      // And the single write contains all three ids.
-      expect(JSON.parse(readItemWrites[0][1])).toEqual(
-        expect.arrayContaining(["iss_1", "iss_2", "iss_3"]),
-      );
-    } finally {
-      localStorage.setItem = original;
-    }
+    // localStorage is jsdom's real Storage, so setItem lives on the prototype
+    // and a prototype spy observes every write. (This used to assign an own
+    // `localStorage.setItem`, which only worked because the file installed a
+    // plain-object stand-in whose methods shadowed the prototype.)
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const { result } = renderHook(() => useReadInboxItems("co_1"));
+    setItem.mockClear(); // ignore any setItem from initial render
+    act(() => result.current.markManyRead(["iss_1", "iss_2", "iss_3"]));
+    expect(result.current.readItemKeys.size).toBe(3);
+    expect(result.current.isRead("iss_1")).toBe(true);
+    expect(result.current.isRead("iss_2")).toBe(true);
+    expect(result.current.isRead("iss_3")).toBe(true);
+    const readItemWrites = setItem.mock.calls.filter(
+      ([k]) => k === "paperclip:inbox:co_1:read-items",
+    );
+    expect(readItemWrites.length).toBe(1);
+    // And the single write contains all three ids.
+    expect(JSON.parse(readItemWrites[0][1])).toEqual(
+      expect.arrayContaining(["iss_1", "iss_2", "iss_3"]),
+    );
   });
 
   test("markManyRead with all already-read ids is a no-op", () => {

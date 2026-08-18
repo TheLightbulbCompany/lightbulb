@@ -1,12 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
-import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 
 // Node's built-in localStorage needs a flag vitest doesn't pass (see
 // useActiveSession.test.tsx), so install the shared Map-backed polyfill.
-const restoreStorage = installStoragePolyfill();
-afterAll(restoreStorage);
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({

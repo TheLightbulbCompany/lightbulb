@@ -140,18 +140,26 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
     );
   }
 
-  const handleCopy = () => {
-    // navigator.clipboard is undefined on insecure origins (plain http,
-    // not localhost) — a bare call throws instead of silently failing.
+  const handleCopy = async () => {
+    // navigator.clipboard is undefined on insecure origins (plain http, not
+    // localhost) — a bare call throws instead of silently failing.
     if (!navigator.clipboard) return;
-    navigator.clipboard
-      .writeText(rawSource)
-      .then(() => {
-        setCopied(true);
-        clearTimeout(copyTimerRef.current);
-        copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {});
+    try {
+      // `await`, not `.writeText(...).then(...)` — a browser/extension that
+      // patches `clipboard.writeText` to return something non-promise (or
+      // undefined) makes `.then` throw synchronously inside this click
+      // handler. `await` has no such requirement: it resolves a plain value
+      // as itself instead of demanding a `.then` method, so a nonconformant
+      // implementation degrades to "treated as succeeded" instead of an
+      // uncaught TypeError. A genuine rejection (real clipboard failure)
+      // still lands in the catch below and sets no success state.
+      await navigator.clipboard.writeText(rawSource);
+      setCopied(true);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard write failed — no success state.
+    }
   };
 
   // Fenced code block

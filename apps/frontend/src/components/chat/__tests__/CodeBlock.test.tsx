@@ -21,7 +21,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { CodeBlock } from "../MessageList";
 
-const writeTextMock = vi.fn().mockResolvedValue(undefined);
+const writeTextMock = vi.fn();
 
 function stubClipboard() {
   Object.defineProperty(navigator, "clipboard", {
@@ -40,7 +40,15 @@ function removeClipboard() {
 }
 
 beforeEach(() => {
-  writeTextMock.mockClear();
+  // The global afterEach (tests/setup.ts) runs vi.restoreAllMocks() after
+  // EVERY test in every file, which strips any mockResolvedValue/
+  // mockImplementation set outside a test's own beforeEach/it body back to
+  // a bare vi.fn() returning undefined. Re-arming it here, every test,
+  // means it survives that regardless of what ran before this file's first
+  // test — a one-time `vi.fn().mockResolvedValue(...)` at module scope
+  // looked correct and passed test 1, then silently broke every test after
+  // it once the prior test's global afterEach fired.
+  writeTextMock.mockReset().mockResolvedValue(undefined);
   stubClipboard();
 });
 
@@ -64,12 +72,14 @@ describe("CodeBlock — copy affordance", () => {
     // header row is `justify-between`, its own position) around.
     expect(screen.getByText("Copy")).toBeInTheDocument();
 
-    await act(async () => {
-      fireEvent.click(button);
-      await Promise.resolve();
-    });
+    fireEvent.click(button);
 
-    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // findByRole polls/retries instead of assuming a fixed microtask-tick
+    // count to flush the `await` inside handleCopy — the prior single
+    // `await Promise.resolve()` flush was tied to the old `.then()` chain's
+    // exact tick count, which is exactly the kind of assumption that broke
+    // once handleCopy became `async`/`await`.
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     expect(screen.getByText("Copy")).toBeInTheDocument();
   });
 

@@ -241,7 +241,15 @@ function fillTemplate(text: string, vars: { event_label: string; account: string
  * an existing automation to ATTACH to (null = seed a new one), and is read at
  * submit time so a picker above can change it freely.
  */
-export function useConnectedAppTrigger({ routineId }: { routineId: string | null }) {
+export function useConnectedAppTrigger({
+  routineId,
+  onProviderChange,
+}: {
+  routineId: string | null;
+  /** Fired when the app is switched, so a host owning state that depends on
+   * it (the create dialog's attach target) can reset alongside. */
+  onProviderChange?: () => void;
+}) {
   const api = useApi();
   const { connections } = useConnections();
   const [provider, setProvider] = useState<string | null>(null);
@@ -335,6 +343,7 @@ export function useConnectedAppTrigger({ routineId }: { routineId: string | null
     (!isOwnerSetup || topic.trim() !== "");
 
   function selectProvider(next: string) {
+    onProviderChange?.();
     setProvider(next);
     setEventId(null);
     setResource(null);

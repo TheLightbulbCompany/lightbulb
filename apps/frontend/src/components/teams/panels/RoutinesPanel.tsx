@@ -887,7 +887,13 @@ function CreateRoutineDialog({
   // Everything else about "a connected app fires this" — the app/event
   // picker, the provider-side wiring and the finish dialog — is shared with
   // RoutineDetailPanel's Add-trigger door.
-  const conn = useConnectedAppTrigger({ routineId: attachRoutineId });
+  const conn = useConnectedAppTrigger({
+    routineId: attachRoutineId,
+    // A different app may not even list the same automations as sensible
+    // targets — and a stale one silently attaching is worse than re-picking,
+    // so switching apps drops back to "create a new automation".
+    onProviderChange: () => setConnRoutineId(NEW_ROUTINE),
+  });
 
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);

@@ -1316,11 +1316,12 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
-  it("offers no attach target — the watch shapes write the automation's own instructions", async () => {
-    // A Google watch stays alive only because the seed prepends a renewal
-    // clause to the routine's description. Attaching that to a hand-written
-    // routine would either rewrite someone's instructions or arm a watch
-    // nothing renews, so the backend refuses it and the picker never offers it.
+  it("offers the attach target, and states what arming the watch will add", async () => {
+    // A Google watch stays alive only because the routine's own agent re-arms
+    // it, which needs a renewal clause in the routine's instructions. That
+    // used to make attaching impossible (it would have overwritten a
+    // hand-written body) — the clause is now APPENDED as a delimited block,
+    // so the target is offered and the consequence is stated up front.
     routinesData = { routines: [routine({ id: "rt_revenue", title: "Revenue recovery" })] };
     const user = userEvent.setup();
     render(<RoutinesPanel />);
@@ -1331,9 +1332,20 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "Calendar changed" }));
 
-    expect(
-      within(screen.getByRole("dialog")).queryByText("Create a new automation"),
-    ).not.toBeInTheDocument();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Create a new automation")).toBeInTheDocument();
+    // No disclosure until an existing automation is actually the target.
+    expect(within(dialog).queryByText(/appended to the END/i)).not.toBeInTheDocument();
+
+    // app, Google account, then the attach target — take the last, rather than
+    // an index the account picker shifts.
+    const combos = within(dialog).getAllByRole("combobox");
+    await user.click(combos[combos.length - 1]);
+    await user.click(await screen.findByRole("option", { name: "Revenue recovery" }));
+
+    const disclosure = await within(dialog).findByText(/renewal step appended to the END/i);
+    expect(disclosure).toHaveTextContent(/twice-weekly schedule trigger/i);
+    expect(disclosure).toHaveTextContent(/Everything you wrote stays exactly as it is/i);
   });
 });
 

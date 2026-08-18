@@ -753,6 +753,34 @@ button:focus-visible { border-radius: 999px; }
   margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
 }
 @keyframes wf-cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── CHAT STREAM: caret + block reveal (MessageList.tsx) ──
+   .chat-caret promotes .wf-type-cursor above (the landing page's fake
+   typing cursor) to a shared class the real chat stream can use too.
+   Reuses @keyframes wf-cursor-blink — do not duplicate it.
+   .chat-block-in fires once per streamed block on mount: settled blocks
+   memo-hit and never re-render, and the growing tail block is reconciled
+   in place rather than remounted, so this can never re-trigger or flicker.
+   Opacity + a small translate only — no blur filter, `will-change: filter`
+   on every streamed block is a real paint cost for a subtle effect.
+   Covered by the reduced-motion rule below (no second rule needed).
+   .chat-tail fuses the caret onto the same line as the last line of prose
+   for the common case (a block that ends in a single paragraph); it's a
+   no-op for blocks ending in a list/table/code fence, where the caret
+   falls to its own line instead — an acceptable degrade rather than
+   forcing every block shape inline. */
+.chat-caret {
+  display: inline-block; width: 2px; height: 1em; background: var(--forest);
+  margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
+}
+@keyframes chat-block-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.chat-block-in { animation: chat-block-in 380ms cubic-bezier(.22,.61,.25,1) both; }
+.chat-tail > p:last-child { display: inline; }
+/* Turn-action buttons (Copy/Share, AgentHead) — 24px is under the 44px
+   touch-target guidance; bump the hit area on coarse (touch) pointers. */
+@media (pointer: coarse) {
+  .chat-action-btn { width: 32px; height: 32px; }
+}
 .wf-seq .wf-conn-line { transform-origin: top; transform: scaleY(0); transition: transform .35s cubic-bezier(.16,1,.3,1); }
 .wf-seq .wf-conn-line[data-wf-on] { transform: scaleY(1); }
 .wf-seq .wf-conn-badge { opacity: 0; transform: scale(.7); transition: opacity .3s, transform .35s cubic-bezier(.34,1.56,.64,1); }

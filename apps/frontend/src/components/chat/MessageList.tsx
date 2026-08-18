@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
-import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
@@ -276,20 +276,40 @@ export function splitMarkdownBlocks(content: string): string[] {
  * cost that used to grow with message length. History messages keep the
  * plain whole-message MarkdownContent (their memo already never re-parses,
  * and one piece avoids block-split artifacts in the durable render).
+ *
+ * Each block mounts inside a `.chat-block-in` wrapper — a one-shot reveal
+ * animation (globals.css). This is safe BECAUSE of the memoization above:
+ * settled blocks memo-hit and never re-render, and the growing tail block is
+ * reconciled in place (same key, same position) rather than remounted, so
+ * the animation fires exactly once per block, ever. It cannot re-trigger or
+ * flicker on subsequent chunks.
+ *
+ * `streaming` is true only for the live growing tail (`kind:"stream"`, see
+ * ItemRenderer) — it renders the blinking caret after the last block. Past
+ * `stream-segment`s and the thinking panel never set it.
  */
 const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
   content,
   onOpenFile,
+  streaming,
 }: {
   content: string;
   onOpenFile?: (path: string) => void;
+  streaming?: boolean;
 }) {
   const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  const lastIndex = blocks.length - 1;
   return (
     <>
-      {blocks.map((block, i) => (
-        <MarkdownContent key={i} content={block} onOpenFile={onOpenFile} />
-      ))}
+      {blocks.map((block, i) => {
+        const isTail = streaming && i === lastIndex;
+        return (
+          <div key={i} className={cn("chat-block-in", isTail && "chat-tail")}>
+            <MarkdownContent content={block} onOpenFile={onOpenFile} />
+            {isTail && <span className="chat-caret" aria-hidden="true" />}
+          </div>
+        );
+      })}
     </>
   );
 });
@@ -391,7 +411,31 @@ export function AgentGlyph({
     );
 }
 
-function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "thinking" }) {
+/**
+ * Copy/Share appear once the turn SETTLES, not on hover. The old
+ * `opacity-0 group-hover:opacity-100` reveal had two defects, not one: the
+ * buttons carried no `onClick` (dead), and hover never fires on touch, so on
+ * every phone they were also permanently invisible. Settle-gating fixes both
+ * — reachable on every input modality — and Regenerate was dropped rather
+ * than shipped as a third dead button (see MessageList.tsx module notes / PR
+ * description for why: it has no resend-this-turn path without new
+ * cross-component plumbing and backend session-mutation semantics that
+ * don't exist yet).
+ */
+export function AgentHead({
+    name,
+    state = "idle",
+    streaming = false,
+    messageText = "",
+}: {
+    name: string;
+    state?: "idle" | "thinking";
+    /** True only while this is the actively-streaming tail turn. */
+    streaming?: boolean;
+    /** Copyable plain text for this turn, e.g. from groupCopyText(group). */
+    messageText?: string;
+}) {
+    const settled = !streaming;
     return (
         <div className="flex items-center gap-2 mb-2">
             <span className="text-xs font-semibold text-[#302d28] tracking-tight">
@@ -400,15 +444,36 @@ function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "t
             <span className="inline-flex items-center justify-center w-5 h-5">
                 <AgentGlyph state={state} size={18} />
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
-                <Copy className="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
-                <RefreshCw className="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
-                <Share2 className="h-3 w-3" />
-            </Button>
+            {settled && (
+                <div className="flex items-center gap-0.5 ml-1 chat-block-in">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Copy"
+                        onClick={() => {
+                            navigator.clipboard?.writeText(messageText).catch(() => {});
+                        }}
+                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                    >
+                        <Copy className="h-3 w-3" />
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Share"
+                        onClick={() => {
+                            if (typeof navigator.share === "function") {
+                                navigator.share({ text: messageText }).catch(() => {});
+                            } else {
+                                navigator.clipboard?.writeText(messageText).catch(() => {});
+                            }
+                        }}
+                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                    >
+                        <Share2 className="h-3 w-3" />
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }
@@ -629,7 +694,15 @@ const ItemRenderer = React.memo(
       );
     }
     if (item.kind === "stream" || item.kind === "stream-segment") {
-      return <StreamingMarkdownContent content={item.text} onOpenFile={onOpenFile} />;
+      // Only "stream" is the live growing tail — "stream-segment"s are past
+      // text a tool call already interrupted, so they never carry the caret.
+      return (
+        <StreamingMarkdownContent
+          content={item.text}
+          onOpenFile={onOpenFile}
+          streaming={item.kind === "stream"}
+        />
+      );
     }
     if (item.kind === "live-thinking") {
       return <ThinkingBlock content={item.text} streaming />;
@@ -818,6 +891,28 @@ function coalesceToolRuns(items: ChatRenderItem[]): Renderable[] {
   return out;
 }
 
+/**
+ * Copyable plain text for one assistant bubble group, in transcript order.
+ * Tool calls, thinking, and hire cards carry no text of their own and are
+ * skipped — this only has to be a faithful plain-text copy of what the
+ * agent said, not a pixel match of the rendered bubble.
+ */
+function groupCopyText(group: RenderGroup): string {
+  const parts: string[] = [];
+  for (const item of group.items) {
+    if (item.kind === "message") {
+      const text = resolveMessageBlocks(item.message)
+        .filter(isTextBlock)
+        .map((b) => (b.text ?? "") as string)
+        .join("");
+      if (text) parts.push(text);
+    } else if (item.kind === "stream" || item.kind === "stream-segment") {
+      if (item.text) parts.push(item.text);
+    }
+  }
+  return parts.join("\n\n");
+}
+
 function BubbleGroupImpl({
   group,
   agentName,
@@ -883,13 +978,15 @@ function BubbleGroupImpl({
     <div className="flex w-full justify-start" data-role="assistant">
       <div
         className={cn(
-          "flex flex-col min-w-0 max-w-[85%] group relative",
+          "flex flex-col min-w-0 max-w-[85%] relative",
           hasErrorCard && "w-full",
         )}
       >
         <AgentHead
           name={agentName || "Assistant"}
           state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}
+          streaming={Boolean(isStreaming && isLastAssistantGroup)}
+          messageText={groupCopyText(group)}
         />
         <div className="relative text-sm leading-7 text-[#302d28] w-full">
           {renderables.map((entry) =>
@@ -931,7 +1028,7 @@ function TypingPlaceholder({ agentName }: { agentName?: string }) {
       className="flex w-full justify-start"
     >
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <AgentHead name={agentName || "Assistant"} state="thinking" />
+        <AgentHead name={agentName || "Assistant"} state="thinking" streaming />
       </div>
     </div>
   );

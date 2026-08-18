@@ -82,4 +82,19 @@ describe("useGatewayRpc event-driven revalidation", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(gw.sendReq).toHaveBeenCalledTimes(1);
   });
+
+  it("revalidates a name-unrelated mount on onboarding_status_changed", async () => {
+    const gw = makeGateway();
+    // Distinct method again — see the global-SWR-cache note above.
+    renderHook(() => useGatewayRpc(gw, "commands.list"));
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(1));
+
+    // The container coming back from a cold reprovision. Reads taken while it
+    // had no IP are cached as a SUCCESSFUL `undefined` (the fetcher swallows
+    // "No container"), so no retry ladder is armed and this blanket event is
+    // the only thing that refetches them.
+    gw.emit("onboarding_status_changed", {});
+
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(2));
+  });
 });

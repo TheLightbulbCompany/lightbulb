@@ -59,7 +59,7 @@ describe('findCustomerByEmail', () => {
     const customer = { id: 'cus_abc', email: 'a@b.com' };
     mocks.customersList.mockResolvedValue({ data: [customer] });
 
-    const { findCustomerByEmail } = await import('../../e2e/fixtures/stripe-admin');
+    const { findCustomerByEmail } = await import('../stripe-admin');
     const result = await findCustomerByEmail(FAKE_KEY, 'a@b.com');
 
     expect(result).toEqual(customer);
@@ -70,7 +70,7 @@ describe('findCustomerByEmail', () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [] });
 
-    const { findCustomerByEmail } = await import('../../e2e/fixtures/stripe-admin');
+    const { findCustomerByEmail } = await import('../stripe-admin');
     const result = await findCustomerByEmail(FAKE_KEY, 'missing@example.com');
 
     expect(result).toBeNull();
@@ -82,7 +82,7 @@ describe('setCustomerMetadata', () => {
     const mocks = await getMocks();
     mocks.customersUpdate.mockResolvedValue({});
 
-    const { setCustomerMetadata } = await import('../../e2e/fixtures/stripe-admin');
+    const { setCustomerMetadata } = await import('../stripe-admin');
     await setCustomerMetadata(FAKE_KEY, 'cus_abc', { e2e_run_id: 'run_123', owner: 'user_x' });
 
     expect(mocks.customersUpdate).toHaveBeenCalledWith('cus_abc', {
@@ -96,7 +96,7 @@ describe('cancelSubsAndDeleteCustomer', () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [] });
 
-    const { cancelSubsAndDeleteCustomer } = await import('../../e2e/fixtures/stripe-admin');
+    const { cancelSubsAndDeleteCustomer } = await import('../stripe-admin');
     await expect(cancelSubsAndDeleteCustomer(FAKE_KEY, 'nobody@example.com')).resolves.toBeUndefined();
 
     expect(mocks.subscriptionsList).not.toHaveBeenCalled();
@@ -126,7 +126,7 @@ describe('cancelSubsAndDeleteCustomer', () => {
       return { deleted: true };
     });
 
-    const { cancelSubsAndDeleteCustomer } = await import('../../e2e/fixtures/stripe-admin');
+    const { cancelSubsAndDeleteCustomer } = await import('../stripe-admin');
     await cancelSubsAndDeleteCustomer(FAKE_KEY, 'test@example.com');
 
     expect(mocks.subscriptionsList).toHaveBeenCalledWith({
@@ -148,7 +148,7 @@ describe('cancelSubsAndDeleteCustomer', () => {
     });
     mocks.customersDel.mockResolvedValue({ deleted: true });
 
-    const { cancelSubsAndDeleteCustomer } = await import('../../e2e/fixtures/stripe-admin');
+    const { cancelSubsAndDeleteCustomer } = await import('../stripe-admin');
     await cancelSubsAndDeleteCustomer(FAKE_KEY, 'test@example.com');
 
     expect(mocks.subscriptionsCancel).not.toHaveBeenCalled();
@@ -164,7 +164,7 @@ describe('cancelSubsAndDeleteCustomer', () => {
     mocks.subscriptionsCancel.mockRejectedValueOnce(new Error('boom'));
     mocks.customersDel.mockResolvedValue({ deleted: true });
 
-    const { cancelSubsAndDeleteCustomer } = await import('../../e2e/fixtures/stripe-admin');
+    const { cancelSubsAndDeleteCustomer } = await import('../stripe-admin');
     await expect(cancelSubsAndDeleteCustomer(FAKE_KEY, 'test@example.com')).resolves.toBeUndefined();
 
     expect(mocks.customersDel).toHaveBeenCalledWith('cus_789');
@@ -176,7 +176,7 @@ describe('cancelSubsAndDeleteCustomer', () => {
     mocks.subscriptionsList.mockResolvedValue({ data: [] });
     mocks.customersDel.mockRejectedValueOnce(new Error('cannot delete'));
 
-    const { cancelSubsAndDeleteCustomer } = await import('../../e2e/fixtures/stripe-admin');
+    const { cancelSubsAndDeleteCustomer } = await import('../stripe-admin');
     await expect(cancelSubsAndDeleteCustomer(FAKE_KEY, 'test@example.com')).resolves.toBeUndefined();
   });
 });

@@ -56,7 +56,7 @@ describe('cancelSubscriptionIfExists', () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [] });
 
-    const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
+    const { cancelSubscriptionIfExists } = await import('../stripe');
     await expect(cancelSubscriptionIfExists('nobody@example.com')).resolves.toBeUndefined();
 
     expect(mocks.subscriptionsList).not.toHaveBeenCalled();
@@ -68,7 +68,7 @@ describe('cancelSubscriptionIfExists', () => {
     mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_123' }] });
     mocks.subscriptionsList.mockResolvedValue({ data: [] });
 
-    const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
+    const { cancelSubscriptionIfExists } = await import('../stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
     // A single list call with status: 'all' covers every non-canceled state.
@@ -94,7 +94,7 @@ describe('cancelSubscriptionIfExists', () => {
     });
     mocks.subscriptionsCancel.mockResolvedValue({ status: 'canceled' });
 
-    const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
+    const { cancelSubscriptionIfExists } = await import('../stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
     expect(mocks.subscriptionsList).toHaveBeenCalledTimes(1);
@@ -118,7 +118,7 @@ describe('cancelSubscriptionIfExists', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce({ status: 'canceled' });
 
-    const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
+    const { cancelSubscriptionIfExists } = await import('../stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
     expect(mocks.subscriptionsCancel).toHaveBeenCalledTimes(2);
@@ -140,7 +140,7 @@ describe('waitForSubscriptionActive', () => {
       json: async () => ({ is_subscribed: true }),
     });
 
-    const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
+    const { waitForSubscriptionActive } = await import('../stripe');
     await expect(
       waitForSubscriptionActive('http://api', async () => 'token', 10000),
     ).resolves.toBeUndefined();
@@ -155,7 +155,7 @@ describe('waitForSubscriptionActive', () => {
         json: async () => ({ is_subscribed: true }),
       });
 
-    const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
+    const { waitForSubscriptionActive } = await import('../stripe');
     await expect(
       Promise.all([
         waitForSubscriptionActive('http://api', async () => 'token', 30000),
@@ -168,7 +168,7 @@ describe('waitForSubscriptionActive', () => {
   it('throws immediately on non-ok, non-503 response', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
 
-    const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
+    const { waitForSubscriptionActive } = await import('../stripe');
     await expect(waitForSubscriptionActive('http://api', async () => 'token', 10000)).rejects.toThrow('401');
   });
 
@@ -178,7 +178,7 @@ describe('waitForSubscriptionActive', () => {
       json: async () => ({ is_subscribed: false }),
     });
 
-    const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
+    const { waitForSubscriptionActive } = await import('../stripe');
     await expect(
       Promise.all([
         waitForSubscriptionActive('http://api', async () => 'token', 100),

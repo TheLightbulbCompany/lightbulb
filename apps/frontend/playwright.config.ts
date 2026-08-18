@@ -6,6 +6,9 @@ dotenv.config({ path: path.resolve(__dirname, '.env.local') });
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // `__tests__/` dirs under tests/e2e hold vitest unit tests for the fixtures
+  // and helpers. Playwright's default testMatch would otherwise collect them.
+  testIgnore: '**/__tests__/**',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0, // journey tests have destructive side effects — no retries

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { notifyConversionGate } from "@/lib/notify";
-import { ArrowUpDown, Blocks, Cable, Check, Clock, Repeat } from "lucide-react";
+import { notifyApiError, notifyConversionGate, notifySuccess } from "@/lib/notify";
+import { ArrowUpDown, Blocks, Cable, Check, ChevronDown, Clock, Repeat } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
   EditorialButton,
@@ -30,6 +30,7 @@ import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { triggerSentence } from "@/components/teams/shared/triggerSentence";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
+import { ScheduleField } from "@/components/teams/shared/components/ScheduleField";
 import { withRoutineReviewer } from "@/components/teams/panels/routineExecutionPolicy";
 import {
   SIGNING_MODE_OPTIONS,
@@ -356,6 +357,21 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       if (variables && Object.keys(variables).length > 0) body.variables = variables;
       await post(`/routines/${routine.id}/run`, body);
       mutate();
+      // The run is dispatched server-side and nothing on this row changes when
+      // it starts — no status flip, no new column — so a successful Run now was
+      // indistinguishable from a dead button. The toast is the acknowledgement,
+      // and its action opens the automation, where Run history is.
+      notifySuccess(`Running ${routineName(routine)}…`, {
+        dedupeKey: `routine-run:${routine.id}`,
+        ...(nav
+          ? {
+              action: {
+                label: "View runs",
+                onClick: () => nav.openDetail("routine-detail", routine.id),
+              },
+            }
+          : {}),
+      });
     } finally {
       setBusy(null);
     }
@@ -368,7 +384,14 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       setRunVars(routine);
       return;
     }
-    void fireRun(routine);
+    // The one-click path has no dialog to render a failure into (the variables
+    // path keeps its inline error — see RunRoutineDialog.submit), so it reports
+    // through the toast surface instead of failing silently.
+    void fireRun(routine).catch((e) => {
+      if (notifyConversionGate(e) === null) {
+        notifyApiError(e, "Couldn't start that run.");
+      }
+    });
   }
 
   if (error)
@@ -907,6 +930,25 @@ interface FromIntegrationResult {
   poll?: boolean;
 }
 
+// Every guided provider's providers.yaml `instructions` template splices in
+// the literal `{proxy_url}` exactly once (Stripe/Sentry/Linear/Attio/
+// PostHog). Rendered as plain text that URL is one unbroken token that
+// overflows past the dialog's edge instead of wrapping, so pull it into its
+// own break-all span — matching SecretField's own convention for raw
+// URLs/secrets — and leave the rest of the (already-wrapping) sentence
+// alone. Falls back to the plain string if the URL isn't found in it.
+function renderInstructions(instructions: string, proxyUrl: string | null) {
+  const idx = proxyUrl ? instructions.indexOf(proxyUrl) : -1;
+  if (idx === -1 || !proxyUrl) return instructions;
+  return (
+    <>
+      {instructions.slice(0, idx)}
+      <code className="break-all">{proxyUrl}</code>
+      {instructions.slice(idx + proxyUrl.length)}
+    </>
+  );
+}
+
 // Searchable single-select for the event catalog. Providers now carry their
 // FULL event lists (Stripe ~265), so the plain dropdown stopped scaling. With
 // no filter and a big catalog: a "Popular" group (the first PINNED_EVENT_COUNT
@@ -914,6 +956,15 @@ interface FromIntegrationResult {
 // rest alphabetized. Typing collapses to one flat list matched
 // case-insensitively against label AND id. Small catalogs (≤8) skip the
 // grouping and list in registry order.
+//
+// The list lives in a POPOVER, not inline. Inline it was 260px of always-open
+// scroller wedged into a dialog that doesn't scroll, so every field below it
+// (repository, and the create actions) sat past the viewport edge with the
+// only scrollable thing under the cursor being the event list itself — the
+// form became unreachable after picking an app. A popover also puts the list
+// on its own dismissable layer, which is what makes Escape close the LIST
+// rather than the whole New-automation dialog (Radix dismisses the topmost
+// layer and stops there), instead of discarding every selection made so far.
 const PINNED_EVENT_COUNT = 3;
 
 function EventPicker({
@@ -925,10 +976,12 @@ function EventPicker({
   value: string | null;
   onSelect: (id: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   // Roving focus over the options (same idiom as the rung radiogroup): Arrow
   // keys move focus, Enter/Space activate the focused option button natively.
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const q = query.trim().toLowerCase();
   const filtered = q
     ? events.filter(
@@ -965,65 +1018,93 @@ function EventPicker({
     </div>
   );
 
+  const selectedLabel = events.find((e) => e.id === value)?.label ?? null;
+
   return (
-    <div>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search events…"
-        aria-label="Search events"
-        className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]"
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            optionRefs.current[0]?.focus();
-          }
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 rounded border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--ink)]"
+        >
+          <span className={cn("truncate", !selectedLabel && "text-[var(--mute)]")}>
+            {selectedLabel ?? "Select an event…"}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--mute)]" aria-hidden="true" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] p-2"
+        // The search input owns focus on open, so typing filters immediately
+        // instead of landing on the trigger's own focus restore.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          searchRef.current?.focus();
         }}
-      />
-      <div
-        role="listbox"
-        aria-label="Event"
-        onKeyDown={onListKeyDown}
-        className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
       >
-        {visible.length === 0 && (
-          <p className="px-3 py-2 text-sm text-[var(--mute)]">
-            No events match &ldquo;{query.trim()}&rdquo;.
-          </p>
-        )}
-        {visible.map((e, i) => (
-          <div key={e.id}>
-            {grouped && i === 0 && groupHeading("Popular")}
-            {grouped && i === popular.length && groupHeading("All events")}
-            <button
-              ref={(el) => {
-                optionRefs.current[i] = el;
-              }}
-              type="button"
-              role="option"
-              aria-selected={value === e.id}
-              tabIndex={i === (selectedIndex === -1 ? 0 : selectedIndex) ? 0 : -1}
-              onClick={() => onSelect(e.id)}
-              className={cn(
-                "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-                value === e.id
-                  ? "bg-[var(--forest-tint)] text-[var(--ink)]"
-                  : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
-              )}
-            >
-              <span className="truncate">{e.label}</span>
-              {value === e.id && (
-                <Check
-                  size={14}
-                  strokeWidth={2}
-                  className="shrink-0 text-[var(--forest)]"
-                />
-              )}
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search events…"
+          aria-label="Search events"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]"
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              optionRefs.current[0]?.focus();
+            }
+          }}
+        />
+        <div
+          role="listbox"
+          aria-label="Event"
+          onKeyDown={onListKeyDown}
+          className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
+        >
+          {visible.length === 0 && (
+            <p className="px-3 py-2 text-sm text-[var(--mute)]">
+              No events match &ldquo;{query.trim()}&rdquo;.
+            </p>
+          )}
+          {visible.map((e, i) => (
+            <div key={e.id}>
+              {grouped && i === 0 && groupHeading("Popular")}
+              {grouped && i === popular.length && groupHeading("All events")}
+              <button
+                ref={(el) => {
+                  optionRefs.current[i] = el;
+                }}
+                type="button"
+                role="option"
+                aria-selected={value === e.id}
+                tabIndex={i === (selectedIndex === -1 ? 0 : selectedIndex) ? 0 : -1}
+                onClick={() => {
+                  onSelect(e.id);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
+                  value === e.id
+                    ? "bg-[var(--forest-tint)] text-[var(--ink)]"
+                    : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+                )}
+              >
+                <span className="truncate">{e.label}</span>
+                {value === e.id && (
+                  <Check
+                    size={14}
+                    strokeWidth={2}
+                    className="shrink-0 text-[var(--forest)]"
+                  />
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1387,7 +1468,7 @@ function CreateRoutineDialog({
           )}
           {connResult.instructions && (
             <p className="text-xs text-[var(--mute)]">
-              {connResult.instructions}
+              {renderInstructions(connResult.instructions, connResult.proxy_url)}
             </p>
           )}
           {connResult.guided && !isReverseGuided ? (
@@ -1687,20 +1768,7 @@ function CreateRoutineDialog({
           </>
         )}
 
-        {rung === "schedule" && (
-          <label className="block">
-            <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-            <input
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              placeholder="0 9 * * *"
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-            />
-            <span className="text-xs text-[var(--mute)]">
-              Cron expression — when the automation fires.
-            </span>
-          </label>
-        )}
+        {rung === "schedule" && <ScheduleField value={cron} onChange={setCron} />}
 
         {rung === "webhook" && (
           <>

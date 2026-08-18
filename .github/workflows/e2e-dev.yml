@@ -11,7 +11,7 @@ on:
 jobs:
   e2e:
     name: Playwright E2E vs dev
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -19,6 +19,12 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          # Per-job install dir — the self-hosted box runs several runner
+          # instances out of one home, so two jobs installing pnpm into the
+          # default ~/setup-pnpm race each other (ENOTEMPTY on rmdir). Every
+          # other pnpm workflow already sets this; this one was the gap.
+          dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -29,6 +35,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `--with-deps` shells out to `sudo apt-get install` for chromium's
+      # system libraries. On the self-hosted box that write is permanent
+      # rather than discarded with the VM, so the first run installs and
+      # every run after it is a no-op. Passwordless sudo is already a
+      # requirement of the box (build-openclaw-image.yml installs soci and
+      # nerdctl into /usr/local/bin the same way).
       - name: Install Playwright browsers
         run: cd apps/frontend && npx playwright install chromium --with-deps
 

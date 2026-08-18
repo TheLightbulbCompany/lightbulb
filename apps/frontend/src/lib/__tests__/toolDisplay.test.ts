@@ -160,3 +160,25 @@ describe("summarizeToolRun — clause capitalization", () => {
     expect(summary).toBe("Ran 2 commands · read 2 files");
   });
 });
+
+describe("searchDetail — inner quotes", () => {
+  it("does not double up when the query itself quotes an exact phrase", () => {
+    // Observed live on the landing demo: for “"northwind ceramics" exist…
+    const d = resolveToolDisplay("web_search", {
+      query: '"northwind ceramics" existing brands',
+    });
+    expect(d.detail).toBe("for “'northwind ceramics' existing brands”");
+    expect(d.detail).not.toContain('“"');
+  });
+
+  it("normalizes curly inner quotes too, so they cannot collide with the wrapper", () => {
+    const d = resolveToolDisplay("web_search", { query: "“exact” phrase" });
+    expect(d.detail).toBe("for “'exact' phrase”");
+  });
+
+  it("leaves an unquoted query untouched", () => {
+    expect(resolveToolDisplay("web_search", { query: "ecs spot capacity" }).detail).toBe(
+      "for “ecs spot capacity”",
+    );
+  });
+});

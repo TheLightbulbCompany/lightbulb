@@ -431,11 +431,19 @@ export class PaperclipStack extends cdk.Stack {
         // provenance, but per-user containers reach Paperclip directly on the
         // in-VPC host (paperclip_adapter_config.paperclipApiUrl), so the Isol8
         // proxy's route filter never sees an agent's call. With this on, the
-        // fork denies `agents:create` to agent principals and requires a
+        // fork refuses agent creation whenever the in-flight request is
+        // authenticated as an agent principal — enforced in agentService.create,
+        // the single seam all creation crosses, so route-level paths like the
+        // CEO-agent company import are covered too — and requires a
         // `hire_agent` approval to name a pre-created pending agent, so
         // approving one activates rather than mints. Board principals — which
         // is only ever the Isol8 control plane, since the proxy already blocks
         // POST /agents and /agent-hires for browsers — are unaffected.
+        //
+        // FAILS OPEN by design: any value other than 1/true/yes/on leaves the
+        // fence off, so a typo here cannot brick agent creation. That is why
+        // the rendered value is asserted in paperclip-stack.test.ts for both
+        // environments rather than trusted as a string.
         // Inert on images older than the fork release carrying the fence.
         PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION:
           GOVERNED_AGENT_CREATION_ENVIRONMENTS.has(env) ? "1" : "0",

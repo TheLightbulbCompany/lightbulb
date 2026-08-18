@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 
 // ---------------------------------------------------------------------------
 // Header agent-action cluster: the inspector / see-work / pause-resume icon
@@ -49,10 +49,15 @@ vi.mock("@/lib/analytics", () => ({
   capture: vi.fn(),
 }));
 
+let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
     nodeConnected: false,
     onEvent: () => () => {},
+    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
+      emitChatMessage = h;
+      return () => {};
+    },
     sendReq: () => Promise.resolve(),
   }),
 }));
@@ -61,10 +66,12 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpcMutation: () => vi.fn(),
 }));
 
-// Active agent in the gateway roster (drives ``currentAgentId``).
+// Active agent in the gateway roster (drives ``currentAgentId``). Mutable so
+// the mobile-roster tests below can add a second agent and assert ordering.
+let mockAgents: { id: string; name: string }[] = [{ id: "agent_1", name: "Friday" }];
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({
-    agents: [{ id: "agent_1", name: "Friday" }],
+    agents: mockAgents,
     defaultId: "agent_1",
     createAgent: vi.fn(),
     deleteAgent: vi.fn(),
@@ -95,11 +102,15 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
   useAgentMutations: () => ({ pause: pauseMock, resume: resumeMock }),
 }));
 
-// Controllable Teams roster status — each test sets ``teamsStatus`` before render.
+// Controllable Teams roster — each test sets ``teamsStatus`` (and optionally
+// ``teamsRows``) before render.
 let teamsStatus: string;
+let teamsRows: { id: string; status?: string | null; role?: string | null }[] | null = null;
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: () => ({ data: { agents: [{ id: "agent_1", status: teamsStatus }] } }),
+    read: () => ({
+      data: { agents: teamsRows ?? [{ id: "agent_1", status: teamsStatus }] },
+    }),
     post: vi.fn(),
     patch: vi.fn(),
     del: vi.fn(),
@@ -126,7 +137,6 @@ vi.mock("@/components/Logo", () => ({ Logo: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));
 vi.mock("@/components/agents/AgentIdentity", () => ({
   Monogram: () => null,
-  StatusDot: () => null,
 }));
 vi.mock("@/components/support/SupportProvider", () => ({
   useSupport: () => ({ openSupport: vi.fn() }),
@@ -165,6 +175,8 @@ function renderShell() {
 describe("ChatLayout — header agent-action cluster", () => {
   beforeEach(() => {
     teamsStatus = "active";
+    teamsRows = null;
+    mockAgents = [{ id: "agent_1", name: "Friday" }];
     pauseMock.mockClear();
     resumeMock.mockClear();
     openAgentInspector.mockClear();
@@ -207,5 +219,83 @@ describe("ChatLayout — header agent-action cluster", () => {
     fireEvent.click(btn);
     await waitFor(() => expect(resumeMock).toHaveBeenCalledWith("agent_1"));
     expect(pauseMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mobile roster. ChatLayout is the mobile-only shell and, unlike
+// WorkspaceSidebar, is NOT wrapped in TeamsEventsProvider — the whole reason
+// `useRosterEntries` owns its own revalidation. These mirror the desktop
+// sidebar's roster tests so the two hosts can't diverge untested.
+// ---------------------------------------------------------------------------
+describe("ChatLayout — mobile roster", () => {
+  beforeEach(() => {
+    teamsStatus = "active";
+    teamsRows = null;
+    mockAgents = [{ id: "agent_1", name: "Friday" }];
+  });
+
+  const stateOf = (name: string) =>
+    screen.getByText(name).closest(".agent-item")?.getAttribute("data-state");
+
+  it("drives roster state from the Teams BFF roster", () => {
+    mockAgents = [
+      { id: "agent_1", name: "Friday" },
+      { id: "agent_2", name: "Beam" },
+      { id: "agent_3", name: "Scout" },
+    ];
+    teamsRows = [
+      { id: "agent_1", status: "running", role: "ceo" },
+      { id: "agent_2", status: "error" },
+      { id: "agent_3", status: "terminated" },
+    ];
+    renderShell();
+
+    expect(stateOf("Friday")).toBe("running");
+    expect(stateOf("Beam")).toBe("attention");
+    expect(stateOf("Scout")).toBe("terminated");
+  });
+
+  it("orders the mobile roster the same way the desktop one does", () => {
+    mockAgents = [
+      { id: "agent_3", name: "Scout" },
+      { id: "agent_1", name: "Friday" },
+      { id: "agent_2", name: "Beam" },
+    ];
+    teamsRows = [
+      { id: "agent_1", status: "idle", role: "ceo" },
+      { id: "agent_2", status: "error" },
+      { id: "agent_3", status: "paused" },
+    ];
+    renderShell();
+
+    expect(
+      Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map(
+        (n) => n.textContent,
+      ),
+    ).toEqual(["Friday", "Beam", "Scout"]);
+  });
+
+  it("recognises `active` as live rather than bucketing it into idle", () => {
+    teamsStatus = "active";
+    renderShell();
+    expect(stateOf("Friday")).toBe("running");
+  });
+
+  it("lights a row from a live gateway run on the mobile shell too", () => {
+    teamsStatus = "idle";
+    renderShell();
+    expect(stateOf("Friday")).toBe("idle");
+
+    act(() =>
+      emitChatMessage({ type: "run_active", active: true, agent_id: "agent_1", session_id: "s1" }),
+    );
+    expect(stateOf("Friday")).toBe("running");
+  });
+
+  it("roster rows are keyboard-operable buttons on mobile as well", () => {
+    teamsStatus = "idle";
+    renderShell();
+    expect(screen.getByRole("button", { name: "Friday" }).tagName).toBe("BUTTON");
   });
 });

@@ -55,6 +55,7 @@ vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
     nodeConnected: false,
     onEvent: () => () => {},
+    onChatMessage: () => () => {},
     sendReq: () => Promise.resolve(),
   }),
 }));
@@ -122,7 +123,6 @@ vi.mock("@/components/Logo", () => ({ Logo: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));
 vi.mock("@/components/agents/AgentIdentity", () => ({
   Monogram: () => null,
-  StatusDot: () => null,
 }));
 vi.mock("@/components/support/SupportProvider", () => ({
   useSupport: () => ({ openSupport: vi.fn() }),

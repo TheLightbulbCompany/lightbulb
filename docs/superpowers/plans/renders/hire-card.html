@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hire card — today vs recommendation + alternatives</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300..700&family=Lora:wght@400..600&family=Geist+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+/* Tokens verbatim from apps/frontend/src/app/globals.css */
+:root{
+  --cream:#faf7f2; --cream-deeper:#f3efe6; --cream-deepest:#ebe5d6;
+  --edge:#e0dbd0; --edge-soft:#ebe6da; --edge-forest:#d4e6dc;
+  --forest:#06402B; --forest-soft:#4a9e74; --forest-tint:#e6efe9;
+  --gold:#c2a378; --ink:#1a1a1a; --ink-soft:#3d3d3d;
+  --mute:#767061; --mute-soft:#8a8578; --warn:#c47a1d; --danger:#b32424;
+  --radius:.5rem;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--cream);color:var(--ink);
+  font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;padding:30px}
+h1{font-family:Lora,Georgia,serif;font-size:20px;font-weight:600;margin-bottom:6px}
+.sub{font-size:13px;color:var(--mute);margin-bottom:24px;max-width:82ch;line-height:1.6}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:26px;max-width:1360px;align-items:start;margin-bottom:30px}
+.colhead{display:flex;align-items:baseline;gap:10px;padding-bottom:9px;margin-bottom:16px;border-bottom:1px solid var(--edge)}
+.colhead h2{font-family:Lora,Georgia,serif;font-size:16px;font-weight:600}
+.tag{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute);
+  border:1px solid var(--edge);border-radius:999px;padding:2px 8px}
+.pane{border:1px solid var(--edge);border-radius:10px;padding:18px 16px;background:var(--cream)}
+.pane.mobile{max-width:390px}
+
+.agentline{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.agentname{font-size:12.5px;font-weight:600}
+.reason{font-size:13.5px;color:var(--mute);margin-bottom:10px;line-height:1.55}
+
+/* ---------- TODAY: every listing flat, one card each ---------- */
+.card{border:1px solid var(--edge);border-radius:var(--radius);background:var(--cream);padding:12px;margin-bottom:8px}
+.card .top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.card .nm{font-weight:500;font-size:14px}
+.card .sm{font-size:13px;color:var(--mute);line-height:1.5;margin-top:1px}
+.badges{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.badge{font-size:11px;background:var(--cream-deeper);border:1px solid var(--edge-soft);
+  color:var(--ink-soft);border-radius:4px;padding:1px 6px}
+.price{flex:none;font-size:11.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.btnrow{margin-top:12px;display:flex;align-items:center;gap:8px}
+.btn{font-size:12.5px;font-weight:500;border-radius:6px;padding:6px 11px;cursor:pointer;
+  border:1px solid var(--forest);background:var(--forest);color:var(--cream)}
+.btn.ghost{background:none;color:var(--ink-soft);border-color:var(--edge)}
+.btn.ghost:hover{background:var(--cream-deeper)}
+
+/* ---------- PROPOSED: one primary + alternatives drawer ---------- */
+.primary{border:1px solid var(--edge);border-radius:var(--radius);background:var(--cream);padding:14px}
+.primary .lede{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--mute);
+  margin-bottom:7px}
+.alt-toggle{margin-top:9px;display:inline-flex;align-items:center;gap:6px;background:none;border:0;
+  cursor:pointer;font-family:inherit;font-size:12.5px;color:var(--mute);padding:0}
+.alt-toggle:hover{color:var(--ink-soft)}
+.alt-list{margin-top:8px;border-left:1px solid var(--edge);padding-left:12px;
+  display:flex;flex-direction:column;gap:2px}
+.alt{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  padding:6px 0;border:0;background:none;text-align:left;cursor:pointer;font-family:inherit;width:100%}
+.alt:hover .alt-nm{color:var(--ink)}
+.alt-nm{font-size:13px;color:var(--ink-soft)}
+.alt-sm{font-size:12px;color:var(--mute)}
+.alt .price{font-size:11px}
+.hint{font-size:11.5px;color:var(--mute-soft);font-style:italic;margin-top:7px}
+
+.note{margin-top:13px;padding-top:10px;border-top:1px dashed var(--edge);
+  font-size:11.5px;line-height:1.65;color:var(--mute)}
+.note b{color:var(--ink-soft);font-weight:600}
+.bad{color:var(--danger);font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>Atlas recommends an agent</h1>
+<p class="sub">
+  Left is <code>origin/main</code>: <code>HireCard</code> does
+  <code>parsed.listings.map(...)</code>, so every suggestion becomes its own card and
+  five recommendations are a wall inside the transcript. Right applies Beautiful UI's
+  Recommendation Card shape — one primary, the rest behind a drawer, picking one promotes it.
+  <b>Deploy stays the approval gate either way</b> — promoting an alternative only changes
+  which card is primary, it never deploys.
+</p>
+
+<div class="wrap">
+  <div>
+    <div class="colhead"><h2>Today</h2><span class="tag">5 listings · desktop</span></div>
+    <div class="pane">
+      <div class="agentline">
+        <svg width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="var(--mute)" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span class="agentname">Atlas</span>
+      </div>
+      <div class="reason">Based on the deploy failures you keep hitting, these could help.</div>
+
+      <div class="card"><div class="top"><div><div class="nm">Sentry Triage</div><div class="sm">Triages incoming errors and opens issues with a suspected cause.</div><div class="badges"><span class="badge">observability</span><span class="badge">github</span></div></div><span class="price">$12/mo</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card"><div class="top"><div><div class="nm">Deploy Watchdog</div><div class="sm">Watches ECS rollouts and reverts a failed deployment.</div><div class="badges"><span class="badge">aws</span><span class="badge">ops</span></div></div><span class="price">Free</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card"><div class="top"><div><div class="nm">Cost Sentinel</div><div class="sm">Flags spend anomalies against your AWS bill.</div><div class="badges"><span class="badge">finops</span></div></div><span class="price">$20/mo</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card"><div class="top"><div><div class="nm">Runbook Author</div><div class="sm">Turns incident transcripts into runbooks.</div><div class="badges"><span class="badge">docs</span></div></div><span class="price">Free</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card"><div class="top"><div><div class="nm">Oncall Buddy</div><div class="sm">Summarises the night's alerts each morning.</div><div class="badges"><span class="badge">ops</span></div></div><span class="price">$8/mo</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+
+      <div class="note">
+        <span class="bad">Five equal cards, five equal buttons.</span> Nothing says which one Atlas
+        actually thinks you want, and the transcript is buried — the next message is a long scroll away.
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="colhead"><h2>Proposed</h2><span class="tag">1 + drawer · desktop</span></div>
+    <div class="pane">
+      <div class="agentline">
+        <svg width="18" height="18" viewBox="0 0 22 12" fill="none" stroke="var(--mute)" stroke-width="1.3"><path d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z"/></svg>
+        <span class="agentname">Atlas</span>
+      </div>
+      <div class="reason">Based on the deploy failures you keep hitting, these could help.</div>
+
+      <div class="primary">
+        <div class="lede">Recommended</div>
+        <div class="top" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+          <div>
+            <div class="nm" style="font-size:15px;font-weight:600">Deploy Watchdog</div>
+            <div class="sm">Watches ECS rollouts and reverts a failed deployment.</div>
+            <div class="badges"><span class="badge">aws</span><span class="badge">ops</span></div>
+          </div>
+          <span class="price">Free</span>
+        </div>
+        <div class="btnrow"><button class="btn">Deploy to my team</button></div>
+      </div>
+
+      <button class="alt-toggle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(90deg)"><path d="m9 18 6-6-6-6"/></svg>
+        4 alternatives
+      </button>
+
+      <div class="alt-list">
+        <button class="alt"><span><span class="alt-nm">Sentry Triage</span> <span class="alt-sm">— triages errors, opens issues</span></span><span class="price">$12/mo</span></button>
+        <button class="alt"><span><span class="alt-nm">Cost Sentinel</span> <span class="alt-sm">— flags AWS spend anomalies</span></span><span class="price">$20/mo</span></button>
+        <button class="alt"><span><span class="alt-nm">Runbook Author</span> <span class="alt-sm">— incidents into runbooks</span></span><span class="price">Free</span></button>
+        <button class="alt"><span><span class="alt-nm">Oncall Buddy</span> <span class="alt-sm">— summarises overnight alerts</span></span><span class="price">$8/mo</span></button>
+      </div>
+      <div class="hint">Picking one promotes it to Recommended. It does not deploy.</div>
+
+      <div class="note">
+        <b>One recommendation, one button.</b> The drawer reuses the trace's hairline rule, so the
+        transcript keeps a single visual grammar. Alternatives are one line each — enough to choose
+        from, not a second wall. <b>Only the primary card carries Deploy</b>, which keeps the
+        approval gate singular and unambiguous.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div>
+    <div class="colhead"><h2>Today — mobile</h2><span class="tag">390px</span></div>
+    <div class="pane mobile">
+      <div class="reason">Based on the deploy failures you keep hitting…</div>
+      <div class="card"><div class="top"><div><div class="nm">Sentry Triage</div><div class="sm">Triages incoming errors and opens issues.</div></div><span class="price">$12/mo</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card"><div class="top"><div><div class="nm">Deploy Watchdog</div><div class="sm">Watches ECS rollouts and reverts failures.</div></div><span class="price">Free</span></div><div class="btnrow"><button class="btn">Deploy to my team</button></div></div>
+      <div class="card" style="opacity:.5"><div class="top"><div><div class="nm">Cost Sentinel</div><div class="sm">…</div></div><span class="price">$20/mo</span></div></div>
+      <div class="note"><span class="bad">Three more below the fold.</span> On a phone, five cards is most of a screen-and-a-half before the agent's next sentence.</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="colhead"><h2>Proposed — mobile</h2><span class="tag">390px</span></div>
+    <div class="pane mobile">
+      <div class="reason">Based on the deploy failures you keep hitting…</div>
+      <div class="primary">
+        <div class="lede">Recommended</div>
+        <div class="nm" style="font-size:15px;font-weight:600">Deploy Watchdog</div>
+        <div class="sm">Watches ECS rollouts and reverts a failed deployment.</div>
+        <div class="badges"><span class="badge">aws</span><span class="badge">ops</span></div>
+        <div class="btnrow"><button class="btn">Deploy to my team</button></div>
+      </div>
+      <button class="alt-toggle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        4 alternatives
+      </button>
+      <div class="note">
+        Collapsed by default on mobile, so the recommendation and the agent's next sentence fit one
+        screen. Tapping opens the same list — a bottom sheet here rather than inline.
+        Targets need the <code>@media (pointer:coarse)</code> bump the other tasks use.
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

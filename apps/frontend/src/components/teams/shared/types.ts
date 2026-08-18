@@ -496,6 +496,14 @@ export interface RoutineTriggerSummary {
   // Webhook replay-window (seconds) — only meaningful for a signed webhook
   // (signingMode "bearer" | "hmac_sha256"); null/omitted otherwise.
   replayWindowSec?: number | null;
+  // The public URL that fires this trigger — what the owner pastes into the
+  // provider's dashboard (Stripe/PostHog/Sentry/Linear/Attio) to ARM it.
+  // Server-owned and server-projected (routers/teams/work.py::get_routine via
+  // core/services/trigger_fire_url.py): the shape depends on PUBLIC_API_BASE
+  // and backend owner-id resolution, and a subtly wrong URL pasted into a
+  // provider fails silently at delivery time — so never reconstruct it here.
+  // Webhook triggers only; absent on schedules.
+  fireUrl?: string | null;
 }
 
 /** The one-time secret material a webhook trigger create/rotate returns

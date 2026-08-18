@@ -30,6 +30,14 @@ const PAPERCLIP_VERSION: PaperclipVersionConfig = JSON.parse(
 );
 
 /**
+ * Environments whose Paperclip BFF arms the fork's governed-agent-creation
+ * fence. Opt-in per environment and dev-first: add "prod" only after dev has
+ * run a full provision (Friday + Atlas) and a marketplace hire under the
+ * fence, on a Paperclip image that actually carries it.
+ */
+const GOVERNED_AGENT_CREATION_ENVIRONMENTS = new Set<string>(["dev"]);
+
+/**
  * PaperclipStack — runs the pinned Paperclip image (an extended overlay of the
  * official image; see apps/infra/paperclip-extended/) as a single Fargate
  * service inside the Isol8 VPC.
@@ -419,6 +427,26 @@ export class PaperclipStack extends cdk.Stack {
         // (409 built_in_agent_undeletable), so not creating them is the
         // only path. Inert on images older than isol8.5 (unread env).
         PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
+        // Isol8 owns the agent cap, OpenClaw pairing, and marketplace
+        // provenance, but per-user containers reach Paperclip directly on the
+        // in-VPC host (paperclip_adapter_config.paperclipApiUrl), so the Isol8
+        // proxy's route filter never sees an agent's call. With this on, the
+        // fork refuses agent creation whenever the in-flight request is
+        // authenticated as an agent principal — enforced in agentService.create,
+        // the single seam all creation crosses, so route-level paths like the
+        // CEO-agent company import are covered too — and requires a
+        // `hire_agent` approval to name a pre-created pending agent, so
+        // approving one activates rather than mints. Board principals — which
+        // is only ever the Isol8 control plane, since the proxy already blocks
+        // POST /agents and /agent-hires for browsers — are unaffected.
+        //
+        // FAILS OPEN by design: any value other than 1/true/yes/on leaves the
+        // fence off, so a typo here cannot brick agent creation. That is why
+        // the rendered value is asserted in paperclip-stack.test.ts for both
+        // environments rather than trusted as a string.
+        // Inert on images older than the fork release carrying the fence.
+        PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION:
+          GOVERNED_AGENT_CREATION_ENVIRONMENTS.has(env) ? "1" : "0",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         // Receiver URL for the bundled isol8.notifications plugin (worker env
         // passthrough in the fork's buildPluginWorkerEnv; the token half is a

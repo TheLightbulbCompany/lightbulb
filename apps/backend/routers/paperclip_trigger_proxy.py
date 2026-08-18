@@ -128,6 +128,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
+from core.services.trigger_fire_url import trigger_fire_url
 from routers.hooks_proxy import _check_rate_limit, _client_factory, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
@@ -418,7 +419,7 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     oidc_bearer: str | None = None
     oidc_jwt = _bearer_jwt(request.headers.get("Authorization"))
     if oidc_jwt:
-        audience = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+        audience = trigger_fire_url(owner_id, public_id)
         if not await asyncio.to_thread(_verify_google_oidc_sync, oidc_jwt, audience):
             return Response(
                 status_code=401,

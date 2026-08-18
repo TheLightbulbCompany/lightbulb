@@ -18,6 +18,7 @@ Teams BFF routine projection (``routers/teams/work.py``).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.config import settings
@@ -39,7 +40,11 @@ def stamp_fire_urls(payload: Any, owner_id: str) -> Any:
     - a trigger create/rotate response (``{"trigger": ..., "secretMaterial":
       ...}``) — the in-VPC ``secretMaterial.webhookUrl`` is REPLACED with the
       public one, because the UI shows that field as the value to paste into
-      the provider.
+      the provider;
+    - a revision-restore response (``{..., "secretMaterials": [...]}``) — an
+      ARRAY, minted when the restored snapshot names a webhook trigger that no
+      longer exists, so upstream recreates it with a fresh secret. Same
+      one-time "shown once, never again" material, same in-VPC URL, same swap.
 
     Schedule triggers have no fire URL and are left untouched. Tolerant of
     upstream shape drift: anything unexpected passes straight through.
@@ -59,6 +64,11 @@ def stamp_fire_urls(payload: Any, owner_id: str) -> Any:
     if public_id and isinstance(material, dict):
         material["webhookUrl"] = trigger_fire_url(owner_id, public_id)
 
+    materials = payload.get("secretMaterials")
+    if isinstance(materials, list):
+        for restored in materials:
+            _restamp_material(restored, owner_id)
+
     return payload
 
 
@@ -66,3 +76,24 @@ def _stamp_trigger(trigger: Any, owner_id: str) -> None:
     public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
     if public_id and trigger.get("kind") == "webhook":
         trigger["fireUrl"] = trigger_fire_url(owner_id, public_id)
+
+
+# Upstream's own (in-VPC, unusable) webhook URL, whose only job here is to carry
+# the public id back out — see ``_restamp_material``.
+_UPSTREAM_PUBLIC_ID = re.compile(r"/api/routine-triggers/public/([^/]+)/fire/?$")
+
+
+def _restamp_material(material: Any, owner_id: str) -> None:
+    """Rewrite one restore-response ``secretMaterial``'s in-VPC ``webhookUrl``.
+
+    A restore entry names its ``triggerId``, never its ``publicId`` — the
+    freshly minted public id appears nowhere else in the response, so it is
+    read back out of upstream's own URL. A non-match means that format moved:
+    leave the value untouched rather than publish a guessed URL, which is the
+    exact failure this module exists to prevent (a subtly wrong URL pasted into
+    a provider fails silently at delivery time).
+    """
+    url = material.get("webhookUrl") if isinstance(material, dict) else None
+    found = _UPSTREAM_PUBLIC_ID.search(url) if isinstance(url, str) else None
+    if found:
+        material["webhookUrl"] = trigger_fire_url(owner_id, found.group(1))

@@ -122,3 +122,19 @@ def test_rotate_secret_replaces_upstream_in_vpc_webhook_url(client, monkeypatch)
     assert body["secretMaterial"]["webhookUrl"] == f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/o1/pub_abc"
     assert body["secretMaterial"]["webhookSecret"] == "whsec_new"
     assert body["trigger"]["fireUrl"] == f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/o1/pub_abc"
+
+
+def test_get_routine_skips_webhook_trigger_with_no_public_id(client, monkeypatch):
+    """No publicId → no fire URL. The URL is keyed by that id, so a webhook row
+    without one (mid-create, or an upstream projection that omits it) has no
+    address to arm; emitting a truncated one would be a silently-dead paste."""
+    admin = MagicMock()
+    admin.get_routine = AsyncMock(
+        return_value={"id": "r1", "triggers": [{"id": "t1", "kind": "webhook", "publicId": None}]}
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    r = client.get("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert "fireUrl" not in r.json()["triggers"][0]

@@ -1134,6 +1134,67 @@ def test_restore_revision_allowed_for_paid(client, admin):
     )
 
 
+def test_restore_revision_rewrites_recreated_webhook_urls(client, admin):
+    """Restoring a snapshot naming a since-deleted webhook trigger makes upstream
+    RECREATE it and return one-time material as ``secretMaterials`` — an ARRAY,
+    a third shape distinct from create/rotate's ``{trigger, secretMaterial}``.
+
+    Its ``webhookUrl`` is built from the in-VPC PAPERCLIP_API_URL like every
+    other upstream-minted one, so it must be swapped here too. A restore entry
+    names only ``triggerId``, so the fresh public id is read back out of
+    upstream's own URL — the sole place it appears in the response.
+    """
+    from core.config import settings
+
+    admin.restore_routine_revision = AsyncMock(
+        return_value={
+            "routine": {"id": "r1"},
+            "restoredFromRevisionNumber": 3,
+            "secretMaterials": [
+                {
+                    "triggerId": "trg_1",
+                    "webhookUrl": "http://paperclip.internal/api/routine-triggers/public/pub_aaa/fire",
+                    "webhookSecret": "whsec_one",
+                },
+                {
+                    "triggerId": "trg_2",
+                    "webhookUrl": "http://paperclip.internal/api/routine-triggers/public/pub_bbb/fire",
+                    "webhookSecret": "whsec_two",
+                },
+            ],
+        }
+    )
+    r = client.post(
+        "/api/v1/teams/routines/r1/revisions/rev_1/restore",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    first, second = r.json()["secretMaterials"]
+    assert first["webhookUrl"] == f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/o1/pub_aaa"
+    assert second["webhookUrl"] == f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/o1/pub_bbb"
+    # Secrets ride through untouched — only the URL is ours to rewrite.
+    assert [m["webhookSecret"] for m in (first, second)] == ["whsec_one", "whsec_two"]
+
+
+def test_restore_revision_leaves_unrecognized_webhook_url_alone(client, admin):
+    """Fail CLOSED on an unparseable upstream URL: a guessed fire URL pasted into
+    a provider fails silently at delivery time, which is worse than an obviously
+    internal one. No match → leave the value exactly as upstream sent it."""
+    admin.restore_routine_revision = AsyncMock(
+        return_value={
+            "secretMaterials": [
+                {"triggerId": "trg_1", "webhookUrl": "http://paperclip.internal/some/other/shape"},
+            ]
+        }
+    )
+    r = client.post(
+        "/api/v1/teams/routines/r1/revisions/rev_1/restore",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["secretMaterials"][0]["webhookUrl"] == "http://paperclip.internal/some/other/shape"
+
+
 def test_patch_routine_accepts_widened_fields(client, admin):
     """The widened routine body carries policies + variables (incl. date type)
     + env through to upstream in camelCase."""

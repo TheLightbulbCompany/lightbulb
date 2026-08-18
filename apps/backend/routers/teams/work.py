@@ -470,12 +470,22 @@ async def restore_routine_revision(
     to an ``active`` snapshot with enabled triggers, which is activation-adjacent
     — the same reason ``patch_routine(status="active")`` is gated. A trial owner
     who can't run scheduled automation shouldn't be able to re-arm it via restore.
+
+    Restoring a snapshot that names a since-deleted webhook trigger makes
+    upstream RECREATE it with a fresh secret and return the one-time material as
+    ``secretMaterials`` — an array, a third shape (see ``stamp_fire_urls``). Its
+    ``webhookUrl`` is built from the same in-VPC host as create/rotate, so it is
+    swapped here too: it is the "shown once, never again" value, and shipping the
+    unusable one would strand whoever surfaces it.
     """
     await require_always_on_entitlement(ctx.owner_id)
-    return await _agents._admin().restore_routine_revision(
-        routine_id=routine_id,
-        revision_id=revision_id,
-        session_cookie=ctx.session_cookie,
+    return stamp_fire_urls(
+        await _agents._admin().restore_routine_revision(
+            routine_id=routine_id,
+            revision_id=revision_id,
+            session_cookie=ctx.session_cookie,
+        ),
+        ctx.owner_id,
     )
 
 

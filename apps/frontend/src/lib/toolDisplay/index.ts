@@ -213,8 +213,23 @@ function writeDetail(key: string, args: Record<string, unknown>): string | undef
  * Six spellings because the query arg name varies by search provider; upstream
  * normalizes the same set in `collectWebSearchQueries`.
  */
+/**
+ * Agents routinely quote an exact phrase inside a query
+ * (`"northwind ceramics" existing brands`). Wrapping that in our own curly
+ * quotes doubles them up and reads like a typo — observed live on the landing
+ * demo as: for “"northwind ceramics" exist…
+ *
+ * Inner doubles become singles rather than being stripped: the quoting carries
+ * meaning (it is exact-phrase search syntax), so dropping it would misreport
+ * what the agent actually searched for.
+ */
+function normalizeInnerQuotes(query: string): string {
+  return query.replace(/["\u201c\u201d]/g, "'");
+}
+
 function searchDetail(args: Record<string, unknown>): string | undefined {
-  const query = firstString(args.query, args.q, args.search, args.searchQuery, args.text, args.prompt);
+  const raw = firstString(args.query, args.q, args.search, args.searchQuery, args.text, args.prompt);
+  const query = raw === undefined ? undefined : normalizeInnerQuotes(raw);
   if (!query) return undefined;
   const count =
     nonNegativeInt(args.count) ??

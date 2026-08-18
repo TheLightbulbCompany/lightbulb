@@ -81,7 +81,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.5
+FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.6
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
 # line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream
@@ -180,8 +180,29 @@ RUN curl -sSL https://astral.sh/uv/install.sh | HOME=/tmp sh && \
 
 # ---- Layer 5: pip packages (no cache, pre-built wheels only) ----
 # nano-pdf entry points land on PATH via system python (/usr/local/bin).
+#
+# openai-whisper was REMOVED (2026-08-17). It pulled the PyPI linux-x86_64
+# torch wheel, which drags the whole NVIDIA CUDA runtime -- torch, triton,
+# cudnn, cublas, nccl, cusparse, cusolver, cufft, nvrtc, ~3.4 GB of wheels
+# compressing to a 2.87 GB layer (37% of the whole image) -- onto a CPU-only
+# Fargate box. Nothing in the fleet could reach it: write_openclaw_config
+# emits tools.media.audio.enabled=false for EVERY owner, so the
+# media-understanding path that would invoke local STT is off fleet-wide.
+# The only other consumer is OpenClaw's OPTIONAL bundled `openai-whisper`
+# skill (requires.bins ["whisper"], brew install path), which an agent would
+# have to invoke by hand and which is useless on 1 vCPU without a GPU.
+# Removing it does NOT speed up the image pull -- SOCI lazy-loads layers
+# >=10 MiB, so those bytes were never in the pull window. What it buys is
+# ephemeral-storage headroom (Fargate's 20 GiB ceiling holds the compressed
+# AND uncompressed image; this file targets 2-3 GB and had reached 7.79 GB)
+# and less background decompression competing with the boot chain on one
+# vCPU -- the same CPU contention that inflates `doctor --fix` from ~43s
+# standalone to ~4 min during boot. It also drops doctor's local-STT probe.
+# If audio understanding is ever enabled, do NOT restore this line as-is:
+# install torch from the CPU wheel index
+# (--index-url https://download.pytorch.org/whl/cpu) and keep CUDA out.
 RUN pip install --no-cache-dir --break-system-packages \
-      openai-whisper websockets nano-pdf
+      websockets nano-pdf
 
 # ---- Layer 6: Go-built skills (copied from builder) ----
 # 13 binaries built in the builder stage — Go toolchain itself stays out

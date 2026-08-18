@@ -1994,6 +1994,26 @@ def build_openclaw_config_dict(
             # (findChromeExecutableLinux probes it first); the pin keeps the
             # choice deliberate rather than an accident of list order.
             "executablePath": "/usr/bin/google-chrome",
+            # extraArgs: WebGL only. Chrome 137 removed the automatic
+            # SwiftShader fallback (blink-dev "Intent to Remove: SwiftShader
+            # Fallback") and prod runs Chrome 151 on GPU-less Fargate, so
+            # before this the container had NO WebGL at all —
+            # `canvas.getContext("webgl")` returned null, which essentially no
+            # real desktop does. Anything drawing through WebGL simply failed;
+            # Arkose/FunCaptcha (LinkedIn's sign-in challenge) renders its
+            # puzzle in 3D and so could never appear.
+            #
+            # These two flags point ANGLE at the Mesa llvmpipe rasteriser
+            # installed in Dockerfile layer 9b. IMAGE-FIRST ORDERING, same as
+            # executablePath above: an image WITHOUT libgl1-mesa-dri +
+            # libglx-mesa0 cannot satisfy `--use-angle=gl`, so this config must
+            # not reach a container until that image has rolled.
+            #
+            # Verify after a roll with chrome://gpu in the Browser panel. If GL
+            # init fails there, the zero-package fallback is
+            # `--enable-unsafe-swiftshader` — a rarer renderer string, but
+            # WebGL present beats WebGL absent.
+            "extraArgs": ["--use-gl=angle", "--use-angle=gl"],
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that
             # Chrome's `chrome_crashpad_handler: --database is required` abort

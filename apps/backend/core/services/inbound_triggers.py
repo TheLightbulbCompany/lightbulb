@@ -12,9 +12,9 @@ a routine the owner already wrote, and the registry's boilerplate starter
 prompt is never rendered onto it. Everything from ``create_routine_trigger``
 down — signing mode, provider-side registration, arming, the returned dict —
 is the same code on both paths; only the rollback differs (an attach may
-delete the trigger it added, never the owner's routine). Three shapes stay
-create-only because their setup writes the routine's own body: see
-``_ATTACHABLE_REGISTRATIONS``.
+delete the triggers it added, never the owner's routine). The three shapes
+whose setup writes the routine's own body APPEND it as a delimited block
+instead of composing the description: see ``_append_platform_block``.
 
 The inbound shapes:
 

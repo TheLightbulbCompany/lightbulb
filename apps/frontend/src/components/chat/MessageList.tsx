@@ -29,6 +29,7 @@ import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typesc
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
 import { ToolActivityTrace, type ToolCall } from "@/components/chat/ToolActivityTrace";
+import { TranscriptSelectionBar } from "@/components/chat/TranscriptSelectionBar";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -1291,6 +1292,11 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
         data-lenis-prevent
       >
+        {/* Selecting text anywhere inside this container surfaces a floating
+            Copy action — portaled to document.body, so it doesn't render as
+            a DOM descendant here despite mounting from this ref. See
+            TranscriptSelectionBar.tsx. */}
+        <TranscriptSelectionBar containerRef={containerRef} />
         {/* `chat-transcript` occludes off-screen groups (content-visibility) —
             see globals.css. Keeps a long history off the layout hot path. */}
         <div className="max-w-3xl mx-auto space-y-10 py-8 chat-transcript">

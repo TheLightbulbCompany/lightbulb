@@ -589,87 +589,103 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           ) : (
             <ul className="flex flex-col gap-1">
               {triggers.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm">
-                  <span
-                    className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
-                    style={{ background: "var(--edge)", color: "var(--ink)" }}
-                  >
-                    {t.kind}
-                  </span>
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="truncate text-xs text-[var(--ink)]">
-                      {triggerTitle(t)}
+                <li key={t.id} className="flex flex-col gap-1.5 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+                      style={{ background: "var(--edge)", color: "var(--ink)" }}
+                    >
+                      {t.kind}
                     </span>
-                    {triggerDetail(t) && (
-                      <span className="truncate font-mono text-xs text-[var(--mute)]">
-                        {triggerDetail(t)}
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate text-xs text-[var(--ink)]">
+                        {triggerTitle(t)}
+                      </span>
+                      {triggerDetail(t) && (
+                        <span className="truncate font-mono text-xs text-[var(--mute)]">
+                          {triggerDetail(t)}
+                        </span>
+                      )}
+                    </div>
+                    {t.timezone && (
+                      <span className="text-xs text-[var(--mute)]">{t.timezone}</span>
+                    )}
+                    {t.nextRunAt && (
+                      <span className="text-xs text-[var(--mute)]">
+                        · next {nextRunLabel(t.nextRunAt)}
                       </span>
                     )}
+                    {t.enabled === false && (
+                      <span className="text-xs text-[var(--mute)]">· paused</span>
+                    )}
+                    <span className="flex-1" />
+                    {t.kind === "schedule" && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setActionError(null);
+                          setTriggerDialog({ mode: "edit", trigger: t });
+                        }}
+                        className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
+                        aria-label={`Edit ${triggerTitle(t)}`}
+                        title="Edit"
+                      >
+                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                    {triggerHasSecret(t) && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => rotateSecret(t.id)}
+                        className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
+                        aria-label={`Rotate to a new random secret for ${triggerTitle(t)}`}
+                        title="Rotate to a new random secret"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                    {triggerHasSecret(t) && t.publicId && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setActionError(null);
+                          setSecretDialogTrigger(t);
+                        }}
+                        className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
+                        aria-label={`Set signing secret for ${triggerTitle(t)}`}
+                        title="Set signing secret"
+                      >
+                        <KeySquare className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => deleteTrigger(t.id)}
+                      className="text-[var(--mute)] hover:text-[var(--danger)] disabled:opacity-50"
+                      aria-label={`Delete ${triggerTitle(t)}`}
+                      title="Delete"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
                   </div>
-                  {t.timezone && (
-                    <span className="text-xs text-[var(--mute)]">{t.timezone}</span>
+                  {/* Arming a webhook trigger means pasting THIS url into the
+                      provider's dashboard. The guided create-flow shows it once,
+                      for the routine it just made; without it here an existing
+                      trigger (e.g. the Stripe triggers on a hand-written routine)
+                      can only be armed through the API. Server-projected — the
+                      shape is server-owned and a subtly wrong URL fails silently
+                      at delivery time, so it is never rebuilt client-side. */}
+                  {t.fireUrl && (
+                    <SecretField
+                      label="Fire URL"
+                      value={t.fireUrl}
+                      copyLabel={`fire URL for ${triggerTitle(t)}`}
+                    />
                   )}
-                  {t.nextRunAt && (
-                    <span className="text-xs text-[var(--mute)]">
-                      · next {nextRunLabel(t.nextRunAt)}
-                    </span>
-                  )}
-                  {t.enabled === false && (
-                    <span className="text-xs text-[var(--mute)]">· paused</span>
-                  )}
-                  <span className="flex-1" />
-                  {t.kind === "schedule" && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        setActionError(null);
-                        setTriggerDialog({ mode: "edit", trigger: t });
-                      }}
-                      className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Edit ${triggerTitle(t)}`}
-                      title="Edit"
-                    >
-                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  )}
-                  {triggerHasSecret(t) && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => rotateSecret(t.id)}
-                      className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Rotate to a new random secret for ${triggerTitle(t)}`}
-                      title="Rotate to a new random secret"
-                    >
-                      <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  )}
-                  {triggerHasSecret(t) && t.publicId && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        setActionError(null);
-                        setSecretDialogTrigger(t);
-                      }}
-                      className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Set signing secret for ${triggerTitle(t)}`}
-                      title="Set signing secret"
-                    >
-                      <KeySquare className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => deleteTrigger(t.id)}
-                    className="text-[var(--mute)] hover:text-[var(--danger)] disabled:opacity-50"
-                    aria-label={`Delete ${triggerTitle(t)}`}
-                    title="Delete"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
                 </li>
               ))}
             </ul>

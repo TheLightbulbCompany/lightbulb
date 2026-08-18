@@ -146,6 +146,7 @@ from core.services.credentials import integration_secret_store, registry
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.trigger_fire_url import trigger_fire_url
 
 logger = logging.getLogger(__name__)
 
@@ -976,7 +977,7 @@ async def _seed_trigger_routine(
             )
             raise
 
-        proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+        proxy_url = trigger_fire_url(owner_id, public_id)
 
         if registration == "guided_paste":
             logger.info(

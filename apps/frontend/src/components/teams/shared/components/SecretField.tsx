@@ -7,14 +7,26 @@ import { Copy } from "lucide-react";
 // RoutinesPanel's create-dialog "Any other app" rung — both show a webhook
 // secret exactly once, so there is no reveal toggle, unlike the
 // fetched-then-masked token in settings/WebhooksPanel.tsx.
-export function SecretField({ label, value }: { label: string; value: string }) {
+// `copyLabel` disambiguates the copy button when several fields share a visible
+// label — a routine carries one webhook trigger per provider event, so its
+// detail panel renders several "Fire URL" fields at once and the row title is
+// the only thing that tells them apart.
+export function SecretField({
+  label,
+  value,
+  copyLabel,
+}: {
+  label: string;
+  value: string;
+  copyLabel?: string;
+}) {
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm text-[var(--ink-soft)]">{label}</span>
         <button
           type="button"
-          aria-label={`Copy ${label}`}
+          aria-label={`Copy ${copyLabel ?? label}`}
           onClick={() => navigator.clipboard.writeText(value)}
           className="text-[var(--mute)] hover:text-[var(--ink)]"
         >

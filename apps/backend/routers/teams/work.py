@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends
 
 from core.repositories import billing_repo
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+from core.services.trigger_fire_url import stamp_fire_urls
 
 from . import agents as _agents
 from ._guards import require_always_on_entitlement, require_trial_runway
@@ -109,6 +110,9 @@ async def create_routine_trigger(
     Paperclip returns the one-time ``{trigger, secretMaterial}`` — the caller
     must display ``secretMaterial.webhookUrl`` / ``webhookSecret`` immediately,
     it is never shown again (rotate is the only way to see a new one later).
+    Upstream mints that ``webhookUrl`` from its in-VPC ``PAPERCLIP_API_URL``,
+    which no provider can reach — ``stamp_fire_urls`` swaps in the public
+    ingress URL, the same one the trigger projection carries as ``fireUrl``.
 
     Gated separately from ``create_routine``: the trigger IS the autonomy lever
     (a schedule fires on its own; a webhook lets an external caller fire the
@@ -117,10 +121,13 @@ async def create_routine_trigger(
     gate, or created upstream).
     """
     await require_always_on_entitlement(ctx.owner_id)
-    return await _agents._admin().create_routine_trigger(
-        routine_id=routine_id,
-        body=body.model_dump(exclude_none=True, by_alias=True),
-        session_cookie=ctx.session_cookie,
+    return stamp_fire_urls(
+        await _agents._admin().create_routine_trigger(
+            routine_id=routine_id,
+            body=body.model_dump(exclude_none=True, by_alias=True),
+            session_cookie=ctx.session_cookie,
+        ),
+        ctx.owner_id,
     )
 
 
@@ -283,10 +290,20 @@ async def list_routine_runs(
 
 @router.get("/routines/{routine_id}")
 async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single routine by id (the routine detail page)."""
-    return await _agents._admin().get_routine(
-        routine_id=routine_id,
-        session_cookie=ctx.session_cookie,
+    """Fetch a single routine by id (the routine detail page).
+
+    Webhook triggers are stamped with ``fireUrl`` — the public address the
+    owner pastes into the provider's dashboard to ARM the trigger. Without it
+    an already-existing trigger can only be armed through the API: the URL's
+    shape is server-owned (PUBLIC_API_BASE + owner-id resolution) and upstream's
+    own ``webhookUrl`` is the in-VPC host, so the panel cannot derive it.
+    """
+    return stamp_fire_urls(
+        await _agents._admin().get_routine(
+            routine_id=routine_id,
+            session_cookie=ctx.session_cookie,
+        ),
+        ctx.owner_id,
     )
 
 
@@ -416,10 +433,15 @@ async def rotate_routine_trigger_secret(
     Returns upstream's ``{trigger, secretMaterial, ...}`` — the new secret is
     shown once. Ungated: rotating the secret of an existing trigger is a
     management action, not an activation lever (it does not create autonomy).
+    ``secretMaterial.webhookUrl`` is rewritten to the public ingress URL (see
+    ``create_routine_trigger``).
     """
-    return await _agents._admin().rotate_routine_trigger_secret(
-        trigger_id=trigger_id,
-        session_cookie=ctx.session_cookie,
+    return stamp_fire_urls(
+        await _agents._admin().rotate_routine_trigger_secret(
+            trigger_id=trigger_id,
+            session_cookie=ctx.session_cookie,
+        ),
+        ctx.owner_id,
     )
 
 

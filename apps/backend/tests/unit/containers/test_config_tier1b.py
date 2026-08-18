@@ -208,8 +208,27 @@ class TestBrowserBounds:
         unwritable XDG_CONFIG_HOME (root-owned on EFS vs the access point's
         uid 1000), fixed in Workspace.ensure_xdg_dirs. These flags do nothing
         for a launch failure; do not re-add them for one.
+
+        Narrowed from "extraArgs must be absent" when the WebGL flags landed:
+        the ban was always about these two flags, not the key.
         """
-        assert "extraArgs" not in _cfg()["browser"]
+        extra_args = _cfg()["browser"].get("extraArgs", [])
+        assert not [a for a in extra_args if "breakpad" in a or "crash-dumps-dir" in a]
+
+    def test_webgl_flags_present(self):
+        """Chrome 137 removed the automatic SwiftShader fallback and prod runs
+        Chrome 151 on GPU-less Fargate, so without these the container had NO
+        WebGL — `canvas.getContext("webgl")` returned null, a state essentially
+        no real desktop is in. Arkose/FunCaptcha (LinkedIn sign-in) renders its
+        puzzle in 3D and could never appear.
+
+        Paired with libgl1-mesa-dri + libglx-mesa0 in Dockerfile layer 9b;
+        neither half works alone, so this guards the config half against a
+        silent revert.
+        """
+        extra_args = _cfg()["browser"]["extraArgs"]
+        assert "--use-gl=angle" in extra_args
+        assert "--use-angle=gl" in extra_args
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

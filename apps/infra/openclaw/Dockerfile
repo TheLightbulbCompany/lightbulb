@@ -326,11 +326,32 @@ ENV LOBSTER_STATE_DIR=/home/node/.openclaw/lobster-state
 # ORDERING IS LOAD-BEARING: rolling a container here with an unpatched
 # config leaves executablePath pointing at a binary this image does not
 # have, and the browser tool dies at launch.
+#
+# MESA IS LOAD-BEARING, not an optimisation. Chrome 137 removed the automatic
+# SwiftShader fallback for WebGL (blink-dev "Intent to Remove: SwiftShader
+# Fallback"); prod runs Chrome 151. Fargate has no GPU and this image shipped
+# no GL driver at all, so `canvas.getContext("webgl")` returned NULL — a state
+# essentially no real desktop is in, and one that silently breaks any site
+# rendering through WebGL. Arkose/FunCaptcha (LinkedIn's sign-in challenge)
+# draws its puzzle in 3D, so it cannot render at all without a context.
+#
+# libgl1-mesa-dri supplies the llvmpipe software rasteriser and libglx-mesa0
+# the GLX entry points ANGLE resolves against; paired with
+# `--use-gl=angle --use-angle=gl` in the generated openclaw.json, the unmasked
+# WEBGL_debug_renderer_info string becomes an ordinary Mesa/llvmpipe value —
+# what any real driverless Linux VM reports — rather than a spoofed one.
+# llvmpipe is also faster than SwiftShader (LLVM JIT, multithreaded).
+#
+# If chrome://gpu ever shows GL initialisation failing, the zero-package
+# fallback is `--enable-unsafe-swiftshader` (ANGLE ships SwiftShader inside
+# Chrome), at the cost of a rarer renderer string. Do not simply drop the
+# packages and flags: that returns the fleet to no-WebGL-at-all.
 RUN curl -fsSL -o /tmp/google-chrome.deb \
       "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
       /tmp/google-chrome.deb \
+      libgl1-mesa-dri libglx-mesa0 \
       fonts-liberation fonts-noto-cjk fonts-noto-color-emoji && \
     rm -f /tmp/google-chrome.deb && rm -rf /var/lib/apt/lists/* && \
     test -x /usr/bin/google-chrome

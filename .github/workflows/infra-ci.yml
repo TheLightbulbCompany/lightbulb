@@ -43,10 +43,11 @@ permissions:
 jobs:
   test:
     name: Synth & Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     # The suite synthesizes every stack; it runs in seconds locally, so a cap
     # this size only catches a hang. Left explicit because an uncapped job
-    # bills GitHub's 6-hour default when a step stalls.
+    # bills GitHub's 6-hour default when a step stalls — and on the shared
+    # self-hosted box it would hold a runner slot for those six hours too.
     timeout-minutes: 20
     steps:
       - name: Checkout code

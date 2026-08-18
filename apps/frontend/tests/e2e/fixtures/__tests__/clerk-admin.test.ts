@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createUser, deleteUser, findUserByEmail, deleteOrg } from '../../e2e/fixtures/clerk-admin';
+import { createUser, deleteUser, findUserByEmail, deleteOrg } from '../clerk-admin';
 
 const FAKE_KEY = 'sk_test_fake';
 

@@ -651,6 +651,53 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
+  it("guided (Stripe): an instructions string embedding the proxy URL renders it as a wrapped code span, not raw inline text", async () => {
+    connectionsData = [connection()];
+    const proxyUrl =
+      "https://api.isol8.co/api/v1/hooks/t/org_3H3viGAfq2SXc9dIdcatmGXg8Td/b9b40b9a392b15fa77ddf1fa";
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: proxyUrl,
+      guided: true,
+      // Mirrors providers.yaml's real Stripe template, which splices the
+      // literal proxy_url into the sentence — the shape that used to overflow
+      // the dialog when rendered as one unbroken text node.
+      instructions:
+        `In your Stripe Dashboard, open Developers → Webhooks and add an endpoint ` +
+        `pointed at ${proxyUrl} listening for the 'Charge refunded' event ` +
+        `(charge.refunded). Stripe then shows the endpoint's signing secret — ` +
+        `paste it back here to finish arming this automation.`,
+      secret_hint: "whsec_…",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+
+    // The URL is pulled out into its own break-all <code> span inside the
+    // instructions paragraph — distinct from the SecretField "Webhook URL"
+    // block above, which renders the same URL in its own <code>.
+    await screen.findAllByText(proxyUrl);
+    const urlCodes = screen.getAllByText(proxyUrl).filter((el) => el.tagName === "CODE");
+    expect(urlCodes).toHaveLength(2);
+    const instructionsCode = urlCodes.find((el) => el.className === "break-all");
+    expect(instructionsCode).toBeDefined();
+
+    // ...while the surrounding operational copy (event name + dashboard
+    // path) is untouched — the fix must not drop or reword instructions.
+    expect(
+      screen.getByText(/open Developers → Webhooks and add an endpoint/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/'Charge refunded' event \(charge\.refunded\)/),
+    ).toBeInTheDocument();
+  });
+
   it("guided (Stripe): a whsec save failure renders inline in the finish dialog and stays retryable", async () => {
     connectionsData = [connection()];
     mockAutomationsPost.mockResolvedValue({

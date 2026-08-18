@@ -6,7 +6,7 @@ function getStripe(): Stripe {
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   if (!stripeKey) throw new Error('STRIPE_SECRET_KEY env var is required');
   return new Stripe(stripeKey, {
-    apiVersion: '2025-01-27.acacia' as Parameters<typeof Stripe>[1]['apiVersion'],
+    apiVersion: '2025-01-27.acacia' as Stripe.StripeConfig['apiVersion'],
   });
 }
 

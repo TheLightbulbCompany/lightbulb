@@ -30,12 +30,13 @@ permissions:
 jobs:
   test:
     name: Lint & Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     # This job had NO cap, so a stalled `Run tests` step billed GitHub's
     # 6-hour default instead of failing — run 31562062289 sat in pytest for
-    # 27+ minutes with no way to tell a slow suite from a hung one. The suite
-    # is genuinely slow on hosted runners (no dependency cache), so the cap is
-    # loose: it exists to bound a hang, not to police runtime.
+    # 27+ minutes with no way to tell a slow suite from a hung one. The cap is
+    # loose because it exists to bound a hang, not to police runtime — and on
+    # a self-hosted runner it does double duty: the box is shared, so a wedged
+    # job holds a runner slot away from every other workflow until it expires.
     timeout-minutes: 45
 
     steps:

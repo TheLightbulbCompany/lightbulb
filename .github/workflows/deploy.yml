@@ -43,6 +43,7 @@ jobs:
           name: cdk.out
           path: apps/infra/cdk.out
           include-hidden-files: true
+          retention-days: 1
   Assets-DockerAsset1:
     name: Publish Assets Assets-DockerAsset1
     needs:

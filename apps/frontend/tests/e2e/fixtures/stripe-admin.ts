@@ -4,7 +4,7 @@ let _client: Stripe | undefined;
 function client(secretKey: string): Stripe {
   if (!_client) {
     _client = new Stripe(secretKey, {
-      apiVersion: '2025-01-27.acacia' as Parameters<typeof Stripe>[1]['apiVersion'],
+      apiVersion: '2025-01-27.acacia' as Stripe.StripeConfig['apiVersion'],
     });
   }
   return _client;

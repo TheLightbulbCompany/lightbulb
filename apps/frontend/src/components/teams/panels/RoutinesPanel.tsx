@@ -914,6 +914,25 @@ interface FromIntegrationResult {
 // rest alphabetized. Typing collapses to one flat list matched
 // case-insensitively against label AND id. Small catalogs (≤8) skip the
 // grouping and list in registry order.
+// Every guided provider's providers.yaml `instructions` template splices in
+// the literal `{proxy_url}` exactly once (Stripe/Sentry/Linear/Attio/
+// PostHog). Rendered as plain text that URL is one unbroken token that
+// overflows past the dialog's edge instead of wrapping, so pull it into its
+// own break-all span — matching SecretField's own convention for raw
+// URLs/secrets — and leave the rest of the (already-wrapping) sentence
+// alone. Falls back to the plain string if the URL isn't found in it.
+function renderInstructions(instructions: string, proxyUrl: string | null) {
+  const idx = proxyUrl ? instructions.indexOf(proxyUrl) : -1;
+  if (idx === -1 || !proxyUrl) return instructions;
+  return (
+    <>
+      {instructions.slice(0, idx)}
+      <code className="break-all">{proxyUrl}</code>
+      {instructions.slice(idx + proxyUrl.length)}
+    </>
+  );
+}
+
 const PINNED_EVENT_COUNT = 3;
 
 function EventPicker({
@@ -1387,7 +1406,7 @@ function CreateRoutineDialog({
           )}
           {connResult.instructions && (
             <p className="text-xs text-[var(--mute)]">
-              {connResult.instructions}
+              {renderInstructions(connResult.instructions, connResult.proxy_url)}
             </p>
           )}
           {connResult.guided && !isReverseGuided ? (

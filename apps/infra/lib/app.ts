@@ -219,6 +219,25 @@ pipeline.workflowFile.patch(
     "id-token": "write",
     contents: "write",
   }),
+
+  // Expire the `cdk.out` handoff artifact after one day. It is consumed by the
+  // asset/deploy jobs inside the same run, so nothing reads it after the run
+  // ends — at the repo default of 90 days each ~33 MB upload just accrues
+  // against the org's 2 GB shared Actions/Packages storage until uploads start
+  // failing with "Artifact storage quota has been hit", blocking every deploy.
+  //
+  // cdk-pipelines-github has no retention option (`stepsToUploadAssembly` in
+  // pipeline.js hardcodes the `with:` block), and this file is regenerated on
+  // every synth, so a hand-edit to deploy.yml would be silently reverted. A
+  // synth-time patch is the only form of this setting that survives.
+  //
+  // The step index is positional because RFC 6902 has no find-by-predicate. If
+  // a construct upgrade reorders the steps this throws at synth ("Cannot set
+  // properties of undefined") for any step lacking a `with:` block — but it
+  // would land silently on the wrong step if that step happens to have one, so
+  // `deploy-workflow-retention.test.ts` asserts the setting is on the cdk.out
+  // upload specifically.
+  JsonPatch.add("/jobs/Build-Synth/steps/2/with/retention-days", 1),
 );
 
 app.synth();

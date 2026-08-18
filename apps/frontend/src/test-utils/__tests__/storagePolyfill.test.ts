@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { installStoragePolyfill } from "../storagePolyfill";
 
 describe("installStoragePolyfill", () => {
@@ -13,6 +13,19 @@ describe("installStoragePolyfill", () => {
     window.localStorage.setItem("a", "b");
     window.localStorage.clear();
     expect(window.localStorage.getItem("a")).toBeNull();
+    restore();
+  });
+
+  // The polyfill's methods are own properties, so without prototype routing a
+  // `vi.spyOn(Storage.prototype, ...)` would never fire — and every
+  // not-to-have-been-called assertion written against it would pass for the
+  // wrong reason. Guard the routing, not just the storage.
+  it("lets vi.spyOn(Storage.prototype) observe calls made through localStorage", () => {
+    const restore = installStoragePolyfill();
+    const setSpy = vi.spyOn(Storage.prototype, "setItem");
+    localStorage.setItem("spied", "yes");
+    expect(setSpy).toHaveBeenCalledWith("spied", "yes");
+    setSpy.mockRestore();
     restore();
   });
 

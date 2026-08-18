@@ -520,7 +520,9 @@ button:focus-visible { border-radius: 999px; }
   transition: left .25s cubic-bezier(.25,.8,.5,1), right .25s cubic-bezier(.25,.8,.5,1);
 }
 .nav-links a:hover::after, .nav-links a.active::after { left: 14px; right: 14px; }
-.nav-alpha {
+.nav-brand { display: flex; align-items: flex-start; }
+.nav-brand .nav-badge { margin-top: 2px; }
+.nav-badge {
   display: inline-block;
   font-size: 8px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
   color: var(--forest-soft); background: rgba(74,158,116,.12);

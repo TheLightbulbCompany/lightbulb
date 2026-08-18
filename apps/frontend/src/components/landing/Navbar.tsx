@@ -90,7 +90,10 @@ export function Navbar() {
 
   return (
     <nav className="landing-nav" aria-label="Main navigation">
-      <Logo size="md" withMark />
+      <div className="nav-brand">
+        <Logo size="md" withMark />
+        <span className="nav-badge">Public Beta</span>
+      </div>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
         <Link href="/" data-section="home" className={initialActive("home")}>
           Home

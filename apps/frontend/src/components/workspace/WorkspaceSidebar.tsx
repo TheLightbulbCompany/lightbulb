@@ -137,6 +137,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <Logo size="sm" href={null} />
+          <span className="nav-badge">Public Beta</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <Link href="/settings" className="sidebar-settings-link">

@@ -50,8 +50,9 @@ EXPECTED_ORDER = [
     # S3 replicas behind resurrects pre-wipe state (incl. auth rows) on the
     # owner's next provision. No-op ("ok") while LITESTREAM_BUCKET is unset.
     "litestream_replicas",
-    "bedrock_aips",
-    "bedrock_role",
+    # No bedrock_aips / bedrock_role steps: the owner's Bedrock footprint is
+    # reaped inside ecs_service, by the shared reaper at the seam every teardown
+    # path crosses (bedrock_aip.reap_owner_bedrock_resources).
     "metronome",
     "stripe",
     "usage_counters",
@@ -212,8 +213,12 @@ def wipe_mocks():
         ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.account_wipe.get_ecs_manager", get_ecs_manager_fn),
         ("core.services.account_wipe.get_workspace", get_workspace_fn),
-        ("core.services.account_wipe.delete_owner_aips", bedrock_aips_delete),
-        ("core.services.account_wipe.delete_owner_bedrock_role", bedrock_role_delete),
+        # Patched on the bedrock_aip module, not on account_wipe: the wipe no
+        # longer calls these itself. They stay stubbed as a safety net — the
+        # reaper runs inside delete_user_service, which is stubbed here, so a
+        # real AWS call from this suite would mean the seam wiring broke.
+        ("core.billing.bedrock_aip.delete_owner_aips", bedrock_aips_delete),
+        ("core.billing.bedrock_aip.delete_owner_bedrock_role", bedrock_role_delete),
         ("core.services.account_wipe._archive_metronome_customer", metronome_archive),
         ("core.services.account_wipe.delete_stripe_customer", stripe_delete),
         ("core.services.account_wipe.usage_repo.delete_all_for_owner", usage_delete),
@@ -292,11 +297,10 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     )
     wipe_mocks.ecs_manager_stub.delete_user_service.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.workspace_stub.delete_user_dir.assert_called_once_with(OWNER_ID)
-    wipe_mocks.bedrock_aips_delete.assert_awaited_once_with(
-        OWNER_ID,
-        aip_arns=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"],
-    )
-    wipe_mocks.bedrock_role_delete.assert_awaited_once_with(OWNER_ID)
+    # The Bedrock footprint is NOT the wipe's job any more — delete_user_service
+    # reaps it at the seam. Stubbing that method (above) is what stops these.
+    wipe_mocks.bedrock_aips_delete.assert_not_awaited()
+    wipe_mocks.bedrock_role_delete.assert_not_awaited()
     wipe_mocks.metronome_archive.assert_awaited_once_with("met_abc123")
     wipe_mocks.stripe_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.usage_delete.assert_awaited_once_with(OWNER_ID)
@@ -346,40 +350,36 @@ async def test_preview_lists_per_agent_paperclip_key_secrets(wipe_mocks):
 
 
 @pytest.mark.asyncio
-async def test_bedrock_aips_step_passes_prefetched_arns_not_a_live_reread(wipe_mocks):
-    """Regression test for the containers-row-deletion ordering hazard: the
-    `ecs_service` step (step 3) deletes the containers row as a side effect
-    of ecs_manager.delete_user_service, and the LATER `bedrock_aips` step
-    (step 5) used to call bedrock_aip.delete_owner_aips(owner_id) with no
-    ARNs, which internally re-read the (by-then-deleted) containers row via
-    read_owner_aips, found nothing, and silently no-op'd while still
-    reporting status="ok" -- orphaning the Bedrock inference profile + the
-    bedrock-aip-owners reverse row on every real wipe.
+async def test_the_wipe_delegates_the_bedrock_footprint_to_the_seam(wipe_mocks):
+    """The wipe owns no Bedrock steps of its own any more.
 
-    The fix: pass the ARNs already captured in the upfront identifier
-    snapshot (`ids.container["bedrock_aip_arns"]`) explicitly via the
-    `aip_arns=` kwarg, so the bedrock_aips step is fully independent of
-    whether a prior step already deleted the containers row."""
+    It used to, and they were the ONLY teardown path that reaped: the
+    entitlement-cancellation webhook and both /debug teardowns leaked a role
+    and its inference profiles on every use, into the same account-wide IAM
+    quota (dev, staging and prod share one AWS account). The reap moved to
+    ``ecs_manager.delete_user_service`` — the seam all four paths cross — so no
+    path can forget it and there is one implementation instead of two.
+
+    That also fixed a bug this suite could not see: the old role step was gated
+    on ``bedrock_role_arn`` being present on the upfront snapshot, so a legacy
+    row without the field silently skipped the delete and stranded the role.
+
+    Delegation is asserted by absence — no bedrock systems in the report, and
+    no direct calls, because delete_user_service is stubbed here."""
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
-    by_system = {s.system: s for s in report.steps}
-    assert by_system["bedrock_aips"].status == "ok"
+    systems = {s.system for s in report.steps}
+    assert "bedrock_aips" not in systems
+    assert "bedrock_role" not in systems
+    wipe_mocks.bedrock_aips_delete.assert_not_awaited()
+    wipe_mocks.bedrock_role_delete.assert_not_awaited()
 
-    # The call MUST carry aip_arns= populated from the pre-fetched snapshot
-    # -- not a bare owner_id call that would force delete_owner_aips to fall
-    # back to its own (now-stale-by-ordering) containers-row re-read.
-    wipe_mocks.bedrock_aips_delete.assert_awaited_once_with(
-        OWNER_ID,
-        aip_arns=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"],
-    )
-    call = wipe_mocks.bedrock_aips_delete.await_args
-    assert "aip_arns" in call.kwargs, "delete_owner_aips must be called with the aip_arns kwarg, not rely on a re-read"
-    assert call.kwargs["aip_arns"], "aip_arns must be populated (non-empty) from the identifier snapshot"
+    # The seam is reached exactly once, and it is what carries the reap.
+    wipe_mocks.ecs_manager_stub.delete_user_service.assert_awaited_once_with(OWNER_ID)
 
-    # The containers row is read exactly TWICE for the whole wipe: the upfront
-    # identifier snapshot, and the gate-token step's strongly-consistent
-    # re-read. The bedrock_aips step adds no third read, proving it isn't
-    # depending on that row still being present.
+    # The containers row is still read exactly TWICE for the whole wipe: the
+    # upfront identifier snapshot, and the gate-token step's strongly-consistent
+    # re-read. Dropping the two steps added no read and removed none.
     assert [c.args for c in wipe_mocks.container_get.await_args_list] == [(OWNER_ID,), (OWNER_ID,)]
     assert [c.kwargs for c in wipe_mocks.container_get.await_args_list] == [{}, {"consistent": True}]
 
@@ -398,7 +398,7 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     assert "ECS API down" in (by_system["ecs_service"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "bedrock_aips", "bedrock_role", "metronome", "stripe", "usage_counters"):
+    for system in ("efs_workspace_dir", "metronome", "stripe", "usage_counters"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
 
     # Clerk — last step — must still have been called despite the earlier failure.
@@ -536,8 +536,10 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
 
     by_system = {s.system: s for s in report.steps}
     assert by_system["ecs_service"].status == "skipped"
-    assert by_system["bedrock_aips"].status == "skipped"
-    assert by_system["bedrock_role"].status == "skipped"
+    # No containers row means the seam never runs, so nothing reaps the Bedrock
+    # footprint either — there is no row naming one.
+    assert "bedrock_aips" not in by_system
+    assert "bedrock_role" not in by_system
     # The gate-token step always runs (it re-reads the row itself) but finds
     # nothing to delete when there is no row at all.
     assert by_system["bedrock_gate_tokens"].status == "ok"
@@ -663,8 +665,8 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     assert by_system["ecs_service"].status == "skipped"
     assert by_system["efs_workspace_dir"].status == "skipped"
     assert by_system["bedrock_gate_tokens"].status == "skipped"
-    assert by_system["bedrock_aips"].status == "skipped"
-    assert by_system["bedrock_role"].status == "skipped"
+    assert "bedrock_aips" not in by_system
+    assert "bedrock_role" not in by_system
     assert by_system["metronome"].status == "skipped"
     assert by_system["stripe"].status == "skipped"
     assert by_system["paperclip_row"].status == "skipped"

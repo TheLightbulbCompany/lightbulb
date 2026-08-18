@@ -300,7 +300,8 @@ def test_degradations_surface_as_warnings(
 ):
     """Blank description, unresolved CEO, and sanitizer-dropped keys each land
     in ``warnings`` (registration still succeeds) — instead of dying in logs,
-    which is how jarvis shipped with a blank org-chart card."""
+    which is how the founders' first built agent shipped with a blank
+    org-chart card."""
     mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
     mock_export.return_value = _pkg(description="")
     mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}

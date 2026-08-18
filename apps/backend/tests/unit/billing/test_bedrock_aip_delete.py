@@ -288,3 +288,145 @@ class TestDeleteOwnerBedrockRole:
 
         fake.detach_role_policy.assert_not_called()
         fake.delete_role.assert_not_called()
+
+
+ROW = {
+    "owner_id": "org_abc",
+    "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
+    "bedrock_role_arn": "arn:aws:iam::1:role/isol8-dev-owner-bedrock-org_abc",
+    "bedrock_gate_token_hash": "hash_current",
+    "bedrock_gate_superseded_hashes": ["hash_old"],
+}
+
+
+async def _reap(row):
+    import core.billing.bedrock_aip as mod
+
+    return await mod.reap_owner_bedrock_resources("org_abc", row)
+
+
+@pytest.fixture
+def reaper(monkeypatch):
+    """Stub the three primitives + the fence read, so these assert on intent."""
+    import core.billing.bedrock_aip as mod
+    import core.billing.bedrock_gate_tokens as tokens
+
+    calls = MagicMock(
+        aips=AsyncMock(return_value=["arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"]),
+        role=AsyncMock(return_value=None),
+        gate=AsyncMock(return_value=2),
+        container_get=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(mod, "delete_owner_aips", calls.aips)
+    monkeypatch.setattr(mod, "delete_owner_bedrock_role", calls.role)
+    monkeypatch.setattr(tokens, "delete_gate_token_rows", calls.gate)
+    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", calls.container_get)
+    return calls
+
+
+class TestReapOwnerBedrockResources:
+    """The shared reaper, invoked from ``ecs_manager.delete_user_service`` — the
+    seam every teardown path crosses. Its whole job is that no path leaks and no
+    path carries its own copy."""
+
+    @pytest.mark.asyncio
+    async def test_reaps_gate_tokens_aips_and_role(self, reaper):
+        detail = await _reap(ROW)
+
+        # Gate-token rows are the security-critical residue: that table has no
+        # owner index, so once the containers row naming them is gone they are
+        # unreachable, un-denyable and un-expirable forever.
+        reaper.gate.assert_awaited_once_with(["hash_current", "hash_old"])
+        reaper.aips.assert_awaited_once()
+        reaper.role.assert_awaited_once_with("org_abc")
+        assert "gate-token" in detail and "AIP" in detail and "IAM role" in detail
+
+    @pytest.mark.asyncio
+    async def test_reaps_the_role_even_when_the_row_never_named_it(self, reaper):
+        """The role name derives from owner_id alone. Gating on
+        ``bedrock_role_arn`` is exactly the bug the account-wipe carried: a
+        legacy row without the field silently skipped the delete and stranded
+        the role forever."""
+        await _reap({k: v for k, v in ROW.items() if k != "bedrock_role_arn"})
+
+        reaper.role.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_a_reprovision_mid_teardown_fences_the_whole_reap(self, reaper):
+        """Every identifier here is deterministic or re-minted under the same
+        owner, so a resubscribe's provision recreates exactly what this would
+        delete — and the AIPs have NO self-heal, because that provision already
+        returned success. A containers row existing again means a provision has
+        run since, so these are its resources now."""
+        reaper.container_get.return_value = {"owner_id": "org_abc", "provision_generation": "NEW"}
+
+        detail = await _reap(ROW)
+
+        assert "fenced" in detail
+        reaper.gate.assert_not_awaited()
+        reaper.aips.assert_not_awaited()
+        reaper.role.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_fence_read_is_strongly_consistent(self, reaper):
+        """A stale empty read here is precisely the wrong answer — it reports
+        "no live container" for one that was just reprovisioned."""
+        await _reap(ROW)
+
+        assert reaper.container_get.await_args.kwargs.get("consistent") is True
+
+    @pytest.mark.asyncio
+    async def test_an_owner_who_never_had_bedrock_costs_no_aws_calls(self, reaper):
+        """ChatGPT-OAuth and BYOK owners never had any of this. IAM write TPS is
+        low enough that four no-op calls per cancelling owner could throttle IAM
+        account-wide during bulk churn and stall legitimate provisioning."""
+        detail = await _reap({"owner_id": "org_abc"})
+
+        assert "no Bedrock footprint" in detail
+        reaper.container_get.assert_not_awaited()  # not even the fence read
+        reaper.gate.assert_not_awaited()
+        reaper.aips.assert_not_awaited()
+        reaper.role.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_failing_resource_still_lets_the_others_be_reaped(self, reaper):
+        """The role is the half that frees the account-wide quota, so an AIP
+        throttle must not skip it. The failure is still re-raised, so an audited
+        caller reports a partial reap rather than claiming success."""
+        reaper.aips.side_effect = RuntimeError("bedrock throttled")
+
+        with pytest.raises(RuntimeError):
+            await _reap(ROW)
+
+        reaper.gate.assert_awaited_once()
+        reaper.role.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_row_is_treated_as_no_footprint(self, reaper):
+        """Teardown reaches this from webhook handlers, where raising means a
+        5xx and a provider retry. An unexpected row shape must degrade."""
+        assert "no Bedrock footprint" in await _reap(object())
+
+
+class TestDeleteOwnerAipsAttemptsEveryArn:
+    @pytest.mark.asyncio
+    async def test_a_throttle_on_one_arn_does_not_strand_the_next(self, aip_tables, monkeypatch):
+        """By the time teardown calls this, the containers row naming these arns
+        is already gone — so aborting the loop at arn #2 strands arn #3 with
+        nothing left in the system able to name it."""
+        import core.billing.bedrock_aip as mod
+
+        arns = ["arn:one", "arn:two", "arn:three"]
+        fake = MagicMock()
+        fake.delete_inference_profile.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "DeleteInferenceProfile"),
+            None,
+        ]
+        monkeypatch.setattr(mod, "_bedrock_client", lambda: fake)
+
+        with pytest.raises(ClientError):
+            await mod.delete_owner_aips("org_abc", aip_arns=arns)
+
+        # All three attempted, not just up to the failure.
+        assert [c.kwargs["inferenceProfileIdentifier"] for c in fake.delete_inference_profile.call_args_list] == arns

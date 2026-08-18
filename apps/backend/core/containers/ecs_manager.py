@@ -2154,6 +2154,25 @@ class EcsManager:
         # when it died", which is what the account wipe sweeps.
         deleted = await container_repo.delete(user_id)
 
+        # THE SEAM. Every teardown in the system reaches AWS through this
+        # function — entitlement cancellation, the admin account-wipe, DELETE
+        # /debug/provision, DELETE /debug/user-data — and the row just deleted
+        # was the only handle on the owner's Bedrock footprint (gate-token
+        # hashes, AIP arns). Reaping HERE, off that row's ALL_OLD image, is
+        # what makes the cleanup structural: no caller can forget it, and none
+        # needs its own copy. Deliberately before the channel-links sweep
+        # below, which can throw and would otherwise skip the reap entirely.
+        #
+        # Raises on a partial reap rather than reporting success — the ECS
+        # teardown above has already happened, so a raise honestly means
+        # "teardown incomplete, retry me", and every step is idempotent.
+        # scale-to-zero/idle parking goes through stop_user_service, NOT here,
+        # so a sleeping container never loses its Bedrock identity.
+        from core.billing.bedrock_aip import reap_owner_bedrock_resources
+
+        reaped = await reap_owner_bedrock_resources(user_id, deleted)
+        logger.info("Bedrock reap for user %s: %s", user_id, reaped)
+
         # Sweep channel_links rows for this owner
         try:
             from core.repositories import channel_link_repo

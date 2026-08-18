@@ -38,8 +38,8 @@ for them (see the inline notes at those call sites):
   spec #3  -> "ecs_service"           (ecs_manager.delete_user_service)
   spec #4  -> "efs_workspace_dir"     (Workspace.delete_user_dir)
   spec #5  -> folded into "ecs_service" (see note below)
-  spec #6-7-> "bedrock_aips"          (bedrock_aip.delete_owner_aips)
-  spec #8  -> "bedrock_role"          (bedrock_aip.delete_owner_bedrock_role)
+  spec #6-7-> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
+  spec #8  -> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
   spec #9  -> "metronome"             (MetronomeClient.archive_customer)
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
   spec #11 -> "usage_counters" / "paperclip_row" / "billing_row" / "user_row"
@@ -88,7 +88,6 @@ from typing import Awaitable, Callable, Literal
 import httpx
 
 from core.auth import is_org_owner_id
-from core.billing.bedrock_aip import delete_owner_aips, delete_owner_bedrock_role
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
@@ -246,10 +245,11 @@ class _Identifiers:
     instead — ``bedrock_gate_tokens`` (re-reads consistently, deletes the
     union) and ``paperclip_row`` (always attempts the pending-brief delete).
 
-    Still snapshot-gated, and knowingly: ``bedrock_aips`` / ``bedrock_role``
-    (an AIP minted mid-wipe survives, though the ``bedrock-aip-owners`` reverse
-    table still names it, unlike a gate-token row), the ``ecs_service`` step
-    itself, and the ``billing_row`` / ``user_row`` / paperclip-company deletes.
+    The Bedrock footprint no longer reads this snapshot at all: it is reaped
+    inside the ``ecs_service`` step off the containers row's own ALL_OLD image,
+    so an AIP minted mid-wipe is caught as long as the row named it when it
+    died. Still snapshot-gated, and knowingly: the ``ecs_service`` step itself,
+    and the ``billing_row`` / ``user_row`` / paperclip-company deletes.
     None of those rows is the sole handle on anything else, so the residue is
     findable and a re-run clears it.
     """
@@ -408,7 +408,8 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         exists=ids.container is not None,
         detail_if_exists=(
             f"service_name={(ids.container or {}).get('service_name', '')} "
-            "(+ EFS access point, containers row, channel-links)"
+            "(+ EFS access point, containers row, channel-links, "
+            "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
         detail_if_absent="no containers row",
     )
@@ -436,25 +437,10 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="LITESTREAM_BUCKET unset (EFS layout)",
     )
 
-    bedrock_aip_arns: dict = (ids.container or {}).get("bedrock_aip_arns") or {}
-    _preview_step(
-        steps,
-        system="bedrock_aips",
-        action="delete_owner_aips",
-        exists=bool(bedrock_aip_arns),
-        detail_if_exists=f"{len(bedrock_aip_arns)} AIP(s): {', '.join(bedrock_aip_arns.values())}",
-        detail_if_absent="no bedrock_aip_arns on containers row",
-    )
-
-    bedrock_role_arn = (ids.container or {}).get("bedrock_role_arn")
-    _preview_step(
-        steps,
-        system="bedrock_role",
-        action="delete_owner_bedrock_role",
-        exists=bool(bedrock_role_arn),
-        detail_if_exists=bedrock_role_arn or "",
-        detail_if_absent="no bedrock_role_arn on containers row",
-    )
+    # No standalone bedrock_aips / bedrock_role preview steps: the executed wipe
+    # no longer has them either. Both are reaped inside the ecs_service step, by
+    # the shared reaper at the seam every teardown path crosses. Preview and
+    # execution have to list the same systems or the preview lies.
 
     metronome_customer_id = (ids.billing or {}).get("metronome_customer_id")
     _preview_step(
@@ -768,35 +754,22 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     await _step(steps, system="litestream_replicas", action="delete_replica_prefix", fn=_s4b)
 
-    # --- Step 5 (spec #6-7 folded): Bedrock AIPs ---------------------------
-    # Pass the pre-fetched ARNs explicitly (from the identifier snapshot
-    # taken at the top of this function) rather than letting delete_owner_aips
-    # re-read the containers row: step 3 above (ecs_service) already deleted
-    # that row as a side effect of ecs_manager.delete_user_service, so a live
-    # re-read here would see nothing and silently no-op -- orphaning the
-    # Bedrock inference profile + reverse row while still reporting "ok".
-    bedrock_aip_arns: dict = (ids.container or {}).get("bedrock_aip_arns") or {}
-    if bedrock_aip_arns:
-
-        async def _s5(arns: list[str] = list(bedrock_aip_arns.values())) -> str:
-            removed = await delete_owner_aips(owner_id, aip_arns=arns)
-            return f"removed {len(removed)} AIP(s): {', '.join(removed)}"
-
-        await _step(steps, system="bedrock_aips", action="delete_owner_aips", fn=_s5)
-    else:
-        _skip(steps, "bedrock_aips", "delete_owner_aips", "no bedrock_aip_arns on containers row")
-
-    # --- Step 6 (spec #8): Bedrock owner role ------------------------------
-    bedrock_role_arn = (ids.container or {}).get("bedrock_role_arn")
-    if bedrock_role_arn:
-
-        async def _s6(bedrock_role_arn: str = bedrock_role_arn) -> str:
-            await delete_owner_bedrock_role(owner_id)
-            return bedrock_role_arn
-
-        await _step(steps, system="bedrock_role", action="delete_owner_bedrock_role", fn=_s6)
-    else:
-        _skip(steps, "bedrock_role", "delete_owner_bedrock_role", "no bedrock_role_arn on containers row")
+    # --- Steps 5-6 (spec #6-7-8): Bedrock AIPs + owner role ----------------
+    # Deliberately NOT separate steps any more. Both are reaped inside step 3's
+    # ``delete_user_service`` (see bedrock_aip.reap_owner_bedrock_resources),
+    # which is the seam EVERY teardown path crosses -- the entitlement
+    # cancellation webhook and both /debug teardowns leaked these until it moved
+    # there, and dev/staging/prod share one AWS account and therefore one
+    # 1,000-role IAM quota.
+    #
+    # This is an upgrade, not just deduplication. These steps reaped from
+    # ``ids.container``, the snapshot taken at the TOP of the wipe; the seam
+    # reaps from the row's own ALL_OLD image at the instant it was deleted,
+    # which is the authoritative answer to what the row named when it died.
+    # Step 6 was also gated on ``bedrock_role_arn`` being present on that
+    # snapshot, so a legacy row without the field silently skipped the role
+    # delete and stranded it forever -- the reaper derives the role name from
+    # owner_id and never gates on the field.
 
     # --- Step 7 (spec #9): Metronome ---------------------------------------
     metronome_customer_id = (ids.billing or {}).get("metronome_customer_id")

@@ -85,9 +85,36 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     except Exception:
         logger.exception("entitlement.teardown owner-facts refresh failed for owner %s", owner_id)
 
+    # RE-CHECK, immediately before the destructive call. The entitlement read at
+    # the top of this function is already several awaits old by now — an owner
+    # facts write, and whatever the caller did before us. Two ways that gap
+    # bites, both of which end with a PAYING owner's container destroyed:
+    #
+    #   * they resubscribe while this is in flight, or
+    #   * a cancellation webhook is redelivered after they resubscribed (Stripe
+    #     and Apple both retry on 5xx).
+    #
+    # Destroying the container self-heals — the next /container/status poll
+    # reprovisions. The Bedrock resources `delete_user_service` reaps behind it
+    # do NOT: the resubscribe's provision has already returned success, so
+    # nothing retries, and the owner's chat just hard-fails on Bedrock. Cheap
+    # strongly-consistent read against that.
+    if still_entitled(await billing_repo.get_by_owner_id(owner_id, consistent_read=True)):
+        logger.warning(
+            "entitlement.teardown ABORTED for owner %s trigger=%s — became entitled again "
+            "mid-teardown (resubscribe or redelivered webhook); leaving the runtime alone",
+            owner_id,
+            trigger,
+        )
+        put_metric("entitlement.teardown", dimensions={"trigger": trigger, "outcome": "aborted_raced"})
+        return False
+
     try:
         from core.containers import get_ecs_manager
 
+        # Reaps the owner's Bedrock footprint (gate-token rows, AIPs, IAM role)
+        # internally — that is the seam every teardown path shares, so there is
+        # nothing to duplicate here. See reap_owner_bedrock_resources.
         await get_ecs_manager().delete_user_service(owner_id)
     except Exception:
         logger.exception("entitlement.teardown container delete failed for owner %s", owner_id)

@@ -32,6 +32,12 @@ def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", s
     admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
     admin.patch_routine = AsyncMock(return_value={})
     admin.delete_routine = AsyncMock(return_value={})
+    # The ATTACH path's two extra calls: the company's routine list is the
+    # tenancy fence, and only the trigger it added may be unwound. The list
+    # carries `routine_id` so `_fake_admin(routine_id=...)` names the attach
+    # target with the same knob it names a created routine.
+    admin.list_routines = AsyncMock(return_value=[{"id": routine_id, "title": "Revenue recovery"}])
+    admin.delete_routine_trigger = AsyncMock(return_value={})
     return admin
 
 
@@ -1656,3 +1662,182 @@ async def test_seed_trigger_routine_does_not_emit_when_it_fails():
     ):
         await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
     capture.assert_not_called()
+
+
+# --- attach to an existing routine (routine_id) ------------------------------
+#
+# The second half of the guided flow: arm this event on an automation the
+# owner already wrote. The whole point is that NOTHING about that routine
+# changes — the tests below pin the create calls that must NOT happen as
+# firmly as the trigger call that must.
+
+
+@pytest.mark.asyncio
+async def test_attach_creates_the_trigger_on_the_existing_routine():
+    """Guided (Stripe) attach: no routine is created, the trigger lands on the
+    named one, and the result reports that routine — same proxy URL, same
+    guided copy, same paste-back step as a fresh seed."""
+    admin = _fake_admin(routine_id="rt_revenue_recovery", public_id="pub_att")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_revenue_recovery")
+
+    admin.create_routine.assert_not_awaited()
+    assert admin.create_routine_trigger.await_args.kwargs["routine_id"] == "rt_revenue_recovery"
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["kind"] == "webhook"
+    # Signing mode still comes straight from the registry — the attach branch
+    # forks none of the provider wiring.
+    assert trigger_body["signingMode"] == "hmac_sha256"
+
+    assert out["routine_id"] == "rt_revenue_recovery"
+    assert out["guided"] is True
+    assert out["proxy_url"].endswith("/api/v1/hooks/t/owner_1/pub_att")
+    assert "charge.refunded" in out["instructions"]
+
+
+@pytest.mark.asyncio
+async def test_attach_never_touches_the_target_routine():
+    """The whole contract of the attach branch: the owner's routine keeps its
+    description, assignee, reviewers, variables and schedule. Nothing writes
+    the routine row, and no extra (renewal/poll) trigger is attached."""
+    admin = _fake_admin(routine_id="rt_hand_written")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_hand_written")
+
+    admin.create_routine.assert_not_awaited()
+    admin.patch_routine.assert_not_awaited()
+    admin.delete_routine.assert_not_awaited()
+    # Exactly ONE trigger: the webhook. The boilerplate starter prompt is
+    # never rendered onto the routine, so there is nothing else to add.
+    admin.create_routine_trigger.assert_awaited_once()
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["kind"] == "webhook"
+    # The assignee resolver never runs — the routine already has an owner.
+    admin.list_agents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_rejects_a_routine_outside_the_callers_company():
+    """The tenancy fence: a routine id from someone else's company is refused
+    before any trigger exists, same posture as the assignee check."""
+    admin = _fake_admin(routine_id="rt_mine")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
+        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_someone_elses")
+
+    admin.create_routine_trigger.assert_not_awaited()
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_accepts_an_enveloped_routine_list():
+    """``list_routines`` comes back as a bare array upstream but enveloped
+    through the BFF — the fence must read both, or every attach 400s."""
+    admin = _fake_admin(routine_id="rt_env")
+    admin.list_routines = AsyncMock(return_value={"routines": [{"id": "rt_env"}]})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_env")
+    assert out["routine_id"] == "rt_env"
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_the_shapes_that_write_the_routines_own_body():
+    """auto_google_watch / gmail push / gmail poll keep their automation alive
+    by writing maintenance instructions into its description (and attaching a
+    renewal schedule). That is exactly what an attach promises not to do, so
+    they stay create-only rather than arming a watch nothing renews."""
+    admin = _fake_admin(routine_id="rt_x")
+    p_repo, p_cookie, p_client = _env(admin)
+    for event_id in ("calendar.changed", "gmail.message", "gmail.poll"):
+        with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="can't be added to an existing"):
+            await seed_trigger_routine("owner_1", "google", event_id, resource="a@b.com", routine_id="rt_x")
+    admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_to_reassign_the_target_routine():
+    admin = _fake_admin(routine_id="rt_x")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="can't reassign"):
+        await seed_trigger_routine(
+            "owner_1", "stripe", "charge.refunded", routine_id="rt_x", assignee_agent_id="agent_9"
+        )
+    admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_runs_the_same_auto_github_registration():
+    """The auto shapes are not forked for attach: the same hook is created on
+    the same repo, armed with the same trigger secret."""
+    admin = _fake_admin(routine_id="rt_deploys", secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
+        out = await seed_trigger_routine(
+            "owner_1", "github", "pull_request", resource="acme/site", routine_id="rt_deploys"
+        )
+
+    admin.create_routine.assert_not_awaited()
+    gh_client.post.assert_awaited_once()
+    assert gh_client.post.await_args.args[0] == "https://api.github.com/repos/acme/site/hooks"
+    assert gh_client.post.await_args.kwargs["json"]["config"]["secret"] == "pcsec_1"
+    assert out["routine_id"] == "rt_deploys"
+    assert out["guided"] is False
+
+
+@pytest.mark.asyncio
+async def test_attach_rollback_deletes_the_trigger_not_the_owners_routine():
+    """GitHub refusing the hook must unwind ONLY the trigger this call added.
+    Deleting the routine here would destroy hand-authored work the call never
+    created — the create branch's rollback is not reusable as-is."""
+    admin = _fake_admin(routine_id="rt_precious", secret_material=_GH_SECRET, trigger_id="trg_new")
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _gh_http_patch(_gh_response(403, {"message": "Forbidden"}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="admin access"):
+        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site", routine_id="rt_precious")
+
+    admin.delete_routine.assert_not_awaited()
+    admin.delete_routine_trigger.assert_awaited_once()
+    assert admin.delete_routine_trigger.await_args.kwargs["trigger_id"] == "trg_new"
+
+
+@pytest.mark.asyncio
+async def test_attach_marks_the_funnel_event_as_an_existing_routine():
+    admin = _fake_admin(routine_id="rt_x")
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch("core.services.inbound_triggers.capture_product_event") as capture,
+    ):
+        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_x")
+    assert capture.call_args.kwargs["properties"]["target"] == "existing_routine"
+
+
+@pytest.mark.asyncio
+async def test_create_branch_still_creates_and_never_lists_routines():
+    """The unchanged 1-click path: omitting routine_id still seeds a routine
+    from the registry template, assigns it, and never consults the routine
+    list (the attach fence must not become a cost every create pays)."""
+    admin = _fake_admin(friday_id="friday_1", routine_id="rt_new")
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch("core.services.inbound_triggers.capture_product_event") as capture,
+    ):
+        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
+
+    admin.create_routine.assert_awaited_once()
+    body = admin.create_routine.await_args.kwargs["body"]
+    assert body["title"] == "Stripe: Charge refunded"
+    assert body["assigneeAgentId"] == "friday_1"
+    assert body["description"]
+    admin.list_routines.assert_not_awaited()
+    admin.delete_routine_trigger.assert_not_awaited()
+    assert out["routine_id"] == "rt_new"
+    assert capture.call_args.kwargs["properties"]["target"] == "new_routine"

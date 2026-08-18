@@ -88,6 +88,11 @@ class FromIntegrationBody(BaseModel):
     # Friday as before. Validated against the caller's own Paperclip company
     # roster inside the seed — never trusted from here.
     assignee_agent_id: str | None = None
+    # ATTACH instead of create: arm this event on a routine the owner already
+    # wrote, leaving its description/assignee/reviewers/variables/schedule
+    # untouched. Validated against the caller's own company's routines inside
+    # the seed — never trusted from here.
+    routine_id: str | None = None
 
 
 class WebhookSecretBody(BaseModel):
@@ -99,13 +104,16 @@ async def from_integration(
     body: FromIntegrationBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict:
-    """Seed a webhook-triggered routine from a connected integration's event.
+    """Seed a webhook-triggered routine from a connected integration's event
+    — or, with ``routine_id``, arm that event on a routine the owner already
+    wrote (same gating, same provider-side registration, nothing about the
+    target routine mutated).
 
     Returns ``seed_trigger_routine``'s dict verbatim — ``{routine_id,
     trigger_public_id, proxy_url, guided, instructions}``. Bad input
     (unknown provider/event, provider not wired as a trigger source, no
-    active Paperclip company, an assignee outside the caller's company)
-    surfaces as 400 rather than an opaque 500.
+    active Paperclip company, an assignee or target routine outside the
+    caller's company) surfaces as 400 rather than an opaque 500.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
@@ -118,6 +126,7 @@ async def from_integration(
             resource=body.resource,
             topic=body.topic,
             assignee_agent_id=body.assignee_agent_id,
+            routine_id=body.routine_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

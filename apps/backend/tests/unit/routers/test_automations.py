@@ -38,6 +38,7 @@ class TestFromIntegration:
             resource=None,
             topic=None,
             assignee_agent_id=None,
+            routine_id=None,
         )
 
     @pytest.mark.asyncio
@@ -110,6 +111,7 @@ class TestFromIntegration:
             resource="acme/site",
             topic=None,
             assignee_agent_id=None,
+            routine_id=None,
         )
 
     @pytest.mark.asyncio
@@ -148,6 +150,7 @@ class TestFromIntegration:
             resource="ada@example.com",
             topic="projects/my-project/topics/isol8-gmail",
             assignee_agent_id=None,
+            routine_id=None,
         )
 
     @pytest.mark.asyncio
@@ -176,7 +179,51 @@ class TestFromIntegration:
             resource=None,
             topic=None,
             assignee_agent_id="agent_support",
+            routine_id=None,
         )
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_routine_id_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
+        """The attach branch rides the same route under the same gates — the
+        target routine reaches the seed untouched, where the tenancy check
+        (is this routine in the caller's own company) lives next to the
+        routine list it already fetches."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {"routine_id": "rt_existing", "trigger_public_id": "pub_1", "guided": True}
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={
+                "provider": "stripe",
+                "event_id": "charge.refunded",
+                "routine_id": "rt_existing",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["routine_id"] == "rt_existing"
+        mock_seed.assert_awaited_once_with(
+            "user_test_123",
+            "stripe",
+            "charge.refunded",
+            resource=None,
+            topic=None,
+            assignee_agent_id=None,
+            routine_id="rt_existing",
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    async def test_attach_is_org_admin_gated_like_create(self, mock_seed, async_client_org_member):
+        """Attaching a trigger to an existing automation is the same admin
+        action as creating one — a non-admin member can't do it either."""
+        response = await async_client_org_member.post(
+            "/api/v1/automations/from-integration",
+            json={"provider": "stripe", "event_id": "charge.refunded", "routine_id": "rt_x"},
+        )
+        assert response.status_code == 403
+        mock_seed.assert_not_awaited()
 
 
 class TestGithubResources:

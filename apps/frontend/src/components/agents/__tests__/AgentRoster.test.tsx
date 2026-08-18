@@ -25,8 +25,9 @@ function entry(
   state: RosterEntry["state"],
   isCeo = false,
   model?: string,
+  extra: Partial<RosterEntry> = {},
 ): RosterEntry {
-  return { agent: agent(id, name, model), state, isCeo };
+  return { agent: agent(id, name, model), state, isCeo, ...extra };
 }
 
 function renderRoster(entries: RosterEntry[], props: Partial<Parameters<typeof AgentRoster>[0]> = {}) {
@@ -49,24 +50,57 @@ function renderRoster(entries: RosterEntry[], props: Partial<Parameters<typeof A
   return handlers;
 }
 
+/** Like `renderRoster` but hands back a `rerender` that swaps only `entries`,
+ *  so a test can simulate a background status change mid-interaction. */
+function renderRosterRerenderable(entries: RosterEntry[]) {
+  const props = {
+    activeAgentId: null,
+    publishedAgentIds: new Set<string>(),
+    onSelect: vi.fn(),
+    onOpenWork: vi.fn(),
+    onInspect: vi.fn(),
+    onRename: vi.fn(),
+    onDelete: vi.fn(),
+  };
+  const view = render(<AgentRoster entries={entries} {...props} />);
+  return {
+    rerender: (next: RosterEntry[]) => view.rerender(<AgentRoster entries={next} {...props} />),
+  };
+}
+
 const rowNames = () =>
   Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map((n) => n.textContent);
 
 describe("rosterStateFor", () => {
-  it("maps the Teams BFF status vocabulary onto roster states", () => {
-    expect(rosterStateFor("running")).toBe("running");
-    expect(rosterStateFor("error")).toBe("attention");
-    expect(rosterStateFor("paused")).toBe("paused");
-    expect(rosterStateFor("terminated")).toBe("paused");
-    expect(rosterStateFor("idle")).toBe("idle");
+  it("shows EVERY live-meaning status as running, not just 'running'", () => {
+    // Regression: only `running` was recognised, so an agent reporting
+    // `active` / `online` / `thinking` rendered with no rail and sorted as if
+    // asleep — the same lie as the hardcoded green dot, inverted.
+    for (const status of ["running", "active", "online", "thinking", "covered", "stalled"]) {
+      expect(rosterStateFor(status)).toBe("running");
+    }
   });
 
-  it("degrades an unknown or missing status to idle, never to a louder state", () => {
-    // The BFF forwards upstream Paperclip JSON verbatim and the enum has
-    // drifted before, so a value we don't recognise must not invent alarm.
-    expect(rosterStateFor("compacting")).toBe("idle");
+  it("treats 'failed' as needing a human, not as idle", () => {
+    expect(rosterStateFor("error")).toBe("attention");
+    expect(rosterStateFor("failed")).toBe("attention");
+  });
+
+  it("keeps terminated distinct from paused", () => {
+    // Folding them together contradicted the header's pause/resume control,
+    // which reads `status === "paused"` off the same field.
+    expect(rosterStateFor("paused")).toBe("paused");
+    expect(rosterStateFor("terminated")).toBe("terminated");
+  });
+
+  it("treats an absent status as idle but an unrecognised one as unknown", () => {
+    // Absent = the roster read hasn't landed; that really is "nothing to
+    // report". Present-but-unrecognised is information we can't classify, and
+    // claiming either "idle" or "working" for it would be a guess.
     expect(rosterStateFor(null)).toBe("idle");
     expect(rosterStateFor(undefined)).toBe("idle");
+    expect(rosterStateFor("")).toBe("idle");
+    expect(rosterStateFor("compacting")).toBe("unknown");
   });
 });
 
@@ -87,6 +121,25 @@ describe("orderRoster", () => {
       entry("e", "Errored One", "attention"),
     ]);
     expect(ordered.map((e) => e.agent.id)).toEqual(["e", "i", "p"]);
+  });
+
+  it("sinks terminated agents below paused ones", () => {
+    // A paused agent is a click from working again; a terminated one can't be
+    // worked with at all, so it should never sit between two that can.
+    const ordered = orderRoster([
+      entry("t", "Dead One", "terminated"),
+      entry("p", "Paused One", "paused"),
+      entry("i", "Idle One", "idle"),
+    ]);
+    expect(ordered.map((e) => e.agent.id)).toEqual(["i", "p", "t"]);
+  });
+
+  it("does not move a row for a status it cannot classify", () => {
+    const ordered = orderRoster([
+      entry("u", "Unknown One", "unknown"),
+      entry("a", "Ada", "idle"),
+    ]);
+    expect(ordered.map((e) => e.agent.id)).toEqual(["a", "u"]);
   });
 
   it("does NOT hoist a running agent — a transient run must not move the row", () => {
@@ -199,10 +252,20 @@ describe("AgentRoster rendering", () => {
   });
 
   it("announces the agent's state as part of the row's accessible name", () => {
-    // The state line is inside the button, so a screen reader hears "Runner,
-    // Working" without needing a separate aria-label to maintain.
     renderRoster([entry("r", "Runner", "running")]);
-    expect(screen.getByRole("button", { name: "Runner Working" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Runner, Working" })).toBeInTheDocument();
+  });
+
+  it("keeps the marketplace pip out of the row's accessible name", () => {
+    // The pip lives inside the button, and a button names itself from its
+    // content — including a descendant's aria-label. Left alone it prefixed
+    // every published agent's row with "Published to marketplace".
+    renderRoster([entry("f", "Friday", "running", true)], {
+      publishedAgentIds: new Set(["f"]),
+    });
+    expect(
+      screen.getByRole("button", { name: "Friday, CEO, Working, Published to marketplace" }),
+    ).toBeInTheDocument();
   });
 
   it("marks the active row with aria-current", () => {
@@ -228,12 +291,79 @@ describe("AgentRoster rendering", () => {
     expect(onDelete.mock.calls[0][0].id).toBe("a");
   });
 
+  it("labels terminated and paused differently in one view", () => {
+    renderRoster([entry("p", "Sleeper", "paused"), entry("t", "Dead", "terminated")]);
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("Terminated")).toBeInTheDocument();
+    expect(screen.getByText("Dead").closest(".agent-item")?.getAttribute("data-state")).toBe(
+      "terminated",
+    );
+  });
+
+  it("prints an unrecognised status verbatim rather than guessing at it", () => {
+    renderRoster([entry("u", "Odd", "unknown", false, undefined, { rawStatus: "compacting" })]);
+    expect(screen.getByText("Compacting")).toBeInTheDocument();
+    // Not claimed as either idle or working.
+    expect(screen.queryByText("Working")).not.toBeInTheDocument();
+    expect(screen.getByText("Odd").closest(".agent-item")?.getAttribute("data-state")).toBe(
+      "unknown",
+    );
+  });
+
+  it("hides delete on seeded agents even when no default is reported", () => {
+    // `defaultAgentId` alone left Friday deletable on any container whose
+    // agents.list returns no default (a legacy pre-Paperclip container is
+    // exactly that). The backend refuses the delete; the row shouldn't offer it.
+    renderRoster([
+      entry("f", "Friday", "idle", true, undefined, { isSeeded: true }),
+      entry("a", "Ada", "idle"),
+    ]);
+    expect(screen.queryByLabelText("Delete Friday")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Delete Ada")).toBeInTheDocument();
+  });
+
   it("hides delete on the default agent, which cannot be removed", () => {
     renderRoster([entry("f", "Friday", "idle", true), entry("a", "Ada", "idle")], {
       defaultAgentId: "f",
     });
     expect(screen.queryByLabelText("Delete Friday")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Delete Ada")).toBeInTheDocument();
+  });
+
+  it("freezes the order while the pointer is over the roster", () => {
+    // A row must not slide out from under a click that is already on its way
+    // because some OTHER agent self-healed. Same principle that keeps a
+    // running agent from being hoisted, applied to the states that do move.
+    const { rerender } = renderRosterRerenderable([
+      entry("e", "Broken", "attention"),
+      entry("a", "Ada", "idle"),
+    ]);
+    expect(rowNames()).toEqual(["Broken", "Ada"]);
+
+    fireEvent.pointerEnter(document.querySelector(".agent-list") as Element);
+    // Broken recovers — but the pointer is still on the roster, so nothing moves.
+    rerender([entry("e", "Broken", "idle"), entry("a", "Ada", "idle")]);
+    expect(rowNames()).toEqual(["Broken", "Ada"]);
+
+    // Pointer leaves: the order re-settles (now alphabetical, both idle).
+    fireEvent.pointerLeave(document.querySelector(".agent-list") as Element);
+    expect(rowNames()).toEqual(["Ada", "Broken"]);
+  });
+
+  it("keeps the freeze while focus moves between a row and its actions", () => {
+    const { rerender } = renderRosterRerenderable([
+      entry("e", "Broken", "attention"),
+      entry("a", "Ada", "idle"),
+    ]);
+    fireEvent.focus(screen.getByRole("button", { name: "Broken, Needs you" }));
+    rerender([entry("e", "Broken", "idle"), entry("a", "Ada", "idle")]);
+    expect(rowNames()).toEqual(["Broken", "Ada"]);
+
+    // Tabbing from the row into its own Rename button must NOT thaw.
+    fireEvent.blur(screen.getByRole("button", { name: "Broken" }), {
+      relatedTarget: screen.getByLabelText("Rename Broken"),
+    });
+    expect(rowNames()).toEqual(["Broken", "Ada"]);
   });
 
   it("nests the session list under the active row only", () => {

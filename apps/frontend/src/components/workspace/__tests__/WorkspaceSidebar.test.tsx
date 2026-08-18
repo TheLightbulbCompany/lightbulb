@@ -56,7 +56,7 @@ vi.mock("@/hooks/useGateway", () => ({
   }),
 }));
 // Durable per-agent state from the Teams BFF roster; tests set it per case.
-let teamsAgents: { id: string; status?: string | null }[] = [];
+let teamsAgents: { id: string; status?: string | null; role?: string; seeded?: boolean }[] = [];
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: () => ({ data: { agents: teamsAgents } }),
@@ -300,12 +300,15 @@ describe("WorkspaceSidebar", () => {
     expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe("idle");
   });
 
-  it("pins the default agent (Friday) first and marks her rank", () => {
+  it("pins the CEO first and marks her rank, from the Paperclip role", () => {
     agents = [
       { id: "a1", name: "Zeta" },
       { id: "friday", name: "Friday" },
     ];
-    defaultId = "friday";
+    teamsAgents = [
+      { id: "a1", status: "idle" },
+      { id: "friday", status: "idle", role: "ceo" },
+    ];
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     const rows = Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map(
@@ -314,6 +317,31 @@ describe("WorkspaceSidebar", () => {
     expect(rows).toEqual(["Friday", "Zeta"]);
     expect(screen.getByText("Friday").closest(".agent-item")?.getAttribute("data-ceo")).toBe("true");
     expect(screen.getByText("CEO")).toBeInTheDocument();
+  });
+
+  it("makes no CEO claim when the container's default agent has no ceo role", () => {
+    // `_build_agents_list` falls back to index 0 when nothing carries the
+    // role, so `defaultId` is an arbitrary agent on a legacy company. The
+    // badge must not outrun the data — it only hides the delete button.
+    agents = [
+      { id: "a1", name: "Zeta" },
+      { id: "a2", name: "Alpha" },
+    ];
+    defaultId = "a1";
+    teamsAgents = [
+      { id: "a1", status: "idle" },
+      { id: "a2", status: "idle" },
+    ];
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.queryByText("CEO")).not.toBeInTheDocument();
+    expect(document.querySelector('.agent-item[data-ceo="true"]')).toBeNull();
+    // Nobody pinned → plain name order.
+    expect(
+      Array.from(document.querySelectorAll(".agent-item .agent-name__text")).map(
+        (n) => n.textContent,
+      ),
+    ).toEqual(["Alpha", "Zeta"]);
   });
 
   it("roster rows are keyboard-operable buttons, not bare click divs", () => {

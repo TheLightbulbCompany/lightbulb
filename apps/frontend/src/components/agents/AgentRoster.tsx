@@ -13,9 +13,9 @@
 //      `<StatusDot status="active" />` — a hardcoded green dot on every agent,
 //      forever. A status indicator that never varies is decoration, not
 //      information. Real per-agent runtime status already exists on the Teams
-//      BFF roster (`GET /teams/agents` → `CompanyAgent.status`), which
-//      `TeamsEventsProvider` keeps live off `teams.agent.status` events. The
-//      hosts read it and pass it in.
+//      BFF roster (`GET /teams/agents` → `CompanyAgent.status`); the hosts
+//      read it via `useRosterEntries` and pass it in. Which statuses mean
+//      what is NOT decided here — see `teams/shared/lib/agentStatus`.
 //   2. It orders by how much the agent wants your attention (see
 //      `orderRoster`), so triage never depends on the order `agents.list`
 //      happened to return.
@@ -26,7 +26,7 @@
 // chevron and manual ordering asks the user to maintain what the sort already
 // derives. See the PR for the full argument.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Pencil, Trash2, ListTodo, SlidersHorizontal } from "lucide-react";
 
 import { Monogram } from "@/components/agents/AgentIdentity";
@@ -34,17 +34,36 @@ import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { agentDisplayName, getAgentModelString, type Agent } from "@/hooks/useAgents";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
+import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
 
 /**
- * The roster's view of an agent's runtime state, collapsed from the Teams BFF
- * `CompanyAgent.status` free string ("idle" | "running" | "error" | "paused" |
- * "terminated", plus whatever upstream adds next).
+ * The roster's view of an agent's runtime state.
+ *
+ * Derived from the shared `CompanyAgent.status` vocabulary
+ * (`teams/shared/lib/agentStatus`) — NOT from a second table of status
+ * strings maintained here. One backend enum, one classification.
  *
  * `idle` is the absence state: it renders no marker at all. Only agents with
  * something to report get a dot, a word and a rail — so a calm roster looks
  * calm, and the eye goes straight to the rows that don't.
+ *
+ * `terminated` is deliberately NOT folded into `paused`. A paused agent is one
+ * click from resuming; a terminated one is permanently dead and will quietly
+ * vanish from assignee pickers. Rendering both as "Paused" also put this
+ * surface in direct contradiction with the header's pause/resume control,
+ * which reads `status === "paused"` off the identical field and so offers
+ * "Pause agent" for an agent the roster claimed was already paused.
+ *
+ * `unknown` is a status the shared vocabulary doesn't recognise. See
+ * `rosterStateFor` for why that is a state rather than a default.
  */
-export type RosterState = "running" | "attention" | "paused" | "idle";
+export type RosterState =
+  | "running"
+  | "attention"
+  | "paused"
+  | "terminated"
+  | "idle"
+  | "unknown";
 
 /**
  * Ordering rank — LOWER sorts higher. Only PERSISTENT conditions move a row:
@@ -65,34 +84,64 @@ const STATE_RANK: Record<RosterState, number> = {
   attention: 0,
   running: 1,
   idle: 1,
+  // An unrecognised status is not a reason to move a row — we don't know
+  // enough to claim it's urgent OR that it's finished.
+  unknown: 1,
   paused: 2,
+  // Dead goes last: a terminated agent can't be worked with at all, so it
+  // should never sit between two agents that can.
+  terminated: 3,
 };
 
-const STATE_LABEL: Record<Exclude<RosterState, "idle">, string> = {
+const STATE_LABEL: Record<Exclude<RosterState, "idle" | "unknown">, string> = {
   running: "Working",
   attention: "Needs you",
   paused: "Paused",
+  terminated: "Terminated",
 };
 
 /**
- * Map a Teams BFF status string onto a roster state. Unknown/absent statuses
- * fall back to `idle` rather than inventing a state — the BFF forwards
- * upstream Paperclip JSON verbatim and the enum has drifted across versions,
- * so an unrecognised value must degrade to "nothing to report", never to a
- * scary one.
+ * Map a `CompanyAgent.status` onto a roster state via the shared vocabulary.
+ *
+ * **On unrecognised statuses.** This used to `default: return "idle"`, which
+ * was wrong in the most damaging possible direction: `active`, `online`,
+ * `thinking` and `failed` are all real, currently-emitted values, so a live
+ * agent rendered with no rail and a *failed* one rendered as if nothing had
+ * happened — the same class of lie as the hardcoded green dot this roster
+ * replaced, just inverted.
+ *
+ * The fix is the shared table, but the default still has to be decided, and
+ * both obvious answers are lies: `idle` claims nothing is happening, `running`
+ * claims something is. So an unclassifiable status gets its own state and the
+ * roster shows the raw value instead of guessing. That keeps us honest, and it
+ * makes the next enum drift *visible* in the sidebar on day one rather than
+ * silently mis-rendering until someone notices.
  */
 export function rosterStateFor(status: string | null | undefined): RosterState {
-  switch ((status ?? "").toLowerCase()) {
-    case "running":
+  switch (classifyAgentStatus(status)) {
+    case "live":
       return "running";
-    case "error":
+    case "attention":
       return "attention";
     case "paused":
-    case "terminated":
       return "paused";
-    default:
+    case "terminated":
+      return "terminated";
+    case "idle":
       return "idle";
+    default:
+      // Absent status = the agent simply isn't reporting (a roster read that
+      // hasn't landed yet); that IS idle. A present-but-unrecognised one is
+      // information we can't classify, and gets shown verbatim.
+      return status ? "unknown" : "idle";
   }
+}
+
+/** Render an unrecognised status readably without pretending to know it.
+ *  Mirrors the org chart's `statusLabel` — capitalize the raw token. */
+function unknownStateLabel(status: string): string {
+  const trimmed = status.trim().slice(0, 24);
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
 export interface RosterEntry {
@@ -100,6 +149,12 @@ export interface RosterEntry {
   state: RosterState;
   /** Friday — the per-owner CEO / orchestrator. Pinned first, always. */
   isCeo: boolean;
+  /** The raw `CompanyAgent.status`, carried only so a `state: "unknown"` row
+   *  can show the value verbatim instead of inventing a label for it. */
+  rawStatus?: string | null;
+  /** Friday / Atlas. The backend refuses to delete these outright, so the row
+   *  must not offer it — see the delete guard in the row. */
+  isSeeded?: boolean;
 }
 
 /**
@@ -163,12 +218,61 @@ export function AgentRoster({
   // re-renders on every live run start/stop, and walking the model catalog on
   // each of those would be work for a value that only changes with `config.get`.
   const modelNames = useMemo(() => buildModelNameMap(configSnapshot), [configSnapshot]);
-  const ordered = orderRoster(entries);
-  const workingCount = entries.filter((e) => e.state === "running").length;
-  const attentionCount = entries.filter((e) => e.state === "attention").length;
+  // Same reasoning as `modelNames` — the roster re-renders on every live-run
+  // frame, so the sort and the two counts ride the same memo rather than
+  // re-running per frame. One pass for both counts.
+  // Order freeze. The sort only moves rows for persistent conditions, but
+  // those conditions still *end* — an agent self-heals out of `attention`, a
+  // teammate resumes a paused one — and that is exactly when the owner is
+  // reaching for a row. Freezing the order for as long as the pointer is over
+  // the roster (or focus is inside it) means a background change can never
+  // slide a row out from under a click that is already on its way. The
+  // snapshot is a plain id list; rows that appear while frozen sort to the end
+  // and everything re-settles the moment the user looks away.
+  const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
+
+  const { ordered, workingCount, attentionCount } = useMemo(
+    () => ({
+      ordered: orderRoster(entries),
+      ...entries.reduce(
+        (acc, e) => {
+          if (e.state === "running") acc.workingCount += 1;
+          else if (e.state === "attention") acc.attentionCount += 1;
+          return acc;
+        },
+        { workingCount: 0, attentionCount: 0 },
+      ),
+    }),
+    [entries],
+  );
+
+  const displayed = useMemo(() => {
+    if (!frozenIds) return ordered;
+    const rank = new Map(frozenIds.map((id, i) => [id, i]));
+    // Array.prototype.sort is stable, so ids absent from the snapshot (agents
+    // hired while frozen) keep their computed order at the end of the list.
+    return [...ordered].sort(
+      (a, b) =>
+        (rank.get(a.agent.id) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.agent.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }, [ordered, frozenIds]);
+
+  const freeze = (): void => setFrozenIds((prev) => prev ?? ordered.map((e) => e.agent.id));
+  const thaw = (): void => setFrozenIds(null);
 
   return (
-    <div className="agent-list">
+    <div
+      className="agent-list"
+      onPointerEnter={freeze}
+      onPointerLeave={thaw}
+      onFocusCapture={freeze}
+      onBlurCapture={(e) => {
+        // Only thaw when focus leaves the roster entirely — moving between a
+        // row and its action buttons must not unfreeze mid-reach.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) thaw();
+      }}
+    >
       {/* The count used to be a bare `agents.length`, which is the one number
           the owner can already see by looking. Lead with the news instead:
           what needs them, then what is happening, and fall back to the count
@@ -186,12 +290,17 @@ export function AgentRoster({
         )}
       </div>
 
-      {ordered.map(({ agent, state, isCeo }) => {
+      {displayed.map(({ agent, state, isCeo, rawStatus, isSeeded }) => {
         const name = agentDisplayName(agent);
         const isActive = activeAgentId === agent.id;
         const displayAgent = fromInstalledAgent(agent);
         const model = displayModelName(getAgentModelString(agent), modelNames);
-        const stateLabel = state === "idle" ? null : STATE_LABEL[state];
+        const stateLabel =
+          state === "idle"
+            ? null
+            : state === "unknown"
+              ? unknownStateLabel(rawStatus || "")
+              : STATE_LABEL[state];
         return (
           <div
             key={agent.id}
@@ -210,6 +319,14 @@ export function AgentRoster({
               type="button"
               className="agent-item__main"
               aria-current={isActive ? "true" : undefined}
+              aria-label={[
+                name,
+                isCeo && "CEO",
+                stateLabel,
+                publishedAgentIds.has(agent.id) && "Published to marketplace",
+              ]
+                .filter(Boolean)
+                .join(", ")}
               onClick={() => onSelect(agent.id)}
             >
               <span className="relative inline-flex">
@@ -277,7 +394,7 @@ export function AgentRoster({
               >
                 <Pencil size={13} />
               </button>
-              {agent.id !== defaultAgentId && (
+              {!isSeeded && agent.id !== defaultAgentId && (
                 <button
                   type="button"
                   className="agent-row-action agent-row-action--danger"

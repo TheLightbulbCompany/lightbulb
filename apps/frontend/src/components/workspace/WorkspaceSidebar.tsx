@@ -68,7 +68,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   // shell sits inside `TeamsEventsProvider` (see WorkspaceShell), which
   // revalidates `/teams/agents` on `teams.agent.status`, so the rows stay live
   // without polling from here.
-  const rosterEntries = useRosterEntries(agents, defaultId);
+  const rosterEntries = useRosterEntries(agents);
 
   // Delta 1: focus is owned by the dock. The active row / nested SessionList
   // derive from the store snapshot's focused chat panel, not local state.

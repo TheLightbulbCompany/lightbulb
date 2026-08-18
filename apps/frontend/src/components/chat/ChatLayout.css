@@ -212,7 +212,13 @@
   cursor: pointer;
   transition: background 0.15s;
   position: relative;
-  gap: 10px;
+  /* Column gap is 0 on purpose: any horizontal space BETWEEN the row button
+     and the action cluster would be a dead zone, since neither the gap nor
+     `.agent-item` itself handles clicks any more. `.agent-item__main` carries
+     that spacing as its own padding instead, so it stays clickable. The row
+     gap is what separates the nested session list, and keeps its 10px. */
+  column-gap: 0;
+  row-gap: 10px;
 }
 .agent-item:hover {
   background: rgba(255,255,255,0.85);
@@ -241,7 +247,8 @@
   align-items: center;
   gap: 10px;
   position: relative;
-  padding: 0;
+  /* Right padding replaces the row's old column-gap — see `.agent-item`. */
+  padding: 0 10px 0 0;
   border: 0;
   background: none;
   font: inherit;
@@ -285,6 +292,18 @@
 }
 .agent-item[data-state="paused"] .agent-item__main::before {
   background: var(--mute-soft);
+}
+/* `terminated` gets NO rail at all, and that absence IS the distinction from
+   paused. A paused agent is a live teammate you switched off and can switch
+   back on — it keeps a rail because it's a condition you can act on. A
+   terminated one is permanently dead (it will quietly vanish from assignee
+   pickers), so there is nothing to act on and nothing to mark; it just
+   recedes. The word on line two carries the difference for anyone reading. */
+.agent-item[data-state="terminated"] .agent-monogram {
+  opacity: 0.4;
+}
+.agent-item[data-state="terminated"] .agent-name {
+  color: var(--mute);
 }
 
 /* A paused/terminated agent is switched off on purpose — recede it rather
@@ -342,7 +361,11 @@
 .agent-state--attention {
   color: var(--danger);
 }
-.agent-state--paused {
+.agent-state--paused,
+.agent-state--terminated,
+/* An unrecognised status prints verbatim in the neutral tone — we are showing
+   the owner what the backend said, not claiming to know what it means. */
+.agent-state--unknown {
   color: var(--mute);
 }
 /* Quiet states get a plain dot; `running` uses the shared LiveRunDot (the
@@ -360,9 +383,15 @@
   border-radius: 999px;
   background: currentColor;
 }
-.agent-state--paused .agent-state__dot {
+.agent-state--paused .agent-state__dot,
+.agent-state--terminated .agent-state__dot,
+.agent-state--unknown .agent-state__dot {
   background: none;
   border: 1.5px solid currentColor;
+}
+/* Terminated is the one state with no marker of any kind. */
+.agent-state--terminated .agent-state__dot {
+  display: none;
 }
 .agent-avatar {
   width: 32px;
@@ -386,17 +415,26 @@
   flex-direction: column;
   gap: 1px;
 }
+/* Base rules stay block + ellipsis: the landing page's WorkspaceDemo renders
+   `<div class="agent-name">` with bare text and no `__text` child, so making
+   this a flex container globally would strip its truncation. */
 .agent-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Roster instances only: lay the name out beside the CEO rank. */
+.agent-item__main .agent-name {
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink);
 }
-/* The name itself is the element that truncates — the rank chip beside it must
-   keep its full width, so the ellipsis has to live on the text, not the row. */
+/* Inside the roster the NAME is the element that truncates — the rank chip
+   beside it must keep its full width, so the ellipsis moves to the text. */
 .agent-name__text {
   min-width: 0;
   white-space: nowrap;

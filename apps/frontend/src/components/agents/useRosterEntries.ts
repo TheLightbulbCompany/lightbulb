@@ -7,11 +7,21 @@
 //
 // Neither source is sufficient alone, which is why both are here:
 //
-//   * `GET /teams/agents` → `CompanyAgent.status` is the DURABLE state —
-//     idle / running / error / paused / terminated, covering Paperclip's
-//     autonomous task runs. It survives a reload, and `TeamsEventsProvider`
-//     already revalidates its SWR key off `teams.agent.status` events. But it
+//   * `GET /teams/agents` → `CompanyAgent.status` is the DURABLE state,
+//     covering Paperclip's autonomous task runs. It survives a reload, but it
 //     knows nothing about a webchat turn.
+//
+//     This hook owns that key's liveness ITSELF — see `ROSTER_SWR` below. It
+//     used to lean on `TeamsEventsProvider` revalidating `/teams/agents` off
+//     `teams.agent.status`, which is true on desktop (the provider wraps
+//     `WorkspaceShell`) and FALSE on mobile: the provider's only other mount
+//     is inside `InlineTeamsPanel`, a conditionally-rendered subtree that is
+//     not an ancestor of `ChatLayout`'s always-visible roster. With
+//     `SwrProvider` setting `revalidateOnFocus: false` globally, the mobile
+//     roster fetched once at mount and then never again — an agent flipping to
+//     error/paused/terminated was invisible on a phone until the shell
+//     remounted. A shared hook must not depend on where it happens to be
+//     mounted, so the guarantee lives here rather than in an ancestor.
 //   * The gateway's `run_active` frame is the LIVE state for exactly that
 //     case. The backend resolves it from OpenClaw's own `sessions.changed`
 //     (terminal status beats a stale `hasActiveRun` — see
@@ -24,76 +34,137 @@
 // a failed `/teams/agents` read or a missed frame degrades to "nothing to
 // report", never to a wrong state.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useGateway } from "@/hooks/useGateway";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { Agent } from "@/hooks/useAgents";
 import { rosterStateFor, type RosterEntry } from "@/components/agents/AgentRoster";
 
+/** The `/teams/agents` fields the roster reads. A narrow structural subset of
+ *  `CompanyAgent` so this hook doesn't depend on the full Teams wire shape. */
+interface RosterAgentRow {
+  id: string;
+  status?: string | null;
+  role?: string | null;
+  seeded?: boolean;
+}
+
+/** Sentinel for a `run_active` frame that arrived without a `session_id`. */
+const UNKEYED_SESSION = "__unkeyed__";
+
 /**
- * Agent ids with a live gateway run.
+ * Liveness for the `/teams/agents` key, owned by this hook so BOTH hosts get
+ * it (see the module header for why an ancestor provider was not enough).
  *
- * ponytail: one flag per agent, not a set of session keys. `run_active` is
- * deduped per session upstream, so an agent running two sessions at once and
- * finishing one would clear the flag early. Track sessions if that case ever
- * matters; a briefly-missing rail is the failure mode, which is the harmless
- * direction.
+ * `SwrProvider`'s docstring names explicit polling as the sanctioned way for a
+ * surface that needs liveness to get it. 30s clears the read layer's 15s dedup
+ * window, so every tick is a real refetch; on desktop the events provider
+ * still delivers status changes immediately and this is only a floor.
+ * `revalidateOnFocus` is re-enabled for this one key against the global
+ * default -- returning to a backgrounded phone is exactly when the owner wants
+ * "who needs me" to be current.
+ */
+const ROSTER_SWR = { refreshInterval: 30_000, revalidateOnFocus: true };
+
+/**
+ * Agent ids with at least one live gateway run.
+ *
+ * Tracked as a set of session ids PER AGENT, not a single flag. `run_active`
+ * carries `{type, active, agent_id, session_id}` and the backend dedupes it
+ * per session key, so a flat per-agent boolean was wrong for an agent running
+ * two sessions at once: finishing either one cleared the rail while the other
+ * was still going. Note there is deliberately no runId keying — unlike
+ * `run_ended`, `run_active` carries no runId at all (it is a session-level
+ * server-truth flag, which is exactly why `useAgentChat` mirrors it directly
+ * rather than gating it on a run).
  */
 function useLiveRunAgentIds(): ReadonlySet<string> {
   const { onChatMessage } = useGateway();
-  const [live, setLive] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [live, setLive] = useState<ReadonlyMap<string, ReadonlySet<string>>>(
+    () => new Map(),
+  );
 
   useEffect(() => {
     return onChatMessage((msg) => {
       const agentId = "agent_id" in msg ? msg.agent_id : undefined;
-      if (!agentId) return;
+      if (typeof agentId !== "string" || !agentId) return;
       // `run_active` is the signal; `run_ended` is the belt-and-braces clear
       // for a dropped/never-delivered `active: false` (a reconnect mid-run
       // would otherwise strand a row on "Working" forever — the same class of
-      // bug as the stuck working pill).
-      const next =
-        msg.type === "run_active" ? msg.active : msg.type === "run_ended" ? false : null;
-      if (next === null) return;
+      // bug as the stuck working pill). `useAgentChat` force-closes its own
+      // busy flag on `run_ended` for the same reason.
+      const active =
+        msg.type === "run_active" ? !!msg.active : msg.type === "run_ended" ? false : null;
+      if (active === null) return;
+      const sessionId =
+        "session_id" in msg && typeof msg.session_id === "string"
+          ? msg.session_id
+          : UNKEYED_SESSION;
+
       setLive((prev) => {
-        if (prev.has(agentId) === next) return prev;
-        const updated = new Set(prev);
-        if (next) updated.add(agentId);
-        else updated.delete(agentId);
-        return updated;
+        const sessions = prev.get(agentId);
+        if (active ? sessions?.has(sessionId) : !sessions?.has(sessionId)) return prev;
+        const next = new Map(prev);
+        const updated = new Set(sessions ?? []);
+        if (active) updated.add(sessionId);
+        else updated.delete(sessionId);
+        if (updated.size) next.set(agentId, updated);
+        else next.delete(agentId);
+        return next;
       });
     });
   }, [onChatMessage]);
 
-  return live;
+  // Identity changes only when an agent enters or leaves the live set, so
+  // downstream memos genuinely skip work on unrelated frames.
+  return useMemo(() => new Set(live.keys()), [live]);
 }
 
 /**
  * Build the roster entries for `agents`.
  *
- * `defaultAgentId` identifies Friday: the backend marks the `role: "ceo"`
- * Paperclip agent as the container config's default (see
- * `containers/config.py` — `default_index` picks the ceo, falling back to the
- * first agent), so it is the same agent the rest of the app already treats as
- * the front door. No second lookup needed.
+ * CEO-ness comes from the Paperclip `role`, NOT from the container's default
+ * agent. `_build_agents_list` picks the `role == "ceo"` agent as the default
+ * but silently falls back to index 0 when no agent carries that role, so on a
+ * legacy or partially-migrated company `defaultAgentId` is an arbitrary agent.
+ * That was harmless when it only hid a delete button; it is not harmless now
+ * that the roster pins the row and prints a CEO badge on it. When the roster
+ * read hasn't landed, or no agent claims the role, nobody is pinned and nobody
+ * is labelled — the badge never outruns the data.
  */
-export function useRosterEntries(agents: Agent[], defaultAgentId?: string): RosterEntry[] {
+export function useRosterEntries(agents: Agent[]): RosterEntry[] {
   const { read } = useTeamsApi();
   // Same SWR key ChatLayout's pause/resume control already reads, so on the
   // mobile shell this shares one cached response rather than adding a request.
-  const { data } = read<{ agents?: { id: string; status?: string | null }[] }>("/agents");
+  const { data } = read<{ agents?: RosterAgentRow[] }>("/agents", ROSTER_SWR);
   const liveRunAgentIds = useLiveRunAgentIds();
+  const rows = data?.agents;
 
-  const statuses = new Map((data?.agents ?? []).map((a) => [a.id, a.status]));
-  return agents.map((agent) => {
-    const durable = rosterStateFor(statuses.get(agent.id));
-    return {
-      agent,
-      // A live gateway run wins over a durable "idle" — the agent is demonstrably
-      // working. It does NOT override "attention": an errored agent that is
-      // retrying still needs the human, and that is the more urgent fact.
-      state: durable === "idle" && liveRunAgentIds.has(agent.id) ? "running" : durable,
-      isCeo: agent.id === defaultAgentId,
-    };
-  });
+  // SWR keeps `data` referentially stable between revalidations and the live
+  // set only changes identity on a real add/remove, so this genuinely skips
+  // work on host re-renders driven by unrelated state (dialog targets,
+  // `agentActionBusy`, the mobile drawer) — and keeps `entries` referentially
+  // stable so the roster's own memos hold.
+  return useMemo(() => {
+    const byId = new Map((rows ?? []).map((a) => [a.id, a]));
+    return agents.map((agent) => {
+      const row = byId.get(agent.id);
+      const durable = rosterStateFor(row?.status);
+      return {
+        agent,
+        // A live gateway run wins over a durable "idle" — the agent is
+        // demonstrably working. It does NOT override any other state: an
+        // errored agent that is retrying still needs the human, and a
+        // terminated one has no business looking busy.
+        state:
+          durable === "idle" && liveRunAgentIds.has(agent.id) ? ("running" as const) : durable,
+        isCeo: row?.role === "ceo",
+        // Friday and Atlas. The BFF stamps this from the persisted seeded-agent
+        // ids, and the backend rejects deleting them outright.
+        isSeeded: row?.seeded === true,
+        rawStatus: row?.status,
+      };
+    });
+  }, [agents, rows, liveRunAgentIds]);
 }

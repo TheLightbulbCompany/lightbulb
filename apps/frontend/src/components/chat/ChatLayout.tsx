@@ -97,7 +97,7 @@ export function ChatLayout({
   // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.
-  const rosterEntries = useRosterEntries(agents, defaultId);
+  const rosterEntries = useRosterEntries(agents);
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);

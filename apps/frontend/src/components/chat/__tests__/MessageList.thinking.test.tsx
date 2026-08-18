@@ -40,6 +40,19 @@ describe("ThinkingBlock — settled tense", () => {
   });
 });
 
+describe("ThinkingBlock — touch target", () => {
+  it("carries the coarse-pointer hit-area class without a visible box on desktop", () => {
+    // .chat-thinking-trigger bumps the tap target via padding+negative-margin
+    // under @media (pointer: coarse) in globals.css (jsdom doesn't evaluate
+    // that query, so this only pins the class wiring, not the computed box).
+    render(<ThinkingBlock content="reasoning" />);
+    const trigger = screen.getByRole("button");
+    expect(trigger).toHaveClass("chat-thinking-trigger");
+    // Fine-pointer/desktop chrome is unchanged — no boxed padding classes.
+    expect(trigger.className).not.toMatch(/\bpx-3\b|\bpy-2\b/);
+  });
+});
+
 describe("ThinkingBlock — mount/collapse behaviour preserved", () => {
   it("mounts expanded while streaming and auto-collapses when the stream ends", () => {
     const { rerender } = render(<ThinkingBlock content="reasoning" streaming />);

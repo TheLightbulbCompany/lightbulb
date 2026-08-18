@@ -375,7 +375,7 @@ export function ThinkingBlock({
           userToggledRef.current = true;
           setIsExpanded(!isExpanded);
         }}
-        className="flex items-center gap-1.5 text-left text-[var(--mute)] hover:text-[var(--ink-soft)] transition-colors"
+        className="chat-thinking-trigger flex items-center gap-1.5 text-left text-[var(--mute)] hover:text-[var(--ink-soft)] transition-colors"
       >
         {isExpanded ? (
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />

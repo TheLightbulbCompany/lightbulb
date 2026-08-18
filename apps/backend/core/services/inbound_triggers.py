@@ -7,6 +7,15 @@ sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
 routines (reuses its routine-body builder directly), driven by the registry
 (``core/services/credentials/registry.py``) instead of a hardcoded spec list.
 
+Pass ``routine_id`` and the first call is skipped: the trigger is ATTACHED to
+a routine the owner already wrote, and the registry's boilerplate starter
+prompt is never rendered onto it. Everything from ``create_routine_trigger``
+down — signing mode, provider-side registration, arming, the returned dict —
+is the same code on both paths; only the rollback differs (an attach may
+delete the trigger it added, never the owner's routine). Three shapes stay
+create-only because their setup writes the routine's own body: see
+``_ATTACHABLE_REGISTRATIONS``.
+
 The inbound shapes:
 
 ``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Isol8
@@ -271,6 +280,20 @@ _DEFAULT_REPLAY_WINDOW_SEC = 300
 # clear error instead of an opaque upstream 4xx).
 _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "none"}
 
+# The registration shapes an ATTACH (``routine_id`` supplied — arm this event
+# on a routine the owner already wrote) can carry. The three that are missing
+# are missing because their contract WRITES THE ROUTINE ITSELF, which is
+# exactly what attaching promises not to do:
+#   auto_google_watch / owner_setup — the ≤7-day channel only stays alive
+#     because the seed prepends a maintenance clause to the routine's
+#     description and attaches a renewal schedule; without the clause the
+#     automation dies silently within a week, and with it the owner's
+#     hand-authored instructions are no longer theirs.
+#   poll — there is no webhook at all; the "trigger" IS a schedule whose whole
+#     behaviour lives in the starter prompt an attach deliberately skips.
+# Those three stay create-only rather than shipping a half-armed attach.
+_ATTACHABLE_REGISTRATIONS = {"guided_paste", "auto_github", "auto_vercel", "auto_meta"}
+
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
     """Same resolution ``routers.paperclip_trigger_proxy._company_id_for_owner``
@@ -352,6 +375,15 @@ def _agent_rows(listed: Any) -> list:
     """
     if isinstance(listed, dict):
         listed = listed.get("agents") or listed.get("items") or []
+    return listed if isinstance(listed, list) else []
+
+
+def _routine_rows(listed: Any) -> list:
+    """The routine rows out of whatever ``list_routines`` returned — the
+    ``_agent_rows`` treatment for the same reason (bare array upstream, an
+    enveloped dict through the BFF)."""
+    if isinstance(listed, dict):
+        listed = listed.get("routines") or listed.get("items") or []
     return listed if isinstance(listed, list) else []
 
 
@@ -695,6 +727,24 @@ async def _rollback_routine(
         )
 
 
+async def _rollback_trigger(
+    admin: PaperclipAdminClient, *, trigger_id: str, cookie: str, owner_id: str, provider_key: str
+) -> None:
+    """The ATTACH branch's counterpart to ``_rollback_routine``: best-effort
+    delete of the trigger this call added to a routine the owner already
+    owned. Only the trigger — deleting the routine would destroy work this
+    call never created."""
+    try:
+        await admin.delete_routine_trigger(trigger_id=trigger_id, session_cookie=cookie)
+    except Exception:
+        logger.exception(
+            "inbound_triggers: rollback delete_routine_trigger failed for trigger=%s owner=%s provider=%s",
+            trigger_id,
+            owner_id,
+            provider_key,
+        )
+
+
 async def seed_trigger_routine(
     owner_id: str,
     provider_key: str,
@@ -702,6 +752,7 @@ async def seed_trigger_routine(
     resource: str | None = None,
     topic: str | None = None,
     assignee_agent_id: str | None = None,
+    routine_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + trigger pre-filled from ``provider_key``'s registry
     ``inbound`` declaration, for the event named ``event_id``, and record the
@@ -726,13 +777,26 @@ async def seed_trigger_routine(
     CALLER's own Paperclip company roster (a Gmail automation for the support
     agent should not arrive Friday-owned and need reassigning by hand).
 
+    ``routine_id`` ATTACHES the trigger to a routine the owner already wrote
+    instead of seeding a new one — the "arm this event on my Revenue recovery
+    routine" path. The routine must be in the CALLER's own company (same
+    tenancy fence as ``assignee_agent_id``), and NOTHING about it is touched:
+    no description, assignee, reviewers, variables or schedule — a
+    hand-authored routine already says what to do, so the registry's boilerplate
+    starter prompt is skipped entirely and only the trigger is added. The
+    provider side runs exactly as it does for a fresh seed (auto-register or
+    guided paste). Rollback unwinds only the trigger this call created, never
+    the routine. Not every shape can attach — see
+    ``_ATTACHABLE_REGISTRATIONS``.
+
     Raises ``ValueError`` for any caller-facing input problem (unknown
     provider/event, provider not wired as a trigger source, missing/invalid
     resource or topic, GitHub/Vercel/Google refusing the registration, no
-    active Paperclip company, no resolvable suggested agent, an assignee
-    outside the caller's company) — the router maps these to a 4xx. Raises
-    ``RuntimeError`` on a malformed upstream response (Paperclip is expected
-    to always return an id / publicId / secretMaterial).
+    active Paperclip company, no resolvable suggested agent, an assignee or
+    target routine outside the caller's company, a registration shape that
+    can't attach) — the router maps these to a 4xx. Raises ``RuntimeError``
+    on a malformed upstream response (Paperclip is expected to always return
+    an id / publicId / secretMaterial).
     """
     out = await _seed_trigger_routine(
         owner_id,
@@ -741,11 +805,19 @@ async def seed_trigger_routine(
         resource=resource,
         topic=topic,
         assignee_agent_id=assignee_agent_id,
+        routine_id=routine_id,
     )
     capture_product_event(
         distinct_id=owner_id,
         event="automation_armed",
-        properties={"provider": provider_key, "event_id": event_id, "source": "from_integration"},
+        properties={
+            "provider": provider_key,
+            "event_id": event_id,
+            "source": "from_integration",
+            # Which half of the funnel this was — a new automation or a
+            # trigger armed on one the owner already wrote.
+            "target": "existing_routine" if routine_id else "new_routine",
+        },
     )
     return out
 
@@ -757,8 +829,14 @@ async def _seed_trigger_routine(
     resource: str | None = None,
     topic: str | None = None,
     assignee_agent_id: str | None = None,
+    routine_id: str | None = None,
 ) -> dict[str, Any]:
-    """The seed itself — see ``seed_trigger_routine`` for the contract."""
+    """The seed itself — see ``seed_trigger_routine`` for the contract.
+
+    ``routine_id`` doubles as the branch switch and the answer: supplied, it
+    is the existing routine to attach to; omitted, it is filled in by the
+    create below. Everything downstream reads the same name either way."""
+    attach = routine_id is not None
     provider = registry.get_provider(provider_key)
     inbound = provider.inbound
     if inbound is None:
@@ -772,6 +850,19 @@ async def _seed_trigger_routine(
     # calendar/drive stay auto_google_watch, gmail.poll/gmail.message carry
     # their own shape) — everything below dispatches on the EFFECTIVE value.
     registration = event.registration or inbound.webhook_registration
+
+    # Attach preconditions, before anything exists upstream. Both refusals are
+    # the same promise stated twice: an attach adds a trigger and touches
+    # nothing else about the routine — not its body (the shapes that rewrite
+    # it are create-only) and not its assignee.
+    if attach:
+        if registration not in _ATTACHABLE_REGISTRATIONS:
+            raise ValueError(
+                f"{event_id!r} can't be added to an existing automation — its setup writes the "
+                "automation's own instructions, so it has to create its own"
+            )
+        if assignee_agent_id is not None:
+            raise ValueError("attaching to an existing automation can't reassign it")
 
     # auto_github preconditions up front — a missing repo or token must fail
     # before anything exists upstream, not after a create/rollback cycle.
@@ -841,8 +932,8 @@ async def _seed_trigger_routine(
     # Only "friday" is used by any live registry template today (Stripe's).
     # Extend this when a second suggested_agent shows up. An explicit assignee
     # bypasses the suggestion entirely — the caller named the agent, so there
-    # is nothing to resolve.
-    if assignee_agent_id is None and inbound.template.suggested_agent != "friday":
+    # is nothing to resolve, and an attach resolves no agent at all.
+    if assignee_agent_id is None and not attach and inbound.template.suggested_agent != "friday":
         raise ValueError(f"no agent resolver for suggested_agent={inbound.template.suggested_agent!r}")
 
     company_id = await _company_id_for_owner(owner_id)
@@ -867,27 +958,58 @@ async def _seed_trigger_routine(
         cookie = await get_admin_session_cookie(http)
         admin = PaperclipAdminClient(http_client=http)
 
-        agents = _agent_rows(await admin.list_agents(session_cookie=cookie, company_id=company_id))
-        if assignee_agent_id is not None:
-            # Never trust a client-supplied agent id: it has to be on the
-            # CALLER's own company roster, the same tenancy fence every Teams
-            # route applies via ctx.company_id. The roster is already in hand.
-            if not any(isinstance(a, dict) and a.get("id") == assignee_agent_id for a in agents):
-                raise ValueError(f"agent {assignee_agent_id!r} is not in this workspace")
-            agent_id = assignee_agent_id
-        else:
-            agent_id = _find_friday_id(agents)
-            if agent_id is None:
-                raise ValueError(f"no CEO agent (Friday) found in company {company_id!r}")
+        # The trigger this call added to a pre-existing routine, once it
+        # exists — what `unwind` is allowed to delete on the attach path.
+        attached_trigger_id: str | None = None
 
-        routine = await admin.create_routine(
-            session_cookie=cookie,
-            company_id=company_id,
-            body=_build_routine_body(title=title, description=description, agent_id=agent_id),
-        )
-        routine_id = routine.get("id") if isinstance(routine, dict) else None
-        if not routine_id:
-            raise RuntimeError("create_routine returned no id")
+        async def unwind() -> None:
+            """Undo what THIS call created when a later step fails. A fresh
+            seed owns the whole routine, so it goes; an attach owns only the
+            trigger it added — the routine is the owner's own work."""
+            if attach:
+                if attached_trigger_id:
+                    await _rollback_trigger(
+                        admin,
+                        trigger_id=attached_trigger_id,
+                        cookie=cookie,
+                        owner_id=owner_id,
+                        provider_key=provider_key,
+                    )
+                return
+            await _rollback_routine(
+                admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+            )
+
+        if attach:
+            # Never trust a client-supplied routine id: the target has to be
+            # in the CALLER's own company — the same tenancy fence the
+            # assignee check below applies, and the reason the id is safe to
+            # interpolate into the trigger-create path afterwards.
+            routines = _routine_rows(await admin.list_routines(session_cookie=cookie, company_id=company_id))
+            if not any(isinstance(r, dict) and r.get("id") == routine_id for r in routines):
+                raise ValueError(f"automation {routine_id!r} is not in this workspace")
+        else:
+            agents = _agent_rows(await admin.list_agents(session_cookie=cookie, company_id=company_id))
+            if assignee_agent_id is not None:
+                # Never trust a client-supplied agent id: it has to be on the
+                # CALLER's own company roster, the same tenancy fence every Teams
+                # route applies via ctx.company_id. The roster is already in hand.
+                if not any(isinstance(a, dict) and a.get("id") == assignee_agent_id for a in agents):
+                    raise ValueError(f"agent {assignee_agent_id!r} is not in this workspace")
+                agent_id = assignee_agent_id
+            else:
+                agent_id = _find_friday_id(agents)
+                if agent_id is None:
+                    raise ValueError(f"no CEO agent (Friday) found in company {company_id!r}")
+
+            routine = await admin.create_routine(
+                session_cookie=cookie,
+                company_id=company_id,
+                body=_build_routine_body(title=title, description=description, agent_id=agent_id),
+            )
+            routine_id = routine.get("id") if isinstance(routine, dict) else None
+            if not routine_id:
+                raise RuntimeError("create_routine returned no id")
 
         if registration == "poll":
             # No webhook at all — the trigger is an enabled schedule and the
@@ -900,9 +1022,7 @@ async def _seed_trigger_routine(
                     body=_build_schedule_trigger_body(_GMAIL_POLL_CRON),
                 )
             except Exception:
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded poll routine=%s owner=%s account=%s event=%s",
@@ -934,6 +1054,11 @@ async def _seed_trigger_routine(
             )
 
             trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
+            # Claimed for unwinding BEFORE anything below can raise — on the
+            # attach path this trigger is the only thing this call may delete,
+            # so losing its id would strand it on the owner's routine.
+            if attach:
+                attached_trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
             public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
             if not public_id:
                 raise RuntimeError("create_routine_trigger returned no trigger.publicId")
@@ -968,13 +1093,12 @@ async def _seed_trigger_routine(
                 if not trigger_id:
                     raise RuntimeError("create_routine_trigger returned no trigger.id")
         except Exception:
-            # The routine already exists upstream at this point. If the
-            # trigger call itself throws (timeout, upstream error) or comes
-            # back without a usable publicId, that routine is an orphan the
-            # owner can't see or arm — unwind it here before re-raising.
-            await _rollback_routine(
-                admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-            )
+            # Something already exists upstream at this point. If the trigger
+            # call itself throws (timeout, upstream error) or comes back
+            # without a usable publicId, a freshly seeded routine is an orphan
+            # the owner can't see or arm, and an attached trigger is dead
+            # weight on a routine they wrote — unwind before re-raising.
+            await unwind()
             raise
 
         proxy_url = trigger_fire_url(owner_id, public_id)
@@ -1034,9 +1158,7 @@ async def _seed_trigger_routine(
             except Exception:
                 # GitHub refused the hook (no admin on the repo, duplicate,
                 # outage) — the routine+trigger are unusable, unwind them.
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_github routine=%s trigger=%s owner=%s repo=%s event=%s",
@@ -1070,9 +1192,7 @@ async def _seed_trigger_routine(
             except Exception:
                 # Vercel refused the webhook (plan/token can't create them,
                 # outage) — the routine+trigger are unusable, unwind them.
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 # ARM the trigger with Vercel's generated secret — the
@@ -1087,9 +1207,7 @@ async def _seed_trigger_routine(
                 # secret — delete it (best-effort) before unwinding, or Vercel
                 # would deliver into signature failures forever.
                 await _delete_vercel_webhook(token=vercel_token, webhook_id=webhook_id)
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_vercel routine=%s trigger=%s owner=%s project=%s event=%s",
@@ -1117,9 +1235,7 @@ async def _seed_trigger_routine(
             except Exception:
                 # Meta refused the binding (not an admin of the asset, missing
                 # app permission, outage) — the routine+trigger are unusable.
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 # The routing map for the app-level ingress. A delivery names
@@ -1142,9 +1258,7 @@ async def _seed_trigger_routine(
                 # Subscribed but unroutable: Meta would deliver into a fleet
                 # that can't resolve the asset. Unbind (best-effort) first.
                 await _unsubscribe_meta_asset(meta_asset)
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_meta routine=%s trigger=%s owner=%s provider=%s asset=%s event=%s",
@@ -1185,9 +1299,7 @@ async def _seed_trigger_routine(
                     body={"description": f"{clause}\n\n{description}"},
                 )
             except Exception:
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 channel = await google_watch.start_watch(
@@ -1201,9 +1313,7 @@ async def _seed_trigger_routine(
                 # gog / Google refused the watch (broken grant, revoked
                 # account, API outage) — the routine+trigger are unusable,
                 # unwind them.
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 # The renewal trigger + state file are what keep the ≤7-day
@@ -1237,9 +1347,7 @@ async def _seed_trigger_routine(
                     channel_id=channel["channel_id"],
                     resource_id=channel["resource_id"],
                 )
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_google_watch routine=%s trigger=%s owner=%s account=%s event=%s",
@@ -1274,9 +1382,7 @@ async def _seed_trigger_routine(
                     body={"description": f"{clause}\n\n{description}"},
                 )
             except Exception:
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 watch = await google_watch.start_gmail_watch(owner_id=owner_id, account_email=resource, topic=topic)
@@ -1286,9 +1392,7 @@ async def _seed_trigger_routine(
                 # (an owner who hasn't done the Pub/Sub setup retries this
                 # create afterwards; the error names Google's reason). The
                 # routine+trigger are unusable either way — unwind them.
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             try:
                 # Renewal trigger + state file, same posture as the push
@@ -1341,9 +1445,7 @@ async def _seed_trigger_routine(
                 # automation is unusable — stop the watch (best-effort)
                 # before unwinding.
                 await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=resource)
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
+                await unwind()
                 raise
             logger.info(
                 "inbound_triggers: seeded owner_setup routine=%s trigger=%s owner=%s account=%s event=%s",
@@ -1376,7 +1478,5 @@ async def _seed_trigger_routine(
 
         # No other registration shape exists; the routine+trigger were
         # already created, so unwind before surfacing the misconfiguration.
-        await _rollback_routine(
-            admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-        )
+        await unwind()
         raise ValueError(f"unsupported registration {registration!r}")

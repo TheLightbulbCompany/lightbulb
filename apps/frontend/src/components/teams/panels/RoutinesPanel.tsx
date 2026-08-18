@@ -587,6 +587,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       {creating && (
         <CreateRoutineDialog
           agents={agents}
+          routines={routines ?? []}
           onClose={() => setCreating(false)}
           onCreated={() => {
             setCreating(false);
@@ -903,6 +904,24 @@ const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
   "auto_meta:instagram": { label: "Instagram account", plural: "accounts" },
 };
 
+// Registration shapes that can only ever CREATE their own automation, never
+// arm an existing one — mirrors the backend's _ATTACHABLE_REGISTRATIONS
+// (core/services/inbound_triggers.py). All three write the routine's own
+// instructions as part of their setup (the Google watch shapes prepend a
+// renewal-maintenance clause; poll's whole behaviour IS its starter prompt),
+// which is exactly what attaching to someone's hand-written routine must not
+// do. The picker hides the choice for them rather than offering a 400.
+const NON_ATTACHABLE_REGISTRATIONS = new Set([
+  "auto_google_watch",
+  "poll",
+  "owner_setup",
+]);
+
+// The target-picker's "create a new one" option. A sentinel rather than an
+// empty string because EditorialSelect (Radix) treats "" as no-value, which
+// would render the placeholder instead of this deliberate default.
+const NEW_ROUTINE = "__new__";
+
 // POST /automations/from-integration's response (core/services/
 // inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
 // paste the proxy URL into the provider's own dashboard and then paste back
@@ -1110,10 +1129,14 @@ function EventPicker({
 
 function CreateRoutineDialog({
   agents,
+  routines,
   onClose,
   onCreated,
 }: {
   agents: CompanyAgent[];
+  // The panel's already-fetched list, reused for the connected-app rung's
+  // target picker — attaching a trigger needs no second read.
+  routines: Routine[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -1166,6 +1189,10 @@ function CreateRoutineDialog({
   const [resourceError, setResourceError] = useState<string | null>(null);
   // owner_setup state (gmail.message) — the owner's own Pub/Sub topic.
   const [connTopic, setConnTopic] = useState("");
+  // Which automation the trigger lands on: NEW_ROUTINE (the default, and the
+  // unchanged 1-click path) or an existing routine's id, which attaches the
+  // trigger to it and leaves everything else about it alone.
+  const [connRoutineId, setConnRoutineId] = useState<string>(NEW_ROUTINE);
 
   // Trigger-capable = connected AND the registry declares inbound events for
   // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
@@ -1185,6 +1212,15 @@ function CreateRoutineDialog({
   const isOwnerSetup = selectedEvent?.registration === "owner_setup";
   const registrationShape =
     selectedConnection?.inbound?.webhook_registration ?? "";
+  // Per-event override wins, same precedence the backend applies.
+  const effectiveRegistration =
+    selectedEvent?.registration ?? registrationShape;
+  const canAttachToExisting =
+    !NON_ATTACHABLE_REGISTRATIONS.has(effectiveRegistration);
+  // The chosen target, normalized: the sentinel and any shape that can't
+  // attach both mean "create a new automation".
+  const attachRoutineId =
+    canAttachToExisting && connRoutineId !== NEW_ROUTINE ? connRoutineId : null;
   const resourceNoun = AUTO_RESOURCE_NOUNS[
     `${registrationShape}:${connProvider}`
   ] ??
@@ -1274,6 +1310,9 @@ function CreateRoutineDialog({
         ...(connResource ? { resource: connResource } : {}),
         // Only the owner_setup shape (gmail.message) carries a topic.
         ...(isOwnerSetup && connTopic.trim() ? { topic: connTopic.trim() } : {}),
+        // Only an attach carries a target — the create path's body is
+        // byte-for-byte what it always was.
+        ...(attachRoutineId ? { routine_id: attachRoutineId } : {}),
       };
       const result = (await automationsApi.post(
         "/automations/from-integration",
@@ -1664,6 +1703,7 @@ function CreateRoutineDialog({
                     setConnEventId(null);
                     setConnResource(null);
                     setConnTopic("");
+                    setConnRoutineId(NEW_ROUTINE);
                     // Resource feeds are per-provider — clearing re-arms the
                     // lazy fetch for the newly selected one.
                     setResourceOptions(null);
@@ -1762,6 +1802,39 @@ function CreateRoutineDialog({
                 <span className="text-xs text-[var(--mute)]">
                   A topic in your own Google Cloud project — you&apos;ll wire
                   it up after Create.
+                </span>
+              </label>
+            )}
+            {/* Where the trigger lands. "Create a new automation" is the
+                default, so the existing one-click path is unchanged; picking
+                an automation the owner already wrote ADDS the trigger to it
+                and touches nothing else — its instructions, assignee,
+                reviewers, variables and schedule stay exactly as written.
+                Last in the block so it reads as the final question, and
+                hidden for the shapes that can only create (they seed the
+                automation's own instructions as part of their setup). */}
+            {connEventId != null && canAttachToExisting && routines.length > 0 && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Automation
+                </span>
+                <div className="mt-1">
+                  <EditorialSelect
+                    options={[
+                      { value: NEW_ROUTINE, label: "Create a new automation" },
+                      ...routines.map((r) => ({
+                        value: r.id,
+                        label: routineName(r),
+                      })),
+                    ]}
+                    value={connRoutineId}
+                    onValueChange={setConnRoutineId}
+                  />
+                </div>
+                <span className="text-xs text-[var(--mute)]">
+                  {attachRoutineId
+                    ? "Adds this trigger to that automation. Its instructions, assignee and schedule stay as they are."
+                    : "Writes a new automation from this event's template."}
                 </span>
               </label>
             )}

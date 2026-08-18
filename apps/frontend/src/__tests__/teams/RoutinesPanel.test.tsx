@@ -813,6 +813,107 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(mockAutomationsPut).not.toHaveBeenCalled();
   });
 
+  // Target selector: create a new automation (the unchanged default) vs arm
+  // this event on one the owner already wrote.
+
+  async function pickStripeRefundEvent() {
+    connectionsData = [connection()];
+    const user = await openConnectedAppRung();
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
+    await user.click(await screen.findByRole("option", { name: "Charge refunded" }));
+    return user;
+  }
+
+  it("defaults to creating a new automation, and submits no routine_id", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_new",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+    });
+    const user = await pickStripeRefundEvent();
+
+    // The picker sits on "Create a new automation" without being touched —
+    // the one-click path is exactly as many clicks as it was.
+    expect(screen.getByText("Create a new automation")).toBeInTheDocument();
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "charge.refunded",
+    });
+  });
+
+  it("choosing an existing automation submits its routine_id and still runs the guided paste flow", async () => {
+    routinesData = { routines: [routine({ id: "rt_revenue", title: "Revenue recovery" })] };
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_revenue",
+      trigger_public_id: "pub_att",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_att",
+      guided: true,
+      instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+      secret_hint: "whsec_…",
+    });
+    const user = await pickStripeRefundEvent();
+
+    // [0] is the app picker; the target picker is the second (guided
+    // providers have no resource dropdown between them).
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Revenue recovery" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "charge.refunded",
+      routine_id: "rt_revenue",
+    });
+
+    // The guided half is unchanged — same URL to paste, same secret to arm
+    // it with. Attaching only changes WHICH routine the trigger hangs off.
+    expect(
+      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_att"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/paste your stripe signing secret/i)).toBeInTheDocument();
+  });
+
+  it("switching apps resets the target back to a new automation", async () => {
+    routinesData = { routines: [routine({ id: "rt_revenue", title: "Revenue recovery" })] };
+    connectionsData = [
+      connection(),
+      connection({
+        provider: "posthog",
+        display_name: "PostHog",
+        inbound: {
+          webhook_registration: "guided_paste",
+          events: [{ id: "insight.alert", label: "Insight alert" }],
+        },
+      }),
+    ];
+    const user = await openConnectedAppRung();
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await openEventList(user);
+    await user.click(await screen.findByRole("option", { name: "Charge refunded" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Revenue recovery" }));
+    // Scope to the dialog — the routine also names itself in the list behind it.
+    expect(
+      within(screen.getByRole("dialog")).getByText("Revenue recovery"),
+    ).toBeInTheDocument();
+
+    // A different app may not even support attaching — the target can't
+    // survive the switch.
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "PostHog" }));
+    await openEventList(user);
+    await user.click(await screen.findByRole("option", { name: "Insight alert" }));
+    expect(screen.getByText("Create a new automation")).toBeInTheDocument();
+  });
+
 });
 
 describe("RoutinesPanel — auto_github repo picker", () => {
@@ -1213,6 +1314,26 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     expect(doneButton).toBeEnabled();
     await user.click(doneButton);
     expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("offers no attach target — the watch shapes write the automation's own instructions", async () => {
+    // A Google watch stays alive only because the seed prepends a renewal
+    // clause to the routine's description. Attaching that to a hand-written
+    // routine would either rewrite someone's instructions or arm a watch
+    // nothing renews, so the backend refuses it and the picker never offers it.
+    routinesData = { routines: [routine({ id: "rt_revenue", title: "Revenue recovery" })] };
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Google Workspace" }));
+    await openEventList(user);
+    await user.click(await screen.findByRole("option", { name: "Calendar changed" }));
+
+    expect(
+      within(screen.getByRole("dialog")).queryByText("Create a new automation"),
+    ).not.toBeInTheDocument();
   });
 });
 

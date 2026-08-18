@@ -19,7 +19,10 @@ The bridge endpoint `build.lobster` curls to register a built agent:
   per-owner URL is substituted into `build.lobster` at stage time (the vendored
   file ships a literal `{{ISOL8_BRIDGE_URL}}` placeholder). Confirm the
   placeholder was substituted; if it still reads `{{ISOL8_BRIDGE_URL}}`, refuse to
-  proceed — the build pipeline cannot register agents.
+  proceed — the build pipeline cannot register agents. It is the ONLY way an agent
+  gets created, and the only place an `agent_id` comes from: Atlas names agents,
+  the platform assigns their ids. If the bridge errors, report it verbatim and
+  stop — never install a build into the container by hand.
 
 LLM provider/model selection is handled by the isol8 platform; the agent loop
 drains queued LLM intents and lets the platform route. The agent does not read

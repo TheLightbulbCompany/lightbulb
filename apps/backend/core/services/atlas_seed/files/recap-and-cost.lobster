@@ -199,7 +199,7 @@ steps:
     env:
       MATRIX: $matrix-of-build.stdout
       DECISIONS: $decisions-of-build.stdout
-      ISOL8_AGENTS_DIR: /home/node/.openclaw/workspaces
+      ISOL8_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 5.9 — Surface determinism-audit failures so the user knows what to fix.

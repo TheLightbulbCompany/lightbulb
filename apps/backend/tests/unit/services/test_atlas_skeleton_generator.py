@@ -9,11 +9,15 @@ populated the staging dir, so every build hit ``staging_dir_missing``.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 _GEN = (
     Path(__file__).resolve().parents[3] / "core" / "services" / "atlas_seed" / "files" / "atlas-skeleton-generator.js"
@@ -33,10 +37,10 @@ const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1", archetype:"
   pipelines:[{name:"intake", purpose:"collect a contract to summarize"}],
   scripts:[{name:"helper", purpose:"normalize a contract payload", archetype:"transform"}] };
 const draft=g.draftToFastIo(spec);
-const w=draft.pass ? g.writeDisk("b1","lex-legal",draft.artifacts_to_stage) : {};
-const v=draft.pass ? g.verifyWrite("b1","lex-legal") : {};
-const w2=draft.pass ? g.writeDisk("b1","lex-legal",draft.artifacts_to_stage) : {};
-const ws=path.join(tmp,"lex-legal","workspace");
+const w=draft.pass ? g.writeDisk("b1",draft.artifacts_to_stage) : {};
+const v=draft.pass ? g.verifyWrite("b1") : {};
+const w2=draft.pass ? g.writeDisk("b1",draft.artifacts_to_stage) : {};
+const ws=path.join(tmp,"workspace-atlas-staging-b1","workspace");
 // The generated helper.js must actually RUN — it previously defined a local
 // `process` that shadowed Node's global, crashing main() at process.argv.
 let scriptRuns=false, scriptShadows=true;
@@ -47,16 +51,32 @@ try {
   const r=cp.spawnSync(process.execPath,[path.join(ws,"helper.js")],{input:"{}",encoding:"utf8"});
   scriptRuns = r.status===0 && /"pass":true/.test(r.stdout||"");
 } catch(e){}
-let entry={};
-try { entry=(JSON.parse(fs.readFileSync(path.join(ws,"openclaw.json"),"utf8")).agents||{}).list[0]||{}; } catch(e){}
+let entry={}, defaults={};
+try {
+  const cfg=JSON.parse(fs.readFileSync(path.join(ws,"openclaw.json"),"utf8"));
+  entry=(cfg.agents||{}).list[0]||{};
+  defaults=(cfg.agents||{}).defaults||{};
+} catch(e){}
+let manifest={};
+try { manifest=JSON.parse(fs.readFileSync(path.join(tmp,"workspace-atlas-staging-b1","build-manifest.json"),"utf8")); } catch(e){}
 const out={
   draft_pass: !!draft.pass,
   write_success: !!w.success,
   write_files: w.file_count||0,
   verify_success: !!v.success,
+  staging_id: g.stagingIdFor("b1"),
+  write_staging_id: w.staging_agent_id||"",
+  verify_staging_id: v.staging_agent_id||"",
+  manifest_staging_id: manifest.staging_agent_id||"",
+  manifest_agent_name: manifest.agent_name||"",
+  entry_id: entry.id||"",
+  entry_has_workspace: Object.prototype.hasOwnProperty.call(entry,"workspace"),
+  defaults_have_workspace: Object.prototype.hasOwnProperty.call(defaults,"workspace"),
+  artifact_paths: Object.keys(draft.artifacts_to_stage||{}),
+  destination_dir: w.destination_dir||"",
   has_openclaw: fs.existsSync(path.join(ws,"openclaw.json")),
   has_agents_md: fs.existsSync(path.join(ws,"AGENTS.md")),
-  has_manifest: fs.existsSync(path.join(tmp,"lex-legal","build-manifest.json")),
+  has_manifest: fs.existsSync(path.join(tmp,"workspace-atlas-staging-b1","build-manifest.json")),
   second_write_refused: w2.error==="destination_exists",
   script_runs: scriptRuns,
   script_shadows_process: scriptShadows,
@@ -112,6 +132,135 @@ def test_skeleton_generator_draft_write_verify(tmp_path):
     assert out["entry_identity"] == {"name": "lex-legal", "emoji": "🛠"}
     assert out["entry_has_archetype"] is False
 
+    # THE FIX: the bundle carries no agent-chosen id. The entry's ``id`` is the
+    # build's staging token (the schema requires the field), the staging dir is
+    # keyed by the build, and the display name appears nowhere as an identifier.
+    assert out["staging_id"] == "atlas-staging-b1"
+    assert out["entry_id"] == "atlas-staging-b1"
+    assert out["write_staging_id"] == "atlas-staging-b1"
+    assert out["verify_staging_id"] == "atlas-staging-b1"
+    assert out["manifest_staging_id"] == "atlas-staging-b1"
+    # The NAME still travels — as a name, on the manifest and the entry.
+    assert out["manifest_agent_name"] == "lex-legal"
+    # No name-derived paths anywhere: not the destination, not the workspace
+    # pointers (the platform sets those to .openclaw/workspace-{assigned id}),
+    # not the staged artifact paths.
+    assert out["destination_dir"].endswith("/workspace-atlas-staging-b1")
+    assert "lex-legal" not in out["destination_dir"]
+    assert out["entry_has_workspace"] is False
+    assert out["defaults_have_workspace"] is False
+    assert not [p for p in out["artifact_paths"] if "lex-legal" in p], out["artifact_paths"]
+
+
+_TOKEN_DRIVER = r"""
+process.env.ISOL8_AGENTS_DIR="/home/node/.openclaw";
+const g=require(process.env.GEN_PATH);
+const r=require(process.env.REG_PATH);
+process.stdout.write(JSON.stringify({
+  plain: g.stagingIdFor("b1"),
+  long: g.stagingIdFor("x".repeat(300)),
+  traversal: g.stagingIdFor("../../etc/passwd"),
+  empty: g.stagingIdFor(""),
+  dir: g.stagingWorkspaceDir("b1"),
+  // The registrar must resolve the staging workspace through the generator's
+  // export, not a second copy of the derivation.
+  registrar_shares_derivation: r._stagingWorkspaceDir === g.stagingWorkspaceDir
+}));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_staging_token_is_always_a_legal_staging_agent_id(tmp_path):
+    # Build ids come from the agent loop and are free-form. The token derived
+    # from one still has to satisfy the bridge: agent_export._AGENT_ID_RE and
+    # RegisterBuiltAgentRequest.staging_agent_id (3-64 chars, [A-Za-z0-9._-],
+    # alphanumeric first char). An over-long or path-y build id must not turn a
+    # good build into a 422 — or a traversal.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", _TOKEN_DRIVER],
+        capture_output=True,
+        text=True,
+        env={
+            "GEN_PATH": str(_GEN),
+            "REG_PATH": str(_GEN.parent / "atlas-trigger-registrar.js"),
+            "PATH": str(bin_dir),
+        },
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+
+    from core.services.agent_export import _AGENT_ID_RE
+
+    assert out["plain"] == "atlas-staging-b1"
+    assert out["empty"] == "atlas-staging-unknown"
+    assert "/" not in out["traversal"] and ".." not in out["traversal"]
+    assert len(out["long"]) == 64
+    for key in ("plain", "long", "traversal", "empty"):
+        assert _AGENT_ID_RE.match(out[key]), (key, out[key])
+    assert out["dir"] == "/home/node/.openclaw/workspace-atlas-staging-b1"
+    assert out["registrar_shares_derivation"] is True
+
+
+_TRIGGER_CONFINE_DRIVER = r"""
+const os=require("os"),fs=require("fs"),path=require("path");
+const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-trig-test-"));
+process.env.ISOL8_AGENTS_DIR=tmp;
+const r=require(process.env.REG_PATH);
+const ws=path.join(tmp,"workspace-atlas-staging-b1","workspace");
+fs.mkdirSync(ws,{recursive:true});
+fs.writeFileSync(path.join(ws,"real.lobster"),"name: real\n");
+// A file that exists OUTSIDE the build workspace, and one inside with a
+// non-lobster extension.
+fs.writeFileSync(path.join(tmp,"outside.lobster"),"name: outside\n");
+fs.writeFileSync(path.join(ws,"notes.md"),"# notes\n");
+const has=r._workspaceHasFile;
+const out={
+  in_workspace: has("b1","real.lobster"),
+  traversal: has("b1","../../outside.lobster"),
+  absolute: has("b1",path.join(tmp,"outside.lobster")),
+  wrong_ext: has("b1","notes.md"),
+  empty: has("b1",""),
+  non_string: has("b1",null),
+  missing: has("b1","nope.lobster"),
+};
+fs.rmSync(tmp,{recursive:true,force:true});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_trigger_pipelines_are_confined_to_the_build_workspace(tmp_path):
+    # triggers[].pipeline is authored by the agent loop, so it is untrusted
+    # input reaching a filesystem path — and it ends up inside a cron row's
+    # "Run <pipeline>" payload. path.join resolves `..`, so without a
+    # confinement check a pipeline outside this build's workspace could satisfy
+    # the existence gate and get registered.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", _TRIGGER_CONFINE_DRIVER],
+        capture_output=True,
+        text=True,
+        env={"REG_PATH": str(_GEN.parent / "atlas-trigger-registrar.js"), "PATH": str(bin_dir)},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["in_workspace"] is True
+    assert out["traversal"] is False
+    assert out["absolute"] is False
+    # The cron branch used to accept any existing file type; the payload is a
+    # lobster run, so only .lobster counts.
+    assert out["wrong_ext"] is False
+    assert out["empty"] is False
+    assert out["non_string"] is False
+    assert out["missing"] is False
+
 
 # Driver for the verify-write schema gate: draft + write a minimal agent,
 # optionally poison the staged openclaw.json with a non-schema agent-entry key
@@ -126,14 +275,14 @@ const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
   never_does:["leak client PII"], what_you_are:"You are Lex.",
   requirements_with_triggers:[] };
 const draft=g.draftToFastIo(spec);
-g.writeDisk("b1","lex-legal",draft.artifacts_to_stage);
+g.writeDisk("b1",draft.artifacts_to_stage);
 if (process.env.POISON==="1") {
-  const cfgPath=path.join(tmp,"lex-legal","workspace","openclaw.json");
+  const cfgPath=path.join(tmp,"workspace-atlas-staging-b1","workspace","openclaw.json");
   const cfg=JSON.parse(fs.readFileSync(cfgPath,"utf8"));
   cfg.agents.list[0].archetype="general";
   fs.writeFileSync(cfgPath,JSON.stringify(cfg,null,2));
 }
-const v=g.verifyWrite("b1","lex-legal");
+const v=g.verifyWrite("b1");
 fs.rmSync(tmp,{recursive:true,force:true});
 process.stdout.write(JSON.stringify({
   success:!!v.success,
@@ -189,6 +338,91 @@ def test_verify_write_blocks_on_schema_violation(tmp_path):
     assert out["success"] is True
     assert out["schema_issues"] == []
     assert out["skipped"] == ""
+
+
+_BUILD_LOBSTER = _GEN.parent / "build.lobster"
+
+# The EFS user root as the container mounts it (container-stack.ts mounts the
+# per-user EFS access point at /home/node/.openclaw), which is the same root the
+# backend's Workspace.user_path resolves `workspace-{id}` under.
+_EFS_USER_ROOT = "/home/node/.openclaw"
+
+
+def test_build_lobster_stages_under_the_efs_user_root():
+    """The pipeline and the bridge must agree on WHERE the build is staged.
+
+    They used to disagree: the pipeline wrote `~/.openclaw/workspaces/{name}/`
+    while the bridge read `{user root}/workspace-{staging_agent_id}` — so every
+    register 404'd, which is what pushed Atlas into installing the agent itself.
+    `~/.openclaw/workspaces` is also the exact path `openclaw doctor --fix`
+    recursively deletes on every boot, so the staging root must not go back there.
+    """
+    text = _BUILD_LOBSTER.read_text(encoding="utf-8")
+    roots = re.findall(r"ISOL8_AGENTS_DIR:\s*(\S+)", text)
+    assert roots, "build.lobster must pin the staging root explicitly"
+    assert set(roots) == {_EFS_USER_ROOT}, roots
+    # The bridge call takes the staging TOKEN verify-write reports, not a name.
+    assert "STAGING_ID: $verify-write.json.staging_agent_id" in text
+    # No tool is keyed by the display name any more (the name still travels as
+    # a NAME on the notifications — that is what Atlas legitimately owns).
+    assert "--agent-name=" not in text, "no step may key the build by the agent's display name"
+    # Cron rows are keyed to the id the BRIDGE assigned.
+    assert '--agent-id="$register-built-agent.json.agent_id"' in text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_generated_staging_dir_is_what_the_bridge_reads(tmp_path):
+    """End-to-end on the path contract: run the real generator against a fake
+    EFS user root, then have the real backend export read that tree back."""
+    from core.containers import workspace as workspace_module
+    from core.services import agent_export
+
+    owner_id = "org_owner_e2e"
+    user_root = tmp_path / "users" / owner_id
+    user_root.mkdir(parents=True)
+
+    driver = (
+        "const g=require(process.env.GEN_PATH);"
+        'const spec={build_id:"b7",intake:{name:"Lex Legal",build_id:"b7",emoji:"\\u2696"},'
+        'user_stories:[{req_id:"US1",action:"summarize contracts",outcome:"the team saves time"}],'
+        'never_does:["leak client PII"],what_you_are:"You are Lex.",requirements_with_triggers:[]};'
+        "const d=g.draftToFastIo(spec);"
+        'process.stdout.write(JSON.stringify(g.writeDisk("b7",d.artifacts_to_stage)));'
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", driver],
+        capture_output=True,
+        text=True,
+        env={"GEN_PATH": str(_GEN), "PATH": str(bin_dir), "ISOL8_AGENTS_DIR": str(user_root)},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    written = json.loads(proc.stdout)
+    assert written["success"] is True, written
+    staging_agent_id = written["staging_agent_id"]
+
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
+        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+
+    # The bridge found the dir the generator wrote, and assigns the identity:
+    # the manifest keys off the staging token, the slice carries no id, and the
+    # display name is the only thing the build contributed.
+    assert pkg.manifest["agent_id"] == staging_agent_id == "atlas-staging-b7"
+    assert pkg.manifest["name"] == "Lex Legal"
+    assert "id" not in pkg.openclaw_slice["agent"]
+    assert "./openclaw.json" in [m.name for m in _tar_members(pkg.tarball_bytes)]
+
+
+def _tar_members(tar_bytes: bytes):
+    import io
+    import tarfile
+
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tf:
+        return tf.getmembers()
 
 
 def _verify_fail_next_snippet():
@@ -284,11 +518,11 @@ const bad={...draft.artifacts_to_stage};
 const cfg=JSON.parse(bad["workspace/openclaw.json"]);
 cfg.agents.list[0].archetype="general";
 bad["workspace/openclaw.json"]=JSON.stringify(cfg,null,2);
-const w1=g.writeDisk("b1","lex-legal",bad);
-const destAfterRefusal=fs.existsSync(path.join(tmp,"lex-legal"));
+const w1=g.writeDisk("b1",bad);
+const destAfterRefusal=fs.existsSync(path.join(tmp,"workspace-atlas-staging-b1"));
 const stagingAfterRefusal=fs.existsSync(path.join(tmp,".atlas-staging-b1"));
-const w2=g.writeDisk("b1","lex-legal",draft.artifacts_to_stage);
-const v=g.verifyWrite("b1","lex-legal");
+const w2=g.writeDisk("b1",draft.artifacts_to_stage);
+const v=g.verifyWrite("b1");
 fs.rmSync(tmp,{recursive:true,force:true});
 process.stdout.write(JSON.stringify({
   first_error:w1.error||"",
@@ -329,6 +563,90 @@ def test_write_disk_refuses_promote_on_schema_violation(tmp_path):
     # A corrected retry promotes cleanly — no destination_exists wedge.
     assert out["retry_success"] is True
     assert out["verify_success"] is True
+
+
+# Driver for the promote-time IDENTITY gate: hand write-disk a bundle whose
+# agents.list[0].id was swapped for a display-name slug (what an improvising
+# Atlas would write), and prove the rename never happens.
+_ID_GATE_DRIVER = r"""
+const os=require("os"),fs=require("fs"),path=require("path");
+const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-id-test-"));
+process.env.ISOL8_AGENTS_DIR=tmp;
+const g=require(process.env.GEN_PATH);
+const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
+  user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
+  never_does:["leak client PII"], what_you_are:"You are Lex.",
+  requirements_with_triggers:[] };
+const draft=g.draftToFastIo(spec);
+const minted={...draft.artifacts_to_stage};
+const cfg=JSON.parse(minted["workspace/openclaw.json"]);
+cfg.agents.list[0].id="product-analytics-scorecard";
+minted["workspace/openclaw.json"]=JSON.stringify(cfg,null,2);
+const w1=g.writeDisk("b1",minted);
+const out={
+  error:w1.error||"",
+  found_agent_id:w1.found_agent_id||"",
+  expected:w1.staged_agent_id||"",
+  slug_dir_created:fs.existsSync(path.join(tmp,"workspace-product-analytics-scorecard")),
+  dest_created:fs.existsSync(path.join(tmp,"workspace-atlas-staging-b1")),
+  staging_left:fs.existsSync(path.join(tmp,".atlas-staging-b1")),
+  no_build_id:(g.writeDisk("",draft.artifacts_to_stage)||{}).error||"",
+  no_build_id_verify:(g.verifyWrite("")||{}).error||"",
+  hand_picked_message:w1.message||"",
+  // A bundle drafted under a DIFFERENT build id also mismatches — but that is
+  // an argument disagreement, not an agent picking an id, and must say so.
+  wrong_build_message:(function(){
+    const other={...draft.artifacts_to_stage};
+    const c=JSON.parse(other["workspace/openclaw.json"]);
+    c.agents.list[0].id=g.stagingIdFor("b2");
+    other["workspace/openclaw.json"]=JSON.stringify(c,null,2);
+    return (g.writeDisk("b1",other)||{}).message||"";
+  })(),
+};
+fs.rmSync(tmp,{recursive:true,force:true});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_write_disk_refuses_a_build_chosen_agent_id(tmp_path):
+    # Atlas names agents; the platform assigns ids. A bundle whose entry id was
+    # hand-picked never reaches disk — so there is no slug-named agent bundle to
+    # improvise an install from when the bridge is unreachable, which is exactly
+    # how ``product-analytics-scorecard`` went live.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "node").symlink_to(shutil.which("node"))
+    proc = subprocess.run(
+        ["node", "-e", _ID_GATE_DRIVER],
+        capture_output=True,
+        text=True,
+        env={"GEN_PATH": str(_GEN), "PATH": str(bin_dir)},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["error"] == "staging_id_mismatch"
+    assert out["found_agent_id"] == "product-analytics-scorecard"
+    assert out["expected"] == "atlas-staging-b1"
+    # Nothing was promoted under either name, and staging was cleaned so a
+    # regenerated retry isn't wedged by destination_exists.
+    assert out["slug_dir_created"] is False
+    assert out["dest_created"] is False
+    assert out["staging_left"] is False
+    # And without a build id there is no staging identity at all — both actions
+    # refuse rather than fall back to a name (verify-write reporting
+    # destination_dir_missing instead would send the build-failure notification
+    # chasing missing files that were never supposed to exist).
+    assert out["no_build_id"] == "build_id_missing"
+    assert out["no_build_id_verify"] == "build_id_missing"
+
+    # The two ways to land on staging_id_mismatch need different advice: an
+    # agent-chosen id vs. a draft/promote build-id disagreement. Telling the
+    # second one "you don't choose ids" sends it hunting for an id it never set.
+    assert "does not choose agent ids" in out["hand_picked_message"]
+    assert "different build ids" in out["wrong_build_message"]
+    assert "does not choose agent ids" not in out["wrong_build_message"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")

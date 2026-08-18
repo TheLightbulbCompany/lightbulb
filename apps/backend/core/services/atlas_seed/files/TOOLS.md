@@ -23,8 +23,10 @@ Seven `.lobster` pipelines — five build steps + two crons:
 ```
 POST /api/v1/agent-builder/u/{owner_id}/register-built-agent
 Authorization: Bearer $OPENCLAW_HOOK_TOKEN
-{ "staging_agent_id": "<staging dir name>", "name": "<agent name>", "reports_to": null }
+{ "staging_agent_id": "atlas-staging-<build_id>", "name": "<agent name>", "reports_to": null }
 ```
+
+`staging_agent_id` is the build's **staging token** — the directory the build wrote (`workspace-atlas-staging-{build_id}/`), not a proposed agent id. Take it verbatim from `verify-write`'s `staging_agent_id`; never construct one from the agent's name. The body carries **no id field at all**: the bridge mints the agent's id and returns it. That is the only place an `agent_id` ever comes from.
 
 `reports_to` null/omitted defaults to the company CEO (Friday) — only set it when the role spec names a different manager. The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true, warnings: [...]}`; relay any `warnings` verbatim into the build thread (they flag e.g. a blank description → blank org-chart capabilities). `verify-write` also schema-validates the staged openclaw.json against the installed OpenClaw's own schema — any `schema_issues[]` in its result must be fixed and the build re-verified before register; never retry register while verify is failing. `build.lobster` does not publish — it ends at register + a `build_registered` notification.
 
@@ -52,7 +54,9 @@ atlas/cookbook-docs / -agent-snapshots / -refresh-state  # cookbook cache + dail
 atlas/citation-tracking            # consecutive-failure tracking (quarterly pass)
 ```
 
-Built-agent files land at the EFS workspaces root `ISOL8_AGENTS_DIR = /home/node/.openclaw/workspaces`, at `workspaces/{agent_name}/` (files under `workspace/`) — where the bridge's `export_built_agent_from_staging` reads and tars.
+Built-agent files land at the EFS user root `ISOL8_AGENTS_DIR = /home/node/.openclaw`, in the build's staging workspace `workspace-atlas-staging-{build_id}/` (files under `workspace/`) — where the bridge's `export_built_agent_from_staging` reads and tars (it resolves `{user root}/workspace-{staging_agent_id}`).
+
+Two things about that path are load-bearing. It is keyed by the **build**, never by the agent's name — the name is a display string and must never become a path or an id. And it is NOT `~/.openclaw/workspaces/`: `openclaw doctor --fix` recursively deletes that directory on every container boot, so anything staged there is gone by the next restart.
 
 ## Skills
 
@@ -77,7 +81,7 @@ Every Node script is `stdin-JSON → stdout-JSON`, a bare `node` step, exit 0|1,
 | `atlas-stack-overlap.js` | Reads `~/.openclaw/agents/*/openclaw.json` structured fields only → `{overlap_score, conflicting_agents, recommendation}` |
 | `atlas-cookbook-reader.js` | Two-source cookbook (docs cache + agent snapshots); drives the daily refresh (`diff-index`/`fetch-pages`/`snapshot-agents`) |
 | `atlas-failure-case-router.js` | Filters the corpus by archetype; refuses any case whose source URL isn't `verified`; `--refresh` re-verifies the corpus |
-| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` schema-validates the staged openclaw.json and only then atomically materializes into `workspaces/{agent_name}/` (an invalid config is never promoted, so a corrected rebuild is never blocked); `verify-write` checks count + per-file SHA256 + re-validates the schema |
+| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` (takes `--build-id` only — no agent name) gates the promote on both the staged openclaw.json's schema AND its id being the build's staging token, then atomically materializes into `workspace-atlas-staging-{build_id}/` (nothing invalid is ever promoted, so a corrected rebuild is never blocked); `verify-write` re-validates the schema against the promoted config, reports the observed file count + per-file SHA256, and returns `staging_agent_id`. It does NOT diff those hashes against the staged ones — nothing compares them, so treat the digests as a record, not a tamper check; the promote's atomicity (`rename(2)`) is what guarantees the tree |
 | `atlas-det-llm-classifier.js` | Per-requirement deterministic / LLM / hybrid classification with rationale |
 | `atlas-skill-recommender.js` | Archetype + requirements → skill list + deny list; skill-vetter first; refuses any ClawHavoc-listed skill |
 | `atlas-requirement-walker.js` | Step 4 vet: `present-next`/`apply-trigger-edits`/`check-loop`; refuses to advance past an unresolved row; H6 fuzzy match |
@@ -115,7 +119,7 @@ A URL claiming verification is run through `skill-vetter`; only a vetter pass ma
 
 ## Atomic Write Contract
 
-`atlas-skeleton-generator.js --action=write-disk` writes all files into `$ISOL8_AGENTS_DIR/.atlas-staging-{build_id}/`, verifies count + per-file SHA256, then `mv`s to `workspaces/{agent_name}/` (atomic on POSIX via `fs.renameSync`); on failure it `rm -rf`s staging and emits a structured error report. Atomicity is at the `mv` — half-atomicity is worse than none, so don't half-implement it.
+`atlas-skeleton-generator.js --action=write-disk` writes all files into `$ISOL8_AGENTS_DIR/.atlas-staging-{build_id}/`, records the count + per-file SHA256 (for the error report — they are not diffed against anything), then `mv`s to `$ISOL8_AGENTS_DIR/workspace-atlas-staging-{build_id}/` (atomic on POSIX via `fs.renameSync`); on failure it `rm -rf`s staging and emits a structured error report. Atomicity is at the `mv` — half-atomicity is worse than none, so don't half-implement it. Both dirs sit under the same EFS root on purpose: `rename(2)` across filesystems is `EXDEV`, and `~/.openclaw/agents` is an ephemeral local mount, not EFS.
 
 ## Universal Skill Core
 

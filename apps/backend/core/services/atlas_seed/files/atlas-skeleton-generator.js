@@ -7,8 +7,16 @@
 // Three modes:
 //   --action=draft (default) — returns all agent files as a JSON artifacts map
 //   --action=write-disk — materializes the drafted artifacts into a staging dir
-//                         then atomic-mv to the agent dir (staging-dir-then-mv per W7)
+//                         then atomic-mv to the staging workspace (staging-dir-then-mv per W7)
 //   --action=verify-write — post-write verification
+//
+// ATLAS DOES NOT MINT AGENT IDS. Atlas picks a NAME; the platform assigns the
+// id when the backend bridge registers the build. Everything on-disk is keyed
+// by a build-scoped STAGING TOKEN (`atlas-staging-{build_id}`), never by the
+// display name — see stagingIdFor(). The staged openclaw.json carries that
+// token in `agents.list[0].id` only because AgentEntrySchema requires the
+// field; the bridge overwrites it with the real (Paperclip-minted) id at
+// deploy and never reads the staged value as an identity.
 //
 // PRD format enforcement (R1/R3/R4):
 //   R1: user-story format with required {{outcome}} field
@@ -37,17 +45,49 @@ const UNIVERSAL_SKILL_CORE = Object.freeze([
 ]);
 
 function parseArgs(argv) {
-  const args = { action: 'draft', buildId: null, agentName: null };
+  const args = { action: 'draft', buildId: null };
   for (const a of argv.slice(2)) {
     if (a.startsWith('--action=')) args.action = a.split('=')[1];
     else if (a.startsWith('--build-id=')) args.buildId = a.split('=')[1];
-    else if (a.startsWith('--agent-name=')) args.agentName = a.split('=')[1];
   }
   return args;
 }
 
 function readStdin() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) { return {}; }
+}
+
+// --- STAGING IDENTITY (the platform's handle for an unregistered build) ---
+
+const STAGING_ID_PREFIX = 'atlas-staging-';
+
+function _buildIdOf(spec) {
+  return (spec && spec.build_id) || (spec && spec.intake && spec.intake.build_id) || 'build_unknown';
+}
+
+// The one handle everything on disk is keyed by. Build-scoped, NOT name-derived:
+// the display name never becomes a path, a config id, or a bridge argument.
+// `_safeName` keeps it inside the backend's agent-id charset ([A-Za-z0-9._-]),
+// so `workspace-{token}` is always a legal, non-traversing dir name. Build ids
+// come from the agent loop and are free-form, so the tail is capped to keep the
+// whole token within the bridge's 64-char staging_agent_id limit (which is also
+// agent_export's _AGENT_ID_RE ceiling) — an over-long build id must not turn a
+// good build into a 422 at register.
+function stagingIdFor(buildId) {
+  return STAGING_ID_PREFIX + _safeName(buildId, 'unknown').slice(0, 64 - STAGING_ID_PREFIX.length);
+}
+
+// EFS user root inside the container (/home/node/.openclaw) — the same root the
+// backend resolves `workspace-{staging_agent_id}` under. NOT ~/.openclaw/agents
+// (an ephemeral local mount: a rename from there onto EFS is a cross-device
+// EXDEV) and NOT ~/.openclaw/workspaces (which `openclaw doctor --fix`
+// recursively deletes on every boot).
+function _agentsRoot() {
+  return process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+}
+
+function _stagingWorkspaceDir(buildId) {
+  return path.join(_agentsRoot(), `workspace-${stagingIdFor(buildId)}`);
 }
 
 function renderUserStory(reqId, agentName, action, outcome) {
@@ -78,10 +118,17 @@ function generateOpenclawJson(spec) {
   // is a non-schema key the deploy sanitizer has to strip.
   const description = (spec.intake.vibe || spec.what_you_are || '').trim();
 
+  // `id` is the build's STAGING TOKEN, never the agent's name. AgentEntrySchema
+  // requires the field, so the bundle cannot omit it outright — but nothing may
+  // read it as an identity: the bridge overwrites it with the Paperclip-minted
+  // uuid at deploy (catalog_service.deploy_from_artifact) and the export
+  // normalizes it back to the staging handle first. `workspace` is deliberately
+  // absent for the same reason: the platform sets it to
+  // `.openclaw/workspace-{assigned id}` at deploy, and emitting a name-derived
+  // path here would just be a second place the display name masquerades as an id.
   const agentEntry = {
-    id: agentName,
+    id: stagingIdFor(_buildIdOf(spec)),
     name: agentName,
-    workspace: `~/.openclaw/agents/${agentName}/workspace`,
     model: 'claude-haiku-4-5',
     thinkingDefault: 'low',
     identity: { name: agentName, emoji: spec.intake.emoji || '🛠' },
@@ -93,7 +140,6 @@ function generateOpenclawJson(spec) {
   return JSON.stringify({
     agents: {
       defaults: {
-        workspace: `~/.openclaw/agents/${agentName}/workspace`,
         timeoutSeconds: 600,
         blockStreamingDefault: 'off'
       },
@@ -470,7 +516,10 @@ function _buildManifest(buildId, agentName, artifactsUnderWorkspace, triggers) {
   }));
   return {
     build_id: buildId,
+    // The NAME Atlas chose (display only) and the platform's staging handle.
+    // Neither is the agent's id — that doesn't exist until the bridge registers.
     agent_name: agentName,
+    staging_agent_id: stagingIdFor(buildId),
     generated_at: new Date().toISOString(),
     files,
     triggers
@@ -489,7 +538,7 @@ function _buildTriggersJson(buildId, agentName, triggers) {
 
 function draftToFastIo(spec) {
   const agentName = spec.intake && spec.intake.name;
-  const buildId = spec.build_id || (spec.intake && spec.intake.build_id) || 'build_unknown';
+  const buildId = _buildIdOf(spec);
   const errors = [];
 
   let agentsMd, soulMd, identityMd, toolsMd, bootstrapMd, userMd, openclawJson;
@@ -505,8 +554,8 @@ function draftToFastIo(spec) {
     return { pass: false, errors };
   }
 
-  // All generated agent files land under workspace/ — matches
-  // openclaw.json#agents.defaults.workspace = "~/.openclaw/agents/{name}/workspace".
+  // All generated agent files land under workspace/ — the layout the bridge's
+  // export_built_agent_from_staging tars (workspace/ becomes the tarball root).
   const underWorkspace = {
     'workspace/openclaw.json': openclawJson,
     'workspace/AGENTS.md': agentsMd,
@@ -571,9 +620,23 @@ function _materializeStaging(stagingDir, artifacts) {
   }
 }
 
-function writeDisk(buildId, agentName, artifacts) {
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
-  const stagingDir = path.join(agentsRoot, `.atlas-staging-${buildId}`);
+function writeDisk(buildId, artifacts) {
+  if (!buildId) {
+    const err = {
+      success: false,
+      error: 'build_id_missing',
+      message: 'write-disk requires --build-id: the staging workspace is keyed by the build, not by the agent name.',
+      build_id: null,
+      staging_dir: null,
+      destination_dir: null
+    };
+    process.stderr.write(JSON.stringify(err) + '\n');
+    return err;
+  }
+  const agentsRoot = _agentsRoot();
+  const stagingDir = path.join(agentsRoot, `.atlas-staging-${_safeName(buildId, 'unknown')}`);
+  const stagingAgentId = stagingIdFor(buildId);
+  const destDir = _stagingWorkspaceDir(buildId);
 
   if (artifacts && typeof artifacts === 'object' && Object.keys(artifacts).length) {
     try {
@@ -599,34 +662,6 @@ function writeDisk(buildId, agentName, artifacts) {
       return err;
     }
   }
-
-  if (!agentName) {
-    // openclaw.json is staged under workspace/ (matches the artifact layout);
-    // fall back to the staging root for the legacy flat layout.
-    for (const candidate of [
-      path.join(stagingDir, 'workspace', 'openclaw.json'),
-      path.join(stagingDir, 'openclaw.json')
-    ]) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(candidate, 'utf8'));
-        agentName = cfg && cfg.agents && cfg.agents.list && cfg.agents.list[0] && cfg.agents.list[0].id;
-        if (agentName) break;
-      } catch (e) { /* try next candidate */ }
-    }
-  }
-  if (!agentName) {
-    const err = {
-      success: false,
-      error: 'agent_name_unresolvable',
-      message: 'Could not read agents.list[0].id from openclaw.json in staging dir.',
-      build_id: buildId,
-      staging_dir: stagingDir,
-      destination_dir: null
-    };
-    process.stderr.write(JSON.stringify(err) + '\n');
-    return err;
-  }
-  const destDir = path.join(agentsRoot, agentName);
 
   if (!fs.existsSync(stagingDir)) {
     const err = {
@@ -687,6 +722,47 @@ function writeDisk(buildId, agentName, artifacts) {
     path.join(stagingDir, 'workspace', 'openclaw.json'),
     path.join(stagingDir, 'openclaw.json')
   ].find(p => fs.existsSync(p));
+
+  // Identity gate on the PROMOTE: the staged entry's `id` must be this build's
+  // staging token. Atlas names agents; the platform assigns ids — so a bundle
+  // carrying a hand-picked id (a display-name slug, a guessed uuid, anything)
+  // never reaches disk under a name that could later be mistaken for an agent.
+  // Cleans staging like the schema gate so a regenerated retry isn't wedged by
+  // destination_exists.
+  const stagedId = _stagedAgentId(stagedCfg);
+  if (stagedId !== null && stagedId !== stagingAgentId) {
+    let cleanupError = null;
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } catch (ce) { cleanupError = ce.message; }
+    const err = {
+      success: false,
+      error: 'staging_id_mismatch',
+      // Two different causes land here and they need different advice. A staged
+      // id that still carries the staging prefix means the DRAFT ran under a
+      // different build id than --build-id — telling that operator "you don't
+      // choose ids" sends them hunting for an id they never set.
+      message:
+        `Staged agents.list[0].id is ${JSON.stringify(stagedId)}, expected the build's staging token ` +
+        `${JSON.stringify(stagingAgentId)}. ` +
+        (String(stagedId).startsWith(STAGING_ID_PREFIX)
+          ? 'That is a staging token from a DIFFERENT build — the draft and this write-disk ran under ' +
+            'different build ids. Re-draft with the same --build-id.'
+          : 'Atlas does not choose agent ids — the platform assigns one at register. Regenerate the ' +
+            'bundle with the generator instead of editing the id.'),
+      staged_agent_id: stagingAgentId,
+      found_agent_id: stagedId,
+      build_id: buildId,
+      staging_dir: stagingDir,
+      destination_dir: destDir,
+      staged_file_hashes: stagedHashes,
+      cleanup_succeeded: !cleanupError,
+      cleanup_error: cleanupError
+    };
+    process.stderr.write(JSON.stringify(err) + '\n');
+    return err;
+  }
+
   const schemaCheck = stagedCfg ? validateStagedConfig(stagedCfg) : { valid: true, issues: [] };
   if (!schemaCheck.valid) {
     let cleanupError = null;
@@ -717,7 +793,7 @@ function writeDisk(buildId, agentName, artifacts) {
       build_id: buildId,
       staging_dir: stagingDir,
       destination_dir: destDir,
-      agent_name: agentName,
+      staging_agent_id: stagingAgentId,
       file_count: stagedFileCount,
       file_hashes: stagedHashes,
       mv_method: 'fs.renameSync (POSIX rename(2), atomic on local filesystem)',
@@ -752,6 +828,21 @@ function writeDisk(buildId, agentName, artifacts) {
   }
 }
 
+// Read agents.list[0].id out of a staged openclaw.json. Returns null when the
+// file is absent/unparseable or the entry carries no id — an id-less bundle is
+// the ideal (the platform assigns one), so "no id" is never a promote failure;
+// only a *wrong* id is.
+function _stagedAgentId(cfgPath) {
+  if (!cfgPath) return null;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const entry = cfg && cfg.agents && cfg.agents.list && cfg.agents.list[0];
+    return (entry && entry.id) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Schema-validate a staged openclaw.json against the INSTALLED OpenClaw's own
 // zod schema (`openclaw config validate --json` on OPENCLAW_CONFIG_PATH). The
 // agent-entry schema is .strict(), so an invented key silently bricks the
@@ -780,15 +871,29 @@ function validateStagedConfig(cfgPath) {
   }
 }
 
-function verifyWrite(buildId, agentName) {
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
-  const destDir = path.join(agentsRoot, agentName);
+function verifyWrite(buildId) {
+  if (!buildId) {
+    // Same refusal as writeDisk. Without it an empty --build-id resolves to the
+    // `unknown` token and reports destination_dir_missing, which sends the
+    // build-verify notification chasing a missing-files problem that isn't there.
+    return {
+      success: false,
+      error: 'build_id_missing',
+      message: 'verify-write requires --build-id: the staging workspace is keyed by the build, not by the agent name.',
+      build_id: null,
+      staging_agent_id: null,
+      destination_dir: null
+    };
+  }
+  const stagingAgentId = stagingIdFor(buildId);
+  const destDir = _stagingWorkspaceDir(buildId);
   if (!fs.existsSync(destDir)) {
     return {
       success: false,
       error: 'destination_dir_missing',
-      message: `Agent dir not found post-write: ${destDir}`,
+      message: `Staging workspace not found post-write: ${destDir}`,
       build_id: buildId,
+      staging_agent_id: stagingAgentId,
       destination_dir: destDir
     };
   }
@@ -827,7 +932,10 @@ function verifyWrite(buildId, agentName) {
   const result = {
     success: schemaCheck.valid,
     build_id: buildId,
-    agent_name: agentName,
+    // The handle build.lobster hands the bridge as `staging_agent_id`. NOT an
+    // agent id: the backend resolves `workspace-{this}` and then assigns the
+    // real id itself.
+    staging_agent_id: stagingAgentId,
     destination_dir: destDir,
     file_count: observedFileCount,
     observed_hashes: observedHashes,
@@ -842,9 +950,8 @@ function verifyWrite(buildId, agentName) {
   return result;
 }
 
-function loadManifest(agentName) {
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
-  const manifestPath = path.join(agentsRoot, agentName, 'build-manifest.json');
+function loadManifest(buildId) {
+  const manifestPath = path.join(_stagingWorkspaceDir(buildId), 'build-manifest.json');
   if (!fs.existsSync(manifestPath)) return null;
   try {
     return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -858,18 +965,18 @@ function main() {
   const stdinData = readStdin();
 
   if (args.action === 'load-manifest') {
-    process.stdout.write(JSON.stringify(loadManifest(args.agentName) || {}));
+    process.stdout.write(JSON.stringify(loadManifest(args.buildId) || {}));
     return;
   }
   if (args.action === 'write-disk') {
     // stdin carries the draft output; pass its artifacts_to_stage so write-disk
     // materializes them into the staging dir before the atomic mv.
     const artifacts = stdinData && stdinData.artifacts_to_stage ? stdinData.artifacts_to_stage : null;
-    process.stdout.write(JSON.stringify(writeDisk(args.buildId, args.agentName, artifacts)));
+    process.stdout.write(JSON.stringify(writeDisk(args.buildId, artifacts)));
     return;
   }
   if (args.action === 'verify-write') {
-    process.stdout.write(JSON.stringify(verifyWrite(args.buildId, args.agentName)));
+    process.stdout.write(JSON.stringify(verifyWrite(args.buildId)));
     return;
   }
   // Default: draft (Step 2 staging)
@@ -880,6 +987,12 @@ if (require.main === module) main();
 
 module.exports = {
   UNIVERSAL_SKILL_CORE,
+  STAGING_ID_PREFIX,
+  stagingIdFor,
+  // Exported so sibling build tools resolve the staging workspace through the
+  // SAME derivation instead of re-deriving it — a second copy that drifts is
+  // how the pipeline and the bridge ended up reading different directories.
+  stagingWorkspaceDir: _stagingWorkspaceDir,
   renderUserStory,
   generateOpenclawJson,
   generateAgentsMd,

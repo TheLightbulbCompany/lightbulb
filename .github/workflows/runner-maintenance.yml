@@ -51,10 +51,15 @@ jobs:
           # (default 60m) so an in-flight job is never a candidate.
           # sudo because soci and cdk both run as root here.
           echo "=== reclaiming (untouched > ${MIN_AGE}m) ==="
+          # `cdk.out*` is the big one and is easy to miss: cdk synth leaves an
+          # ~81 MB /tmp/cdk.outXXXXXX behind per run and never collects it, so
+          # ~190 past deploys had quietly become the entire 16 GB. Note the
+          # DOT — a `cdk-*` glob does NOT match it, which is how the first
+          # pass reclaimed only megabytes and still came back 100% full.
           sudo find /tmp -maxdepth 1 -mmin "+${MIN_AGE}" \
-            \( -name 'tmp.*' -o -name 'cdk-*' -o -name 'soci*' -o -name 'ztoc*' \
-               -o -name 'buildkit*' -o -name 'containerd*' \) \
-            -print -exec rm -rf {} + 2>/dev/null || true
+            \( -name 'tmp.*' -o -name 'cdk-*' -o -name 'cdk.out*' -o -name 'soci*' \
+               -o -name 'ztoc*' -o -name 'buildkit*' -o -name 'containerd*' \) \
+            -exec rm -rf {} + 2>/dev/null || true
           echo
           echo "=== after ==="
           df -h /tmp /var/tmp / 2>/dev/null || true

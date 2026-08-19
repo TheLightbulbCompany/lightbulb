@@ -39,6 +39,8 @@ class TestFromIntegration:
             topic=None,
             assignee_agent_id=None,
             routine_id=None,
+            title=None,
+            description=None,
         )
 
     @pytest.mark.asyncio
@@ -112,6 +114,8 @@ class TestFromIntegration:
             topic=None,
             assignee_agent_id=None,
             routine_id=None,
+            title=None,
+            description=None,
         )
 
     @pytest.mark.asyncio
@@ -151,6 +155,8 @@ class TestFromIntegration:
             topic="projects/my-project/topics/isol8-gmail",
             assignee_agent_id=None,
             routine_id=None,
+            title=None,
+            description=None,
         )
 
     @pytest.mark.asyncio
@@ -180,6 +186,8 @@ class TestFromIntegration:
             topic=None,
             assignee_agent_id="agent_support",
             routine_id=None,
+            title=None,
+            description=None,
         )
 
     @pytest.mark.asyncio
@@ -211,7 +219,32 @@ class TestFromIntegration:
             topic=None,
             assignee_agent_id=None,
             routine_id="rt_existing",
+            title=None,
+            description=None,
         )
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_edited_draft_passes_through_as_an_override(self, mock_billing, mock_seed, async_client):
+        """What the owner typed over the pre-filled title/description reaches
+        the seed; the untouched-draft path (every other test here) sends
+        neither, so the registry template still wins there."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {"routine_id": "rt_1", "trigger_public_id": "pub_1", "guided": True}
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={
+                "provider": "stripe",
+                "event_id": "invoice.payment_failed",
+                "title": "Chase the failed invoice",
+                "description": "Email the customer, then flag it to me.",
+            },
+        )
+        assert response.status_code == 200
+        assert mock_seed.await_args.kwargs["title"] == "Chase the failed invoice"
+        assert mock_seed.await_args.kwargs["description"] == "Email the customer, then flag it to me."
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)

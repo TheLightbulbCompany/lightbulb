@@ -89,10 +89,16 @@ class FromIntegrationBody(BaseModel):
     # roster inside the seed — never trusted from here.
     assignee_agent_id: str | None = None
     # ATTACH instead of create: arm this event on a routine the owner already
-    # wrote, leaving its description/assignee/reviewers/variables/schedule
-    # untouched. Validated against the caller's own company's routines inside
-    # the seed — never trusted from here.
+    # wrote, leaving its assignee/reviewers/variables/schedule untouched and
+    # its instructions intact (the shapes that need maintenance text APPEND a
+    # delimited block). Validated against the caller's own company's routines
+    # inside the seed — never trusted from here.
     routine_id: str | None = None
+    # What the owner typed over the pre-filled draft in the create dialog.
+    # The frontend sends these ONLY when the draft was actually edited, so the
+    # 1-click path stays byte-identical to the registry template.
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=20000)
 
 
 class WebhookSecretBody(BaseModel):
@@ -106,8 +112,11 @@ async def from_integration(
 ) -> dict:
     """Seed a webhook-triggered routine from a connected integration's event
     — or, with ``routine_id``, arm that event on a routine the owner already
-    wrote (same gating, same provider-side registration, nothing about the
-    target routine mutated).
+    wrote (same gating, same provider-side registration, nothing the owner
+    wrote overwritten).
+
+    ``title``/``description`` are the owner's edits to the pre-filled draft;
+    omitted, the registry template renders exactly as it always has.
 
     Returns ``seed_trigger_routine``'s dict verbatim — ``{routine_id,
     trigger_public_id, proxy_url, guided, instructions}``. Bad input
@@ -127,6 +136,8 @@ async def from_integration(
             topic=body.topic,
             assignee_agent_id=body.assignee_agent_id,
             routine_id=body.routine_id,
+            title=body.title,
+            description=body.description,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

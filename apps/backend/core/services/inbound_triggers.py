@@ -12,9 +12,9 @@ a routine the owner already wrote, and the registry's boilerplate starter
 prompt is never rendered onto it. Everything from ``create_routine_trigger``
 down — signing mode, provider-side registration, arming, the returned dict —
 is the same code on both paths; only the rollback differs (an attach may
-delete the trigger it added, never the owner's routine). Three shapes stay
-create-only because their setup writes the routine's own body: see
-``_ATTACHABLE_REGISTRATIONS``.
+delete the triggers it added, never the owner's routine). The three shapes
+whose setup writes the routine's own body APPEND it as a delimited block
+instead of composing the description: see ``_append_platform_block``.
 
 The inbound shapes:
 
@@ -280,19 +280,18 @@ _DEFAULT_REPLAY_WINDOW_SEC = 300
 # clear error instead of an opaque upstream 4xx).
 _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "none"}
 
-# The registration shapes an ATTACH (``routine_id`` supplied — arm this event
-# on a routine the owner already wrote) can carry. The three that are missing
-# are missing because their contract WRITES THE ROUTINE ITSELF, which is
-# exactly what attaching promises not to do:
-#   auto_google_watch / owner_setup — the ≤7-day channel only stays alive
-#     because the seed prepends a maintenance clause to the routine's
-#     description and attaches a renewal schedule; without the clause the
-#     automation dies silently within a week, and with it the owner's
-#     hand-authored instructions are no longer theirs.
-#   poll — there is no webhook at all; the "trigger" IS a schedule whose whole
-#     behaviour lives in the starter prompt an attach deliberately skips.
-# Those three stay create-only rather than shipping a half-armed attach.
-_ATTACHABLE_REGISTRATIONS = {"guided_paste", "auto_github", "auto_vercel", "auto_meta"}
+# Three registration shapes WRITE THE ROUTINE'S OWN BODY as part of their
+# setup: auto_google_watch and owner_setup prepend a maintenance clause (their
+# ≤7-day channel only stays alive because the routine's own agent re-arms it),
+# and poll's entire behaviour lives in the starter prompt. On the CREATE path
+# they compose the whole description, so they prepend. On the ATTACH path the
+# routine is somebody's hand-written work, so the same text is APPENDED as a
+# delimited, platform-owned block at the very END — every user-written word
+# survives, and the owner can see exactly what the platform added. Refusing
+# instead (the shape this replaced) left the owner at a dead end with a
+# capability the machinery already supports.
+_PLATFORM_BLOCK_START = "--- Added by Isol8 when this trigger was armed — leave this block in place ---"
+_PLATFORM_BLOCK_END = "--- end Isol8 block ---"
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
@@ -745,6 +744,31 @@ async def _rollback_trigger(
         )
 
 
+def _trigger_id(resp: Any) -> str | None:
+    """The internal trigger id out of a ``create_routine_trigger`` response."""
+    trigger = resp.get("trigger") if isinstance(resp, dict) else None
+    return trigger.get("id") if isinstance(trigger, dict) else None
+
+
+async def _append_platform_block(admin: PaperclipAdminClient, *, cookie: str, routine_id: str, block: str) -> None:
+    """Append a delimited, platform-owned block to the END of an existing
+    routine's description, leaving every user-written word intact.
+
+    Reads the CURRENT description with ``get_routine`` rather than trusting
+    the list projection: the list row is not guaranteed to carry a
+    description, and treating a missing one as empty would erase the very
+    instructions this exists to preserve. A failed read raises, and the
+    caller unwinds — better than a patch that destroys the body."""
+    detail = await admin.get_routine(session_cookie=cookie, routine_id=routine_id)
+    existing = (detail.get("description") if isinstance(detail, dict) else None) or ""
+    appended = f"{_PLATFORM_BLOCK_START}\n{block}\n{_PLATFORM_BLOCK_END}"
+    await admin.patch_routine(
+        session_cookie=cookie,
+        routine_id=routine_id,
+        body={"description": f"{existing.rstrip()}\n\n{appended}" if existing.strip() else appended},
+    )
+
+
 async def seed_trigger_routine(
     owner_id: str,
     provider_key: str,
@@ -753,6 +777,8 @@ async def seed_trigger_routine(
     topic: str | None = None,
     assignee_agent_id: str | None = None,
     routine_id: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + trigger pre-filled from ``provider_key``'s registry
     ``inbound`` declaration, for the event named ``event_id``, and record the
@@ -780,14 +806,24 @@ async def seed_trigger_routine(
     ``routine_id`` ATTACHES the trigger to a routine the owner already wrote
     instead of seeding a new one — the "arm this event on my Revenue recovery
     routine" path. The routine must be in the CALLER's own company (same
-    tenancy fence as ``assignee_agent_id``), and NOTHING about it is touched:
-    no description, assignee, reviewers, variables or schedule — a
-    hand-authored routine already says what to do, so the registry's boilerplate
-    starter prompt is skipped entirely and only the trigger is added. The
-    provider side runs exactly as it does for a fresh seed (auto-register or
-    guided paste). Rollback unwinds only the trigger this call created, never
-    the routine. Not every shape can attach — see
-    ``_ATTACHABLE_REGISTRATIONS``.
+    tenancy fence as ``assignee_agent_id``), and nothing the owner wrote is
+    overwritten: no assignee, reviewers, variables or schedule, and the
+    registry's boilerplate starter prompt is skipped entirely — a hand-authored
+    routine already says what to do. The three shapes whose setup writes the
+    routine's own body (auto_google_watch / owner_setup / poll) APPEND their
+    maintenance clause as a delimited block at the end of the existing
+    description instead of composing it (see ``_append_platform_block``); the
+    frontend discloses that before the owner confirms. The provider side runs
+    exactly as it does for a fresh seed (auto-register or guided paste).
+    Rollback unwinds only the triggers this call created, never the routine.
+
+    ``title`` / ``description`` OVERRIDE the registry template — what the
+    owner typed over the pre-filled draft in the create dialog. Omitted (the
+    untouched-draft path, which is what the 1-click flow sends), the template
+    renders exactly as it always did. Note a custom title is no longer
+    invertible by ``automation_from_title``, so a published agent carrying
+    that automation declares no provider requirement — the cost of letting
+    owners name their own automations.
 
     Raises ``ValueError`` for any caller-facing input problem (unknown
     provider/event, provider not wired as a trigger source, missing/invalid
@@ -806,6 +842,8 @@ async def seed_trigger_routine(
         topic=topic,
         assignee_agent_id=assignee_agent_id,
         routine_id=routine_id,
+        title=title,
+        description=description,
     )
     capture_product_event(
         distinct_id=owner_id,
@@ -830,6 +868,8 @@ async def _seed_trigger_routine(
     topic: str | None = None,
     assignee_agent_id: str | None = None,
     routine_id: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
 ) -> dict[str, Any]:
     """The seed itself — see ``seed_trigger_routine`` for the contract.
 
@@ -851,18 +891,12 @@ async def _seed_trigger_routine(
     # their own shape) — everything below dispatches on the EFFECTIVE value.
     registration = event.registration or inbound.webhook_registration
 
-    # Attach preconditions, before anything exists upstream. Both refusals are
-    # the same promise stated twice: an attach adds a trigger and touches
-    # nothing else about the routine — not its body (the shapes that rewrite
-    # it are create-only) and not its assignee.
-    if attach:
-        if registration not in _ATTACHABLE_REGISTRATIONS:
-            raise ValueError(
-                f"{event_id!r} can't be added to an existing automation — its setup writes the "
-                "automation's own instructions, so it has to create its own"
-            )
-        if assignee_agent_id is not None:
-            raise ValueError("attaching to an existing automation can't reassign it")
+    # Attach precondition, before anything exists upstream: an attach adds a
+    # trigger and leaves the routine the owner's own. Reassignment is the one
+    # thing it can never do — the shapes that would otherwise rewrite the body
+    # append a delimited block instead (see _append_platform_block).
+    if attach and assignee_agent_id is not None:
+        raise ValueError("attaching to an existing automation can't reassign it")
 
     # auto_github preconditions up front — a missing repo or token must fail
     # before anything exists upstream, not after a create/rollback cycle.
@@ -940,7 +974,10 @@ async def _seed_trigger_routine(
     if not company_id:
         raise ValueError(f"no active Paperclip company for owner {owner_id!r}")
 
-    title = inbound.template.title.format(event_label=event.label)
+    # An owner-supplied title/description wins over the registry template.
+    # `or` (not `is None`) so an empty string falls back too — a blanked field
+    # means "use the default", not "name this automation nothing".
+    title = (title or "").strip() or inbound.template.title.format(event_label=event.label)
     # str.format ignores surplus kwargs, so `account` is inert for templates
     # that don't use it. Google's starter_prompt names the account so the
     # agent knows which `-a` to pass to gog — the push notification carries
@@ -948,7 +985,12 @@ async def _seed_trigger_routine(
     # may override the template's prompt (a scheduled inbox check reads
     # nothing like a push notification).
     starter_prompt = event.starter_prompt or inbound.template.starter_prompt
-    description = starter_prompt.format(event_label=event.label, account=resource or "")
+    # Kept separate from `description` below: the poll shape APPENDS this to a
+    # routine the owner already wrote, and a platform-owned block must be
+    # exactly that — the registry's text, never something the caller supplied.
+    # (The other two appending shapes build their clause server-side already.)
+    rendered_description = starter_prompt.format(event_label=event.label, account=resource or "")
+    description = (description or "").strip() or rendered_description
 
     # Lazy import: keeps this module's load light and sidesteps a cycle —
     # same convention agent_export.py uses for the identical import.
@@ -958,19 +1000,29 @@ async def _seed_trigger_routine(
         cookie = await get_admin_session_cookie(http)
         admin = PaperclipAdminClient(http_client=http)
 
-        # The trigger this call added to a pre-existing routine, once it
-        # exists — what `unwind` is allowed to delete on the attach path.
-        attached_trigger_id: str | None = None
+        # The triggers this call added to a pre-existing routine, as they come
+        # into being — what `unwind` is allowed to delete on the attach path.
+        # A list, not one id: the google shapes attach a renewal SCHEDULE
+        # alongside the webhook, and leaving that behind would keep waking the
+        # owner's routine for a watch that no longer exists.
+        attached_trigger_ids: list[str] = []
+
+        def claim(resp: Any) -> None:
+            """Remember a trigger this call just created, on the attach path.
+            No-op on the create path — there the whole routine is unwound."""
+            tid = _trigger_id(resp)
+            if attach and tid:
+                attached_trigger_ids.append(tid)
 
         async def unwind() -> None:
             """Undo what THIS call created when a later step fails. A fresh
             seed owns the whole routine, so it goes; an attach owns only the
-            trigger it added — the routine is the owner's own work."""
+            triggers it added — the routine is the owner's own work."""
             if attach:
-                if attached_trigger_id:
+                for tid in attached_trigger_ids:
                     await _rollback_trigger(
                         admin,
-                        trigger_id=attached_trigger_id,
+                        trigger_id=tid,
                         cookie=cookie,
                         owner_id=owner_id,
                         provider_key=provider_key,
@@ -1016,11 +1068,23 @@ async def _seed_trigger_routine(
             # automation is live the moment it exists. Nothing to renew, no
             # proxy URL to hand the owner.
             try:
-                await admin.create_routine_trigger(
-                    session_cookie=cookie,
-                    routine_id=routine_id,
-                    body=_build_schedule_trigger_body(_GMAIL_POLL_CRON),
+                claim(
+                    await admin.create_routine_trigger(
+                        session_cookie=cookie,
+                        routine_id=routine_id,
+                        body=_build_schedule_trigger_body(_GMAIL_POLL_CRON),
+                    )
                 )
+                # poll has no webhook and no maintenance clause — the whole
+                # behaviour IS the starter prompt, so an attach appends it
+                # (the create path already rendered it as the description).
+                # The REGISTRY's rendering, not `description`: an owner's own
+                # instructions override belongs to a routine this call CREATES,
+                # never inside a block stamped as platform-owned.
+                if attach:
+                    await _append_platform_block(
+                        admin, cookie=cookie, routine_id=routine_id, block=rendered_description
+                    )
             except Exception:
                 await unwind()
                 raise
@@ -1054,11 +1118,9 @@ async def _seed_trigger_routine(
             )
 
             trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
-            # Claimed for unwinding BEFORE anything below can raise — on the
-            # attach path this trigger is the only thing this call may delete,
-            # so losing its id would strand it on the owner's routine.
-            if attach:
-                attached_trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
+            # Claimed for unwinding BEFORE anything below can raise — losing
+            # the id would strand this trigger on the owner's routine.
+            claim(trigger_resp)
             public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
             if not public_id:
                 raise RuntimeError("create_routine_trigger returned no trigger.publicId")
@@ -1289,18 +1351,19 @@ async def _seed_trigger_routine(
                 address=proxy_url,
                 account=resource,
             )
-            try:
-                # The state-file path is keyed by the trigger's public id,
-                # which only exists now — so the maintenance clause lands via
-                # a description patch, not the create body.
-                await admin.patch_routine(
-                    session_cookie=cookie,
-                    routine_id=routine_id,
-                    body={"description": f"{clause}\n\n{description}"},
-                )
-            except Exception:
-                await unwind()
-                raise
+            if not attach:
+                try:
+                    # The state-file path is keyed by the trigger's public id,
+                    # which only exists now — so the maintenance clause lands via
+                    # a description patch, not the create body.
+                    await admin.patch_routine(
+                        session_cookie=cookie,
+                        routine_id=routine_id,
+                        body={"description": f"{clause}\n\n{description}"},
+                    )
+                except Exception:
+                    await unwind()
+                    raise
             try:
                 channel = await google_watch.start_watch(
                     owner_id=owner_id,
@@ -1321,10 +1384,12 @@ async def _seed_trigger_routine(
                 # within a week — same severity as the watch itself failing,
                 # so stop the just-created channel (best-effort, never masks
                 # this error) and unwind.
-                await admin.create_routine_trigger(
-                    session_cookie=cookie,
-                    routine_id=routine_id,
-                    body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                claim(
+                    await admin.create_routine_trigger(
+                        session_cookie=cookie,
+                        routine_id=routine_id,
+                        body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                    )
                 )
                 state: dict[str, Any] = {
                     "kind": "calendar" if is_calendar else "drive",
@@ -1339,6 +1404,11 @@ async def _seed_trigger_routine(
                 if channel.get("page_token"):
                     state["page_token"] = channel["page_token"]
                 await asyncio.to_thread(_write_watch_state, owner_id, public_id, state)
+                # Attach: the owner's own instructions stay first and whole —
+                # the renewal step is appended as a delimited block, LAST, so
+                # a failure anywhere above never half-writes their body.
+                if attach:
+                    await _append_platform_block(admin, cookie=cookie, routine_id=routine_id, block=clause)
             except Exception:
                 await google_watch.stop_watch(
                     owner_id=owner_id,
@@ -1373,17 +1443,18 @@ async def _seed_trigger_routine(
                 path=f"{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json",
                 account=resource,
             )
-            try:
-                # Same description patch as auto_google_watch above: the
-                # state-file path needs the trigger's public id.
-                await admin.patch_routine(
-                    session_cookie=cookie,
-                    routine_id=routine_id,
-                    body={"description": f"{clause}\n\n{description}"},
-                )
-            except Exception:
-                await unwind()
-                raise
+            if not attach:
+                try:
+                    # Same description patch as auto_google_watch above: the
+                    # state-file path needs the trigger's public id.
+                    await admin.patch_routine(
+                        session_cookie=cookie,
+                        routine_id=routine_id,
+                        body={"description": f"{clause}\n\n{description}"},
+                    )
+                except Exception:
+                    await unwind()
+                    raise
             try:
                 watch = await google_watch.start_gmail_watch(owner_id=owner_id, account_email=resource, topic=topic)
             except Exception:
@@ -1399,10 +1470,12 @@ async def _seed_trigger_routine(
                 # channels. The gmail state file carries NO secret: renewal
                 # is `gog gmail watch renew -a <account>`, which re-arms
                 # from the topic/labels gog stored at start time.
-                await admin.create_routine_trigger(
-                    session_cookie=cookie,
-                    routine_id=routine_id,
-                    body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                claim(
+                    await admin.create_routine_trigger(
+                        session_cookie=cookie,
+                        routine_id=routine_id,
+                        body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                    )
                 )
                 await asyncio.to_thread(
                     _write_watch_state,
@@ -1438,6 +1511,9 @@ async def _seed_trigger_routine(
                 channels = await integrations_repo.get_google_watch_channels(owner_id)
                 channels.append(entry)
                 await integrations_repo.set_google_watch_channels(owner_id, channels)
+                # Attach: appended last, same posture as auto_google_watch.
+                if attach:
+                    await _append_platform_block(admin, cookie=cookie, routine_id=routine_id, block=clause)
             except Exception:
                 # Without the renewal trigger the watch dies within a week;
                 # without its row entry the proxy has no bearer secret to
@@ -1445,6 +1521,25 @@ async def _seed_trigger_routine(
                 # automation is unusable — stop the watch (best-effort)
                 # before unwinding.
                 await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=resource)
+                # The row above may already have landed (only the attach-path
+                # append comes after it), and it names a trigger `unwind` is
+                # about to delete. Nothing else ever prunes this list, so drop
+                # the entry here or it accumulates forever. Best-effort: this
+                # runs inside an except and must never mask the real error.
+                # (auto_google_watch's counterpart orphan is a private EFS
+                # state file the next seed overwrites by public id — left
+                # alone deliberately.)
+                try:
+                    rows = await integrations_repo.get_google_watch_channels(owner_id)
+                    kept = [c for c in rows if c.get("trigger_public_id") != public_id]
+                    if len(kept) != len(rows):
+                        await integrations_repo.set_google_watch_channels(owner_id, kept)
+                except Exception:
+                    logger.exception(
+                        "inbound_triggers: could not drop the stranded gmail watch row for trigger=%s owner=%s",
+                        public_id,
+                        owner_id,
+                    )
                 await unwind()
                 raise
             logger.info(

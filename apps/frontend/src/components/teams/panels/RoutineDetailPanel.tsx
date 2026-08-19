@@ -47,6 +47,13 @@ import { describeCron } from "@/components/teams/shared/cron-readable";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
 import { ScheduleField } from "@/components/teams/shared/components/ScheduleField";
 import {
+  ConnectedAppFields,
+  ConnectedAppResultDialog,
+  StartRungPicker,
+  useConnectedAppTrigger,
+  type StartRung,
+} from "@/components/teams/shared/components/ConnectedAppTrigger";
+import {
   routineReviewerAgentId,
   withRoutineReviewer,
 } from "@/components/teams/panels/routineExecutionPolicy";
@@ -915,6 +922,12 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         <TriggerDialog
           mode={triggerDialog.mode}
           trigger={triggerDialog.mode === "edit" ? triggerDialog.trigger : undefined}
+          routineId={routineId}
+          agents={agents}
+          onArmed={() => {
+            setTriggerDialog(null);
+            void refresh();
+          }}
           submitting={busy}
           error={actionError}
           onClose={() => setTriggerDialog(null)}
@@ -1449,17 +1462,26 @@ interface TriggerSubmitBody {
 function TriggerDialog({
   mode,
   trigger,
+  routineId,
+  agents,
   submitting,
   error,
   onClose,
   onSubmit,
+  onArmed,
 }: {
   mode: "add" | "edit";
   trigger?: RoutineTriggerSummary;
+  /** The automation being armed — the connected-app branch attaches to it. */
+  routineId: string;
+  agents: CompanyAgent[];
   submitting: boolean;
   error: string | null;
   onClose: () => void;
   onSubmit: (body: TriggerSubmitBody) => void | Promise<void>;
+  /** The connected-app branch talks to /automations directly, so it reports
+   * completion here instead of through onSubmit. */
+  onArmed: () => void;
 }) {
   // For a NEW trigger we suggest the user's browser zone; for an EXISTING trigger
   // that stored no timezone we seed AND dirty-compare against the backend's real
@@ -1473,10 +1495,20 @@ function TriggerDialog({
   const [timezone, setTimezone] = useState(initialTz);
   const [label, setLabel] = useState(trigger?.label ?? "");
   const [enabled, setEnabled] = useState(trigger?.enabled !== false);
-  // Trigger kind — only choosable in "add" mode (a Plus button). Edit only
-  // reaches this dialog for an existing schedule trigger (the Pencil affordance
-  // is gated to `t.kind === "schedule"`), so kind is fixed there.
-  const [kind, setKind] = useState<string>(mode === "add" ? "schedule" : trigger?.kind ?? "schedule");
+  // What starts this — the SAME three-way choice the New-automation dialog
+  // offers, because an automation that already exists can take any of them:
+  // a routine is instructions + an agent, and its triggers are a set, not a
+  // property of the door you came in through. Only choosable in "add" mode;
+  // edit only reaches this dialog for an existing schedule trigger (the
+  // Pencil affordance is gated to `t.kind === "schedule"`), so kind is fixed
+  // there.
+  const [rung, setRung] = useState<StartRung>("schedule");
+  const kind =
+    mode === "add" ? (rung === "webhook" ? "webhook" : "schedule") : (trigger?.kind ?? "schedule");
+  const isConnectedApp = mode === "add" && rung === "connected_app";
+  // Arming a connected app attaches to THIS routine — same call the create
+  // dialog makes, same provider-side wiring, only with a target.
+  const conn = useConnectedAppTrigger({ routineId });
   const [signingMode, setSigningMode] = useState("bearer");
   const [replayWindowSec, setReplayWindowSec] = useState(String(DEFAULT_REPLAY_WINDOW_SEC));
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
@@ -1484,11 +1516,18 @@ function TriggerDialog({
   const replayWindowValid =
     !showReplayWindow || (Number.isFinite(replayWindowNum) && replayWindowNum >= 30 && replayWindowNum <= 86400);
 
-  const canSubmit =
-    kind === "schedule" ? cron.trim() !== "" && timezone.trim() !== "" : replayWindowValid;
+  const canSubmit = isConnectedApp
+    ? conn.canSubmit
+    : kind === "schedule"
+      ? cron.trim() !== "" && timezone.trim() !== ""
+      : replayWindowValid;
 
   async function submit() {
     if (!canSubmit) return;
+    if (isConnectedApp) {
+      await conn.submit();
+      return;
+    }
     if (mode === "add") {
       if (kind === "webhook") {
         await onSubmit({
@@ -1528,13 +1567,15 @@ function TriggerDialog({
     await onSubmit(body);
   }
 
+  if (conn.result) {
+    return <ConnectedAppResultDialog ctl={conn} onDone={onArmed} />;
+  }
+
   return (
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={
-        mode === "edit" ? "Edit schedule" : kind === "webhook" ? "Add webhook" : "Add schedule"
-      }
+      title={mode === "edit" ? "Edit schedule" : "Add trigger"}
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -1544,29 +1585,19 @@ function TriggerDialog({
             variant="primary"
             size="sm"
             onClick={submit}
-            disabled={submitting || !canSubmit}
+            disabled={submitting || conn.submitting || !canSubmit}
           >
-            {submitting ? "Saving…" : mode === "add" ? "Add" : "Save"}
+            {submitting || conn.submitting ? "Saving…" : mode === "add" ? "Add" : "Save"}
           </EditorialButton>
         </>
       }
     >
       <div className="flex flex-col gap-3">
-        <DialogError message={error} />
-        {mode === "add" && (
-          <label className="block">
-            <span className="text-sm text-[var(--ink-soft)]">Trigger type</span>
-            <select
-              value={kind}
-              onChange={(e) => setKind(e.target.value)}
-              className={INPUT_CLASS}
-            >
-              <option value="schedule">Schedule</option>
-              <option value="webhook">Webhook</option>
-            </select>
-          </label>
-        )}
-        {kind === "schedule" ? (
+        <DialogError message={isConnectedApp ? conn.err : error} />
+        {mode === "add" && <StartRungPicker value={rung} onChange={setRung} />}
+        {isConnectedApp ? (
+          <ConnectedAppFields ctl={conn} agents={agents} />
+        ) : kind === "schedule" ? (
           <>
             <ScheduleField value={cron} onChange={setCron} />
             <label className="block">
@@ -1619,22 +1650,28 @@ function TriggerDialog({
             )}
           </>
         )}
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Label (optional)</span>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            className={INPUT_CLASS}
-          />
-        </label>
-        <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          Enabled
-        </label>
+        {/* Label + Enabled are fields of a trigger this dialog creates; the
+            connected-app branch names and enables its own server-side. */}
+        {!isConnectedApp && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Label (optional)</span>
+              <input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+              />
+              Enabled
+            </label>
+          </>
+        )}
       </div>
     </EditorialDialog>
   );

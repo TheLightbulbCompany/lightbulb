@@ -302,7 +302,27 @@ def _connection_row(
                 # (google: gmail.poll/gmail.message differ from the watch
                 # events) — the frontend branches per-event on it (the
                 # owner_setup topic input). None = inherit.
-                "events": [{"id": e.id, "label": e.label, "registration": e.registration} for e in v.inbound.events],
+                "events": [
+                    {
+                        "id": e.id,
+                        "label": e.label,
+                        "registration": e.registration,
+                        # Per-event override of template.starter_prompt — the
+                        # draft description the create dialog pre-fills has to
+                        # apply the same precedence the seed does.
+                        "starter_prompt": e.starter_prompt,
+                    }
+                    for e in v.inbound.events
+                ],
+                # The registry template the seed renders server-side. The
+                # create dialog shows it as an EDITABLE draft (same
+                # {event_label}/{account} placeholders), so wiring an app no
+                # longer means accepting boilerplate you can't rewrite. Sent
+                # back as an override only when the owner actually edits it.
+                "template": {
+                    "title": v.inbound.template.title,
+                    "starter_prompt": v.inbound.template.starter_prompt,
+                },
             }
             if v.inbound
             else None

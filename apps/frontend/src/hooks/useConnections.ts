@@ -78,7 +78,21 @@ export interface Connection {
      * (google: gmail.poll → "poll", gmail.message → "owner_setup" while the
      * watch events inherit the block level). Null/absent = inherit.
      */
-    events: { id: string; label: string; registration?: string | null }[];
+    events: {
+      id: string;
+      label: string;
+      registration?: string | null;
+      /** Per-event override of `template.starter_prompt` — same precedence
+       * the seed applies (event wins). */
+      starter_prompt?: string | null;
+    }[];
+    /**
+     * The registry template the seed renders server-side (placeholders
+     * `{event_label}` / `{account}`). The create dialog pre-fills an EDITABLE
+     * draft from it and sends an override back only when the owner changes it,
+     * so an untouched draft still lets the server's own template win.
+     */
+    template?: { title: string; starter_prompt: string } | null;
   } | null;
 }
 

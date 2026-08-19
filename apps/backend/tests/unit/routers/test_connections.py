@@ -296,21 +296,39 @@ class TestListConnections:
         # (the registry orders those first) rather than all ~265 events.
         assert by_key["stripe"]["inbound"]["webhook_registration"] == "guided_paste"
         assert by_key["stripe"]["inbound"]["events"][:3] == [
-            {"id": "invoice.payment_failed", "label": "Invoice payment failed", "registration": None},
-            {"id": "charge.refunded", "label": "Charge refunded", "registration": None},
-            {"id": "customer.subscription.deleted", "label": "Subscription canceled", "registration": None},
+            {
+                "id": "invoice.payment_failed",
+                "label": "Invoice payment failed",
+                "registration": None,
+                "starter_prompt": None,
+            },
+            {"id": "charge.refunded", "label": "Charge refunded", "registration": None, "starter_prompt": None},
+            {
+                "id": "customer.subscription.deleted",
+                "label": "Subscription canceled",
+                "registration": None,
+                "starter_prompt": None,
+            },
         ]
+        # The template the seed renders server-side, so the create dialog can
+        # pre-fill an EDITABLE draft of the same title/instructions.
+        assert by_key["stripe"]["inbound"]["template"]["title"] == "Stripe: {event_label}"
+        assert "{event_label}" in by_key["stripe"]["inbound"]["template"]["starter_prompt"]
         # google is auto-registering (auto_google_watch) with the gmail
         # events overriding per-event; notion still declares no `inbound`.
-        assert by_key["google"]["inbound"] == {
-            "webhook_registration": "auto_google_watch",
-            "events": [
-                {"id": "calendar.changed", "label": "Calendar changed", "registration": None},
-                {"id": "drive.changed", "label": "Drive file changed", "registration": None},
-                {"id": "gmail.poll", "label": "New email (checked on a schedule)", "registration": "poll"},
-                {"id": "gmail.message", "label": "New email (real-time push)", "registration": "owner_setup"},
-            ],
-        }
+        google = by_key["google"]["inbound"]
+        assert google["webhook_registration"] == "auto_google_watch"
+        assert [{k: e[k] for k in ("id", "label", "registration")} for e in google["events"]] == [
+            {"id": "calendar.changed", "label": "Calendar changed", "registration": None},
+            {"id": "drive.changed", "label": "Drive file changed", "registration": None},
+            {"id": "gmail.poll", "label": "New email (checked on a schedule)", "registration": "poll"},
+            {"id": "gmail.message", "label": "New email (real-time push)", "registration": "owner_setup"},
+        ]
+        # Per-event starter_prompt overrides ride along — the draft has to
+        # apply the same precedence the seed does (event wins over template).
+        by_event = {e["id"]: e["starter_prompt"] for e in google["events"]}
+        assert by_event["calendar.changed"] is None
+        assert by_event["gmail.poll"].startswith("Scheduled inbox check")
         assert by_key["notion"]["inbound"] is None
 
 

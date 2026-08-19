@@ -13,10 +13,16 @@
 // mechanism as the paperclip live-events relay, and the reason there is no
 // token in this file.
 //
-// The container's Chromium launches lazily on the agent's FIRST browser tool
-// call, so a connected session can legitimately show an empty gray desktop —
-// that is the display with nothing drawn on it yet, not a bug. The hint line
-// in the connected state exists for exactly that moment.
+// The container's Chrome launches lazily on the FIRST browser tool call, so
+// before this panel there was no way to see it without asking an agent to
+// browse — and a connected VNC session legitimately showed a black desktop
+// (the display with nothing drawn on it). Opening the panel now proactively
+// starts Chrome via the browser.request/POST /start gateway RPC (the same
+// ensure-running path the agent tool uses, minus the LLM turn), so the owner
+// can watch/drive the browser without an agent — and without depending on
+// inference being up. The start is idempotent (a no-op if Chrome is already
+// running) and fire-and-forget: the VNC connect below runs independently and
+// paints once Chrome draws, so a slow cold launch never blocks the panel.
 
 import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
@@ -24,12 +30,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
 
 import { BACKEND_URL } from "@/lib/api";
+import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { browserViewWsUrl } from "./browserViewUrl";
 
 type ViewState = "connecting" | "connected" | "disconnected";
 
 export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElement {
   const { getToken } = useAuth();
+  const callRpc = useGatewayRpcMutation();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ViewState>("connecting");
   // Bumping this re-runs the connect effect — the Retry button, and nothing
@@ -38,6 +46,17 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // and a background retry loop would wake-spam the relay for a panel the
   // owner may not even be looking at.
   const [attempt, setAttempt] = useState(0);
+
+  // Ensure the container's Chrome is running whenever the panel opens (and on
+  // each Retry). Fire-and-forget: browser.request/POST /start ensures-then-
+  // returns, is idempotent on an already-running browser, and can take up to
+  // the backend RPC timeout on a cold 1-vCPU launch — none of which should
+  // block the VNC connect below. A rejection (container asleep, RPC timeout
+  // while the launch continues container-side) is swallowed; the VNC path owns
+  // the visible state.
+  useEffect(() => {
+    void callRpc("browser.request", { method: "POST", path: "/start" }).catch(() => {});
+  }, [attempt, callRpc]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -111,8 +130,8 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
           ) : (
             <>
               <p className="max-w-xs text-sm text-[var(--mute)]">
-                Browser view isn&rsquo;t reachable. Your agents may be asleep, or their browser
-                hasn&rsquo;t started yet — it launches the first time an agent uses it.
+                Browser view isn&rsquo;t reachable. Your agents may be asleep, or the container is
+                still starting — Retry once it&rsquo;s awake.
               </p>
               <button
                 onClick={retry}

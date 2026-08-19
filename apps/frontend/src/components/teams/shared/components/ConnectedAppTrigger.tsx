@@ -236,6 +236,37 @@ function fillTemplate(text: string, vars: { event_label: string; account: string
     .replaceAll("{account}", vars.account);
 }
 
+/* ── multi-event drafting ────────────────────────────────────────────────
+ *
+ * ONE trigger carries MANY events: a Paperclip webhook trigger has no event
+ * filter, and Stripe/GitHub/Vercel/Meta all let one endpoint subscribe to
+ * many events — so ticking three Stripe events is one URL to paste, not
+ * three. Everything below mirrors inbound_triggers.py so the draft shown here
+ * is byte-for-byte what the server writes when it is left untouched.
+ */
+
+/** `_join_human`: one item is itself (which is what keeps every single-event
+ * draft identical to the pre-multi-select one), two join with "and", more
+ * comma-separate with a final "and". */
+function joinHuman(parts: string[]): string {
+  if (parts.length < 3) return parts.join(" and ");
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+// inbound_triggers._MULTI_EVENT_CLAUSE, verbatim.
+function multiEventClause(count: number, eventLabels: string): string {
+  return (
+    `This trigger is armed for ${count} events: ${eventLabels}. Exactly one of ` +
+    "them fired this run — read the event type out of the payload FIRST and " +
+    "branch on it before doing anything else."
+  );
+}
+
+// Paperclip caps routine titles at 200 chars (inbound_triggers._ROUTINE_TITLE_MAX);
+// a joined multi-event title reaches that, and the server falls back to the
+// same compact name, so the draft has to as well.
+const ROUTINE_TITLE_MAX = 200;
+
 /**
  * All the state and wiring for "a connected app fires this". `routineId` names
  * an existing automation to ATTACH to (null = seed a new one), and is read at
@@ -253,7 +284,10 @@ export function useConnectedAppTrigger({
   const api = useApi();
   const { connections } = useConnections();
   const [provider, setProvider] = useState<string | null>(null);
-  const [eventId, setEventId] = useState<string | null>(null);
+  // The events this ONE trigger is armed for, in the order they were ticked —
+  // the first is the primary one (it picks the registration shape, exactly as
+  // the seed does server-side).
+  const [eventIds, setEventIds] = useState<string[]>([]);
   const [result, setResult] = useState<FromIntegrationResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -286,7 +320,12 @@ export function useConnectedAppTrigger({
   );
   const selectedConnection = triggerableConnections.find((c) => c.provider === provider) ?? null;
   const events = selectedConnection?.inbound?.events ?? [];
-  const selectedEvent = events.find((e) => e.id === eventId) ?? null;
+  // Ticked order, so the primary event (which drives the registration shape
+  // and the starter-prompt override) is the one the owner chose first.
+  const selectedEvents = eventIds
+    .map((id) => events.find((e) => e.id === id))
+    .filter((e): e is NonNullable<typeof e> => e != null);
+  const selectedEvent = selectedEvents[0] ?? null;
   const registrationShape = selectedConnection?.inbound?.webhook_registration ?? "";
   const isAutoRegister = registrationShape.startsWith("auto_");
   // The selected EVENT's registration override wins, same precedence the
@@ -302,18 +341,33 @@ export function useConnectedAppTrigger({
     routineId != null ? (ATTACH_DISCLOSURES[effectiveRegistration] ?? null) : null;
 
   // The draft: exactly what the server would write if we sent no override.
+  // One event joins to itself, so a single selection renders byte-for-byte
+  // what it always did; several add the branch-on-the-payload clause.
   const template = selectedConnection?.inbound?.template ?? null;
-  const draftTitle =
+  const eventLabelText = joinHuman(selectedEvents.map((e) => e.label));
+  const compactName =
+    selectedEvents.length > 1
+      ? `${selectedConnection?.display_name ?? provider} (${selectedEvents.length} events)`
+      : (selectedConnection?.display_name ?? provider ?? "");
+  const templatedTitle =
     template && selectedEvent
-      ? fillTemplate(template.title, { event_label: selectedEvent.label, account: resource ?? "" })
+      ? fillTemplate(template.title, { event_label: eventLabelText, account: resource ?? "" })
       : "";
-  const draftDescription =
+  const draftTitle =
+    selectedEvents.length > 1 && templatedTitle.length > ROUTINE_TITLE_MAX
+      ? compactName
+      : templatedTitle;
+  const templatedDescription =
     template && selectedEvent
       ? fillTemplate(selectedEvent.starter_prompt || template.starter_prompt, {
-          event_label: selectedEvent.label,
+          event_label: eventLabelText,
           account: resource ?? "",
         })
       : "";
+  const draftDescription =
+    templatedDescription && selectedEvents.length > 1
+      ? `${templatedDescription}\n\n${multiEventClause(selectedEvents.length, eventLabelText)}`
+      : templatedDescription;
   const title = titleEdit ?? draftTitle;
   const description = descriptionEdit ?? draftDescription;
 
@@ -338,14 +392,21 @@ export function useConnectedAppTrigger({
 
   const canSubmit =
     provider != null &&
-    eventId != null &&
+    eventIds.length > 0 &&
     (!isAutoRegister || resource != null) &&
     (!isOwnerSetup || topic.trim() !== "");
+
+  /** Tick / untick one event. The draft re-derives itself for free — a field
+   * the owner has typed into holds its own edit (titleEdit/descriptionEdit),
+   * an untouched one follows the selection. */
+  function toggleEvent(id: string) {
+    setEventIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]));
+  }
 
   function selectProvider(next: string) {
     onProviderChange?.();
     setProvider(next);
-    setEventId(null);
+    setEventIds([]);
     setResource(null);
     setTopic("");
     setTitleEdit(null);
@@ -357,13 +418,15 @@ export function useConnectedAppTrigger({
   }
 
   async function submit(): Promise<FromIntegrationResult | null> {
-    if (!provider || !eventId) return null;
+    if (!provider || eventIds.length === 0) return null;
     setSubmitting(true);
     setErr(null);
     try {
       const body = {
         provider,
-        event_id: eventId,
+        // One trigger, every ticked event. The backend still accepts the old
+        // singular `event_id`, but nothing here sends it.
+        event_ids: eventIds,
         // Only the auto-register shapes carry a resource; guided providers'
         // bodies stay exactly as before.
         ...(resource ? { resource } : {}),
@@ -415,9 +478,10 @@ export function useConnectedAppTrigger({
   return {
     provider,
     selectProvider,
-    eventId,
-    setEventId,
+    eventIds,
+    toggleEvent,
     events,
+    selectedEvents,
     triggerableConnections,
     selectedConnection,
     selectedEvent,
@@ -455,7 +519,7 @@ export function useConnectedAppTrigger({
 
 export type ConnectedAppTriggerCtl = ReturnType<typeof useConnectedAppTrigger>;
 
-// Searchable single-select for the event catalog. Providers carry their FULL
+// Searchable MULTI-select for the event catalog. Providers carry their FULL
 // event lists (Stripe ~265), so a plain dropdown stopped scaling. With no
 // filter and a big catalog: a "Popular" group (the first PINNED_EVENT_COUNT
 // registry entries — providers.yaml orders the curated picks first) then the
@@ -473,14 +537,22 @@ export type ConnectedAppTriggerCtl = ReturnType<typeof useConnectedAppTrigger>;
 // selection made so far.
 const PINNED_EVENT_COUNT = 3;
 
+/** The trigger button's summary of what is ticked. Two fit; beyond that the
+ * first plus a count, so the button never wraps out of the dialog. */
+function eventSummary(labels: string[]): string | null {
+  if (labels.length === 0) return null;
+  if (labels.length <= 2) return labels.join(", ");
+  return `${labels[0]} +${labels.length - 1} more`;
+}
+
 function EventPicker({
   events,
-  value,
-  onSelect,
+  values,
+  onToggle,
 }: {
   events: { id: string; label: string }[];
-  value: string | null;
-  onSelect: (id: string) => void;
+  values: string[];
+  onToggle: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -500,7 +572,7 @@ function EventPicker({
     ? [...events.slice(PINNED_EVENT_COUNT)].sort((a, b) => a.id.localeCompare(b.id))
     : (filtered ?? events);
   const visible = [...popular, ...rest];
-  const selectedIndex = visible.findIndex((e) => e.id === value);
+  const selectedIndex = visible.findIndex((e) => values.includes(e.id));
 
   function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -517,7 +589,9 @@ function EventPicker({
     </div>
   );
 
-  const selectedLabel = events.find((e) => e.id === value)?.label ?? null;
+  const selectedLabel = eventSummary(
+    values.map((id) => events.find((e) => e.id === id)?.label ?? id),
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -558,7 +632,8 @@ function EventPicker({
         />
         <div
           role="listbox"
-          aria-label="Event"
+          aria-label="Events"
+          aria-multiselectable="true"
           onKeyDown={onListKeyDown}
           className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
         >
@@ -577,23 +652,36 @@ function EventPicker({
                 }}
                 type="button"
                 role="option"
-                aria-selected={value === e.id}
+                aria-selected={values.includes(e.id)}
                 tabIndex={i === (selectedIndex === -1 ? 0 : selectedIndex) ? 0 : -1}
                 onClick={() => {
-                  onSelect(e.id);
-                  setOpen(false);
+                  // Closing on the FIRST pick keeps single-select exactly as
+                  // effortless as it was: tick one, the list gets out of the
+                  // way. Once something is ticked you are clearly building a
+                  // set, so the list stays put for the next one.
+                  const wasEmpty = values.length === 0;
+                  onToggle(e.id);
+                  if (wasEmpty) setOpen(false);
                 }}
                 className={cn(
-                  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
-                  value === e.id
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
+                  values.includes(e.id)
                     ? "bg-[var(--forest-tint)] text-[var(--ink)]"
                     : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
                 )}
               >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                    values.includes(e.id)
+                      ? "border-[var(--forest)] bg-[var(--forest)] text-[var(--cream)]"
+                      : "border-[var(--edge)]",
+                  )}
+                >
+                  {values.includes(e.id) && <Check size={10} strokeWidth={3} />}
+                </span>
                 <span className="truncate">{e.label}</span>
-                {value === e.id && (
-                  <Check size={14} strokeWidth={2} className="shrink-0 text-[var(--forest)]" />
-                )}
               </button>
             </div>
           ))}
@@ -640,14 +728,14 @@ export function ConnectedAppFields({
       </label>
       {ctl.selectedConnection && (
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Event</span>
+          <span className="text-sm text-[var(--ink-soft)]">Events</span>
           <div className="mt-1">
             {/* Keyed by provider so switching apps resets the filter. */}
             <EventPicker
               key={ctl.provider}
               events={ctl.events}
-              value={ctl.eventId}
-              onSelect={ctl.setEventId}
+              values={ctl.eventIds}
+              onToggle={ctl.toggleEvent}
             />
           </div>
         </div>
@@ -655,7 +743,7 @@ export function ConnectedAppFields({
       {/* The auto-register shapes' third step — which repo/project to hook.
           The backend registers the webhook there itself, so unlike guided
           providers there is no paste step after Create. */}
-      {ctl.isAutoRegister && ctl.eventId != null && (
+      {ctl.isAutoRegister && ctl.eventIds.length > 0 && (
         <div className="flex flex-col gap-1.5">
           <label className="block">
             <span className="text-sm text-[var(--ink-soft)]">{ctl.resourceNoun.label}</span>
@@ -844,6 +932,23 @@ export function ConnectedAppResultDialog({
       <div className="flex flex-col gap-3">
         {/* Poll results have no webhook — nothing to copy. */}
         {result.proxy_url && <SecretField label="Webhook URL" value={result.proxy_url} />}
+        {/* One endpoint, several events: the dashboard step is "tick all of
+            these on that one URL", so name them rather than leaving the owner
+            to re-derive the list from the instructions sentence. */}
+        {result.guided && ctl.selectedEvents.length > 1 && (
+          <div className="flex flex-col gap-1">
+            <span className="text-sm text-[var(--ink-soft)]">
+              Subscribe this one endpoint to all {ctl.selectedEvents.length} events
+            </span>
+            <ul className="flex flex-col gap-0.5">
+              {ctl.selectedEvents.map((e) => (
+                <li key={e.id} className="text-xs text-[var(--mute)]">
+                  {e.label} — <code className="break-all">{e.id}</code>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {/* Reverse-guided: the FULL header value ("Bearer <secret>"), not the
             bare secret — copying it whole eliminates the classic
             forgot-the-Bearer-prefix failure. */}

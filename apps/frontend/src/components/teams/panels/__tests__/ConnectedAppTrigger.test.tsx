@@ -63,6 +63,7 @@ const STRIPE = {
     events: [
       { id: "invoice.payment_failed", label: "Invoice payment failed", starter_prompt: null },
       { id: "charge.refunded", label: "Charge refunded", starter_prompt: null },
+      { id: "customer.subscription.deleted", label: "Subscription canceled", starter_prompt: null },
     ],
     template: {
       title: "Stripe: {event_label}",
@@ -132,6 +133,21 @@ async function pickStripeInvoiceEvent(dialog: HTMLElement, user: ReturnType<type
   await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
 }
 
+/** Tick more events onto an already-started selection. The popover closes on
+ * the FIRST pick (so single-select feels as it always did) and stays open
+ * while a set is being built, so each extra event needs the list reopened. */
+async function alsoPick(
+  dialog: HTMLElement,
+  user: ReturnType<typeof userEvent.setup>,
+  labels: string[],
+) {
+  for (const label of labels) {
+    await user.click(within(dialog).getByRole("button", { name: /invoice payment failed/i }));
+    await user.click(await screen.findByRole("option", { name: label }));
+    await user.keyboard("{Escape}");
+  }
+}
+
 describe("New automation — the connected-app rung is writable", () => {
   it("pre-fills a draft title and description from the app and event", async () => {
     connections = [STRIPE];
@@ -161,7 +177,7 @@ describe("New automation — the connected-app rung is writable", () => {
     expect(path).toBe("/automations/from-integration");
     // Byte-identical to the pre-editable 1-click body: the server's own
     // template renders the title and instructions.
-    expect(body).toEqual({ provider: "stripe", event_id: "invoice.payment_failed" });
+    expect(body).toEqual({ provider: "stripe", event_ids: ["invoice.payment_failed"] });
   });
 
   it("sends what the owner typed over the draft", async () => {
@@ -183,7 +199,7 @@ describe("New automation — the connected-app rung is writable", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalled());
     expect(apiPost.mock.calls[0][1]).toEqual({
       provider: "stripe",
-      event_id: "invoice.payment_failed",
+      event_ids: ["invoice.payment_failed"],
       title: "Dunning desk",
       description: "Email the customer, then tell me.",
     });
@@ -214,7 +230,7 @@ describe("Add trigger — an existing automation takes either kind", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalled());
     expect(apiPost.mock.calls[0]).toEqual([
       "/automations/from-integration",
-      { provider: "stripe", event_id: "invoice.payment_failed", routine_id: "r1" },
+      { provider: "stripe", event_ids: ["invoice.payment_failed"], routine_id: "r1" },
     ]);
     // The routine's own title/instructions are not this dialog's to rewrite.
     expect(apiPost.mock.calls[0][1]).not.toHaveProperty("title");
@@ -242,5 +258,112 @@ describe("Add trigger — an existing automation takes either kind", () => {
     const disclosure = await within(dialog).findByText(/renewal step appended to the END/i);
     expect(disclosure).toHaveTextContent(/twice-weekly schedule trigger/i);
     expect(disclosure).toHaveTextContent(/Everything you wrote stays exactly as it is/i);
+  });
+});
+
+
+// ── multi-event: one trigger, many events ──────────────────────────────────
+//
+// A Paperclip webhook trigger has no event filter, and Stripe lets ONE
+// endpoint subscribe to many events — so the founder's three-event Revenue
+// recovery routine is one URL to paste, not three.
+describe("Multi-event — one trigger carries the whole selection", () => {
+  it("submits every ticked event as one trigger, and drafts instructions that branch", async () => {
+    connections = [STRIPE];
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await pickStripeInvoiceEvent(dialog, user);
+    await alsoPick(dialog, user, ["Subscription canceled", "Charge refunded"]);
+
+    // The draft names all three and tells the agent to read the type first.
+    expect(within(dialog).getByLabelText("Title")).toHaveValue(
+      "Stripe: Invoice payment failed, Subscription canceled and Charge refunded",
+    );
+    const description = within(dialog).getByLabelText("Description") as HTMLTextAreaElement;
+    expect(description.value).toContain("This trigger is armed for 3 events");
+    expect(description.value).toContain("read the event type out of the payload FIRST");
+
+    await user.click(within(dialog).getByRole("button", { name: /^Create$/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    expect(apiPost.mock.calls[0][1]).toEqual({
+      provider: "stripe",
+      event_ids: [
+        "invoice.payment_failed",
+        "customer.subscription.deleted",
+        "charge.refunded",
+      ],
+    });
+  });
+
+  it("summarizes the selection on the picker button", async () => {
+    connections = [STRIPE];
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await pickStripeInvoiceEvent(dialog, user);
+    // One pick reads exactly as it did before multi-select.
+    expect(
+      within(dialog).getByRole("button", { name: "Invoice payment failed" }),
+    ).toBeInTheDocument();
+
+    await alsoPick(dialog, user, ["Subscription canceled", "Charge refunded"]);
+    expect(
+      within(dialog).getByRole("button", { name: /Invoice payment failed \+2 more/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("never clobbers a field the owner has typed into when events are toggled", async () => {
+    connections = [STRIPE];
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await pickStripeInvoiceEvent(dialog, user);
+
+    const description = within(dialog).getByLabelText("Description");
+    await user.clear(description);
+    await user.type(description, "Email the customer, then tell me.");
+
+    // Ticking another event re-derives the UNTOUCHED title but leaves the
+    // dirtied description exactly as typed.
+    await alsoPick(dialog, user, ["Charge refunded"]);
+    expect(within(dialog).getByLabelText("Title")).toHaveValue(
+      "Stripe: Invoice payment failed and Charge refunded",
+    );
+    expect(description).toHaveValue("Email the customer, then tell me.");
+
+    await user.click(within(dialog).getByRole("button", { name: /^Create$/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    expect(apiPost.mock.calls[0][1]).toEqual({
+      provider: "stripe",
+      event_ids: ["invoice.payment_failed", "charge.refunded"],
+      description: "Email the customer, then tell me.",
+    });
+  });
+
+  it("lists every event to subscribe next to the one URL in the finish dialog", async () => {
+    connections = [STRIPE];
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /add trigger/i }));
+    const dialog = await screen.findByRole("dialog");
+    await pickStripeInvoiceEvent(dialog, user);
+    await alsoPick(dialog, user, ["Charge refunded"]);
+    await user.click(within(dialog).getByRole("button", { name: /^Add$/ }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    expect(apiPost.mock.calls[0][1]).toEqual({
+      provider: "stripe",
+      event_ids: ["invoice.payment_failed", "charge.refunded"],
+      routine_id: "r1",
+    });
+    // ONE URL, and the events to tick against it.
+    expect(await screen.findByText(STRIPE_RESULT.proxy_url)).toBeInTheDocument();
+    expect(await screen.findByText(/Subscribe this one endpoint to all 2 events/i)).toBeInTheDocument();
+    expect(screen.getByText("invoice.payment_failed")).toBeInTheDocument();
+    expect(screen.getByText("charge.refunded")).toBeInTheDocument();
   });
 });

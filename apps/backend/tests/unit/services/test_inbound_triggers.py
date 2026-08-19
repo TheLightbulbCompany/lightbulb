@@ -68,7 +68,7 @@ async def test_seed_trigger_routine_stripe_guided():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        out = await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
 
     assert out["guided"] is True
     assert out["routine_id"] == "rt_1"
@@ -93,7 +93,7 @@ async def test_seed_trigger_routine_builds_expected_bodies():
     admin = _fake_admin(friday_id="friday_xyz")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"])
 
     routine_body = admin.create_routine.await_args.kwargs["body"]
     assert routine_body["title"] == "Stripe: Charge refunded"
@@ -116,7 +116,7 @@ async def test_seed_trigger_routine_builds_expected_bodies():
 async def test_seed_trigger_routine_bails_when_provider_has_no_inbound():
     # notion has no `inbound:` block, so it isn't a trigger source.
     with pytest.raises(ValueError, match="not wired as an Automations trigger source"):
-        await seed_trigger_routine("owner_1", "notion", "whatever")
+        await seed_trigger_routine("owner_1", "notion", ["whatever"])
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_seed_trigger_routine_unknown_event_id():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="unknown event"):
-        await seed_trigger_routine("owner_1", "stripe", "not.a.real.event")
+        await seed_trigger_routine("owner_1", "stripe", ["not.a.real.event"])
     admin.create_routine.assert_not_awaited()
 
 
@@ -133,7 +133,7 @@ async def test_seed_trigger_routine_no_active_company():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin, company_status="seeding")
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="no active Paperclip company"):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     admin.create_routine.assert_not_awaited()
 
 
@@ -142,7 +142,7 @@ async def test_seed_trigger_routine_uses_org_company_lookup_for_org_owner():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin, company_id="c_org")
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("org_abc", "stripe", "invoice.payment_failed")
+        out = await seed_trigger_routine("org_abc", "stripe", ["invoice.payment_failed"])
     assert out["proxy_url"].endswith("/api/v1/hooks/t/org_abc/pub_1")
     assert admin.create_routine.await_args.kwargs["company_id"] == "c_org"
 
@@ -154,7 +154,7 @@ async def test_seed_trigger_routine_no_friday_agent_found():
     admin.create_routine = AsyncMock()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="no CEO agent"):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     admin.create_routine.assert_not_awaited()
 
 
@@ -166,7 +166,7 @@ async def test_seed_trigger_routine_trigger_create_failure_rolls_back_routine():
     admin.create_routine_trigger = AsyncMock(side_effect=RuntimeError("upstream 500"))
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="upstream 500"):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_trigger"
 
@@ -180,7 +180,7 @@ async def test_seed_trigger_routine_trigger_missing_public_id_rolls_back_routine
     admin.create_routine_trigger = AsyncMock(return_value={"trigger": {}})
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="no trigger.publicId"):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_malformed"
 
@@ -195,7 +195,7 @@ async def test_seed_trigger_routine_sentry_uses_registry_copy_and_github_hmac():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "sentry", "issue")
+        out = await seed_trigger_routine("owner_1", "sentry", ["issue"])
 
     trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
     assert trigger_body["signingMode"] == "github_hmac"
@@ -214,7 +214,7 @@ async def test_seed_trigger_routine_stripe_returns_secret_hint():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
+        out = await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"])
 
     assert out["secret_hint"] == "whsec_…"
 
@@ -229,7 +229,7 @@ async def test_seed_trigger_routine_posthog_bearer_guided_returns_webhook_secret
     admin = _fake_admin(secret_material={"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_ph"})
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "posthog", "$exception")
+        out = await seed_trigger_routine("owner_1", "posthog", ["$exception"])
 
     trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
     assert trigger_body["signingMode"] == "bearer"
@@ -258,7 +258,7 @@ async def test_seed_trigger_routine_posthog_missing_secret_material_rolls_back()
         p_client,
         pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
     ):
-        await seed_trigger_routine("owner_1", "posthog", "$pageview")
+        await seed_trigger_routine("owner_1", "posthog", ["$pageview"])
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_ph_secret"
 
@@ -317,7 +317,7 @@ async def test_seed_trigger_routine_auto_github_registers_hook():
     p_repo, p_cookie, p_client = _env(admin)
     p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
-        out = await seed_trigger_routine("owner_1", "github", "pull_request", resource="acme/site")
+        out = await seed_trigger_routine("owner_1", "github", ["pull_request"], resource="acme/site")
 
     gh_client.post.assert_awaited_once()
     hook_url = gh_client.post.await_args.args[0]
@@ -347,7 +347,7 @@ async def test_seed_trigger_routine_auto_github_requires_resource():
     p_repo, p_cookie, p_client = _env(admin)
     for bad in (None, "no-slash", "a/b/c", "own er/repo"):
         with p_repo, p_cookie, p_client, _gh_token_patch(), pytest.raises(ValueError, match="owner/repo"):
-            await seed_trigger_routine("owner_1", "github", "push", resource=bad)
+            await seed_trigger_routine("owner_1", "github", ["push"], resource=bad)
     admin.create_routine.assert_not_awaited()
 
 
@@ -356,7 +356,7 @@ async def test_seed_trigger_routine_auto_github_requires_connected_token():
     admin = _fake_admin(secret_material=_GH_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _gh_token_patch(token=None), pytest.raises(ValueError, match="not connected"):
-        await seed_trigger_routine("owner_1", "github", "push", resource="acme/site")
+        await seed_trigger_routine("owner_1", "github", ["push"], resource="acme/site")
     admin.create_routine.assert_not_awaited()
 
 
@@ -376,7 +376,7 @@ async def test_seed_trigger_routine_auto_github_missing_secret_material_rolls_ba
         p_http,
         pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
     ):
-        await seed_trigger_routine("owner_1", "github", "push", resource="acme/site")
+        await seed_trigger_routine("owner_1", "github", ["push"], resource="acme/site")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_secret"
     gh_client.post.assert_not_awaited()
@@ -390,7 +390,7 @@ async def test_seed_trigger_routine_auto_github_hook_403_rolls_back():
     p_repo, p_cookie, p_client = _env(admin)
     p_http, _ = _gh_http_patch(_gh_response(403, {"message": "Forbidden"}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="admin access"):
-        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site")
+        await seed_trigger_routine("owner_1", "github", ["issues"], resource="acme/site")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_forbidden"
 
@@ -401,7 +401,7 @@ async def test_seed_trigger_routine_auto_github_hook_422_duplicate_rolls_back():
     p_repo, p_cookie, p_client = _env(admin)
     p_http, _ = _gh_http_patch(_gh_response(422, {"message": "Hook already exists on this repository"}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="already exists"):
-        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site")
+        await seed_trigger_routine("owner_1", "github", ["issues"], resource="acme/site")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_dupe"
 
@@ -449,7 +449,7 @@ async def test_seed_trigger_routine_auto_vercel_registers_webhook_and_arms():
     p_repo, p_cookie, p_client = _env(admin)
     p_http, vc_client = _gh_http_patch(_gh_response(200, _VC_WEBHOOK))
     with p_repo, p_cookie, p_client, _gh_token_patch(token="vc_tok_1"), p_http:
-        out = await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+        out = await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource="prj_abc123")
 
     vc_client.post.assert_awaited_once()
     assert vc_client.post.await_args.args[0] == "https://api.vercel.com/v1/webhooks"
@@ -487,7 +487,7 @@ async def test_seed_trigger_routine_auto_vercel_requires_resource():
             _gh_token_patch(token="vc_tok_1"),
             pytest.raises(ValueError, match="project id"),
         ):
-            await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource=bad)
+            await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource=bad)
     admin.create_routine.assert_not_awaited()
 
 
@@ -496,7 +496,7 @@ async def test_seed_trigger_routine_auto_vercel_requires_connected_token():
     admin = _fake_admin(trigger_id="trig_int_1")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _gh_token_patch(token=None), pytest.raises(ValueError, match="not connected"):
-        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+        await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource="prj_abc123")
     admin.create_routine.assert_not_awaited()
 
 
@@ -516,7 +516,7 @@ async def test_seed_trigger_routine_auto_vercel_missing_trigger_id_rolls_back():
         p_http,
         pytest.raises(RuntimeError, match="trigger.id"),
     ):
-        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+        await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource="prj_abc123")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_trigger_id"
     vc_client.post.assert_not_awaited()
@@ -537,7 +537,7 @@ async def test_seed_trigger_routine_auto_vercel_create_403_rolls_back():
         p_http,
         pytest.raises(ValueError, match="plan or token"),
     ):
-        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+        await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource="prj_abc123")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_forbidden_vc"
     admin.rotate_routine_trigger_secret.assert_not_awaited()
@@ -561,7 +561,7 @@ async def test_seed_trigger_routine_auto_vercel_arm_failure_deletes_webhook_and_
         p_http,
         pytest.raises(RuntimeError, match="upstream 500"),
     ):
-        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+        await seed_trigger_routine("owner_1", "vercel_cli", ["deployment.error"], resource="prj_abc123")
     vc_client.delete.assert_awaited_once()
     assert vc_client.delete.await_args.args[0] == "https://api.vercel.com/v1/webhooks/hook_1"
     admin.delete_routine.assert_awaited_once()
@@ -672,7 +672,7 @@ async def test_seed_trigger_routine_auto_google_watch_calendar(tmp_path):
         _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
-        out = await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+        out = await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="ada@example.com")
 
     # Two triggers on the same routine: the webhook first, then the renewal
     # schedule.
@@ -760,7 +760,7 @@ async def test_seed_trigger_routine_auto_google_watch_drive(tmp_path):
         _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
-        out = await seed_trigger_routine("owner_1", "google", "drive.changed", resource="ada@example.com")
+        out = await seed_trigger_routine("owner_1", "google", ["drive.changed"], resource="ada@example.com")
 
     assert run_gog.call_count == 2
     token_argv = run_gog.call_args_list[0].args[0]
@@ -819,7 +819,7 @@ async def test_seed_trigger_routine_auto_google_watch_requires_connected_account
         _google_accounts_patch(),
         pytest.raises(ValueError, match="connected Google account"),
     ):
-        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource=None)
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource=None)
     with (
         p_repo,
         p_cookie,
@@ -827,7 +827,7 @@ async def test_seed_trigger_routine_auto_google_watch_requires_connected_account
         _google_accounts_patch(emails=("ada@example.com",)),
         pytest.raises(ValueError, match="isn't connected"),
     ):
-        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="mallory@evil.example")
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="mallory@evil.example")
     admin.create_routine.assert_not_awaited()
 
 
@@ -849,7 +849,7 @@ async def test_seed_trigger_routine_auto_google_watch_gog_failure_rolls_back():
         _channels_set_patch() as set_channels,
         pytest.raises(ValueError, match="Google refused"),
     ):
-        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="ada@example.com")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gog_fail"
     set_channels.assert_not_awaited()
@@ -880,7 +880,7 @@ async def test_seed_trigger_routine_auto_google_watch_renewal_trigger_failure_st
         patch("core.services.google_watch.stop_watch", stop_watch),
         pytest.raises(RuntimeError, match="upstream 500"),
     ):
-        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="ada@example.com")
     stop_watch.assert_awaited_once()
     stop_kwargs = stop_watch.await_args.kwargs
     assert stop_kwargs["resource_id"] == "res_x"
@@ -905,7 +905,7 @@ async def test_seed_trigger_routine_auto_google_watch_missing_secret_material_ro
         patch("core.services.google_watch._run_gog", run_gog),
         pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
     ):
-        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="ada@example.com")
     admin.delete_routine.assert_awaited_once()
     run_gog.assert_not_called()
 
@@ -977,7 +977,7 @@ async def test_seed_trigger_routine_gmail_poll_creates_enabled_schedule_trigger(
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _google_accounts_patch():
-        out = await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com")
+        out = await seed_trigger_routine("owner_1", "google", ["gmail.poll"], resource="ada@example.com")
 
     trigger_call = admin.create_routine_trigger.await_args.kwargs
     assert trigger_call["routine_id"] == "rt_1"
@@ -1012,7 +1012,7 @@ async def test_seed_trigger_routine_gmail_poll_requires_connected_account():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(ValueError, match="isn't connected"):
-        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="mallory@evil.example")
+        await seed_trigger_routine("owner_1", "google", ["gmail.poll"], resource="mallory@evil.example")
     admin.create_routine.assert_not_awaited()
 
 
@@ -1022,7 +1022,7 @@ async def test_seed_trigger_routine_gmail_poll_trigger_failure_rolls_back():
     admin.create_routine_trigger = AsyncMock(side_effect=RuntimeError("upstream 500"))
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(RuntimeError, match="upstream 500"):
-        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com")
+        await seed_trigger_routine("owner_1", "google", ["gmail.poll"], resource="ada@example.com")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_poll_orphan"
 
@@ -1050,7 +1050,7 @@ async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry(tm
         _channels_set_patch() as set_channels,
     ):
         out = await seed_trigger_routine(
-            "owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC
+            "owner_1", "google", ["gmail.message"], resource="ada@example.com", topic=_GMAIL_TOPIC
         )
 
     assert admin.create_routine_trigger.await_count == 2
@@ -1129,7 +1129,7 @@ async def test_seed_trigger_routine_gmail_push_requires_valid_topic():
             _google_accounts_patch(),
             pytest.raises(ValueError, match="Pub/Sub topic"),
         ):
-            await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=bad)
+            await seed_trigger_routine("owner_1", "google", ["gmail.message"], resource="ada@example.com", topic=bad)
     admin.create_routine.assert_not_awaited()
 
 
@@ -1151,7 +1151,9 @@ async def test_seed_trigger_routine_gmail_push_gog_failure_rolls_back():
         _channels_set_patch() as set_channels,
         pytest.raises(ValueError, match="Google refused"),
     ):
-        await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC)
+        await seed_trigger_routine(
+            "owner_1", "google", ["gmail.message"], resource="ada@example.com", topic=_GMAIL_TOPIC
+        )
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gmail_fail"
     set_channels.assert_not_awaited()
@@ -1180,7 +1182,9 @@ async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch(tmp
         pytest.raises(RuntimeError, match="ddb down"),
     ):
         set_channels.side_effect = RuntimeError("ddb down")
-        await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC)
+        await seed_trigger_routine(
+            "owner_1", "google", ["gmail.message"], resource="ada@example.com", topic=_GMAIL_TOPIC
+        )
     stop.assert_awaited_once_with(owner_id="owner_1", account_email="ada@example.com")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gmail_row_fail"
@@ -1291,7 +1295,7 @@ async def test_seed_trigger_routine_auto_meta_subscribes_page_and_records_bindin
             AsyncMock(return_value={"access_token": "meta_user_tok"}),
         ),
     ):
-        out = await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+        out = await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource="1112223334")
 
     # The asset is bound with the PAGE token /me/accounts returned, not the
     # user token — subscribed_apps on a Page wants the Page's own token.
@@ -1345,7 +1349,7 @@ async def test_seed_trigger_routine_auto_meta_rejects_asset_not_on_the_account()
         ),
         pytest.raises(ValueError, match="isn't on your connected account"),
     ):
-        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="9998887776")
+        await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource="9998887776")
     admin.create_routine.assert_not_awaited()
 
 
@@ -1355,7 +1359,7 @@ async def test_seed_trigger_routine_auto_meta_requires_numeric_asset():
     p_repo, p_cookie, p_client = _env(admin)
     for bad in (None, "acme/site", "111-222", "111 222"):
         with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="numeric Meta asset id"):
-            await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource=bad)
+            await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource=bad)
     admin.create_routine.assert_not_awaited()
 
 
@@ -1378,7 +1382,7 @@ async def test_seed_trigger_routine_auto_meta_rolls_back_on_graph_refusal():
         ),
         pytest.raises(ValueError, match="couldn't subscribe"),
     ):
-        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+        await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource="1112223334")
 
     admin.delete_routine.assert_awaited_once()
     setter.assert_not_awaited()
@@ -1405,7 +1409,7 @@ async def test_seed_trigger_routine_auto_meta_unsubscribes_when_the_binding_writ
         ),
         pytest.raises(RuntimeError, match="ddb down"),
     ):
-        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+        await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource="1112223334")
 
     meta_client.delete.assert_awaited_once()
     assert meta_client.delete.await_args.args[0] == "https://graph.facebook.com/v23.0/1112223334/subscribed_apps"
@@ -1422,7 +1426,7 @@ async def test_seed_trigger_routine_auto_meta_instagram_uses_the_efs_token():
     p_http, meta_client = _meta_http_patch()
     (p_get_b, p_set_b), setter = _meta_bindings_patch()
     with p_repo, p_cookie, p_client, p_http, p_get_b, p_set_b, _ig_creds_patch():
-        out = await seed_trigger_routine("owner_1", "instagram", "comments", resource="7778889990")
+        out = await seed_trigger_routine("owner_1", "instagram", ["comments"], resource="7778889990")
 
     # No Graph fan-out at all on the Instagram path — one account, one file.
     meta_client.get.assert_not_awaited()
@@ -1447,7 +1451,7 @@ async def test_seed_trigger_routine_auto_meta_instagram_not_connected():
         patch("core.services.inbound_triggers._read_instagram_credentials", side_effect=FileNotFoundError()),
         pytest.raises(ValueError, match="is not connected"),
     ):
-        await seed_trigger_routine("owner_1", "instagram", "comments", resource="7778889990")
+        await seed_trigger_routine("owner_1", "instagram", ["comments"], resource="7778889990")
     admin.create_routine.assert_not_awaited()
 
 
@@ -1536,7 +1540,7 @@ async def test_seed_trigger_routine_assigns_the_supplied_agent():
     )
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_support")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"], assignee_agent_id="agent_support")
 
     assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "agent_support"
 
@@ -1553,7 +1557,7 @@ async def test_seed_trigger_routine_assigns_the_supplied_agent_from_an_enveloped
     )
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_support")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"], assignee_agent_id="agent_support")
 
     assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "agent_support"
 
@@ -1567,7 +1571,7 @@ async def test_seed_trigger_routine_rejects_an_agent_outside_an_enveloped_roster
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
         await seed_trigger_routine(
-            "owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_someone_elses"
+            "owner_1", "stripe", ["invoice.payment_failed"], assignee_agent_id="agent_someone_elses"
         )
     admin.create_routine.assert_not_awaited()
 
@@ -1581,7 +1585,7 @@ async def test_seed_trigger_routine_rejects_an_agent_outside_the_company():
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
         await seed_trigger_routine(
-            "owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_someone_elses"
+            "owner_1", "stripe", ["invoice.payment_failed"], assignee_agent_id="agent_someone_elses"
         )
     admin.create_routine.assert_not_awaited()
 
@@ -1591,7 +1595,7 @@ async def test_seed_trigger_routine_without_assignee_still_defaults_to_friday():
     admin = _fake_admin(friday_id="friday_xyz")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
 
     assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "friday_xyz"
 
@@ -1651,7 +1655,7 @@ async def test_seed_trigger_routine_emits_automation_armed():
         p_client,
         patch("core.services.inbound_triggers.capture_product_event") as capture,
     ):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
 
     capture.assert_called_once()
     assert capture.call_args.kwargs["event"] == "automation_armed"
@@ -1671,7 +1675,7 @@ async def test_seed_trigger_routine_does_not_emit_when_it_fails():
         patch("core.services.inbound_triggers.capture_product_event") as capture,
         pytest.raises(ValueError),
     ):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     capture.assert_not_called()
 
 
@@ -1691,7 +1695,7 @@ async def test_attach_creates_the_trigger_on_the_existing_routine():
     admin = _fake_admin(routine_id="rt_revenue_recovery", public_id="pub_att")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_revenue_recovery")
+        out = await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], routine_id="rt_revenue_recovery")
 
     admin.create_routine.assert_not_awaited()
     assert admin.create_routine_trigger.await_args.kwargs["routine_id"] == "rt_revenue_recovery"
@@ -1715,7 +1719,7 @@ async def test_attach_never_touches_the_target_routine():
     admin = _fake_admin(routine_id="rt_hand_written")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_hand_written")
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], routine_id="rt_hand_written")
 
     admin.create_routine.assert_not_awaited()
     admin.patch_routine.assert_not_awaited()
@@ -1735,7 +1739,7 @@ async def test_attach_rejects_a_routine_outside_the_callers_company():
     admin = _fake_admin(routine_id="rt_mine")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
-        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_someone_elses")
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], routine_id="rt_someone_elses")
 
     admin.create_routine_trigger.assert_not_awaited()
     admin.create_routine.assert_not_awaited()
@@ -1749,7 +1753,7 @@ async def test_attach_accepts_an_enveloped_routine_list():
     admin.list_routines = AsyncMock(return_value={"routines": [{"id": "rt_env"}]})
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_env")
+        out = await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], routine_id="rt_env")
     assert out["routine_id"] == "rt_env"
 
 
@@ -1798,7 +1802,7 @@ async def test_attach_google_watch_appends_the_clause_after_the_owners_words(tmp
         _channels_set_patch(),
     ):
         out = await seed_trigger_routine(
-            "owner_1", "google", "calendar.changed", resource="ada@example.com", routine_id="rt_mine"
+            "owner_1", "google", ["calendar.changed"], resource="ada@example.com", routine_id="rt_mine"
         )
 
     admin.create_routine.assert_not_awaited()
@@ -1835,7 +1839,7 @@ async def test_attach_gmail_push_appends_the_clause_after_the_owners_words(tmp_p
         await seed_trigger_routine(
             "owner_1",
             "google",
-            "gmail.message",
+            ["gmail.message"],
             resource="ada@example.com",
             topic="projects/my-project/topics/isol8-gmail",
             routine_id="rt_mine",
@@ -1856,7 +1860,7 @@ async def test_attach_gmail_poll_appends_the_starter_prompt():
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _google_accounts_patch():
         out = await seed_trigger_routine(
-            "owner_1", "google", "gmail.poll", resource="ada@example.com", routine_id="rt_mine"
+            "owner_1", "google", ["gmail.poll"], resource="ada@example.com", routine_id="rt_mine"
         )
 
     admin.create_routine.assert_not_awaited()
@@ -1877,7 +1881,7 @@ async def test_attach_gmail_poll_appends_the_registry_text_not_a_caller_override
         await seed_trigger_routine(
             "owner_1",
             "google",
-            "gmail.poll",
+            ["gmail.poll"],
             resource="ada@example.com",
             routine_id="rt_mine",
             title="Mine",
@@ -1932,7 +1936,7 @@ async def test_attach_gmail_push_drops_its_channel_row_when_the_append_fails(tmp
         await seed_trigger_routine(
             "owner_1",
             "google",
-            "gmail.message",
+            ["gmail.message"],
             resource="ada@example.com",
             topic=_GMAIL_TOPIC,
             routine_id="rt_mine",
@@ -1958,7 +1962,9 @@ async def test_attach_never_patches_a_description_it_could_not_read():
     admin.get_routine = AsyncMock(side_effect=RuntimeError("upstream down"))
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(RuntimeError):
-        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com", routine_id="rt_mine")
+        await seed_trigger_routine(
+            "owner_1", "google", ["gmail.poll"], resource="ada@example.com", routine_id="rt_mine"
+        )
 
     admin.patch_routine.assert_not_awaited()
     admin.delete_routine.assert_not_awaited()
@@ -1993,7 +1999,7 @@ async def test_attach_rollback_deletes_the_renewal_trigger_too(tmp_path):
         pytest.raises(OSError),
     ):
         await seed_trigger_routine(
-            "owner_1", "google", "calendar.changed", resource="ada@example.com", routine_id="rt_mine"
+            "owner_1", "google", ["calendar.changed"], resource="ada@example.com", routine_id="rt_mine"
         )
 
     admin.delete_routine.assert_not_awaited()
@@ -2014,7 +2020,7 @@ async def test_overrides_win_over_the_registry_template():
         await seed_trigger_routine(
             "owner_1",
             "stripe",
-            "invoice.payment_failed",
+            ["invoice.payment_failed"],
             title="Dunning desk",
             description="Email the customer, then tell me.",
         )
@@ -2036,13 +2042,13 @@ async def test_an_untouched_draft_is_byte_identical_to_the_template_path():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", title=None, description=None)
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"], title=None, description=None)
     with_nones = admin.create_routine.await_args.kwargs["body"]
 
     admin2 = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin2)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     without = admin2.create_routine.await_args.kwargs["body"]
 
     assert with_nones == without
@@ -2059,7 +2065,7 @@ async def test_a_blanked_override_falls_back_to_the_template():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", title="   ", description="")
+        await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"], title="   ", description="")
 
     body = admin.create_routine.await_args.kwargs["body"]
     assert body["title"] == "Stripe: Invoice payment failed"
@@ -2072,7 +2078,7 @@ async def test_attach_refuses_to_reassign_the_target_routine():
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="can't reassign"):
         await seed_trigger_routine(
-            "owner_1", "stripe", "charge.refunded", routine_id="rt_x", assignee_agent_id="agent_9"
+            "owner_1", "stripe", ["charge.refunded"], routine_id="rt_x", assignee_agent_id="agent_9"
         )
     admin.create_routine_trigger.assert_not_awaited()
 
@@ -2086,7 +2092,7 @@ async def test_attach_runs_the_same_auto_github_registration():
     p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
         out = await seed_trigger_routine(
-            "owner_1", "github", "pull_request", resource="acme/site", routine_id="rt_deploys"
+            "owner_1", "github", ["pull_request"], resource="acme/site", routine_id="rt_deploys"
         )
 
     admin.create_routine.assert_not_awaited()
@@ -2106,7 +2112,7 @@ async def test_attach_rollback_deletes_the_trigger_not_the_owners_routine():
     p_repo, p_cookie, p_client = _env(admin)
     p_http, _ = _gh_http_patch(_gh_response(403, {"message": "Forbidden"}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="admin access"):
-        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site", routine_id="rt_precious")
+        await seed_trigger_routine("owner_1", "github", ["issues"], resource="acme/site", routine_id="rt_precious")
 
     admin.delete_routine.assert_not_awaited()
     admin.delete_routine_trigger.assert_awaited_once()
@@ -2123,7 +2129,7 @@ async def test_attach_marks_the_funnel_event_as_an_existing_routine():
         p_client,
         patch("core.services.inbound_triggers.capture_product_event") as capture,
     ):
-        await seed_trigger_routine("owner_1", "stripe", "charge.refunded", routine_id="rt_x")
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], routine_id="rt_x")
     assert capture.call_args.kwargs["properties"]["target"] == "existing_routine"
 
 
@@ -2140,7 +2146,7 @@ async def test_create_branch_still_creates_and_never_lists_routines():
         p_client,
         patch("core.services.inbound_triggers.capture_product_event") as capture,
     ):
-        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
+        out = await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"])
 
     admin.create_routine.assert_awaited_once()
     body = admin.create_routine.await_args.kwargs["body"]
@@ -2151,3 +2157,176 @@ async def test_create_branch_still_creates_and_never_lists_routines():
     admin.delete_routine_trigger.assert_not_awaited()
     assert out["routine_id"] == "rt_new"
     assert capture.call_args.kwargs["properties"]["target"] == "new_routine"
+
+
+# ── multi-event: one trigger, many events ───────────────────────────────────
+#
+# A Paperclip webhook trigger has no event filter, and Stripe/GitHub/Vercel/
+# Meta all let one endpoint subscribe to many events — so the founder's
+# three-event Revenue recovery routine is ONE trigger and ONE dashboard paste,
+# not three. The events that CAN'T share a trigger (a Google watch, a Gmail
+# poll) are the 400 below.
+
+_STRIPE_THREE = ["invoice.payment_failed", "customer.subscription.deleted", "charge.refunded"]
+
+
+@pytest.mark.asyncio
+async def test_multi_event_creates_one_trigger_naming_every_event():
+    """Three Stripe events -> ONE routine, ONE webhook trigger, and guided
+    instructions that name all three (the owner subscribes one endpoint to the
+    lot in the Stripe dashboard)."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", _STRIPE_THREE)
+
+    admin.create_routine.assert_awaited_once()
+    admin.create_routine_trigger.assert_awaited_once()
+
+    body = admin.create_routine.await_args.kwargs["body"]
+    assert body["title"] == "Stripe: Invoice payment failed, Subscription canceled and Charge refunded"
+    # The agent wakes for any of the three, so it is told to branch on the
+    # payload's own type before doing anything.
+    assert "3 events" in body["description"]
+    assert "read the event type out of the payload FIRST" in body["description"]
+
+    for event_id in _STRIPE_THREE:
+        assert event_id in out["instructions"], event_id
+    assert out["proxy_url"] in out["instructions"]
+    assert out["guided"] is True
+
+
+@pytest.mark.asyncio
+async def test_multi_event_trigger_label_falls_back_when_it_blows_the_cap():
+    """Paperclip rejects a trigger label over 120 chars outright. Enough
+    events joined into one title passes that long before it stops being
+    useful, so the label falls back to the compact form."""
+    from core.services.credentials.registry import get_provider
+
+    events = [e.id for e in get_provider("stripe").inbound.events[:8]]
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", events)
+
+    label = admin.create_routine_trigger.await_args.kwargs["body"]["label"]
+    assert label == "Stripe (8 events)"
+    assert len(label) <= 120
+
+
+@pytest.mark.asyncio
+async def test_multi_event_github_registers_every_event_on_one_hook():
+    """The auto shape's whole point: one hook on the repo, subscribed to the
+    UNION of the selected events' provider_events."""
+    admin = _fake_admin(secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
+        await seed_trigger_routine("owner_1", "github", ["pull_request", "issues", "push"], resource="acme/site")
+
+    gh_client.post.assert_awaited_once()
+    assert gh_client.post.await_args.kwargs["json"]["events"] == ["pull_request", "issues", "push"]
+    admin.create_routine_trigger.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_single_event_rendering_is_byte_identical_to_the_one_click_path():
+    """The parity case. A one-element list must render the title, description
+    and instructions EXACTLY as the single-event flow always did — the join of
+    one item is the item, and the multi-event clause is a separate branch."""
+    admin_one = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin_one)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
+
+    routine = admin_one.create_routine.await_args.kwargs["body"]
+    assert routine["title"] == "Stripe: Invoice payment failed"
+    assert routine["description"] == (
+        "A Stripe webhook just fired: Invoice payment failed. Look at the event payload, "
+        "figure out what happened, and take the appropriate next step (e.g. follow up with "
+        "the customer, flag it to the team, or update records)."
+    )
+    assert "This trigger is armed for" not in routine["description"]
+    assert admin_one.create_routine_trigger.await_args.kwargs["body"]["label"] == "Stripe: Invoice payment failed"
+    assert "invoice.payment_failed" in out["instructions"]
+    assert "Invoice payment failed" in out["instructions"]
+
+
+@pytest.mark.asyncio
+async def test_events_with_different_registration_shapes_are_refused():
+    """A Gmail poll rides a schedule and a Calendar watch opens a push
+    channel — nothing about them can share one trigger. The error names both
+    so the owner knows what to split."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError) as exc:
+        await seed_trigger_routine("owner_1", "google", ["gmail.poll", "calendar.changed"], resource="ada@example.com")
+
+    msg = str(exc.value)
+    assert "gmail.poll (poll)" in msg
+    assert "calendar.changed (auto_google_watch)" in msg
+    assert "separate triggers" in msg
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_google_watches_cannot_share_one_trigger():
+    """Same shape, still one-per-trigger: each watch is its own Google push
+    channel with its own state file and renewal clause."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="separate triggers"):
+        await seed_trigger_routine(
+            "owner_1", "google", ["calendar.changed", "drive.changed"], resource="ada@example.com"
+        )
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_events_in_a_list_are_named():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="unknown event 'not.a.real.event'"):
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded", "not.a.real.event"])
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_event_list_is_refused_before_anything_exists():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="at least one event"):
+        await seed_trigger_routine("owner_1", "stripe", [])
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_multi_event_attaches_one_trigger_to_an_existing_routine():
+    """The founder's actual case: three Stripe events armed on the Revenue
+    recovery routine they already wrote. One trigger added, nothing they wrote
+    touched."""
+    admin = _fake_admin(routine_id="rt_revenue_recovery")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", _STRIPE_THREE, routine_id="rt_revenue_recovery")
+
+    admin.create_routine.assert_not_awaited()
+    admin.patch_routine.assert_not_awaited()
+    admin.create_routine_trigger.assert_awaited_once()
+    assert out["routine_id"] == "rt_revenue_recovery"
+    for event_id in _STRIPE_THREE:
+        assert event_id in out["instructions"], event_id
+
+
+@pytest.mark.asyncio
+async def test_funnel_event_records_the_whole_event_list():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, patch("core.services.inbound_triggers.capture_product_event") as capture:
+        await seed_trigger_routine("owner_1", "stripe", _STRIPE_THREE)
+
+    props = capture.call_args.kwargs["properties"]
+    assert props["event_ids"] == _STRIPE_THREE
+    assert props["event_count"] == 3
+    # The old single-event property still reads, for funnels built on it.
+    assert props["event_id"] == "invoice.payment_failed"

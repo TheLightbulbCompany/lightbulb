@@ -92,7 +92,7 @@ describe("RoutinesPanel — New automation dialog", () => {
     // The list is gone and the trigger names the selection — the fields below
     // it (repository, Create) are reachable again.
     await waitFor(() =>
-      expect(screen.queryByRole("listbox", { name: "Event" })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("listbox", { name: "Events" })).not.toBeInTheDocument(),
     );
     expect(within(dialog).getByRole("button", { name: /push/i })).toBeInTheDocument();
   });
@@ -100,12 +100,12 @@ describe("RoutinesPanel — New automation dialog", () => {
   it("Escape closes the event list, not the whole dialog", async () => {
     const { user, dialog } = await openConnectedAppRung();
     await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
-    expect(await screen.findByRole("listbox", { name: "Event" })).toBeInTheDocument();
+    expect(await screen.findByRole("listbox", { name: "Events" })).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
 
     await waitFor(() =>
-      expect(screen.queryByRole("listbox", { name: "Event" })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("listbox", { name: "Events" })).not.toBeInTheDocument(),
     );
     // The dialog — and the app/rung selections made in it — survive.
     expect(screen.getByRole("dialog")).toBeInTheDocument();

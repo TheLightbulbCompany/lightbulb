@@ -82,4 +82,29 @@ describe("useGatewayRpc event-driven revalidation", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(gw.sendReq).toHaveBeenCalledTimes(1);
   });
+
+  it("revalidates a name-unrelated mount on onboarding_status_changed", async () => {
+    const gw = makeGateway();
+    // Reproduce the production precondition rather than a plain success: the
+    // first read lands mid-reprovision, when the container has no task IP.
+    // The fetcher swallows "No container" into `undefined`, so SWR caches a
+    // SUCCESSFUL empty value and the onErrorRetry ladder is never armed —
+    // which is exactly why nothing else ever refetches this key.
+    gw.sendReq = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("No container for user"))
+      .mockResolvedValue({ ok: true });
+
+    // Distinct method again — see the global-SWR-cache note above.
+    const { result } = renderHook(() => useGatewayRpc(gw, "commands.list"));
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(1));
+    expect(result.current.data).toBeUndefined();
+
+    // The container becoming reachable again is the only signal that recovers
+    // that cached-empty value.
+    gw.emit("onboarding_status_changed", {});
+
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.data).toEqual({ ok: true }));
+  });
 });

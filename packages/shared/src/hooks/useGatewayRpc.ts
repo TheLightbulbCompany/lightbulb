@@ -30,7 +30,31 @@ const EVENT_METHOD_ALIASES: Record<string, string[]> = {
   "config.changed": ["config.get"],
 };
 
+/**
+ * Events that revalidate EVERY gateway-backed read, not just name-matched
+ * methods.
+ *
+ * `onboarding_status_changed` (backend `core/services/status_events.py`) fires
+ * after every durable write `compute_status` composes — including the
+ * containers-row transition when a container becomes reachable again after a
+ * cold reprovision (a BYO-key provider switch, a resize, an admin
+ * reprovision).
+ *
+ * That transition needs a blanket revalidate because reads taken while the
+ * container had no IP do not fail: the fetcher below deliberately swallows
+ * "No container" into `undefined`, so SWR caches a SUCCESSFUL empty value and
+ * `onErrorRetry` never fires. Nothing else refetches those keys, so an open
+ * tab kept an empty agent roster until a manual reload, with the provisioning
+ * stepper parked on the phase that reads it. This event is the one signal
+ * that the container is reachable again. The 10s throttle at the call site
+ * bounds the fan-out.
+ */
+const REVALIDATE_ALL_EVENTS: ReadonlySet<string> = new Set([
+  "onboarding_status_changed",
+]);
+
 function eventMatchesMethod(method: string, event: string): boolean {
+  if (REVALIDATE_ALL_EVENTS.has(event)) return true;
   if (method === event || method.startsWith(event + ".")) return true;
   const aliasTargets = EVENT_METHOD_ALIASES[event];
   if (!aliasTargets) return false;

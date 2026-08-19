@@ -5,7 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { KeyRound, Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
-import { notifyApiError } from "@/lib/notify";
+import { notifyApiError, notifySuccess } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { CreditsSection } from "./CreditsSection";
@@ -635,8 +635,18 @@ function ReplaceKeyForm({
     e.preventDefault();
     setSubmitting(true);
     try {
-      await api.put(`/settings/keys/${currentProvider}`, { api_key: apiKey });
+      const res = (await api.put(`/settings/keys/${currentProvider}`, {
+        api_key: apiKey,
+      })) as { container_restarting?: boolean } | null;
       setApiKey("");
+      // Saving used to clear the field and say nothing, which read as "did
+      // that work?" — and a rotated key is not live until the container
+      // restarts, so silence was actively misleading.
+      notifySuccess(
+        res?.container_restarting
+          ? "Key saved — restarting your container to apply it"
+          : "Key saved",
+      );
       onReplaced();
     } catch (err) {
       notifyApiError(err, "Couldn't save key");

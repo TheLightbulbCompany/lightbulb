@@ -48,6 +48,89 @@ class TestSettingsKeys:
         assert resp.json()["tool_id"] == "openai"
 
     @pytest.mark.asyncio
+    @patch("core.containers.get_ecs_manager")
+    @patch("core.services.container_provision.resolve_provider_choice")
+    @patch("routers.settings_keys.KeyService")
+    async def test_set_key_redeploys_when_rotating_the_live_provider(
+        self, mock_svc_cls, mock_resolve, mock_get_ecs, async_client
+    ):
+        """Rotating the key the container is actually running on rolls it.
+
+        ECS resolves `secrets:` at task start, so without a redeploy the owner
+        keeps running on the old key with no error.
+        """
+        mock_svc_cls.return_value = AsyncMock(set_key=AsyncMock(return_value={}))
+        mock_resolve.return_value = ("byo_key", "openai")
+        ecs = AsyncMock()
+        mock_get_ecs.return_value = ecs
+
+        resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+
+        assert resp.status_code == 200
+        assert resp.json()["container_restarting"] is True
+        ecs.force_redeploy_user_service.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("core.containers.get_ecs_manager")
+    @patch("core.services.container_provision.resolve_provider_choice")
+    @patch("routers.settings_keys.KeyService")
+    async def test_set_key_does_not_redeploy_for_the_inactive_provider(
+        self, mock_svc_cls, mock_resolve, mock_get_ecs, async_client
+    ):
+        """Saving the OTHER provider's key must not restart anything.
+
+        Only the active byo_provider's key is injected, so this changes nothing
+        a running task holds — and the provider switch that makes it live is
+        already a cold reprovision.
+        """
+        mock_svc_cls.return_value = AsyncMock(set_key=AsyncMock(return_value={}))
+        mock_resolve.return_value = ("byo_key", "openai")
+        ecs = AsyncMock()
+        mock_get_ecs.return_value = ecs
+
+        resp = await async_client.put("/api/v1/settings/keys/anthropic", json={"api_key": "sk-ant-new"})
+
+        assert resp.status_code == 200
+        assert resp.json()["container_restarting"] is False
+        ecs.force_redeploy_user_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("core.containers.get_ecs_manager")
+    @patch("core.services.container_provision.resolve_provider_choice")
+    @patch("routers.settings_keys.KeyService")
+    async def test_set_key_does_not_redeploy_when_not_on_byo_key(
+        self, mock_svc_cls, mock_resolve, mock_get_ecs, async_client
+    ):
+        """A chatgpt_oauth/bedrock owner injects no BYO secret at all."""
+        mock_svc_cls.return_value = AsyncMock(set_key=AsyncMock(return_value={}))
+        mock_resolve.return_value = ("chatgpt_oauth", None)
+        ecs = AsyncMock()
+        mock_get_ecs.return_value = ecs
+
+        resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+
+        assert resp.status_code == 200
+        assert resp.json()["container_restarting"] is False
+        ecs.force_redeploy_user_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("core.containers.get_ecs_manager")
+    @patch("core.services.container_provision.resolve_provider_choice")
+    @patch("routers.settings_keys.KeyService")
+    async def test_set_key_survives_a_redeploy_failure(self, mock_svc_cls, mock_resolve, mock_get_ecs, async_client):
+        """A redeploy failure must not fail a write that already succeeded."""
+        mock_svc_cls.return_value = AsyncMock(set_key=AsyncMock(return_value={}))
+        mock_resolve.return_value = ("byo_key", "openai")
+        ecs = AsyncMock()
+        ecs.force_redeploy_user_service = AsyncMock(side_effect=RuntimeError("no such service"))
+        mock_get_ecs.return_value = ecs
+
+        resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+
+        assert resp.status_code == 200
+        assert resp.json()["container_restarting"] is False
+
+    @pytest.mark.asyncio
     async def test_set_key_unsupported_tool(self, async_client):
         """PUT /settings/keys/{tool_id} rejects unsupported tools."""
         resp = await async_client.put(

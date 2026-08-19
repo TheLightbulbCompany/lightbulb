@@ -985,7 +985,12 @@ async def _seed_trigger_routine(
     # may override the template's prompt (a scheduled inbox check reads
     # nothing like a push notification).
     starter_prompt = event.starter_prompt or inbound.template.starter_prompt
-    description = (description or "").strip() or starter_prompt.format(event_label=event.label, account=resource or "")
+    # Kept separate from `description` below: the poll shape APPENDS this to a
+    # routine the owner already wrote, and a platform-owned block must be
+    # exactly that — the registry's text, never something the caller supplied.
+    # (The other two appending shapes build their clause server-side already.)
+    rendered_description = starter_prompt.format(event_label=event.label, account=resource or "")
+    description = (description or "").strip() or rendered_description
 
     # Lazy import: keeps this module's load light and sidesteps a cycle —
     # same convention agent_export.py uses for the identical import.
@@ -1073,8 +1078,13 @@ async def _seed_trigger_routine(
                 # poll has no webhook and no maintenance clause — the whole
                 # behaviour IS the starter prompt, so an attach appends it
                 # (the create path already rendered it as the description).
+                # The REGISTRY's rendering, not `description`: an owner's own
+                # instructions override belongs to a routine this call CREATES,
+                # never inside a block stamped as platform-owned.
                 if attach:
-                    await _append_platform_block(admin, cookie=cookie, routine_id=routine_id, block=description)
+                    await _append_platform_block(
+                        admin, cookie=cookie, routine_id=routine_id, block=rendered_description
+                    )
             except Exception:
                 await unwind()
                 raise
@@ -1511,6 +1521,25 @@ async def _seed_trigger_routine(
                 # automation is unusable — stop the watch (best-effort)
                 # before unwinding.
                 await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=resource)
+                # The row above may already have landed (only the attach-path
+                # append comes after it), and it names a trigger `unwind` is
+                # about to delete. Nothing else ever prunes this list, so drop
+                # the entry here or it accumulates forever. Best-effort: this
+                # runs inside an except and must never mask the real error.
+                # (auto_google_watch's counterpart orphan is a private EFS
+                # state file the next seed overwrites by public id — left
+                # alone deliberately.)
+                try:
+                    rows = await integrations_repo.get_google_watch_channels(owner_id)
+                    kept = [c for c in rows if c.get("trigger_public_id") != public_id]
+                    if len(kept) != len(rows):
+                        await integrations_repo.set_google_watch_channels(owner_id, kept)
+                except Exception:
+                    logger.exception(
+                        "inbound_triggers: could not drop the stranded gmail watch row for trigger=%s owner=%s",
+                        public_id,
+                        owner_id,
+                    )
                 await unwind()
                 raise
             logger.info(

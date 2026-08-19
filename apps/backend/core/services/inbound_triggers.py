@@ -893,6 +893,10 @@ async def seed_trigger_routine(
     on a malformed upstream response (Paperclip is expected to always return
     an id / publicId / secretMaterial).
     """
+    # Deduped HERE so the funnel counts what was actually armed — the seed
+    # dedupes too, and recording the raw list would report event_count=2 for
+    # a caller that sent the same id twice.
+    event_ids = list(dict.fromkeys(event_ids))
     out = await _seed_trigger_routine(
         owner_id,
         provider_key,
@@ -911,7 +915,7 @@ async def seed_trigger_routine(
             "provider": provider_key,
             # The whole armed set, plus the first id kept under its old name so
             # funnels built on the single-event shape keep reading.
-            "event_id": event_ids[0],
+            "event_id": event_ids[0],  # non-empty: the seed above raises on an empty list
             "event_ids": event_ids,
             "event_count": len(event_ids),
             "source": "from_integration",

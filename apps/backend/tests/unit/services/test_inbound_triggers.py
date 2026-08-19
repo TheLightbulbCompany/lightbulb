@@ -2330,3 +2330,20 @@ async def test_funnel_event_records_the_whole_event_list():
     assert props["event_count"] == 3
     # The old single-event property still reads, for funnels built on it.
     assert props["event_id"] == "invoice.payment_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_duplicated_event_id_is_armed_and_counted_once():
+    """Dedupe is the seed's, not the router's — a direct service call with the
+    same id twice arms one event AND reports one, so the funnel can't
+    over-count what was actually wired."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, patch("core.services.inbound_triggers.capture_product_event") as capture:
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded", "charge.refunded"])
+
+    admin.create_routine_trigger.assert_awaited_once()
+    assert admin.create_routine.await_args.kwargs["body"]["title"] == "Stripe: Charge refunded"
+    props = capture.call_args.kwargs["properties"]
+    assert props["event_ids"] == ["charge.refunded"]
+    assert props["event_count"] == 1

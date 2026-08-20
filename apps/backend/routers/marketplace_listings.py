@@ -824,6 +824,25 @@ async def deploy_listing(
                     detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
                 )
 
+        # A company deploy needs a RUNNING pod: the background job refuses to
+        # create Paperclip agents it cannot pair, which from the buyer's seat
+        # was a 202 + confirmation card + an empty roster (a fresh account that
+        # never opened the app has no container at all; a free-tier pod may be
+        # scaled to zero). Refuse up front instead, and point at the app —
+        # deliberately NOT dispatching provisioning from here: ensure_user_ready
+        # has exactly ONE trigger (GET /container/status — see user_provision's
+        # module docstring), and opening the app is what drives it, wake
+        # included.
+        container_row = await container_repo.get_by_owner_id(owner_id)
+        if container_row is None or container_row.get("status") != "running":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Your pod isn't running yet — open the app to finish setup "
+                    "(or wake your agents), then retry this deploy."
+                ),
+            )
+
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")

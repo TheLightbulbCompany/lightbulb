@@ -44,9 +44,9 @@ def admin_client(app):
 
 @pytest.fixture(autouse=True)
 def deploy_claim():
-    """Stub the owner-wide deploy claim the company branch now takes — unit
-    tests must not touch DynamoDB. Individual tests re-patch to exercise the
-    refusal path."""
+    """Stub the owner-wide deploy claim + the pod-running read the company
+    branch now makes — unit tests must not touch DynamoDB. Individual tests
+    re-patch to exercise the refusal paths."""
     with (
         patch(
             "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
@@ -57,8 +57,13 @@ def deploy_claim():
             "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
             new_callable=AsyncMock,
         ) as release,
+        patch(
+            "routers.marketplace_listings.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "user_admin", "status": "running"},
+        ) as get_row,
     ):
-        yield claim, release
+        yield claim, release, get_row
 
 
 def _company_listing(
@@ -234,26 +239,50 @@ def test_non_admin_deploy_company_202(mock_get_published, mock_boto, mock_run, m
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
-@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_company_deploy_refused_while_claim_held(
-    mock_get_published, mock_boto, mock_run, mock_create_task, mock_get_row, client, deploy_claim
+    mock_get_published, mock_boto, mock_run, mock_create_task, client, deploy_claim
 ):
     """A held owner-wide deploy claim (a hire or another company deploy in
     flight) refuses the dispatch 409 — no S3 read, no background task. A double
     POST minting the whole org twice is exactly what this fences."""
     mock_get_published.return_value = _company_listing()
-    mock_get_row.return_value = {"owner_id": "user_x"}
-    claim, _release = deploy_claim
+    claim, _release, _get_row = deploy_claim
     claim.return_value = (None, "l_other")
 
     resp = client.post("/api/v1/marketplace/listings/gstack/deploy")
 
     assert resp.status_code == 409, resp.text
     assert "already running" in resp.json()["detail"]
+    mock_boto.assert_not_called()
+    mock_run.assert_not_called()
+    mock_create_task.assert_not_called()
+
+
+@pytest.mark.parametrize("row", [None, {"owner_id": "user_x", "status": "stopped"}])
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_company_deploy_refused_when_pod_not_running(
+    mock_get_published, mock_boto, mock_run, mock_create_task, client, deploy_claim, row
+):
+    """No container row (fresh account that never opened the app) or a
+    scaled-to-zero pod refuses 503 UP FRONT — the old shape was a 202 +
+    confirmation card while the background job silently created nothing. No
+    claim taken, no S3 read, no dispatch."""
+    mock_get_published.return_value = _company_listing()
+    claim, _release, get_row = deploy_claim
+    get_row.return_value = row
+
+    resp = client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 503, resp.text
+    assert "open the app" in resp.json()["detail"]
+    claim.assert_not_awaited()
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()

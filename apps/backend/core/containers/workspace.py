@@ -1199,12 +1199,17 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
 
     Returns True if a row was deleted, False on no-op (no store yet / no row /
     contention we couldn't win), or the string ``"restart_required"`` on the
-    local-sqlite layout (``settings.LITESTREAM_BUCKET`` set and no store on
-    EFS): the row lives on container-local disk the backend cannot reach, so a
-    sentinel is written to the EFS durable spine instead and only a container
-    boot applies it — the CALLER decides whether to bounce a running container
-    (never-booted containers consume the sentinel on first boot anyway).
-    Never raises on a missing store or table.
+    local-sqlite layout (``settings.LITESTREAM_BUCKET`` set): the live row is
+    on container-local disk the backend cannot reach, so a sentinel is written
+    to the EFS durable spine and only a container boot applies it — the CALLER
+    decides whether to bounce a running container (never-booted containers
+    consume the sentinel on first boot anyway). On that layout the clear
+    reports ``"restart_required"`` EVEN when a store file is still visible on
+    EFS and the hot DELETE landed: that file is residue the running task never
+    reads (its live store is local), so treating the hot delete as sufficient
+    left the sentinel waiting for a boot no caller triggered — a reconnect
+    staged a fresh token that never imported (founder-org prod incident,
+    2026-08). Never raises on a missing store or table.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -1250,9 +1255,11 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
     if failure == "no_table":
         # Store file exists but the auth_profile_store table was never created
         # (container booted but no auth ever persisted). A true no-op: the boot
-        # import seeds it. Quiet — NOT a failure.
+        # import seeds it. Quiet — NOT a failure. On the local-sqlite layout
+        # the EFS file says nothing about the LIVE local store, so the
+        # sentinel written above is still the fix and needs its boot.
         logger.info("clear_default_agent_auth_profile_row: no auth table yet for %s", user_id)
-        return False
+        return "restart_required" if settings.LITESTREAM_BUCKET else False
     if failure:
         # A genuine write failure — almost always SQLITE_BUSY: the live OpenClaw
         # process held the auth-store write lock past the busy-timeout. This is
@@ -1267,10 +1274,20 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
             failure,
         )
         put_metric("oauth.auth_row_clear_failed")
-        return False
+        # local-sqlite layout: the sentinel above (hot_delete="failed") is the
+        # retry request, and only a boot applies it — tell the caller to bounce.
+        return "restart_required" if settings.LITESTREAM_BUCKET else False
 
     logger.info(
         "cleared_default_agent_auth_row",
         extra={"user_id": user_id, "agent": _DEFAULT_AGENT_DIR, "deleted_rows": deleted},
     )
+    # local-sqlite layout: the EFS store this delete just edited is residue the
+    # running task never reads — its live store is on container-local disk. The
+    # hot delete stays as best-effort cover for a container still pinned to the
+    # EFS layout, but the authoritative clear is the sentinel, and only a boot
+    # applies it. Returning True here (pre-fix) left the sentinel unconsumed
+    # and the stale local row shadowing the freshly staged oauth.json forever.
+    if settings.LITESTREAM_BUCKET:
+        return "restart_required"
     return deleted > 0

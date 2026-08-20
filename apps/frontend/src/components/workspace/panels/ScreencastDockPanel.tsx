@@ -124,9 +124,11 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
             if (cancelled) return;
             const ctx = canvas.getContext("2d");
             if (!ctx) return;
-            // Match backing store to the frame so drawImage is 1:1; CSS stretches
-            // it to fill the panel. The input mapping uses the displayed rect +
-            // metadata, so it's independent of this backing size.
+            // Match backing store to the frame so drawImage is 1:1; CSS (objectFit
+            // "fill" below) stretches it to fill the panel box exactly. Because
+            // "fill" makes the displayed rect equal the painted frame, the input
+            // mapping (displayed rect + metadata) has no letterbox offset and is
+            // independent of this backing size.
             if (canvas.width !== img.naturalWidth) canvas.width = img.naturalWidth;
             if (canvas.height !== img.naturalHeight) canvas.height = img.naturalHeight;
             ctx.drawImage(img, 0, 0);
@@ -179,6 +181,17 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
   );
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Leave focus management to the browser so the canvas is escapable: Tab
+      // moves focus out normally, Escape blurs the canvas for an explicit exit.
+      // Neither forwards to CDP. Every other key is captured and forwarded.
+      // ponytail: no modifiers bitmask yet — Ctrl/Cmd shortcuts don't reach the
+      // page (CodeRabbit's second point); wire modifiers in toCdpKeyEvent in the
+      // later phase, per the plan.
+      if (e.key === "Tab") return;
+      if (e.key === "Escape") {
+        canvasRef.current?.blur();
+        return;
+      }
       e.preventDefault();
       send({ type: "key", event: toCdpKeyEvent("keyDown", { key: e.key, code: e.code, keyCode: e.keyCode }) });
     },
@@ -186,6 +199,7 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
   );
   const onKeyUp = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.key === "Tab" || e.key === "Escape") return;
       e.preventDefault();
       send({ type: "key", event: toCdpKeyEvent("keyUp", { key: e.key, code: e.code, keyCode: e.keyCode }) });
     },
@@ -235,7 +249,13 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
   return (
     <div className="relative flex h-full w-full flex-col bg-[var(--panel)]">
       {/* The screencast canvas. tabIndex makes it focusable so it receives key
-          events; CSS stretches the frame to fill the panel. */}
+          events. objectFit "fill" (NOT "contain") is deliberate: it stretches
+          the frame to fill the panel box exactly, so the displayed rect equals
+          the painted frame and mapPointerToDevice has no letterbox offset to
+          correct for. The cost is mild aspect distortion when the panel and page
+          viewport differ — cosmetic, and pointer coords stay correct (the whole
+          point). A later phase can resize the screencast viewport to the panel
+          to remove the distortion. */}
       <canvas
         ref={canvasRef}
         tabIndex={0}
@@ -246,7 +266,7 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
         className="min-h-0 min-w-0 flex-1 outline-none"
-        style={{ width: "100%", height: "100%", objectFit: "contain" }}
+        style={{ width: "100%", height: "100%", objectFit: "fill" }}
       />
 
       {state === "connected" && tabs.length > 1 && (

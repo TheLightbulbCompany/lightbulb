@@ -56,6 +56,17 @@ describe("mapPointerToDevice", () => {
       y: 0,
     });
   });
+
+  it("scales each axis independently when the canvas aspect ratio differs from the frame (objectFit: fill)", () => {
+    // The panel is chosen objectFit:"fill", so the frame stretches to fill the
+    // box and each axis maps independently — no letterbox offset even when the
+    // canvas is square (640x640) but the page viewport is wide (1280x800). This
+    // pins the fill contract: the center of the square canvas is the page center,
+    // and the corner is the page's far corner, regardless of aspect mismatch.
+    const squareRect = { left: 0, top: 0, width: 640, height: 640 };
+    expect(mapPointerToDevice(320, 320, squareRect, meta)).toEqual({ x: 640, y: 400 });
+    expect(mapPointerToDevice(640, 640, squareRect, meta)).toEqual({ x: 1280, y: 800 });
+  });
 });
 
 describe("toCdpMouseEvent", () => {

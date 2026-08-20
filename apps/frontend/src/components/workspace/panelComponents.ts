@@ -8,14 +8,15 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-// The `browser` panel still renders the noVNC live view (BrowserDockPanel). The
-// CDP screencast (ScreencastDockPanel + routers/screencast.py relay) ships
-// DORMANT in this PR so the socat bridge + relay can deploy and every container
-// can be rolled with ZERO user-visible change (panel stays VNC). A trivial
-// follow-up flips this one line to ScreencastDockPanel once socat is on
-// prod.tag fleet-wide — screencast goes live everywhere at once, no
-// broken-panel window.
-import { BrowserDockPanel } from "./panels/BrowserDockPanel";
+// The `browser` panel now renders the CDP screencast live view
+// (ScreencastDockPanel + routers/screencast.py relay), NOT the old noVNC panel
+// (BrowserDockPanel, kept as the fallback reference). This is the flip half of
+// the #1939 two-step: it MUST NOT merge until the socat bridge is on the prod.tag
+// fleet-wide, or every container without the CDP proxy shows the panel's
+// disconnected/Retry state. Once socat is fleet-wide, screencast goes live
+// everywhere at once with no broken-panel window. `browser` stays the
+// parameterless-singleton key (#1874).
+import { ScreencastDockPanel } from "./panels/ScreencastDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -23,7 +24,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: ScreencastDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

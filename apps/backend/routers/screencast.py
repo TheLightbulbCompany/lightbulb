@@ -156,17 +156,37 @@ async def _resolve_ws_owner(websocket: WebSocket) -> str | None:
     return resolve_owner_id(auth)
 
 
-async def _discover_page_target(ip: str) -> str | None:
-    """Return a CDP page target's WS url, rewritten to the proxy host:port.
+def _select_page_target(targets: list, desired_target_id: str | None) -> dict | None:
+    """Pick the CDP page target to screencast from a /json/list payload.
+
+    When the client asked for a specific tab (``?target=<raw cdp id>``, sent by
+    the chrome tab strip on switch) and it's still an open page target, stream
+    it; otherwise fall back to the first page target (fresh connect, or the
+    requested tab was closed / its raw id rotated on a redirect). Only real
+    ``page`` targets with a debugger url are eligible — never a background /
+    service-worker target.
+    """
+    pages = [t for t in targets if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    if desired_target_id:
+        wanted = next((t for t in pages if str(t.get("id") or "") == desired_target_id), None)
+        if wanted is not None:
+            return wanted
+    return pages[0] if pages else None
+
+
+async def _discover_page_target(ip: str, desired_target_id: str | None = None) -> tuple[str | None, str | None]:
+    """Return ``(proxy ws url, raw target id)`` for the page target to stream.
 
     CDP's HTTP /json/list advertises webSocketDebuggerUrl as
     ``ws://localhost:18800/devtools/page/<id>``; we keep the path and swap the
     authority to ``{ip}:18801`` so it dials the SG-fenced proxy. Host header is
-    the numeric container IP, which Chrome's DNS-rebind check accepts.
+    the numeric container IP, which Chrome's DNS-rebind check accepts. The raw
+    target id is returned so the relay can echo it to the client ({type:target})
+    for the active-tab highlight + URL bar.
 
-    Returns None if the browser isn't up yet (no page target) or CDP is
-    unreachable (old image without the proxy) — the caller closes 4503 and the
-    panel shows its "asleep/starting" state.
+    Returns ``(None, None)`` if the browser isn't up yet (no page target) or CDP
+    is unreachable (old image without the proxy) — the caller closes 4503 and
+    the panel shows its "asleep/starting" state.
     """
     base = f"http://{ip}:{_CDP_PROXY_PORT}"
     try:
@@ -176,15 +196,15 @@ async def _discover_page_target(ip: str) -> str | None:
             targets = resp.json()
     except Exception as e:  # noqa: BLE001 - unreachable / not-yet-started
         logger.info("screencast_ws: CDP discovery failed ip=%s: %s", ip, e)
-        return None
+        return None, None
 
-    page = next((t for t in targets if t.get("type") == "page" and t.get("webSocketDebuggerUrl")), None)
+    page = _select_page_target(targets, desired_target_id)
     if page is None:
-        return None
+        return None, None
     # Keep the path (/devtools/page/<id>), swap authority to the proxy.
     ws_url = str(page["webSocketDebuggerUrl"])
     path = ws_url.split("/", 3)[-1]  # everything after ws://<authority>/
-    return f"ws://{ip}:{_CDP_PROXY_PORT}/{path}"
+    return f"ws://{ip}:{_CDP_PROXY_PORT}/{path}", str(page.get("id") or "")
 
 
 def _resize_override_params(msg: dict) -> dict | None:
@@ -265,7 +285,12 @@ async def screencast_ws(websocket: WebSocket) -> None:
         await websocket.close(code=4503, reason="Container not reachable")
         return
 
-    cdp_url = await _discover_page_target(ip)
+    # ?target=<raw cdp target id> lets the chrome tab strip point the stream at
+    # the tab the user switched to (the screencast is per-page; focusing a tab
+    # doesn't move a stream already bound to another target). Absent/stale → the
+    # first page target, unchanged from before.
+    desired_target_id = websocket.query_params.get("target") or None
+    cdp_url, target_id = await _discover_page_target(ip, desired_target_id)
     if cdp_url is None:
         # No proxy (old image), CDP down, or no page target yet.
         await websocket.close(code=4503, reason="Browser not reachable")
@@ -289,6 +314,9 @@ async def screencast_ws(websocket: WebSocket) -> None:
             close_timeout=5,
         ) as cdp:
             await websocket.accept(subprotocol=_ACCEPT_SUBPROTOCOL)
+            # Tell the client which raw target it's now streaming so the tab
+            # strip highlights the right tab + the URL bar shows its address.
+            await websocket.send_text(json.dumps({"type": "target", "targetId": target_id}))
             await cdp.send(json.dumps({"id": _next_id(), "method": "Page.enable"}))
             await cdp.send(
                 json.dumps({"id": _next_id(), "method": "Page.startScreencast", "params": _SCREENCAST_PARAMS})

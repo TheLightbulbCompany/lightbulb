@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent, within } from "@testing-library/react";
 import React from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 
@@ -24,13 +24,16 @@ class MockWebSocket {
   static OPEN = 1;
   static instances: MockWebSocket[] = [];
   readyState = 0;
+  url: string;
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
-  constructor() {
-    // Called as new WebSocket(url, protocols); extra args are ignored.
+  constructor(url: string) {
+    // Called as new WebSocket(url, protocols); the protocols arg is ignored, but
+    // the url carries the ?target= the chrome tab strip uses to switch tabs.
+    this.url = url;
     MockWebSocket.instances.push(this);
   }
   send(data: string): void {
@@ -183,5 +186,172 @@ describe("ScreencastDockPanel", () => {
     // Panel center -> viewport center, 1:1 because viewport == panel size.
     expect(mouse.event.x).toBe(400);
     expect(mouse.event.y).toBe(300);
+  });
+});
+
+// Browser chrome (tab strip + address bar + back/forward/reload). Drives the
+// relay to connected, feeds a {type:"target"} + a /tabs list, then exercises the
+// chrome. browser.request calls go through callRpcMock; a tab switch reconnects
+// the screencast WS (a new MockWebSocket) carrying ?target=<raw id>.
+describe("ScreencastDockPanel chrome", () => {
+  const TABS = [
+    { tabId: "t1", targetId: "raw-1", title: "Example", url: "https://example.com/" },
+    { tabId: "t2", targetId: "raw-2", title: "Docs", url: "https://docs.example.com/" },
+  ];
+
+  function routeRpc(tabsAction: unknown = { ok: true, tab: { targetId: "raw-new", tabId: "t9" } }) {
+    callRpcMock.mockImplementation((method: string, params: { path?: string }) => {
+      if (method !== "browser.request") return Promise.resolve({});
+      if (params?.path === "/tabs") return Promise.resolve({ running: true, tabs: TABS });
+      if (params?.path === "/tabs/action") return Promise.resolve(tabsAction);
+      return Promise.resolve({});
+    });
+  }
+
+  async function mountConnected(rawTargetId = "raw-1"): Promise<MockWebSocket> {
+    const ws = await mountAndGetWs();
+    await act(async () => {
+      ws.readyState = MockWebSocket.OPEN;
+      ws.onopen?.();
+      ws.onmessage?.({ data: JSON.stringify({ type: "target", targetId: rawTargetId }) });
+      ws.onmessage?.({ data: FRAME });
+    });
+    await screen.findByText("Example"); // tabs loaded via refreshTabs
+    return ws;
+  }
+
+  it("renders the tab strip, highlights the streamed tab, and shows its URL", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+
+    expect(screen.getByText("Docs")).toBeInTheDocument();
+    expect(screen.getByText("Example").closest('[role="tab"]')).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Docs").closest('[role="tab"]')).toHaveAttribute("aria-selected", "false");
+    expect((screen.getByLabelText("Address bar") as HTMLInputElement).value).toBe("https://example.com/");
+  });
+
+  it("switches tabs: focuses the tab and reconnects the stream with ?target=", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+    callRpcMock.mockClear();
+
+    fireEvent.click(screen.getByText("Docs"));
+
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2));
+    expect(MockWebSocket.instances[1].url).toContain("target=raw-2");
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/tabs/focus",
+      body: { targetId: "t2" },
+    });
+  });
+
+  it("closes a tab by its stable alias id", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+    callRpcMock.mockClear();
+
+    const docsTab = screen.getByText("Docs").closest('[role="tab"]') as HTMLElement;
+    await act(async () => {
+      fireEvent.click(within(docsTab).getByLabelText("Close Docs"));
+    });
+
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "DELETE",
+      path: "/tabs/t2",
+    });
+  });
+
+  it("opens a new tab and streams it", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+
+    fireEvent.click(screen.getByLabelText("New tab"));
+
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/tabs/action",
+      body: { action: "new" },
+    });
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(2));
+    expect(MockWebSocket.instances[1].url).toContain("target=raw-new");
+  });
+
+  it("navigates to a typed URL (normalized) on the active tab", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+    callRpcMock.mockClear();
+
+    const input = screen.getByLabelText("Address bar") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "wikipedia.org" } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form") as HTMLFormElement);
+    });
+
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/navigate",
+      body: { url: "https://wikipedia.org/", targetId: "t1" },
+    });
+  });
+
+  it("wires back/forward to the browser tool's history.go evaluate", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+    callRpcMock.mockClear();
+
+    fireEvent.click(screen.getByLabelText("Back"));
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/act",
+      body: { kind: "evaluate", targetId: "t1", fn: "() => { history.go(-1); return true; }" },
+    });
+
+    callRpcMock.mockClear();
+    fireEvent.click(screen.getByLabelText("Forward"));
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/act",
+      body: { kind: "evaluate", targetId: "t1", fn: "() => { history.go(1); return true; }" },
+    });
+  });
+
+  it("reloads by re-navigating to the current URL", async () => {
+    routeRpc();
+    await mountConnected("raw-1");
+    callRpcMock.mockClear();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Reload"));
+    });
+    expect(callRpcMock).toHaveBeenCalledWith("browser.request", {
+      method: "POST",
+      path: "/navigate",
+      body: { url: "https://example.com/", targetId: "t1" },
+    });
+  });
+
+  it("maps pointer input by the CANVAS's own rect (offset below the chrome bar)", async () => {
+    routeRpc();
+    const ws = await mountConnected("raw-1");
+
+    // The canvas sits BELOW the chrome: its own rect has top=76 (the chrome
+    // height). mapPointerToDevice must subtract that — using the canvas rect,
+    // NOT the panel's (top=0) — or every click lands 76px too low.
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    canvas.getBoundingClientRect = () =>
+      ({ left: 0, top: 76, right: 800, bottom: 676, width: 800, height: 600, x: 0, y: 76, toJSON: () => ({}) }) as DOMRect;
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "frame", data: "AAAA", metadata: { deviceWidth: 800, deviceHeight: 600 } }),
+      });
+    });
+
+    fireEvent.mouseDown(canvas, { clientX: 400, clientY: 76 + 300, button: 0, buttons: 1 });
+
+    const mouse = ws.sent.map((m) => JSON.parse(m)).find((m) => m.type === "mouse");
+    expect(mouse.event.x).toBe(400);
+    expect(mouse.event.y).toBe(300); // 376 (client) - 76 (canvas top) = viewport center
   });
 });

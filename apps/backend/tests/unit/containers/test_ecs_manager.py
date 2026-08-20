@@ -4983,3 +4983,84 @@ class TestProvisionFailureClassification:
         assert store.row.get("retryable") is True, "retryable must land on the row (release owns the transition)"
         assert store.row.get("last_error"), "last_error cause must land on the row"
         assert "Failed to create ECS service" in store.row["last_error"]
+
+
+class TestProviderSwitchDesiredZeroReconcile:
+    @pytest.mark.asyncio
+    async def test_active_claim_ignores_stale_running_row_and_rescales_completed_zero(self, manager, mock_ecs_client):
+        stale_running = _make_container_dict(status="running", substatus="gateway_healthy")
+        stale_running["provision_claim_id"] = "claim-1"
+
+        mock_ecs_client.describe_services.side_effect = [
+            {
+                "services": [
+                    {
+                        "deployments": [
+                            {
+                                "id": "ecs-svc/old-primary",
+                                "status": "PRIMARY",
+                                "rolloutState": "COMPLETED",
+                                "desiredCount": 0,
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "services": [
+                    {
+                        "deployments": [
+                            {
+                                "id": "ecs-svc/primary",
+                                "status": "PRIMARY",
+                                "rolloutState": "COMPLETED",
+                                "desiredCount": 1,
+                            }
+                        ]
+                    }
+                ]
+            },
+        ]
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch(
+                "core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens",
+                new_callable=AsyncMock,
+            ),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                side_effect=[stale_running, _make_container_dict(status="provisioning")]
+            )
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.update_container_leased = AsyncMock()
+
+            await manager.wait_for_running("user_test_123", claim_id="claim-1")
+
+        mock_ecs_client.update_service.assert_called_with(
+            cluster=manager._cluster,
+            service="openclaw-user_test_123-f4ae64abb2db",
+            desiredCount=1,
+            forceNewDeployment=True,
+        )
+        mock_repo.update_fields.assert_not_called()
+        terminal = mock_repo.update_container_leased.call_args
+        assert terminal.args[2]["status"] == "running"
+        assert terminal.kwargs["release_lease"] is True

@@ -3348,7 +3348,9 @@ class EcsManager:
            RUNNING + gateway port open): write status=running, substatus=
            gateway_healthy, store task_arn, return.
         2. DDB status is no longer "provisioning" (external state change --
-           admin stop, re-provision, reaper, etc.): return silently.
+           admin stop, re-provision, reaper, etc.): return silently, unless
+           the row still carries our provision claim; in that case the row is
+           a stale liveness write and SFN must keep reconciling ECS.
         3. PRIMARY deployment rolloutState=FAILED (circuit breaker tripped --
            the provision will never succeed): write status=error, return.
         4. asyncio.CancelledError (backend shutdown): propagate.
@@ -3389,9 +3391,22 @@ class EcsManager:
         while True:
             try:
                 container = await container_repo.get_by_owner_id(user_id)
-                if not container or container.get("status") != "provisioning":
+                if not container:
                     # External state change or row gone -- nothing to do.
                     return
+                if container.get("status") != "provisioning":
+                    owns_active_claim = claim_id is not None and container.get("provision_claim_id") == claim_id
+                    if not owns_active_claim:
+                        # External state change -- nothing to do.
+                        return
+                    logger.warning(
+                        "Container %s row says status=%s/substatus=%s while provision claim %s is still active; "
+                        "reconciling ECS before terminal success",
+                        user_id,
+                        container.get("status"),
+                        container.get("substatus"),
+                        claim_id,
+                    )
 
                 service_name = container["service_name"]
 
@@ -3421,6 +3436,12 @@ class EcsManager:
                 primary = await self._get_primary_deployment(service_name)
                 if primary is None:
                     # Transient state -- no PRIMARY deployment visible. Retry.
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                desired = primary.get("desiredCount")
+                if primary.get("rolloutState") == "COMPLETED" and desired == 0:
+                    self._ensure_primary_desired(service_name, user_id)
                     await asyncio.sleep(interval_s)
                     continue
 
@@ -3548,6 +3569,37 @@ class EcsManager:
                 )
 
             await asyncio.sleep(interval_s)
+
+    def _ensure_primary_desired(self, service_name: str, user_id: str) -> None:
+        """Recover PRIMARY/COMPLETED at desiredCount=0 during a provision wait.
+
+        Provider-switch reprovision drains the old service before dispatching
+        SFN. The provision runner may not declare success while ECS still says
+        the primary deployment desires zero tasks; scale the service back to
+        one and keep waiting for the real running+gateway-healthy confirmation.
+        """
+        try:
+            self._ecs.update_service(
+                cluster=self._cluster,
+                service=service_name,
+                desiredCount=1,
+                forceNewDeployment=True,
+            )
+            put_metric(
+                "container.provision_desired_reconciled",
+                dimensions={"trigger": "primary_completed_zero"},
+            )
+            logger.warning(
+                "Reconciled %s from PRIMARY/COMPLETED desiredCount=0 to desiredCount=1 during provision wait (user=%s)",
+                service_name,
+                user_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to reconcile %s from PRIMARY/COMPLETED desiredCount=0 during provision wait (user=%s)",
+                service_name,
+                user_id,
+            )
 
     def _fallback_service_to_on_demand(self, service_name: str, user_id: str) -> None:
         """Flip a service that Spot cannot place onto on-demand FARGATE.

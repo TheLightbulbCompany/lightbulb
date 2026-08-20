@@ -137,6 +137,9 @@ class Harness:
         self.unwind_raises: BaseException | None = None
         self.container = {"gateway_token": "gw_token"}
         self.ip = "10.0.0.5"
+        # (listing_id, name) tuples recorded by the one-company-per-workspace
+        # marker write on real success.
+        self.deployed_markers: list[tuple[str, str]] = []
 
 
 def _install(monkeypatch, h: Harness, plan=None):
@@ -222,6 +225,12 @@ def _install(monkeypatch, h: Harness, plan=None):
     monkeypatch.setattr(svc, "is_seeded_agent", fake_is_seeded)
     monkeypatch.setattr(svc, "delete_paperclip_for_marketplace", fake_delete)
     monkeypatch.setattr(svc, "get_catalog_service", lambda: FakeCatalog())
+
+    # One-company marker — recorded, never hits DynamoDB in unit tests.
+    async def fake_set_deployed(owner_id, *, listing_id, name):
+        h.deployed_markers.append((listing_id, name))
+
+    monkeypatch.setattr(svc.container_repo, "set_deployed_company", fake_set_deployed)
 
 
 # ---------------------------------------------------------------------------
@@ -821,3 +830,47 @@ async def test_no_claim_token_touches_no_claim(monkeypatch):
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert touched == []
+
+
+# ---------------------------------------------------------------------------
+# One-company-per-workspace marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_success_writes_the_deployed_company_marker(monkeypatch):
+    h = Harness()
+    _install(monkeypatch, h, plan=_simple_plan())
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
+
+    assert h.deployed_markers == [("l1", "Acme")]
+
+
+@pytest.mark.asyncio
+async def test_failure_does_not_burn_the_company_slot(monkeypatch):
+    """A rolled-back run must NOT write the marker — the owner retries."""
+    h = Harness()
+    _install(monkeypatch, h, plan=_simple_plan())
+
+    async def fail_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        raise RuntimeError("pair failed")
+
+    monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
+
+    assert h.deployed_markers == []
+
+
+@pytest.mark.asyncio
+async def test_creating_nothing_does_not_burn_the_company_slot(monkeypatch):
+    """The creating-nothing early returns (here: container unreachable) exit
+    without an exception but created nothing — no marker."""
+    h = Harness()
+    h.ip = None
+    _install(monkeypatch, h, plan=_simple_plan())
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
+
+    assert h.deployed_markers == []

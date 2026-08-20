@@ -328,7 +328,8 @@ The marketplace also carries **whole pre-built companies**
 package into the roster (reporting into the existing CEO), with its
 routines landing PAUSED for the owner to enable. Companies over 10 agents
 require the Ultra Pro plan; one install runs at a time, so a company deploy
-and an agent hire can't overlap.
+and an agent hire can't overlap; and a workspace holds ONE deployed company
+package — a second company deploy is refused until the workspace is wiped.
 
 A hire also carries the seller's automations, but neither kind arrives
 running: its schedules land as PAUSED routines the owner switches on, and

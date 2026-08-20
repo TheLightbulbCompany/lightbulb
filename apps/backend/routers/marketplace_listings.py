@@ -843,6 +843,23 @@ async def deploy_listing(
                 ),
             )
 
+        # ONE company package per workspace. A second whole org — the same
+        # listing again or a different one — grafts a duplicate role structure
+        # onto the same Friday, and same-listing retries would mint the entire
+        # company twice (single-agent hires have an already-installed dedupe;
+        # this is the company equivalent). The marker is written by
+        # run_company_deploy on real success and dies with the row on a
+        # workspace wipe/reprovision.
+        already = container_row.get("deployed_company")
+        if isinstance(already, dict) and already.get("listing_id"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"You already deployed {already.get('name') or 'a company'} — "
+                    "your workspace runs one company package."
+                ),
+            )
+
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")

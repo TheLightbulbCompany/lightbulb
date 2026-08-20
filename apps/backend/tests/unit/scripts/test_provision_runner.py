@@ -23,6 +23,10 @@ def manager(monkeypatch):
     # below drive these explicitly.
     mgr.resolve_running_container = AsyncMock(return_value=(None, None))
     mgr.is_healthy = MagicMock(return_value=False)
+    # Service-liveness gate in front of the probe: default to "live" so the
+    # probe stays the deciding check in every pre-existing test. The draining
+    # test below flips it to False.
+    mgr.has_live_service = AsyncMock(return_value=True)
     monkeypatch.setattr(provision_runner, "_get_manager", lambda: mgr)
     monkeypatch.setattr(
         provision_runner,
@@ -332,6 +336,25 @@ async def test_container_leg_runs_when_gateway_is_unhealthy(monkeypatch, manager
     _row(monkeypatch, {"status": "running"})
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
     manager.provision_user_container.assert_awaited_once()
+
+
+async def test_container_leg_runs_when_service_is_draining(monkeypatch, manager, repo):
+    """desiredCount=0 with the old task still DRAINING: the gateway probe
+    still answers (a stopped task serves for ~30s+ past the stop), but
+    nothing will ever scale the service back up — a deliberate stop
+    (provider change / admin reprovision) exposed the claimable row in the
+    first place. Skipping here parked the runner in wait_for_running for the
+    full attempt timeout against a service pinned at 0 (founder-org 30-min
+    provision hang, 2026-08-20). has_live_service is the guard: not live →
+    full provision, whose scale-from-zero branch restarts the box."""
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    _live_box(manager)  # the draining task would still pass the probe
+    manager.has_live_service = AsyncMock(return_value=False)
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    manager.provision_user_container.assert_awaited_once()
+    # The probe must not even run: its answer is meaningless during a drain.
+    manager.resolve_running_container.assert_not_awaited()
 
 
 async def test_container_leg_runs_when_probe_raises(monkeypatch, manager, repo):

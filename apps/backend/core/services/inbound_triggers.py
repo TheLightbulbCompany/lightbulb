@@ -977,6 +977,20 @@ async def _seed_trigger_routine(
         raise ValueError(
             f"these events wire up differently and can't share one trigger: {conflict} — add them as separate triggers"
         )
+    # One trigger hands the agent ONLY the delivery body — the proxy forwards
+    # it byte-verbatim (HMAC is over the raw bytes) and the fork's
+    # firePublicTrigger takes `payload: req.body`, so no header reaches the run
+    # context. A provider that names its event only in a header (GitHub's
+    # X-GitHub-Event, Sentry's Sentry-Hook-Resource) would therefore wake the
+    # agent with no way to tell which armed event fired. Isol8AI/isol8#1916 is
+    # the durable fix; until it lands those providers stay one event per
+    # trigger.
+    if len(events) > 1 and not inbound.event_in_body:
+        raise ValueError(
+            f"a {provider.display_name} delivery names its event in an HTTP header rather than the "
+            f"payload, so an agent woken by one trigger can't tell which of "
+            f"{', '.join(e.id for e in events)} fired — add them as separate triggers"
+        )
     if len(events) > 1 and registration in _ONE_EVENT_REGISTRATIONS:
         raise ValueError(
             f"{registration} arms one event per trigger, so {', '.join(e.id for e in events)} "
@@ -1224,8 +1238,12 @@ async def _seed_trigger_routine(
                     signing_mode=inbound.signing_mode,
                     replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
                     # Paperclip rejects a label over 120 chars outright, which
-                    # a joined multi-event title reaches quickly.
-                    label=title if len(title) <= _TRIGGER_LABEL_MAX else compact_name,
+                    # a joined multi-event title reaches (5 Stripe events is
+                    # already 139). Only multi-event titles fall back — a
+                    # single-event label is whatever it always was, including
+                    # a long custom title, which this must not silently
+                    # rewrite behind the owner's back.
+                    label=title if len(events) == 1 or len(title) <= _TRIGGER_LABEL_MAX else compact_name,
                 ),
             )
 

@@ -60,6 +60,9 @@ const STRIPE = {
   status: "connected",
   inbound: {
     webhook_registration: "guided_paste",
+    // Stripe names the fired event in the body (`type`), which is what lets
+    // several events share ONE trigger.
+    event_in_body: true,
     events: [
       { id: "invoice.payment_failed", label: "Invoice payment failed", starter_prompt: null },
       { id: "charge.refunded", label: "Charge refunded", starter_prompt: null },
@@ -82,6 +85,27 @@ const GOOGLE = {
     webhook_registration: "auto_google_watch",
     events: [{ id: "calendar.changed", label: "Calendar changed", starter_prompt: null }],
     template: { title: "Google: {event_label}", starter_prompt: "Something changed." },
+  },
+};
+
+// A header-identified provider: Sentry names the fired event in
+// Sentry-Hook-Resource, which never reaches the agent — so its events cannot
+// share one trigger and the picker must stay single-select.
+const SENTRY = {
+  provider: "sentry",
+  display_name: "Sentry",
+  status: "connected",
+  inbound: {
+    webhook_registration: "guided_paste",
+    // no event_in_body
+    events: [
+      { id: "issue", label: "Issue created or changed", starter_prompt: null },
+      { id: "comment", label: "Comment", starter_prompt: null },
+    ],
+    template: {
+      title: "Sentry: {event_label}",
+      starter_prompt: "A Sentry webhook just fired: {event_label}.",
+    },
   },
 };
 
@@ -129,7 +153,7 @@ async function pickStripeInvoiceEvent(dialog: HTMLElement, user: ReturnType<type
   await user.click(within(dialog).getByRole("radio", { name: /a connected app/i }));
   await user.click(within(dialog).getByRole("combobox"));
   await user.click(await screen.findByRole("option", { name: "Stripe" }));
-  await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+  await user.click(within(dialog).getByRole("button", { name: /select (an )?events?…/i }));
   await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
 }
 
@@ -252,7 +276,7 @@ describe("Add trigger — an existing automation takes either kind", () => {
     await user.click(within(dialog).getByRole("radio", { name: /a connected app/i }));
     await user.click(within(dialog).getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "Google" }));
-    await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+    await user.click(within(dialog).getByRole("button", { name: /select (an )?events?…/i }));
     await user.click(await screen.findByRole("option", { name: "Calendar changed" }));
 
     const disclosure = await within(dialog).findByText(/renewal step appended to the END/i);
@@ -365,5 +389,54 @@ describe("Multi-event — one trigger carries the whole selection", () => {
     expect(await screen.findByText(/Subscribe this one endpoint to all 2 events/i)).toBeInTheDocument();
     expect(screen.getByText("invoice.payment_failed")).toBeInTheDocument();
     expect(screen.getByText("charge.refunded")).toBeInTheDocument();
+  });
+});
+
+
+// ── the multi-select gate ─────────────────────────────────────────────────
+describe("Providers whose deliveries name the event in a header stay single-event", () => {
+  it("replaces the selection instead of accumulating, and submits one event", async () => {
+    connections = [SENTRY];
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("radio", { name: /a connected app/i }));
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Sentry" }));
+
+    await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+    await user.click(await screen.findByRole("option", { name: "Issue created or changed" }));
+    // Picking a second REPLACES the first — an agent woken by one Sentry
+    // trigger could not tell which of them fired (Isol8AI/isol8#1916).
+    await user.click(within(dialog).getByRole("button", { name: /issue created or changed/i }));
+    await user.click(await screen.findByRole("option", { name: "Comment" }));
+
+    expect(within(dialog).getByLabelText("Title")).toHaveValue("Sentry: Comment");
+    await user.click(within(dialog).getByRole("button", { name: /^Create$/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    expect(apiPost.mock.calls[0][1]).toEqual({ provider: "sentry", event_ids: ["comment"] });
+  });
+
+  it("shows a plain-string 400 detail instead of 'ApiError'", async () => {
+    // Every caller-facing 400 from this route is HTTPException(detail="…"),
+    // so `detail` is the string itself — reading only detail.message rendered
+    // these as "ApiError: API 400".
+    connections = [SENTRY];
+    apiPost.mockRejectedValueOnce({
+      body: { detail: "a Sentry delivery names its event in an HTTP header rather than the payload" },
+    });
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("radio", { name: /a connected app/i }));
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Sentry" }));
+    await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+    await user.click(await screen.findByRole("option", { name: "Issue created or changed" }));
+    await user.click(within(dialog).getByRole("button", { name: /^Create$/ }));
+
+    expect(await screen.findByText(/names its event in an HTTP header/i)).toBeInTheDocument();
   });
 });

@@ -32,10 +32,15 @@ import { useApi } from "@/lib/api";
 import { notifyConversionGate } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
-/** Human copy for a blocked-gate 402 (e.g. routines_require_subscription). */
+/** Human copy for a backend error: a blocked-gate 402 puts its copy in
+ * `detail.message`, while a plain `HTTPException(400, detail="…")` — every
+ * caller-facing 400 this flow raises, e.g. "add them as separate triggers" —
+ * makes `detail` the string itself. Reading only the former rendered those as
+ * "ApiError: API 400", which tells the owner nothing about what to fix. */
 export function gateMessage(e: unknown): string {
-  const body = (e as { body?: { detail?: { message?: string } } })?.body;
-  const msg = body?.detail?.message;
+  const detail = (e as { body?: { detail?: unknown } })?.body?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  const msg = (detail as { message?: string } | undefined)?.message;
   return typeof msg === "string" && msg ? msg : String(e);
 }
 
@@ -326,6 +331,16 @@ export function useConnectedAppTrigger({
     .map((id) => events.find((e) => e.id === id))
     .filter((e): e is NonNullable<typeof e> => e != null);
   const selectedEvent = selectedEvents[0] ?? null;
+  // Can this provider's events share ONE trigger? Only if a delivery's body
+  // says which one fired — the agent is handed the payload and nothing else
+  // (Isol8AI/isol8#1916). GitHub and Sentry name it in a header, so their
+  // picker stays single-select and the seed would 400 a multi-event body.
+  //
+  // This also makes a registration-shape conflict unreachable from the UI:
+  // the only provider whose events differ in shape is google (gmail.poll /
+  // gmail.message vs the watch events), and google is single-select here. The
+  // seed's own conflict 400 remains the fence for direct API callers.
+  const multiSelect = selectedConnection?.inbound?.event_in_body === true;
   const registrationShape = selectedConnection?.inbound?.webhook_registration ?? "";
   const isAutoRegister = registrationShape.startsWith("auto_");
   // The selected EVENT's registration override wins, same precedence the
@@ -400,7 +415,13 @@ export function useConnectedAppTrigger({
    * the owner has typed into holds its own edit (titleEdit/descriptionEdit),
    * an untouched one follows the selection. */
   function toggleEvent(id: string) {
-    setEventIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]));
+    setEventIds((prev) =>
+      !multiSelect
+        ? [id]
+        : prev.includes(id)
+          ? prev.filter((e) => e !== id)
+          : [...prev, id],
+    );
   }
 
   function selectProvider(next: string) {
@@ -480,6 +501,7 @@ export function useConnectedAppTrigger({
     selectProvider,
     eventIds,
     toggleEvent,
+    multiSelect,
     events,
     selectedEvents,
     triggerableConnections,
@@ -549,10 +571,15 @@ function EventPicker({
   events,
   values,
   onToggle,
+  multiple,
 }: {
   events: { id: string; label: string }[];
   values: string[];
   onToggle: (id: string) => void;
+  /** False for a provider whose deliveries name the event only in a header
+   * (GitHub, Sentry) — one event per trigger, so this behaves exactly as the
+   * pre-multi-select picker did: pick one, the list closes. */
+  multiple: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -601,7 +628,7 @@ function EventPicker({
           className="flex w-full items-center justify-between gap-2 rounded border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--ink)]"
         >
           <span className={cn("truncate", !selectedLabel && "text-[var(--mute)]")}>
-            {selectedLabel ?? "Select an event…"}
+            {selectedLabel ?? (multiple ? "Select events…" : "Select an event…")}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--mute)]" aria-hidden="true" />
         </button>
@@ -632,8 +659,8 @@ function EventPicker({
         />
         <div
           role="listbox"
-          aria-label="Events"
-          aria-multiselectable="true"
+          aria-label={multiple ? "Events" : "Event"}
+          aria-multiselectable={multiple || undefined}
           onKeyDown={onListKeyDown}
           className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
         >
@@ -658,10 +685,11 @@ function EventPicker({
                   // Closing on the FIRST pick keeps single-select exactly as
                   // effortless as it was: tick one, the list gets out of the
                   // way. Once something is ticked you are clearly building a
-                  // set, so the list stays put for the next one.
+                  // set, so the list stays put for the next one — unless this
+                  // provider only takes one event, where it always closes.
                   const wasEmpty = values.length === 0;
                   onToggle(e.id);
-                  if (wasEmpty) setOpen(false);
+                  if (!multiple || wasEmpty) setOpen(false);
                 }}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
@@ -670,18 +698,25 @@ function EventPicker({
                     : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
                 )}
               >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border",
-                    values.includes(e.id)
-                      ? "border-[var(--forest)] bg-[var(--forest)] text-[var(--cream)]"
-                      : "border-[var(--edge)]",
-                  )}
-                >
-                  {values.includes(e.id) && <Check size={10} strokeWidth={3} />}
-                </span>
+                {/* The tick box is what tells the owner several events can
+                    share this trigger — so it only appears where they can. */}
+                {multiple && (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                      values.includes(e.id)
+                        ? "border-[var(--forest)] bg-[var(--forest)] text-[var(--cream)]"
+                        : "border-[var(--edge)]",
+                    )}
+                  >
+                    {values.includes(e.id) && <Check size={10} strokeWidth={3} />}
+                  </span>
+                )}
                 <span className="truncate">{e.label}</span>
+                {!multiple && values.includes(e.id) && (
+                  <Check size={14} strokeWidth={2} className="ml-auto shrink-0 text-[var(--forest)]" />
+                )}
               </button>
             </div>
           ))}
@@ -728,7 +763,9 @@ export function ConnectedAppFields({
       </label>
       {ctl.selectedConnection && (
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Events</span>
+          <span className="text-sm text-[var(--ink-soft)]">
+            {ctl.multiSelect ? "Events" : "Event"}
+          </span>
           <div className="mt-1">
             {/* Keyed by provider so switching apps resets the filter. */}
             <EventPicker
@@ -736,6 +773,7 @@ export function ConnectedAppFields({
               events={ctl.events}
               values={ctl.eventIds}
               onToggle={ctl.toggleEvent}
+              multiple={ctl.multiSelect}
             />
           </div>
         </div>

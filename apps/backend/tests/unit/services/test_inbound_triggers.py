@@ -2215,18 +2215,118 @@ async def test_multi_event_trigger_label_falls_back_when_it_blows_the_cap():
 
 
 @pytest.mark.asyncio
-async def test_multi_event_github_registers_every_event_on_one_hook():
-    """The auto shape's whole point: one hook on the repo, subscribed to the
-    UNION of the selected events' provider_events."""
+async def test_a_title_between_the_label_and_title_caps_splits_them():
+    """The window the 8-event case skips over: a joined title of 121-200 chars
+    is a legal ROUTINE title but an illegal trigger LABEL, so the routine keeps
+    the descriptive name and only the label falls back."""
+    from core.services.credentials.registry import get_provider
+
+    events = [e.id for e in get_provider("stripe").inbound.events[:5]]
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", events)
+
+    title = admin.create_routine.await_args.kwargs["body"]["title"]
+    assert 120 < len(title) <= 200, len(title)
+    assert title.startswith("Stripe: Invoice payment failed,")
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["label"] == "Stripe (5 events)"
+
+
+@pytest.mark.asyncio
+async def test_a_long_custom_title_on_a_single_event_keeps_its_label():
+    """Parity guard for the label fallback: it is a MULTI-event concern. A
+    one-event automation with a long hand-typed title must reach Paperclip
+    exactly as it did before multi-select — this call must never quietly
+    rename somebody's trigger to the provider name."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    custom = "Dunning desk " * 12  # 156 chars, over the label cap, under the title cap
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", ["charge.refunded"], title=custom)
+
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["label"] == custom.strip()
+
+
+@pytest.mark.asyncio
+async def test_multi_event_vercel_registers_every_event_on_one_webhook():
+    """The auto shape's whole point: ONE webhook on the project, subscribed to
+    the UNION of the selected events' provider_events."""
+    admin = _fake_admin(trigger_id="trig_int_1")
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, vc_client = _gh_http_patch(_gh_response(200, _VC_WEBHOOK))
+    with p_repo, p_cookie, p_client, _gh_token_patch(token="vc_tok_1"), p_http:
+        await seed_trigger_routine(
+            "owner_1", "vercel_cli", ["deployment.error", "deployment.succeeded"], resource="prj_abc123"
+        )
+
+    vc_client.post.assert_awaited_once()
+    assert vc_client.post.await_args.kwargs["json"]["events"] == [
+        "deployment.error",
+        "deployment.succeeded",
+    ]
+    admin.create_routine_trigger.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_multi_event_meta_subscribes_the_union_of_fields():
+    """Meta's app-level ingress routes by intersecting a delivery's fields
+    with the binding's, so the union is both what gets subscribed and what
+    the binding must record."""
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, meta_client = _meta_http_patch()
+    (p_get_b, p_set_b), setter = _meta_bindings_patch()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        p_http,
+        p_get_b,
+        p_set_b,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+    ):
+        await seed_trigger_routine("owner_1", "meta_ads", ["leadgen", "feed"], resource="1112223334")
+
+    meta_client.post.assert_awaited_once()
+    assert meta_client.post.await_args.kwargs["params"]["subscribed_fields"] == "leadgen,feed"
+    assert setter.await_args.args[2][0]["fields"] == ["leadgen", "feed"]
+    admin.create_routine_trigger.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_header_identified_providers_stay_one_event_per_trigger():
+    """GitHub names the fired event in X-GitHub-Event and Sentry in
+    Sentry-Hook-Resource — neither reaches the agent (the proxy forwards the
+    body verbatim, and the fork's firePublicTrigger passes only `payload`).
+    Arming several on one trigger would wake an agent that cannot tell which
+    fired, so it is refused until Isol8AI/isol8#1916 lands."""
+    for provider, events in (("github", ["pull_request", "issues"]), ("sentry", ["issue", "comment"])):
+        admin = _fake_admin(secret_material=_GH_SECRET)
+        p_repo, p_cookie, p_client = _env(admin)
+        with p_repo, p_cookie, p_client, _gh_token_patch(), pytest.raises(ValueError) as exc:
+            await seed_trigger_routine("owner_1", provider, events, resource="acme/site")
+        assert "names its event in an HTTP header" in str(exc.value)
+        assert "separate triggers" in str(exc.value)
+        # Nothing was created — the check runs before the first upstream call.
+        admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_event_github_still_registers_its_provider_events():
+    """The pre-existing union under ONE curated id is untouched by the gate:
+    an event whose provider_events lists several names still subscribes them
+    all — that was never the multi-event path."""
     admin = _fake_admin(secret_material=_GH_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
     with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
-        await seed_trigger_routine("owner_1", "github", ["pull_request", "issues", "push"], resource="acme/site")
+        await seed_trigger_routine("owner_1", "github", ["pull_request"], resource="acme/site")
 
-    gh_client.post.assert_awaited_once()
-    assert gh_client.post.await_args.kwargs["json"]["events"] == ["pull_request", "issues", "push"]
-    admin.create_routine_trigger.assert_awaited_once()
+    assert gh_client.post.await_args.kwargs["json"]["events"] == ["pull_request"]
 
 
 @pytest.mark.asyncio

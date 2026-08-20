@@ -90,7 +90,7 @@ const AGENTS = [
 // 260px list that pushed the rest of the form past the viewport edge), so a
 // pick is: open the trigger, then choose the option.
 async function openEventList(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole("button", { name: /select an event/i }));
+  await user.click(await screen.findByRole("button", { name: /select (an )?events?…/i }));
 }
 
 describe("RoutinesPanel", () => {

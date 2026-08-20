@@ -309,6 +309,23 @@ class Inbound(BaseModel):
     # like "whsec_…"; Sentry's is an integration Client Secret — a wrong hint
     # reads as "you're pasting the wrong thing", so name the provider's term.
     secret_hint: str | None = None
+    # Can the AGENT tell which event fired from the delivery BODY alone?
+    #
+    # This gates multi-event triggers. One trigger fires for several events and
+    # the agent is handed only the payload: the proxy forwards the body
+    # byte-verbatim (HMAC is over the raw bytes) and the fork's
+    # `firePublicTrigger` takes `payload: req.body` — NO headers reach the run
+    # context. So a provider that names its event only in an HTTP header
+    # (GitHub's X-GitHub-Event, Sentry's Sentry-Hook-Resource) cannot be
+    # multi-armed: the agent would wake with no way to know which of the armed
+    # events it is looking at.
+    #
+    # False by default, so a newly wired provider is single-event until someone
+    # has actually checked its payload. Set it only after confirming the body
+    # carries the event type (Stripe `type`, Linear `type`, Attio
+    # `events[].event_type`, Vercel `type`, Meta `entry[].changes[].field`).
+    # Isol8AI/isol8#1916 is the durable fix that lifts this for the rest.
+    event_in_body: bool = False
     # Ordering is load-bearing, by convention rather than schema: the first
     # entries are the curated "popular" set — the frontend event picker pins
     # the first 3 as its Popular group — and the remainder is alphabetized by

@@ -47,6 +47,7 @@ import httpx
 
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
 from core.services.agent_routine_provisioning import create_agent_routines
@@ -198,26 +199,45 @@ def _resolve_reports_to(planned: PlannedAgent, plan: DeployPlan, friday_id: str,
 # ---------------------------------------------------------------------------
 
 
-async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes) -> None:
+async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes, claim_token: str | None = None) -> None:
     """Deploy a whole company package. Background target — NEVER raises.
 
     Fire-and-forget: the deploy endpoint has already returned 202. On any
     failure the agents this run created are best-effort rolled back (see
     ``_rollback``) and the error logged; the roster and progress are observed in
     Teams. See the module docstring for the full recipe.
+
+    ``claim_token`` — the owner-wide deploy claim the router took before
+    dispatching. This run owns it: the lease is extended per agent (see
+    ``_run_company_deploy``) and released here when the run settles. The
+    release passes the failure as ``cause`` so a pairing ``TimeoutError``
+    HOLDS the claim — the container may still be writing — exactly like the
+    single-agent path.
     """
     created: list[dict] = []
+    failure: BaseException | None = None
     try:
-        await _run_company_deploy(owner_id=owner_id, tar_bytes=tar_bytes, created=created)
+        await _run_company_deploy(owner_id=owner_id, tar_bytes=tar_bytes, created=created, claim_token=claim_token)
     except Exception as exc:  # noqa: BLE001 — background target must never escape
+        failure = exc
         logger.exception("company_deploy: owner=%s failed — rolling back %d created agent(s)", owner_id, len(created))
         # cause=exc lets unwind_partial_deploy skip the EFS/openclaw.json edit
         # on a client-side TimeoutError (pair_with_openclaw can time out) —
         # see its docstring.
         await _rollback(owner_id, created, cause=exc)
+    finally:
+        if claim_token:
+            await container_repo.release_owner_deploy_claim(
+                owner_id,
+                listing_id=str(listing.get("listing_id")),
+                token=claim_token,
+                cause=failure,
+            )
 
 
-async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[dict]) -> None:
+async def _run_company_deploy(
+    *, owner_id: str, tar_bytes: bytes, created: list[dict], claim_token: str | None = None
+) -> None:
     """Inner orchestration (may raise — the public wrapper rolls back + swallows).
 
     Appends each freshly-created Paperclip agent dict to ``created`` as it is
@@ -255,6 +275,13 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
         workspace = get_workspace()
 
         for planned in plan.agents:
+            # Keep the owner-wide deploy lease live across the whole run: each
+            # per-agent step is bounded well under DEPLOY_CLAIM_STALE_S, but N
+            # of them are not. A dead run stops extending and is taken over on
+            # the normal cutoff. Never raises.
+            if claim_token:
+                await container_repo.extend_owner_deploy_claim(owner_id, token=claim_token)
+
             reports_to = _resolve_reports_to(planned, plan, friday_id, slug_to_id)
 
             # Adapter is ALWAYS synthesized server-side — a PlannedAgent carries
@@ -264,11 +291,11 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
                 service_token=service_token.mint(owner_id),
                 user_id=owner_id,
             )
-            # Deliberately omit agent-create idempotency here. Company deploy
-            # still starts an untracked background task per POST; two workers
-            # replaying one agent id could race, and one rollback could delete
-            # the other's live install. This path needs a durable deployment
-            # operation claim before per-agent replay is safe.
+            # Deliberately omit agent-create idempotency here. The owner-wide
+            # deploy claim serializes whole runs, but nothing REPLAYS a
+            # half-finished run per-agent — a failed run rolls back its own
+            # agents and a retry re-mints from scratch, so a replayed agent id
+            # has nothing durable to key on.
             pc = await admin.create_agent(
                 session_cookie=cookie,
                 company_id=company_id,

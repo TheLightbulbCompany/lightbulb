@@ -4,9 +4,10 @@
 The company-deploy branch of ``deploy_listing`` used to hard-409 every company
 needing Ultra (``min_plan != "standard"`` or ``agent_count`` over the standard
 cap). PR3 flips it to a plan gate: the 409 fires ONLY when the listing needs
-Ultra AND the owner is not on ``ultra_pro``. The PR2 ``require_platform_admin``
-gate stays in front (admin-flag lift is a separate post-E2E concern), so these
-tests authenticate as a platform admin and vary only the billing plan.
+Ultra AND the owner is not on ``ultra_pro``. The old ``require_platform_admin``
+launch gate has since been removed — the route is buyer-open — but these tests
+still authenticate as a platform admin and vary only the billing plan (admin
+no longer changes the route's behaviour).
 """
 
 import os
@@ -24,7 +25,7 @@ from core.auth import AuthContext, get_current_user  # noqa: E402
 @pytest.fixture
 def admin_client(app):
     """TestClient authenticated as an @isol8.co platform admin (personal ctx),
-    so require_platform_admin passes and resolve_owner_id -> user_admin."""
+    resolve_owner_id -> user_admin."""
 
     async def _mock():
         return AuthContext(user_id="user_admin", email="admin@isol8.co")
@@ -36,6 +37,25 @@ def admin_client(app):
             yield c
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def deploy_claim():
+    """Stub the owner-wide deploy claim (the company branch takes it before
+    dispatch) — unit tests must not touch DynamoDB. The single-agent tests
+    below re-patch these per-test where the claim is the subject."""
+    with (
+        patch(
+            "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
+            new_callable=AsyncMock,
+            return_value=("tok", None),
+        ),
+        patch(
+            "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
+            new_callable=AsyncMock,
+        ),
+    ):
+        yield
 
 
 def _ultra_company_listing() -> dict:

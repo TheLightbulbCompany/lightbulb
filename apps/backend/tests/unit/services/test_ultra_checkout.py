@@ -660,24 +660,19 @@ class TestCreateUltraUpgradeService:
 # ---------------------------------------------------------------------------
 
 
-# COMPANY_MARKETPLACE_LAUNCH_GATE: the Ultra checkout is platform-admin-only
-# until buyer launch, so these contexts carry @isol8.co emails to pass that gate
-# and exercise the underlying billing logic. `_non_admin_ctx` below is the one
-# that must be rejected by the platform gate.
+# The endpoint is open to any subscriber (the platform-admin launch gate was
+# removed at buyer launch); ordinary customer emails exercise exactly what a
+# buyer sends.
 def _personal_ctx():
-    return AuthContext(user_id="user_p", email="p@isol8.co")
+    return AuthContext(user_id="user_p", email="p@example.com")
 
 
 def _admin_ctx():
-    return AuthContext(user_id="user_admin", org_id="org_1", org_role="org:admin", email="admin@isol8.co")
+    return AuthContext(user_id="user_admin", org_id="org_1", org_role="org:admin", email="admin@example.com")
 
 
 def _member_ctx():
-    return AuthContext(user_id="user_mem", org_id="org_1", org_role="org:member", email="mem@isol8.co")
-
-
-def _non_admin_ctx():
-    return AuthContext(user_id="user_x", email="customer@example.com")
+    return AuthContext(user_id="user_mem", org_id="org_1", org_role="org:member", email="mem@example.com")
 
 
 class TestUltraCheckoutEndpoint:
@@ -733,19 +728,6 @@ class TestUltraCheckoutEndpoint:
         with pytest.raises(HTTPException) as exc:
             await billing.create_ultra_checkout(auth=_member_ctx())
         assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_rejects_non_platform_admin(self, monkeypatch):
-        """COMPANY_MARKETPLACE_LAUNCH_GATE: a non-platform-admin (ordinary
-        customer email) is 403'd before any billing work — the paid Ultra tier
-        stays admin-only until the marketplace opens to buyers, matching the
-        company-deploy gate. No upgrade is attempted."""
-        upgrade_mock = AsyncMock()
-        with patch("core.services.billing_service.create_ultra_upgrade", new=upgrade_mock):
-            with pytest.raises(HTTPException) as exc:
-                await billing.create_ultra_checkout(auth=_non_admin_ctx())
-        assert exc.value.status_code == 403
-        upgrade_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ensures_stripe_customer_before_fresh_checkout(self, monkeypatch):

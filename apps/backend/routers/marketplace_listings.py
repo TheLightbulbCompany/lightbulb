@@ -22,7 +22,6 @@ from core.auth import (
     get_current_user,
     get_optional_user,
     require_org_admin,
-    require_platform_admin,
     resolve_owner_id,
 )
 from core.config import settings
@@ -750,13 +749,28 @@ async def deploy_listing(
         raise HTTPException(status_code=404, detail="listing not found")
 
     if listing.get("format") == "company":
-        # COMPANY_MARKETPLACE_LAUNCH_GATE: company deploys are platform-admin-only
-        # until the dev E2E validates the deploy engine. Enforced server-side, not
-        # merely in the UI. Remove every COMPANY_MARKETPLACE_LAUNCH_GATE marker to
-        # open the marketplace (deploy + Ultra upgrade) to buyers together.
-        require_platform_admin(auth)
-
         owner_id = resolve_owner_id(auth)
+
+        # Paid entitlement, FIRST — this branch returns before the agent path's
+        # check below ever runs, and that was an entitlement bypass waiting for
+        # buyer launch (harmless only while the route was platform-admin-only).
+        # Same rules as the agent path: free deploys for anyone signed in,
+        # sellers skip their own listing's check, purchase identity is the
+        # RESOLVED owner. Checked before the plan gate so an unentitled caller
+        # can't kick a container resize.
+        if (
+            int(listing.get("price_cents", 0) or 0) > 0
+            and listing.get("seller_id") != auth.user_id
+            and not await marketplace_repo.has_unrevoked_purchase(
+                buyer_id=owner_id,
+                listing_id=listing["listing_id"],
+            )
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="purchase required to deploy this listing",
+            )
+
         # min_plan is "standard" iff agent_count <= 10 (see company_package).
         # A company needing Ultra (min_plan != standard, or — belt-and-
         # suspenders — a raw agent_count over the standard cap should a manifest
@@ -813,17 +827,44 @@ async def deploy_listing(
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")
-        tar_bytes = await asyncio.to_thread(
-            _fetch_company_tar, s3_prefix=s3_prefix, listing_id=listing.get("listing_id")
-        )
+
+        # Owner-wide exclusive claim — the SAME fence the single-agent hire
+        # below takes. A company deploy mints N agents against the one
+        # container, so it must not overlap a hire, an Atlas build, or another
+        # company deploy (a double POST would mint the whole org twice). The
+        # background run extends the lease per agent (its wall clock is N x a
+        # single deploy's) and releases it when done. Taken AFTER the plan/
+        # resize checks so their 409s never leak a claim, and BEFORE the S3
+        # fetch so a loser doesn't pay for the GET.
+        claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing["listing_id"])
+        if not claim_token:
+            if await container_repo.get_by_owner_id(owner_id) is None:
+                raise HTTPException(status_code=503, detail="container starting — retry in a moment")
+            raise HTTPException(
+                status_code=409,
+                detail="An agent install is already running for your workspace — try again in a few minutes.",
+            )
+
+        try:
+            tar_bytes = await asyncio.to_thread(
+                _fetch_company_tar, s3_prefix=s3_prefix, listing_id=listing.get("listing_id")
+            )
+        except BaseException as exc:
+            await container_repo.release_owner_deploy_claim(
+                owner_id, listing_id=listing["listing_id"], token=claim_token, cause=exc
+            )
+            raise
 
         # Fire-and-forget: instantiate the whole package off the request path and
         # return 202 immediately. There is no job row — progress and the final
         # roster are observed in Teams (the Paperclip roster is the source of
         # truth). On failure the background task best-effort rolls back exactly
-        # the agents it created this run (see company_deploy_service).
+        # the agents it created this run (see company_deploy_service). The task
+        # owns the claim from here — it releases it in its finally.
         asyncio.create_task(
-            company_deploy_service.run_company_deploy(owner_id=owner_id, listing=listing, tar_bytes=tar_bytes)
+            company_deploy_service.run_company_deploy(
+                owner_id=owner_id, listing=listing, tar_bytes=tar_bytes, claim_token=claim_token
+            )
         )
         return JSONResponse(status_code=202, content={"started": True, "agent_count": agent_count})
 

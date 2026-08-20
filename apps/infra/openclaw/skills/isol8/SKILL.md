@@ -323,6 +323,13 @@ hire time). Some listings are paid (one-time purchase via Stripe). You
 cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 
+The marketplace also carries **whole pre-built companies**
+(isol8.co/marketplace/companies): one click deploys every agent in the
+package into the roster (reporting into the existing CEO), with its
+routines landing PAUSED for the owner to enable. Companies over 10 agents
+require the Ultra Pro plan; one install runs at a time, so a company deploy
+and an agent hire can't overlap.
+
 A hire also carries the seller's automations, but neither kind arrives
 running: its schedules land as PAUSED routines the owner switches on, and
 its webhook automations come back as a to-do list (which app + event), one
@@ -390,9 +397,13 @@ team workspaces: a $50/month base plus $20/month per seat** — so a solo
 admin pays $70/month and a four-person team pays $130/month. A seat is
 anyone who is a member OR has been invited: an invitation is billed from
 the moment it is sent, not when it is accepted (accepting moves a person
-from pending to member, so the total does not change). There is also a
-**free tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap,
-container sleeps when idle). Inference runs on one of
+from pending to member, so the total does not change). Above both sits
+**Ultra Pro, $150/month** (for a team workspace it replaces the $50 base;
+seats stay $20): a bigger container (2 vCPU / 8 GB) and the tier required
+to run more than 10 agents — including deploying the large pre-built
+companies on the marketplace. Upgrade lives in isol8.co/settings. There is
+also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
+cap, container sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
 personal owners and to org workspaces, where the workspace owner/admin who

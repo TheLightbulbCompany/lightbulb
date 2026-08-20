@@ -1,15 +1,17 @@
-"""Company deploy dispatch endpoint (admin-flagged, standard-only, fire-and-forget).
+"""Company deploy dispatch endpoint (buyer-open, fire-and-forget).
 
-Replaces the "Company deploys are coming soon." 400 stub in ``deploy_listing``
-with the real (platform-admin-gated) dispatch. The deploy is FIRE-AND-FORGET:
-the route schedules ``run_company_deploy`` off the request path and returns 202
-with ``{started, agent_count}`` — there is no job row and no status/rollback
-endpoint. Progress + the roster live in Teams.
+The deploy is FIRE-AND-FORGET: the route schedules ``run_company_deploy`` off
+the request path and returns 202 with ``{started, agent_count}`` — there is no
+job row and no status/rollback endpoint. Progress + the roster live in Teams.
+The route is open to any signed-in buyer (the platform-admin launch gate was
+removed); plan gating is the Ultra 409 and concurrency is the owner-wide
+deploy claim the route takes before dispatching.
 
 Follows the company-listing client/auth idiom from
 ``test_marketplace_company_listings.py`` — the conftest ``client`` fixture is a
 personal (non-admin, email=None) caller; ``admin_client`` below is an
-``@isol8.co`` platform admin.
+``@isol8.co`` platform admin (kept for continuity; admin no longer changes the
+route's behaviour).
 """
 
 import os
@@ -38,6 +40,25 @@ def admin_client(app):
             yield c
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def deploy_claim():
+    """Stub the owner-wide deploy claim the company branch now takes — unit
+    tests must not touch DynamoDB. Individual tests re-patch to exercise the
+    refusal path."""
+    with (
+        patch(
+            "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
+            new_callable=AsyncMock,
+            return_value=("tok", None),
+        ) as claim,
+        patch(
+            "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
+            new_callable=AsyncMock,
+        ) as release,
+    ):
+        yield claim, release
 
 
 def _company_listing(
@@ -97,8 +118,8 @@ def test_admin_deploy_standard_company_202(mock_get_published, mock_boto, mock_r
     assert resp.json() == {"started": True, "agent_count": 5}
 
     # Background task fired with the run_company_deploy coroutine, right args —
-    # no job_id (fire-and-forget).
-    mock_run.assert_called_once_with(owner_id="user_admin", listing=listing, tar_bytes=b"COMPANYTAR")
+    # no job_id (fire-and-forget). The task owns the claim from here.
+    mock_run.assert_called_once_with(owner_id="user_admin", listing=listing, tar_bytes=b"COMPANYTAR", claim_token="tok")
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
@@ -131,49 +152,108 @@ def test_admin_deploy_standard_company_skips_size_reconcile(
     ecs.resize_user_container.assert_not_called()
 
 
-@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("routers.marketplace_listings.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_admin_deploy_priced_company_short_circuits_entitlement(
-    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchases, admin_client
+def test_priced_company_without_purchase_403(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchase, admin_client
 ):
-    """The company branch returns BEFORE the agent-path paid-entitlement check.
-
-    A priced (price_cents=2000) company listing with NO purchase row still
-    deploys 202 for an admin — proving the company branch short-circuits ahead
-    of the entitlement gate (which would otherwise 403). The purchases table is
-    never queried.
-    """
+    """Buyer launch closed the old bypass: the company branch used to return
+    before the agent path's paid-entitlement check ever ran (harmless while
+    admin-only). A priced company with NO purchase row is now 403'd before any
+    claim/S3/dispatch work."""
     mock_get_published.return_value = _company_listing(price_cents=2000)
+    mock_purchase.return_value = False
+
+    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 403, resp.text
+    mock_purchase.assert_awaited_once_with(buyer_id="user_admin", listing_id="l1")
+    mock_boto.assert_not_called()
+    mock_run.assert_not_called()
+    mock_create_task.assert_not_called()
+
+
+@patch("routers.marketplace_listings.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_priced_company_with_purchase_202(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchase, admin_client
+):
+    """An entitled buyer (unrevoked purchase row) deploys a priced company 202."""
+    mock_get_published.return_value = _company_listing(price_cents=2000)
+    mock_purchase.return_value = True
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
-    # Real dict (not a bare MagicMock): has_unrevoked_purchase pages on
-    # resp.get("LastEvaluatedKey"), and a MagicMock's truthy return there
-    # spins the pagination loop forever.
-    mock_purchases.return_value.query.return_value = {"Items": []}
 
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
 
     assert resp.status_code == 202, resp.text
     assert resp.json() == {"started": True, "agent_count": 5}
-    # Entitlement path never touched — company branch returned first.
-    mock_purchases.return_value.query.assert_not_called()
+    mock_create_task.assert_called_once_with(mock_run.return_value)
+
+
+@patch("routers.marketplace_listings.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_seller_deploys_own_priced_company_without_purchase(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchase, admin_client
+):
+    """Sellers don't buy their own listings — the identity bypass from the
+    agent path applies to companies too."""
+    listing = _company_listing(price_cents=2000)
+    listing["seller_id"] = "user_admin"
+    mock_get_published.return_value = listing
+    mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
+
+    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 202, resp.text
+    mock_purchase.assert_not_awaited()
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
 @patch("routers.marketplace_listings.asyncio.create_task")
-@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_non_admin_deploy_company_403(mock_get_published, mock_boto, mock_run, mock_create_task, client):
-    """A non-admin (personal, email=None) is 403'd server-side — no background
-    task, no S3 read."""
+def test_non_admin_deploy_company_202(mock_get_published, mock_boto, mock_run, mock_create_task, client):
+    """Buyer launch: an ordinary signed-in user (personal, email=None) deploys a
+    standard company — no platform-admin gate."""
     mock_get_published.return_value = _company_listing()
+    mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 
     resp = client.post("/api/v1/marketplace/listings/gstack/deploy")
 
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 202, resp.text
+    mock_create_task.assert_called_once_with(mock_run.return_value)
+
+
+@patch("routers.marketplace_listings.container_repo.get_by_owner_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_company_deploy_refused_while_claim_held(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_get_row, client, deploy_claim
+):
+    """A held owner-wide deploy claim (a hire or another company deploy in
+    flight) refuses the dispatch 409 — no S3 read, no background task. A double
+    POST minting the whole org twice is exactly what this fences."""
+    mock_get_published.return_value = _company_listing()
+    mock_get_row.return_value = {"owner_id": "user_x"}
+    claim, _release = deploy_claim
+    claim.return_value = (None, "l_other")
+
+    resp = client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 409, resp.text
+    assert "already running" in resp.json()["detail"]
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()

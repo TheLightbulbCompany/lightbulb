@@ -70,14 +70,18 @@ def capture_product_event(
     event: str,
     properties: dict | None = None,
     set_person: dict | None = None,
+    event_uuid: str | None = None,
 ) -> None:
     """Capture one PostHog product event keyed on the subscriber's Clerk id.
 
     ``set_person`` is merged into ``$set`` so the person profile carries current
     billing state (subscription_status / is_subscribed / trial_end /
-    provider_choice) for segmentation. No-op — logged, never raised — when the
-    write key is unset, the client failed to init, or capture errors; telemetry
-    must not break the billing path.
+    provider_choice) for segmentation. ``event_uuid`` is forwarded as the
+    capture ``uuid`` — a DETERMINISTIC id (e.g. uuid5 of a runId) lets PostHog
+    ingestion drop exact duplicates, giving effectively-once emission across
+    backend restarts. No-op — logged, never raised — when the write key is
+    unset, the client failed to init, or capture errors; telemetry must not
+    break the billing path.
     """
     client = _client_or_none()
     if client is None or not distinct_id:
@@ -86,7 +90,10 @@ def capture_product_event(
     if set_person:
         props["$set"] = {**props.get("$set", {}), **set_person}
     try:
-        client.capture(distinct_id, event, props)
+        if event_uuid:
+            client.capture(distinct_id, event, props, uuid=event_uuid)
+        else:
+            client.capture(distinct_id, event, props)
     except Exception:
         logger.warning("PostHog capture failed (event=%s owner=%s)", event, distinct_id, exc_info=True)
 

@@ -307,6 +307,12 @@ class GatewayConnection:
         # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
         # tracked so close() can drain them instead of cancelling a send.
         self._push_tasks: Set[asyncio.Task] = set()
+        # Fire-and-forget product-analytics emit tasks. Tracked SEPARATELY from
+        # _billing_tasks and CANCELLED (not drained) on close: an emit's
+        # Paperclip enrichment can run to its full 5s budget, and sharing the
+        # billing drain window would let best-effort analytics starve usage
+        # writes at shutdown.
+        self._analytics_tasks: Set[asyncio.Task] = set()
         # One-shot completion observers keyed by runId (== chat.send's
         # idempotencyKey, which OpenClaw echoes as `runId` on every event for
         # the run — src/gateway/server-methods/chat.ts). Registered via
@@ -1415,6 +1421,28 @@ class GatewayConnection:
         self._billing_tasks.add(task)
         task.add_done_callback(self._billing_tasks.discard)
 
+    def _emit_run_completed(self, payload: dict, parsed_key: dict, phase: str) -> None:
+        """Fire-and-forget ``agent_run_completed`` product event (mirrors
+        ``_record_usage_from_session``: classify synchronously, spawn the
+        enrichment+capture task; close() cancels rather than drains it).
+        Must never raise into the reader loop.
+        """
+        try:
+            from core.services import run_analytics
+
+            task = run_analytics.schedule_run_completed(
+                owner_id=self.owner_id,
+                parsed=parsed_key,
+                payload=payload,
+                phase=phase,
+            )
+        except Exception:
+            logger.exception("agent_run_completed scheduling failed for user %s", self.user_id)
+            return
+        if task is not None:
+            self._analytics_tasks.add(task)
+            task.add_done_callback(self._analytics_tasks.discard)
+
     async def _resolve_agent_name(self, agent_id: str | None) -> str:
         """Best-effort display name for *agent_id* via a TTL-cached agents.list.
 
@@ -1873,13 +1901,18 @@ class GatewayConnection:
                 # Billing: lifecycle/end fires once per completed agent run
                 # for BOTH webchat and channel-driven runs (webchat's chat.final
                 # only fires for webchat, so we use lifecycle/end instead).
-                # Billing runs for ALL sessions (web + channel).
+                # Billing runs for ALL sessions (web + channel). Product
+                # analytics hangs off the same terminal, widened to the error
+                # phase too — OpenClaw's lifecycleEnded guard means every run
+                # emits exactly one of end/error; billing stays end-only.
                 if (
                     stream == "lifecycle"
                     and isinstance(payload.get("data"), dict)
-                    and payload["data"].get("phase") == "end"
+                    and payload["data"].get("phase") in ("end", "error")
                 ):
-                    self._record_usage_from_session(payload)
+                    if payload["data"]["phase"] == "end":
+                        self._record_usage_from_session(payload)
+                    self._emit_run_completed(payload, parsed_key, payload["data"]["phase"])
                 # Skip forwarding channel, cron, and Paperclip (issue/run)
                 # events to the web UI. Each runs in its own isolated session
                 # inside OpenClaw with its own delivery path — their streaming
@@ -2459,6 +2492,13 @@ class GatewayConnection:
         # in is_alive == False, whether or not runs were in flight.
         self._note_gateway_liveness(connected=False)
         self._closed = True
+        # Cancel in-flight analytics emits (best-effort by contract) BEFORE the
+        # drains below, so a slow Paperclip enrichment never competes with the
+        # billing/push writes for the bounded close budget. An emit lost here is
+        # the same accepted loss class as a run terminating while the backend
+        # is down.
+        for task in list(self._analytics_tasks):
+            task.cancel()
         # Wait for in-flight billing-resolver tasks so teardown doesn't drop usage events.
         if self._billing_tasks:
             try:

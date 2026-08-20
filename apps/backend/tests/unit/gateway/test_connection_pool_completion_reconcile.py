@@ -47,6 +47,7 @@ async def test_close_reconciles_pending_completion_callback():
     # Minimal state for close() to run its drain path.
     conn._closed = False
     conn._billing_tasks = set()
+    conn._analytics_tasks = set()
     conn._push_tasks = set()
     conn._pending_rpcs = {}
     conn._grace_task = None

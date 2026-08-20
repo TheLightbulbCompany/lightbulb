@@ -72,8 +72,11 @@ NIGHTLY_CEO_ROUTINE_CRON = "0 8 * * *"
 # issue. The ``[NIGHTLY-CEO-LOOP]`` sentinel is the first line — Friday's
 # AGENTS.md keys the self-agenda branch on it AND on the server-controlled
 # ``originKind == "routine_execution"`` (which a teammate cannot forge).
+# run_analytics keys ``is_nightly_ceo`` tagging on the same sentinel.
+NIGHTLY_CEO_SENTINEL = "[NIGHTLY-CEO-LOOP]"
+
 NIGHTLY_CEO_ROUTINE_DESCRIPTION = (
-    "[NIGHTLY-CEO-LOOP] Scheduled company-control wake. Advance ONE existing "
+    f"{NIGHTLY_CEO_SENTINEL} Scheduled company-control wake. Advance ONE existing "
     "company constraint using CEO work only: set or clarify priority, synthesize "
     "existing evidence, resolve or reroute a blocker, verify a claimed outcome, "
     "or delegate one bounded specialist issue. Never self-assign or execute "

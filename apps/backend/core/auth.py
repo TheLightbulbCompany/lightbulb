@@ -284,17 +284,24 @@ _PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(
 )
 
 
+def is_platform_admin_email(email: str | None) -> bool:
+    """True when *email* identifies an Isol8 team member: ends with
+    ``@isol8.co`` or is in ``_PLATFORM_ADMIN_EXTRA_EMAILS``. The single
+    definition of "internal" — shared by the admin route gate and the
+    internal-owner tagging in run analytics."""
+    normalized = (email or "").lower()
+    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN) or normalized in _PLATFORM_ADMIN_EXTRA_EMAILS
+
+
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
     """
     Allow only platform admins (Isol8 team) — distinct from customer org admins.
 
-    Gate: the Clerk JWT's ``email`` claim must end with ``@isol8.co`` OR
-    appear in ``_PLATFORM_ADMIN_EXTRA_EMAILS``. Clerk populates the claim
-    from the user's primary verified email. Removing someone from the team
-    = deleting their Clerk user (or removing their address from the extra
-    list / Clerk's @isol8.co email).
+    Gate: the Clerk JWT's ``email`` claim must pass ``is_platform_admin_email``.
+    Clerk populates the claim from the user's primary verified email. Removing
+    someone from the team = deleting their Clerk user (or removing their
+    address from the extra list / Clerk's @isol8.co email).
     """
-    email = (auth.email or "").lower()
-    if not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN) and email not in _PLATFORM_ADMIN_EXTRA_EMAILS:
+    if not is_platform_admin_email(auth.email):
         raise HTTPException(status_code=403, detail="Platform admin access required")
     return auth

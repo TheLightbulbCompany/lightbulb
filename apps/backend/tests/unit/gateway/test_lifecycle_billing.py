@@ -21,6 +21,7 @@ def conn():
     c._pending_rpcs = {}
     c._management_api = MagicMock()
     c._billing_tasks = set()
+    c._analytics_tasks = set()
     # Owner-keyed fan-out state (set by __init__ in real usage; __new__ bypasses
     # it). These lifecycle/end events don't forward, but _handle_message now
     # awaits the owner-keyed path, so the service + cache must exist.
@@ -246,3 +247,110 @@ async def test_missing_runid_always_schedules(conn):
         await asyncio.sleep(0)
 
     assert mock_fetch.await_count == 2
+
+
+# --- agent_run_completed product-event emission (run_analytics) ---
+#
+# The same lifecycle terminal branch, widened to phase "error" for analytics
+# only. Billing stays end-only; the emission is fire-and-forget and must never
+# raise into the reader loop.
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_end_schedules_run_completed_and_bills_once(conn):
+    payload = {
+        "runId": "rc-1",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:main",
+    }
+
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
+        patch("core.services.run_analytics.schedule_run_completed", return_value=None) as mock_sched,
+    ):
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await asyncio.sleep(0)
+
+    # Phase-widening must not double-call billing.
+    assert mock_fetch.await_count == 1
+    mock_sched.assert_called_once()
+    kwargs = mock_sched.call_args.kwargs
+    assert kwargs["owner_id"] == "org_1"
+    assert kwargs["phase"] == "end"
+    assert kwargs["parsed"]["source"] == "webchat"
+    assert kwargs["payload"] is payload
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_error_schedules_run_completed_without_billing(conn):
+    payload = {
+        "runId": "rc-2",
+        "stream": "lifecycle",
+        "data": {"phase": "error", "error": "boom"},
+        "sessionKey": "agent:main:paperclip:issue:iss-1",
+    }
+
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
+        patch("core.services.run_analytics.schedule_run_completed", return_value=None) as mock_sched,
+    ):
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await asyncio.sleep(0)
+
+    mock_fetch.assert_not_awaited()
+    mock_sched.assert_called_once()
+    assert mock_sched.call_args.kwargs["phase"] == "error"
+    assert mock_sched.call_args.kwargs["parsed"]["issue_id"] == "iss-1"
+
+
+@pytest.mark.asyncio
+async def test_run_completed_task_joins_the_analytics_task_set(conn):
+    payload = {
+        "runId": "rc-3",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:main",
+    }
+
+    async def _noop():
+        pass
+
+    task = asyncio.get_running_loop().create_task(_noop())
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch("core.services.run_analytics.schedule_run_completed", return_value=task),
+    ):
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        # Separate from _billing_tasks: close() cancels analytics emits instead
+        # of letting them share (and starve) the billing drain window.
+        assert task in conn._analytics_tasks
+        assert task not in conn._billing_tasks
+        await task
+        await asyncio.sleep(0)
+
+    assert task not in conn._analytics_tasks
+
+
+@pytest.mark.asyncio
+async def test_run_completed_scheduling_failure_never_breaks_reader_or_billing(conn):
+    """The analytics hook exploding must neither raise into _handle_message
+    nor lose the billing write it shares the terminal with."""
+    payload = {
+        "runId": "rc-4",
+        "stream": "lifecycle",
+        "data": {"phase": "end"},
+        "sessionKey": "agent:main:main",
+    }
+
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
+        patch(
+            "core.services.run_analytics.schedule_run_completed",
+            side_effect=RuntimeError("posthog wiring exploded"),
+        ),
+    ):
+        await conn._handle_message({"type": "event", "event": "agent", "payload": payload})
+        await asyncio.sleep(0)
+
+    mock_fetch.assert_awaited_once()

@@ -217,25 +217,33 @@ class TestBrowserBounds:
         assert not [a for a in extra_args if any(t in a for t in crash_reporter_tokens)]
 
     def test_webgl_flags_present(self):
-        """Chrome 137 removed the automatic SwiftShader fallback and prod runs
-        Chrome 151 on GPU-less Fargate, so without a working software renderer
-        the container had NO WebGL — `canvas.getContext("webgl")` returned null,
-        a state essentially no real desktop is in. Arkose/FunCaptcha (LinkedIn
-        sign-in) renders its puzzle in 3D and could never appear.
+        """WebGL must work AND the live-view must not be throttled to ~4fps.
 
-        The first attempt's `--use-angle=gl` (Mesa llvmpipe) was measured to fail WebGL
-        context creation with "BindToCurrentSequence failed" in the prod
-        container 2026-08-20; ANGLE's self-contained SwiftShader works. We pin
-        the SwiftShader backend plus the 137 gate flag. Guards against a revert
-        back to the broken llvmpipe flag.
+        Chrome 137 removed the automatic SwiftShader fallback and prod runs
+        Chrome 151 on GPU-less Fargate, so without a software renderer the
+        container has NO WebGL — `canvas.getContext("webgl")` returns null, a
+        state essentially no real desktop is in, and Arkose/FunCaptcha (LinkedIn
+        sign-in) renders its 3D puzzle only with WebGL. `--enable-unsafe-swiftshader`
+        hands WebGL surfaces an in-process SwiftShader context and is kept.
+
+        Compositing is a separate axis. `--use-angle=swiftshader` routes ALL GL
+        (incl. 2D page compositing the screencast captures) through
+        ANGLE->Vulkan->SwiftShader and was measured 2026-08-20 to cap the CDP
+        live-view at ~4fps; `--disable-gpu` (native Skia software compositor) is
+        ~8x faster at the same CPU with WebGL preserved. So we ship --disable-gpu
+        and BAN both --use-angle=swiftshader (slow compositor) and --use-gl=angle
+        (broken llvmpipe path — "BindToCurrentSequence failed").
         """
         extra_args = _cfg()["browser"]["extraArgs"]
-        assert "--use-gl=angle" in extra_args
-        assert "--use-angle=swiftshader" in extra_args
+        # WebGL preserved via in-process SwiftShader fallback.
         assert "--enable-unsafe-swiftshader" in extra_args
-        # The llvmpipe path is broken here (BindToCurrentSequence) — never
-        # ship it again.
+        # Fast native software compositor (not ANGLE) — the ~8x live-view win.
+        assert "--disable-gpu" in extra_args
+        # Never re-add the slow ANGLE-SwiftShader compositor or the broken
+        # llvmpipe path.
+        assert "--use-angle=swiftshader" not in extra_args
         assert "--use-angle=gl" not in extra_args
+        assert "--use-gl=angle" not in extra_args
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

@@ -8,11 +8,14 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-// The `browser` panel now renders the CDP screencast (ScreencastDockPanel).
-// BrowserDockPanel (noVNC) stays in the tree as the fallback path — the VNC
-// relay + container Xvnc/websockify boot are intact — until the screencast is
-// prod-validated and the VNC path is retired.
-import { ScreencastDockPanel } from "./panels/ScreencastDockPanel";
+// The `browser` panel still renders the noVNC live view (BrowserDockPanel). The
+// CDP screencast (ScreencastDockPanel + routers/screencast.py relay) ships
+// DORMANT in this PR so the socat bridge + relay can deploy and every container
+// can be rolled with ZERO user-visible change (panel stays VNC). A trivial
+// follow-up flips this one line to ScreencastDockPanel once socat is on
+// prod.tag fleet-wide — screencast goes live everywhere at once, no
+// broken-panel window.
+import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -20,7 +23,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  browser: ScreencastDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

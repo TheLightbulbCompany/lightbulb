@@ -1531,6 +1531,13 @@ class EcsManager:
         clear-auth sentinel). Single-writer deployment config keeps the old
         task fully stopped before the replacement starts.
         """
+        # Persist the browser session (cookies + localStorage) BEFORE the roll
+        # stops the old task — its /tmp Chrome profile is wiped on replacement.
+        # Best-effort, never raises. Lazy import: services -> containers, so a
+        # module-level import here would cycle.
+        from core.services.browser_state import snapshot_browser_state
+
+        await snapshot_browser_state(user_id)
         await asyncio.to_thread(
             self._ecs.update_service,
             cluster=self._cluster,
@@ -1651,6 +1658,15 @@ class EcsManager:
             # window where a retry could only guess which revision to resume.
             if _register_only:
                 return new_task_def_arn
+
+            # Persist the browser session (cookies + localStorage) BEFORE the
+            # roll stops the old task — its /tmp Chrome profile is wiped on
+            # replacement. Placed after the _register_only return so it only
+            # fires on an actual roll. Best-effort, never raises. Lazy import:
+            # services -> containers would cycle at module load.
+            from core.services.browser_state import snapshot_browser_state
+
+            await snapshot_browser_state(user_id)
 
             # Update service to use new task def + force redeploy
             await asyncio.to_thread(

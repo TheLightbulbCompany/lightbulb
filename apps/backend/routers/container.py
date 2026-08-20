@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 # repair.
 _SELF_HEAL_BACKOFF_S = 60.0
 _self_heal_inflight: set[str] = set()
+# Guards the status-poll browser-session restore so concurrent polls
+# don't each fire the (idempotent) restore fan-out for one owner.
+_browser_restore_inflight: set[str] = set()
 # Stamped ONLY when a dial fails expensively (a real handshake wait on the
 # pool's global connect lock — e.g. a blackholed IP eating the full connect
 # timeout). Success leaves no stamp (a later drop re-dials on the next
@@ -595,6 +598,23 @@ async def container_status(
             _pool_self_heal_connect(get_gateway_pool(), owner_id, container_ip, container["gateway_token"])
         )
 
+    # Restore the browser session (cookies + localStorage) after a container
+    # roll wiped the /tmp Chrome profile. Gated on runtime_phase=="ready" (the
+    # gateway is connected, so the mutation RPCs land) and the presence of a
+    # persisted snapshot, which browser_state writes ONLY on a roll and deletes
+    # on first successful restore — so the steady state is one cheap EFS stat
+    # in the background task and no-op. Fired here, off the readiness poll, so
+    # it runs before the owner interacts with the browser panel.
+    if (
+        container_ip
+        and container is not None
+        and container.get("gateway_token")
+        and contract["runtime_phase"] == "ready"
+        and owner_id not in _browser_restore_inflight
+    ):
+        _browser_restore_inflight.add(owner_id)
+        asyncio.create_task(_browser_state_restore(owner_id, container_ip, container["gateway_token"]))
+
     return _status_response(contract)
 
 
@@ -651,6 +671,23 @@ async def _pool_self_heal_connect(pool, owner_id: str, ip: str, token: str) -> N
         _self_heal_backoff_at[owner_id] = time.monotonic()
     finally:
         _self_heal_inflight.discard(owner_id)
+
+
+async def _browser_state_restore(owner_id: str, ip: str, token: str) -> None:
+    """Background best-effort browser-session restore for the status poll.
+
+    ``restore_browser_state`` is a fast no-op (one EFS stat) when no snapshot
+    exists, applies + consumes it otherwise, and never raises. Always clears
+    the per-owner in-flight marker so a later roll's snapshot can restore.
+    """
+    from core.services.browser_state import restore_browser_state
+
+    try:
+        await restore_browser_state(owner_id, ip, token)
+    except Exception:  # noqa: BLE001 — best-effort; restore already swallows
+        logger.info("status-poll browser-state restore failed owner=%s", owner_id)
+    finally:
+        _browser_restore_inflight.discard(owner_id)
 
 
 def _sync_contract_with_container(contract: dict, container: dict) -> dict:

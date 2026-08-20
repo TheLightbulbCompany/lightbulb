@@ -298,6 +298,13 @@ def _connection_row(
         "inbound": (
             {
                 "webhook_registration": v.inbound.webhook_registration,
+                # Whether the DELIVERY BODY names which event fired. Multi-
+                # select is gated on it: one trigger hands the agent only the
+                # payload, so a provider that names its event in an HTTP
+                # header (GitHub, Sentry) has to stay one event per trigger —
+                # the picker renders single-select for it, and the seed 400s a
+                # multi-event body. See registry.Inbound.event_in_body.
+                "event_in_body": v.inbound.event_in_body,
                 # Per-event `registration` overrides the block-level mode
                 # (google: gmail.poll/gmail.message differ from the watch
                 # events) — the frontend branches per-event on it (the

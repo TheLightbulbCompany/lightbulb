@@ -74,6 +74,15 @@ export interface Connection {
   inbound?: {
     webhook_registration: string;
     /**
+     * Does a delivery's BODY name which event fired? Multi-select is gated on
+     * it: one trigger hands the agent only the payload (the proxy forwards it
+     * verbatim and Paperclip's run context carries no headers), so a provider
+     * that identifies its event in an HTTP header — GitHub's X-GitHub-Event,
+     * Sentry's Sentry-Hook-Resource — stays ONE event per trigger until
+     * Isol8AI/isol8#1916 lands. Absent = treat as false.
+     */
+    event_in_body?: boolean;
+    /**
      * `registration` is a per-EVENT override of `webhook_registration`
      * (google: gmail.poll → "poll", gmail.message → "owner_setup" while the
      * watch events inherit the block level). Null/absent = inherit.

@@ -293,6 +293,54 @@ _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "n
 _PLATFORM_BLOCK_START = "--- Added by Isol8 when this trigger was armed — leave this block in place ---"
 _PLATFORM_BLOCK_END = "--- end Isol8 block ---"
 
+# ONE trigger can carry MANY events. A Paperclip webhook trigger has no event
+# filter (its schema is kind/signingMode/replayWindowSec — see the fork's
+# validators/routine.ts), it fires on any signed POST and hands the whole
+# payload to the agent; and every provider that fans out this way (Stripe,
+# GitHub, PostHog, Vercel, Meta) lets ONE endpoint subscribe to MANY events.
+# So event selection is multi-select on one trigger: one URL to paste, one
+# hook to register, and the routine's instructions branch on the payload.
+#
+# These three shapes are the exception — each opens exactly ONE provider-side
+# thing per trigger (a Google push channel per resource, a Gmail watch, a poll
+# schedule), so their events can only be armed one per trigger.
+_ONE_EVENT_REGISTRATIONS = {"auto_google_watch", "poll", "owner_setup"}
+
+# Paperclip's own caps (fork validators/routine.ts): routine title max 200,
+# trigger label max 120. A joined multi-event name blows past both long before
+# it stops being readable, so it falls back to the compact "Stripe (3 events)".
+_ROUTINE_TITLE_MAX = 200
+_TRIGGER_LABEL_MAX = 120
+
+# Appended to a multi-event draft description. The agent wakes from ONE
+# trigger for several different payloads, so the first thing it has to do is
+# work out which one arrived — Stripe's `type`, GitHub's X-GitHub-Event, and
+# so on. Single-event drafts never see this (parity with the 1-click flow).
+_MULTI_EVENT_CLAUSE = (
+    "This trigger is armed for {count} events: {event_labels}. Exactly one of "
+    "them fired this run — read the event type out of the payload FIRST and "
+    "branch on it before doing anything else."
+)
+
+
+def _join_human(parts: list[str]) -> str:
+    """``["a"] -> "a"``, ``["a","b"] -> "a and b"``, ``["a","b","c"] -> "a, b and c"``.
+
+    A one-item join is the item itself, which is what keeps every single-event
+    rendering (title, starter prompt, guided instructions) byte-identical to
+    what it was before events became multi-select."""
+    if len(parts) < 3:
+        return " and ".join(parts)
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _provider_event_names(events: list[registry.InboundEvent]) -> list[str]:
+    """Every selected event's PROVIDER-side names, deduped in order — the
+    GitHub hook's ``events``, the Vercel webhook's ``events``, the Meta
+    ``subscribed_apps`` fields. The curated id is the fallback where the two
+    coincide, exactly as it was for a single event."""
+    return list(dict.fromkeys(name for e in events for name in (e.provider_events or [e.id])))
+
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
     """Same resolution ``routers.paperclip_trigger_proxy._company_id_for_owner``
@@ -772,7 +820,7 @@ async def _append_platform_block(admin: PaperclipAdminClient, *, cookie: str, ro
 async def seed_trigger_routine(
     owner_id: str,
     provider_key: str,
-    event_id: str,
+    event_ids: list[str],
     resource: str | None = None,
     topic: str | None = None,
     assignee_agent_id: str | None = None,
@@ -781,8 +829,18 @@ async def seed_trigger_routine(
     description: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + trigger pre-filled from ``provider_key``'s registry
-    ``inbound`` declaration, for the event named ``event_id``, and record the
-    funnel event on success.
+    ``inbound`` declaration, armed for every event in ``event_ids``, and record
+    the funnel event on success.
+
+    ONE trigger carries the whole list: a Paperclip webhook trigger has no
+    event filter, and every provider that fans out (Stripe, GitHub, Vercel,
+    Meta, PostHog) lets one endpoint subscribe to many events — so the owner
+    pastes ONE URL / registers ONE hook and the routine branches on the
+    payload. The events must share a registration shape, and the three
+    one-watch shapes (``auto_google_watch`` / ``poll`` / ``owner_setup``) take
+    exactly one event; anything else is a ValueError naming the conflict.
+    A multi-event title is not invertible by ``automation_from_title`` — the
+    same cost a custom title already carries.
 
     Thin wrapper so ``automation_armed`` fires from ONE place instead of once
     per registration shape's return — every shape below is a success path.
@@ -825,8 +883,9 @@ async def seed_trigger_routine(
     that automation declares no provider requirement — the cost of letting
     owners name their own automations.
 
-    Raises ``ValueError`` for any caller-facing input problem (unknown
-    provider/event, provider not wired as a trigger source, missing/invalid
+    Raises ``ValueError`` for any caller-facing input problem (an empty or
+    unknown event list, events whose registration shapes can't share one
+    trigger, provider not wired as a trigger source, missing/invalid
     resource or topic, GitHub/Vercel/Google refusing the registration, no
     active Paperclip company, no resolvable suggested agent, an assignee or
     target routine outside the caller's company, a registration shape that
@@ -834,10 +893,14 @@ async def seed_trigger_routine(
     on a malformed upstream response (Paperclip is expected to always return
     an id / publicId / secretMaterial).
     """
+    # Deduped HERE so the funnel counts what was actually armed — the seed
+    # dedupes too, and recording the raw list would report event_count=2 for
+    # a caller that sent the same id twice.
+    event_ids = list(dict.fromkeys(event_ids))
     out = await _seed_trigger_routine(
         owner_id,
         provider_key,
-        event_id,
+        event_ids,
         resource=resource,
         topic=topic,
         assignee_agent_id=assignee_agent_id,
@@ -850,7 +913,11 @@ async def seed_trigger_routine(
         event="automation_armed",
         properties={
             "provider": provider_key,
-            "event_id": event_id,
+            # The whole armed set, plus the first id kept under its old name so
+            # funnels built on the single-event shape keep reading.
+            "event_id": event_ids[0],  # non-empty: the seed above raises on an empty list
+            "event_ids": event_ids,
+            "event_count": len(event_ids),
             "source": "from_integration",
             # Which half of the funnel this was — a new automation or a
             # trigger armed on one the owner already wrote.
@@ -863,7 +930,7 @@ async def seed_trigger_routine(
 async def _seed_trigger_routine(
     owner_id: str,
     provider_key: str,
-    event_id: str,
+    event_ids: list[str],
     resource: str | None = None,
     topic: str | None = None,
     assignee_agent_id: str | None = None,
@@ -882,14 +949,62 @@ async def _seed_trigger_routine(
     if inbound is None:
         raise ValueError(f"{provider_key!r} is not wired as an Automations trigger source")
 
-    event = next((e for e in inbound.events if e.id == event_id), None)
-    if event is None:
-        raise ValueError(f"unknown event {event_id!r} for provider {provider_key!r}")
+    # Deduped, caller's order. The FIRST event is the primary one: it names
+    # the registration shape, supplies the starter-prompt override, and (for
+    # the one-event shapes below) is the watch actually opened.
+    ordered = list(dict.fromkeys(event_ids))
+    if not ordered:
+        raise ValueError("pick at least one event")
+    by_id = {e.id: e for e in inbound.events}
+    unknown = [e for e in ordered if e not in by_id]
+    if unknown:
+        raise ValueError(f"unknown event {', '.join(repr(u) for u in unknown)} for provider {provider_key!r}")
+    events = [by_id[e] for e in ordered]
+    event = events[0]
 
     # Events may override the block-level registration (the google block:
     # calendar/drive stay auto_google_watch, gmail.poll/gmail.message carry
     # their own shape) — everything below dispatches on the EFFECTIVE value.
     registration = event.registration or inbound.webhook_registration
+
+    # One trigger = one URL = one signing mode = one registration shape. Events
+    # that wire up differently physically cannot share it, so say which ones
+    # and send the owner back to add them separately rather than silently
+    # arming the first shape for all of them.
+    shapes = {e.id: (e.registration or inbound.webhook_registration) for e in events}
+    if len(set(shapes.values())) > 1:
+        conflict = ", ".join(f"{eid} ({shape})" for eid, shape in shapes.items())
+        raise ValueError(
+            f"these events wire up differently and can't share one trigger: {conflict} — add them as separate triggers"
+        )
+    # One trigger hands the agent ONLY the delivery body — the proxy forwards
+    # it byte-verbatim (HMAC is over the raw bytes) and the fork's
+    # firePublicTrigger takes `payload: req.body`, so no header reaches the run
+    # context. A provider that names its event only in a header (GitHub's
+    # X-GitHub-Event, Sentry's Sentry-Hook-Resource) would therefore wake the
+    # agent with no way to tell which armed event fired. Isol8AI/isol8#1916 is
+    # the durable fix; until it lands those providers stay one event per
+    # trigger.
+    if len(events) > 1 and not inbound.event_in_body:
+        # Deliberately generic: the reason is a header for GitHub/Sentry but an
+        # owner-templated body for PostHog, and naming the wrong one sends the
+        # owner hunting for something that isn't there.
+        raise ValueError(
+            f"an agent woken by one {provider.display_name} trigger can't tell which event fired from "
+            f"the payload alone, so {', '.join(e.id for e in events)} must be added as separate triggers"
+        )
+    if len(events) > 1 and registration in _ONE_EVENT_REGISTRATIONS:
+        raise ValueError(
+            f"{registration} arms one event per trigger, so {', '.join(e.id for e in events)} "
+            "must be added as separate triggers"
+        )
+
+    # What every renderer below names the selection: one event reads exactly as
+    # it always did, several read as a list.
+    event_label_text = _join_human([e.label for e in events])
+    event_id_text = _join_human([e.id for e in events])
+    # The fallback name when the joined one blows Paperclip's caps.
+    compact_name = f"{provider.display_name} ({len(events)} events)" if len(events) > 1 else provider.display_name
 
     # Attach precondition, before anything exists upstream: an attach adds a
     # trigger and leaves the routine the owner's own. Reassignment is the one
@@ -977,7 +1092,14 @@ async def _seed_trigger_routine(
     # An owner-supplied title/description wins over the registry template.
     # `or` (not `is None`) so an empty string falls back too — a blanked field
     # means "use the default", not "name this automation nothing".
-    title = (title or "").strip() or inbound.template.title.format(event_label=event.label)
+    # `event_label_text` is `event.label` verbatim for one event, so this is
+    # the same expression it always was on the single-event path. Several
+    # events join into one title, which can outgrow Paperclip's 200-char cap —
+    # only then does it fall back to the compact name.
+    default_title = inbound.template.title.format(event_label=event_label_text)
+    if len(events) > 1 and len(default_title) > _ROUTINE_TITLE_MAX:
+        default_title = compact_name
+    title = (title or "").strip() or default_title
     # str.format ignores surplus kwargs, so `account` is inert for templates
     # that don't use it. Google's starter_prompt names the account so the
     # agent knows which `-a` to pass to gog — the push notification carries
@@ -989,7 +1111,11 @@ async def _seed_trigger_routine(
     # routine the owner already wrote, and a platform-owned block must be
     # exactly that — the registry's text, never something the caller supplied.
     # (The other two appending shapes build their clause server-side already.)
-    rendered_description = starter_prompt.format(event_label=event.label, account=resource or "")
+    rendered_description = starter_prompt.format(event_label=event_label_text, account=resource or "")
+    # Several events on one trigger means the agent can't know which arrived
+    # from the instructions alone — tell it to read the type off the payload.
+    if len(events) > 1:
+        rendered_description += "\n\n" + _MULTI_EVENT_CLAUSE.format(count=len(events), event_labels=event_label_text)
     description = (description or "").strip() or rendered_description
 
     # Lazy import: keeps this module's load light and sidesteps a cycle —
@@ -1093,7 +1219,7 @@ async def _seed_trigger_routine(
                 routine_id,
                 owner_id,
                 resource,
-                event_id,
+                event_id_text,
             )
             return {
                 "routine_id": routine_id,
@@ -1113,7 +1239,13 @@ async def _seed_trigger_routine(
                 body=_build_webhook_trigger_body(
                     signing_mode=inbound.signing_mode,
                     replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
-                    label=title,
+                    # Paperclip rejects a label over 120 chars outright, which
+                    # a joined multi-event title reaches (5 Stripe events is
+                    # already 139). Only multi-event titles fall back — a
+                    # single-event label is whatever it always was, including
+                    # a long custom title, which this must not silently
+                    # rewrite behind the owner's back.
+                    label=title if len(events) == 1 or len(title) <= _TRIGGER_LABEL_MAX else compact_name,
                 ),
             )
 
@@ -1172,20 +1304,29 @@ async def _seed_trigger_routine(
                 public_id,
                 owner_id,
                 provider_key,
-                event_id,
+                event_id_text,
             )
             # Per-provider copy from the registry when present — every dashboard
             # buries webhooks somewhere different, and a wrong path strands the
             # owner mid-setup. The generic sentence is only the fallback.
             if inbound.instructions:
+                # `event_labels`/`event_ids` are the plural-safe names the
+                # provider copy uses; `event_label`/`event_id` stay bound to
+                # the same rendering so a template written before multi-select
+                # still names every selected event.
                 instructions = inbound.instructions.format(
-                    proxy_url=proxy_url, event_label=event.label, event_id=event.id
+                    proxy_url=proxy_url,
+                    event_label=event_label_text,
+                    event_id=event_id_text,
+                    event_labels=event_label_text,
+                    event_ids=event_id_text,
                 )
             else:
+                noun = "event" if len(events) == 1 else "events"
                 instructions = (
                     f"In your {provider.display_name} dashboard, add a webhook endpoint "
-                    f"pointed at {proxy_url} listening for the '{event.label}' event "
-                    f"({event.id}). Paste the signing secret it gives you back into Isol8 "
+                    f"pointed at {proxy_url} listening for the '{event_label_text}' {noun} "
+                    f"({event_id_text}). Paste the signing secret it gives you back into Isol8 "
                     "to finish arming this automation."
                 )
             return {
@@ -1212,9 +1353,9 @@ async def _seed_trigger_routine(
                     token=gh_token,
                     resource=resource,
                     proxy_url=proxy_url,
-                    # Provider-side hook events from the registry; the curated
-                    # id itself is the fallback when they coincide.
-                    events=event.provider_events or [event.id],
+                    # EVERY selected event, on the one hook — that is the
+                    # whole point of multi-select: one endpoint, many events.
+                    events=_provider_event_names(events),
                     secret=webhook_secret,
                 )
             except Exception:
@@ -1228,7 +1369,7 @@ async def _seed_trigger_routine(
                 public_id,
                 owner_id,
                 resource,
-                event_id,
+                event_id_text,
             )
             return {
                 "routine_id": routine_id,
@@ -1247,9 +1388,9 @@ async def _seed_trigger_routine(
                     token=vercel_token,
                     resource=resource,
                     proxy_url=proxy_url,
-                    # Provider-side webhook events from the registry; the
-                    # curated id itself is the fallback when they coincide.
-                    events=event.provider_events or [event.id],
+                    # Every selected event on the one webhook, same as the
+                    # GitHub hook above.
+                    events=_provider_event_names(events),
                 )
             except Exception:
                 # Vercel refused the webhook (plan/token can't create them,
@@ -1277,7 +1418,7 @@ async def _seed_trigger_routine(
                 public_id,
                 owner_id,
                 resource,
-                event_id,
+                event_id_text,
             )
             return {
                 "routine_id": routine_id,
@@ -1291,7 +1432,9 @@ async def _seed_trigger_routine(
 
         if registration == "auto_meta":
             assert meta_asset and webhook_secret  # narrowed by the pre-checks above
-            fields = event.provider_events or [event.id]
+            # The union of every selected event's Graph fields — meta_webhook
+            # routes a delivery by intersecting these with the payload's.
+            fields = _provider_event_names(events)
             try:
                 await _subscribe_meta_asset(meta_asset, fields)
             except Exception:
@@ -1329,7 +1472,7 @@ async def _seed_trigger_routine(
                 owner_id,
                 provider_key,
                 meta_asset["id"],
-                event_id,
+                event_id_text,
             )
             return {
                 "routine_id": routine_id,
@@ -1425,7 +1568,7 @@ async def _seed_trigger_routine(
                 public_id,
                 owner_id,
                 resource,
-                event_id,
+                event_id_text,
             )
             return {
                 "routine_id": routine_id,
@@ -1548,7 +1691,7 @@ async def _seed_trigger_routine(
                 public_id,
                 owner_id,
                 resource,
-                event_id,
+                event_id_text,
             )
             # The one-time Pub/Sub setup in the OWNER'S project. Everything
             # interpolated is fence-validated above (topic regex, proxy_url is

@@ -215,7 +215,9 @@ class InboundEvent(BaseModel):
     label: str
     # Provider-side event names to subscribe when Isol8 auto-registers the
     # webhook (auto_github: the GitHub hook's `events` array; auto_vercel:
-    # the Vercel webhook's `events`). None for guided-paste providers — the
+    # the Vercel webhook's `events`). One trigger may carry several events, in
+    # which case the UNION of their names is what gets registered on the one
+    # hook. None for guided-paste providers — the
     # owner picks events in the provider's own dashboard, so there is nothing
     # to subscribe programmatically.
     provider_events: list[str] | None = None
@@ -296,13 +298,34 @@ class Inbound(BaseModel):
     # Provider-specific guided-paste copy shown after seeding, overriding the
     # generic "add a webhook endpoint in your <provider> dashboard" sentence —
     # each dashboard buries webhooks somewhere different (Sentry: an internal
-    # integration; Linear: Settings → API). Supports {proxy_url}, {event_label}
-    # and {event_id} placeholders.
+    # integration; Linear: Settings → API). Supports {proxy_url} plus
+    # {event_labels}/{event_ids} — the human labels / provider ids of EVERY
+    # event armed on the trigger, joined ("a, b and c"). {event_label} and
+    # {event_id} are the older singular spellings, bound to the same rendering
+    # so a template written before events became multi-select still names them
+    # all. Write the copy so it reads for one event or ten.
     instructions: str | None = None
     # Placeholder for the paste-the-signing-secret input. Stripe secrets look
     # like "whsec_…"; Sentry's is an integration Client Secret — a wrong hint
     # reads as "you're pasting the wrong thing", so name the provider's term.
     secret_hint: str | None = None
+    # Can the AGENT tell which event fired from the delivery BODY alone?
+    #
+    # This gates multi-event triggers. One trigger fires for several events and
+    # the agent is handed only the payload: the proxy forwards the body
+    # byte-verbatim (HMAC is over the raw bytes) and the fork's
+    # `firePublicTrigger` takes `payload: req.body` — NO headers reach the run
+    # context. So a provider that names its event only in an HTTP header
+    # (GitHub's X-GitHub-Event, Sentry's Sentry-Hook-Resource) cannot be
+    # multi-armed: the agent would wake with no way to know which of the armed
+    # events it is looking at.
+    #
+    # False by default, so a newly wired provider is single-event until someone
+    # has actually checked its payload. Set it only after confirming the body
+    # carries the event type (Stripe `type`, Linear `type`, Attio
+    # `events[].event_type`, Vercel `type`, Meta `entry[].changes[].field`).
+    # Isol8AI/isol8#1916 is the durable fix that lifts this for the rest.
+    event_in_body: bool = False
     # Ordering is load-bearing, by convention rather than schema: the first
     # entries are the curated "popular" set — the frontend event picker pins
     # the first 3 as its Popular group — and the remainder is alphabetized by

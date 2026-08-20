@@ -327,6 +327,23 @@ describe("ObservabilityStack", () => {
     });
   });
 
+  // P15 exists because its exact absence let a 30-minute single-owner outage
+  // page nobody: the inline-timeout emission landed on a dimension stream no
+  // alarm watched. Pin the binding (metric + status dimension), not just the
+  // name, so the alarm cannot silently drift off the emitter's stream.
+  test("P15 pages on the inline-provision-timeout stream", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "isol8-dev-P15-provision-inline-timeout",
+      Namespace: "Isol8",
+      MetricName: "container.provision",
+      Threshold: 0,
+      Period: 60,
+      Dimensions: Match.arrayWith([
+        Match.objectLike({ Name: "status", Value: "inline_timeout" }),
+      ]),
+    });
+  });
+
   test("dashboard has correct name", () => {
     template.hasResourceProperties("AWS::CloudWatch::Dashboard", {
       DashboardName: "isol8-dev-orr",

@@ -596,6 +596,37 @@ export class ObservabilityStack extends cdk.Stack {
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
+
+    // -------------------------------------------------------------------
+    // P15: provision-inline-timeout
+    // -------------------------------------------------------------------
+    // Backend emits container.provision{status:"inline_timeout"} in
+    // core/services/provision_dispatch.py when an inline provision attempt
+    // hits its hard timeout (_INLINE_ATTEMPT_TIMEOUT_S, 1800s) and is
+    // terminated. By the time this metric appears, one owner has already sat
+    // WITHOUT a container for the entire window. The 2026-08-20 founder
+    // outage had exactly this signature and paged nobody: the metric landed
+    // on a dimension stream no alarm watched (W1 reads only status=ok/error),
+    // and the SFN watchdog execution SUCCEEDED after taking the row over, so
+    // the executions-failed/timed-out pages never fired either. This alarm
+    // also covers the "unwatched attempt" degrade (StartExecution failed),
+    // where the inline child is the ONLY thing running. Any occurrence pages.
+    this.createAlarm({
+      id: "P15",
+      name: "provision-inline-timeout",
+      metricName: "container.provision",
+      dimensions: { status: "inline_timeout" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "page",
+      description:
+        "An inline provision attempt hit its 1800s hard timeout — the owner " +
+        "has been down for that whole window and recovery now rides the SFN " +
+        "leg (or nothing, in the unwatched degrade).",
+    });
   }
 
   // =========================================================================

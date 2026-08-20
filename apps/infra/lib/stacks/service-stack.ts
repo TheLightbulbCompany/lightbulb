@@ -2052,6 +2052,31 @@ export class ServiceStack extends cdk.Stack {
     });
     provisionTimedOut.addAlarmAction(pageAction);
 
+    // A provision that neither fails nor times out can still strand a user:
+    // the 2026-08-20 founder outage was a watchdog execution that ran 35
+    // minutes and then SUCCEEDED, so neither alarm above fired while the
+    // owner's container sat at zero the whole time. ExecutionTime is only
+    // published when the execution closes, so this pages at close — it makes
+    // a slow-but-eventually-successful provision impossible to miss rather
+    // than shortening detection below the execution's own runtime (the P15
+    // inline-timeout page covers the in-flight 1800s mark). Normal executions
+    // close in 3-10 min; 20 min is comfortably above that.
+    const provisionSlow = new cloudwatch.Alarm(this, "ProvisionExecutionSlowAlarm", {
+      alarmName: `isol8-${env}-provision-executions-slow`,
+      alarmDescription:
+        "PAGE: a provisioning Step Functions execution took over 20 minutes " +
+        "to close. An owner sat without a container for that whole time, " +
+        "even though the execution eventually closed cleanly.",
+      metric: provisionStateMachine.metricTime({
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 20 * 60 * 1000,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    provisionSlow.addAlarmAction(pageAction);
+
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `isol8-${env}-backend`,
       cpu: env === "prod" ? 2048 : 1024,

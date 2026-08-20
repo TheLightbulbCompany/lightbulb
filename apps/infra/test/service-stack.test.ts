@@ -662,7 +662,9 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       String(a.Properties?.AlarmName ?? "").includes("provision-executions"),
     );
 
-    expect(provisioning).toHaveLength(2);
+    // failed + timed-out + slow (the 2026-08-20 founder outage was an
+    // execution that SUCCEEDED after 35 min, which the first two cannot see).
+    expect(provisioning).toHaveLength(3);
     for (const alarm of provisioning as any[]) {
       expect(alarm.Properties.AlarmActions).toEqual([
         expect.stringContaining("isol8-dev-alerts-page"),

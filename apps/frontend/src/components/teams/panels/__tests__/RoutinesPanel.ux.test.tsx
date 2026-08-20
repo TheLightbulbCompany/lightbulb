@@ -87,7 +87,7 @@ describe("RoutinesPanel — New automation dialog", () => {
 
   it("closes the event list once an event is picked", async () => {
     const { user, dialog } = await openConnectedAppRung();
-    await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+    await user.click(within(dialog).getByRole("button", { name: /select (an )?events?…/i }));
     await user.click(await screen.findByRole("option", { name: "Push" }));
     // The list is gone and the trigger names the selection — the fields below
     // it (repository, Create) are reachable again.
@@ -99,7 +99,7 @@ describe("RoutinesPanel — New automation dialog", () => {
 
   it("Escape closes the event list, not the whole dialog", async () => {
     const { user, dialog } = await openConnectedAppRung();
-    await user.click(within(dialog).getByRole("button", { name: /select an event/i }));
+    await user.click(within(dialog).getByRole("button", { name: /select (an )?events?…/i }));
     expect(await screen.findByRole("listbox", { name: "Event" })).toBeInTheDocument();
 
     await user.keyboard("{Escape}");

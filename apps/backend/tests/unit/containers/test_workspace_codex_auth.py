@@ -315,9 +315,13 @@ async def test_clear_default_agent_missing_table_emits_no_failure_metric(fake_ef
 
 # ---------------------------------------------------------------------------
 # local-sqlite layout: the per-agent store lives on container-local disk.
-# With LITESTREAM_BUCKET set and no store on EFS, the clear writes a boot
-# sentinel and reports restart_required; an EFS store (old-layout container in
-# the same env during the cutover window) still wins with the hot DELETE.
+# With LITESTREAM_BUCKET set the clear ALWAYS writes the boot sentinel and
+# ALWAYS reports restart_required — an EFS store file still visible there is
+# residue the running task never reads, so the hot DELETE (kept as best-effort
+# cover for a container still pinned to the EFS layout) is never sufficient by
+# itself. Reporting True for that case left the sentinel waiting for a boot no
+# caller triggered: a /poll reconnect staged a fresh token that never imported
+# (founder-org prod incident, 2026-08).
 # ---------------------------------------------------------------------------
 
 
@@ -340,8 +344,9 @@ async def test_clear_writes_sentinel_when_store_is_container_local(fake_efs_root
 async def test_clear_does_the_efs_delete_when_the_store_is_visible(fake_efs_root, monkeypatch):
     """An EFS store still gets the hot in-place DELETE — but see
     test_clear_writes_sentinel_even_when_efs_store_still_visible: on an O6 env
-    the sentinel is ALSO written, because during the cutover boot the EFS copy
-    may already be the stale one."""
+    the sentinel is ALSO written, because the EFS copy may be dead residue the
+    running task never reads. The delete landing is therefore NOT sufficient:
+    the caller must still be told to bounce so the sentinel gets its boot."""
     from core.config import settings as core_settings
 
     monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
@@ -349,8 +354,48 @@ async def test_clear_does_the_efs_delete_when_the_store_is_visible(fake_efs_root
 
     result = await clear_default_agent_auth_profile_row(user_id="org_1")
 
-    assert result is True
+    assert result == "restart_required"
     assert _store_rows(path) == []
+
+
+@pytest.mark.asyncio
+async def test_clear_reports_restart_required_when_hot_delete_loses_the_lock(fake_efs_root, monkeypatch):
+    """local-sqlite layout, hot delete beaten by the live writer: the sentinel
+    (hot_delete='failed') is the ONLY retry request and only a boot applies it.
+    Returning False here (pre-fix) meant no caller bounced and the stale row
+    shadowed the fresh token forever."""
+    from core.config import settings as core_settings
+
+    monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
+    _make_agent_sqlite(fake_efs_root, "org_1", "main")
+    monkeypatch.setattr(
+        "core.containers.workspace._delete_default_agent_auth_row_blocking",
+        lambda _p: (0, "write_failed: database is locked"),
+    )
+    monkeypatch.setattr("core.containers.workspace.put_metric", lambda name, **kw: None)
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert result == "restart_required"
+
+
+@pytest.mark.asyncio
+async def test_clear_reports_restart_required_when_efs_store_has_no_table(fake_efs_root, monkeypatch):
+    """local-sqlite layout: an EFS store file with no auth table says nothing
+    about the LIVE container-local store — the sentinel still needs its boot."""
+    from core.config import settings as core_settings
+
+    monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
+    p = _agent_sqlite_path(fake_efs_root, "org_1", "main")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(p))
+    con.execute("CREATE TABLE other (x TEXT)")
+    con.commit()
+    con.close()
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert result == "restart_required"
 
 
 @pytest.mark.asyncio
@@ -365,10 +410,11 @@ async def test_clear_stays_benign_noop_without_use_replica_bucket(fake_efs_root)
 
 @pytest.mark.asyncio
 async def test_clear_writes_sentinel_even_when_efs_store_still_visible(fake_efs_root, monkeypatch):
-    """During the one cutover boot the container has already copied the DBs to
-    its local mounts but has not yet archived the EFS originals. A hot DELETE
-    landing in that window edits a copy nothing reads again, so the stale row
-    survives locally and the reconnect silently fails. Write both."""
+    """On the local-sqlite layout an EFS store file may be dead residue (the
+    live store is on container-local disk). A hot DELETE landing there edits a
+    copy nothing reads again, so the stale row survives locally and the
+    reconnect silently fails. Write both — and report restart_required so the
+    caller bounces the task, which is what actually applies the sentinel."""
     from core.config import settings as core_settings
     from core.containers.workspace import CLEAR_AUTH_SENTINEL_FILENAME
 
@@ -377,8 +423,8 @@ async def test_clear_writes_sentinel_even_when_efs_store_still_visible(fake_efs_
 
     result = await clear_default_agent_auth_profile_row(user_id="org_1")
 
-    assert result is True  # the in-place delete still happened
-    assert _store_rows(path) == []
+    assert result == "restart_required"  # the sentinel needs a boot — caller bounces
+    assert _store_rows(path) == []  # the in-place delete still happened
     # ...and the sentinel is there so the container-local copy gets cleared too
     assert (fake_efs_root / "org_1" / CLEAR_AUTH_SENTINEL_FILENAME).is_file()
 

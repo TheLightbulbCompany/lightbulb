@@ -34,7 +34,7 @@ class TestFromIntegration:
         mock_seed.assert_awaited_once_with(
             "user_test_123",
             "stripe",
-            "invoice.payment_failed",
+            ["invoice.payment_failed"],
             resource=None,
             topic=None,
             assignee_agent_id=None,
@@ -109,7 +109,7 @@ class TestFromIntegration:
         mock_seed.assert_awaited_once_with(
             "user_test_123",
             "github",
-            "pull_request",
+            ["pull_request"],
             resource="acme/site",
             topic=None,
             assignee_agent_id=None,
@@ -150,7 +150,7 @@ class TestFromIntegration:
         mock_seed.assert_awaited_once_with(
             "user_test_123",
             "google",
-            "gmail.message",
+            ["gmail.message"],
             resource="ada@example.com",
             topic="projects/my-project/topics/isol8-gmail",
             assignee_agent_id=None,
@@ -181,7 +181,7 @@ class TestFromIntegration:
         mock_seed.assert_awaited_once_with(
             "user_test_123",
             "stripe",
-            "invoice.payment_failed",
+            ["invoice.payment_failed"],
             resource=None,
             topic=None,
             assignee_agent_id="agent_support",
@@ -214,7 +214,7 @@ class TestFromIntegration:
         mock_seed.assert_awaited_once_with(
             "user_test_123",
             "stripe",
-            "charge.refunded",
+            ["charge.refunded"],
             resource=None,
             topic=None,
             assignee_agent_id=None,
@@ -567,3 +567,77 @@ class TestMetaResources:
         mock_pages.side_effect = RuntimeError("Meta /me/accounts returned no page list")
         response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
         assert response.status_code == 502
+
+
+class TestMultiEventBody:
+    """``event_ids`` is the multi-select shape; ``event_id`` is the deprecated
+    one-event alias that maps into it. Sending both is ambiguous, so it is
+    refused rather than silently picking one."""
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_event_ids_reaches_the_seed_as_a_list(self, mock_billing, mock_seed, async_client):
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {"routine_id": "rt_1", "guided": True}
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={
+                "provider": "stripe",
+                "event_ids": ["invoice.payment_failed", "charge.refunded", "invoice.payment_failed"],
+            },
+        )
+        assert response.status_code == 200
+        # Deduped, caller's order preserved — the first is the primary event.
+        assert mock_seed.await_args.args[2] == ["invoice.payment_failed", "charge.refunded"]
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_both_spellings_at_once_is_refused(self, mock_billing, mock_seed, async_client):
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={"provider": "stripe", "event_id": "charge.refunded", "event_ids": ["charge.refunded"]},
+        )
+        assert response.status_code == 422
+        mock_seed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_neither_spelling_is_refused(self, mock_billing, mock_seed, async_client):
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        response = await async_client.post("/api/v1/automations/from-integration", json={"provider": "stripe"})
+        assert response.status_code == 422
+        mock_seed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_empty_event_ids_is_refused(self, mock_billing, mock_seed, async_client):
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        response = await async_client.post(
+            "/api/v1/automations/from-integration", json={"provider": "stripe", "event_ids": []}
+        )
+        assert response.status_code == 422
+        mock_seed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_conflicting_shapes_surface_as_400(self, mock_billing, mock_seed, async_client):
+        """The seed's registration-shape conflict is caller-facing input, so
+        it reaches the owner as a 400 naming what to split."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.side_effect = ValueError(
+            "these events wire up differently and can't share one trigger: "
+            "gmail.poll (poll), calendar.changed (auto_google_watch) — add them as separate triggers"
+        )
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={"provider": "google", "event_ids": ["gmail.poll", "calendar.changed"]},
+        )
+        assert response.status_code == 400
+        assert "separate triggers" in response.json()["detail"]

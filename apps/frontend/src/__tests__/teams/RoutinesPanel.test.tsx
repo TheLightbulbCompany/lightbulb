@@ -90,7 +90,7 @@ const AGENTS = [
 // 260px list that pushed the rest of the form past the viewport edge), so a
 // pick is: open the trigger, then choose the option.
 async function openEventList(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole("button", { name: /select an event/i }));
+  await user.click(await screen.findByRole("button", { name: /select (an )?events?…/i }));
 }
 
 describe("RoutinesPanel", () => {
@@ -570,7 +570,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "stripe",
-      event_id: "invoice.payment_failed",
+      event_ids: ["invoice.payment_failed"],
     });
   });
 
@@ -609,7 +609,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(screen.getAllByRole("option")).toHaveLength(7);
   });
 
-  it("guided (Stripe): submits {provider,event_id}, then shows the proxy URL + a signing-secret field that PUTs it", async () => {
+  it("guided (Stripe): submits {provider,event_ids}, then shows the proxy URL + a signing-secret field that PUTs it", async () => {
     connectionsData = [connection()];
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
@@ -631,7 +631,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "stripe",
-      event_id: "invoice.payment_failed",
+      event_ids: ["invoice.payment_failed"],
     });
 
     expect(
@@ -791,7 +791,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "posthog",
-      event_id: "$exception",
+      event_ids: ["$exception"],
     });
 
     expect(
@@ -843,7 +843,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "stripe",
-      event_id: "charge.refunded",
+      event_ids: ["charge.refunded"],
     });
   });
 
@@ -868,7 +868,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "stripe",
-      event_id: "charge.refunded",
+      event_ids: ["charge.refunded"],
       routine_id: "rt_revenue",
     });
 
@@ -980,7 +980,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     expect(screen.getByRole("option", { name: "acme/api" })).toBeInTheDocument();
   });
 
-  it("submits {provider, event_id, resource} and shows the live-on-repo success state", async () => {
+  it("submits {provider, event_ids, resource} and shows the live-on-repo success state", async () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
@@ -999,7 +999,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "github",
-      event_id: "pull_request",
+      event_ids: ["pull_request"],
       resource: "acme/site",
     });
 
@@ -1096,7 +1096,7 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     // not the display name.
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "vercel_cli",
-      event_id: "deployment.error",
+      event_ids: ["deployment.error"],
       resource: "prj_1",
     });
 
@@ -1183,7 +1183,7 @@ describe("RoutinesPanel — auto_meta asset picker", () => {
     await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
     expect(mockAutomationsPost).toHaveBeenCalledWith(
       "/automations/from-integration",
-      { provider: "meta_ads", event_id: "leadgen", resource: "1112223334" },
+      { provider: "meta_ads", event_ids: ["leadgen"], resource: "1112223334" },
     );
     expect(
       await screen.findByText(
@@ -1300,7 +1300,7 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     // validates against the connected-accounts inventory).
     expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
       provider: "google",
-      event_id: "calendar.changed",
+      event_ids: ["calendar.changed"],
       resource: "ada@example.com",
     });
 
@@ -1521,7 +1521,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
       "/automations/from-integration",
       {
         provider: "google",
-        event_id: "gmail.poll",
+        event_ids: ["gmail.poll"],
         resource: "ada@example.com",
       },
     );
@@ -1569,7 +1569,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
       "/automations/from-integration",
       {
         provider: "google",
-        event_id: "gmail.message",
+        event_ids: ["gmail.message"],
         resource: "ada@example.com",
         topic: "projects/my-project/topics/isol8-gmail",
       },

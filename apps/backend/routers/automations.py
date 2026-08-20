@@ -36,7 +36,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
@@ -77,7 +77,18 @@ async def _resolve_trigger_id(owner_id: str, public_id: str) -> str | None:
 
 class FromIntegrationBody(BaseModel):
     provider: str
-    event_id: str
+    # The events this ONE trigger is armed for. A Paperclip webhook trigger has
+    # no event filter and every fan-out provider lets one endpoint subscribe to
+    # many events, so picking three Stripe events is one URL to paste, not
+    # three. All of them must share a registration shape — the seed 400s with
+    # the conflicting ids otherwise.
+    # 300 comfortably clears the largest catalog in the registry (Stripe's
+    # ~265 events) while still bounding the request.
+    event_ids: list[str] | None = Field(default=None, min_length=1, max_length=300)
+    # Deprecated single-event alias, mapped into `event_ids` below. Kept so
+    # callers written against the one-event shape keep working; send one or the
+    # other, never both.
+    event_id: str | None = Field(default=None, min_length=1)
     # Provider-side resource for auto-registering shapes — the "owner/repo"
     # to hook for auto_github. Guided-paste providers ignore it.
     resource: str | None = None
@@ -100,6 +111,17 @@ class FromIntegrationBody(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=20000)
 
+    @model_validator(mode="after")
+    def _exactly_one_event_source(self) -> "FromIntegrationBody":
+        if (self.event_ids is None) == (self.event_id is None):
+            raise ValueError("send event_ids (preferred) or the deprecated event_id, not both and not neither")
+        return self
+
+    def events(self) -> list[str]:
+        """The armed event list either spelling resolves to, deduped in the
+        order the caller sent them (the first is the primary event)."""
+        return list(dict.fromkeys(self.event_ids if self.event_ids is not None else [self.event_id or ""]))
+
 
 class WebhookSecretBody(BaseModel):
     webhook_secret: str = Field(min_length=1, max_length=512)
@@ -110,10 +132,13 @@ async def from_integration(
     body: FromIntegrationBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict:
-    """Seed a webhook-triggered routine from a connected integration's event
-    — or, with ``routine_id``, arm that event on a routine the owner already
-    wrote (same gating, same provider-side registration, nothing the owner
-    wrote overwritten).
+    """Seed a webhook-triggered routine from a connected integration's events
+    — or, with ``routine_id``, arm them on a routine the owner already wrote
+    (same gating, same provider-side registration, nothing the owner wrote
+    overwritten).
+
+    ``event_ids`` is a multi-select: ONE trigger, one URL, every event
+    registered on it. ``event_id`` is the deprecated one-event alias.
 
     ``title``/``description`` are the owner's edits to the pre-filled draft;
     omitted, the registry template renders exactly as it always has.
@@ -131,7 +156,7 @@ async def from_integration(
         return await seed_trigger_routine(
             owner_id,
             body.provider,
-            body.event_id,
+            body.events(),
             resource=body.resource,
             topic=body.topic,
             assignee_agent_id=body.assignee_agent_id,

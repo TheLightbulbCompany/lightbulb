@@ -1068,7 +1068,7 @@ function CreateRoutineDialog({
                 and leaves their instructions, assignee, reviewers, variables
                 and schedule as written (the shapes that need maintenance text
                 append a clearly-marked block, disclosed below). */}
-            {conn.eventId != null && routines.length > 0 && (
+            {conn.eventIds.length > 0 && routines.length > 0 && (
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">Automation</span>
                 <div className="mt-1">

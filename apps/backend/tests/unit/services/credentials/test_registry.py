@@ -120,9 +120,25 @@ def test_inbound_invariants_hold_for_every_provider():
         if p.inbound.signature_header:
             assert p.inbound.signing_mode in {"github_hmac", "hmac_sha1"}, key
         assert p.inbound.template.suggested_agent == "friday", key
+        # event_in_body is what gates multi-event triggers, and it is only
+        # honest for a provider whose BODY names the fired event. Pin the two
+        # header-identified providers as False so a future "just flip it"
+        # cannot quietly arm several events onto an agent that can't tell them
+        # apart (Isol8AI/isol8#1916 is the durable fix).
+        if key in ("github", "sentry"):
+            assert p.inbound.event_in_body is False, key
         if p.inbound.instructions:
-            # Must interpolate cleanly with exactly these placeholders.
-            p.inbound.instructions.format(proxy_url="https://x", event_label="L", event_id="e")
+            # Must interpolate cleanly with exactly the kwargs the seed passes
+            # (inbound_triggers._seed_trigger_routine's guided_paste branch) —
+            # the plural {event_labels}/{event_ids} and the older singular
+            # spellings, which stay bound to the same joined rendering.
+            p.inbound.instructions.format(
+                proxy_url="https://x",
+                event_label="L",
+                event_id="e",
+                event_labels="L and M",
+                event_ids="e and f",
+            )
 
 
 def test_event_catalogs_are_well_formed():

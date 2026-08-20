@@ -35,9 +35,11 @@ function Done() {
           {error ? "Connection failed" : `${connected ?? "Service"} connected`}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {error
-            ? `Something went wrong (${error}). Ask your agent to try again.`
-            : "You can close this tab — your agent can use it now."}
+          {error === "already_connected"
+            ? "This service was already connected, so nothing changed. You can close this tab."
+            : error
+              ? `Something went wrong (${error}). Ask your agent to try again.`
+              : "You can close this tab — your agent can use it now."}
         </p>
       </div>
     </main>

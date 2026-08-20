@@ -1125,6 +1125,8 @@ class TestAuthorizeFromContainer:
         call = mock_dance.start.await_args
         assert call.args[0] == "user_test_123" and call.args[1] == "google"
         assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
+        # The state row records who minted it, so the callback can refuse a rebind.
+        assert call.kwargs["origin"] == "container"
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
@@ -1149,6 +1151,55 @@ class TestAuthorizeFromContainer:
         mock_dance.start.assert_not_awaited()
 
 
+class TestOAuthCallbackContainerOrigin:
+    """A container-started flow may create a connection, never rebind a live one —
+    judged at APPLY time under the connection lock, not only at mint time."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_container_flow_dropped_when_provider_went_live(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "github", cred, "container"))
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})  # owner connected via the tab meanwhile
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.get("/api/v1/oauth/github/callback?code=abc&state=st1", follow_redirects=False)
+        assert response.status_code in (302, 307)
+        assert "/oauth/done?error=already_connected" in response.headers["location"]
+        mock_store.put.assert_not_called()
+        mock_apply.apply_connection.assert_not_awaited()
+        mock_repo.put_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_owner_started_flow_still_applies_when_already_connected(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
+        # Owner-started (no origin) reconnects keep today's behaviour — Google's
+        # add-another-account depends on connecting while already connected.
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "github", cred, None))
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+
+        response = await async_client.get("/api/v1/oauth/github/callback?code=abc&state=st1", follow_redirects=False)
+        assert "/oauth/done?connected=github" in response.headers["location"]
+        mock_apply.apply_connection.assert_awaited_once()
+        mock_repo.put_status.assert_awaited_once()
+
+
 class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
@@ -1162,7 +1213,7 @@ class TestOAuthCallback:
         self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
     ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_repo.put_status = AsyncMock()
@@ -1238,7 +1289,7 @@ class TestOAuthCallback:
         # credential residue on EFS. google is actor-refresh -> no secret retained,
         # so there is no Secrets Manager delete to make, and no status row written.
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_repo.put_status = AsyncMock()
@@ -1274,7 +1325,7 @@ class TestOAuthCallback:
         # A successful Google connect must record the connected account's email in
         # the per-owner inventory, on top of the provider-level "connected" status.
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
         mock_repo.put_status = AsyncMock()
         # apply_connection surfaces the connected account email (gog_cli rail).
         mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
@@ -1305,7 +1356,7 @@ class TestOAuthCallback:
         # Connecting two different Google accounts yields two inventory records —
         # the keyring holds both, so the inventory must too.
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
         mock_repo.put_status = AsyncMock()
         mock_accounts.add_account = AsyncMock()
 
@@ -1348,7 +1399,7 @@ class TestOAuthCallback:
         monkeypatch.setattr(connections.registry, "get_provider", lambda key: synthetic)
 
         cred = {"access_token": "a", "refresh_token": "r"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "acme", cred))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "acme", cred, None))
         mock_store.put = AsyncMock()
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(return_value=None)

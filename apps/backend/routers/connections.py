@@ -896,22 +896,27 @@ async def authorize_from_container(owner_id: str, provider: str, request: Reques
     front of the owner — which is why a live connection is refused outright:
     the agent may start a missing connection, never silently rebind one.
 
-    That 409 is a guard against the agent re-starting a live connection, not
-    a fence on the callback: if the owner connects via the tab AND then also
-    finishes this consent within the state TTL, the later credential wins —
-    the same last-writer-wins two admin tabs have today, and both consents
-    are the owner's own. Accepted; not worth state-origin tracking.
+    That rule is enforced twice: here at mint time (409), and again in the
+    callback at apply time — the state row carries ``origin="container"`` and
+    the callback drops a container-originated credential if the provider went
+    live in between (the owner connected via the tab during the state TTL).
+    Owner-started flows are untouched: Google's add-another-account relies on
+    connecting while already connected.
     """
     from routers.agent_builder import _require_hook_token  # local import, as in marketplace_listings
 
     await _require_hook_token(owner_id, request)
-    row = await integrations_repo.get(owner_id, provider)
-    if row and row.get("status", "connected") == "connected":
+    if await _is_connected(owner_id, provider):
         raise HTTPException(status_code=409, detail=f"{provider} is already connected")
-    return await _start_oauth(owner_id, provider)
+    return await _start_oauth(owner_id, provider, origin="container")
 
 
-async def _start_oauth(owner_id: str, provider: str) -> dict:
+async def _is_connected(owner_id: str, provider: str) -> bool:
+    row = await integrations_repo.get(owner_id, provider)
+    return bool(row) and row.get("status", "connected") == "connected"
+
+
+async def _start_oauth(owner_id: str, provider: str, *, origin: str | None = None) -> dict:
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
@@ -922,7 +927,7 @@ async def _start_oauth(owner_id: str, provider: str) -> dict:
     # must surface as a clean, retryable error, not an uncaught 500 that reads as a
     # crash in a demo. The callback leg already degrades the same way.
     try:
-        url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+        url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider), origin=origin)
     except ValueError:
         # No usable OAuth client — e.g. a platform-app provider (instagram) whose
         # shared client hasn't been seeded into Secrets Manager for this env yet
@@ -958,7 +963,9 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
     if not code:
         return _done("error=oauth_provider")
     try:
-        owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
+        owner_id, prov, credential, origin = await oauth_dance.exchange(
+            state, code, redirect_uri=_redirect_uri(provider)
+        )
     except ValueError:
         return _done("error=oauth_state")
     except httpx.HTTPError:
@@ -974,6 +981,12 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
     # by this callback finishing its writes afterwards. Taken AFTER the exchange
     # network call, never around it.
     async with connection_lock.connection_lock(owner_id, prov):
+        # Agent-started flow landing on a provider that went live in between
+        # (the owner connected via the tab during the state TTL): drop it. The
+        # agent may start a missing connection, never rebind a live one — judged
+        # here, under the same lock the writes take, not at mint time.
+        if origin == "container" and await _is_connected(owner_id, prov):
+            return _done("error=already_connected")
         # Retain the credential in Secrets Manager only when the backend is the
         # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
         # container, so the backend stores nothing and the EFS keyring written by

@@ -73,7 +73,7 @@ REDIRECT = "https://app.isol8.co/oauth/callback"
 async def test_start_builds_authorize_url(monkeypatch):
     stored = {}
 
-    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None):
+    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None, origin=None):
         stored.update(state=state, owner_id=owner_id, provider=provider, verifier=verifier, client_id=client_id)
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
@@ -145,7 +145,7 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    owner_id, provider, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    owner_id, provider, credential, _origin = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
 
     assert owner_id == "org_1"
     assert provider == "google"
@@ -364,7 +364,7 @@ async def test_exchange_public_client_omits_client_secret(monkeypatch, fake_app_
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    owner_id, provider, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    owner_id, provider, credential, _origin = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
 
     assert owner_id == "org_1" and provider == "attio"
     assert posted["url"] == "https://app.attio.com/oidc/token"
@@ -411,7 +411,7 @@ async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake
 @pytest.mark.asyncio
 async def test_start_omits_resource_for_byo_provider(monkeypatch):
     # google has no mcp_remote — the authorize request must not carry a resource param.
-    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None):
+    async def _fake_put(state, *, owner_id, provider, verifier, client_id=None, origin=None):
         pass
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put)
@@ -515,7 +515,7 @@ async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_stor
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
 
     # Confidential client: secret IS present in the token body.
     assert posted["data"]["client_secret"] == "secret"
@@ -572,7 +572,7 @@ async def test_exchange_uses_state_bound_client_id_over_store(monkeypatch, fake_
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
 
     # The token POST + credential use the state's client_id, NOT the store's newer one.
     assert posted["data"]["client_id"] == "this_auth_cid"
@@ -610,7 +610,7 @@ async def test_exchange_falls_back_to_store_client_id_for_legacy_state(monkeypat
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
 
     assert posted["data"]["client_id"] == "store_cid"
     assert credential["client_id"] == "store_cid"

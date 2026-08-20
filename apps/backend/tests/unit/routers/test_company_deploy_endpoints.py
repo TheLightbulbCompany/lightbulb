@@ -357,3 +357,34 @@ def test_second_company_deploy_refused_409(
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_one_company_fence_runs_before_the_plan_gate(
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_billing, mock_get_ecs, client, deploy_claim
+):
+    """Ordering: the fence is a pure row read and an unconditional refusal,
+    while the Ultra plan gate's size reconcile can KICK A CONTAINER RESTART.
+    An owner with a deployed company attempting an Ultra listing must get the
+    already-deployed 409 without the billing read or any ecs consult."""
+    mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
+    _claim, _release, get_row = deploy_claim
+    get_row.return_value = {
+        "owner_id": "user_x",
+        "status": "running",
+        "deployed_company": {"listing_id": "l_first", "name": "First Co", "deployed_at": 1},
+    }
+
+    resp = client.post("/api/v1/marketplace/listings/gstack/deploy")
+
+    assert resp.status_code == 409, resp.text
+    assert "already deployed First Co" in resp.json()["detail"]
+    mock_billing.assert_not_awaited()
+    mock_get_ecs.assert_not_called()
+    mock_run.assert_not_called()
+    mock_create_task.assert_not_called()

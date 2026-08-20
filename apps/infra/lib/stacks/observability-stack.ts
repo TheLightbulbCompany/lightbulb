@@ -124,6 +124,13 @@ export class ObservabilityStack extends cdk.Stack {
       displayName: "Isol8 Warn",
     });
 
+    // CloudWatch alarm actions publish as the CloudWatch service principal,
+    // not as this stack's deploy role. Keep the topics closed except for
+    // same-account alarms owned by this environment; otherwise the alarm can
+    // enter ALARM while SNS rejects the action with AuthorizationError.
+    this.allowCloudWatchAlarmPublish(this.pageTopic);
+    this.allowCloudWatchAlarmPublish(this.warnTopic);
+
     // -----------------------------------------------------------------------
     // Alert destinations
     // -----------------------------------------------------------------------
@@ -245,6 +252,25 @@ export class ObservabilityStack extends cdk.Stack {
    * namespace (AWS/ApplicationELB, AWS/ApiGateway, ...) with its own
    * dimension scheme, or a metric built from a construct reference.
    */
+  private allowCloudWatchAlarmPublish(topic: sns.Topic): void {
+    topic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowSameAccountCloudWatchAlarmsPublish",
+        principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [topic.topicArn],
+        conditions: {
+          StringEquals: {
+            "AWS:SourceAccount": cdk.Aws.ACCOUNT_ID,
+          },
+          ArnLike: {
+            "AWS:SourceArn": `arn:${cdk.Aws.PARTITION}:cloudwatch:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:alarm:isol8-${this.envName}-*`,
+          },
+        },
+      }),
+    );
+  }
+
   private createAlarm(def: AlarmDef): cloudwatch.Alarm {
     // Auto-inject env and service dimensions for custom Isol8 namespace
     const isCustomNamespace = !def.namespace || def.namespace === "Isol8";

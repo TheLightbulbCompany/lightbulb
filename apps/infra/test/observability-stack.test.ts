@@ -489,6 +489,42 @@ describe("ObservabilityStack — prod-only paths", () => {
 
   // PagerDuty is what turns a page into a phone push. It is prod-only, so
   // nothing in the dev suite covers it.
+  test("alarm topics allow same-account CloudWatch alarms to publish", () => {
+    for (const env of ["dev", "prod"] as const) {
+      const policyDocs = Object.values(
+        buildTemplate(env).findResources("AWS::SNS::TopicPolicy"),
+      ).map((policy: any) => policy.Properties.PolicyDocument);
+
+      const statements = policyDocs.flatMap((doc: any) => doc.Statement ?? []);
+      const publishStatements = statements.filter(
+        (statement: any) =>
+          statement.Principal?.Service === "cloudwatch.amazonaws.com" &&
+          statement.Action === "sns:Publish",
+      );
+
+      expect(publishStatements).toHaveLength(2);
+      for (const statement of publishStatements) {
+        expect(statement.Condition.StringEquals["AWS:SourceAccount"]).toEqual({
+          Ref: "AWS::AccountId",
+        });
+        expect(statement.Condition.ArnLike["AWS:SourceArn"]).toEqual({
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              { Ref: "AWS::Partition" },
+              ":cloudwatch:",
+              { Ref: "AWS::Region" },
+              ":",
+              { Ref: "AWS::AccountId" },
+              `:alarm:isol8-${env}-*`,
+            ],
+          ],
+        });
+      }
+    }
+  });
+
   test("prod page topic also delivers to PagerDuty over HTTPS", () => {
     const subs = Object.values(template.findResources("AWS::SNS::Subscription"));
     const https = subs.filter((s: any) => s.Properties.Protocol === "https");

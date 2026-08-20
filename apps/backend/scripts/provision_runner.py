@@ -98,18 +98,31 @@ async def _container_already_healthy(manager, owner_id: str, row: dict | None) -
     the box is up we skip straight to ``wait_for_running``, which observes the
     same healthy task and writes the fenced terminal transition.
 
-    Reuses ``resolve_running_container`` (read-only ECS task discovery, see its
-    docstring) + ``is_healthy`` (the gateway TCP probe) rather than
-    ``has_live_service``: "an ACTIVE service with desiredCount > 0" is TRUE for
-    a wedged box whose task is up but whose gateway never opened, and skipping
-    the provision there would remove the one thing that heals it. Anything
-    indeterminate (no service yet, no IP, probe error) answers False, so the
-    runner provisions exactly as it does today — the skip is the special case,
-    never the fallback.
+    ``has_live_service`` first, then the probe — BOTH must pass. The probe
+    (``resolve_running_container`` + ``is_healthy``, the gateway TCP check)
+    cannot be replaced by ``has_live_service`` alone: "an ACTIVE service with
+    desiredCount > 0" is TRUE for a wedged box whose task is up but whose
+    gateway never opened, and skipping the provision there would remove the
+    one thing that heals it. But the probe alone is not enough either: a
+    deliberate stop (provider change, admin reprovision) sets desiredCount=0
+    and only then exposes a claimable row, and the old task keeps answering
+    the gateway probe for its whole drain window (~30s+). Skipping on that
+    probe leaves the runner in ``wait_for_running`` against a service nothing
+    will ever scale up — the founder-org 30-minute provision hang, 2026-08-20.
+    ``has_live_service`` (desired>0 AND a task running or a rollout in
+    progress) is exactly the "something will be up" predicate that drain
+    window fails. Anything indeterminate (no service yet, no IP, probe error)
+    answers False, so the runner provisions exactly as it does today — the
+    skip is the special case, never the fallback.
     """
     if not (row or {}).get("service_name"):
         return False  # brand-new owner: nothing to discover, full provision
     try:
+        if not await manager.has_live_service(owner_id):
+            # desiredCount=0 / no ACTIVE service: a deliberate stop owns this
+            # box; its still-draining task can look healthy. Provision (the
+            # scale-from-zero branch), never skip.
+            return False
         container, ip = await manager.resolve_running_container(owner_id)
         if not container or not ip:
             return False

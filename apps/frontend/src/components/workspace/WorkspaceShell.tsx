@@ -38,6 +38,7 @@ import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout, clearLayout } from "./layoutStorage";
+import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
 import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
@@ -85,6 +86,7 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
 
 export function WorkspaceShell(): React.ReactElement {
   const onboardingPhase = useOnboardingGate(); // exactly ONE mount (router side effects)
+  useBrowserToolAutoOpen(); // desktop-only by mount site; surfaces the Browser panel on agent browser use
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
   const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable

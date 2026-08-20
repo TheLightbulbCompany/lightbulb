@@ -106,6 +106,20 @@ describe("<DeployCompanyButton>", () => {
     expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
   });
 
+  it("already-deployed 409 is terminal — message only, no retry, no links", async () => {
+    vi.mocked(deployCompany).mockRejectedValueOnce(
+      new Error("You already deployed Acme Co — your workspace runs one company package."),
+    );
+    render(<DeployCompanyButton listing={companyListing("standard")} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /deploy company/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/already deployed acme co/i);
+    expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("other errors keep the Try again retry", async () => {
     vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Deploy failed."));
     render(<DeployCompanyButton listing={companyListing("standard")} />);

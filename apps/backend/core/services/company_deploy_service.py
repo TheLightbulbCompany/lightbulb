@@ -213,6 +213,10 @@ async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes, 
     release passes the failure as ``cause`` so a pairing ``TimeoutError``
     HOLDS the claim — the container may still be writing — exactly like the
     single-agent path.
+
+    On real success (agents were created) the owner's ``deployed_company``
+    marker is written — the durable half of the ONE-company-per-workspace
+    fence the deploy route checks.
     """
     created: list[dict] = []
     failure: BaseException | None = None
@@ -225,6 +229,16 @@ async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes, 
         # on a client-side TimeoutError (pair_with_openclaw can time out) —
         # see its docstring.
         await _rollback(owner_id, created, cause=exc)
+    else:
+        # REAL success only — `created` is empty on the creating-nothing early
+        # returns (no company / container unreachable / no Friday), which must
+        # not burn the owner's one company slot. Never raises.
+        if created:
+            await container_repo.set_deployed_company(
+                owner_id,
+                listing_id=str(listing.get("listing_id") or ""),
+                name=str(listing.get("name") or ""),
+            )
     finally:
         if claim_token:
             await container_repo.release_owner_deploy_claim(

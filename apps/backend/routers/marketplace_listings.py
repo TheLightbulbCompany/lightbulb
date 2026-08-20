@@ -771,6 +771,45 @@ async def deploy_listing(
                 detail="purchase required to deploy this listing",
             )
 
+        # A company deploy needs a RUNNING pod: the background job refuses to
+        # create Paperclip agents it cannot pair, which from the buyer's seat
+        # was a 202 + confirmation card + an empty roster (a fresh account that
+        # never opened the app has no container at all; a free-tier pod may be
+        # scaled to zero). Refuse up front instead, and point at the app —
+        # deliberately NOT dispatching provisioning from here: ensure_user_ready
+        # has exactly ONE trigger (GET /container/status — see user_provision's
+        # module docstring), and opening the app is what drives it, wake
+        # included.
+        container_row = await container_repo.get_by_owner_id(owner_id)
+        if container_row is None or container_row.get("status") != "running":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Your pod isn't running yet — open the app to finish setup "
+                    "(or wake your agents), then retry this deploy."
+                ),
+            )
+
+        # ONE company package per workspace. A second whole org — the same
+        # listing again or a different one — grafts a duplicate role structure
+        # onto the same Friday, and same-listing retries would mint the entire
+        # company twice (single-agent hires have an already-installed dedupe;
+        # this is the company equivalent). The marker is written by
+        # run_company_deploy on real success and dies with the row on a
+        # workspace wipe/reprovision. Checked BEFORE the plan gate below: this
+        # is a pure row read and an unconditional refusal, while the plan
+        # gate's size reconcile can KICK A CONTAINER RESTART — wasted, real
+        # disruption for a request this fence was always going to refuse.
+        already = container_row.get("deployed_company")
+        if isinstance(already, dict) and already.get("listing_id"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"You already deployed {already.get('name') or 'a company'} — "
+                    "your workspace runs one company package."
+                ),
+            )
+
         # min_plan is "standard" iff agent_count <= 10 (see company_package).
         # A company needing Ultra (min_plan != standard, or — belt-and-
         # suspenders — a raw agent_count over the standard cap should a manifest
@@ -823,25 +862,6 @@ async def deploy_listing(
                     status_code=409,
                     detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
                 )
-
-        # A company deploy needs a RUNNING pod: the background job refuses to
-        # create Paperclip agents it cannot pair, which from the buyer's seat
-        # was a 202 + confirmation card + an empty roster (a fresh account that
-        # never opened the app has no container at all; a free-tier pod may be
-        # scaled to zero). Refuse up front instead, and point at the app —
-        # deliberately NOT dispatching provisioning from here: ensure_user_ready
-        # has exactly ONE trigger (GET /container/status — see user_provision's
-        # module docstring), and opening the app is what drives it, wake
-        # included.
-        container_row = await container_repo.get_by_owner_id(owner_id)
-        if container_row is None or container_row.get("status") != "running":
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Your pod isn't running yet — open the app to finish setup "
-                    "(or wake your agents), then retry this deploy."
-                ),
-            )
 
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:

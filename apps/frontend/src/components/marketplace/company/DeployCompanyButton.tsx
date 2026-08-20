@@ -100,7 +100,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
             <a href="/chat" className="font-bold underline hover:opacity-80">
               Open the app
             </a>
-          ) : (
+          ) : /already deployed/i.test(error) ? null : (
             <button onClick={deploy} className="font-bold underline hover:opacity-80" type="button">
               Try again
             </button>

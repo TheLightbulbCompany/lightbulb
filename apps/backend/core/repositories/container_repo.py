@@ -768,6 +768,44 @@ def _held_listing_id(raw_item: dict | None) -> str | None:
         return None
 
 
+async def set_deployed_company(owner_id: str, *, listing_id: str, name: str) -> None:
+    """Record that this owner's workspace holds a deployed company package.
+
+    Written by ``run_company_deploy`` on REAL success only (agents were
+    created and materialized — never on the creating-nothing early returns),
+    and read by the deploy route to enforce ONE company package per workspace:
+    a second company deploy — same listing or a different one — is refused
+    409, because a whole second org grafted onto the same Friday duplicates
+    role structures and (on the standard plan) blows the agent budget.
+
+    A workspace wipe/reprovision deletes the row, so a fresh slate can deploy
+    again — that is the intended semantics, not a leak.
+
+    **Never raises**: the deploy has already succeeded when this runs; a
+    marker miss just means the fence is open for this owner (logged loudly).
+    """
+    try:
+        await update_fields(
+            owner_id,
+            {
+                "deployed_company": {
+                    "listing_id": listing_id,
+                    "name": name,
+                    "deployed_at": int(time.time()),
+                }
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — see docstring
+        logger.error(
+            "set_deployed_company: marker write failed for owner=%s listing=%s (%s: %s) "
+            "— one-company fence is OPEN for this owner",
+            owner_id,
+            listing_id,
+            type(e).__name__,
+            e,
+        )
+
+
 async def extend_owner_deploy_claim(owner_id: str, *, token: str) -> None:
     """Refresh the claim's ``claimed_at`` so a long-running holder keeps its
     lease. Company deploys call this once per agent step: each step is bounded

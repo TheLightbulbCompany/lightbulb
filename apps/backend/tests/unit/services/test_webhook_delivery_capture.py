@@ -12,7 +12,9 @@ def test_builds_stripe_capture_record_with_raw_body_and_signature_headers():
     body = b'{"id":"evt_123","type":"invoice.payment_failed","created":1787211000}'
     record = capture.build_capture_record(
         body=body,
-        headers=Headers({"Stripe-Signature": "t=1,v1=abc", "Content-Type": "application/json", "Authorization": "secret"}),
+        headers=Headers(
+            {"Stripe-Signature": "t=1,v1=abc", "Content-Type": "application/json", "Authorization": "secret"}
+        ),
         source="paperclip_trigger_proxy",
         owner_id="owner_1",
         trigger_public_id="pub_1",
@@ -30,7 +32,9 @@ def test_builds_stripe_capture_record_with_raw_body_and_signature_headers():
 
 
 def test_builds_meta_capture_record_with_fields_and_stable_fallback_delivery_id():
-    body = json.dumps({"object": "page", "entry": [{"id": "p1", "time": 1787211001, "changes": [{"field": "feed"}]}]}).encode()
+    body = json.dumps(
+        {"object": "page", "entry": [{"id": "p1", "time": 1787211001, "changes": [{"field": "feed"}]}]}
+    ).encode()
     record = capture.build_capture_record(
         body=body,
         headers=Headers({"X-Hub-Signature-256": "sha256=abc"}),

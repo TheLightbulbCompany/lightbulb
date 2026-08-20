@@ -71,7 +71,17 @@ def cmd_export(args: argparse.Namespace) -> None:
         time.sleep(2)
         results = json.loads(
             subprocess.check_output(
-                ["aws", "logs", "get-query-results", "--region", args.region, "--query-id", start_out, "--output", "json"],
+                [
+                    "aws",
+                    "logs",
+                    "get-query-results",
+                    "--region",
+                    args.region,
+                    "--query-id",
+                    start_out,
+                    "--output",
+                    "json",
+                ],
                 text=True,
             )
         )
@@ -100,7 +110,9 @@ def cmd_manifest(args: argparse.Namespace) -> None:
                     "signature_headers": sorted((record.get("signature_headers") or {}).keys()),
                 }
             )
-    Path(args.out).write_text(json.dumps({"capture_count": len(records), "event_types": by_type}, indent=2, sort_keys=True) + "\n")
+    Path(args.out).write_text(
+        json.dumps({"capture_count": len(records), "event_types": by_type}, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def cmd_replay(args: argparse.Namespace) -> None:
@@ -110,7 +122,12 @@ def cmd_replay(args: argparse.Namespace) -> None:
         if record.get("content_type"):
             headers["content-type"] = record["content_type"]
         if args.dry_run:
-            print(json.dumps({"would_replay": record.get("provider_delivery_id"), "event": record.get("provider_event_type")}, sort_keys=True))
+            print(
+                json.dumps(
+                    {"would_replay": record.get("provider_delivery_id"), "event": record.get("provider_event_type")},
+                    sort_keys=True,
+                )
+            )
             continue
         req = urllib.request.Request(args.url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=args.timeout_seconds) as resp:  # noqa: S310 - operator-provided URL

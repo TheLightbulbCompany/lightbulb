@@ -113,7 +113,11 @@ def infer_delivery_metadata(body: bytes, headers: Headers | Mapping[str, str]) -
     provider = "unknown"
     if "stripe-signature" in lowered:
         provider = "stripe"
-    elif "x-hub-signature-256" in lowered and isinstance(payload, dict) and payload.get("object") in {"page", "instagram"}:
+    elif (
+        "x-hub-signature-256" in lowered
+        and isinstance(payload, dict)
+        and payload.get("object") in {"page", "instagram"}
+    ):
         provider = "meta"
     elif "x-github-event" in lowered:
         provider = "github"
@@ -131,7 +135,9 @@ def infer_delivery_metadata(body: bytes, headers: Headers | Mapping[str, str]) -
         or _body_value(payload, "id", "event.id", "data.id")
     )
     if not delivery_id:
-        digest = hashlib.sha256(body + (lowered.get("stripe-signature") or lowered.get("x-hub-signature-256") or "").encode()).hexdigest()
+        digest = hashlib.sha256(
+            body + (lowered.get("stripe-signature") or lowered.get("x-hub-signature-256") or "").encode()
+        ).hexdigest()
         delivery_id = f"sha256:{digest}"
 
     timestamp = _body_value(payload, "created", "created_at", "createdAt", "time")

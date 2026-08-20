@@ -615,13 +615,12 @@ async def try_claim_owner_deploy(
     but must serialize with those paths so concurrent recommendations cannot
     file duplicate approvals for one logical hire.
 
-    NOT FENCED — ``company_deploy_service.run_company_deploy``, deliberately. It
-    creates and pairs N agents in one background run, so its wall clock is N x a
-    single deploy's; no single lease can cover it without a wedge far longer than
-    ``DEPLOY_CLAIM_STALE_S``, and a lease that expires mid-run is worse than none
-    (see the constant's comment). It is platform-admin-only behind
-    COMPANY_MARKETPLACE_LAUNCH_GATE, so it cannot collide with a buyer hire in
-    practice.
+    ``company_deploy_service.run_company_deploy`` is fenced too, but its wall
+    clock is N x a single deploy's — longer than one ``DEPLOY_CLAIM_STALE_S``
+    lease. It holds the claim across the whole run by calling
+    ``extend_owner_deploy_claim`` at each per-agent step, so the lease only
+    goes stale if the process actually dies mid-run (the takeover posture a
+    single-deploy timeout gets).
 
     Also NOT fenced, and out of scope for this claim: the two BARE agent creates
     (``routers/teams/agents.create_agent`` and ``routers/websocket_chat``), which
@@ -767,6 +766,35 @@ def _held_listing_id(raw_item: dict | None) -> str | None:
     except Exception:
         logger.warning("_held_listing_id: failed to parse ALL_OLD item — falling back to unknown holder")
         return None
+
+
+async def extend_owner_deploy_claim(owner_id: str, *, token: str) -> None:
+    """Refresh the claim's ``claimed_at`` so a long-running holder keeps its
+    lease. Company deploys call this once per agent step: each step is bounded
+    well under ``DEPLOY_CLAIM_STALE_S``, so a live run never goes stale, while
+    a dead one stops extending and is taken over on the normal cutoff.
+
+    Conditioned on ``tok`` — a holder that already lost its lease to takeover
+    cannot resurrect it. **Never raises**: a failed extension just means the
+    lease can go stale mid-run, which is the pre-existing takeover posture.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET deploy_claims.#lid.claimed_at = :now",
+            ConditionExpression="deploy_claims.#lid.tok = :tok",
+            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
+            ExpressionAttributeValues={":now": int(time.time()), ":tok": token},
+        )
+    except Exception as e:  # noqa: BLE001 — see docstring
+        logger.warning(
+            "extend_owner_deploy_claim: could not extend for owner=%s (%s: %s) — lease may go stale",
+            owner_id,
+            type(e).__name__,
+            e,
+        )
 
 
 def _has_timeout_cause(exc: BaseException | None) -> bool:

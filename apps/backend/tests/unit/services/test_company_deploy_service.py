@@ -739,3 +739,85 @@ async def test_admin_http_closed_on_success(monkeypatch):
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert h.http.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Owner-wide deploy claim (buyer launch): extended per agent, released on settle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_extended_per_agent_and_released_on_success(monkeypatch):
+    """The run owns the router's claim: the lease is extended once per planned
+    agent (a company's wall clock is N x a single deploy's) and released with
+    no cause when the run succeeds."""
+    h = Harness()
+    _install(monkeypatch, h, plan=_simple_plan())
+    extends: list[str] = []
+    releases: list[tuple[str, BaseException | None]] = []
+
+    async def fake_extend(owner_id, *, token):
+        extends.append(token)
+
+    async def fake_release(owner_id, *, listing_id, token, cause=None):
+        releases.append((token, cause))
+
+    monkeypatch.setattr(svc.container_repo, "extend_owner_deploy_claim", fake_extend)
+    monkeypatch.setattr(svc.container_repo, "release_owner_deploy_claim", fake_release)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1"}, tar_bytes=b"", claim_token="tok")
+
+    assert extends == ["tok", "tok", "tok"]
+    assert releases == [("tok", None)]
+
+
+@pytest.mark.asyncio
+async def test_claim_released_with_the_failure_as_cause(monkeypatch):
+    """A failed run releases the claim with the failure as ``cause`` — so a
+    pairing TimeoutError HOLDS the claim (release no-ops on it), exactly like
+    the single-agent path."""
+    h = Harness()
+    _install(monkeypatch, h, plan=_simple_plan())
+    boom = RuntimeError("pair failed")
+
+    async def fail_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        raise boom
+
+    monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)
+
+    async def fake_extend(owner_id, *, token):
+        return None
+
+    releases: list[tuple[str, BaseException | None]] = []
+
+    async def fake_release(owner_id, *, listing_id, token, cause=None):
+        releases.append((token, cause))
+
+    monkeypatch.setattr(svc.container_repo, "extend_owner_deploy_claim", fake_extend)
+    monkeypatch.setattr(svc.container_repo, "release_owner_deploy_claim", fake_release)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1"}, tar_bytes=b"", claim_token="tok")
+
+    assert releases == [("tok", boom)]
+
+
+@pytest.mark.asyncio
+async def test_no_claim_token_touches_no_claim(monkeypatch):
+    """claim_token=None (direct service callers, older dispatch shapes) never
+    calls the claim machinery."""
+    h = Harness()
+    _install(monkeypatch, h, plan=_simple_plan())
+    touched: list[str] = []
+
+    async def fake_extend(owner_id, *, token):
+        touched.append("extend")
+
+    async def fake_release(owner_id, *, listing_id, token, cause=None):
+        touched.append("release")
+
+    monkeypatch.setattr(svc.container_repo, "extend_owner_deploy_claim", fake_extend)
+    monkeypatch.setattr(svc.container_repo, "release_owner_deploy_claim", fake_release)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert touched == []

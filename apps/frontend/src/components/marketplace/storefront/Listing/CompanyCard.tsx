@@ -28,7 +28,7 @@ export function CompanyCard({ listing }: { listing: Listing }) {
           </span>
         ) : (
           <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
-            Deploy — coming soon
+            One-click deploy
           </span>
         )}
       </div>

@@ -9,24 +9,20 @@ import type { Listing } from "@/lib/marketplace/types";
 
 /**
  * Company-listing CTA on the buyer detail page. Owns the whole company action:
- *
- *  - `min_plan: "ultra_pro"` → the "Requires Ultra Pro" upsell (that tier's
- *    deploy engine ships later). No active deploy.
- *  - `min_plan: "standard"`  → an enabled "Deploy company" button. Clicking it
- *    POSTs the deploy (fire-and-forget: the backend returns 202 immediately and
- *    instantiates the whole org off the request path) and swaps in a static
- *    confirmation card pointing the buyer at Teams.
+ * an enabled "Deploy company" button that POSTs the deploy (fire-and-forget:
+ * the backend returns 202 immediately and instantiates the whole org off the
+ * request path) and swaps in a static confirmation card pointing the buyer at
+ * Teams.
  *
  * The deploy is fire-and-forget — there is no job to poll. The agents appear in
  * the buyer's Teams roster as they're created (the Paperclip roster is the
  * source of truth), and routines land paused for the buyer to enable from
  * Teams.
  *
- * The button renders unconditionally for standard companies — the platform
- * admin-only window is enforced *server-side* (the deploy route requires a
- * platform admin until the dev E2E validates the engine), and a later task
- * opens it to all buyers. A non-admin who clicks it gets the backend's 403
- * surfaced inline rather than a hidden button.
+ * Plan gating is server-side: a company needing Ultra 409s "Requires Ultra
+ * Pro" for a standard-plan owner (the button can't know the viewer's plan —
+ * this page renders signed-out too), so that error gets an upgrade link to
+ * Settings instead of a bare retry.
  */
 export function DeployCompanyButton({ listing }: { listing: Listing }) {
   const company = companyMeta(listing);
@@ -38,18 +34,6 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
   // Not a company row — nothing to render (the page only mounts this in the
   // company branch, but stay defensive).
   if (!company) return null;
-
-  if (company.min_plan === "ultra_pro") {
-    return (
-      <button
-        disabled
-        className="editorial-btn editorial-btn--primary h-12 px-6 text-sm opacity-60"
-        title="Ultra Pro tier coming soon"
-      >
-        Requires Ultra Pro
-      </button>
-    );
-  }
 
   if (started) {
     return (
@@ -108,9 +92,15 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
           role="alert"
         >
           {error}{" "}
-          <button onClick={deploy} className="font-bold underline hover:opacity-80" type="button">
-            Try again
-          </button>
+          {/Ultra Pro/i.test(error) ? (
+            <a href="/settings" className="font-bold underline hover:opacity-80">
+              Upgrade in Settings
+            </a>
+          ) : (
+            <button onClick={deploy} className="font-bold underline hover:opacity-80" type="button">
+              Try again
+            </button>
+          )}
         </p>
       )}
     </div>

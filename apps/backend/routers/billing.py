@@ -16,7 +16,6 @@ from core.auth import (
     is_org_owner_id,
     resolve_owner_id,
     require_org_admin,
-    require_platform_admin,
 )
 from core.config import settings
 from core.observability.metrics import put_metric, timing
@@ -768,13 +767,6 @@ async def create_ultra_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):
     from core.services.billing_service import BillingServiceError, create_ultra_upgrade
-
-    # COMPANY_MARKETPLACE_LAUNCH_GATE: Ultra Pro's only benefit is deploying
-    # large marketplace companies, and that deploy path is platform-admin-only
-    # until buyer launch — so gate the paid upgrade the same way, or a customer
-    # could pay $150 for a tier they can't use. Remove every
-    # COMPANY_MARKETPLACE_LAUNCH_GATE marker to open both to buyers together.
-    require_platform_admin(auth)
 
     # Org admins only — a billing action, so mirror /trial-checkout,
     # /team-checkout and /provider. A non-admin org member must not be able to

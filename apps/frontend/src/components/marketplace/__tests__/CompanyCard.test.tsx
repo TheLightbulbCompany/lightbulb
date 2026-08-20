@@ -26,7 +26,7 @@ describe("CompanyCard", () => {
     render(<CompanyCard listing={companyListing(5, "standard")} />);
     expect(screen.getByText(/5 agents/i)).toBeInTheDocument();
     expect(screen.getByText(/27 skills/i)).toBeInTheDocument();
-    expect(screen.getByText(/coming soon/i)).toBeInTheDocument();
+    expect(screen.getByText(/one-click deploy/i)).toBeInTheDocument();
   });
 
   it("shows the Ultra Pro badge for large companies", () => {

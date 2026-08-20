@@ -84,13 +84,37 @@ describe("<DeployCompanyButton>", () => {
     expect(screen.queryByRole("button", { name: /deploy company/i })).toBeNull();
   });
 
-  it("ultra_pro company: renders the Requires Ultra Pro upsell and never deploys", () => {
+  it("ultra_pro company: renders an enabled Deploy button (plan gating is server-side)", () => {
     render(<DeployCompanyButton listing={companyListing("ultra_pro")} />);
 
-    expect(screen.getByText(/requires ultra pro/i)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /deploy company/i }),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: /deploy company/i })).toBeEnabled();
     expect(deployCompany).not.toHaveBeenCalled();
+  });
+
+  it("Requires Ultra Pro 409: shows the error with an Upgrade in Settings link, not a retry", async () => {
+    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra Pro"));
+    render(<DeployCompanyButton listing={companyListing("ultra_pro")} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /deploy company/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/requires ultra pro/i);
+    expect(screen.getByRole("link", { name: /upgrade in settings/i })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
+    expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+  });
+
+  it("other errors keep the Try again retry", async () => {
+    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Deploy failed."));
+    render(<DeployCompanyButton listing={companyListing("standard")} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /deploy company/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/deploy failed/i);
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /upgrade in settings/i })).toBeNull();
   });
 });

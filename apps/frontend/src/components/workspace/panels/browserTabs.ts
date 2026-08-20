@@ -43,3 +43,15 @@ export function normalizeTabs(payload: unknown): BrowserTab[] {
     ];
   });
 }
+
+/** Display label for a tab: its title, else the URL host, else "New tab".
+ * Same precedence as the fork Control-UI's tab strip (browser-panel-tabs.ts). */
+export function tabLabel(tab: BrowserTab): string {
+  const title = tab.title.trim();
+  if (title) return title;
+  try {
+    return new URL(tab.url).host || "New tab";
+  } catch {
+    return tab.url || "New tab";
+  }
+}

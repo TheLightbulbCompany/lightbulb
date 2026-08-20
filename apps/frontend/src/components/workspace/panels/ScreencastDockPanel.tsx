@@ -29,13 +29,14 @@
 
 import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Chrome, RotateCcw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, Chrome, Globe, Plus, RotateCcw, RotateCw, X } from "lucide-react";
 
 import { BACKEND_URL } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { screencastWsUrl } from "./browserViewUrl";
-import { normalizeTabs, type BrowserTab } from "./browserTabs";
+import { normalizeTabs, tabLabel, type BrowserTab } from "./browserTabs";
+import { normalizeBrowserUrlDraft } from "./browserNav";
 import {
   mapPointerToDevice,
   toCdpKeyEvent,
@@ -59,6 +60,19 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
   // would get wake-spammed), same policy as the VNC panel.
   const [attempt, setAttempt] = useState(0);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  // The RAW CDP target id the relay is streaming (echoed by its {type:"target"}
+  // message). The chrome addresses tabs two ways: the RAW id highlights the
+  // active tab + is what ?target= reconnects to (the relay/CDP only knows raw
+  // ids), while browser.request calls (navigate/focus/act/close) use the tab's
+  // stable ALIAS id, which the plugin resolves server-side.
+  const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
+  // URL bar: while editing, show the user's draft; otherwise mirror the active
+  // tab's live URL (derived at render — no setState-in-effect sync needed).
+  const [editing, setEditing] = useState(false);
+  const [urlDraft, setUrlDraft] = useState("");
+  // Raw target the NEXT (re)connect should stream; null = let the relay pick the
+  // first page target. Read at connect time; a switch sets it then bumps attempt.
+  const desiredTargetRef = useRef<string | null>(null);
   const refreshSeq = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
@@ -132,7 +146,10 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
         // Token rides the subprotocol offer next to the accept token, same
         // cross-host auth channel as the VNC relay. The relay selects
         // "isol8-screencast"; the JWT never becomes the selected protocol.
-        ws = new WebSocket(screencastWsUrl(BACKEND_URL), ["isol8-screencast", token]);
+        ws = new WebSocket(screencastWsUrl(BACKEND_URL, desiredTargetRef.current), [
+          "isol8-screencast",
+          token,
+        ]);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -151,10 +168,16 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
         };
         ws.onmessage = (ev) => {
           if (cancelled) return;
-          let frame: { type?: string; data?: string; metadata?: ScreencastMetadata };
+          let frame: { type?: string; data?: string; metadata?: ScreencastMetadata; targetId?: string };
           try {
             frame = JSON.parse(typeof ev.data === "string" ? ev.data : "");
           } catch {
+            return;
+          }
+          // The relay's opening frame names the raw target it's streaming, so the
+          // tab strip highlights the right tab + the URL bar shows its address.
+          if (frame.type === "target") {
+            setActiveTargetId(typeof frame.targetId === "string" ? frame.targetId : null);
             return;
           }
           if (frame.type !== "frame" || !frame.data) return;
@@ -249,7 +272,7 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
     [send],
   );
 
-  // ---- Tab strip (unchanged from the VNC panel: the stuck-popup escape) ----
+  // ---- Tab list (drives the chrome tab strip + URL bar; polled every 5s) ----
   const refreshTabs = useCallback(async () => {
     const seq = ++refreshSeq.current;
     const apply = (next: BrowserTab[]) => {
@@ -275,13 +298,98 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
     return () => clearInterval(timer);
   }, [state, refreshTabs]);
 
+  // The tab the stream is showing: matched by the relay's raw target id, else
+  // the first tab (fresh connect before {type:"target"} lands).
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.targetId === activeTargetId) ?? tabs[0] ?? null,
+    [tabs, activeTargetId],
+  );
+
+  // The address the URL bar shows: the user's draft while editing, else the
+  // active tab's live URL (updates on the tab poll with no effect/sync).
+  const urlValue = editing ? urlDraft : (activeTab?.url ?? "");
+
+  // Point the screencast at a raw target (or the first, when null) by reconnecting
+  // — the only way to move a per-page stream. Reuses the retry() reconnect path;
+  // state stays "connected" so the canvas holds the last frame (no overlay flash)
+  // until the new tab paints.
+  const reconnectTo = useCallback((rawTargetId: string | null) => {
+    desiredTargetRef.current = rawTargetId;
+    if (rawTargetId) setActiveTargetId(rawTargetId); // optimistic; relay confirms
+    setAttempt((n) => n + 1);
+  }, []);
+
+  const switchTab = useCallback(
+    (tab: BrowserTab) => {
+      if (tab.targetId === activeTargetId) return;
+      // Foreground it (so a background tab actually composites) then stream it.
+      void callRpc("browser.request", { method: "POST", path: "/tabs/focus", body: { targetId: tab.id } }).catch(
+        () => {},
+      );
+      reconnectTo(tab.targetId);
+    },
+    [activeTargetId, callRpc, reconnectTo],
+  );
+
+  const newTab = useCallback(() => {
+    void callRpc("browser.request", { method: "POST", path: "/tabs/action", body: { action: "new" } })
+      .then((res) => {
+        const raw = (res as { tab?: { targetId?: unknown } } | null)?.tab?.targetId;
+        if (typeof raw === "string" && raw) reconnectTo(raw);
+      })
+      .catch(() => {})
+      .finally(() => void refreshTabs());
+  }, [callRpc, reconnectTo, refreshTabs]);
+
   const closeTab = useCallback(
-    (id: string) => {
-      void callRpc("browser.request", { method: "DELETE", path: `/tabs/${encodeURIComponent(id)}` })
+    (tab: BrowserTab) => {
+      void callRpc("browser.request", { method: "DELETE", path: `/tabs/${encodeURIComponent(tab.id)}` })
+        .catch(() => {})
+        .finally(() => {
+          void refreshTabs();
+          // Closed the streamed tab → fall the stream back to the first remaining.
+          if (tab.targetId === activeTargetId) reconnectTo(null);
+        });
+    },
+    [activeTargetId, callRpc, reconnectTo, refreshTabs],
+  );
+
+  const navigateTo = useCallback(
+    (raw: string) => {
+      const url = normalizeBrowserUrlDraft(raw);
+      if (!url || !activeTab) return;
+      void callRpc("browser.request", {
+        method: "POST",
+        path: "/navigate",
+        body: { url, targetId: activeTab.id },
+      })
         .catch(() => {})
         .finally(() => void refreshTabs());
     },
-    [callRpc, refreshTabs],
+    [activeTab, callRpc, refreshTabs],
+  );
+
+  // Reload = re-navigate to the current URL (the fork's reloadPage: a live
+  // document reload, not just a repaint). No dedicated reload route exists.
+  const reload = useCallback(() => {
+    if (activeTab?.url) navigateTo(activeTab.url);
+  }, [activeTab, navigateTo]);
+
+  // Back/forward via the browser tool's evaluate route (history.go) — the same
+  // path the fork's own Control-UI browser panel uses; evaluate is enabled by
+  // default in the container config. No back/forward HTTP route exists.
+  const goHistory = useCallback(
+    (delta: -1 | 1) => {
+      if (!activeTab) return;
+      void callRpc("browser.request", {
+        method: "POST",
+        path: "/act",
+        body: { kind: "evaluate", targetId: activeTab.id, fn: `() => { history.go(${delta}); return true; }` },
+      })
+        .catch(() => {})
+        .finally(() => window.setTimeout(() => void refreshTabs(), 700));
+    },
+    [activeTab, callRpc, refreshTabs],
   );
 
   const retry = useCallback(() => {
@@ -291,16 +399,117 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
 
   return (
     <div className="relative flex h-full w-full flex-col bg-[var(--panel)]">
-      {/* The screencast canvas. tabIndex makes it focusable so it receives key
-          events. objectFit "fill" (NOT "contain") stays deliberate now that the
-          viewport tracks the panel: steady-state the frame's aspect EQUALS the
-          panel's (the relay's cap is aspect-preserving), so fill has nothing to
-          distort, and during the ~150ms resize debounce the transient mismatch
-          renders as a brief stretch — visually a window mid-resize. "contain"
-          would letterbox that transient instead AND reintroduce the letterbox
-          offset correction in mapPointerToDevice; fill keeps the displayed rect
-          equal to the painted frame, so proportional pointer mapping stays exact
-          even mid-resize. */}
+      {/* Browser chrome: a REAL flex child above the canvas (not an overlay), so
+          the canvas box shrinks by the chrome height and mapPointerToDevice —
+          which reads the canvas's own getBoundingClientRect — stays exact, and
+          the ResizeObserver reflows the container viewport to the smaller box. */}
+      {state === "connected" && (
+        <div className="flex shrink-0 flex-col border-b border-[var(--line)] bg-[var(--panel)]">
+          {/* Tab strip */}
+          <div className="flex items-center gap-1 overflow-x-auto px-1.5 pt-1.5">
+            {tabs.map((tab) => {
+              const active = tab.targetId === activeTargetId;
+              const label = tabLabel(tab);
+              return (
+                <div
+                  key={tab.id}
+                  role="tab"
+                  aria-selected={active}
+                  title={tab.url || label}
+                  onClick={() => switchTab(tab)}
+                  className={`flex min-w-0 max-w-[200px] shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 py-1 text-xs ${
+                    active
+                      ? "border-[var(--line)] bg-[var(--hover)] text-[var(--ink)]"
+                      : "border-transparent text-[var(--mute)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  <Globe size={12} className="shrink-0 opacity-70" />
+                  <span className="truncate">{label}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(tab);
+                    }}
+                    aria-label={`Close ${label}`}
+                    className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--mute)] transition-colors hover:bg-[var(--line)] hover:text-[var(--ink)]"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              onClick={newTab}
+              aria-label="New tab"
+              className="shrink-0 rounded p-1 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+
+          {/* Toolbar: back / forward / reload + address bar */}
+          <div className="flex items-center gap-1 px-1.5 py-1.5">
+            <button
+              onClick={() => goHistory(-1)}
+              aria-label="Back"
+              className="rounded p-1 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <button
+              onClick={() => goHistory(1)}
+              aria-label="Forward"
+              className="rounded p-1 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <ArrowRight size={16} />
+            </button>
+            <button
+              onClick={reload}
+              aria-label="Reload"
+              className="rounded p-1 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <RotateCw size={15} />
+            </button>
+            <form
+              className="flex-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                navigateTo(urlValue);
+                canvasRef.current?.focus();
+              }}
+            >
+              <input
+                type="text"
+                inputMode="url"
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Address bar"
+                placeholder="Enter a URL"
+                value={urlValue}
+                onChange={(e) => setUrlDraft(e.target.value)}
+                onFocus={(e) => {
+                  setEditing(true);
+                  setUrlDraft(activeTab?.url ?? "");
+                  e.currentTarget.select();
+                }}
+                onBlur={() => setEditing(false)}
+                className="w-full truncate rounded-md border border-[var(--line)] bg-[var(--panel)] px-2.5 py-1 text-xs text-[var(--ink)] outline-none focus:border-[var(--forest)]"
+              />
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* The screencast canvas (fills the area below the chrome). tabIndex makes
+          it focusable so it receives key events. objectFit "fill" (NOT "contain")
+          stays deliberate now that the viewport tracks the panel: steady-state
+          the frame's aspect EQUALS the canvas box's (the relay's cap is
+          aspect-preserving), so fill has nothing to distort, and during the
+          ~150ms resize debounce the transient mismatch renders as a brief
+          stretch — visually a window mid-resize. "contain" would letterbox that
+          transient AND reintroduce the letterbox offset in mapPointerToDevice;
+          fill keeps the displayed rect equal to the painted frame, so
+          proportional pointer mapping stays exact even mid-resize. */}
       <canvas
         ref={canvasRef}
         tabIndex={0}
@@ -313,27 +522,6 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
         className="min-h-0 min-w-0 flex-1 outline-none"
         style={{ width: "100%", height: "100%", objectFit: "fill" }}
       />
-
-      {state === "connected" && tabs.length > 1 && (
-        <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-1.5 overflow-x-auto border-b border-[var(--line)] bg-[var(--panel)] px-2 py-1.5">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              title={tab.url || tab.title}
-              className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink)]"
-            >
-              <span className="max-w-[180px] truncate">{tab.title || tab.url || "Untitled"}</span>
-              <button
-                onClick={() => closeTab(tab.id)}
-                aria-label={`Close ${tab.title || tab.url || "this browser window"}`}
-                className="rounded p-0.5 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
 
       {state !== "connected" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">

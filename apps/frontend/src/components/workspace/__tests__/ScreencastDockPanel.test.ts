@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { screencastWsUrl } from "../panels/browserViewUrl";
 import { mapPointerToDevice, toCdpMouseEvent, toCdpKeyEvent } from "../panels/screencastInput";
+import { normalizeBrowserUrlDraft } from "../panels/browserNav";
+import { tabLabel } from "../panels/browserTabs";
 
 // The screencast rides the SAME bv door as the VNC relay (its path is under
 // /browser-view/*), so the host mapping is identical and just as load-bearing.
@@ -21,6 +23,50 @@ describe("screencastWsUrl", () => {
     expect(screencastWsUrl("http://localhost:8000/api/v1")).toBe(
       "ws://localhost:8000/api/v1/browser-view/screencast/ws",
     );
+  });
+
+  it("appends ?target= so the relay streams the tab the chrome switched to", () => {
+    expect(screencastWsUrl("https://api-dev.isol8.co/api/v1", "ABC-123")).toBe(
+      "wss://bv-dev.isol8.co/api/v1/browser-view/screencast/ws?target=ABC-123",
+    );
+    // No target ⇒ bare url (relay picks the first page target).
+    expect(screencastWsUrl("https://api-dev.isol8.co/api/v1", null)).toBe(
+      "wss://bv-dev.isol8.co/api/v1/browser-view/screencast/ws",
+    );
+  });
+});
+
+// URL bar coercion (ported from the fork's browser-url.ts): a bare host gets
+// https://, "host:port" is not mistaken for a scheme, and a non-http(s) scheme
+// is rejected so the address bar can't push e.g. javascript:/file: to /navigate.
+describe("normalizeBrowserUrlDraft", () => {
+  it("prepends https:// to a bare host", () => {
+    expect(normalizeBrowserUrlDraft("example.com")).toBe("https://example.com/");
+  });
+  it("keeps an explicit http(s) scheme", () => {
+    expect(normalizeBrowserUrlDraft("http://example.com/x")).toBe("http://example.com/x");
+  });
+  it("treats host:port as a host, not a scheme", () => {
+    expect(normalizeBrowserUrlDraft("localhost:3000")).toBe("https://localhost:3000/");
+  });
+  it("rejects a non-http(s) scheme and blank input", () => {
+    expect(normalizeBrowserUrlDraft("javascript:alert(1)")).toBeNull();
+    expect(normalizeBrowserUrlDraft("   ")).toBeNull();
+  });
+});
+
+// Tab-strip label precedence: title, else URL host, else a fallback.
+describe("tabLabel", () => {
+  const base = { id: "t1", targetId: "raw", title: "", url: "" };
+  it("prefers the title", () => {
+    expect(tabLabel({ ...base, title: "My Page", url: "https://x.com" })).toBe("My Page");
+  });
+  it("falls back to the URL host when untitled", () => {
+    expect(tabLabel({ ...base, url: "https://docs.example.com/a/b" })).toBe("docs.example.com");
+  });
+  it("falls back to 'New tab' for a blank/opaque tab", () => {
+    expect(tabLabel(base)).toBe("New tab");
+    expect(tabLabel({ ...base, url: "about:blank" })).toBe("New tab");
   });
 });
 

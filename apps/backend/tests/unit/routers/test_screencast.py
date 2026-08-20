@@ -80,8 +80,8 @@ def test_ws_no_cdp_target_closes_4503(monkeypatch):
         async def resolve_running_container(self, owner_id):
             return {"status": "running"}, "10.0.0.42"
 
-    async def _no_target(ip):
-        return None
+    async def _no_target(ip, desired=None):
+        return None, None
 
     monkeypatch.setattr(mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
@@ -139,8 +139,9 @@ def _wire_connected(monkeypatch, mod, fake_cdp):
         async def resolve_running_container(self, owner_id):
             return {"status": "running"}, "10.0.0.42"
 
-    async def _target(ip):
-        return f"ws://{ip}:18801/devtools/page/ABC"
+    async def _target(ip, desired=None):
+        # Echo the requested target so the query-param wiring is observable.
+        return f"ws://{ip}:18801/devtools/page/ABC", (desired or "ABC")
 
     class _FakeConnect:
         def __init__(self, *a, **k):
@@ -180,6 +181,10 @@ def test_screencast_frame_forwarded_and_acked(monkeypatch):
     client = TestClient(_build_app())
     with client.websocket_connect("/ws", subprotocols=["isol8-screencast", "the.jwt"]) as ws:
         assert ws.accepted_subprotocol == "isol8-screencast"
+        # The relay's opening message names the streamed target (for the tab
+        # strip); the frame follows.
+        first = ws.receive_json()
+        assert first == {"type": "target", "targetId": "ABC"}
         msg = ws.receive_json()
         assert msg["type"] == "frame"
         assert msg["data"] == "BASE64JPEG"
@@ -395,6 +400,7 @@ def test_frame_burst_is_paced_through_the_relay(monkeypatch):
 
     client = TestClient(_build_app())
     with client.websocket_connect("/ws", subprotocols=["isol8-screencast", "the.jwt"]) as ws:
+        ws.receive_json()  # drain the leading {type:"target"} message
         for _ in range(n):
             ws.receive_json()  # drain forwarded frames so send_text never blocks
         assert fake_cdp.all_acked.wait(timeout=5), "not all frames were acked"
@@ -402,3 +408,41 @@ def test_frame_burst_is_paced_through_the_relay(monkeypatch):
     span = fake_cdp.ack_times[-1] - fake_cdp.ack_times[0]
     # n acks paced at 30fps take ≥ (n-1) intervals; allow 10% scheduling slack.
     assert span >= (n - 1) * _MIN_FRAME_INTERVAL * 0.9
+
+
+def test_select_page_target():
+    """The chrome tab strip switches tabs via ?target=; the relay must stream the
+    requested page target when it's still open, else fall back to the first."""
+    from routers.screencast import _select_page_target
+
+    targets = [
+        {"type": "service_worker", "id": "sw", "webSocketDebuggerUrl": "ws://x/1"},
+        {"type": "page", "id": "P1", "webSocketDebuggerUrl": "ws://x/2"},
+        {"type": "page", "id": "P2", "webSocketDebuggerUrl": "ws://x/3"},
+    ]
+
+    # Requested tab present → stream it.
+    assert _select_page_target(targets, "P2")["id"] == "P2"
+    # No request → first PAGE target (never the service worker).
+    assert _select_page_target(targets, None)["id"] == "P1"
+    # Requested tab gone (closed / raw id rotated) → fall back to first page.
+    assert _select_page_target(targets, "GONE")["id"] == "P1"
+    # A page target without a debugger url is not eligible.
+    assert _select_page_target([{"type": "page", "id": "P3"}], None) is None
+    assert _select_page_target([], None) is None
+
+
+def test_ws_honors_target_query_param_and_reports_it(monkeypatch):
+    """?target=<id> is forwarded to discovery, and the streamed target id is
+    echoed back to the client so the tab strip highlights the right tab."""
+    from fastapi.testclient import TestClient
+
+    import routers.screencast as mod
+
+    fake_cdp = _FakeCdp(frames=[])
+    _wire_connected(monkeypatch, mod, fake_cdp)  # _target echoes the desired id
+
+    client = TestClient(_build_app())
+    with client.websocket_connect("/ws?target=raw-XYZ", subprotocols=["isol8-screencast", "the.jwt"]) as ws:
+        first = ws.receive_json()
+        assert first == {"type": "target", "targetId": "raw-XYZ"}

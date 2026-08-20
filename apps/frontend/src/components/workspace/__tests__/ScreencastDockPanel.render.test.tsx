@@ -3,11 +3,11 @@ import { render, screen, act, waitFor } from "@testing-library/react";
 import React from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 
-// Component-level render test for ScreencastDockPanel. The panel ships DORMANT
-// (panelComponents keeps `browser` → BrowserDockPanel for now), so this tests
-// the component directly — never through the browser panel key — proving it
-// mounts and reacts to the relay WS lifecycle before a follow-up PR wires it in.
-// The pure coord/URL logic is covered separately in ScreencastDockPanel.test.ts.
+// Component-level render test for ScreencastDockPanel. panelComponents now maps
+// the `browser` key to this panel; this test still renders the component
+// directly (not through the panel key) to prove it mounts and reacts to the
+// relay WS lifecycle. The pure coord/URL logic is covered separately in
+// ScreencastDockPanel.test.ts.
 
 const { getTokenMock, callRpcMock } = vi.hoisted(() => ({
   getTokenMock: vi.fn(),

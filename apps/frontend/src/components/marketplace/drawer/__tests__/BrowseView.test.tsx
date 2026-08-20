@@ -127,4 +127,21 @@ describe("BrowseView", () => {
     // Category chips are agent-only — hidden in the companies scope.
     expect(screen.queryByRole("button", { name: /^sales$/i })).toBeNull();
   });
+
+  it("scope switch clears the grid immediately — no stale cross-format cards", async () => {
+    // The refetch is debounced 300ms; until it lands the grid must show
+    // Loading, never the OLD scope's rows through the NEW scope's card
+    // (agent rows rendered a phantom Hire button as company rows, and vice
+    // versa an all-null blank grid).
+    mockSearch.mockResolvedValueOnce({ items: SAMPLE }).mockReturnValueOnce(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<BrowseView />);
+    await waitFor(() => expect(screen.getByText("Atlas")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("tab", { name: /companies/i }));
+
+    expect(screen.queryByText("Atlas")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^hire$/i })).toBeNull();
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+  });
 });

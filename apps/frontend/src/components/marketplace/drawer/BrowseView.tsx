@@ -79,7 +79,16 @@ export function BrowseView() {
               type="button"
               role="tab"
               aria-selected={scope === s}
-              onClick={() => setScope(s)}
+              onClick={() => {
+                if (s === scope) return;
+                setScope(s);
+                // Clear synchronously: until the debounced refetch lands, the
+                // grid would otherwise render the OLD scope's rows through the
+                // NEW scope's card — company rows briefly get a single-agent
+                // "Hire" button, and agent rows render as nothing at all.
+                setItems([]);
+                setLoading(true);
+              }}
               className={`px-3 py-1.5 rounded-full text-[12.5px] ${
                 scope === s ? "bg-[var(--forest)] text-white" : "bg-transparent text-[#5b5b5b]"
               }`}

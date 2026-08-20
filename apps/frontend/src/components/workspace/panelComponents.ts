@@ -8,7 +8,11 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-import { BrowserDockPanel } from "./panels/BrowserDockPanel";
+// The `browser` panel now renders the CDP screencast (ScreencastDockPanel).
+// BrowserDockPanel (noVNC) stays in the tree as the fallback path — the VNC
+// relay + container Xvnc/websockify boot are intact — until the screencast is
+// prod-validated and the VNC path is retired.
+import { ScreencastDockPanel } from "./panels/ScreencastDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -16,7 +20,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: ScreencastDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

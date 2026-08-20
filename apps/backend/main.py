@@ -60,6 +60,7 @@ from routers import (
     paperclip_proxy,
     paperclip_trigger_proxy,
     platform_info,
+    screencast,
     ses_inbound,
     settings_keys,
     support_tickets,
@@ -794,6 +795,9 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 # Container browser live-view relay (direct browser WS via the ALB, like the
 # paperclip_proxy relay — NOT the API Gateway WebSocket path above)
 app.include_router(browser_view.router, prefix="/api/v1/browser-view", tags=["browser-view"])
+# CDP screencast relay (sibling of browser_view; same bv door, path under
+# /api/v1/browser-view/* so it rides the CloudFront VPC-origin listener rule)
+app.include_router(screencast.router, prefix="/api/v1/browser-view/screencast", tags=["browser-view"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

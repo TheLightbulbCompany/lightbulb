@@ -81,7 +81,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.6
+FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.7
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
 # line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream

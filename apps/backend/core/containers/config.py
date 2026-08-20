@@ -2017,18 +2017,29 @@ def build_openclaw_config_dict(
             # ANGLE's self-contained SwiftShader (Vulkan/Subzero, no mesa/GLX/X
             # dependency) creates a real WebGL context reliably — verified with
             # all three of --use-angle=swiftshader, --enable-unsafe-swiftshader,
-            # and both together in the same container. We set both: the explicit
-            # backend request plus the 137 gate flag, so a Chrome that ever
-            # tightens the explicit-swiftshader path still admits WebGL. Renderer
-            # string reads "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
-            # (Subzero)), SwiftShader driver)". This is CONFIG-ONLY — no image
-            # roll needed (the mesa libs stay baked but go unused for WebGL).
+            # and both together in the same container.
             #
+            # Compositing, though, must NOT go through ANGLE. We first shipped
+            # --use-gl=angle --use-angle=swiftshader, which routes ALL GL —
+            # including the 2D page compositing the live-view captures — through
+            # ANGLE->Vulkan->SwiftShader, emulating a whole GPU pipeline in
+            # software just to paint web content. Measured 2026-08-20 on a dev
+            # container, that path caps the CDP screencast at ~4fps. Swapping it
+            # for --disable-gpu (Chrome's native Skia software compositor) was
+            # ~8x fps (4 -> 20-30fps) at the SAME CPU, same box. --disable-gpu
+            # keeps WebGL: --enable-unsafe-swiftshader still hands WebGL surfaces
+            # an in-process SwiftShader context (renderer "ANGLE (Google, Vulkan
+            # 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)"),
+            # verified byte-identical (shader compile+link+drawArrays+readPixels)
+            # under both configs, so the Arkose/FunCaptcha 3D case is preserved.
+            # CONFIG-ONLY — no image roll (mesa libs stay baked, unused for WebGL).
+            #
+            # Do NOT re-add --use-angle=swiftshader (slow compositor) or
+            # --use-gl=angle (broken llvmpipe path — BindToCurrentSequence).
             # Verify after delivery with chrome://gpu in the Browser panel, or
             # canvas.getContext("webgl") != null over CDP on port 18800.
             "extraArgs": [
-                "--use-gl=angle",
-                "--use-angle=swiftshader",
+                "--disable-gpu",
                 "--enable-unsafe-swiftshader",
             ],
             # NO crash-reporter extraArgs. `--disable-breakpad` +

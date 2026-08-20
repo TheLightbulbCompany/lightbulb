@@ -5,8 +5,17 @@
 // fullscreen window. Kept in its own module (like browserViewUrl.ts) so the
 // coercion is unit-testable without mounting the noVNC panel.
 
-/** One open browser target. Closed via DELETE /tabs/:targetId. */
+/** One open browser target. */
 export type BrowserTab = {
+  /**
+   * Stable panel handle for addressing this target: the plugin's per-profile
+   * tab alias (`t1`, `t2`, …) when present, else the raw CDP target id. Raw
+   * target ids are volatile across form submits / target replacement (exactly
+   * what an OAuth redirect does), but the alias migrates server-side, so Close
+   * must address the tab by THIS id — DELETE /tabs/:id resolves it against the
+   * current list's tabId. See the reference client's normalizeTab.
+   */
+  id: string;
   targetId: string;
   title: string;
   url: string;
@@ -22,9 +31,15 @@ export function normalizeTabs(payload: unknown): BrowserTab[] {
   return tabs.flatMap((tab) => {
     const record = tab as Record<string, unknown> | null;
     const targetId = asString(record?.targetId);
-    // Raw target ids are volatile across navigations, but they're what
-    // DELETE /tabs/:targetId addresses; a target with no id can't be closed.
     if (!targetId) return [];
-    return [{ targetId, title: asString(record?.title), url: asString(record?.url) }];
+    return [
+      {
+        // Prefer the stable alias; fall back to the raw target id.
+        id: asString(record?.tabId) || targetId,
+        targetId,
+        title: asString(record?.title),
+        url: asString(record?.url),
+      },
+    ];
   });
 }

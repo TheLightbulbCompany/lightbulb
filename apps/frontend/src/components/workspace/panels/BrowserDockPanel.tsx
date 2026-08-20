@@ -53,6 +53,17 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // original page and the human is trapped with no switcher. This list gives
   // them a Close button to escape it — see the strip below.
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  // Staleness + unmount guards for the async tab fetches: only the most recent
+  // refresh may apply its result (so a slow 5s-poll response can't resurrect a
+  // tab a later close already dropped), and none may setState after unmount.
+  const refreshSeq = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // Ensure the container's Chrome is running whenever the panel opens (and on
   // each Retry). Fire-and-forget: browser.request/POST /start ensures-then-
@@ -123,12 +134,17 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   }, [attempt, getToken]);
 
   const refreshTabs = useCallback(async () => {
+    const seq = ++refreshSeq.current;
+    const apply = (next: BrowserTab[]) => {
+      // Drop the result if a newer refresh has since started, or we unmounted.
+      if (mounted.current && seq === refreshSeq.current) setTabs(next);
+    };
     try {
-      setTabs(normalizeTabs(await callRpc("browser.request", { method: "GET", path: "/tabs" })));
+      apply(normalizeTabs(await callRpc("browser.request", { method: "GET", path: "/tabs" })));
     } catch {
       // Not-connected / asleep / mid-deploy: show nothing rather than a stale
       // list. The strip below only renders when connected anyway.
-      setTabs([]);
+      apply([]);
     }
   }, [callRpc]);
 
@@ -139,6 +155,7 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // /tabs poll costs nothing.
   useEffect(() => {
     if (state !== "connected") {
+      refreshSeq.current++; // invalidate any in-flight refresh from while connected
       setTabs([]);
       return;
     }
@@ -150,10 +167,10 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
   // Explicit human click only — never auto-close a target. Fire-and-forget
   // like /start; the refetch reflects reality whether the close landed or not.
   const closeTab = useCallback(
-    (targetId: string) => {
+    (id: string) => {
       void callRpc("browser.request", {
         method: "DELETE",
-        path: `/tabs/${encodeURIComponent(targetId)}`,
+        path: `/tabs/${encodeURIComponent(id)}`,
       })
         .catch(() => {})
         .finally(() => void refreshTabs());
@@ -175,14 +192,14 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-1.5 overflow-x-auto border-b border-[var(--line)] bg-[var(--panel)] px-2 py-1.5">
           {tabs.map((tab) => (
             <div
-              key={tab.targetId}
+              key={tab.id}
               title={tab.url || tab.title}
               className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink)]"
             >
               <span className="max-w-[180px] truncate">{tab.title || tab.url || "Untitled"}</span>
               <button
-                onClick={() => closeTab(tab.targetId)}
-                aria-label="Close this browser window"
+                onClick={() => closeTab(tab.id)}
+                aria-label={`Close ${tab.title || tab.url || "this browser window"}`}
                 className="rounded p-0.5 text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
               >
                 <X size={12} />

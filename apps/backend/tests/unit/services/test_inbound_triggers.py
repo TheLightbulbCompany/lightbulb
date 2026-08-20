@@ -241,8 +241,30 @@ async def test_seed_trigger_routine_posthog_bearer_guided_returns_webhook_secret
     assert "Destinations" in out["instructions"]
     assert out["proxy_url"] in out["instructions"]
     assert "Exception captured" in out["instructions"]
+    assert "default event JSON body" in out["instructions"]
+    assert "properties.code" in out["instructions"]
+    assert "conversation transcript" in out["instructions"]
     # No paste-back input on this variant, so no hint to shape it.
     assert out["secret_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_posthog_onboarding_gate_prompt_names_required_evidence():
+    admin = _fake_admin(secret_material={"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_ph"})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "posthog", ["onboarding_gate_blocked"])
+
+    routine = admin.create_routine.await_args.kwargs["body"]
+    assert "browser PostHog `onboarding_gate_blocked` webhook" in routine["description"]
+    assert "event `uuid`" in routine["description"]
+    assert "properties.code" in routine["description"]
+    assert "distinct_id" in routine["description"]
+    assert "properties.$session_id" in routine["description"]
+    assert "CloudWatch" in routine["description"]
+    assert "duplicate-activation-blocker" in routine["description"]
+    assert "conversation data" in routine["description"]
+    assert "Onboarding gate blocked" in out["instructions"]
 
 
 @pytest.mark.asyncio

@@ -104,6 +104,7 @@ class _FakeCdp:
         self.sent = []
         self.ack_seen = threading.Event()
         self.input_seen = threading.Event()
+        self.resize_seen = threading.Event()
 
     async def send(self, data):
         self.sent.append(json.loads(data))
@@ -112,6 +113,8 @@ class _FakeCdp:
             self.ack_seen.set()
         elif method in ("Input.dispatchMouseEvent", "Input.dispatchKeyEvent"):
             self.input_seen.set()
+        elif method == "Emulation.setDeviceMetricsOverride":
+            self.resize_seen.set()
 
     def __aiter__(self):
         return self
@@ -228,6 +231,102 @@ def test_client_unknown_input_type_dropped(monkeypatch):
     methods = [c.get("method") for c in fake_cdp.sent]
     assert "Input.dispatchKeyEvent" in methods
     assert "Runtime.evaluate" not in methods
+
+
+def test_client_resize_routed_to_device_metrics_override(monkeypatch):
+    """A client {type:resize} → Emulation.setDeviceMetricsOverride with the
+    panel dims, mobile:false, and deviceScaleFactor FORCED to 1 (frame cost is
+    per-pixel on software GL — a client-supplied dsf must not quadruple it)."""
+    from fastapi.testclient import TestClient
+
+    import routers.screencast as mod
+
+    fake_cdp = _FakeCdp(frames=[])
+    _wire_connected(monkeypatch, mod, fake_cdp)
+
+    client = TestClient(_build_app())
+    with client.websocket_connect("/ws", subprotocols=["isol8-screencast", "the.jwt"]) as ws:
+        ws.send_text(json.dumps({"type": "resize", "width": 1024, "height": 640, "deviceScaleFactor": 2}))
+        assert fake_cdp.resize_seen.wait(timeout=5), "no setDeviceMetricsOverride sent to CDP"
+
+    override = next(c for c in fake_cdp.sent if c.get("method") == "Emulation.setDeviceMetricsOverride")
+    assert override["params"] == {"width": 1024, "height": 640, "deviceScaleFactor": 1, "mobile": False}
+
+
+def test_resize_params_validated_and_capped():
+    """Trust-boundary shaping: degenerate sizes drop; oversized panels scale
+    down ASPECT-PRESERVING to the viewport ceiling (pixel count is the fps
+    lever under SwiftShader — but the shape must survive, it's the whole fix)."""
+    from routers.screencast import _MAX_VIEWPORT_HEIGHT, _MAX_VIEWPORT_WIDTH, _resize_override_params
+
+    # In-range passes through unchanged.
+    assert _resize_override_params({"width": 1280, "height": 800}) == {
+        "width": 1280,
+        "height": 800,
+        "deviceScaleFactor": 1,
+        "mobile": False,
+    }
+
+    # Oversized: scaled down keeping the aspect ratio (2000x1200 → 1600x960,
+    # not a shape-changing clamp to 1600x1000).
+    capped = _resize_override_params({"width": 2000, "height": 1200})
+    assert capped["width"] == _MAX_VIEWPORT_WIDTH == 1600
+    assert capped["height"] == 960
+
+    # Height-bound panel caps on height.
+    tall = _resize_override_params({"width": 800, "height": 2000})
+    assert tall["height"] == _MAX_VIEWPORT_HEIGHT == 1000
+    assert tall["width"] == 400
+
+    # Degenerate / garbage → dropped, never forwarded to CDP.
+    assert _resize_override_params({"width": 0, "height": 600}) is None
+    assert _resize_override_params({"width": 800, "height": -1}) is None
+    assert _resize_override_params({"width": "wide", "height": 600}) is None
+    assert _resize_override_params({}) is None
+
+
+def test_resize_burst_coalesces_to_latest():
+    """Rapid resizes apply only the LATEST: a synchronous burst yields exactly
+    one setDeviceMetricsOverride, carrying the final size (no CDP thrash)."""
+    import asyncio
+
+    from routers.screencast import _ResizeCoalescer
+
+    applied = []
+
+    async def apply(params):
+        applied.append(params)
+
+    async def run():
+        coalescer = _ResizeCoalescer(apply)
+        for width in (100, 200, 300, 400, 500):
+            coalescer.submit({"width": width})
+        # Let the drain task run its first (and only) iteration.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert applied == [{"width": 500}]
+
+
+def test_resize_apply_failure_is_swallowed():
+    """A failing CDP send must not raise out of the coalescer (never crash the
+    session), and the drain task ends instead of retrying a dead socket."""
+    import asyncio
+
+    from routers.screencast import _ResizeCoalescer
+
+    async def apply(params):
+        raise ConnectionError("cdp gone")
+
+    async def run():
+        coalescer = _ResizeCoalescer(apply)
+        coalescer.submit({"width": 100})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert coalescer._task.done()
+
+    asyncio.run(run())
 
 
 def test_ack_delay_paces_a_burst_but_not_a_slow_stream():

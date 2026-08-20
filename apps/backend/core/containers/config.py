@@ -2003,17 +2003,34 @@ def build_openclaw_config_dict(
             # Arkose/FunCaptcha (LinkedIn's sign-in challenge) renders its
             # puzzle in 3D and so could never appear.
             #
-            # These two flags point ANGLE at the Mesa llvmpipe rasteriser
-            # installed in Dockerfile layer 9b. IMAGE-FIRST ORDERING, same as
-            # executablePath above: an image WITHOUT libgl1-mesa-dri +
-            # libglx-mesa0 cannot satisfy `--use-angle=gl`, so this config must
-            # not reach a container until that image has rolled.
+            # The first WebGL attempt used `--use-angle=gl` (ANGLE over Mesa llvmpipe
+            # rasteriser from Dockerfile layer 9b). That was WRONG: measured in
+            # the prod founder container 2026-08-20, ANGLE-GL initialises fine
+            # (chrome://gpu shows "ANGLE (Mesa/X.org, llvmpipe ... OpenGL 4.5)")
+            # but WebGL context creation still fails —
+            # `webglcontextcreationerror.statusMessage` is
+            # "BindToCurrentSequence failed", a GPU-scheduler bind failure on
+            # the software-GL command-buffer path. Adding the mesa libs was
+            # necessary-but-not-sufficient; the llvmpipe path is simply broken
+            # here (same failure with or without --enable-unsafe-swiftshader).
             #
-            # Verify after a roll with chrome://gpu in the Browser panel. If GL
-            # init fails there, the zero-package fallback is
-            # `--enable-unsafe-swiftshader` — a rarer renderer string, but
-            # WebGL present beats WebGL absent.
-            "extraArgs": ["--use-gl=angle", "--use-angle=gl"],
+            # ANGLE's self-contained SwiftShader (Vulkan/Subzero, no mesa/GLX/X
+            # dependency) creates a real WebGL context reliably — verified with
+            # all three of --use-angle=swiftshader, --enable-unsafe-swiftshader,
+            # and both together in the same container. We set both: the explicit
+            # backend request plus the 137 gate flag, so a Chrome that ever
+            # tightens the explicit-swiftshader path still admits WebGL. Renderer
+            # string reads "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
+            # (Subzero)), SwiftShader driver)". This is CONFIG-ONLY — no image
+            # roll needed (the mesa libs stay baked but go unused for WebGL).
+            #
+            # Verify after delivery with chrome://gpu in the Browser panel, or
+            # canvas.getContext("webgl") != null over CDP on port 18800.
+            "extraArgs": [
+                "--use-gl=angle",
+                "--use-angle=swiftshader",
+                "--enable-unsafe-swiftshader",
+            ],
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that
             # Chrome's `chrome_crashpad_handler: --database is required` abort

@@ -895,6 +895,12 @@ async def authorize_from_container(owner_id: str, provider: str, request: Reques
     here — whoever drives the container's chat can put a consent screen in
     front of the owner — which is why a live connection is refused outright:
     the agent may start a missing connection, never silently rebind one.
+
+    That 409 is a guard against the agent re-starting a live connection, not
+    a fence on the callback: if the owner connects via the tab AND then also
+    finishes this consent within the state TTL, the later credential wins —
+    the same last-writer-wins two admin tabs have today, and both consents
+    are the owner's own. Accepted; not worth state-origin tracking.
     """
     from routers.agent_builder import _require_hook_token  # local import, as in marketplace_listings
 

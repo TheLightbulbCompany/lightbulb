@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { AwsConnectCard } from "../AwsConnectCard";
+import { AwsChangeAccessCard } from "../AwsChangeAccessCard";
 import { ConnectButton } from "../ConnectButton";
 import { type Connection } from "@/hooks/useConnections";
 
@@ -161,5 +162,55 @@ describe("ConnectButton aws_sts wiring", () => {
     );
     expect(screen.getByRole("button", { name: /connect aws/i })).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/paste api key/i)).not.toBeInTheDocument();
+  });
+
+  it("offers Change access level (not a reconnect) on a connected aws_sts row", () => {
+    render(
+      <ConnectButton
+        connection={{ ...awsRow, status: "connected" }}
+        canManage
+        connectPaste={vi.fn()}
+        startOAuth={vi.fn()}
+        disconnect={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /disconnect aws/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /change aws access level/i })).toBeInTheDocument();
+  });
+});
+
+describe("AwsChangeAccessCard", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    getMock.mockResolvedValue(SETUP);
+    postMock.mockClear();
+  });
+
+  it("reads aws-setup on expand, shows the tier's policy ARN + a region-scoped stack-update link, and never POSTs", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <AwsChangeAccessCard connection={{ ...awsRow, status: "connected" }} canManage />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /change aws access level/i }));
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith("/connections/aws/aws-setup"));
+
+    // ViewOnly default policy shown; toggling to PowerUser swaps it.
+    expect(await screen.findByText(SETUP.view_only.policy_arn)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "PowerUser" }));
+    expect(screen.getByText(SETUP.power_user.policy_arn)).toBeInTheDocument();
+
+    // Deep link targets the CFN stack-update console for the existing stack,
+    // region-scoped to the setup default.
+    fireEvent.click(screen.getByRole("button", { name: /update stack in aws/i }));
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/update?stackName=isol8-connector",
+      "_blank",
+      "noopener,noreferrer",
+    );
+
+    // In-place change: no aws-complete / disconnect call.
+    expect(postMock).not.toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 });

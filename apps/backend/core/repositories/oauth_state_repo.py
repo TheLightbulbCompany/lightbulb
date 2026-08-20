@@ -15,7 +15,15 @@ def _table():
     return get_table("oauth-state")
 
 
-async def put(state: str, *, owner_id: str, provider: str, verifier: str, client_id: str | None = None) -> None:
+async def put(
+    state: str,
+    *,
+    owner_id: str,
+    provider: str,
+    verifier: str,
+    client_id: str | None = None,
+    origin: str | None = None,
+) -> None:
     item: dict = {
         "state": state,
         "owner_id": owner_id,
@@ -29,6 +37,11 @@ async def put(state: str, *, owner_id: str, provider: str, verifier: str, client
     # when absent so the attribute is never written empty.
     if client_id is not None:
         item["client_id"] = client_id
+    # Who minted it: "container" for agent-started flows. The callback judges
+    # those against the LIVE connection at apply time (never rebind); owner-
+    # started flows (no origin) keep today's behaviour. Omitted when unset.
+    if origin is not None:
+        item["origin"] = origin
     await run_in_thread(_table().put_item, Item=item)
 
 

@@ -862,6 +862,14 @@ async def delete_byo_app(
     return {"status": "cleared"}
 
 
+def _done(query: str) -> RedirectResponse:
+    # Public landing page (outside the frontend's Clerk matcher): the browser
+    # finishing the dance may be the owner's own tab OR the agent's container
+    # Chrome, which has no Clerk session (see authorize_from_container). The
+    # page itself bounces a signed-in viewer on to /settings/connections.
+    return RedirectResponse(f"{settings.FRONTEND_URL}/oauth/done?{query}")
+
+
 def _redirect_uri(provider: str) -> str:
     # Server-derived, never caller-supplied. Must match the URI registered with
     # the provider and be identical in both authorize + callback legs.
@@ -871,7 +879,44 @@ def _redirect_uri(provider: str) -> str:
 @router.get("/{provider}/authorize")
 async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
+    return await _start_oauth(resolve_owner_id(auth), provider)
+
+
+@router.get("/u/{owner_id}/{provider}/authorize")
+async def authorize_from_container(owner_id: str, provider: str, request: Request):
+    """Container-authed sibling of ``authorize``: the owner's agent mints the
+    consent URL and opens it in its own (container) Chrome, and the owner
+    signs in through the Browser panel — same rails end to end (same owner-
+    scoped gating, same state record, same callback, same materializers).
+
+    Auth is the per-container ``hook_token``, compared timing-safely against
+    the row of the owner NAMED IN THE PATH (``_require_hook_token``), so a
+    container can only mint for its own owner. There is no org-admin gate
+    here — whoever drives the container's chat can put a consent screen in
+    front of the owner — which is why a live connection is refused outright:
+    the agent may start a missing connection, never silently rebind one.
+
+    That rule is enforced twice: here at mint time (409), and again in the
+    callback at apply time — the state row carries ``origin="container"`` and
+    the callback drops a container-originated credential if the provider went
+    live in between (the owner connected via the tab during the state TTL).
+    Owner-started flows are untouched: Google's add-another-account relies on
+    connecting while already connected.
+    """
+    from routers.agent_builder import _require_hook_token  # local import, as in marketplace_listings
+
+    await _require_hook_token(owner_id, request)
+    if await _is_connected(owner_id, provider):
+        raise HTTPException(status_code=409, detail=f"{provider} is already connected")
+    return await _start_oauth(owner_id, provider, origin="container")
+
+
+async def _is_connected(owner_id: str, provider: str) -> bool:
+    row = await integrations_repo.get(owner_id, provider)
+    return bool(row) and row.get("status", "connected") == "connected"
+
+
+async def _start_oauth(owner_id: str, provider: str, *, origin: str | None = None) -> dict:
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
@@ -882,7 +927,7 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
     # must surface as a clean, retryable error, not an uncaught 500 that reads as a
     # crash in a demo. The callback leg already degrades the same way.
     try:
-        url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider))
+        url = await oauth_dance.start(owner_id, provider, redirect_uri=_redirect_uri(provider), origin=origin)
     except ValueError:
         # No usable OAuth client — e.g. a platform-app provider (instagram) whose
         # shared client hasn't been seeded into Secrets Manager for this env yet
@@ -902,8 +947,10 @@ async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)
 
 # Public callback — the OAuth provider redirects the (unauthenticated) browser here.
 # Identity comes from the server-side state record, NOT from the request. Mounted at /api/v1/oauth/...
-# No org-admin gate here: the single-use `state` it consumes could only have been
-# minted by `authorize`, which is admin-gated — so this write path is admin-gated transitively.
+# No org-admin gate here: the single-use `state` it consumes is owner-scoped by
+# construction — minted only by `authorize` (Clerk + org-admin) or by
+# `authorize_from_container` (the owner's own container, hook-token-gated), and
+# the row pins the owner/provider the credential lands on.
 oauth_router = APIRouter(prefix="/oauth", tags=["connections"])
 
 
@@ -914,24 +961,32 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
     # the connections page instead of 422ing raw JSON in the user's browser; the
     # provider's error code is in the access log.
     if not code:
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_provider")
+        return _done("error=oauth_provider")
     try:
-        owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
+        owner_id, prov, credential, origin = await oauth_dance.exchange(
+            state, code, redirect_uri=_redirect_uri(provider)
+        )
     except ValueError:
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_state")
+        return _done("error=oauth_state")
     except httpx.HTTPError:
         # With a BYO app the owner's own client_id/secret is user input: a wrong
         # secret or a misconfigured app makes the provider's token endpoint
         # return 4xx, which exchange()'s raise_for_status turns into an
         # HTTPError. The single-use state is already consumed, so land back on
         # the connections page with a retryable error instead of a 500.
-        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
+        return _done("error=oauth_exchange")
     p = registry.get_provider(prov)
     # Serialize the connect writes against a concurrent disconnect (both take the
     # same per-owner lock), so a disconnect landing mid-connect cannot be undone
     # by this callback finishing its writes afterwards. Taken AFTER the exchange
     # network call, never around it.
     async with connection_lock.connection_lock(owner_id, prov):
+        # Agent-started flow landing on a provider that went live in between
+        # (the owner connected via the tab during the state TTL): drop it. The
+        # agent may start a missing connection, never rebind a live one — judged
+        # here, under the same lock the writes take, not at mint time.
+        if origin == "container" and await _is_connected(owner_id, prov):
+            return _done("error=already_connected")
         # Retain the credential in Secrets Manager only when the backend is the
         # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
         # container, so the backend stores nothing and the EFS keyring written by
@@ -945,7 +1000,7 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
             await _remove_materialized_artifacts(owner_id, p, credential)
             if _retains_secret(p):
                 await integration_secret_store.delete(owner_id, prov)
-            return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
+            return _done("error=apply_failed")
         await integrations_repo.put_status(owner_id, prov, "connected")
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
@@ -953,4 +1008,4 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
     # email that apply_connection surfaced from the gog keyring seed.
     if prov == "google" and connection_identity:
         await google_accounts_repo.add_account(owner_id, connection_identity)
-    return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?connected={prov}")
+    return _done(f"connected={prov}")

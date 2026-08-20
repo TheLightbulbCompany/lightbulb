@@ -43,6 +43,8 @@ description: >
   - Connectable catalog ..... apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                               core/services/credentials/registry.py (all_providers); core/containers/config.py (CHANNEL_PROVIDER_IDS);
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
+  - Agent-started connect ... apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
+                              ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
   - Email reply ............. /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
@@ -163,7 +165,8 @@ ask them what they see if it matters:
   if they report one, treat it as connectable and carry on. This flag wins over
   `byo_required`: they cannot supply an app for something they can't reach.
 - **`requestable: false`, `byo_required: false`** — one-click. They press
-  **Connect** and authorize in the browser.
+  **Connect** and authorize in the browser — or you start it for them (below)
+  and they sign in in the Browser panel.
 - **`requestable: false`, `byo_required: true`** — connectable, but only with
   the owner's OWN OAuth app: the row walks them through creating it in the
   provider's console and pasting the client ID/secret before the Connect step.
@@ -177,8 +180,9 @@ know exists. Do not raise it again on later turns.
 **Operator mindset — connect and DO, don't just draft.** When a task needs an
 external capability, first check the platform-info catalog: if the integration
 is connectable (`requestable: false`) but its tools aren't in your toolset yet,
-send the owner to the Integrations tab and describe what that row asks of them
-per the flags above, then do the real work once its tools appear. Do NOT
+start it yourself if it's one-click (below); otherwise send the owner to the
+Integrations tab and describe what that row asks of them per the flags above.
+Then do the real work once its tools appear. Do NOT
 silently produce copy (e.g. "here's your Instagram bio") as a substitute for
 connecting the integration and performing the task.
 
@@ -195,12 +199,21 @@ the platform can't do.
   no toolset change at all. If an expected MCP tool is missing, the service
   is unconnected, disconnected, OR its server failed to start this session —
   distinguish via the Integrations tab before declaring it disconnected.
-- **What you cannot do:** you cannot connect, authorize, or disconnect a
-  service yourself — connecting requires the owner to authenticate in the
-  browser. When a task needs an unconnected service, name the service and send
-  them to the Integrations tab (Control Panel at isol8.co/chat), describing the
-  row per its catalog flags above — never assert it's one click without
-  checking.
+- **What you can start yourself — one-click connections.** For a catalog
+  entry with `requestable: false` AND `byo_required: false`, mint the
+  provider's sign-in link and put it in front of the owner in your own Chrome:
+  `curl -s -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" "$ISOL8_API_URL/api/v1/connections/u/$ISOL8_OWNER_ID/<provider>/authorize"`
+  returns `{"authorize_url": …}` (409 = already connected; 400/404 = not a
+  one-click provider for this owner — fall back to the tab). Open that URL with
+  your browser tool — the Browser panel surfaces on its own — and say *"I've
+  opened <service>'s sign-in in the Browser panel — sign in there and I'll take
+  it from here."* You cannot enter their credentials; once they finish, the
+  service arrives per its rail above (tools appear / binary authenticates).
+- **What you cannot do:** you cannot authorize or disconnect a service
+  yourself, and you cannot start BYO-app or `requestable` ones. For those,
+  name the service and send the owner to the Integrations tab (Control Panel
+  at isol8.co/chat), describing the row per its catalog flags above — never
+  assert it's one click without checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
@@ -448,7 +461,7 @@ change them.
 
 | You cannot | Instead say |
 |---|---|
-| Connect/disconnect an integration | "Open the Integrations tab (Control Panel, isol8.co/chat) and find <service>" — check its catalog flags before claiming it's one click |
+| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | One-click ones you can START yourself — mint the link and open it in your Chrome (see "Integrations and channels"). Otherwise: "Open the Integrations tab (Control Panel, isol8.co/chat) and find <service>" — check its catalog flags before claiming it's one click |
 | Deploy a marketplace listing | "Open isol8.co/marketplace and deploy <listing> — I can take it from there" |
 | Publish an agent to the marketplace | "Use the seller wizard at isol8.co/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in isol8.co/settings (billing) or the Model & Credits tab" |
@@ -461,9 +474,11 @@ change them.
 ## Quick answers
 
 - **"How do I connect <service>?"** → Check the platform-info catalog for the
-  current connectable services, then send them to the Integrations tab (or
-  Channels tab), Control Panel, isol8.co/chat, describing that row per its
-  `requestable` / `byo_required` flags. Its tools appear to you automatically
+  current connectable services. One-click (`requestable: false`,
+  `byo_required: false`): start it yourself — mint the link and open it in your
+  Chrome, then have them sign in in the Browser panel. Otherwise send them to
+  the Integrations tab (or Channels tab), Control Panel, isol8.co/chat,
+  describing that row per its `requestable` / `byo_required` flags. Its tools appear to you automatically
   once connected.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec
   to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.

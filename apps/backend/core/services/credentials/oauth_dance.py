@@ -138,7 +138,7 @@ def _expiry_iso(expires_in: int | None) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
 
-async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
+async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: str | None = None) -> str:
     p = registry.get_provider(provider_key)
     if not p.oauth:
         raise ValueError(f"{provider_key} has no oauth spec")
@@ -161,7 +161,15 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
     # than re-reading the app store, which a concurrent connect could have replaced
     # with a different DCR-registered client (the code↔client binding stays atomic).
     client_id, _ = await _oauth_client(owner_id, provider_key)
-    await oauth_state_repo.put(state, owner_id=owner_id, provider=provider_key, verifier=verifier, client_id=client_id)
+    # `origin` is only written for agent-started flows (see authorize_from_container).
+    await oauth_state_repo.put(
+        state,
+        owner_id=owner_id,
+        provider=provider_key,
+        verifier=verifier,
+        client_id=client_id,
+        **({"origin": origin} if origin else {}),
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -181,7 +189,10 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str) -> str:
     return f"{p.oauth.authorization_url}?{urlencode(params)}"
 
 
-async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, str, dict]:
+async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, str, dict, str | None]:
+    """Returns (owner_id, provider, credential, origin) — `origin` is whatever
+    start() recorded on the state row ("container" for agent-started flows,
+    None for owner-started ones); the callback decides rebinding on it."""
     rec = await oauth_state_repo.consume(state)
     if not rec:
         raise ValueError("invalid or expired OAuth state")
@@ -279,4 +290,4 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         if credential["client_secret"]:
             info["client_secret"] = credential["client_secret"]
         credential["client_information"] = info
-    return rec["owner_id"], rec["provider"], credential
+    return rec["owner_id"], rec["provider"], credential, rec.get("origin")

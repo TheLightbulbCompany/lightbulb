@@ -986,10 +986,12 @@ async def _seed_trigger_routine(
     # the durable fix; until it lands those providers stay one event per
     # trigger.
     if len(events) > 1 and not inbound.event_in_body:
+        # Deliberately generic: the reason is a header for GitHub/Sentry but an
+        # owner-templated body for PostHog, and naming the wrong one sends the
+        # owner hunting for something that isn't there.
         raise ValueError(
-            f"a {provider.display_name} delivery names its event in an HTTP header rather than the "
-            f"payload, so an agent woken by one trigger can't tell which of "
-            f"{', '.join(e.id for e in events)} fired — add them as separate triggers"
+            f"an agent woken by one {provider.display_name} trigger can't tell which event fired from "
+            f"the payload alone, so {', '.join(e.id for e in events)} must be added as separate triggers"
         )
     if len(events) > 1 and registration in _ONE_EVENT_REGISTRATIONS:
         raise ValueError(

@@ -424,7 +424,9 @@ describe("Providers whose deliveries name the event in a header stay single-even
     // these as "ApiError: API 400".
     connections = [SENTRY];
     apiPost.mockRejectedValueOnce({
-      body: { detail: "a Sentry delivery names its event in an HTTP header rather than the payload" },
+      body: {
+        detail: "an agent woken by one Sentry trigger can't tell which event fired from the payload alone",
+      },
     });
     const user = userEvent.setup();
     render(<RoutinesPanel />);
@@ -437,6 +439,8 @@ describe("Providers whose deliveries name the event in a header stay single-even
     await user.click(await screen.findByRole("option", { name: "Issue created or changed" }));
     await user.click(within(dialog).getByRole("button", { name: /^Create$/ }));
 
-    expect(await screen.findByText(/names its event in an HTTP header/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/can't tell which event fired from the payload alone/i),
+    ).toBeInTheDocument();
   });
 });

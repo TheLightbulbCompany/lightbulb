@@ -2309,7 +2309,7 @@ async def test_header_identified_providers_stay_one_event_per_trigger():
         p_repo, p_cookie, p_client = _env(admin)
         with p_repo, p_cookie, p_client, _gh_token_patch(), pytest.raises(ValueError) as exc:
             await seed_trigger_routine("owner_1", provider, events, resource="acme/site")
-        assert "names its event in an HTTP header" in str(exc.value)
+        assert "can't tell which event fired from the payload alone" in str(exc.value)
         assert "separate triggers" in str(exc.value)
         # Nothing was created — the check runs before the first upstream call.
         admin.create_routine.assert_not_awaited()

@@ -7,7 +7,10 @@
 // (Page.startScreencast); we paint them to a <canvas> and send human
 // mouse/keyboard back as CDP Input.* events. Resolution follows the page
 // viewport, not a fixed 1280x800 X display — which is the whole point (fixes the
-// blur and the matchbox fullscreen trap).
+// blur and the matchbox fullscreen trap). The viewport in turn follows the
+// PANEL: a ResizeObserver reports the panel's CSS-pixel box over the relay
+// ({type:"resize"}), which applies Emulation.setDeviceMetricsOverride so the
+// page reflows to the panel like a real resizing window instead of stretching.
 //
 // Transport: wss to the backend's owner-scoped screencast relay
 // (routers/screencast.py) over the SAME bv door + auth as the VNC relay — the
@@ -77,6 +80,41 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
+  // Ask the relay to match the container browser's viewport to the panel box so
+  // the page REFLOWS to the panel size (the relay applies
+  // Emulation.setDeviceMetricsOverride, aspect-preserving-capped server-side).
+  // deviceScaleFactor is deliberately 1, NOT window.devicePixelRatio: frame
+  // production in the container is CPU-bound under SwiftShader software
+  // rendering and scales with pixel count — dsf 2 would quadruple frame cost
+  // (~5fps -> ~2fps) for crispness a JPEG stream doesn't repay. The relay
+  // forces 1 anyway; sending the field keeps the wire shape ready for GPU boxes.
+  const sendResize = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    if (width <= 0 || height <= 0) return; // pre-layout / hidden panel
+    send({ type: "resize", width, height, deviceScaleFactor: 1 });
+  }, [send]);
+
+  // Panel-size tracking, trailing-debounced ~150ms so a splitter drag coalesces
+  // into one viewport override (the relay coalesces again as the server fence).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(sendResize, 150);
+    });
+    observer.observe(canvas);
+    return () => {
+      if (timer) clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [sendResize]);
+
   useEffect(() => {
     // State is driven by the WS lifecycle callbacks below (onopen → connected,
     // onclose/onerror → disconnected) and reset to "connecting" by the initial
@@ -98,7 +136,12 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (!cancelled) setState("connected");
+          if (cancelled) return;
+          setState("connected");
+          // Match the viewport to the panel right away; frames arriving before
+          // the override land at the browser's previous size and render as a
+          // brief stretch — visually a window mid-resize.
+          sendResize();
         };
         ws.onclose = () => {
           if (!cancelled) setState("disconnected");
@@ -151,7 +194,7 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
       }
       wsRef.current = null;
     };
-  }, [attempt, getToken]);
+  }, [attempt, getToken, sendResize]);
 
   // ---- Input capture -> CDP Input.* (via the relay) ----
   const canvasPos = useCallback((e: { clientX: number; clientY: number }) => {
@@ -249,13 +292,15 @@ export function ScreencastDockPanel(_props: IDockviewPanelProps): React.ReactEle
   return (
     <div className="relative flex h-full w-full flex-col bg-[var(--panel)]">
       {/* The screencast canvas. tabIndex makes it focusable so it receives key
-          events. objectFit "fill" (NOT "contain") is deliberate: it stretches
-          the frame to fill the panel box exactly, so the displayed rect equals
-          the painted frame and mapPointerToDevice has no letterbox offset to
-          correct for. The cost is mild aspect distortion when the panel and page
-          viewport differ — cosmetic, and pointer coords stay correct (the whole
-          point). A later phase can resize the screencast viewport to the panel
-          to remove the distortion. */}
+          events. objectFit "fill" (NOT "contain") stays deliberate now that the
+          viewport tracks the panel: steady-state the frame's aspect EQUALS the
+          panel's (the relay's cap is aspect-preserving), so fill has nothing to
+          distort, and during the ~150ms resize debounce the transient mismatch
+          renders as a brief stretch — visually a window mid-resize. "contain"
+          would letterbox that transient instead AND reintroduce the letterbox
+          offset correction in mapPointerToDevice; fill keeps the displayed rect
+          equal to the painted frame, so proportional pointer mapping stays exact
+          even mid-resize. */}
       <canvas
         ref={canvasRef}
         tabIndex={0}

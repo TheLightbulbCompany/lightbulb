@@ -9,7 +9,10 @@ same owner-scoping; the ONLY difference is what it fronts:
 Instead of the whole X display over RFB, this streams ONE CDP page target via
 ``Page.startScreencast`` (JPEG frames) and relays human pointer/keyboard back as
 CDP ``Input.dispatchMouseEvent`` / ``Input.dispatchKeyEvent``. Resolution follows
-the page viewport, not a fixed 1280x800 X display — the whole point.
+the page viewport, not a fixed 1280x800 X display — the whole point. The viewport
+itself follows the viewer: the panel reports its CSS-pixel box as
+``{type:"resize"}`` messages, applied here via ``Emulation.setDeviceMetricsOverride``
+so the page REFLOWS to the panel size instead of the frame being stretched.
 
 Security (see docs/superpowers/spikes/cdp-screencast-reachability-decision.md):
 raw CDP (18800) NEVER leaves container loopback. A container-side proxy fronts it
@@ -61,7 +64,9 @@ _CDP_PROXY_PORT = 18801
 
 # Screencast params. jpeg/quality~60 per the plan; maxWidth/Height cap the frame
 # so a huge viewport can't blow the frame budget on a 1 vCPU box. everyNthFrame
-# drops frames at the source (cheaper than dropping them after encode).
+# drops frames at the source (cheaper than dropping them after encode). The cap
+# already exceeds the viewport ceiling below (1600x1000 @ dsf 1), so a viewer
+# resize never needs a screencast restart.
 _SCREENCAST_PARAMS = {
     "format": "jpeg",
     "quality": 60,
@@ -69,6 +74,20 @@ _SCREENCAST_PARAMS = {
     "maxHeight": 1080,
     "everyNthFrame": 1,
 }
+
+# Viewport ceiling for viewer-driven resizes. Frame production is CPU-BOUND
+# under SwiftShader software rendering (measured ~180-250ms/frame at 1280x800,
+# cost scales with PIXEL COUNT), so matching a big retina panel 1:1 would tank
+# the real framerate. The cap is aspect-preserving: a larger panel gets the same
+# SHAPE at a lower resolution, and the panel's objectFit scales it back up —
+# the reflow (aspect) is the correctness fix, resolution is just crispness.
+_MAX_VIEWPORT_WIDTH = 1600
+_MAX_VIEWPORT_HEIGHT = 1000
+
+# Floor between Emulation.setDeviceMetricsOverride applies. The panel already
+# trailing-debounces its ResizeObserver; this is the server-side thrash fence
+# for clients that don't.
+_RESIZE_MIN_INTERVAL = 0.1
 
 # Deliver at most 30fps — the standard interactive-remote-view ceiling. CDP emits
 # the NEXT screencastFrame only after we ack the last one, so spacing our acks by
@@ -168,6 +187,60 @@ async def _discover_page_target(ip: str) -> str | None:
     return f"ws://{ip}:{_CDP_PROXY_PORT}/{path}"
 
 
+def _resize_override_params(msg: dict) -> dict | None:
+    """Validate a client ``{type:"resize"}`` into Emulation.setDeviceMetricsOverride
+    params. Trust boundary: degenerate sizes are dropped (None), oversized ones
+    are scaled down aspect-preserving to the viewport ceiling.
+    """
+    try:
+        width = int(msg.get("width"))
+        height = int(msg.get("height"))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    scale = min(1.0, _MAX_VIEWPORT_WIDTH / width, _MAX_VIEWPORT_HEIGHT / height)
+    return {
+        "width": max(1, round(width * scale)),
+        "height": max(1, round(height * scale)),
+        # Forced to 1 regardless of the client's devicePixelRatio: SwiftShader
+        # compositing is CPU-bound per pixel, so dsf 2 would quadruple frame
+        # cost (~5fps -> ~2fps) for crispness a JPEG-over-WS view doesn't repay.
+        # ponytail: honor client dsf (<=2) if containers ever get a real GPU.
+        "deviceScaleFactor": 1,
+        "mobile": False,
+    }
+
+
+class _ResizeCoalescer:
+    """Latest-wins applier for viewport resizes.
+
+    Bursts overwrite the pending value instead of queueing a CDP command each;
+    at most one apply is in flight, spaced >= _RESIZE_MIN_INTERVAL apart. An
+    apply failure is swallowed — a resize must never crash the session.
+    """
+
+    def __init__(self, apply) -> None:
+        self._apply = apply
+        self._pending: dict | None = None
+        self._task: asyncio.Task | None = None
+
+    def submit(self, params: dict) -> None:
+        self._pending = params
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        while self._pending is not None:
+            params, self._pending = self._pending, None
+            try:
+                await self._apply(params)
+            except Exception as e:  # noqa: BLE001 - session may be closing
+                logger.info("screencast_ws: resize apply failed: %s", e)
+                return
+            await asyncio.sleep(_RESIZE_MIN_INTERVAL)
+
+
 def _cdp_input_method(msg_type: str) -> str | None:
     """Map a frontend input message type to its CDP Input.* method.
 
@@ -220,6 +293,19 @@ async def screencast_ws(websocket: WebSocket) -> None:
             await cdp.send(
                 json.dumps({"id": _next_id(), "method": "Page.startScreencast", "params": _SCREENCAST_PARAMS})
             )
+
+            async def _apply_viewport(params: dict) -> None:
+                await cdp.send(
+                    json.dumps({"id": _next_id(), "method": "Emulation.setDeviceMetricsOverride", "params": params})
+                )
+
+            # ponytail: the viewport override outlives the viewer — the shared
+            # browser stays at the last panel size after the panel closes.
+            # Clearing on last-viewer disconnect needs cross-session refcounting
+            # (and miscounts during the maxHealthyPercent:200 deploy transient
+            # when two backends run); add Emulation.clearDeviceMetricsOverride
+            # behind a per-owner viewer count if agents mind the leftover size.
+            resizer = _ResizeCoalescer(_apply_viewport)
 
             async def cdp_to_client() -> None:
                 last_ack: float | None = None
@@ -276,6 +362,11 @@ async def screencast_ws(websocket: WebSocket) -> None:
                         try:
                             msg = json.loads(raw)
                         except (ValueError, TypeError):
+                            continue
+                        if msg.get("type") == "resize":
+                            params = _resize_override_params(msg)
+                            if params is not None:
+                                resizer.submit(params)
                             continue
                         method = _cdp_input_method(msg.get("type"))
                         if method is None:

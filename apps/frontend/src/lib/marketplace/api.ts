@@ -140,6 +140,8 @@ export interface SearchOptions {
   category?: string;
   sort?: "installs" | "recent";
   limit?: number;
+  /** Listing format to browse; defaults to single agents. */
+  format?: "openclaw" | "company";
 }
 
 export async function searchListings(
@@ -149,7 +151,7 @@ export async function searchListings(
   if (opts.q) params.set("q", opts.q);
   if (opts.category) params.set("category", opts.category);
   if (opts.sort) params.set("sort", opts.sort);
-  params.set("format", "openclaw");
+  params.set("format", opts.format ?? "openclaw");
   params.set("limit", String(opts.limit ?? 60));
   const resp = await fetch(`${API}/marketplace/listings/search?${params}`, {
     next: { revalidate: 60 },

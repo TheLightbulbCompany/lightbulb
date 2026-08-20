@@ -3,8 +3,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockSearch = vi.fn();
+const mockDeployCompany = vi.fn();
 vi.mock("@/lib/marketplace/api", () => ({
   searchListings: (opts: unknown) => mockSearch(opts),
+  deployCompany: (opts: unknown) => mockDeployCompany(opts),
 }));
 vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({ installedSlugs: new Set(["pulse"]), deploy: vi.fn() }),
@@ -96,5 +98,50 @@ describe("BrowseView", () => {
     ["all", "sales", "engineering", "operations", "research", "finance"].forEach((c) => {
       expect(screen.getByRole("button", { name: new RegExp(`^${c}$`, "i") })).toBeVisible();
     });
+  });
+
+  it("Companies scope refetches with format=company and renders company cards", async () => {
+    const company = {
+      listing_id: "lc1", slug: "gstack", name: "GStack", description_md: "A whole company",
+      seller_id: "__isol8__", price_cents: 0, status: "published", format: "company",
+      tags: [], version: 1, created_at: "2026-07-01", published_at: "2026-07-01",
+      manifest_json: {
+        company: {
+          slug: "gstack", name: "GStack", description: "Engineering org in a box",
+          agent_count: 5, team_count: 1, skill_count: 12, agent_slugs: ["ceo"],
+          env_requirements: [], min_plan: "standard",
+        },
+      },
+    };
+    mockSearch.mockResolvedValueOnce({ items: SAMPLE }).mockResolvedValueOnce({ items: [company] });
+    const user = userEvent.setup();
+    render(<BrowseView />);
+    await waitFor(() => expect(mockSearch).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("tab", { name: /companies/i }));
+
+    await waitFor(() => expect(mockSearch).toHaveBeenCalledTimes(2));
+    expect(mockSearch).toHaveBeenLastCalledWith(expect.objectContaining({ format: "company" }));
+    await waitFor(() => expect(screen.getByText("GStack")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /deploy company/i })).toBeEnabled();
+    // Category chips are agent-only — hidden in the companies scope.
+    expect(screen.queryByRole("button", { name: /^sales$/i })).toBeNull();
+  });
+
+  it("scope switch clears the grid immediately — no stale cross-format cards", async () => {
+    // The refetch is debounced 300ms; until it lands the grid must show
+    // Loading, never the OLD scope's rows through the NEW scope's card
+    // (agent rows rendered a phantom Hire button as company rows, and vice
+    // versa an all-null blank grid).
+    mockSearch.mockResolvedValueOnce({ items: SAMPLE }).mockReturnValueOnce(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<BrowseView />);
+    await waitFor(() => expect(screen.getByText("Atlas")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("tab", { name: /companies/i }));
+
+    expect(screen.queryByText("Atlas")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^hire$/i })).toBeNull();
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
 });

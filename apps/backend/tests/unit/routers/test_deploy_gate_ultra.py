@@ -54,6 +54,11 @@ def deploy_claim():
             "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
             new_callable=AsyncMock,
         ),
+        patch(
+            "routers.marketplace_listings.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "user_admin", "status": "running"},
+        ),
     ):
         yield
 

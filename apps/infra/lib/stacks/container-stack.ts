@@ -737,6 +737,21 @@ export class ContainerStack extends cdk.Stack {
       // display, where it would just exit after an X error.)
       '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
       '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
+      // CDP screencast bridge: expose Chrome's loopback DevTools (18800) on
+      // 18801 for the backend screencast relay (routers/screencast.py). 18801
+      // binds 0.0.0.0 but is reachable ONLY from the backend service SG
+      // (ContainerFromServiceIngress opens all TCP from that SG) and has NO ALB
+      // rule — strictly tighter than VNC's 6080, no public door at all. Raw
+      // 18800 stays loopback (Chrome's default); socat is its only client.
+      //
+      // Deliberately NOT DISPLAY-gated, unlike the Xvnc/websockify siblings
+      // above: Chrome's CDP endpoint (cdpPort 18800, config.py) exists whether
+      // Chrome is headless or headful, so screencast works with or without a
+      // virtual display — gating on DISPLAY would needlessly deny it to
+      // headless containers. socat is baked in the extended image (Dockerfile
+      // apt layer); brace-wrapped like the siblings so the trailing `&` sits
+      // inside `{ … }` and the array's `; ` join stays valid syntax.
+      '{ socat TCP4-LISTEN:18801,fork,reuseaddr TCP4:127.0.0.1:18800 & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover

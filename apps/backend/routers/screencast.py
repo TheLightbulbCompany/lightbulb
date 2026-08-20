@@ -28,6 +28,7 @@ rollout gate (old tag = no proxy = inert; new tag = proxy = live).
 import asyncio
 import json
 import logging
+import time
 
 import httpx
 from fastapi import APIRouter, WebSocket
@@ -68,6 +69,26 @@ _SCREENCAST_PARAMS = {
     "maxHeight": 1080,
     "everyNthFrame": 1,
 }
+
+# Deliver at most 30fps — the standard interactive-remote-view ceiling. CDP emits
+# the NEXT screencastFrame only after we ack the last one, so spacing our acks by
+# one frame-interval caps BOTH the delivered framerate AND the container's
+# screencast-capture CPU (no wasted encode/send on a busy page) without dropping
+# frames (a dropped-but-unacked frame would stall CDP, which waits for the ack).
+SCREENCAST_MAX_FPS = 30
+_MIN_FRAME_INTERVAL = 1.0 / SCREENCAST_MAX_FPS
+
+
+def _ack_delay(last_ack: float | None, now: float) -> float:
+    """Seconds to wait before the next screencastFrameAck to hold delivery at
+    ≤ SCREENCAST_MAX_FPS. ``last_ack``/``now`` are ``time.monotonic()`` seconds.
+
+    Returns 0 when the previous ack is already ≥ one frame-interval old — a
+    stream slower than 30fps is never throttled, so it adds no latency.
+    """
+    if last_ack is None:
+        return 0.0
+    return max(0.0, _MIN_FRAME_INTERVAL - (now - last_ack))
 
 
 async def _resolve_ws_owner(websocket: WebSocket) -> str | None:
@@ -201,6 +222,7 @@ async def screencast_ws(websocket: WebSocket) -> None:
             )
 
             async def cdp_to_client() -> None:
+                last_ack: float | None = None
                 try:
                     async for raw in cdp:
                         try:
@@ -210,13 +232,14 @@ async def screencast_ws(websocket: WebSocket) -> None:
                         if evt.get("method") != "Page.screencastFrame":
                             continue  # ignore command replies + other events
                         params = evt.get("params") or {}
-                        # Forward CDP's base64 data verbatim (no re-encode), then
-                        # ack. ACK-AFTER-SEND is the backpressure: Chrome emits the
-                        # next frame only after ack, and we await the client send
-                        # first, so a slow viewer throttles the stream to ~1
-                        # in-flight frame. ponytail: ack-after-send bounds
-                        # in-flight to 1; add a frame-drop/window if a fast box
-                        # ever needs a deeper pipeline.
+                        # Forward CDP's base64 data verbatim (no re-encode) — the
+                        # frame we already have goes out immediately, so pacing
+                        # adds no latency to a displayed frame. ACK-AFTER-SEND is
+                        # still the backpressure: Chrome emits the next frame only
+                        # after ack, bounding in-flight to 1. On top of that we
+                        # PACE the ack to hold delivery ≤ SCREENCAST_MAX_FPS —
+                        # spacing acks throttles the SOURCE (capture + encode CPU),
+                        # not just the wire. A slower stream is acked at once.
                         await websocket.send_text(
                             json.dumps(
                                 {
@@ -228,6 +251,9 @@ async def screencast_ws(websocket: WebSocket) -> None:
                         )
                         session_id = params.get("sessionId")
                         if session_id is not None:
+                            delay = _ack_delay(last_ack, time.monotonic())
+                            if delay > 0:
+                                await asyncio.sleep(delay)
                             await cdp.send(
                                 json.dumps(
                                     {
@@ -237,6 +263,7 @@ async def screencast_ws(websocket: WebSocket) -> None:
                                     }
                                 )
                             )
+                            last_ack = time.monotonic()
                 except (WebSocketDisconnect, ConnectionClosed):
                     return
                 except Exception as e:  # noqa: BLE001 - log + bail

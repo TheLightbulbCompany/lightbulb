@@ -10,6 +10,7 @@ message must be routed to the right CDP Input.* method.
 
 import json
 import threading
+import time
 
 import pytest
 
@@ -227,3 +228,78 @@ def test_client_unknown_input_type_dropped(monkeypatch):
     methods = [c.get("method") for c in fake_cdp.sent]
     assert "Input.dispatchKeyEvent" in methods
     assert "Runtime.evaluate" not in methods
+
+
+def test_ack_delay_paces_a_burst_but_not_a_slow_stream():
+    """The ack pacer holds forwarded frames at ≤ SCREENCAST_MAX_FPS.
+
+    CDP emits the next frame only after our ack, so spacing acks by one
+    frame-interval caps delivery. This drives the pacing math with a fake clock
+    (monotonic seconds passed in): a burst arriving faster than 30fps waits; a
+    stream already slower than 30fps passes through with zero added latency.
+    """
+    from routers.screencast import SCREENCAST_MAX_FPS, _MIN_FRAME_INTERVAL, _ack_delay
+
+    assert SCREENCAST_MAX_FPS == 30
+
+    # First frame of the stream: nothing to pace against, no wait.
+    assert _ack_delay(None, 100.0) == 0.0
+
+    # Burst: frames arriving faster than the interval must wait out the balance.
+    assert _ack_delay(100.0, 100.0) == pytest.approx(_MIN_FRAME_INTERVAL)  # 0s gap
+    assert _ack_delay(100.0, 100.0 + _MIN_FRAME_INTERVAL / 2) == pytest.approx(_MIN_FRAME_INTERVAL / 2)
+
+    # Slow stream: last ack already ≥ one interval old → acked at once, no delay.
+    # (At exactly one interval, float subtraction leaves fs-scale noise — approx.)
+    assert _ack_delay(100.0, 100.0 + _MIN_FRAME_INTERVAL) == pytest.approx(0.0, abs=1e-9)
+    assert _ack_delay(100.0, 100.0 + 1.0) == 0.0
+
+
+def test_frame_burst_is_paced_through_the_relay(monkeypatch):
+    """A burst of frames offered all at once is throttled to ≤30fps by the relay.
+
+    Proves the pacer is actually wired into the cdp→client loop (not a dead
+    helper): the fake CDP hands over every frame immediately, yet the acks for
+    the burst span ≥ (n-1) frame-intervals of wall time.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.screencast as mod
+    from routers.screencast import _MIN_FRAME_INTERVAL
+
+    n = 4
+    frames = [
+        json.dumps(
+            {
+                "method": "Page.screencastFrame",
+                "params": {"data": f"F{i}", "sessionId": i, "metadata": {}},
+            }
+        )
+        for i in range(n)
+    ]
+
+    class _TimedCdp(_FakeCdp):
+        def __init__(self, frames):
+            super().__init__(frames)
+            self.ack_times: list[float] = []
+            self.all_acked = threading.Event()
+
+        async def send(self, data):
+            await super().send(data)
+            if json.loads(data).get("method") == "Page.screencastFrameAck":
+                self.ack_times.append(time.monotonic())
+                if len(self.ack_times) >= n:
+                    self.all_acked.set()
+
+    fake_cdp = _TimedCdp(frames)
+    _wire_connected(monkeypatch, mod, fake_cdp)
+
+    client = TestClient(_build_app())
+    with client.websocket_connect("/ws", subprotocols=["isol8-screencast", "the.jwt"]) as ws:
+        for _ in range(n):
+            ws.receive_json()  # drain forwarded frames so send_text never blocks
+        assert fake_cdp.all_acked.wait(timeout=5), "not all frames were acked"
+
+    span = fake_cdp.ack_times[-1] - fake_cdp.ack_times[0]
+    # n acks paced at 30fps take ≥ (n-1) intervals; allow 10% scheduling slack.
+    assert span >= (n - 1) * _MIN_FRAME_INTERVAL * 0.9

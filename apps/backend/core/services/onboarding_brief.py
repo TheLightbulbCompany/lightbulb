@@ -257,15 +257,22 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
 # `requestable` (not-yet-available) integrations, and the agent has to open the
 # skill to see it — which the 2026-07-26 run below proved she may not do. So the
 # endpoint is handed over directly, same as the email script: it is public and
-# unauthenticated, so it answers before anything is connected.
+# unauthenticated, so it answers before anything is connected. The one-click
+# connections she can now START herself (routers/connections.py
+# authorize_from_container — hook-token sibling of the tab's Connect); that
+# curl rides along for the same reason the catalog one does.
 _INTEGRATIONS_STEP = (
     "\n\nAlong with those moves, tell me which integrations to connect. Read the "
     "live catalog first — `curl -s $ISOL8_API_URL/api/v1/platform-info` — then "
     "name only the ones that serve the moves you picked, say what each one "
     "unlocks, and say what it costs me to set up (each entry's `requestable` and "
     "`byo_required` flags tell you that — don't promise me one click without "
-    "checking them). You can't connect them yourself, so just tell me which are "
-    "worth my time."
+    "checking them). For the one-click ones (both flags false) don't wait on me: "
+    'mint the sign-in link yourself — `curl -s -H "Authorization: Bearer '
+    '$OPENCLAW_HOOK_TOKEN" "$ISOL8_API_URL/api/v1/connections/u/$ISOL8_OWNER_ID/'
+    '<provider>/authorize"` returns `authorize_url` — open it in your browser, and '
+    "tell me to sign in in the Browser panel. Anything else, just tell me which "
+    "are worth my time."
 )
 
 

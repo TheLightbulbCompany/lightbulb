@@ -293,6 +293,8 @@ def test_first_run_message_asks_for_integration_recommendations(brief):
     # Both kickoff paths: the "you pick" fallback is the same product moment.
     assert CATALOG in msg
     assert "integrations to connect" in msg
+    # The one-click mint path is handed over too (the agent may never open the skill).
+    assert "connections/u/$ISOL8_OWNER_ID/<provider>/authorize" in msg
 
 
 def test_kickoff_names_the_flags_that_gate_a_one_click_promise():

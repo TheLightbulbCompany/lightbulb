@@ -55,6 +55,11 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # tests/unit/routers/test_marketplace_recommend.py (resolver) +
     # tests/unit/services/test_marketplace_hire.py (approval + install).
     "GET /api/v1/marketplace/u/{owner_id}/recommend": "hook-token lookup; containers table not provisioned hermetically",
+    # Agent-started integration connect: same hook-token lookup on the DDB
+    # containers table before anything else can run. Covered by
+    # tests/unit/routers/test_connections.py::TestAuthorizeFromContainer
+    # (401 / 409 / mint paths).
+    "GET /api/v1/connections/u/{owner_id}/{provider}/authorize": "hook-token lookup; containers table not provisioned hermetically",
     # Agent-initiated owner email: same hook-token lookup on the DDB containers
     # table, before anything else can run, so an unmocked GetItem raises
     # ResourceNotFoundException → 5xx. Same class as hooks/u/... and

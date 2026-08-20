@@ -1097,6 +1097,58 @@ class TestAuthorize:
         assert response.status_code == 404
 
 
+class TestAuthorizeFromContainer:
+    """GET /api/v1/connections/u/{owner_id}/{provider}/authorize — the agent
+    mints the consent URL itself (hook-token auth), opens it in its own Chrome,
+    and the owner signs in via the Browser panel."""
+
+    URL = "/api/v1/connections/u/user_test_123/google/authorize"
+    HEADERS = {"Authorization": "Bearer tok-123"}
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    async def test_mints_with_valid_hook_token(
+        self, mock_get_container, mock_repo, mock_dance, async_client, monkeypatch
+    ):
+        mock_get_container.return_value = {"hook_token": "tok-123"}
+        mock_repo.get = AsyncMock(return_value=None)
+        monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
+        mock_dance.start = AsyncMock(return_value="https://accounts.google.com/o/oauth2/v2/auth?x=1")
+
+        response = await async_client.get(self.URL, headers=self.HEADERS)
+        assert response.status_code == 200
+        assert response.json()["authorize_url"].startswith("https://accounts.google.com/")
+        # Owner comes from the PATH, and the token was checked against THAT owner's row.
+        mock_get_container.assert_awaited_once_with("user_test_123")
+        call = mock_dance.start.await_args
+        assert call.args[0] == "user_test_123" and call.args[1] == "google"
+        assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    async def test_missing_or_wrong_token_401(self, mock_get_container, mock_dance, async_client):
+        mock_get_container.return_value = {"hook_token": "tok-123"}
+        mock_dance.start = AsyncMock()
+        assert (await async_client.get(self.URL)).status_code == 401
+        assert (await async_client.get(self.URL, headers={"Authorization": "Bearer nope"})).status_code == 401
+        mock_dance.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    async def test_already_connected_409_never_rebinds(self, mock_get_container, mock_repo, mock_dance, async_client):
+        mock_get_container.return_value = {"hook_token": "tok-123"}
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_dance.start = AsyncMock()
+        response = await async_client.get(self.URL, headers=self.HEADERS)
+        assert response.status_code == 409
+        mock_dance.start.assert_not_awaited()
+
+
 class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
@@ -1122,7 +1174,7 @@ class TestOAuthCallback:
             follow_redirects=False,
         )
         assert response.status_code in (302, 307)
-        assert "/settings/connections?connected=google" in response.headers["location"]
+        assert "/oauth/done?connected=google" in response.headers["location"]
 
         # Identity + credential recovered from the state record.
         mock_dance.exchange.assert_awaited_once()
@@ -1233,7 +1285,7 @@ class TestOAuthCallback:
             follow_redirects=False,
         )
         assert response.status_code in (302, 307)
-        assert "/settings/connections?connected=google" in response.headers["location"]
+        assert "/oauth/done?connected=google" in response.headers["location"]
 
         # Provider-level status row still written.
         assert mock_repo.put_status.await_count == 1

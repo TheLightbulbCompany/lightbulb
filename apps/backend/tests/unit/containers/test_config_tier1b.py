@@ -218,18 +218,24 @@ class TestBrowserBounds:
 
     def test_webgl_flags_present(self):
         """Chrome 137 removed the automatic SwiftShader fallback and prod runs
-        Chrome 151 on GPU-less Fargate, so without these the container had NO
-        WebGL — `canvas.getContext("webgl")` returned null, a state essentially
-        no real desktop is in. Arkose/FunCaptcha (LinkedIn sign-in) renders its
-        puzzle in 3D and could never appear.
+        Chrome 151 on GPU-less Fargate, so without a working software renderer
+        the container had NO WebGL — `canvas.getContext("webgl")` returned null,
+        a state essentially no real desktop is in. Arkose/FunCaptcha (LinkedIn
+        sign-in) renders its puzzle in 3D and could never appear.
 
-        Paired with libgl1-mesa-dri + libglx-mesa0 in Dockerfile layer 9b;
-        neither half works alone, so this guards the config half against a
-        silent revert.
+        The first attempt's `--use-angle=gl` (Mesa llvmpipe) was measured to fail WebGL
+        context creation with "BindToCurrentSequence failed" in the prod
+        container 2026-08-20; ANGLE's self-contained SwiftShader works. We pin
+        the SwiftShader backend plus the 137 gate flag. Guards against a revert
+        back to the broken llvmpipe flag.
         """
         extra_args = _cfg()["browser"]["extraArgs"]
         assert "--use-gl=angle" in extra_args
-        assert "--use-angle=gl" in extra_args
+        assert "--use-angle=swiftshader" in extra_args
+        assert "--enable-unsafe-swiftshader" in extra_args
+        # The llvmpipe path is broken here (BindToCurrentSequence) — never
+        # ship it again.
+        assert "--use-angle=gl" not in extra_args
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

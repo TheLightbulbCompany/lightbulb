@@ -30,6 +30,9 @@ on:
       # Fleet-wide Gen Sage policy (~/.sage/config.json) is baked by Layer 13c;
       # tuning it (sensitivity, disabled_threats) only ships via a rebuild.
       - "apps/infra/openclaw/sage/**"
+      # Same staleness class: Layer 9c bakes the WARP browser-egress boot
+      # script, which container-stack.ts invokes by absolute path.
+      - "apps/infra/openclaw/warp/**"
       - "openclaw-version.json"
   # The boot chain can destroy an owner's data, so its smoke suite must gate
   # the image rather than run after it ships. Same paths as the push trigger.

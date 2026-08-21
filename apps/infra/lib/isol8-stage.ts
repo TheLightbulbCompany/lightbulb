@@ -89,6 +89,8 @@ export class Isol8Stage extends cdk.Stage {
       // service-stack secretNames, so ContainerStack imports it via
       // fromSecretNameV2 without triggering a KMS auto-grant cycle.
       gogKeyringPasswordSecretName: auth.gogKeyringPassword.secretName,
+      cloudflareWarpEnrollmentSecretName:
+        auth.cloudflareWarpEnrollment.secretName,
     });
 
     // ApiStack deploys BEFORE ServiceStack (no circular dependency)

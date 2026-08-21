@@ -32,6 +32,7 @@ export class AuthStack extends cdk.Stack {
   public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
+  public readonly cloudflareWarpEnrollment: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
@@ -227,6 +228,28 @@ export class AuthStack extends cdk.Stack {
       "gog-keyring-password",
       { passwordLength: 64, excludePunctuation: true },
       "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate — rotation orphans every existing keyring.",
+    );
+
+    // Cloudflare Zero Trust enrollment for the per-user containers' WARP
+    // browser egress. JSON: {"organization","auth_client_id","auth_client_secret"}
+    // — a ZT team name plus a service token with device-enrollment permission.
+    //
+    // Placeholder-until-set, like paperclipAdminCredentials: CDK generates a
+    // random string on first create and a human pastes the real JSON in after
+    // the Zero Trust org exists. That is a designed state, not a broken one —
+    // isol8-warp-boot.sh treats "not enrollment JSON" as "skip, browser egress
+    // stays on the NAT IP" and exits 0.
+    //
+    // ONE FLEET-WIDE TOKEN, and it is readable by every customer's agent (it
+    // lands in the container env and in mdm.xml on disk). A Cloudflare account
+    // caps service tokens at 50, so per-customer tokens are not an option.
+    // Rotation = delete + recreate the token in the ZT dashboard, then
+    // overwrite this secret; containers pick it up on their next task start.
+    this.cloudflareWarpEnrollment = createSecret(
+      "CloudflareWarpEnrollment",
+      "cloudflare-warp-enrollment",
+      { passwordLength: 32, excludePunctuation: true },
+      "Cloudflare Zero Trust service token for container browser egress (JSON: {organization,auth_client_id,auth_client_secret}). Placeholder until set by hand.",
     );
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that

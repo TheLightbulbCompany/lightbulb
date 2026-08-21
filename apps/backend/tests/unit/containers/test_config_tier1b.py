@@ -12,6 +12,7 @@ unknown keys crash-loop the container at boot. `sshVerify` and channel
 deliberately not emitted (deferred to the next image bump).
 """
 
+import base64
 from unittest.mock import patch
 
 from core.containers import config as config_module
@@ -244,6 +245,37 @@ class TestBrowserBounds:
         assert "--use-angle=swiftshader" not in extra_args
         assert "--use-angle=gl" not in extra_args
         assert "--use-gl=angle" not in extra_args
+
+    def test_browser_egress_proxy_off_by_default(self):
+        """No knob, no proxy flag — a container keeps egressing on the AWS NAT
+        IP exactly as before. The container image ships WARP inert, so an
+        accidental flag here would point Chrome at a dead loopback port fleet-
+        wide.
+        """
+        with patch.object(config_module.settings, "BROWSER_EGRESS_PROXY_PORT", 0):
+            assert not [a for a in _cfg()["browser"]["extraArgs"] if "proxy" in a]
+
+    def test_browser_egress_proxy_flag_when_enabled(self):
+        """When on: exactly one flag, a data: PAC that routes through the WARP
+        loopback proxy and — load-bearing — falls back to DIRECT.
+
+        The `; DIRECT` tail is the entire reason this is a PAC rather than
+        `--proxy-server=socks5://…`. Verified against a real WARP proxy
+        2026-08-21: with it, killing warp-svc still loads the page (origin IP,
+        0.6s); without it, the load fails outright. A "simplification" that
+        drops it turns any container whose warp-svc did not connect into one
+        with no working browser at all.
+        """
+        with patch.object(config_module.settings, "BROWSER_EGRESS_PROXY_PORT", 40000):
+            flags = [a for a in _cfg()["browser"]["extraArgs"] if "proxy" in a]
+        assert len(flags) == 1, flags
+        prefix = "--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,"
+        assert flags[0].startswith(prefix)
+        pac = base64.b64decode(flags[0][len(prefix) :]).decode()
+        assert "SOCKS5 127.0.0.1:40000; DIRECT" in pac
+        # Loopback is never proxied — CDP, the X display and the gateway all
+        # live there.
+        assert 'return "DIRECT"' in pac
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

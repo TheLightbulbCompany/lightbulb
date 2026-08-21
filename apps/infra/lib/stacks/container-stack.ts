@@ -47,7 +47,23 @@ export interface ContainerStackProps extends cdk.StackProps {
    * plumbing the ServiceStack uses to avoid cross-stack KMS auto-grant cycles.
    */
   gogKeyringPasswordSecretName: string;
+  /**
+   * Name (NOT ISecret) of the Cloudflare Zero Trust enrollment secret created
+   * in AuthStack, injected as CLOUDFLARE_WARP_ENROLLMENT. Same secret-name
+   * plumbing as gogKeyringPasswordSecretName above, and for the same reason.
+   */
+  cloudflareWarpEnrollmentSecretName: string;
 }
+
+/**
+ * Loopback port the container's WARP local proxy listens on, and the port the
+ * backend points Chrome's PAC at. ONE constant so the two halves cannot drift:
+ * service-stack imports it for the backend's BROWSER_EGRESS_PROXY_PORT env,
+ * and the task definition below passes it to isol8-warp-boot.sh, which writes
+ * it into mdm.xml as `proxy_port`. A plain module import, not a CDK
+ * cross-stack ref, so it creates no CFN export.
+ */
+export const BROWSER_EGRESS_PROXY_PORT = 40000;
 
 const ENV_CONFIG: Record<
   string,
@@ -195,6 +211,7 @@ export class ContainerStack extends cdk.Stack {
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${props.environment}/user-keys/*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.gogKeyringPasswordSecretName}*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.cloudflareWarpEnrollmentSecretName}*`,
         ],
       }),
     );
@@ -737,6 +754,25 @@ export class ContainerStack extends cdk.Stack {
       // display, where it would just exit after an X error.)
       '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
       '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
+      // Step C4b — Cloudflare WARP browser egress (Dockerfile layer 9c).
+      //
+      // Backgrounded, and that is the whole point of the `&`: the script
+      // waits up to ~60s for the tunnel to report Connected, and boot must
+      // not pay that. The wait exists only to turn the outcome into ONE
+      // CloudWatch line ("[warp] connected after Ns" / "[warp] not Connected
+      // after Ns"); nothing downstream reads it. Chrome launches lazily at
+      // the first browser tool call, minutes later at the earliest, so the
+      // tunnel is up long before anything looks for it — and if it never
+      // comes up, the PAC the backend emits ends in "; DIRECT", so Chrome
+      // falls back to the NAT IP (measured: 0.6s to first byte) rather than
+      // failing to load.
+      //
+      // The `[ ! -x ]` guard is deliberately the opposite shape from the
+      // local-sqlite boot guard below, which is FATAL. That one is fatal
+      // because a container without it silently loses owner data; this one
+      // costs a CAPTCHA-avoidance nicety, so an older pinned tag without the
+      // script must keep booting normally.
+      "[ ! -x /usr/local/bin/isol8-warp-boot.sh ] || { /usr/local/bin/isol8-warp-boot.sh & }",
       // The CDP-screencast bridge (socat 18801 -> loopback DevTools 18800) was
       // removed with the screencast live-view; the Browser panel is VNC-only.
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
@@ -863,6 +899,13 @@ export class ContainerStack extends cdk.Stack {
         // inside the databases, stays literally unchanged. Only the bucket
         // needs to reach the container.
         LITESTREAM_S3_BUCKET: litestreamBucketName,
+        // Loopback port the WARP local proxy listens on (Step C4b). The SAME
+        // constant reaches the backend as BROWSER_EGRESS_PROXY_PORT, which is
+        // what decides whether Chrome gets a PAC pointing here at all — so the
+        // container side is safe to set unconditionally: an unenrolled warp
+        // just never listens, and a backend with the knob off never points
+        // Chrome at it.
+        BROWSER_EGRESS_PROXY_PORT: String(BROWSER_EGRESS_PROXY_PORT),
       },
       secrets: {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
@@ -877,6 +920,18 @@ export class ContainerStack extends cdk.Stack {
             this,
             "ImportGogKeyringPassword",
             props.gogKeyringPasswordSecretName,
+          ),
+        ),
+        // Cloudflare Zero Trust service token for the WARP browser egress.
+        // Same import-by-name / no-KMS-auto-grant reasoning as the gog secret
+        // above. Until a human sets the real JSON, this carries CDK's random
+        // placeholder and isol8-warp-boot.sh skips — so it is safe to inject
+        // in every environment from the first deploy.
+        CLOUDFLARE_WARP_ENROLLMENT: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportCloudflareWarpEnrollment",
+            props.cloudflareWarpEnrollmentSecretName,
           ),
         ),
       },

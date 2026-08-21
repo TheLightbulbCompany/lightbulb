@@ -224,6 +224,24 @@ class Settings(BaseSettings):
     JS for weeks. Explicit intent (wake verb, chat send, retry) is never
     budgeted."""
 
+    BROWSER_EGRESS_PROXY_PORT: int = 0
+    """Loopback port of the container's Cloudflare WARP local proxy, or 0 for
+    off. Non-zero makes write_openclaw_config give the browser tool's Chrome a
+    PAC pointing at 127.0.0.1:<port>, so page loads egress on a Cloudflare IP
+    instead of the AWS NAT IP (the thing that trips datacenter-IP CAPTCHA
+    walls). Nothing else in the container is affected: a loopback proxy reaches
+    only processes explicitly pointed at it, and this is the only pointer.
+
+    The PAC ends in "; DIRECT", so a container whose warp-svc never connected
+    falls back to today's egress instead of losing the browser (measured: 0.6s
+    to first byte on the fallback). That makes this knob safe to flip ahead of
+    the container side being healthy, though the useful order is the reverse —
+    see the comment on the CDK env var in service-stack.ts.
+
+    Container-side counterpart: the same port is set on the per-user task
+    definition and written into WARP's mdm.xml as proxy_port. Both come from
+    one constant, BROWSER_EGRESS_PROXY_PORT in container-stack.ts."""
+
     BEDROCK_ENFORCEMENT_LIVE: bool = True
     """Arms the revoke-only enforcement off the Metronome low-balance
     webhook. Defaults True now that Metronome is the only ledger — there is

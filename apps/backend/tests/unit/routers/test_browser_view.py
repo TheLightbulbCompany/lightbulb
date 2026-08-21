@@ -252,6 +252,33 @@ def test_webrtc_admin_routes_reject_normalized_variants(path):
     assert exc_info.value.status_code == 403
 
 
+def test_webrtc_path_decode_is_bounded_and_fails_closed(monkeypatch):
+    """Nested encoding cannot turn path normalization into unbounded CPU work."""
+    from urllib.parse import quote
+
+    from fastapi import HTTPException
+
+    import routers.browser_view as mod
+
+    encoded = "api/room/broadcast"
+    for _ in range(mod._MAX_PATH_DECODE_PASSES + 1):
+        encoded = quote(encoded, safe="")
+    original_unquote = mod.unquote
+    calls = 0
+
+    def _counted_unquote(value):
+        nonlocal calls
+        calls += 1
+        return original_unquote(value)
+
+    monkeypatch.setattr(mod, "unquote", _counted_unquote)
+    with pytest.raises(HTTPException) as exc_info:
+        mod._upstream_path(encoded)
+
+    assert exc_info.value.status_code == 403
+    assert calls == mod._MAX_PATH_DECODE_PASSES + 1
+
+
 def test_webrtc_batch_rejects_before_auth_or_upstream(monkeypatch):
     """Neko's batch dispatcher cannot smuggle an admin broadcast subrequest."""
     from fastapi.testclient import TestClient
@@ -266,6 +293,34 @@ def test_webrtc_batch_rejects_before_auth_or_upstream(monkeypatch):
         "/webrtc/api/batch",
         json=[{"path": "/api/room/broadcast/start", "method": "POST"}],
     )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "api/room/%2e%2e/room/broadcast",
+        r"api\\room\\broadcast",
+        "api%2525252525252froom%2525252525252fbroadcast",
+        "api/x/%2e%2e/batch",
+        r"api\\batch",
+        "api%2525252525252fbatch",
+    ],
+)
+def test_webrtc_normalized_admin_paths_reject_at_route_before_all_boundaries(monkeypatch, path):
+    """Dot segments, slashes, and backslashes cannot evade the route fence."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _unexpected(*args):
+        raise AssertionError("blocked route must not reach auth, owner lookup, or Neko")
+
+    monkeypatch.setattr(mod, "_browser_auth", _unexpected)
+    monkeypatch.setattr(mod, "_resolve_running", _unexpected)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _unexpected)
+    response = TestClient(_build_app()).get(f"/webrtc/{path}")
 
     assert response.status_code == 403
 
@@ -503,9 +558,9 @@ def test_webrtc_http_rejects_missing_invalid_or_expired_auth(monkeypatch, token)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end", ["disconnect", "send_error", "cancel"])
+@pytest.mark.parametrize("end", ["disconnect", "send_error", "send_error_close_error", "cancel", "upstream_error"])
 async def test_webrtc_response_closes_resources_on_actual_asgi_abort(monkeypatch, end):
-    """ASGI disconnects, send failures, and task cancellation close both resources."""
+    """All ASGI aborts and upstream iteration failures close both resources."""
     import asyncio
     import httpx
     from starlette.requests import Request
@@ -518,10 +573,14 @@ async def test_webrtc_response_closes_resources_on_actual_asgi_abort(monkeypatch
     class _Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"first"
+            if end == "upstream_error":
+                raise RuntimeError("upstream stream failed")
             await asyncio.Event().wait()
 
         async def aclose(self):
             seen["upstream_closed"] = True
+            if end == "send_error_close_error":
+                raise RuntimeError("upstream close failed")
 
     class _Client:
         def __init__(self, **kwargs):
@@ -568,11 +627,11 @@ async def test_webrtc_response_closes_resources_on_actual_asgi_abort(monkeypatch
     async def send(message):
         if message["type"] == "http.response.start":
             started.set()
-        if end == "send_error" and message["type"] == "http.response.body":
+        if end.startswith("send_error") and message["type"] == "http.response.body":
             raise OSError("client disconnected")
 
     scope = {"type": "http", "asgi": {"spec_version": "2.3" if end == "disconnect" else "2.4"}}
-    if end == "send_error":
+    if end.startswith("send_error"):
         with pytest.raises(ClientDisconnect):
             await response(scope, receive, send)
     elif end == "cancel":
@@ -581,6 +640,9 @@ async def test_webrtc_response_closes_resources_on_actual_asgi_abort(monkeypatch
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+    elif end == "upstream_error":
+        with pytest.raises(RuntimeError, match="upstream stream failed"):
+            await response(scope, receive, send)
     else:
         await response(scope, receive, send)
     assert seen == {"upstream_closed": True, "client_closed": True}

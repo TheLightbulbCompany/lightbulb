@@ -234,7 +234,6 @@ git commit -m "feat(browser): proxy authenticated WebRTC sessions"
 
 - Add: apps/frontend/src/components/workspace/panels/WebRtcBrowserDockPanel.tsx
 - Add: apps/frontend/src/components/workspace/panels/browserViewport.ts
-- Add: apps/frontend/src/components/workspace/panels/browserViewTransport.ts
 - Modify: apps/frontend/src/components/workspace/panels/browserViewUrl.ts
 - Modify: apps/frontend/src/components/workspace/panelComponents.ts
 - Modify: apps/frontend/src/components/workspace/__tests__/BrowserDockPanel.test.ts
@@ -266,7 +265,7 @@ Expected: new tests fail.
 
 - [ ] Implement getToken -> credentialed cross-origin bootstrap -> iframe, quiet connecting/Retry states, whoami readiness, Neko's native click-to-unmute behavior, bounded 300-ms display resize, and no custom browser chrome.
 
-- [ ] Select the component with temporary `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc`. Missing/other values select VNC for rollback. `cohort` selects WebRTC only for the comma-separated personal-owner Clerk IDs in `NEXT_PUBLIC_BROWSER_VIEW_WEBRTC_COHORT`; team owners remain VNC during this small cohort. The version-controlled source of both dev/default/cohort build values is `apps/infra/lib/app.ts`, which emits the committed `.github/workflows/deploy.yml` Vercel build environment: set dev to `webrtc`, production default to `vnc`, then set production to `cohort` with the reviewed IDs before promoting it to `webrtc`. Do not depend on an unspecified Vercel dashboard environment value or add runtime flag infrastructure.
+- [ ] Select the component directly from temporary `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc`; missing/other values select VNC for rollback. The version-controlled source is `apps/infra/lib/app.ts`, which emits the committed `.github/workflows/deploy.yml` Vercel build environment: set dev to `webrtc` and production to `vnc` until Task 7. There are no live-user cohorts to model, so do not add owner-ID lists, runtime flag infrastructure, or Clerk-dependent selection code.
 
 - [ ] Add bv hosts to report-only frame-src and connect-src. Do not turn CSP enforcement on in this feature.
 
@@ -307,7 +306,7 @@ gh run list --repo Isol8AI/isol8 --branch feat/browser-webrtc --limit 10 --json 
 
 - [ ] Promote the built extended image to dev through openclaw-version.json, deploy through CI, and roll one manual dev test owner. Verify the live task definition and public ENI rather than trusting a UI label.
 
-- [ ] Enable `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc` by changing `apps/infra/lib/app.ts`, regenerating its committed `.github/workflows/deploy.yml`, and deploying through the normal dev pipeline.
+- [ ] Confirm the Task 5-generated workflow builds dev with `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc`, then deploy through the normal dev pipeline.
 
 - [ ] Validate tool auto-open, manual start, native Chrome tabs/omnibox, 30-minute YouTube video/audio, OAuth popup, right-click, keyboard modifiers, scroll, clipboard, download, CAPTCHA/2FA entry, panel remount, dock resize, browser restart, task redeploy, and client network switch. Native-touch acceptance is deferred to Task 8's Xorg cutover.
 
@@ -327,7 +326,7 @@ git status --short
 
 When measured values changed, stage only those files and commit with message perf(browser): tune WebRTC for owner task budget. Otherwise create no tuning commit.
 
-## Task 7: Roll out WebRTC with a bounded rollback window
+## Task 7: Promote WebRTC through a bounded no-user production gate
 
 **Files:**
 
@@ -338,11 +337,11 @@ When measured values changed, stage only those files and commit with message per
 
 - [ ] Do not add a telemetry service or scrape every owner container.
 
-- [ ] Enable WebRTC for a limited production cohort by setting `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=cohort` and the reviewed personal-owner `NEXT_PUBLIC_BROWSER_VIEW_WEBRTC_COHORT` IDs in `apps/infra/lib/app.ts`, regenerating the committed `.github/workflows/deploy.yml`, and using the normal deployment pipeline. Repeat the user journey and resource checks on production networking without changing production servers by hand.
+- [ ] Because there are no live users to cohort or passively observe, make WebRTC the production build value in `apps/infra/lib/app.ts`, regenerate the committed `.github/workflows/deploy.yml`, and deploy through the normal pipeline. Keep the old VNC value as the one-line rollback only during this operator gate.
 
-- [ ] Observe one full production window. Require >=99.5% measured session establishment and no material increase in browser RPC timeouts, gateway health failures, or task restarts.
+- [ ] Repeat the full journey and resource checks on production networking without changing production servers by hand. Run at least 200 controlled supported-client connection attempts; require >=99.5% session establishment and no browser RPC timeout, gateway health failure, or task restart attributable to capture.
 
-- [ ] Make WebRTC the production default by changing the same `apps/infra/lib/app.ts` value while retaining the VNC flag value as one-step rollback for one further observation window.
+- [ ] Keep the production gate open only long enough for the controlled browser/client/network matrix and soak to pass. With no live traffic, do not invent a cohort, calendar observation window, or telemetry service; proceed directly to Task 8 after the evidence is accepted.
 
 - [ ] If supported networks fail both direct UDP and ICE-TCP and success misses the gate, stop rollout and write an evidence-backed TURN addendum. Do not expose reusable TURN credentials or silently relay all media.
 

@@ -76,6 +76,7 @@ _SAFE_REQUEST_HEADERS = frozenset(
 _SAFE_RESPONSE_HEADERS = frozenset(
     {"cache-control", "content-encoding", "content-language", "content-type", "etag", "last-modified"}
 )
+_MAX_PATH_DECODE_PASSES = 8
 
 # RFB frames are small (input events up, framebuffer rects down); 10 MB matches
 # the paperclip relay's ceiling and is far above any legitimate VNC frame, so
@@ -158,11 +159,14 @@ async def _resolve_running(auth: AuthContext) -> str:
 
 def _upstream_path(path: str) -> str:
     normalized = path
-    while True:
+    for _ in range(_MAX_PATH_DECODE_PASSES):
         decoded = unquote(normalized)
         if decoded == normalized:
             break
         normalized = decoded
+    else:
+        if unquote(normalized) != normalized:
+            raise HTTPException(status_code=403, detail="Invalid upstream path")
     if "?" in normalized or "#" in normalized:
         raise HTTPException(status_code=403, detail="Invalid upstream path")
     normalized = posixpath.normpath("/" + normalized.replace("\\", "/")).lstrip("/")
@@ -285,8 +289,14 @@ async def _webrtc_proxy(request: Request, path: str) -> Response:
         nonlocal closed
         if not closed:
             closed = True
-            await upstream.aclose()
-            await client.aclose()
+            try:
+                await upstream.aclose()
+            except Exception as exc:  # noqa: BLE001 - cleanup cannot replace a disconnect.
+                logger.warning("browser_view_proxy: upstream close failed: %s", exc)
+            try:
+                await client.aclose()
+            except Exception as exc:  # noqa: BLE001 - cleanup cannot replace a disconnect.
+                logger.warning("browser_view_proxy: client close failed: %s", exc)
 
     async def body():
         try:

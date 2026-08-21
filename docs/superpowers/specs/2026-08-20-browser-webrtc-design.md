@@ -259,11 +259,11 @@ If the CPU gate fails, tune in this fixed order: reduce frame rate from 24 to 20
 1. Ship the Neko runtime and config while the frontend still selects VNC. Encoding stays idle without a viewer.
 2. Ship public owner-task networking, backend proxy, and the WebRTC panel behind a temporary frontend transport flag whose default remains VNC.
 3. Enable WebRTC in dev only; run automated, manual, and resource gates.
-4. Enable for a limited production cohort, observe connection success and task resource metrics, then make WebRTC the production default.
-5. Keep the VNC flag for one production observation window. Rollback is a frontend flag flip; OpenClaw and Chrome state are unchanged.
+4. With no live-user cohort to observe, make WebRTC the production build value and run the controlled supported-client/network matrix, soak, resource gates, and at least 200 connection attempts on production networking.
+5. Keep the VNC value as a one-line operator rollback only until that controlled production gate passes. OpenClaw and Chrome state are unchanged by a rollback.
 6. Delete the flag, VNC relay/client/packages, CDP screencast relay/panel/input code, websockify/Xvnc/x11vnc/Xvfb/socat visual processes, and their tests. Keep only Xorg/Openbox/Pulse/Neko and OpenClaw CDP automation.
 7. Delete this spec and its implementation plan after the final cleanup PR merges, per repository policy; the PR descriptions and git history become the durable record.
 
 ## Estimated sequence
 
-This is expected to take four to six weeks of implementation, dev validation, and staged rollout, with two additional weeks reserved for codec/resource tuning and production observation. The system can stop safely after any rollout phase because VNC remains the selected fallback until the WebRTC gates pass. The migration is not complete until the final transport cleanup lands.
+This is expected to take four to six weeks of implementation and dev/production validation, with additional time reserved if codec/resource tuning or a TURN addendum is actually required. No-live-user rollout removes the cohort/calendar observation delay, but not the controlled browser, network, security, soak, or resource gates. The system can stop safely before the production gate because VNC remains the selected fallback until the WebRTC gates pass. The migration is not complete until the final transport cleanup lands.

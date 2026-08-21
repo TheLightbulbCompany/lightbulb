@@ -697,6 +697,18 @@ COPY skills/paperclip /app/skills/paperclip
 # in the SKILL.md maintenance header.
 COPY skills/isol8 /app/skills/isol8
 
+# Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
+# Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still
+# honors is /usr/share/google-chrome/extensions/<ID>.json pointing at a local .crx —
+# Chrome installs it into the (ephemeral, /tmp) profile on every launch. No flag, no
+# policy, no server. popups-to-tabs folds every new window (window.open OAuth popups)
+# into the main window as a tab, so the kiosk WM never hides one window behind another
+# in the live view. The JSON filename IS the extension id (derived from the packing key).
+COPY chrome-extensions/popups-to-tabs.crx /opt/isol8/chrome-extensions/popups-to-tabs.crx
+COPY chrome-extensions/popups-to-tabs.external.json /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
+RUN chmod 0644 /opt/isol8/chrome-extensions/popups-to-tabs.crx \
+      /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
+
 
 # ---- Layer 17: resolve the `openclaw` peer dependency for baked plugins ----
 # @openclaw/* plugins declare `openclaw` (the fork core package; its package.json

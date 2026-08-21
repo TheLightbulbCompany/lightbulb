@@ -20,6 +20,10 @@ on:
       # script) must rebuild + republish — otherwise promoted tags keep shipping
       # stale skill content.
       - "apps/infra/openclaw/skills/**"
+      # Same staleness class: Chrome extensions are baked as pre-packed .crx +
+      # external-install JSON (see chrome-extensions/README.md), so an
+      # extension-only change must rebuild + republish too.
+      - "apps/infra/openclaw/chrome-extensions/**"
       # Same staleness class: the Dockerfile bakes the local-sqlite boot chain
       # (isol8-local-sqlite-boot.sh / isol8-local-sqlite-app.sh / isol8-litestream.yml).
       - "apps/infra/openclaw/local-sqlite/**"

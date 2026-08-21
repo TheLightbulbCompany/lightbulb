@@ -227,8 +227,8 @@ class TestBrowserBounds:
         hands WebGL surfaces an in-process SwiftShader context and is kept.
 
         Compositing is a separate axis. `--use-angle=swiftshader` routes ALL GL
-        (incl. 2D page compositing the screencast captures) through
-        ANGLE->Vulkan->SwiftShader and was measured 2026-08-20 to cap the CDP
+        (incl. 2D page compositing the live-view captures) through
+        ANGLE->Vulkan->SwiftShader and was measured 2026-08-20 to cap the
         live-view at ~4fps; `--disable-gpu` (native Skia software compositor) is
         ~8x faster at the same CPU with WebGL preserved. So we ship --disable-gpu
         and BAN both --use-angle=swiftshader (slow compositor) and --use-gl=angle

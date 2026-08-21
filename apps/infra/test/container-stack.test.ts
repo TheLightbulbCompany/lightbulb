@@ -118,16 +118,10 @@ function expectDisplayGate(
   expect(websockify).toBeGreaterThan(wm);
   expect(websockify).toBeLessThan(boot);
 
-  // CDP screencast bridge: socat exposes loopback Chrome CDP (18800) on 18801
-  // for the backend relay. It must launch before the boot exec replaces the
-  // shell, and — unlike Xvnc/websockify — it is NOT DISPLAY-gated, because CDP
-  // exists whether Chrome is headless or headful. Assert both: present, and not
-  // hidden behind the DISPLAY guard.
-  const socat = command.indexOf("socat TCP4-LISTEN:18801,fork,reuseaddr TCP4:127.0.0.1:18800");
-  expect(socat).toBeGreaterThan(websockify);
-  expect(socat).toBeLessThan(boot);
-  expect(command).toContain("{ socat TCP4-LISTEN:18801,fork,reuseaddr TCP4:127.0.0.1:18800 & }");
-  expect(command).not.toContain('[ -z "$DISPLAY" ] || { socat');
+  // The CDP-screencast socat bridge (18801 -> 18800) was removed with the
+  // screencast live-view — it must never reappear in the boot command.
+  expect(command).not.toContain("socat TCP4-LISTEN:18801");
+  expect(command).not.toContain("18801");
 
   // Xvnc must be resizable-by-client and loopback-only: SecurityTypes None is
   // safe ONLY together with -localhost (the relay is the auth fence), so pin

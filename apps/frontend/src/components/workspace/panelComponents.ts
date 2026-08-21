@@ -8,16 +8,13 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-// The `browser` panel renders the noVNC live view (BrowserDockPanel), NOT the
-// CDP screencast panel. Rationale (2026-08-20): CDP Page.startScreencast captures
-// PAGE content only — it structurally cannot show Chrome's native browser UI (the
-// tab strip, omnibox, extension toolbar), so ScreencastDockPanel had to rebuild a
-// fake chrome that never matches native and felt broken to users. VNC streams the
-// REAL Chrome window (real tabs/omnibox/extensions/infobars), and the ~4fps that
-// once made VNC feel slow was a compositor flag, fixed in #1950 (--disable-gpu,
-// ~8x) — so VNC is now native AND fast. ScreencastDockPanel + routers/screencast.py
-// stay parked as the substrate for a future WebRTC-of-display view. `browser`
-// stays the parameterless-singleton key (#1874).
+// The `browser` panel renders the noVNC live view (BrowserDockPanel). VNC
+// streams the REAL Chrome window (real tabs/omnibox/extensions/infobars); the
+// ~4fps that once made it feel slow was a compositor flag, fixed in #1950
+// (--disable-gpu, ~8x) — so VNC is native AND fast. (A CDP-screencast panel was
+// tried and removed: Page.startScreencast captures PAGE content only, so it had
+// to rebuild a fake chrome that never matched native and felt broken to users.)
+// `browser` stays the parameterless-singleton key (#1874).
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 

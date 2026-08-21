@@ -2024,7 +2024,7 @@ def build_openclaw_config_dict(
             # including the 2D page compositing the live-view captures — through
             # ANGLE->Vulkan->SwiftShader, emulating a whole GPU pipeline in
             # software just to paint web content. Measured 2026-08-20 on a dev
-            # container, that path caps the CDP screencast at ~4fps. Swapping it
+            # container, that path caps the live-view at ~4fps. Swapping it
             # for --disable-gpu (Chrome's native Skia software compositor) was
             # ~8x fps (4 -> 20-30fps) at the SAME CPU, same box. --disable-gpu
             # keeps WebGL: --enable-unsafe-swiftshader still hands WebGL surfaces

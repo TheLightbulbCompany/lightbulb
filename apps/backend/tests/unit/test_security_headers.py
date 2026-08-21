@@ -34,3 +34,17 @@ def test_webrtc_iframe_is_the_only_frame_exception():
 
     session = client.post("/api/v1/browser-view/session")
     assert session.headers.get("x-frame-options") == "SAMEORIGIN"
+
+
+def test_browser_view_session_uses_the_global_cors_policy():
+    """The Clerk bootstrap POST remains callable from the configured frontend."""
+    response = client.options(
+        "/api/v1/browser-view/session",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert response.headers.get("access-control-allow-credentials") == "true"

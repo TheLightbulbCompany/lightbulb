@@ -39,7 +39,6 @@ from urllib.parse import unquote, urlparse
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
 from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 from starlette.websockets import WebSocketDisconnect
@@ -54,6 +53,7 @@ router = APIRouter()
 _CLERK_SESSION_COOKIE = "__session"
 _BROWSER_VIEW_COOKIE = "isol8_browser_view"
 _NEKO_COOKIE = "neko"
+_NEKO_UPSTREAM_COOKIE = "NEKO_SESSION"
 _COOKIE_PATH = "/api/v1/browser-view"
 _NEKO_PATH = "/api/v1/browser-view/webrtc"
 _COOKIE_MAX_AGE = 15 * 60
@@ -143,8 +143,16 @@ async def _resolve_running(auth: AuthContext) -> str:
 
 
 def _upstream_path(path: str) -> str:
-    normalized = posixpath.normpath("/" + unquote(path).replace("\\", "/")).lstrip("/")
-    if normalized == "api/room/broadcast" or normalized.startswith("api/room/broadcast/"):
+    normalized = path
+    while True:
+        decoded = unquote(normalized)
+        if decoded == normalized:
+            break
+        normalized = decoded
+    normalized = posixpath.normpath("/" + normalized.replace("\\", "/")).lstrip("/")
+    if normalized in {"api/batch", "api/room/broadcast"} or normalized.startswith(
+        ("api/batch/", "api/room/broadcast/")
+    ):
         raise HTTPException(status_code=403, detail="Broadcast route unavailable")
     return f"{_NEKO_PATH}/{normalized}" if normalized else f"{_NEKO_PATH}/"
 
@@ -167,17 +175,21 @@ def _set_cookie(response: Response, key: str, value: str, request: Request) -> N
 
 async def _neko_session(ip: str, cookie: str | None) -> str:
     timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-        if cookie:
-            reused = await client.get(
-                f"http://{ip}:6081{_NEKO_PATH}/api/whoami",
-                headers={"Cookie": f"{_NEKO_COOKIE}={cookie}"},
-            )
-            if reused.is_success:
-                return cookie
-        response = await client.post(f"http://{ip}:6081{_NEKO_PATH}/api/login", json={"username": "owner"})
-        response.raise_for_status()
-        session = response.cookies.get(_NEKO_COOKIE)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            if cookie:
+                reused = await client.get(
+                    f"http://{ip}:6081{_NEKO_PATH}/api/whoami",
+                    headers={"Cookie": f"{_NEKO_UPSTREAM_COOKIE}={cookie}"},
+                )
+                if reused.is_success:
+                    return cookie
+            response = await client.post(f"http://{ip}:6081{_NEKO_PATH}/api/login", json={"username": "owner"})
+            response.raise_for_status()
+            session = response.cookies.get(_NEKO_UPSTREAM_COOKIE)
+    except httpx.HTTPError as exc:
+        logger.warning("browser_view_session: Neko login failed ip=%s: %s", ip, exc)
+        raise HTTPException(status_code=502, detail="Neko unavailable") from exc
     if not session:
         raise HTTPException(status_code=502, detail="Neko login did not return a session")
     return session
@@ -188,16 +200,11 @@ def _upstream_headers(request: Request, neko_cookie: str) -> dict[str, str]:
         name: value
         for name, value in request.headers.items()
         if name.lower() in _SAFE_REQUEST_HEADERS and name.lower() not in _HOP_BY_HOP
-    } | {"cookie": f"{_NEKO_COOKIE}={neko_cookie}"}
+    } | {"cookie": f"{_NEKO_UPSTREAM_COOKIE}={neko_cookie}"}
 
 
 def _response_headers(headers: httpx.Headers) -> dict[str, str]:
     return {name: value for name, value in headers.items() if name.lower() in _SAFE_RESPONSE_HEADERS}
-
-
-async def _close_http(client: httpx.AsyncClient, response: httpx.Response) -> None:
-    await response.aclose()
-    await client.aclose()
 
 
 @router.post("/session")
@@ -237,9 +244,12 @@ async def _webrtc_proxy(request: Request, path: str) -> Response:
     timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
     client = httpx.AsyncClient(timeout=timeout, trust_env=False)
     try:
+        upstream_url = f"http://{ip}:6081{upstream_path}"
+        if request.url.query:
+            upstream_url = f"{upstream_url}?{request.url.query}"
         upstream_request = client.build_request(
             request.method,
-            f"http://{ip}:6081{upstream_path}",
+            upstream_url,
             headers=_upstream_headers(request, neko),
             content=request.stream(),
         )
@@ -247,25 +257,19 @@ async def _webrtc_proxy(request: Request, path: str) -> Response:
     except Exception:
         await client.aclose()
         raise HTTPException(status_code=502, detail="Neko unavailable") from None
-    response = StreamingResponse(
-        upstream.aiter_raw(),
-        status_code=upstream.status_code,
-        headers=_response_headers(upstream.headers),
-        background=BackgroundTask(_close_http, client, upstream),
-    )
-    if session := upstream.cookies.get(_NEKO_COOKIE):
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    response = StreamingResponse(body(), status_code=upstream.status_code, headers=_response_headers(upstream.headers))
+    if session := upstream.cookies.get(_NEKO_UPSTREAM_COOKIE):
         _set_cookie(response, _NEKO_COOKIE, session, request)
     return response
-
-
-@router.api_route("/webrtc/", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def browser_view_webrtc_root(request: Request) -> Response:
-    return await _webrtc_proxy(request, "")
-
-
-@router.api_route("/webrtc/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def browser_view_webrtc_http(request: Request, path: str) -> Response:
-    return await _webrtc_proxy(request, path)
 
 
 @router.websocket("/webrtc/ws")
@@ -279,13 +283,13 @@ async def browser_view_webrtc_ws(websocket: WebSocket) -> None:
             raise HTTPException(status_code=401, detail="Missing Neko session")
         ip = await _resolve_running(auth)
     except HTTPException as exc:
-        await websocket.close(code=4403 if exc.status_code == 403 else 4401)
+        await websocket.close(code=4503 if exc.status_code == 503 else 4403 if exc.status_code == 403 else 4401)
         return
 
     try:
         async with ws_connect(
-            f"ws://{ip}:6081{_NEKO_PATH}/ws",
-            additional_headers={"Cookie": f"{_NEKO_COOKIE}={neko}"},
+            f"ws://{ip}:6081{_NEKO_PATH}/api/ws",
+            additional_headers={"Cookie": f"{_NEKO_UPSTREAM_COOKIE}={neko}"},
             max_size=_WS_MAX_FRAME_SIZE,
             open_timeout=5,
             close_timeout=5,
@@ -321,6 +325,16 @@ async def browser_view_webrtc_ws(websocket: WebSocket) -> None:
             await websocket.close()
         except Exception:  # noqa: BLE001 - already closed
             pass
+
+
+@router.api_route("/webrtc/", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def browser_view_webrtc_root(request: Request) -> Response:
+    return await _webrtc_proxy(request, "")
+
+
+@router.api_route("/webrtc/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def browser_view_webrtc_http(request: Request, path: str) -> Response:
+    return await _webrtc_proxy(request, path)
 
 
 @router.websocket("/ws")

@@ -170,6 +170,16 @@ export class ContainerStack extends cdk.Stack {
       ec2.Port.tcp(2049),
       "Allow NFS from Fargate containers",
     );
+    this.containerSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(59000),
+      "Allow WebRTC ICE TCP from the internet",
+    );
+    this.containerSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.udp(59000),
+      "Allow WebRTC ICE UDP from the internet",
+    );
 
     // ECS task execution role (used by ECS agent)
     this.taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {

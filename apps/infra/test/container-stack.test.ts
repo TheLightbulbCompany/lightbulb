@@ -195,6 +195,25 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
+  test("opens only the owner WebRTC ICE mux to the internet", () => {
+    const publicIngress = [
+      ...Object.values(template.findResources("AWS::EC2::SecurityGroupIngress")).map(
+        (resource) => resource.Properties as Record<string, unknown>,
+      ),
+      ...Object.values(template.findResources("AWS::EC2::SecurityGroup")).flatMap(
+        (resource) => (resource.Properties?.SecurityGroupIngress ?? []) as Record<string, unknown>[],
+      ),
+    ]
+      .filter(({ CidrIp }) => CidrIp === "0.0.0.0/0")
+      .map(({ IpProtocol, FromPort, ToPort }) => ({ IpProtocol, FromPort, ToPort }))
+      .sort((left, right) => String(left.IpProtocol).localeCompare(String(right.IpProtocol)));
+
+    expect(publicIngress).toEqual([
+      { IpProtocol: "tcp", FromPort: 59000, ToPort: 59000 },
+      { IpProtocol: "udp", FromPort: 59000, ToPort: 59000 },
+    ]);
+  });
+
   test("execution role GetSecretValue is scoped to BYOK user-keys + the gog keyring secret, never '*'", () => {
     // The per-user task defs inject exactly two secret families; a wildcard
     // here would let a leaked execution-role credential read every secret in

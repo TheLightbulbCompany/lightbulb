@@ -1152,6 +1152,10 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Fargate Task Definition
     // -------------------------------------------------------------------------
+    const ownerServiceSubnetIds = props.vpc
+      .selectSubnets({ subnetType: ec2.SubnetType.PUBLIC })
+      .subnetIds.join(",");
+
     const privateSubnetIds = props.vpc
       .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
       .subnetIds.join(",");
@@ -1315,7 +1319,7 @@ export class ServiceStack extends cdk.Stack {
       // latest CDK base revision live via describe_task_definition(family)
       // — the base family is uncontaminated because per-user clones go to
       // a separate `<base>-user` family.
-      ECS_SUBNETS: privateSubnetIds,
+      ECS_SUBNETS: ownerServiceSubnetIds,
       ECS_SECURITY_GROUP_ID:
         props.container.containerSecurityGroup.securityGroupId,
       CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,

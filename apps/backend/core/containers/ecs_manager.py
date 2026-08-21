@@ -331,6 +331,15 @@ class EcsManager:
         self._cloud_map_service_name = settings.CLOUD_MAP_SERVICE_NAME
         self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
 
+    def _network_configuration(self) -> dict:
+        return {
+            "awsvpcConfiguration": {
+                "subnets": self._subnets,
+                "securityGroups": self._security_groups,
+                "assignPublicIp": "ENABLED",
+            }
+        }
+
     def _service_name(self, user_id: str) -> str:
         """Generate deterministic, collision-resistant service name from user_id.
 
@@ -827,6 +836,7 @@ class EcsManager:
             service=container["service_name"],
             taskDefinition=new_arn,
             forceNewDeployment=True,
+            networkConfiguration=self._network_configuration(),
         )
         # Persist the new ARN so subsequent operations see it.
         await container_repo.update_fields(owner_id, {"task_definition_arn": new_arn})
@@ -1111,13 +1121,7 @@ class EcsManager:
                 taskDefinition=task_def_arn,
                 desiredCount=0,
                 capacityProviderStrategy=SPOT_CAPACITY_STRATEGY,
-                networkConfiguration={
-                    "awsvpcConfiguration": {
-                        "subnets": self._subnets,
-                        "securityGroups": self._security_groups,
-                        "assignPublicIp": "DISABLED",
-                    }
-                },
+                networkConfiguration=self._network_configuration(),
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
                 deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
             )
@@ -1476,6 +1480,7 @@ class EcsManager:
                     service=service_name,
                     desiredCount=1,
                     deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+                    networkConfiguration=self._network_configuration(),
                 )
         except Exception as e:
             logger.error(
@@ -1544,6 +1549,7 @@ class EcsManager:
             service=self._service_name(user_id),
             forceNewDeployment=True,
             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+            networkConfiguration=self._network_configuration(),
         )
 
     async def resize_user_container(
@@ -1676,6 +1682,7 @@ class EcsManager:
                 taskDefinition=new_task_def_arn,
                 forceNewDeployment=True,
                 deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+                networkConfiguration=self._network_configuration(),
             )
 
             # Decide whether to flip status=provisioning + fire the poller.
@@ -1840,6 +1847,7 @@ class EcsManager:
             service=self._service_name(user_id),
             taskDefinition=target_task_definition_arn,
             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+            networkConfiguration=self._network_configuration(),
         )
 
         pre_wait_response = await asyncio.to_thread(
@@ -3030,6 +3038,7 @@ class EcsManager:
                             desiredCount=1,
                             taskDefinition=new_task_def_arn,
                             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+                            networkConfiguration=self._network_configuration(),
                         )
                         old_task_def_arn = existing.get("task_definition_arn") if existing else None
                         # The widest unfenced window on this path: the
@@ -3149,6 +3158,7 @@ class EcsManager:
                         service=service_name,
                         forceNewDeployment=True,
                         deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+                        networkConfiguration=self._network_configuration(),
                     )
                 except Exception as e:
                     # Metrics only; outer release owns status="error". (This
@@ -3585,6 +3595,7 @@ class EcsManager:
                 service=service_name,
                 capacityProviderStrategy=ON_DEMAND_CAPACITY_STRATEGY,
                 forceNewDeployment=True,
+                networkConfiguration=self._network_configuration(),
             )
             put_metric(
                 "container.spot_fallback",

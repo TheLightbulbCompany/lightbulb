@@ -36,6 +36,14 @@ _TEST_AIP_ARNS = {
     "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
 }
 
+_OWNER_NETWORK_CONFIGURATION = {
+    "awsvpcConfiguration": {
+        "subnets": ["subnet-aaa", "subnet-bbb"],
+        "securityGroups": ["sg-12345"],
+        "assignPublicIp": "ENABLED",
+    }
+}
+
 # Captured at import, BEFORE the autouse fixture below stubs them, so the one
 # test that needs the real lease primitives can put them back.
 _REAL_LEASED = _container_repo_module.update_container_leased
@@ -497,6 +505,10 @@ class TestRegisterTaskDefinition:
 class TestCreateUserService:
     """Test ECS service creation with per-user EFS isolation."""
 
+    def test_owner_network_configuration_enables_the_public_ice_mux_subnets(self, manager):
+        """A missing or stale awsvpc config would leave owner ICE candidates unreachable."""
+        assert manager._network_configuration() == _OWNER_NETWORK_CONFIGURATION
+
     @pytest.mark.asyncio
     async def test_creates_service_and_repo_record(self, manager, mock_ecs_client, mock_efs_client):
         """create_user_service upserts repo record early, then creates access point, task def, service."""
@@ -541,6 +553,7 @@ class TestCreateUserService:
             assert call_kwargs["capacityProviderStrategy"] == [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
             assert "launchType" not in call_kwargs
             assert call_kwargs["enableExecuteCommand"] is True
+            assert call_kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
 
             # Verify update_fields called for substatus progression (3 calls)
             assert mock_repo.update_fields.call_count == 3
@@ -873,6 +886,7 @@ class TestStartUserService:
                 cluster=manager._cluster,
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=1,
+                networkConfiguration=_OWNER_NETWORK_CONFIGURATION,
                 deploymentConfiguration={
                     "deploymentCircuitBreaker": {
                         "enable": True,
@@ -2143,6 +2157,7 @@ class TestAwaitRunningTransition:
         kwargs = mock_ecs_client.update_service.call_args.kwargs
         assert kwargs["capacityProviderStrategy"] == [{"capacityProvider": "FARGATE", "weight": 1}]
         assert kwargs["forceNewDeployment"] is True
+        assert kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
         assert "desiredCount" not in kwargs
 
     @pytest.mark.asyncio
@@ -2830,6 +2845,7 @@ class TestResizeUserContainer:
             ]
             assert update_calls, "Expected update_service to be called via asyncio.to_thread"
             call_kwargs = update_calls[0].kwargs
+            assert call_kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
             dc = call_kwargs.get("deploymentConfiguration") or {}
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
@@ -3004,6 +3020,7 @@ class TestConfigLockProtocolRollout:
         )
         update_kwargs = mock_ecs_client.update_service.call_args.kwargs
         assert update_kwargs["taskDefinition"] == "arn:task-def:new"
+        assert update_kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
         assert "forceNewDeployment" not in update_kwargs
         mock_ecs_client.get_waiter.assert_called_once_with("services_stable")
         waiter.wait.assert_called_once_with(
@@ -3309,6 +3326,7 @@ class TestProvisionUserContainer:
             # update_service is called directly (not via asyncio.to_thread)
             # in the redeploying branch.
             call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            assert call_kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
             dc = call_kwargs.get("deploymentConfiguration") or {}
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
@@ -3813,6 +3831,7 @@ class TestProvisionUserContainerProviderChoice:
                 "update_service must point at the freshly-registered task def; "
                 "without taskDefinition= the service stays pinned to the prior revision."
             )
+            assert kw["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
 
             # Old task def was deregistered.
             assert any(

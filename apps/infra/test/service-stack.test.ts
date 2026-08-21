@@ -110,6 +110,31 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
+  test("gives owner-service creation public subnets without moving backend work public", () => {
+    const taskDefinitions = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
+      Properties?: {
+        ContainerDefinitions?: Array<{
+          Name?: string;
+          Environment?: Array<{ Name?: string; Value?: unknown }>;
+        }>;
+      };
+    }>;
+    const backend = taskDefinitions
+      .flatMap((taskDefinition) => taskDefinition.Properties?.ContainerDefinitions ?? [])
+      .find(({ Name }) => Name === "backend");
+    const ownerSubnets = backend?.Environment?.find(({ Name }) => Name === "ECS_SUBNETS")?.Value;
+
+    expect(JSON.stringify(ownerSubnets)).toContain("PublicSubnet");
+    expect(JSON.stringify(ownerSubnets)).not.toContain("PrivateSubnet");
+
+    const backendService = JSON.stringify(template.findResources("AWS::ECS::Service"));
+    const provisioner = JSON.stringify(template.findResources("AWS::StepFunctions::StateMachine"));
+    expect(backendService).toContain("PrivateSubnet");
+    expect(backendService).toContain("DISABLED");
+    expect(provisioner).toContain("PrivateSubnet");
+    expect(provisioner).not.toContain("ENABLED");
+  });
+
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {
     const taskDefinitions = template.findResources("AWS::ECS::TaskDefinition");
     const rendered = JSON.stringify(taskDefinitions);

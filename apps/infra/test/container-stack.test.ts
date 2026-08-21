@@ -103,19 +103,22 @@ function expectDisplayGate(
   const command = openclawStartupCommand(template, env);
   const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ]');
   const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
-  const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
+  const auxiliary = command.indexOf("supervisord -c /etc/neko/browser-supervisord.conf");
   const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
   const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
 
   // The guard must precede the launch it protects, and everything must precede
   // the exec that replaces this shell — nothing can be appended after that.
-  // The WM must come after the X server line: X clients do not retry a missing
-  // socket, which is also why the command wraps it in a wait-for-socket loop.
+  // Neko, PulseAudio, and Openbox are supervised only after the X socket
+  // exists. Their supervisor stays backgrounded so its failure never replaces
+  // or kills the OpenClaw gateway boot path.
   expect(guard).toBeGreaterThanOrEqual(0);
   expect(start).toBeGreaterThan(guard);
-  expect(wm).toBeGreaterThan(start);
+  expect(auxiliary).toBeGreaterThan(start);
   expect(command).toContain("while [ ! -S /tmp/.X11-unix/X1 ]");
-  expect(websockify).toBeGreaterThan(wm);
+  expect(command).toContain("browser-supervisord.conf");
+  expect(command).toMatch(/supervisord -c \/etc\/neko\/browser-supervisord\.conf[^\n]*&/);
+  expect(websockify).toBeGreaterThan(auxiliary);
   expect(websockify).toBeLessThan(boot);
 
   // CDP screencast bridge: socat exposes loopback Chrome CDP (18800) on 18801
@@ -142,6 +145,8 @@ function expectDisplayGate(
   expect(command).not.toContain("x11vnc");
   expect(command).not.toContain("socat TCP-LISTEN:5900");
   expect(command).not.toContain("Xvfb");
+  expect(command).not.toContain("google-chrome");
+  expect(command).not.toContain("chromium");
 
   expect(openclawContainerEnv(template, env).some(({ Name }) => Name === "DISPLAY")).toBe(displaySet);
 }

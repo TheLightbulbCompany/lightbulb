@@ -144,6 +144,7 @@ The backend browser-view router gains three responsibilities:
 2. `/api/v1/browser-view/webrtc/{path:path}` HTTP proxy
    - validates the browser-view cookie on every request;
    - resolves the current owner container per request;
+   - rejects normalized `/api/room/broadcast` and every descendant before any upstream request;
    - forwards only the Neko path prefix to `http://<private-ip>:6081`;
    - strips hop-by-hop headers and the Isol8 auth cookie before forwarding;
    - streams bodies and preserves content type, cache control, and Neko session-cookie updates.
@@ -208,7 +209,7 @@ The following existing behavior is intentionally preserved:
 - `POST /session` accepts the Clerk `Authorization` token and CORS only from the exact Isol8 frontend origins. Every cookie-authenticated unsafe HTTP method and WebSocket upgrade validates an exact `Origin`: the matching Isol8 frontend origin for parent bootstrap, or the matching `bv[-env].isol8.co` origin for Neko's same-origin iframe client. Missing or other origins are rejected before proxying. Safe reads remain cookie-authenticated. This is the CSRF defense; frame ancestry is only embedding policy.
 - Proxy paths are fixed under Neko's configured prefix; no arbitrary upstream URL or port exists.
 - Hop-by-hop headers and client-supplied forwarding headers are dropped.
-- Neko `pprof`, metrics, webcam, microphone, broadcast, upload-drop, and JPEG screencast features are disabled in production config.
+- Neko `pprof`, metrics, webcam, microphone, upload-drop, and JPEG screencast features are disabled in production config. Pinned Neko cannot unregister broadcast routes: the private runtime leaves its URL empty and autostart false, while the backend rejects normalized `/api/room/broadcast` and descendants before proxying; the Task 4 negative test proves no upstream call.
 - Public ingress exposes only the ICE mux port. Neko HTTP/signaling remains private behind the backend SG.
 - Browser-view responses use a narrow `frame-ancestors` policy for Isol8 app origins. The generic backend `X-Frame-Options: SAMEORIGIN` header is skipped only for this authenticated iframe path.
 
@@ -218,7 +219,7 @@ The following existing behavior is intentionally preserved:
 
 - Docker image builds and `neko --version`/GStreamer/Pulse/Xorg smoke checks pass.
 - CDK tests pin public owner subnets, `assignPublicIp: ENABLED`, and the exact TCP/UDP media ingress without widening other task ports.
-- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, both `Set-Cookie` values carry host-only/HttpOnly/SameSite/Path/Secure attributes, cross-site unsafe HTTP and WS origins reject before proxying while allowed frontend and `bv` origins work, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, and either WS leg ending tears down the other.
+- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, both `Set-Cookie` values carry host-only/HttpOnly/SameSite/Path/Secure attributes, normalized broadcast paths and descendants reject with no upstream call, cross-site unsafe HTTP and WS origins reject before proxying while allowed frontend and `bv` origins work, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, and either WS leg ending tears down the other.
 - Frontend tests prove URL mapping, bootstrap-before-iframe ordering, bounded/debounced sizing, `/start` behavior, retry, and removal of noVNC/CDP-tab polling.
 - Existing backend, frontend, infra, and E2E tests pass.
 

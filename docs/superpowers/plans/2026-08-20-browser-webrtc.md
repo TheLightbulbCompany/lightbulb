@@ -98,7 +98,7 @@ Expected: new assertions fail against the VNC-only startup.
 
 - [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, the noauth provider behind the backend/SG fence, a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. The constant `owner` identity names the shared display only: no viewer/session/peer limit is enforced, and concurrent same-owner viewing/control is unsupported UX.
 
-- [ ] Disable Neko JPEG screencast, webcam, microphone, broadcast, upload-drop, pprof, and public metrics.
+- [ ] Disable Neko JPEG screencast, webcam, microphone, upload-drop, pprof, and public metrics. Pinned Neko cannot disable its administrator broadcast routes by configuration, so leave its broadcast URL empty and autostart false; Task 4 rejects normalized `/api/room/broadcast` and every descendant before an upstream request, with a negative no-upstream-call test.
 
 - [ ] Start Xvnc as today, then let Supervisor keep PulseAudio, Openbox, and Neko alive. Keep websockify/VNC :6080 untouched for rollback. Do not start Chrome from Supervisor or Neko.
 
@@ -181,7 +181,7 @@ git commit -m "feat(browser): expose owner-scoped WebRTC media mux"
 - Modify: apps/backend/main.py
 - Add or modify: apps/backend/tests/unit/core/test_security_headers.py
 
-- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, complete short-lived Isol8 and Neko `Set-Cookie` attributes (host-only, HttpOnly, `SameSite=Strict`, path, and Secure outside localhost), HTTP header/cookie stripping, fixed upstream host/port, allowed exact frontend/`bv` origins and rejected cross-site unsafe HTTP/WS origins, WS first-completion teardown, and iframe security headers.
+- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, complete short-lived Isol8 and Neko `Set-Cookie` attributes (host-only, HttpOnly, `SameSite=Strict`, path, and Secure outside localhost), HTTP header/cookie stripping, fixed upstream host/port, rejection of normalized `/api/room/broadcast` and every descendant before any upstream call, allowed exact frontend/`bv` origins and rejected cross-site unsafe HTTP/WS origins, WS first-completion teardown, and iframe security headers.
 
 ~~~bash
 cd apps/backend && uv run pytest tests/unit/routers/test_browser_view.py tests/unit/core/test_security_headers.py -q

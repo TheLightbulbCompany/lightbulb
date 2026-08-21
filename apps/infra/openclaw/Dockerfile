@@ -20,7 +20,7 @@ FROM debian:bookworm-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      build-essential ca-certificates curl git \
+      build-essential pkg-config ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin Go from go.dev — Debian 12's apt golang-go is 1.19, but several
@@ -77,7 +77,39 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
     cd /tmp/openhue && go build -o /out/bin/openhue .
 
 # =============================================================================
-# Stage 2: final — runtime-only image
+# Stage 2: neko-builder — pinned WebRTC server (kept separate from skills Go)
+# =============================================================================
+FROM debian:bookworm-slim AS neko-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG NEKO_GO_VERSION=1.25.14
+ARG NEKO_GO_SHA256=a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712
+ARG NEKO_COMMIT=395ca1a6f62b7b0e270e654d366a2d57b8042efd
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      build-essential ca-certificates curl git \
+      libx11-dev libxrandr-dev libxtst-dev libgtk-3-dev libxcvt-dev \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${NEKO_GO_VERSION}.linux-amd64.tar.gz" \
+    && echo "${NEKO_GO_SHA256}  /tmp/go.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/go.tgz -C /usr/local \
+    && rm /tmp/go.tgz
+
+ENV PATH=/usr/local/go/bin:$PATH
+
+RUN git clone https://github.com/m1k1o/neko.git /src/neko \
+    && cd /src/neko \
+    && git checkout "${NEKO_COMMIT}" \
+    && cd server \
+    && GIT_COMMIT="${NEKO_COMMIT}" GIT_TAG=v3.1.5 ./build core
+
+# Pinned Neko v3.1.5 client matching the server source above.
+FROM ghcr.io/m1k1o/neko/base@sha256:20806497c78de64700cb7befa674dbdc6bc4e8f0848a3dc911f0878a6726fa36 AS neko-client
+
+# =============================================================================
+# Stage 3: final — runtime-only image
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
@@ -107,7 +139,7 @@ USER root
 #   current: tigervnc (Xvnc = X server + VNC server in ONE resident process,
 #            with native client-driven SetDesktopSize resize — the thing
 #            x11vnc cannot do, and what lets the dock panel resize the actual
-#            display) + matchbox (kiosk window manager: every window
+#            display) + Openbox (kiosk window manager: every window
 #            borderless-fullscreen, re-fit on display resize — without it
 #            Chrome floats at its default size on a black root window)
 #   legacy:  xvfb + x11vnc (+ socat spawn-per-connection), kept until no
@@ -131,13 +163,34 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       socat python3-pip sqlite3 python3 \
       curl wget ca-certificates gnupg git unzip \
       xvfb x11vnc novnc websockify \
-      tigervnc-standalone-server matchbox-window-manager \
+      tigervnc-standalone-server \
+      supervisor pulseaudio openbox libxtst6 \
+      gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+      gstreamer1.0-pulseaudio \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/Xtigervnc /usr/bin/Xvnc \
     # ln -sf happily creates a DANGLING link if the package ever renames its
     # binary; test -x follows the link, turning that into a failed image build
     # here instead of a fleet-wide boot FATAL at the next deploy.
     && test -x /usr/bin/Xvnc
+
+# ---- Neko v3.1.5 runtime ----
+# Neko shares OpenClaw's Xvnc DISPLAY=:1 and never owns Chrome/CDP. Its HTTP
+# listener is loopback-only; Task 4 is the authenticated product boundary.
+COPY --from=neko-builder /src/neko/server/bin/neko /usr/local/bin/neko
+COPY --from=neko-client /var/www/ /var/www/neko/
+COPY browser/neko.yaml /etc/neko/neko.yaml
+COPY browser/default.pa /etc/pulse/default.pa
+COPY browser/openbox.xml /etc/neko/openbox.xml
+COPY browser/browser-supervisord.conf /etc/neko/browser-supervisord.conf
+RUN mkdir -p /tmp/neko-runtime \
+    && chown node:node /tmp/neko-runtime \
+    && chmod 0700 /tmp/neko-runtime \
+    && neko --version \
+    && gst-inspect-1.0 vp8enc >/dev/null \
+    && gst-inspect-1.0 opusenc >/dev/null \
+    && pulseaudio --version \
+    && openbox --version
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \

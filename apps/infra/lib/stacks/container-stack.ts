@@ -697,9 +697,9 @@ export class ContainerStack extends cdk.Stack {
       // display for damage (docker-selenium #1027); Xvnc IS the display and
       // only encodes updates while a viewer is attached — no viewer, no work.
       //
-      // matchbox is the kiosk window manager: without one, Chrome floats at
+      // Openbox is the kiosk window manager: without one, Chrome floats at
       // its default window size over an unpainted (black) X root — the
-      // "watching a movie of a browser" effect. matchbox keeps every window
+      // "watching a movie of a browser" effect. Openbox keeps every window
       // borderless-fullscreen and re-fits it when the display resizes, which
       // is what makes noVNC's resizeSession (panel size -> display size)
       // end-to-end useful. It must connect AFTER the X socket exists — X
@@ -733,9 +733,11 @@ export class ContainerStack extends cdk.Stack {
       // The live view is auxiliary — a dead Xvnc costs the Browser panel and
       // headful Chrome, but chat/channels/everything else still works, and
       // killing the whole agent container over it would invert priorities.
-      // (Skipping the exec also beats running matchbox against a dead
-      // display, where it would just exit after an X error.)
-      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec matchbox-window-manager -use_titlebar no; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
+      // (Skipping the exec also beats running Openbox against a dead
+      // display, where it would just exit after an X error.) Supervisor owns
+      // PulseAudio, Openbox, and Neko only; it is backgrounded so any failure
+      // leaves the OpenClaw gateway boot path alive.
+      '[ -z "$DISPLAY" ] || { ( i=0; while [ ! -S /tmp/.X11-unix/X1 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if [ -S /tmp/.X11-unix/X1 ]; then exec supervisord -c /etc/neko/browser-supervisord.conf; else echo "[boot] WARNING: Xvnc socket never appeared; live view and headful browser will be broken this task"; fi ) & }',
       '[ -z "$DISPLAY" ] || { websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 & }',
       // CDP screencast bridge: expose Chrome's loopback DevTools (18800) on
       // 18801 for the backend screencast relay (routers/screencast.py). 18801

@@ -207,14 +207,14 @@ function StepList({ steps }: { steps: WipeStep[] }) {
           key={`${step.system}-${step.action}-${i}`}
           className="flex items-start justify-between gap-3 rounded px-2 py-1.5 text-xs"
         >
-          <div className="min-w-0">
+          <div className="min-w-0 break-all">
             <div className="font-mono text-zinc-200">
               <span>{step.system}</span>
               <span className="mx-1 text-zinc-600">·</span>
               <span>{step.action}</span>
             </div>
             {step.detail ? (
-              <div className="truncate text-zinc-500" title={step.detail}>
+              <div className="text-zinc-500">
                 {step.detail}
               </div>
             ) : null}

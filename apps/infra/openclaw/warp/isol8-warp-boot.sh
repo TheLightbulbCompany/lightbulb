@@ -44,13 +44,15 @@ if [ -z "$ORG" ] || [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
   exit 0
 fi
 
-# The values below are interpolated into XML verbatim. Cloudflare's team name
-# and service-token pair are plain [A-Za-z0-9._-], so this never fires in
-# practice — but a fat-fingered value with an XML metacharacter would produce
-# a malformed mdm.xml that warp-svc ignores SILENTLY, and the only symptom
-# would be "never reaches Connected" with no cause. Name it instead.
-if printf '%s%s%s' "$ORG" "$CLIENT_ID" "$CLIENT_SECRET" | grep -q '[<>&"]'; then
-  log "enrollment values contain XML metacharacters; refusing to write mdm.xml"
+# The values below are interpolated into XML verbatim through an UNQUOTED
+# heredoc, which re-parses `$`, backticks and backslashes as shell syntax.
+# Cloudflare's team name and service-token pair are plain [A-Za-z0-9._-], so
+# this never fires in practice — but a fat-fingered value with an XML
+# metacharacter would produce a malformed mdm.xml that warp-svc ignores
+# SILENTLY (only symptom: "never reaches Connected"), and one with a shell
+# metacharacter would be EVALUATED by this script. Name both instead.
+if printf '%s%s%s' "$ORG" "$CLIENT_ID" "$CLIENT_SECRET" | grep -q '[<>&"$`\\]'; then
+  log "enrollment values contain XML or shell metacharacters; refusing to write mdm.xml"
   exit 0
 fi
 

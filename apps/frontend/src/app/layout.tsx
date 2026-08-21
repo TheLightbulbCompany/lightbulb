@@ -50,7 +50,7 @@ const epilogue = Epilogue({
   weight: ["300", "400", "500"],
 });
 
-const SITE_TITLE = "isol8 — Autonomous Businesses";
+const SITE_TITLE = "isol8 — AI Agents for Autonomous Businesses";
 const SITE_DESCRIPTION =
   "Point agents at the business you already run — sales, support, finance — and let it run itself. Always-on, cloud-isolated, and yours.";
 

@@ -4,6 +4,7 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 
 export const metadata: Metadata = {
   title: "Cookie Policy — isol8",
+  alternates: { canonical: "https://isol8.co/cookies" },
   description: "How isol8 uses cookies and similar tracking technologies.",
 };
 

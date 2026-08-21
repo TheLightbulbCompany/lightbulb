@@ -28,9 +28,9 @@ export function PanelMasthead({
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
           {overline}
         </p>
-        <h1 className="font-editorial-serif text-5xl leading-none text-[var(--ink)]">
+        <h2 className="font-editorial-serif text-5xl leading-none text-[var(--ink)]">
           {title}
-        </h1>
+        </h2>
       </div>
       {(meta || actions) && (
         <div className="flex items-center gap-3 sm:pb-1">

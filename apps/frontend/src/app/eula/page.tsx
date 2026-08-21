@@ -4,6 +4,7 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 
 export const metadata: Metadata = {
   title: "End User License Agreement — isol8",
+  alternates: { canonical: "https://isol8.co/eula" },
   description: "The license terms for the isol8 desktop application.",
 };
 

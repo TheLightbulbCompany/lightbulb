@@ -21,8 +21,13 @@ To change it: edit the source, bump `version` in `manifest.json` AND in
 `external_version`), repack, and update `EXTENSION_ID` if you packed with a new
 key — the ID is what the JSON filename in the Dockerfile is named after:
 
+    # macOS (branded Chrome):
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --no-message-box \
       --pack-extension=$PWD/popups-to-tabs --user-data-dir=/tmp/pack-ud          # → .crx + .pem
+    # Linux (e.g. inside the container image, which has /usr/bin/google-chrome):
+    google-chrome --headless=new --no-sandbox --disable-gpu \
+      --pack-extension=$PWD/popups-to-tabs --user-data-dir=/tmp/pack-ud          # same outputs
+    # Re-sign with the SAME key to keep the id: add --pack-extension-key=popups-to-tabs.pem
     openssl rsa -in popups-to-tabs.pem -pubout -outform DER | openssl dgst -sha256 -binary \
       | head -c 16 | xxd -p -c 32 | tr '0-9a-f' 'a-p'                              # → EXTENSION_ID
 

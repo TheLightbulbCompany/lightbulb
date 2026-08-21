@@ -48,3 +48,16 @@ def test_browser_view_session_uses_the_global_cors_policy():
 
     assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
     assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+def test_browser_view_session_rejects_unconfigured_cors_preflight():
+    response = client.options(
+        "/api/v1/browser-view/session",
+        headers={
+            "Origin": "https://attacker.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.headers.get("access-control-allow-origin") is None

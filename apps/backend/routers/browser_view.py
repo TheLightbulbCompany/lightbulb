@@ -83,6 +83,20 @@ _SAFE_RESPONSE_HEADERS = frozenset(
 _WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
 
 
+class _ClosingStreamingResponse(StreamingResponse):
+    """Close upstream resources even when ASGI stops consuming the body."""
+
+    def __init__(self, *args, close_resources, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._close_resources = close_resources
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._close_resources()
+
+
 def _auth_from_payload(payload: dict) -> AuthContext:
     user_id = payload.get("sub")
     if not user_id:
@@ -149,6 +163,8 @@ def _upstream_path(path: str) -> str:
         if decoded == normalized:
             break
         normalized = decoded
+    if "?" in normalized or "#" in normalized:
+        raise HTTPException(status_code=403, detail="Invalid upstream path")
     normalized = posixpath.normpath("/" + normalized.replace("\\", "/")).lstrip("/")
     if normalized in {"api/batch", "api/room/broadcast"} or normalized.startswith(
         ("api/batch/", "api/room/broadcast/")
@@ -157,8 +173,10 @@ def _upstream_path(path: str) -> str:
     return f"{_NEKO_PATH}/{normalized}" if normalized else f"{_NEKO_PATH}/"
 
 
-def _cookie_secure(request: Request) -> bool:
-    return request.url.hostname not in {"localhost", "127.0.0.1"}
+def _cookie_secure() -> bool:
+    from core.config import settings
+
+    return settings.ENVIRONMENT in {"dev", "staging", "prod"}
 
 
 def _set_cookie(response: Response, key: str, value: str, request: Request) -> None:
@@ -168,7 +186,7 @@ def _set_cookie(response: Response, key: str, value: str, request: Request) -> N
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
         samesite="strict",
-        secure=_cookie_secure(request),
+        secure=_cookie_secure(),
         path=_COOKIE_PATH,
     )
 
@@ -254,19 +272,35 @@ async def _webrtc_proxy(request: Request, path: str) -> Response:
             content=request.stream(),
         )
         upstream = await client.send(upstream_request, stream=True)
+    except asyncio.CancelledError:
+        await client.aclose()
+        raise
     except Exception:
         await client.aclose()
         raise HTTPException(status_code=502, detail="Neko unavailable") from None
+
+    closed = False
+
+    async def close_resources() -> None:
+        nonlocal closed
+        if not closed:
+            closed = True
+            await upstream.aclose()
+            await client.aclose()
 
     async def body():
         try:
             async for chunk in upstream.aiter_raw():
                 yield chunk
         finally:
-            await upstream.aclose()
-            await client.aclose()
+            await close_resources()
 
-    response = StreamingResponse(body(), status_code=upstream.status_code, headers=_response_headers(upstream.headers))
+    response = _ClosingStreamingResponse(
+        body(),
+        status_code=upstream.status_code,
+        headers=_response_headers(upstream.headers),
+        close_resources=close_resources,
+    )
     if session := upstream.cookies.get(_NEKO_UPSTREAM_COOKIE):
         _set_cookie(response, _NEKO_COOKIE, session, request)
     return response

@@ -71,11 +71,12 @@ def test_webrtc_session_bootstrap_sets_scoped_host_only_cookies(monkeypatch):
         assert "Secure" not in cookie
 
 
-def test_webrtc_session_cookie_is_secure_off_localhost(monkeypatch):
-    """The host-only session cookies become Secure on the real BV host."""
+def test_webrtc_session_cookie_is_secure_in_deployed_environment_despite_forged_host(monkeypatch):
+    """Only trusted deployment state, never a client Host header, controls Secure."""
     from fastapi.testclient import TestClient
 
     import routers.browser_view as mod
+    from core.config import settings
 
     async def _fake_decode(token):
         return {"sub": "user_test1"}
@@ -89,9 +90,10 @@ def test_webrtc_session_cookie_is_secure_off_localhost(monkeypatch):
     monkeypatch.setattr(mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
     monkeypatch.setattr(mod, "_neko_session", _fake_neko)
-    response = TestClient(_build_app(), base_url="https://bv.isol8.co").post(
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    response = TestClient(_build_app()).post(
         "/session",
-        headers={"Authorization": "Bearer clerk.jwt", "Origin": "http://localhost:3000"},
+        headers={"Authorization": "Bearer clerk.jwt", "Origin": "http://localhost:3000", "Host": "localhost"},
     )
 
     assert response.status_code == 200
@@ -115,6 +117,56 @@ def test_webrtc_session_rejects_missing_invalid_or_expired_auth(monkeypatch, tok
     response = TestClient(_build_app()).post("/session", headers=headers)
 
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("origin", [None, "https://attacker.example"])
+def test_webrtc_session_rejects_missing_or_cross_site_origin_before_auth(monkeypatch, origin):
+    """Bootstrap is Origin-gated before its bearer credential is inspected."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _unexpected(*args):
+        raise AssertionError("origin rejection must precede auth and Neko login")
+
+    monkeypatch.setattr(mod, "_browser_auth", _unexpected)
+    headers = {} if origin is None else {"Origin": origin}
+    response = TestClient(_build_app()).post("/session", headers=headers)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("route", ["/session", "/webrtc/api/whoami"])
+def test_webrtc_http_routes_report_unreachable_before_neko_io(monkeypatch, route):
+    """Both bootstrap and proxy use the distinct runtime-unreachable response."""
+    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _fake_decode(token):
+        return {"sub": "user_test1"}
+
+    async def _unreachable(auth):
+        raise HTTPException(status_code=503)
+
+    async def _unexpected(*args):
+        raise AssertionError("unreachable owner must not contact Neko")
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _unreachable)
+    monkeypatch.setattr(mod, "_neko_session", _unexpected)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _unexpected)
+    if route == "/session":
+        response = TestClient(_build_app()).post(
+            route, headers={"Authorization": "Bearer clerk.jwt", "Origin": "http://localhost:3000"}
+        )
+    else:
+        response = TestClient(_build_app()).get(
+            route, cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"}
+        )
+
+    assert response.status_code == 503
 
 
 def test_webrtc_session_org_member_resolves_org_owner(monkeypatch):
@@ -218,12 +270,39 @@ def test_webrtc_batch_rejects_before_auth_or_upstream(monkeypatch):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "api/room/broadcast%3Fignored",
+        "api/room/broadcast%253Fignored",
+        "api/batch%23ignored",
+        "api/batch%2523ignored",
+    ],
+)
+def test_webrtc_encoded_delimiters_reject_before_auth_resolve_or_upstream(monkeypatch, path):
+    """Encoded query/fragment delimiters cannot disguise Neko admin paths."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _unexpected(*args):
+        raise AssertionError("blocked route must not authenticate, resolve, or connect upstream")
+
+    monkeypatch.setattr(mod, "_browser_auth", _unexpected)
+    monkeypatch.setattr(mod, "_resolve_running", _unexpected)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _unexpected)
+    response = TestClient(_build_app()).get(f"/webrtc/{path}")
+
+    assert response.status_code == 403
+
+
 def test_webrtc_proxy_uses_only_the_resolved_private_neko_endpoint(monkeypatch):
     """Client host, forwarded headers, and Isol8's cookie never reach Neko."""
     import httpx
     from fastapi.testclient import TestClient
 
     import routers.browser_view as mod
+    from core.config import settings
 
     seen: dict[str, object] = {}
 
@@ -266,10 +345,18 @@ def test_webrtc_proxy_uses_only_the_resolved_private_neko_endpoint(monkeypatch):
     monkeypatch.setattr(mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
     monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
 
     response = TestClient(_build_app()).get(
         "/webrtc/api/whoami?cast=1&quality=high%20detail",
-        headers={"X-Forwarded-For": "198.51.100.8", "X-Real-IP": "198.51.100.8", "Host": "attacker.example"},
+        headers={
+            "Connection": "keep-alive",
+            "Host": "attacker.example",
+            "X-Forwarded-For": "198.51.100.8",
+            "X-Forwarded-Host": "attacker.example",
+            "X-Isol8-Owner": "other-owner",
+            "X-Real-IP": "198.51.100.8",
+        },
         cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session", "__session": "never-forward"},
     )
 
@@ -283,7 +370,69 @@ def test_webrtc_proxy_uses_only_the_resolved_private_neko_endpoint(monkeypatch):
     }
     assert seen["closed"] is True
     assert response.headers.get("x-neko-internal") is None
-    assert any("neko=refreshed.session" in cookie for cookie in response.headers.get_list("set-cookie"))
+    refreshed = next(cookie for cookie in response.headers.get_list("set-cookie") if "neko=refreshed.session" in cookie)
+    assert "Domain=" not in refreshed
+    assert all(
+        attribute in refreshed
+        for attribute in ("HttpOnly", "SameSite=strict", "Path=/api/v1/browser-view", "Max-Age=900", "Secure")
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "owner"),
+    [
+        ({"sub": "user_test1"}, "user_test1"),
+        ({"sub": "user_member", "o": {"id": "org_acme", "rol": "admin"}}, "org_acme"),
+    ],
+)
+@pytest.mark.parametrize("origin", ["https://isol8.co", "https://bv.isol8.co"])
+def test_webrtc_unsafe_http_route_resolves_personal_or_org_owner(monkeypatch, payload, owner, origin):
+    """Actual unsafe proxy routes accept only the production frontend/BV pair."""
+    import httpx
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+    from core.config import settings
+
+    seen: dict[str, str] = {}
+
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url)
+
+        async def send(self, request, stream):
+            return httpx.Response(200, stream=_Stream(), request=request)
+
+        async def aclose(self):
+            pass
+
+    async def _fake_decode(token):
+        return payload
+
+    class _FakeEcs:
+        async def resolve_running_container(self, owner_id):
+            seen["owner"] = owner_id
+            return {"status": "running"}, "10.0.0.42"
+
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "https://isol8.co")
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _Client)
+    response = TestClient(_build_app()).post(
+        "/webrtc/api/screen",
+        headers={"Origin": origin},
+        cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"},
+    )
+
+    assert response.status_code == 200
+    assert seen["owner"] == owner
 
 
 @pytest.mark.parametrize("origin", [None, "https://attacker.example"])
@@ -354,12 +503,13 @@ def test_webrtc_http_rejects_missing_invalid_or_expired_auth(monkeypatch, token)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end", ["cancel", "upstream_error"])
-async def test_webrtc_stream_closes_response_and_client_on_non_normal_end(monkeypatch, end):
-    """Cancellation and upstream iteration failure both close HTTP resources."""
+@pytest.mark.parametrize("end", ["disconnect", "send_error", "cancel"])
+async def test_webrtc_response_closes_resources_on_actual_asgi_abort(monkeypatch, end):
+    """ASGI disconnects, send failures, and task cancellation close both resources."""
     import asyncio
     import httpx
     from starlette.requests import Request
+    from starlette.responses import ClientDisconnect
 
     import routers.browser_view as mod
 
@@ -368,8 +518,6 @@ async def test_webrtc_stream_closes_response_and_client_on_non_normal_end(monkey
     class _Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"first"
-            if end == "upstream_error":
-                raise RuntimeError("upstream stream failed")
             await asyncio.Event().wait()
 
         async def aclose(self):
@@ -410,14 +558,84 @@ async def test_webrtc_stream_closes_response_and_client_on_non_normal_end(monkey
         }
     )
     response = await mod._webrtc_proxy(request, "api/whoami")
+    started = asyncio.Event()
 
-    assert await anext(response.body_iterator) == b"first"
-    if end == "cancel":
-        await response.body_iterator.aclose()
+    async def receive():
+        if end == "disconnect":
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            started.set()
+        if end == "send_error" and message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    scope = {"type": "http", "asgi": {"spec_version": "2.3" if end == "disconnect" else "2.4"}}
+    if end == "send_error":
+        with pytest.raises(ClientDisconnect):
+            await response(scope, receive, send)
+    elif end == "cancel":
+        task = asyncio.create_task(response(scope, receive, send))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     else:
-        with pytest.raises(RuntimeError, match="upstream stream failed"):
-            await anext(response.body_iterator)
+        await response(scope, receive, send)
     assert seen == {"upstream_closed": True, "client_closed": True}
+
+
+@pytest.mark.asyncio
+async def test_webrtc_cancelled_upstream_connect_closes_client_and_reraises(monkeypatch):
+    """Cancellation while opening Neko is not translated into a 502."""
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+
+    import routers.browser_view as mod
+
+    closed = False
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url)
+
+        async def send(self, request, stream):
+            raise asyncio.CancelledError
+
+        async def aclose(self):
+            nonlocal closed
+            closed = True
+
+    async def _fake_decode(token):
+        return {"sub": "user_test1"}
+
+    async def _fake_resolve(auth):
+        return "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _Client)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/webrtc/api/whoami",
+            "query_string": b"",
+            "headers": [(b"cookie", b"isol8_browser_view=clerk.jwt; neko=neko.session")],
+            "server": ("localhost", 8000),
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await mod._webrtc_proxy(request, "api/whoami")
+    assert closed
 
 
 @pytest.mark.asyncio
@@ -511,6 +729,7 @@ async def test_neko_session_mints_after_missing_or_invalid_cookie(monkeypatch, s
     import routers.browser_view as mod
 
     calls: list[str] = []
+    login: dict[str, object] = {}
 
     class _Client:
         async def __aenter__(self):
@@ -525,6 +744,7 @@ async def test_neko_session_mints_after_missing_or_invalid_cookie(monkeypatch, s
 
         async def post(self, url, **kwargs):
             calls.append("post")
+            login.update(url=url, body=kwargs["json"])
             return httpx.Response(
                 200,
                 headers={"set-cookie": "NEKO_SESSION=fresh.session; Path=/"},
@@ -535,6 +755,10 @@ async def test_neko_session_mints_after_missing_or_invalid_cookie(monkeypatch, s
 
     assert await mod._neko_session("10.0.0.42", stale_cookie) == "fresh.session"
     assert calls == (["post"] if stale_cookie is None else ["get", "post"])
+    assert login == {
+        "url": "http://10.0.0.42:6081/api/v1/browser-view/webrtc/api/login",
+        "body": {"username": "owner"},
+    }
 
 
 def test_webrtc_ws_uses_pinned_neko_api_ws_and_cookie(monkeypatch):
@@ -582,6 +806,143 @@ def test_webrtc_ws_uses_pinned_neko_api_ws_and_cookie(monkeypatch):
         "url": "ws://10.0.0.42:6081/api/v1/browser-view/webrtc/api/ws",
         "headers": {"Cookie": "NEKO_SESSION=neko.session"},
     }
+
+
+@pytest.mark.parametrize(
+    ("payload", "owner"),
+    [
+        ({"sub": "user_test1"}, "user_test1"),
+        ({"sub": "user_member", "o": {"id": "org_acme", "rol": "admin"}}, "org_acme"),
+    ],
+)
+@pytest.mark.parametrize("origin", ["https://isol8.co", "https://bv.isol8.co"])
+def test_webrtc_ws_route_resolves_personal_or_org_owner(monkeypatch, payload, owner, origin):
+    """Actual signaling routes derive both owner types before dialing Neko."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+    from core.config import settings
+
+    seen: dict[str, str] = {}
+
+    class _Upstream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _Connect:
+        async def __aenter__(self):
+            return _Upstream()
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def _fake_decode(token):
+        return payload
+
+    class _FakeEcs:
+        async def resolve_running_container(self, owner_id):
+            seen["owner"] = owner_id
+            return {"status": "running"}, "10.0.0.42"
+
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "https://isol8.co")
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
+    monkeypatch.setattr(mod, "ws_connect", lambda *args, **kwargs: _Connect())
+    with TestClient(_build_app()).websocket_connect(
+        "/webrtc/ws", headers={"Origin": origin}, cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"}
+    ):
+        pass
+
+    assert seen["owner"] == owner
+
+
+def test_webrtc_ws_viewer_disconnect_cancels_other_leg_and_closes_upstream(monkeypatch):
+    """The Neko relay, not just VNC, tears down on first completed leg."""
+    import asyncio
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    closed = threading.Event()
+
+    class _Upstream:
+        async def send(self, data):
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+    class _Connect:
+        async def __aenter__(self):
+            return _Upstream()
+
+        async def __aexit__(self, *args):
+            closed.set()
+            return False
+
+    async def _fake_decode(token):
+        return {"sub": "user_test1"}
+
+    async def _fake_resolve(auth):
+        return "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
+    monkeypatch.setattr(mod, "ws_connect", lambda *args, **kwargs: _Connect())
+    with TestClient(_build_app()).websocket_connect(
+        "/webrtc/ws",
+        headers={"Origin": "http://localhost:8000"},
+        cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"},
+    ) as ws:
+        ws.close()
+        assert closed.wait(timeout=5), "Neko signaling socket leaked after viewer disconnect"
+
+
+def test_webrtc_ws_upstream_completion_closes_viewer(monkeypatch):
+    """An upstream Neko completion also ends the viewer-side session."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import routers.browser_view as mod
+
+    class _Upstream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _Connect:
+        async def __aenter__(self):
+            return _Upstream()
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def _fake_decode(token):
+        return {"sub": "user_test1"}
+
+    async def _fake_resolve(auth):
+        return "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
+    monkeypatch.setattr(mod, "ws_connect", lambda *args, **kwargs: _Connect())
+    with TestClient(_build_app()).websocket_connect(
+        "/webrtc/ws",
+        headers={"Origin": "http://localhost:8000"},
+        cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"},
+    ) as ws:
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_text()
 
 
 def test_webrtc_ws_unreachable_container_closes_4503(monkeypatch):

@@ -1,7 +1,10 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
-import { ContainerStack } from "../lib/stacks/container-stack";
+import {
+  BROWSER_EGRESS_PROXY_PORT,
+  ContainerStack,
+} from "../lib/stacks/container-stack";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
@@ -37,6 +40,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     vpc: network.vpc,
     kmsKeyArn: kmsKey.keyArn,
     gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
+    cloudflareWarpEnrollmentSecretName: `isol8/${environment}/cloudflare-warp-enrollment`,
   });
 
   const service = new ServiceStack(app, `Service-${environment}`, {
@@ -741,4 +745,38 @@ describe("ServiceStack — Metronome per-env wiring", () => {
       ]),
     });
   });
+});
+
+describe("ServiceStack — browser egress proxy knob", () => {
+  // The backend decides whether Chrome gets a PAC; the container decides what
+  // port WARP listens on. They are set in two different stacks, so the only
+  // thing stopping a drift is that both read one exported constant. Flipping
+  // this knob on by typing a port number instead points Chrome at a port
+  // nothing listens on — and that fails SILENTLY, because the PAC's
+  // "; DIRECT" tail quietly falls back to the NAT IP. Hence the assert.
+  test.each(["dev", "prod"] as const)(
+    "%s sets BROWSER_EGRESS_PROXY_PORT to off or to the container's actual port",
+    (envName) => {
+      const template =
+        envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack(envName);
+      const taskDefs = Object.values(
+        template.findResources("AWS::ECS::TaskDefinition"),
+      ) as Array<{
+        Properties?: {
+          ContainerDefinitions?: Array<{
+            Environment?: Array<{ Name?: string; Value?: string }>;
+          }>;
+        };
+      }>;
+      const values = taskDefs
+        .flatMap((t) => t.Properties?.ContainerDefinitions ?? [])
+        .flatMap((c) => c.Environment ?? [])
+        .filter((e) => e.Name === "BROWSER_EGRESS_PROXY_PORT")
+        .map((e) => e.Value);
+      expect(values.length).toBeGreaterThan(0);
+      for (const value of values) {
+        expect(["0", String(BROWSER_EGRESS_PROXY_PORT)]).toContain(value);
+      }
+    },
+  );
 });

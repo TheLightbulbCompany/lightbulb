@@ -16,6 +16,7 @@ function buildStack(environment: "dev" | "prod"): Template {
     vpc,
     kmsKeyArn: kmsKey.keyArn,
     gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
+    cloudflareWarpEnrollmentSecretName: `isol8/${environment}/cloudflare-warp-enrollment`,
   });
   return Template.fromStack(containerStack);
 }
@@ -184,11 +185,12 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
-  test("execution role GetSecretValue is scoped to BYOK user-keys + the gog keyring secret, never '*'", () => {
-    // The per-user task defs inject exactly two secret families; a wildcard
-    // here would let a leaked execution-role credential read every secret in
-    // the account. Searched across both policy types so CDK repacking can't
-    // silently invalidate the assertion.
+  test("execution role GetSecretValue is scoped to the three injected secrets, never '*'", () => {
+    // The per-user task defs inject exactly three secret families (BYOK
+    // user-keys, the gog keyring password, the Cloudflare WARP enrollment);
+    // a wildcard here would let a leaked execution-role credential read every
+    // secret in the account. Searched across both policy types so CDK
+    // repacking can't silently invalidate the assertion.
     const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
       Object.values(template.findResources(type)).some((r) =>
         ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
@@ -198,13 +200,18 @@ describe("ContainerStack — dev", () => {
             return (
               s.Action === "secretsmanager:GetSecretValue" &&
               Array.isArray(resources) &&
-              resources.length === 2 &&
+              resources.length === 3 &&
               resources.some(
                 (res) => typeof res === "string" && res.includes(":secret:isol8/dev/user-keys/*"),
               ) &&
               resources.some(
                 (res) =>
                   typeof res === "string" && res.includes(":secret:isol8/dev/gog-keyring-password"),
+              ) &&
+              resources.some(
+                (res) =>
+                  typeof res === "string" &&
+                  res.includes(":secret:isol8/dev/cloudflare-warp-enrollment"),
               )
             );
           },
@@ -508,6 +515,50 @@ describe("ContainerStack — dev", () => {
         }),
       ]),
     });
+  });
+
+  test("openclaw container injects CLOUDFLARE_WARP_ENROLLMENT from the shared secret", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Secrets: Match.arrayWith([
+            Match.objectLike({
+              Name: "CLOUDFLARE_WARP_ENROLLMENT",
+              ValueFrom: Match.objectLike({
+                "Fn::Join": Match.arrayWith([
+                  Match.arrayWith([
+                    Match.stringLikeRegexp("isol8/dev/cloudflare-warp-enrollment"),
+                  ]),
+                ]),
+              }),
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("warp boot runs in the background and never fails the boot", () => {
+    // Two properties, both load-bearing and both easy to lose in a refactor:
+    //
+    // 1. Backgrounded. The script waits up to ~60s for the tunnel so it can
+    //    log the outcome; run in the foreground that becomes 60s of cold-start
+    //    on every task, for a log line nothing reads.
+    // 2. Guarded, non-fatal. The local-sqlite guard immediately below it is
+    //    `|| { echo FATAL; exit 1; }` because a missing boot chain loses owner
+    //    data. This one costs a CAPTCHA-avoidance nicety, so a tag pinned
+    //    before layer 9c existed must still boot.
+    const command = openclawStartupCommand(template, "dev");
+    expect(command).toContain(
+      "[ ! -x /usr/local/bin/isol8-warp-boot.sh ] || { /usr/local/bin/isol8-warp-boot.sh & }",
+    );
+    expect(command).not.toContain("isol8-warp-boot.sh; exit 1");
+    // Ordered before the exec that replaces this shell, or it never runs.
+    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(
+      command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh"),
+    );
   });
 
   test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {

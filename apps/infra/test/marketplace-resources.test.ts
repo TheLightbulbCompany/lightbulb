@@ -56,6 +56,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     vpc: network.vpc,
     kmsKeyArn: kmsKey.keyArn,
     gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
+    cloudflareWarpEnrollmentSecretName: `isol8/${environment}/cloudflare-warp-enrollment`,
   });
 
   const service = new ServiceStack(app, `Service-${environment}`, {

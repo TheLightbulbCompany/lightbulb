@@ -39,6 +39,43 @@ logger = logging.getLogger(__name__)
 # promotion, and a provision in that window must not stamp a future version.
 DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 
+# PAC served to the browser tool's Chrome when BROWSER_EGRESS_PROXY_PORT is set,
+# routing page loads through the container's Cloudflare WARP local proxy instead
+# of the AWS NAT IP. `%d` is that port.
+#
+# A PAC rather than the simpler `--proxy-server=socks5://…` for ONE reason: the
+# trailing `; DIRECT`. If warp-svc is not running — an unenrolled container, a
+# failed enrollment, a knob flipped ahead of an image roll — Chrome falls back
+# to today's egress instead of failing every page load. Verified end to end
+# against a real WARP proxy (Chromium 2026-08-21): proxy up -> cdn-cgi/trace
+# reports `warp=on` and a Cloudflare IP; proxy killed -> the same PAC returns
+# the origin IP with `warp=off` in 0.6s; the same PAC WITHOUT `; DIRECT` fails
+# the load outright, which is what the fallback is buying.
+#
+# Chrome does honour `data:` PAC URLs (verified the same day, Chrome 151: a PAC
+# handed over a data: URL sent traffic to a listener under test exactly as
+# --proxy-server did). Keeping the PAC inline avoids putting a file on EFS that
+# a browser launch would then depend on.
+#
+# The loopback arm is belt-and-braces — Chromium applies implicit localhost
+# bypasses anyway, and Chrome only ever LISTENS on the CDP port rather than
+# dialling it — but it makes the intent legible: nothing local is ever proxied.
+_BROWSER_EGRESS_PAC_JS = (
+    "function FindProxyForURL(u,h){"
+    'if(isPlainHostName(h)||shExpMatch(h,"127.*")||h=="::1")return "DIRECT";'
+    'return "SOCKS5 127.0.0.1:%d; DIRECT";}'
+)
+
+
+def _browser_egress_args() -> list[str]:
+    """Chrome flags routing browser egress through WARP, or [] when off."""
+    port = settings.BROWSER_EGRESS_PROXY_PORT
+    if not port:
+        return []
+    pac = base64.b64encode((_BROWSER_EGRESS_PAC_JS % port).encode()).decode()
+    return [f"--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,{pac}"]
+
+
 # Channel provider ids we provision a config block for, and whose accounts must
 # survive a reprovision (read back by ecs_manager._provision_channel_accounts).
 # Single source of truth — the channels block in build_openclaw_config_dict is
@@ -2041,6 +2078,9 @@ def build_openclaw_config_dict(
             "extraArgs": [
                 "--disable-gpu",
                 "--enable-unsafe-swiftshader",
+                # Cloudflare WARP browser egress, when the environment has the
+                # knob on. Appends at most one flag; see _browser_egress_args.
+                *_browser_egress_args(),
             ],
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that

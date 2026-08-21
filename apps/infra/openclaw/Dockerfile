@@ -356,6 +356,43 @@ RUN curl -fsSL -o /tmp/google-chrome.deb \
     rm -f /tmp/google-chrome.deb && rm -rf /var/lib/apt/lists/* && \
     test -x /usr/bin/google-chrome
 
+# ---- Layer 9c: Cloudflare WARP (browser egress) ----
+# Routes ONLY the browser tool's Chrome off the AWS NAT IP and onto a
+# Cloudflare egress IP, to cut the datacenter-IP CAPTCHA walls. Fargate grants
+# no NET_ADMIN and has no /dev/net/tun, so a real tunnel is impossible; the
+# official package's "Local proxy" mode needs neither — warp-svc opens a
+# SOCKS5/HTTP listener on loopback and speaks MASQUE/QUIC (UDP 443) out to
+# 162.159.198.x. Verified against this exact package: warp-svc starts with no
+# dbus, no CAP_NET_ADMIN and no tun device.
+#
+# A loopback proxy affects only processes explicitly pointed at it, which is
+# exactly the property we want: the gateway WebSocket, Paperclip, the
+# bedrock-gate, Litestream/S3, EFS and every MCP server are untouched. The one
+# pointer is Chrome's --proxy-pac-url, emitted by the backend config generator.
+#
+# INERT until the enrollment secret is set: isol8-warp-boot.sh skips entirely
+# (exit 0) when CLOUDFLARE_WARP_ENROLLMENT is absent or is still the CDK
+# placeholder, so this layer ships and rolls ahead of any Zero Trust org
+# existing — same image-first decoupling as layers 9b and 10 above.
+#
+# Codename is read from the base rather than hardcoded (unlike the 1Password /
+# GitHub repos above, which serve one distro-agnostic "stable" suite):
+# Cloudflare publishes per-suite, and this base's Debian release is whatever
+# the upstream OpenClaw fork's node image is on. Cloudflare currently publishes
+# both bookworm and trixie; a base that moves to a suite they do not publish
+# fails the build here, loudly, instead of shipping a container that silently
+# never connects.
+RUN . /etc/os-release && \
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${VERSION_CODENAME} main" \
+      > /etc/apt/sources.list.d/cloudflare-client.list && \
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends cloudflare-warp && \
+    rm -rf /var/lib/apt/lists/* && \
+    warp-cli --version
+COPY warp/isol8-warp-boot.sh /usr/local/bin/isol8-warp-boot.sh
+RUN chmod 0755 /usr/local/bin/isol8-warp-boot.sh
+
 # ---- Layer 10: externalized channel plugins (Slack, Discord) ----
 # Upstream OpenClaw externalized these channel plugins out of the core image
 # (@openclaw/slack and @openclaw/discord are pruned from the published ghcr

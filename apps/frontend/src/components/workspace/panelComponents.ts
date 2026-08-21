@@ -8,15 +8,17 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-// The `browser` panel now renders the CDP screencast live view
-// (ScreencastDockPanel + routers/screencast.py relay), NOT the old noVNC panel
-// (BrowserDockPanel, kept as the fallback reference). This is the flip half of
-// the #1939 two-step: it MUST NOT merge until the socat bridge is on the prod.tag
-// fleet-wide, or every container without the CDP proxy shows the panel's
-// disconnected/Retry state. Once socat is fleet-wide, screencast goes live
-// everywhere at once with no broken-panel window. `browser` stays the
-// parameterless-singleton key (#1874).
-import { ScreencastDockPanel } from "./panels/ScreencastDockPanel";
+// The `browser` panel renders the noVNC live view (BrowserDockPanel), NOT the
+// CDP screencast panel. Rationale (2026-08-20): CDP Page.startScreencast captures
+// PAGE content only — it structurally cannot show Chrome's native browser UI (the
+// tab strip, omnibox, extension toolbar), so ScreencastDockPanel had to rebuild a
+// fake chrome that never matches native and felt broken to users. VNC streams the
+// REAL Chrome window (real tabs/omnibox/extensions/infobars), and the ~4fps that
+// once made VNC feel slow was a compositor flag, fixed in #1950 (--disable-gpu,
+// ~8x) — so VNC is now native AND fast. ScreencastDockPanel + routers/screencast.py
+// stay parked as the substrate for a future WebRTC-of-display view. `browser`
+// stays the parameterless-singleton key (#1874).
+import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -24,7 +26,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  browser: ScreencastDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

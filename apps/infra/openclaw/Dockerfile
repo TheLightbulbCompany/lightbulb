@@ -99,11 +99,19 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 
 ENV PATH=/usr/local/go/bin:$PATH
 
+# v3.1.5's build script retained pre-module linker paths. Patch the checked-out,
+# pinned source at the build boundary so Go stamps the actual server variables.
 RUN git clone https://github.com/m1k1o/neko.git /src/neko \
     && cd /src/neko \
     && git checkout "${NEKO_COMMIT}" \
     && cd server \
-    && GIT_COMMIT="${NEKO_COMMIT}" GIT_TAG=v3.1.5 ./build core
+    && sed -i \
+      -e 's|m1k1o/neko\.buildDate|github.com/m1k1o/neko/server.buildDate|' \
+      -e 's|m1k1o/neko\.gitCommit|github.com/m1k1o/neko/server.gitCommit|' \
+      -e 's|m1k1o/neko\.gitBranch|github.com/m1k1o/neko/server.gitBranch|' \
+      -e 's|m1k1o/neko\.gitTag|github.com/m1k1o/neko/server.gitTag|' \
+      build \
+    && GIT_COMMIT="${NEKO_COMMIT}" GIT_BRANCH=detached GIT_TAG=v3.1.5 ./build core
 
 # Pinned Neko v3.1.5 client matching the server source above.
 FROM ghcr.io/m1k1o/neko/base@sha256:20806497c78de64700cb7befa674dbdc6bc4e8f0848a3dc911f0878a6726fa36 AS neko-client
@@ -187,7 +195,7 @@ COPY browser/browser-supervisord.conf /etc/neko/browser-supervisord.conf
 RUN mkdir -p /tmp/neko-runtime \
     && chown node:node /tmp/neko-runtime \
     && chmod 0700 /tmp/neko-runtime \
-    && neko --version \
+    && neko --version | grep -F "Version v3.1.5@395ca1a6f62b7b0e270e654d366a2d57b8042efd" \
     && gst-inspect-1.0 vp8enc >/dev/null \
     && gst-inspect-1.0 opusenc >/dev/null \
     && pulseaudio --version \

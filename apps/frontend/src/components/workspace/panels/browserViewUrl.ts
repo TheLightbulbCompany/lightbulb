@@ -17,14 +17,3 @@ function bvBase(base: string): string {
 export function browserViewWsUrl(base: string): string {
   return `${bvBase(base)}/browser-view/ws`;
 }
-
-// The CDP screencast relay rides the SAME bv door (its path is under
-// /browser-view/* so the ALB listener rule carries it); only the suffix differs.
-// An optional raw CDP target id (?target=) asks the relay to stream that
-// specific tab — how the chrome tab strip switches which tab is shown (the
-// screencast is per-page, so focus alone can't move a stream already bound to
-// another target).
-export function screencastWsUrl(base: string, targetId?: string | null): string {
-  const url = `${bvBase(base)}/browser-view/screencast/ws`;
-  return targetId ? `${url}?target=${encodeURIComponent(targetId)}` : url;
-}

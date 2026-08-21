@@ -550,10 +550,17 @@ async def container_status(
     # is the one place that already holds the row. The dispatcher returns on a
     # comparison for a FRESH claim (the overwhelming majority), so admitting
     # it costs nothing per poll and no extra reads.
+    #
+    # "sent" is admitted for the same reason in the other direction: the
+    # kickoff was acked, and the only outstanding work is OBSERVING its
+    # terminal — an in-process observer the dispatching process may have
+    # taken with it (rolling deploy, grace close). The dispatcher re-attaches
+    # one here if this process lacks it; when it already holds it (the common
+    # case) that is one dict lookup, no reads.
     if (
         contract["runtime_phase"] in ("starting", "ready")
         and onboarding.get("funnel_state") == "submitted"
-        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched")
+        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched", "sent")
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 

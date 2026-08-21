@@ -1561,6 +1561,16 @@ class GatewayConnection:
         """
         self._run_completion_callbacks.pop(run_id, None)
 
+    def has_run_completion_callback(self, run_id: str) -> bool:
+        """Whether THIS connection currently observes *run_id*'s terminal.
+
+        The observer set is in-process memory; a caller holding the durable
+        record of a dispatched run (bootstrap_dispatcher's ``sent`` row) uses
+        this to tell "already observed here" from "the observing process is
+        gone — re-attach" without a DDB round trip.
+        """
+        return run_id in self._run_completion_callbacks
+
     def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
         """Pop and fire *run_id*'s registered completion callback, if any.
 
@@ -1591,16 +1601,19 @@ class GatewayConnection:
     def _reject_pending_run_completions(self, reason: str) -> None:
         """Fire every still-registered run-completion observer as errored.
 
-        A registered-but-unfired callback (bootstrap_dispatcher's
-        dispatched→delivered/failed move) is silently dropped when this
-        connection is torn down: the terminal chat event can never arrive on a
-        dead/replaced socket, and bootstrap_dispatcher deliberately does NOT
-        re-arm post-connect, so onboarding would stick at `dispatched` forever.
-        Reconcile them as errored — mirrors how pending RPCs are rejected on the
-        same teardown paths — so the observer marks the run failed and a later
-        onboarding generation / human can recover. Reuses ``_dispatch_run_completion``
-        (pop + fire as a tracked task), so it can never double-fire a callback a
-        real terminal already consumed.
+        For the teardown where the GATEWAY dropped us (dead reader loop,
+        park→dead escalation): the run behind a registered-but-unfired
+        callback (bootstrap_dispatcher's sent→delivered/failed move) may well
+        be dead with it, and its terminal can never arrive on this socket —
+        reconcile the observer as errored, mirroring how pending RPCs are
+        rejected on the same path, so the row reads ``failed`` and a human /
+        the next onboarding generation can recover. Reuses
+        ``_dispatch_run_completion`` (pop + fire as a tracked task), so it can
+        never double-fire a callback a real terminal already consumed.
+
+        Deliberately NOT called from ``close()``: that is this PROCESS letting
+        go of the socket while the run keeps going inside OpenClaw — see the
+        handoff there.
         """
         if not self._run_completion_callbacks:
             return
@@ -2518,12 +2531,24 @@ class GatewayConnection:
                     "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
-        # Reconcile any still-registered completion observers as errored BEFORE
-        # the drain below, so a bootstrap kickoff whose terminal event can never
-        # arrive on this closing socket doesn't strand onboarding at `dispatched`.
-        # Firing them here (not after the drain) means their DDB writes are
-        # awaited by the same drain as the already-fired ones.
-        self._reject_pending_run_completions("Gateway connection closed")
+        # Pending run-completion observers are HANDED OFF here, never failed.
+        # close() is this process letting go of the socket — graceful shutdown
+        # (rolling deploy), the frontend-gone grace close, an IP-change
+        # recreate — and says nothing about the run, which keeps going inside
+        # OpenClaw. Failing the observer here marks a kickoff that is visibly
+        # working as "Friday couldn't start". The observer's durable record (the
+        # ``sent`` row keyed by the kickoff's dispatch id == runId) is what lets
+        # whichever process polls next re-attach an observer on its own
+        # connection (bootstrap_dispatcher). Only a genuine gateway drop
+        # (``_on_reader_loop_exit``) still resolves pending observers as failed.
+        if self._run_completion_callbacks:
+            put_metric("gateway.run_completion.handoff", value=float(len(self._run_completion_callbacks)))
+            logger.info(
+                "Handing off %d pending run-completion observer(s) for user %s on close",
+                len(self._run_completion_callbacks),
+                self.user_id,
+            )
+            self._run_completion_callbacks.clear()
         # Drain in-flight run-completion observer tasks (INV-5 bootstrap
         # dispatcher) too, so teardown doesn't cancel a DDB completion write
         # mid-flight -- mirrors the push-dispatch drain above.
@@ -2752,6 +2777,13 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.unregister_run_completion_callback(run_id)
+
+    def has_run_completion_callback(self, user_id: str, run_id: str) -> bool:
+        """Whether a connection for *user_id* exists on THIS task and already
+        observes *run_id* — see ``GatewayConnection.has_run_completion_callback``.
+        False when there is no connection (nothing can be observing)."""
+        conn = self._connections.get(user_id)
+        return conn is not None and conn.has_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the

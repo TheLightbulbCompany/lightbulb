@@ -225,3 +225,33 @@ def test_pool_unregister_run_completion_callback_delegates_to_connection():
     pool.register_run_completion_callback("owner_1", "run-1", cb)
     pool.unregister_run_completion_callback("owner_1", "run-1")
     assert "run-1" not in conn._run_completion_callbacks
+
+
+# --- has_run_completion_callback: "does THIS process already observe that run?" ---
+
+
+@pytest.mark.asyncio
+async def test_has_run_completion_callback_tracks_registration_and_consumption():
+    conn = _make_terminal_conn()
+
+    async def cb(state, payload):
+        return None
+
+    assert conn.has_run_completion_callback("run-1") is False
+    conn.register_run_completion_callback("run-1", cb)
+    assert conn.has_run_completion_callback("run-1") is True
+    await _drive_terminal(conn, state="final", run_id="run-1")
+    # Consumed by the terminal -> no longer observed here.
+    assert conn.has_run_completion_callback("run-1") is False
+
+
+def test_pool_has_run_completion_callback_is_false_without_a_connection():
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    pool._connections = {}
+    assert pool.has_run_completion_callback("org_1", "run-1") is False
+
+    conn = _make_terminal_conn("org_1")
+    pool._connections["org_1"] = conn
+    assert pool.has_run_completion_callback("org_1", "run-1") is False
+    conn.register_run_completion_callback("run-1", AsyncMock())
+    assert pool.has_run_completion_callback("org_1", "run-1") is True

@@ -1,11 +1,18 @@
-"""Pending run-completion observers must be reconciled on teardown, not dropped.
+"""Pending run-completion observers on teardown: fail them only when the run
+is actually gone.
 
 bootstrap_dispatcher registers a run-completion callback to move onboarding
-dispatched→delivered/failed and deliberately does NOT re-arm post-connect. If
-the connection is torn down (IP-change recreate, dead reader loop, park→dead
-escalation, or any close) before the terminal chat event arrives, that callback
-must be fired as errored so onboarding fails-and-recovers instead of sticking at
-`dispatched` forever.
+sent→delivered/failed. Two teardowns look alike from inside the connection but
+mean opposite things for the run:
+
+* the GATEWAY dropped us (dead reader loop, park→dead escalation) — the run
+  may well be dead; fire the observer as errored so onboarding fails-and-
+  recovers instead of sticking at `sent` forever;
+* THIS PROCESS let go of the socket (`close()`: graceful shutdown, grace close,
+  IP-change recreate) — the kickoff keeps running inside OpenClaw. Marking it
+  failed here is a lie the owner sees as "Friday couldn't start" while Friday
+  is visibly working. The observer is handed off instead: the row stays `sent`
+  and the dispatcher re-attaches an observer from whichever process polls next.
 """
 
 import asyncio
@@ -41,7 +48,10 @@ async def test_reject_pending_run_completions_fires_and_empties():
 
 
 @pytest.mark.asyncio
-async def test_close_reconciles_pending_completion_callback():
+async def test_close_hands_off_pending_completion_callbacks_instead_of_failing_them():
+    """close() is this process letting go of the socket, not evidence the run
+    died — the observer must NOT fire as errored. It is left for the
+    dispatcher to re-attach from the row (`bootstrap_state` stays `sent`)."""
     fired: list = []
     conn = _conn_with_callback(fired)
     # Minimal state for close() to run its drain path.
@@ -61,8 +71,7 @@ async def test_close_reconciles_pending_completion_callback():
 
     await conn.close()
 
-    # close() fired the observer AND its drain awaited the DDB write.
-    assert fired == [("error", {"errorMessage": "Gateway connection closed"})]
+    assert fired == []
 
 
 @pytest.mark.asyncio

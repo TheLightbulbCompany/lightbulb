@@ -728,7 +728,7 @@ export class ContainerStack extends cdk.Stack {
       // first browser tool call — arbitrarily long after boot and nowhere
       // near the cause.
       '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ] || { echo "[boot] FATAL: DISPLAY is set but Xvnc is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs tigervnc-standalone-server."; exit 1; }',
-      '[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -geometry 1280x800 -depth 24 -localhost -SecurityTypes None -rfbport 5900 & }',
+      '[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -config /etc/neko/xvnc-neko.conf -geometry 1280x800 -depth 24 -localhost -SecurityTypes None -rfbport 5900 & }',
       // On socket timeout: loud warning + skip the WM, never a boot failure.
       // The live view is auxiliary — a dead Xvnc costs the Browser panel and
       // headful Chrome, but chat/channels/everything else still works, and

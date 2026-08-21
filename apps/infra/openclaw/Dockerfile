@@ -20,7 +20,7 @@ FROM debian:bookworm-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      build-essential pkg-config ca-certificates curl git \
+      build-essential ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin Go from go.dev — Debian 12's apt golang-go is 1.19, but several
@@ -105,6 +105,17 @@ RUN git clone https://github.com/m1k1o/neko.git /src/neko \
     && cd server \
     && GIT_COMMIT="${NEKO_COMMIT}" GIT_TAG=v3.1.5 ./build core
 
+FROM neko-builder AS neko-input-builder
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      autoconf automake libtool make pkg-config xorg-dev xutils-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cd /src/neko/utils/xorg-deps/xf86-input-neko \
+    && ./autogen.sh --prefix=/usr \
+    && ./configure \
+    && make \
+    && install -D .libs/neko_drv.so /out/neko_drv.so
+
 # Pinned Neko v3.1.5 client matching the server source above.
 FROM ghcr.io/m1k1o/neko/base@sha256:20806497c78de64700cb7befa674dbdc6bc4e8f0848a3dc911f0878a6726fa36 AS neko-client
 
@@ -176,16 +187,20 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 
 # ---- Neko v3.1.5 runtime ----
 # Neko shares OpenClaw's Xvnc DISPLAY=:1 and never owns Chrome/CDP. Its HTTP
-# listener is loopback-only; Task 4 is the authenticated product boundary.
+# listener is task-private through the backend-only security-group rule; Task 4
+# is the authenticated product boundary.
 COPY --from=neko-builder /src/neko/server/bin/neko /usr/local/bin/neko
+COPY --from=neko-input-builder /out/neko_drv.so /usr/lib/xorg/modules/input/neko_drv.so
 COPY --from=neko-client /var/www/ /var/www/neko/
 COPY browser/neko.yaml /etc/neko/neko.yaml
+COPY browser/xvnc-neko.conf /etc/neko/xvnc-neko.conf
 COPY browser/default.pa /etc/pulse/default.pa
 COPY browser/openbox.xml /etc/neko/openbox.xml
 COPY browser/browser-supervisord.conf /etc/neko/browser-supervisord.conf
 RUN mkdir -p /tmp/neko-runtime \
     && chown node:node /tmp/neko-runtime \
     && chmod 0700 /tmp/neko-runtime \
+    && test -s /usr/lib/xorg/modules/input/neko_drv.so \
     && neko --version \
     && gst-inspect-1.0 vp8enc >/dev/null \
     && gst-inspect-1.0 opusenc >/dev/null \

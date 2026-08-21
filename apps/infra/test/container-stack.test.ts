@@ -102,7 +102,7 @@ function expectDisplayGate(
 ): void {
   const command = openclawStartupCommand(template, env);
   const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ]');
-  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
+  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY" -config /etc/neko/xvnc-neko.conf');
   const auxiliary = command.indexOf("supervisord -c /etc/neko/browser-supervisord.conf");
   const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
   const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");

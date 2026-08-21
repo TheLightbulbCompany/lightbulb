@@ -1,7 +1,7 @@
 legacy: false
 
 server:
-  bind: "127.0.0.1:6081"
+  bind: "0.0.0.0:6081"
   static: "/var/www/neko"
   path_prefix: "/api/v1/browser-view/webrtc"
   proxy: true
@@ -24,7 +24,7 @@ session:
 desktop:
   display: ":1"
   input:
-    enabled: false
+    enabled: true
   upload_drop: false
   file_chooser_dialog: false
 

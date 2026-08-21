@@ -30,7 +30,7 @@ The implementation uses [Neko](https://github.com/m1k1o/neko) v3.1.5 as the WebR
 - Gaming-grade latency, 60 fps, 1080p, simulcast, or multiple quality ladders.
 - Reimplementing OpenClaw tabs, navigation, browser lifecycle, or CDP commands in Isol8.
 - Microphone/webcam forwarding into the remote browser in this migration.
-- Multi-viewer collaboration. One owner session per owner container is the product contract.
+- Coordinated multi-viewer UX. The product supports one independent browser-view session per owner container; it does not promise a security boundary between concurrent uses of the same browser cookie.
 - Solving website bot detection. Giving each task a public address may change egress reputation, but it is not an anti-detection promise.
 - Persisting the raw Chrome profile on EFS. Existing browser-state snapshot/restore remains unchanged.
 - Operating TURN before measurements show it is needed. The owner task is directly reachable over authenticated ICE on a unique public address; direct UDP plus ICE-TCP is the shortest reliable path for this topology.
@@ -154,7 +154,9 @@ The backend browser-view router gains three responsibilities:
    - forwards only the Neko session cookie upstream;
    - closes both legs as soon as either leg ends.
 
-Neko uses its `noauth` provider only because the backend/SG combination is the real tenant fence: `:6081` is reachable only from the backend service SG, the client never receives a container IP, and the public media mux cannot create a peer without signaling's random ICE credentials. There is no client-controlled owner id.
+Neko's in-memory `object` provider is used only because the backend/SG combination is the real tenant fence: `:6081` is reachable only from the backend service SG, the client never receives a container IP, and the public media mux cannot create a peer without signaling's random ICE credentials. There is no client-controlled owner id.
+
+Neko instead uses its in-memory `object` member provider with exactly one `owner` account. Neko rejects a second login for that account while its first session is live, which enforces one independently bootstrapped browser-view session per owner task without adding an Isol8 session store. The backend forwards the first session cookie only to that owner. A duplicate iframe or browser context that already holds that same cookie may still create another peer: that is not supported collaboration UX and is not a security boundary. It has the same owner authority and must not be relied on for exclusive human control.
 
 The parent panel refreshes the short-lived browser-view auth cookie every 45 seconds while mounted. A refresh failure does not tear down an established WebRTC session; it changes the panel to reconnecting only when signaling itself needs to reconnect.
 
@@ -204,8 +206,8 @@ The following existing behavior is intentionally preserved:
 
 - Owner identity comes only from a verified Clerk token and org claims.
 - Container IPs, Neko ports, cookies, and ICE credentials are never accepted from client parameters.
-- The Isol8 auth cookie is HttpOnly, Secure outside localhost, short-lived, path-scoped to `/api/v1/browser-view`, and never forwarded to Neko.
-- Neko's session cookie is HttpOnly/Secure and forwarded only to the resolved owner's Neko process.
+- The Isol8 auth cookie and the forwarded Neko session cookie are host-only, HttpOnly, `SameSite=Strict`, short-lived, path-scoped to `/api/v1/browser-view`, and `Secure` outside localhost; neither is forwarded upstream except the Neko cookie to the resolved owner's Neko process. `SameSite=Strict` permits the `https://[bv-]isol8.co` iframe under the same-site `https://[dev.]isol8.co` parent while withholding both cookies on cross-site requests.
+- `POST /session` accepts the Clerk `Authorization` token and CORS only from the exact Isol8 frontend origins. Every cookie-authenticated unsafe HTTP method and WebSocket upgrade validates an exact `Origin`: the matching Isol8 frontend origin for parent bootstrap, or the matching `bv[-env].isol8.co` origin for Neko's same-origin iframe client. Missing or other origins are rejected before proxying. Safe reads remain cookie-authenticated. This is the CSRF defense; frame ancestry is only embedding policy.
 - Proxy paths are fixed under Neko's configured prefix; no arbitrary upstream URL or port exists.
 - Hop-by-hop headers and client-supplied forwarding headers are dropped.
 - Neko `pprof`, metrics, webcam, microphone, broadcast, upload-drop, and JPEG screencast features are disabled in production config.
@@ -218,7 +220,7 @@ The following existing behavior is intentionally preserved:
 
 - Docker image builds and `neko --version`/GStreamer/Pulse/Xorg smoke checks pass.
 - CDK tests pin public owner subnets, `assignPublicIp: ENABLED`, and the exact TCP/UDP media ingress without widening other task ports.
-- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, and either WS leg ending tears down the other.
+- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, both `Set-Cookie` values carry host-only/HttpOnly/SameSite/Path/Secure attributes, cross-site unsafe HTTP and WS origins reject before proxying while allowed frontend and `bv` origins work, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, a second independent `owner` login is rejected, and either WS leg ending tears down the other.
 - Frontend tests prove URL mapping, bootstrap-before-iframe ordering, bounded/debounced sizing, `/start` behavior, retry, and removal of noVNC/CDP-tab polling.
 - Existing backend, frontend, infra, and E2E tests pass.
 
@@ -235,12 +237,11 @@ Run on a real dev Fargate owner task for at least 30 minutes:
 
 ### Resource gates
 
-During the same run:
+During the same run, use ECS Exec (already enabled for owner tasks) to capture `top -b -d 10 -n 61` from the owner container for each separate ten-minute static and motion/video segment. For each of the 60 timed frames, sum `%CPU` for `neko`, `Xorg`, `openbox`, and `pulseaudio`; that named process set is the display-stack sample. A process restart or missing frame invalidates the segment and requires a rerun. In parallel, query the existing AWS/ECS service `CPUUtilization` and `MemoryUtilization` metrics at one-minute resolution for the same ten timestamps; Container Insights is not used.
 
-- static page: display stack averages at most 25% of one vCPU;
-- motion/video: display stack averages at most 45% of one vCPU and total task CPU remains below 80% sustained;
-- memory remains below 3.2 GB sustained on the 4 GB task;
-- perceived input response stays below 300 ms p95 on a normal US connection;
+- static page: the 60-frame display-stack average is at most 25% of one vCPU;
+- motion/video: the 60-frame display-stack average is at most 45% of one vCPU, and every matching one-minute task CPU sample is below 80%;
+- every matching one-minute task-memory sample is below 80% of the 4 GB reservation (3.2 GB);
 - connection establishment succeeds in at least 99.5% of measured supported-client attempts;
 - no OpenClaw browser RPC timeout, gateway health failure, or chat-stream regression is attributable to capture.
 

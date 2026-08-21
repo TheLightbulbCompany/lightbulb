@@ -96,7 +96,7 @@ Expected: new assertions fail against the VNC-only startup.
   - copy the Neko binary and Isol8-owned config into the final image;
   - run build-time smoke checks for neko, gst-inspect-1.0 vp8enc, gst-inspect-1.0 opusenc, pulseaudio, and openbox.
 
-- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, noauth behind the backend/SG fence, secure HttpOnly cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000.
+- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, an in-memory `object` member provider containing exactly one `owner` account (a second independent login must fail while that session is live), a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. This limits independent browser-view sessions, not peers reusing the same cookie; coordinated multi-viewer UX remains unsupported.
 
 - [ ] Disable Neko JPEG screencast, webcam, microphone, broadcast, upload-drop, pprof, and public metrics.
 
@@ -181,7 +181,7 @@ git commit -m "feat(browser): expose owner-scoped WebRTC media mux"
 - Modify: apps/backend/main.py
 - Add or modify: apps/backend/tests/unit/core/test_security_headers.py
 
-- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, short-lived Isol8 cookie attributes, HTTP header/cookie stripping, fixed upstream host/port, WS first-completion teardown, and iframe security headers.
+- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, a rejected second independent `owner` login, complete short-lived Isol8 and Neko `Set-Cookie` attributes (host-only, HttpOnly, `SameSite=Strict`, path, and Secure outside localhost), HTTP header/cookie stripping, fixed upstream host/port, allowed exact frontend/`bv` origins and rejected cross-site unsafe HTTP/WS origins, WS first-completion teardown, and iframe security headers.
 
 ~~~bash
 cd apps/backend && uv run pytest tests/unit/routers/test_browser_view.py tests/unit/core/test_security_headers.py -q
@@ -199,9 +199,11 @@ Expected: new tests fail.
   - use bounded upstream connect/read timeouts and streamed responses;
   - preserve only safe response headers and Neko cookie updates.
 
-- [ ] Bootstrap reuses a valid Neko session cookie or logs into http://resolved-private-ip:6081/api/v1/browser-view/webrtc/api/login as constant user owner.
+- [ ] Bootstrap reuses a valid Neko session cookie or logs into http://resolved-private-ip:6081/api/v1/browser-view/webrtc/api/login as the one configured `owner` account. Neko's in-memory object provider rejects a second independent login; do not add a backend session table or claim that duplicate peers with the same cookie are exclusive.
 
 - [ ] Refresh the Isol8 auth cookie from the current Authorization token. Do not add a signer or session table.
+
+- [ ] Set both browser cookies host-only, HttpOnly, `SameSite=Strict`, path-scoped to `/api/v1/browser-view`, short-lived, and Secure outside localhost. CORS on `POST /session` admits only the exact Isol8 frontend origins. Before proxying every cookie-authenticated unsafe HTTP request and WebSocket upgrade, require an exact allowed `Origin`: the Isol8 frontend origin for bootstrap or the matching `bv[-env].isol8.co` origin for Neko's same-origin iframe client. Reject missing or cross-site origins; frame-ancestors is not CSRF protection.
 
 - [ ] Ensure the proxy never forwards the Isol8 cookie, client forwarding headers, hop-by-hop headers, client owner, host, IP, or port.
 
@@ -232,11 +234,13 @@ git commit -m "feat(browser): proxy authenticated WebRTC sessions"
 
 - Add: apps/frontend/src/components/workspace/panels/WebRtcBrowserDockPanel.tsx
 - Add: apps/frontend/src/components/workspace/panels/browserViewport.ts
+- Add: apps/frontend/src/components/workspace/panels/browserViewTransport.ts
 - Modify: apps/frontend/src/components/workspace/panels/browserViewUrl.ts
 - Modify: apps/frontend/src/components/workspace/panelComponents.ts
 - Modify: apps/frontend/src/components/workspace/__tests__/BrowserDockPanel.test.ts
 - Add: apps/frontend/src/components/workspace/__tests__/WebRtcBrowserDockPanel.test.tsx
 - Modify: apps/frontend/next.config.ts
+- Modify: apps/infra/lib/app.ts
 
 - [ ] Write failing URL and viewport tests: dev/prod/local bv mapping, all Neko paths under /api/v1/browser-view/webrtc, rounded dimensions, no DPR multiplication, <=1,024,000 pixels, and 1280 x 800 at rate 24 by default.
 
@@ -262,7 +266,7 @@ Expected: new tests fail.
 
 - [ ] Implement getToken -> credentialed cross-origin bootstrap -> iframe, quiet connecting/Retry states, whoami readiness, Neko's native click-to-unmute behavior, bounded 300-ms display resize, and no custom browser chrome.
 
-- [ ] Select the component with temporary NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc. Missing/other values select VNC for rollback.
+- [ ] Select the component with temporary `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc`. Missing/other values select VNC for rollback. `cohort` selects WebRTC only for the comma-separated personal-owner Clerk IDs in `NEXT_PUBLIC_BROWSER_VIEW_WEBRTC_COHORT`; team owners remain VNC during this small cohort. The version-controlled source of both dev/default/cohort build values is `apps/infra/lib/app.ts`, which emits the committed `.github/workflows/deploy.yml` Vercel build environment: set dev to `webrtc`, production default to `vnc`, then set production to `cohort` with the reviewed IDs before promoting it to `webrtc`. Do not depend on an unspecified Vercel dashboard environment value or add runtime flag infrastructure.
 
 - [ ] Add bv hosts to report-only frame-src and connect-src. Do not turn CSP enforcement on in this feature.
 
@@ -303,13 +307,13 @@ gh run list --repo Isol8AI/isol8 --branch feat/browser-webrtc --limit 10 --json 
 
 - [ ] Promote the built extended image to dev through openclaw-version.json, deploy through CI, and roll one manual dev test owner. Verify the live task definition and public ENI rather than trusting a UI label.
 
-- [ ] Enable NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc in the normal dev deployment configuration.
+- [ ] Enable `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc` by changing `apps/infra/lib/app.ts`, regenerating its committed `.github/workflows/deploy.yml`, and deploying through the normal dev pipeline.
 
 - [ ] Validate tool auto-open, manual start, native Chrome tabs/omnibox, 30-minute YouTube video/audio, OAuth popup, right-click, keyboard modifiers, scroll, clipboard, touch, download, CAPTCHA/2FA entry, panel remount, dock resize, browser restart, task redeploy, and client network switch.
 
-- [ ] Verify Chrome, Safari, and Tauri connect, and explicitly prove one owner's credential cannot reach another owner's Neko session.
+- [ ] Verify Chrome, Safari, and Tauri connect; explicitly prove one owner's credential cannot reach another owner's Neko session; and prove a second independent browser context cannot log into the same owner's already-live `owner` account. A second peer reusing the first context's cookie is not a supported collaboration flow and is not treated as an isolation boundary.
 
-- [ ] Record Container Insights during static and video segments. Require display stack <=25% vCPU static, <=45% motion, total task <80% sustained, memory <3.2 GB, and no correlated OpenClaw RPC/gateway regression.
+- [ ] For separate ten-minute static and video segments, use ECS Exec (enabled on owner tasks) to record `top -b -d 10 -n 61`; sum `%CPU` for `neko`, `Xorg`, `openbox`, and `pulseaudio` in each of the 60 timed frames. A missing process/frame or restart invalidates that segment. Query existing AWS/ECS service `CPUUtilization` and `MemoryUtilization` at one-minute resolution for the matching ten timestamps; do not use Container Insights. Require display stack <=25% vCPU static, <=45% motion, every motion CPU sample <80%, every memory sample <80% of the 4 GB reservation (3.2 GB), and no correlated OpenClaw RPC/gateway regression.
 
 - [ ] If CPU fails, change exactly one value per cycle: first 24 -> 20 fps; then maximum area 1,024,000 -> 576,000 pixels. Do not add a ladder, switch codec, increase task CPU, or tune for sub-100-ms latency.
 
@@ -334,11 +338,11 @@ When measured values changed, stage only those files and commit with message per
 
 - [ ] Do not add a telemetry service or scrape every owner container.
 
-- [ ] Enable WebRTC for a limited production cohort through the normal deployment pipeline. Repeat the user journey and resource checks on production networking without changing production servers by hand.
+- [ ] Enable WebRTC for a limited production cohort by setting `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=cohort` and the reviewed personal-owner `NEXT_PUBLIC_BROWSER_VIEW_WEBRTC_COHORT` IDs in `apps/infra/lib/app.ts`, regenerating the committed `.github/workflows/deploy.yml`, and using the normal deployment pipeline. Repeat the user journey and resource checks on production networking without changing production servers by hand.
 
 - [ ] Observe one full production window. Require >=99.5% measured session establishment and no material increase in browser RPC timeouts, gateway health failures, or task restarts.
 
-- [ ] Make WebRTC the production default while retaining the VNC flag value as one-step rollback for one further observation window.
+- [ ] Make WebRTC the production default by changing the same `apps/infra/lib/app.ts` value while retaining the VNC flag value as one-step rollback for one further observation window.
 
 - [ ] If supported networks fail both direct UDP and ICE-TCP and success misses the gate, stop rollout and write an evidence-backed TURN addendum. Do not expose reusable TURN credentials or silently relay all media.
 

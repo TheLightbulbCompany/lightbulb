@@ -24,3 +24,13 @@ def test_headers_present_on_a_404_too():
     r = client.get("/definitely-not-a-route")
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("strict-transport-security")
+
+
+def test_webrtc_iframe_is_the_only_frame_exception():
+    """The Neko iframe may embed, but no neighboring browser-view route may."""
+    r = client.get("/api/v1/browser-view/webrtc/", cookies={"isol8_browser_view": "bad", "neko": "bad"})
+    assert r.headers.get("x-frame-options") is None
+    assert r.headers.get("content-security-policy") == "frame-ancestors http://localhost:3000 http://localhost:5173"
+
+    session = client.post("/api/v1/browser-view/session")
+    assert session.headers.get("x-frame-options") == "SAMEORIGIN"

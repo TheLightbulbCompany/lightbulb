@@ -236,13 +236,21 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Neko is embedded only through this authenticated proxy prefix. The
+        # rest of the backend keeps SAMEORIGIN; frame ancestry is deliberately
+        # not a replacement for the router's cookie+Origin CSRF checks.
+        is_browser_webrtc = scope.get("path", "").startswith("/api/v1/browser-view/webrtc/")
+        frame_ancestors = "frame-ancestors " + " ".join(settings.cors_origins_list)
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = message.setdefault("headers", [])
                 present = {name.lower() for name, _ in headers}
                 for name, value in self._HEADERS:
-                    if name not in present:
+                    if name not in present and not (is_browser_webrtc and name == b"x-frame-options"):
                         headers.append((name, value))
+                if is_browser_webrtc and b"content-security-policy" not in present:
+                    headers.append((b"content-security-policy", frame_ancestors.encode("latin-1")))
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

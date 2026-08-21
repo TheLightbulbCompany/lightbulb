@@ -21,6 +21,154 @@ def _build_app():
     return app
 
 
+def test_webrtc_session_bootstrap_sets_scoped_host_only_cookies(monkeypatch):
+    """A Clerk-authenticated bootstrap never exposes the owner or upstream IP.
+
+    This fails if the new endpoint is absent, if it stops deriving the owner
+    from the Clerk claims, or if either browser-held credential becomes a
+    cross-host/non-HttpOnly cookie.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _fake_decode(token: str):
+        assert token == "clerk.jwt"
+        return {"sub": "user_test1"}
+
+    class _FakeEcs:
+        async def resolve_running_container(self, owner_id):
+            assert owner_id == "user_test1"
+            return {"status": "running"}, "10.0.0.42"
+
+    async def _fake_neko_login(ip: str, cookie: str | None):
+        assert ip == "10.0.0.42"
+        assert cookie is None
+        return "neko.session"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
+    monkeypatch.setattr(mod, "_neko_session", _fake_neko_login, raising=False)
+
+    response = TestClient(_build_app()).post(
+        "/session",
+        headers={"Authorization": "Bearer clerk.jwt", "Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "iframe_url": "/api/v1/browser-view/webrtc/?cast=1",
+        "state": "ready",
+    }
+    cookies = response.headers.get_list("set-cookie")
+    assert len(cookies) == 2
+    for cookie in cookies:
+        assert "Domain=" not in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=strict" in cookie
+        assert "Path=/api/v1/browser-view" in cookie
+
+
+def test_webrtc_broadcast_descendants_reject_before_upstream(monkeypatch):
+    """Neko's admin broadcast route stays unreachable through every spelling."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    upstream_called = False
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_test1"}
+
+    async def _unexpected_resolve(*args):
+        nonlocal upstream_called
+        upstream_called = True
+        raise AssertionError("broadcast must reject before resolving an upstream")
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _unexpected_resolve, raising=False)
+
+    response = TestClient(_build_app()).get(
+        "/webrtc/api/room/%62roadcast/child",
+        cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session"},
+    )
+
+    assert response.status_code == 403
+    assert not upstream_called
+
+
+def test_webrtc_proxy_uses_only_the_resolved_private_neko_endpoint(monkeypatch):
+    """Client host, forwarded headers, and Isol8's cookie never reach Neko."""
+    import httpx
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    seen: dict[str, object] = {}
+
+    async def _fake_decode(token: str):
+        assert token == "clerk.jwt"
+        return {"sub": "user_test1"}
+
+    async def _fake_resolve(auth):
+        assert auth.user_id == "user_test1"
+        return "10.0.0.42"
+
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"neko"
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def build_request(self, method, url, **kwargs):
+            seen.update(method=method, url=url, headers=kwargs["headers"])
+            return httpx.Request(method, url)
+
+        async def send(self, request, stream):
+            assert stream is True
+            return httpx.Response(200, stream=_Stream(), headers={"content-type": "text/plain"}, request=request)
+
+        async def aclose(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+
+    response = TestClient(_build_app()).get(
+        "/webrtc/api/whoami",
+        headers={"X-Forwarded-For": "198.51.100.8", "X-Real-IP": "198.51.100.8", "Host": "attacker.example"},
+        cookies={"isol8_browser_view": "clerk.jwt", "neko": "neko.session", "__session": "never-forward"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"neko"
+    assert seen["url"] == "http://10.0.0.42:6081/api/v1/browser-view/webrtc/api/whoami"
+    assert seen["headers"] == {"accept": "*/*", "accept-encoding": "gzip, deflate", "cookie": "neko=neko.session"}
+    assert seen["closed"] is True
+
+
+def test_webrtc_unsafe_request_rejects_cross_site_origin_before_resolve(monkeypatch):
+    """Cookie authentication alone never authorizes a cross-site mutation."""
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _unexpected_resolve(*args):
+        raise AssertionError("origin rejection must happen before upstream resolution")
+
+    monkeypatch.setattr(mod, "_resolve_running", _unexpected_resolve)
+    response = TestClient(_build_app()).post(
+        "/webrtc/api/screen",
+        headers={"Origin": "https://attacker.example"},
+        cookies={"isol8_browser_view": "bad", "neko": "neko.session"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_ws_rejects_missing_clerk_cookie():
     """No ``__session`` cookie on the upgrade → 4401 before accept()."""
     from fastapi.testclient import TestClient

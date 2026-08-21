@@ -28,6 +28,7 @@ export function WebRtcBrowserDockPanel(): React.ReactElement {
   const attemptRef = useRef(0);
   const iframeLoadRef = useRef(0);
   const abortsRef = useRef(new Set<AbortController>());
+  const readinessRequestRef = useRef<AbortController | null>(null);
   const readinessPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const readinessTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -37,21 +38,26 @@ export function WebRtcBrowserDockPanel(): React.ReactElement {
   const [attempt, setAttempt] = useState(0);
   const [iframeUrl, setIframeUrl] = useState<string | null>(null);
 
+  const cancelReadiness = useCallback(() => {
+    readinessRequestRef.current?.abort();
+    readinessRequestRef.current = null;
+    if (readinessPollRef.current) clearInterval(readinessPollRef.current);
+    if (readinessTimeoutRef.current) clearTimeout(readinessTimeoutRef.current);
+    readinessPollRef.current = null;
+    readinessTimeoutRef.current = null;
+  }, []);
+
   const clearAttemptWork = useCallback(() => {
     abortsRef.current.forEach((controller) => controller.abort());
     abortsRef.current.clear();
-    if (readinessPollRef.current) clearInterval(readinessPollRef.current);
-    if (readinessTimeoutRef.current) clearTimeout(readinessTimeoutRef.current);
+    cancelReadiness();
     if (refreshRef.current) clearInterval(refreshRef.current);
     if (resizeRef.current) clearTimeout(resizeRef.current);
-    readinessPollRef.current = null;
-    readinessTimeoutRef.current = null;
     refreshRef.current = null;
     resizeRef.current = null;
-  }, []);
+  }, [cancelReadiness]);
 
-  const fetchJson = useCallback(async (url: string, init: RequestInit = {}) => {
-    const controller = new AbortController();
+  const fetchJson = useCallback(async (url: string, init: RequestInit = {}, controller = new AbortController()) => {
     abortsRef.current.add(controller);
     try {
       const response = await fetch(url, { ...init, credentials: "include", signal: controller.signal });
@@ -135,32 +141,39 @@ export function WebRtcBrowserDockPanel(): React.ReactElement {
   }, [sendResize, state]);
 
   const onIframeLoad = useCallback(() => {
-    if (readinessPollRef.current) clearInterval(readinessPollRef.current);
-    if (readinessTimeoutRef.current) clearTimeout(readinessTimeoutRef.current);
-    readinessPollRef.current = null;
-    readinessTimeoutRef.current = null;
+    cancelReadiness();
     const currentAttempt = attemptRef.current;
     const currentLoad = ++iframeLoadRef.current;
     let done = false;
     const finish = (next: ViewState) => {
       if (done || attemptRef.current !== currentAttempt || iframeLoadRef.current !== currentLoad) return;
       done = true;
-      if (readinessPollRef.current) clearInterval(readinessPollRef.current);
-      if (readinessTimeoutRef.current) clearTimeout(readinessTimeoutRef.current);
-      readinessPollRef.current = null;
-      readinessTimeoutRef.current = null;
+      cancelReadiness();
       setState(next);
     };
     const checkReady = async () => {
+      if (done || readinessRequestRef.current) return;
+      const controller = new AbortController();
+      readinessRequestRef.current = controller;
       try {
-        const whoami = await fetchJson(browserViewWhoamiUrl(BACKEND_URL));
+        const whoami = await fetchJson(browserViewWhoamiUrl(BACKEND_URL), {}, controller);
         if (whoami?.state?.is_watching === true) finish("connected");
-      } catch {}
+      } catch {
+        // Startup keeps polling through transient failures until its fixed bound.
+      } finally {
+        if (readinessRequestRef.current === controller) readinessRequestRef.current = null;
+      }
     };
     void checkReady();
     readinessPollRef.current = setInterval(() => void checkReady(), READINESS_POLL_MS);
     readinessTimeoutRef.current = setTimeout(() => finish("disconnected"), READINESS_TIMEOUT_MS);
-  }, [fetchJson]);
+  }, [cancelReadiness, fetchJson]);
+
+  const onIframeError = useCallback(() => {
+    iframeLoadRef.current++;
+    cancelReadiness();
+    setState("disconnected");
+  }, [cancelReadiness]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
@@ -176,7 +189,7 @@ export function WebRtcBrowserDockPanel(): React.ReactElement {
             allowFullScreen
             className="h-full w-full border-0"
             onLoad={onIframeLoad}
-            onError={() => setState("disconnected")}
+            onErrorCapture={onIframeError}
           />
         )}
       </div>

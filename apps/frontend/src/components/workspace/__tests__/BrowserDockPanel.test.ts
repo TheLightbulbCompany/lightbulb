@@ -62,6 +62,17 @@ describe("normalizeBrowserViewport", () => {
     expect(viewport.width / viewport.height).toBeCloseTo(2, 1);
   });
 
+  it("keeps adversarial narrow panels step-aligned inside the pixel cap", () => {
+    for (const [width, height] of [[1, 1_000_000], [1_000_000, 1]]) {
+      const viewport = normalizeBrowserViewport(width, height);
+      expect(viewport.width).toBeGreaterThanOrEqual(8);
+      expect(viewport.height).toBeGreaterThanOrEqual(8);
+      expect(viewport.width % 8).toBe(0);
+      expect(viewport.height % 8).toBe(0);
+      expect(viewport.width * viewport.height).toBeLessThanOrEqual(1_024_000);
+    }
+  });
+
   it("does not inspect devicePixelRatio", () => {
     const dpr = vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(3);
     expect(normalizeBrowserViewport(640, 400)).toEqual({ width: 640, height: 400, rate: 24 });

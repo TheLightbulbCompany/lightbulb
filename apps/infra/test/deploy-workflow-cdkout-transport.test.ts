@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
  */
 
 const DEPLOY_YML = join(__dirname, "../../../.github/workflows/deploy.yml");
+const APP_TS = join(__dirname, "../lib/app.ts");
 
 describe("deploy.yml cdk.out transport", () => {
   const yaml = readFileSync(DEPLOY_YML, "utf8");
@@ -54,8 +55,11 @@ describe("deploy.yml cdk.out transport", () => {
   });
 
   it("builds the temporary browser transport as WebRTC in dev and VNC in prod", () => {
+    const source = readFileSync(APP_TS, "utf8");
     const dev = yaml.match(/^  dev-DeployVercelDev:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
     const prod = yaml.match(/^  prod-DeployVercelProd:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
+    expect(source).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"webrtc"/);
+    expect(source).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"vnc"/);
     expect(dev).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: webrtc");
     expect(prod).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: vnc");
   });

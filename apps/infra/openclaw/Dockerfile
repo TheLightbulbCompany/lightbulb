@@ -164,7 +164,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       curl wget ca-certificates gnupg git unzip \
       xvfb x11vnc novnc websockify \
       tigervnc-standalone-server \
-      supervisor pulseaudio openbox libxtst6 \
+      supervisor pulseaudio openbox libgtk-3-0 libxcvt0 libxtst6 \
       gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
       gstreamer1.0-pulseaudio \
     && rm -rf /var/lib/apt/lists/* \

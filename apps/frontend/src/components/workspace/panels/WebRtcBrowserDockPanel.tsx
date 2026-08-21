@@ -142,6 +142,7 @@ export function WebRtcBrowserDockPanel(): React.ReactElement {
 
   const onIframeLoad = useCallback(() => {
     cancelReadiness();
+    setState("connecting");
     const currentAttempt = attemptRef.current;
     const currentLoad = ++iframeLoadRef.current;
     let done = false;

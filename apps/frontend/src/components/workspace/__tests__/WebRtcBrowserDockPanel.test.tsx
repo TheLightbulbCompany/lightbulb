@@ -143,6 +143,24 @@ describe("WebRtcBrowserDockPanel", () => {
     expect(whoamiCalls).toHaveLength(3);
   });
 
+  it("returns to the connecting veil when a connected iframe reloads", async () => {
+    const watching = [true, false, true];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/session")) return Promise.resolve(response(SESSION));
+      if (url.endsWith("/api/whoami")) return Promise.resolve(response({ state: { is_watching: watching.shift() } }));
+      return Promise.resolve(response({}));
+    }));
+    mount();
+    const frame = await screen.findByTitle("Your shared Chrome browser");
+    fireEvent.load(frame);
+    await waitFor(() => expect(screen.queryByText(/Connecting to your browser/)).toBeNull());
+    vi.useFakeTimers();
+    fireEvent.load(frame);
+    expect(screen.getByText(/Connecting to your browser/)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.queryByText(/Connecting to your browser/)).toBeNull();
+  });
+
   it("does not overlap readiness requests while one is in flight", async () => {
     let resolveWhoami!: (value: Response) => void;
     const fetchMock = vi.fn((url: string) => {
@@ -182,24 +200,12 @@ describe("WebRtcBrowserDockPanel", () => {
     await act(async () => resolveNew(response({ state: { is_watching: true } })));
   });
 
-  it("times out startup readiness into Retry", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(response(SESSION));
-    vi.stubGlobal("fetch", fetchMock);
-    mount();
-    const frame = await screen.findByTitle("Your shared Chrome browser");
-    vi.useFakeTimers();
-    fireEvent.load(frame);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-    const callsAtTimeout = fetchMock.mock.calls.length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(fetchMock).toHaveBeenCalledTimes(callsAtTimeout);
-  });
-
   it("aborts an in-flight whoami request at the readiness timeout", async () => {
     let signal: AbortSignal | undefined;
+    let whoamiCalls = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
       if (url.endsWith("/session")) return Promise.resolve(response(SESSION));
+      whoamiCalls += 1;
       signal = init.signal;
       return new Promise<Response>(() => {});
     }));
@@ -210,6 +216,9 @@ describe("WebRtcBrowserDockPanel", () => {
     expect(signal).toBeDefined();
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(signal?.aborted).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(whoamiCalls).toBe(1);
   });
 
   it("keeps Retry after an iframe error even if the cancelled whoami later resolves true", async () => {
@@ -226,24 +235,44 @@ describe("WebRtcBrowserDockPanel", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
-  it("aborts readiness work when Retry starts a new attempt", async () => {
-    let signal: AbortSignal | undefined;
+  it("aborts a hanging auth refresh before Retry starts fresh bootstrap", async () => {
+    let refreshSignal: AbortSignal | undefined;
+    let sessionCount = 0;
+    let retryStartedAfterAbort = false;
     vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
-      if (url.endsWith("/session")) return Promise.resolve(response(SESSION));
-      signal = init.signal;
-      return new Promise<Response>(() => {});
+      if (url.endsWith("/api/whoami")) return Promise.resolve(response({ state: { is_watching: true } }));
+      if (!url.endsWith("/session")) return Promise.resolve(response({}));
+      sessionCount += 1;
+      if (sessionCount === 1) return Promise.resolve(response(SESSION));
+      if (sessionCount === 2) {
+        refreshSignal = init.signal;
+        return new Promise<Response>(() => {});
+      }
+      retryStartedAfterAbort = refreshSignal?.aborted === true;
+      return Promise.resolve(response(SESSION));
     }));
-    mount();
-    const frame = await screen.findByTitle("Your shared Chrome browser");
     vi.useFakeTimers();
+    mount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const frame = screen.getByTitle("Your shared Chrome browser");
     fireEvent.load(frame);
-    expect(signal).toBeDefined();
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(/Connecting to your browser/)).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(refreshSignal).toBeDefined();
+    await act(async () => fireEvent(frame, new Event("error", { bubbles: true })));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
       await Promise.resolve();
     });
-    expect(signal?.aborted).toBe(true);
+    expect(retryStartedAfterAbort).toBe(true);
   });
 
   it("refreshes auth every 45 seconds without dropping a watched stream on a transient failure", async () => {

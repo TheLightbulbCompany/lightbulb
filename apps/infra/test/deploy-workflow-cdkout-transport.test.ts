@@ -58,8 +58,10 @@ describe("deploy.yml cdk.out transport", () => {
     const source = readFileSync(APP_TS, "utf8");
     const dev = yaml.match(/^  dev-DeployVercelDev:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
     const prod = yaml.match(/^  prod-DeployVercelProd:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
-    expect(source).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"webrtc"/);
-    expect(source).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"vnc"/);
+    const devSource = source.match(/new GitHubActionStep\("DeployVercelDev", \{[\s\S]*?\{\s*name: "Build Frontend",[\s\S]*?\n\s*\},\n\s*\{/)?.[0] ?? "";
+    const prodSource = source.match(/new GitHubActionStep\("DeployVercelProd", \{[\s\S]*?\{\s*name: "Build Frontend \(Production\)",[\s\S]*?\n\s*\},\n\s*\{/)?.[0] ?? "";
+    expect(devSource).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"webrtc"/);
+    expect(prodSource).toMatch(/NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT:\s*"vnc"/);
     expect(dev).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: webrtc");
     expect(prod).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: vnc");
   });

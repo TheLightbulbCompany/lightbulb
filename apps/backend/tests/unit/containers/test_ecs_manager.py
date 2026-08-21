@@ -904,16 +904,6 @@ class TestStartUserService:
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
-
-class TestForceRedeployUserService:
-    @pytest.mark.asyncio
-    async def test_force_redeploy_reapplies_owner_network_configuration(self, manager, mock_ecs_client):
-        with patch("core.services.browser_state.snapshot_browser_state", new=AsyncMock()):
-            await manager.force_redeploy_user_service("user_test_123")
-
-        kwargs = mock_ecs_client.update_service.call_args.kwargs
-        assert kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
-
     @pytest.mark.asyncio
     async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
         """Cold-start restart MUST fire _await_running_transition, or the cold-
@@ -984,6 +974,16 @@ class TestForceRedeployUserService:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+
+class TestForceRedeployUserService:
+    @pytest.mark.asyncio
+    async def test_force_redeploy_reapplies_owner_network_configuration(self, manager, mock_ecs_client):
+        with patch("core.services.browser_state.snapshot_browser_state", new=AsyncMock()):
+            await manager.force_redeploy_user_service("user_test_123")
+
+        kwargs = mock_ecs_client.update_service.call_args.kwargs
+        assert kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
 
 
 # ---------------------------------------------------------------------------

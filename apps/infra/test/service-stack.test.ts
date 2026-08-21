@@ -111,6 +111,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
   test("gives owner-service creation public subnets without moving backend work public", () => {
+    const expectPrivateSubnets = (subnets: unknown) => {
+      expect(subnets).toEqual(expect.any(Array));
+      expect(subnets).not.toHaveLength(0);
+      for (const subnet of subnets as unknown[]) {
+        const rendered = JSON.stringify(subnet);
+        expect(rendered).toContain("PrivateSubnet");
+        expect(rendered).not.toContain("PublicSubnet");
+      }
+      expect(JSON.stringify(subnets)).not.toContain("PublicSubnet");
+    };
+
     const taskDefinitions = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
       Properties?: {
         ContainerDefinitions?: Array<{
@@ -133,7 +144,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(backendService).toBeDefined();
     const backendNetwork = backendService?.[1].Properties?.NetworkConfiguration?.AwsvpcConfiguration;
     expect(backendNetwork?.AssignPublicIp).toBe("DISABLED");
-    expect(JSON.stringify(backendNetwork?.Subnets)).toContain("PrivateSubnet");
+    expectPrivateSubnets(backendNetwork?.Subnets);
 
     const stateMachine = Object.values(template.findResources("AWS::StepFunctions::StateMachine"))[0] as {
       Properties?: { DefinitionString?: { "Fn::Join"?: [string, unknown[]] } };
@@ -151,9 +162,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     const runnerNetwork = JSON.parse(definition).States.RunProvisioner.Parameters.NetworkConfiguration
       .AwsvpcConfiguration;
     expect(runnerNetwork.AssignPublicIp ?? "DISABLED").toBe("DISABLED");
-    expect(runnerNetwork.Subnets.map((token: string) => JSON.stringify(tokens.get(token))).join(",")).toContain(
-      "PrivateSubnet",
-    );
+    expectPrivateSubnets(runnerNetwork.Subnets.map((token: string) => tokens.get(token)));
   });
 
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {

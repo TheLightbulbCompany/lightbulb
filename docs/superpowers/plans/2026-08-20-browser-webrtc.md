@@ -96,7 +96,7 @@ Expected: new assertions fail against the VNC-only startup.
   - copy the Neko binary and Isol8-owned config into the final image;
   - run build-time smoke checks for neko, gst-inspect-1.0 vp8enc, gst-inspect-1.0 opusenc, pulseaudio, and openbox.
 
-- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, an in-memory `object` member provider containing exactly one `owner` account (a second independent login must fail while that session is live), a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. This limits independent browser-view sessions, not peers reusing the same cookie; coordinated multi-viewer UX remains unsupported.
+- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, the noauth provider behind the backend/SG fence, a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. The constant `owner` identity names the shared display only: no viewer/session/peer limit is enforced, and concurrent same-owner viewing/control is unsupported UX.
 
 - [ ] Disable Neko JPEG screencast, webcam, microphone, broadcast, upload-drop, pprof, and public metrics.
 
@@ -181,7 +181,7 @@ git commit -m "feat(browser): expose owner-scoped WebRTC media mux"
 - Modify: apps/backend/main.py
 - Add or modify: apps/backend/tests/unit/core/test_security_headers.py
 
-- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, a rejected second independent `owner` login, complete short-lived Isol8 and Neko `Set-Cookie` attributes (host-only, HttpOnly, `SameSite=Strict`, path, and Secure outside localhost), HTTP header/cookie stripping, fixed upstream host/port, allowed exact frontend/`bv` origins and rejected cross-site unsafe HTTP/WS origins, WS first-completion teardown, and iframe security headers.
+- [ ] Write failing tests for missing/invalid/expired auth, personal/org owner resolution, unreachable containers, Neko login/cookie reuse, complete short-lived Isol8 and Neko `Set-Cookie` attributes (host-only, HttpOnly, `SameSite=Strict`, path, and Secure outside localhost), HTTP header/cookie stripping, fixed upstream host/port, allowed exact frontend/`bv` origins and rejected cross-site unsafe HTTP/WS origins, WS first-completion teardown, and iframe security headers.
 
 ~~~bash
 cd apps/backend && uv run pytest tests/unit/routers/test_browser_view.py tests/unit/core/test_security_headers.py -q
@@ -199,7 +199,7 @@ Expected: new tests fail.
   - use bounded upstream connect/read timeouts and streamed responses;
   - preserve only safe response headers and Neko cookie updates.
 
-- [ ] Bootstrap reuses a valid Neko session cookie or logs into http://resolved-private-ip:6081/api/v1/browser-view/webrtc/api/login as the one configured `owner` account. Neko's in-memory object provider rejects a second independent login; do not add a backend session table or claim that duplicate peers with the same cookie are exclusive.
+- [ ] Bootstrap reuses a valid Neko session cookie or logs into http://resolved-private-ip:6081/api/v1/browser-view/webrtc/api/login as constant user `owner`. That identity is not a session limit: each client still completes the verified-Clerk owner bootstrap and cookie checks, while concurrent same-owner peers share the display without supported collaboration semantics. Do not add a backend session table.
 
 - [ ] Refresh the Isol8 auth cookie from the current Authorization token. Do not add a signer or session table.
 
@@ -311,7 +311,7 @@ gh run list --repo Isol8AI/isol8 --branch feat/browser-webrtc --limit 10 --json 
 
 - [ ] Validate tool auto-open, manual start, native Chrome tabs/omnibox, 30-minute YouTube video/audio, OAuth popup, right-click, keyboard modifiers, scroll, clipboard, touch, download, CAPTCHA/2FA entry, panel remount, dock resize, browser restart, task redeploy, and client network switch.
 
-- [ ] Verify Chrome, Safari, and Tauri connect; explicitly prove one owner's credential cannot reach another owner's Neko session; and prove a second independent browser context cannot log into the same owner's already-live `owner` account. A second peer reusing the first context's cookie is not a supported collaboration flow and is not treated as an isolation boundary.
+- [ ] Verify Chrome, Safari, and Tauri connect, and explicitly prove one owner's credential cannot reach another owner's Neko session. Concurrent clients for the same owner are allowed to share the display but remain unsupported coordinated-viewer UX; do not add a session-limit test or claim exclusive control.
 
 - [ ] For separate ten-minute static and video segments, use ECS Exec (enabled on owner tasks) to record `top -b -d 10 -n 61`; sum `%CPU` for `neko`, `Xorg`, `openbox`, and `pulseaudio` in each of the 60 timed frames. A missing process/frame or restart invalidates that segment. Query existing AWS/ECS service `CPUUtilization` and `MemoryUtilization` at one-minute resolution for the matching ten timestamps; do not use Container Insights. Require display stack <=25% vCPU static, <=45% motion, every motion CPU sample <80%, every memory sample <80% of the 4 GB reservation (3.2 GB), and no correlated OpenClaw RPC/gateway regression.
 

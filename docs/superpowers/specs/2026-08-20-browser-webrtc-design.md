@@ -30,7 +30,7 @@ The implementation uses [Neko](https://github.com/m1k1o/neko) v3.1.5 as the WebR
 - Gaming-grade latency, 60 fps, 1080p, simulcast, or multiple quality ladders.
 - Reimplementing OpenClaw tabs, navigation, browser lifecycle, or CDP commands in Isol8.
 - Microphone/webcam forwarding into the remote browser in this migration.
-- Coordinated multi-viewer UX. The product supports one independent browser-view session per owner container; it does not promise a security boundary between concurrent uses of the same browser cookie.
+- Coordinated multi-viewer UX. Multiple authenticated clients for the same owner may view and control the one shared display; this migration adds no viewer, session, or peer limit, no arbitration, and no collaboration affordances.
 - Solving website bot detection. Giving each task a public address may change egress reputation, but it is not an anti-detection promise.
 - Persisting the raw Chrome profile on EFS. Existing browser-state snapshot/restore remains unchanged.
 - Operating TURN before measurements show it is needed. The owner task is directly reachable over authenticated ICE on a unique public address; direct UDP plus ICE-TCP is the shortest reliable path for this topology.
@@ -154,9 +154,7 @@ The backend browser-view router gains three responsibilities:
    - forwards only the Neko session cookie upstream;
    - closes both legs as soon as either leg ends.
 
-Neko's in-memory `object` provider is used only because the backend/SG combination is the real tenant fence: `:6081` is reachable only from the backend service SG, the client never receives a container IP, and the public media mux cannot create a peer without signaling's random ICE credentials. There is no client-controlled owner id.
-
-Neko instead uses its in-memory `object` member provider with exactly one `owner` account. Neko rejects a second login for that account while its first session is live, which enforces one independently bootstrapped browser-view session per owner task without adding an Isol8 session store. The backend forwards the first session cookie only to that owner. A duplicate iframe or browser context that already holds that same cookie may still create another peer: that is not supported collaboration UX and is not a security boundary. It has the same owner authority and must not be relied on for exclusive human control.
+Neko uses its `noauth` provider only because the backend/SG combination is the real tenant fence: `:6081` is reachable only from the backend service SG, the client never receives a container IP, and the public media mux cannot create a peer without signaling's random ICE credentials. There is no client-controlled owner id. The constant `owner` Neko identity names the shared display; it does not limit active sessions or peers. Every client independently crosses the verified-Clerk owner bootstrap and per-request browser-view cookie boundary before it can receive its Neko session cookie or use the proxy. Concurrent same-owner viewers/controllers are allowed technically, but their input races and shared display are unsupported product behavior.
 
 The parent panel refreshes the short-lived browser-view auth cookie every 45 seconds while mounted. A refresh failure does not tear down an established WebRTC session; it changes the panel to reconnecting only when signaling itself needs to reconnect.
 
@@ -220,7 +218,7 @@ The following existing behavior is intentionally preserved:
 
 - Docker image builds and `neko --version`/GStreamer/Pulse/Xorg smoke checks pass.
 - CDK tests pin public owner subnets, `assignPublicIp: ENABLED`, and the exact TCP/UDP media ingress without widening other task ports.
-- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, both `Set-Cookie` values carry host-only/HttpOnly/SameSite/Path/Secure attributes, cross-site unsafe HTTP and WS origins reject before proxying while allowed frontend and `bv` origins work, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, a second independent `owner` login is rejected, and either WS leg ending tears down the other.
+- Backend tests prove missing/bad/expired auth rejects before proxying, org members resolve the org owner, both `Set-Cookie` values carry host-only/HttpOnly/SameSite/Path/Secure attributes, cross-site unsafe HTTP and WS origins reject before proxying while allowed frontend and `bv` origins work, the auth cookie is not forwarded upstream, arbitrary paths/hosts cannot proxy, and either WS leg ending tears down the other.
 - Frontend tests prove URL mapping, bootstrap-before-iframe ordering, bounded/debounced sizing, `/start` behavior, retry, and removal of noVNC/CDP-tab polling.
 - Existing backend, frontend, infra, and E2E tests pass.
 

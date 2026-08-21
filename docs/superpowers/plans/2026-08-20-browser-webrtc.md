@@ -96,7 +96,7 @@ Expected: new assertions fail against the VNC-only startup.
   - copy the Neko binary and Isol8-owned config into the final image;
   - run build-time smoke checks for neko, gst-inspect-1.0 vp8enc, gst-inspect-1.0 opusenc, pulseaudio, and openbox.
 
-- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, the noauth provider behind the backend/SG fence, a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. The constant `owner` identity names the shared display only: no viewer/session/peer limit is enforced, and concurrent same-owner viewing/control is unsupported UX.
+- [ ] Configure Neko with private HTTP :6081, path prefix /api/v1/browser-view/webrtc, the noauth provider behind the backend/SG fence, a short-lived secure HttpOnly `SameSite=Strict` session cookie, implicit hosting, merciful reconnect, one VP8 24-fps 1.8-Mbps pipeline, PulseAudio/Opus, ICE Lite/trickle, and UDP/TCP mux :59000. Keep `desktop.input.enabled: false` during this Xvnc rollback window: XTEST still provides keyboard, mouse, scroll, and clipboard, while native-touch socket-driver activation is deferred to Task 8's Xorg cutover. The constant `owner` identity names the shared display only: no viewer/session/peer limit is enforced, and concurrent same-owner viewing/control is unsupported UX.
 
 - [ ] Disable Neko JPEG screencast, webcam, microphone, upload-drop, pprof, and public metrics. Pinned Neko cannot disable its administrator broadcast routes by configuration, so leave its broadcast URL empty and autostart false; Task 4 rejects normalized `/api/room/broadcast` and every descendant before an upstream request, with a negative no-upstream-call test.
 
@@ -309,7 +309,7 @@ gh run list --repo Isol8AI/isol8 --branch feat/browser-webrtc --limit 10 --json 
 
 - [ ] Enable `NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT=webrtc` by changing `apps/infra/lib/app.ts`, regenerating its committed `.github/workflows/deploy.yml`, and deploying through the normal dev pipeline.
 
-- [ ] Validate tool auto-open, manual start, native Chrome tabs/omnibox, 30-minute YouTube video/audio, OAuth popup, right-click, keyboard modifiers, scroll, clipboard, touch, download, CAPTCHA/2FA entry, panel remount, dock resize, browser restart, task redeploy, and client network switch.
+- [ ] Validate tool auto-open, manual start, native Chrome tabs/omnibox, 30-minute YouTube video/audio, OAuth popup, right-click, keyboard modifiers, scroll, clipboard, download, CAPTCHA/2FA entry, panel remount, dock resize, browser restart, task redeploy, and client network switch. Native-touch acceptance is deferred to Task 8's Xorg cutover.
 
 - [ ] Verify Chrome, Safari, and Tauri connect, and explicitly prove one owner's credential cannot reach another owner's Neko session. Concurrent clients for the same owner are allowed to share the display but remain unsupported coordinated-viewer UX; do not add a session-limit test or claim exclusive control.
 
@@ -384,7 +384,7 @@ When measured values changed, stage only those files and commit with message per
 
 - [ ] Remove VNC and CDP screencast routes/tests. Keep the authenticated Neko bootstrap/proxy under the existing browser-view prefix.
 
-- [ ] Replace Xvnc with Xorg dummy so dynamic screen resize remains supported without a VNC server.
+- [ ] Replace Xvnc with Xorg dummy so dynamic screen resize remains supported without a VNC server. Build and configure Neko's pinned native touch input driver there, enable `desktop.input.enabled`, and add a native-touch acceptance test before deleting the rollback stack.
 
 - [ ] Remove VNC/screencast Debian packages and frontend dependency/types. Remove socat only after rg proves no non-browser use.
 

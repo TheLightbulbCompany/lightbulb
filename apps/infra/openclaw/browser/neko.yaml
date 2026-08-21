@@ -24,7 +24,7 @@ session:
 desktop:
   display: ":1"
   input:
-    enabled: true
+    enabled: false
   upload_drop: false
   file_chooser_dialog: false
 

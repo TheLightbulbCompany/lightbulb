@@ -1,21 +1,21 @@
-import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parse as parseIni } from "ini";
 import { describe, expect, test } from "vitest";
+import { parseDocument } from "yaml";
 
 const browserPath = (file: string) => fileURLToPath(new URL(`../openclaw/browser/${file}`, import.meta.url));
 
 function parseYaml(file: string): Record<string, unknown> {
-  return JSON.parse(execFileSync("ruby", ["-ryaml", "-rjson", "-e", "puts JSON.generate(YAML.load_file(ARGV[0]))", file], { encoding: "utf8" }));
+  const document = parseDocument(readFileSync(file, "utf8"));
+  if (document.errors.length > 0) {
+    throw new Error(document.errors.map((error) => error.message).join("\\n"));
+  }
+  return document.toJS() as Record<string, unknown>;
 }
 
-function parseSupervisor(file: string): Record<string, Record<string, string>> {
-  const script = [
-    "import configparser, json, sys",
-    "config = configparser.ConfigParser()",
-    "config.read(sys.argv[1])",
-    "print(json.dumps({section: dict(config[section]) for section in config.sections()}))",
-  ].join("; ");
-  return JSON.parse(execFileSync("python3", ["-c", script, file], { encoding: "utf8" }));
+function parseSupervisor(file: string): Record<string, Record<string, unknown>> {
+  return parseIni(readFileSync(file, "utf8")) as Record<string, Record<string, unknown>>;
 }
 
 describe("pinned Neko runtime", () => {
@@ -48,7 +48,7 @@ describe("pinned Neko runtime", () => {
       path: "/api/v1/browser-view/webrtc",
     });
     expect(desktop).toMatchObject({ display: ":1", upload_drop: false, file_chooser_dialog: false });
-    expect(input.enabled).toBe(true);
+    expect(input.enabled).toBe(false);
     expect(capture.screencast?.enabled).toBe(false);
     expect(capture.webcam?.enabled).toBe(false);
     expect(capture.microphone?.enabled).toBe(false);
@@ -68,7 +68,7 @@ describe("pinned Neko runtime", () => {
     expect(supervisor["program:pulseaudio"].command).toContain("/usr/bin/pulseaudio");
     expect(supervisor["program:openbox"].command).toContain("/usr/bin/openbox");
     for (const section of ["program:pulseaudio", "program:openbox", "program:neko"]) {
-      expect(supervisor[section].autorestart).toBe("true");
+      expect(supervisor[section].autorestart).toBe(true);
     }
   });
 });

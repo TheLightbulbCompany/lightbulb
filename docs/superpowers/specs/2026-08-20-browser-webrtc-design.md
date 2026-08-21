@@ -94,6 +94,14 @@ The final display stack is:
 
 Xorg is eager because OpenClaw decides headless/headful once at Chrome launch. Video/audio encoding is lazy because Neko starts capture pipelines only while a viewer is watching.
 
+### Rollout input boundary
+
+Task 2 through the Task 6 rollback window keep the proven Xvnc launch and set
+Neko's `desktop.input.enabled: false`. The pinned source uses this optional
+native-touch Unix-socket driver; XTEST continues to provide keyboard, mouse,
+scroll, and clipboard input. Task 8's final Xorg cutover builds/configures that
+driver, enables native touch, and validates it before removing VNC.
+
 ### Stream profile
 
 The initial production profile is intentionally one conservative VP8 pipeline:

@@ -274,8 +274,9 @@ class TestBrowserBounds:
         pac = base64.b64decode(flags[0][len(prefix) :]).decode()
         assert "SOCKS5 127.0.0.1:40000; DIRECT" in pac
         # Loopback is never proxied — CDP, the X display and the gateway all
-        # live there.
-        assert 'return "DIRECT"' in pac
+        # live there. Assert the actual match conditions, not just that some
+        # DIRECT branch exists (the `; DIRECT` fallback above is one too).
+        assert 'if(isPlainHostName(h)||shExpMatch(h,"127.*")||h=="::1")return "DIRECT";' in pac
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

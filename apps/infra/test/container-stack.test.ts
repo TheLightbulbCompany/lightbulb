@@ -196,6 +196,21 @@ describe("ContainerStack — dev", () => {
   });
 
   test("opens only the owner WebRTC ICE mux to the internet", () => {
+    const ownerSecurityGroup = Object.entries(template.findResources("AWS::EC2::SecurityGroup")).find(
+      ([logicalId]) => logicalId.startsWith("ContainerSecurityGroup"),
+    );
+    expect(ownerSecurityGroup).toBeDefined();
+    const ownerPublicIngress = (
+      (ownerSecurityGroup?.[1].Properties?.SecurityGroupIngress ?? []) as Record<string, unknown>[]
+    )
+      .filter(({ CidrIp }) => CidrIp === "0.0.0.0/0")
+      .map(({ IpProtocol, FromPort, ToPort }) => ({ IpProtocol, FromPort, ToPort }))
+      .sort((left, right) => String(left.IpProtocol).localeCompare(String(right.IpProtocol)));
+    expect(ownerPublicIngress).toEqual([
+      { IpProtocol: "tcp", FromPort: 59000, ToPort: 59000 },
+      { IpProtocol: "udp", FromPort: 59000, ToPort: 59000 },
+    ]);
+
     const publicIngress = [
       ...Object.values(template.findResources("AWS::EC2::SecurityGroupIngress")).map(
         (resource) => resource.Properties as Record<string, unknown>,

@@ -127,12 +127,33 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(JSON.stringify(ownerSubnets)).toContain("PublicSubnet");
     expect(JSON.stringify(ownerSubnets)).not.toContain("PrivateSubnet");
 
-    const backendService = JSON.stringify(template.findResources("AWS::ECS::Service"));
-    const provisioner = JSON.stringify(template.findResources("AWS::StepFunctions::StateMachine"));
-    expect(backendService).toContain("PrivateSubnet");
-    expect(backendService).toContain("DISABLED");
-    expect(provisioner).toContain("PrivateSubnet");
-    expect(provisioner).not.toContain("ENABLED");
+    const backendService = Object.entries(template.findResources("AWS::ECS::Service")).find(
+      ([logicalId]) => logicalId.startsWith("Service"),
+    );
+    expect(backendService).toBeDefined();
+    const backendNetwork = backendService?.[1].Properties?.NetworkConfiguration?.AwsvpcConfiguration;
+    expect(backendNetwork?.AssignPublicIp).toBe("DISABLED");
+    expect(JSON.stringify(backendNetwork?.Subnets)).toContain("PrivateSubnet");
+
+    const stateMachine = Object.values(template.findResources("AWS::StepFunctions::StateMachine"))[0] as {
+      Properties?: { DefinitionString?: { "Fn::Join"?: [string, unknown[]] } };
+    };
+    const definitionParts = stateMachine.Properties?.DefinitionString?.["Fn::Join"]?.[1] ?? [];
+    const tokens = new Map<string, unknown>();
+    const definition = definitionParts
+      .map((part, index) => {
+        if (typeof part === "string") return part;
+        const token = `__token_${index}__`;
+        tokens.set(token, part);
+        return token;
+      })
+      .join("");
+    const runnerNetwork = JSON.parse(definition).States.RunProvisioner.Parameters.NetworkConfiguration
+      .AwsvpcConfiguration;
+    expect(runnerNetwork.AssignPublicIp ?? "DISABLED").toBe("DISABLED");
+    expect(runnerNetwork.Subnets.map((token: string) => JSON.stringify(tokens.get(token))).join(",")).toContain(
+      "PrivateSubnet",
+    );
   });
 
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {

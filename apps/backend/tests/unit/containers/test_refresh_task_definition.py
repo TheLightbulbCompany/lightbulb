@@ -11,11 +11,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+_OWNER_NETWORK_CONFIGURATION = {
+    "awsvpcConfiguration": {
+        "subnets": ["subnet-aaa", "subnet-bbb"],
+        "securityGroups": ["sg-12345"],
+        "assignPublicIp": "ENABLED",
+    }
+}
+
+
 @pytest.mark.asyncio
 async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     from core.containers import ecs_manager
 
     manager = ecs_manager.EcsManager()
+    manager._subnets = ["subnet-aaa", "subnet-bbb"]
+    manager._security_groups = ["sg-12345"]
 
     fake_existing_container = {
         "owner_id": "u_1",
@@ -68,6 +79,7 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     fake_ecs.update_service.assert_called_once()
     upd_kwargs = fake_ecs.update_service.call_args.kwargs
     assert upd_kwargs["taskDefinition"].endswith(":5")
+    assert upd_kwargs["networkConfiguration"] == _OWNER_NETWORK_CONFIGURATION
 
     assert result == "arn:aws:ecs:us-east-1:877352799272:task-definition/isol8-dev-openclaw-u-1:5"
 

@@ -229,6 +229,13 @@ def _response_headers(headers: httpx.Headers) -> dict[str, str]:
     return {name: value for name, value in headers.items() if name.lower() in _SAFE_RESPONSE_HEADERS}
 
 
+async def _close_client(client: httpx.AsyncClient) -> None:
+    try:
+        await client.aclose()
+    except Exception as exc:  # noqa: BLE001 - cleanup cannot replace the primary proxy error.
+        logger.warning("browser_view_proxy: client close failed: %s", exc)
+
+
 @router.post("/session")
 async def browser_view_session(request: Request) -> Response:
     """Mint the short-lived browser-view cookies for the verified owner."""
@@ -277,10 +284,10 @@ async def _webrtc_proxy(request: Request, path: str) -> Response:
         )
         upstream = await client.send(upstream_request, stream=True)
     except asyncio.CancelledError:
-        await client.aclose()
+        await _close_client(client)
         raise
     except Exception:
-        await client.aclose()
+        await _close_client(client)
         raise HTTPException(status_code=502, detail="Neko unavailable") from None
 
     closed = False

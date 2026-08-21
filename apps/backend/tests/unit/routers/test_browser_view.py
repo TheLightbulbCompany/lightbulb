@@ -672,6 +672,7 @@ async def test_webrtc_cancelled_upstream_connect_closes_client_and_reraises(monk
         async def aclose(self):
             nonlocal closed
             closed = True
+            raise RuntimeError("client close failed")
 
     async def _fake_decode(token):
         return {"sub": "user_test1"}
@@ -697,6 +698,60 @@ async def test_webrtc_cancelled_upstream_connect_closes_client_and_reraises(monk
 
     with pytest.raises(asyncio.CancelledError):
         await mod._webrtc_proxy(request, "api/whoami")
+    assert closed
+
+
+@pytest.mark.asyncio
+async def test_webrtc_upstream_transport_error_preserves_502_when_client_close_fails(monkeypatch):
+    """A client-close error cannot replace the stable upstream-unavailable response."""
+    import httpx
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    import routers.browser_view as mod
+
+    closed = False
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url)
+
+        async def send(self, request, stream):
+            raise httpx.ConnectError("Neko unavailable")
+
+        async def aclose(self):
+            nonlocal closed
+            closed = True
+            raise RuntimeError("client close failed")
+
+    async def _fake_decode(token):
+        return {"sub": "user_test1"}
+
+    async def _fake_resolve(auth):
+        return "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "_resolve_running", _fake_resolve)
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _Client)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/webrtc/api/whoami",
+            "query_string": b"",
+            "headers": [(b"cookie", b"isol8_browser_view=clerk.jwt; neko=neko.session")],
+            "server": ("localhost", 8000),
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod._webrtc_proxy(request, "api/whoami")
+    assert exc_info.value.status_code == 502
     assert closed
 
 

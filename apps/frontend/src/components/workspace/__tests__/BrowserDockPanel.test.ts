@@ -1,6 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { browserViewWsUrl } from "../panels/browserViewUrl";
+import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  browserViewScreenUrl,
+  browserViewSessionUrl,
+  browserViewWebRtcRootUrl,
+  browserViewWhoamiUrl,
+  browserViewWsUrl,
+} from "../panels/browserViewUrl";
 import { normalizeTabs } from "../panels/browserTabs";
+import { normalizeBrowserViewport } from "../panels/browserViewport";
 
 // The bv host mapping is load-bearing: the api host is an API Gateway HTTP
 // API that cannot pass WebSocket upgrades, so a wrong mapping here is a panel
@@ -22,6 +31,59 @@ describe("browserViewWsUrl", () => {
     expect(browserViewWsUrl("http://localhost:8000/api/v1")).toBe(
       "ws://localhost:8000/api/v1/browser-view/ws",
     );
+  });
+});
+
+describe("browser-view WebRTC URLs", () => {
+  it.each([
+    ["https://api-dev.isol8.co/api/v1", "https://bv-dev.isol8.co/api/v1"],
+    ["https://api.isol8.co/api/v1", "https://bv.isol8.co/api/v1"],
+    ["http://localhost:8000/api/v1", "http://localhost:8000/api/v1"],
+  ])("keeps every Neko route under the WebRTC prefix for %s", (apiUrl, bvUrl) => {
+    expect(browserViewSessionUrl(apiUrl)).toBe(`${bvUrl}/browser-view/session`);
+    expect(browserViewWebRtcRootUrl(apiUrl)).toBe(`${bvUrl}/browser-view/webrtc/`);
+    expect(browserViewWhoamiUrl(apiUrl)).toBe(`${bvUrl}/browser-view/webrtc/api/whoami`);
+    expect(browserViewScreenUrl(apiUrl)).toBe(`${bvUrl}/browser-view/webrtc/api/room/screen`);
+  });
+});
+
+describe("normalizeBrowserViewport", () => {
+  it("uses the conservative stream defaults before the panel is measurable", () => {
+    expect(normalizeBrowserViewport(0, 0)).toEqual({ width: 1280, height: 800, rate: 24 });
+  });
+
+  it("rounds CSS dimensions down to multiples of eight without DPR input", () => {
+    expect(normalizeBrowserViewport(811.9, 622.9)).toEqual({ width: 808, height: 616, rate: 24 });
+  });
+
+  it("preserves the panel aspect ratio while enforcing the area cap", () => {
+    const viewport = normalizeBrowserViewport(2000, 1000);
+    expect(viewport.width * viewport.height).toBeLessThanOrEqual(1_024_000);
+    expect(viewport.width / viewport.height).toBeCloseTo(2, 1);
+  });
+
+  it("does not inspect devicePixelRatio", () => {
+    const dpr = vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(3);
+    expect(normalizeBrowserViewport(640, 400)).toEqual({ width: 640, height: 400, rate: 24 });
+    dpr.mockRestore();
+  });
+});
+
+describe("temporary browser transport selection and CSP", () => {
+  const panelComponents = readFileSync(join(__dirname, "../panelComponents.ts"), "utf8");
+  const nextConfig = readFileSync(join(__dirname, "../../../../next.config.ts"), "utf8");
+
+  it("selects WebRTC only for the exact build-time value", () => {
+    expect(panelComponents).toContain(
+      'process.env.NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT === "webrtc" ? WebRtcBrowserDockPanel : BrowserDockPanel',
+    );
+  });
+
+  it("allows both browser-view hosts only through report-only frame and parent fetch policies", () => {
+    expect(nextConfig).toContain("Content-Security-Policy-Report-Only");
+    for (const host of ["https://bv.isol8.co", "https://bv-dev.isol8.co"]) {
+      expect(nextConfig.match(new RegExp(host, "g"))).toHaveLength(2);
+    }
   });
 });
 

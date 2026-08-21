@@ -52,4 +52,11 @@ describe("deploy.yml cdk.out transport", () => {
     expect(authAt).toBeGreaterThan(-1);
     expect(uploadAt).toBeGreaterThan(authAt);
   });
+
+  it("builds the temporary browser transport as WebRTC in dev and VNC in prod", () => {
+    const dev = yaml.match(/^  dev-DeployVercelDev:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
+    const prod = yaml.match(/^  prod-DeployVercelProd:$[\s\S]*?(?=^  [A-Za-z])/m)?.[0] ?? "";
+    expect(dev).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: webrtc");
+    expect(prod).toContain("NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: vnc");
+  });
 });

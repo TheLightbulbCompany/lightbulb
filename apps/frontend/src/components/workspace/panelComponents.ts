@@ -8,17 +8,10 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-// The `browser` panel renders the noVNC live view (BrowserDockPanel), NOT the
-// CDP screencast panel. Rationale (2026-08-20): CDP Page.startScreencast captures
-// PAGE content only — it structurally cannot show Chrome's native browser UI (the
-// tab strip, omnibox, extension toolbar), so ScreencastDockPanel had to rebuild a
-// fake chrome that never matches native and felt broken to users. VNC streams the
-// REAL Chrome window (real tabs/omnibox/extensions/infobars), and the ~4fps that
-// once made VNC feel slow was a compositor flag, fixed in #1950 (--disable-gpu,
-// ~8x) — so VNC is now native AND fast. ScreencastDockPanel + routers/screencast.py
-// stay parked as the substrate for a future WebRTC-of-display view. `browser`
-// stays the parameterless-singleton key (#1874).
+// `browser` stays the parameterless singleton. WebRTC is a temporary
+// build-time dev rollout; VNC remains the exact-value fallback until acceptance.
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
+import { WebRtcBrowserDockPanel } from "./panels/WebRtcBrowserDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -26,7 +19,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
-  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: (process.env.NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT === "webrtc" ? WebRtcBrowserDockPanel : BrowserDockPanel) as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

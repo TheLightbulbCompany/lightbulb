@@ -6,16 +6,16 @@
 // Deliberately import-free: the mapping is load-bearing (a wrong host is a
 // panel spinning forever against a door that drops the connection) and must
 // stay testable without dragging in the component's SWR/Clerk import graph.
-function bvBase(base: string): string {
+function bvBase(base: string, protocol = false): string {
   const url = new URL(base);
   if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
     url.hostname = url.hostname.replace(/^api(-|\.)/, "bv$1");
   }
-  return `${url.origin.replace(/^http/, "ws")}${url.pathname}`;
+  return `${protocol ? url.origin.replace(/^http/, "ws") : url.origin}${url.pathname}`;
 }
 
 export function browserViewWsUrl(base: string): string {
-  return `${bvBase(base)}/browser-view/ws`;
+  return `${bvBase(base, true)}/browser-view/ws`;
 }
 
 // The CDP screencast relay rides the SAME bv door (its path is under
@@ -25,6 +25,34 @@ export function browserViewWsUrl(base: string): string {
 // screencast is per-page, so focus alone can't move a stream already bound to
 // another target).
 export function screencastWsUrl(base: string, targetId?: string | null): string {
-  const url = `${bvBase(base)}/browser-view/screencast/ws`;
+  const url = `${bvBase(base, true)}/browser-view/screencast/ws`;
   return targetId ? `${url}?target=${encodeURIComponent(targetId)}` : url;
+}
+
+export function browserViewSessionUrl(base: string): string {
+  return `${bvBase(base)}/browser-view/session`;
+}
+
+export function browserViewWebRtcRootUrl(base: string): string {
+  return `${bvBase(base)}/browser-view/webrtc/`;
+}
+
+export function browserViewWhoamiUrl(base: string): string {
+  return `${browserViewWebRtcRootUrl(base)}api/whoami`;
+}
+
+export function browserViewScreenUrl(base: string): string {
+  return `${browserViewWebRtcRootUrl(base)}api/room/screen`;
+}
+
+export function browserViewIframeUrl(base: string, iframePath: string): string {
+  const root = browserViewWebRtcRootUrl(base);
+  const url = new URL(iframePath, root);
+  const expected = new URL(root);
+  if (url.origin !== expected.origin || !url.pathname.startsWith(expected.pathname)) {
+    throw new Error("Invalid browser-view iframe path");
+  }
+  url.searchParams.set("cast", "1");
+  url.searchParams.set("volume", "1");
+  return url.toString();
 }

@@ -150,6 +150,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
             ...vercelEnv,
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
             NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_DEV }}",
+            NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: "webrtc",
           },
         },
         {
@@ -202,6 +203,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
             ...vercelEnv,
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
             NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_PROD }}",
+            NEXT_PUBLIC_BROWSER_VIEW_TRANSPORT: "vnc",
           },
         },
         {

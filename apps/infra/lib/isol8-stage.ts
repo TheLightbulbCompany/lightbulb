@@ -212,6 +212,12 @@ export class Isol8Stage extends cdk.Stage {
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
     });
 
+    // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps
+    // it on EVERY platform send (agent mail, welcome, support tickets) — SES
+    // rejects a send naming a configuration set that does not exist, so the
+    // outbound stack has to be deployed before the service that references it.
+    if (agentMailOutbound) service.addDependency(agentMailOutbound);
+
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,
     // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from
     // FastAPI via Cloud Map at

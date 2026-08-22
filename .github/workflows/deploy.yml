@@ -1464,6 +1464,7 @@ jobs:
       - Assets-FileAsset20
       - Assets-FileAsset21
       - Assets-DockerAsset1
+      - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -2181,6 +2182,7 @@ jobs:
       - Assets-FileAsset20
       - Assets-FileAsset21
       - Assets-DockerAsset1
+      - prod-isol8-prod-agent-mail-outbound-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-container-Deploy
       - prod-isol8-prod-auth-Deploy

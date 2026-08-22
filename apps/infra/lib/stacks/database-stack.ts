@@ -190,6 +190,10 @@ export class DatabaseStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
       ephemeral: true,
     });
+    this.agentMailInboxTable.addGlobalSecondaryIndex({
+      indexName: "by-message-id",
+      partitionKey: { name: "message_id", type: dynamodb.AttributeType.STRING },
+    });
 
     // Webhook event dedup table — shared by Stripe and Clerk webhooks
     // PK: event_id (prefixed: "stripe:{id}" or "clerk:{id}")

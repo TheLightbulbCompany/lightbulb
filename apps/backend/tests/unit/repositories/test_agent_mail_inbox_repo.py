@@ -52,3 +52,27 @@ async def test_list_messages_queries_newest_first(monkeypatch):
     kwargs = table.query.call_args.kwargs
     assert kwargs["ScanIndexForward"] is False
     assert kwargs["Limit"] == 5
+
+
+@pytest.mark.asyncio
+async def test_find_by_message_id_queries_the_gsi_and_filters_by_address(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {
+        "Items": [
+            {"address": "other@acme.isol8.co", "message_id": "m1", "received_key": "2026#other"},
+            {"address": "friday@acme.isol8.co", "message_id": "m1", "received_key": "2026#m"},
+        ]
+    }
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    item = await repo.find_by_message_id("Friday@Acme.isol8.co", "m1")
+    assert item == {"address": "friday@acme.isol8.co", "message_id": "m1", "received_key": "2026#m"}
+    kwargs = table.query.call_args.kwargs
+    assert kwargs["IndexName"] == "by-message-id"
+
+
+@pytest.mark.asyncio
+async def test_find_by_message_id_returns_none_without_querying_when_empty(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.find_by_message_id("friday@acme.isol8.co", "") is None
+    table.query.assert_not_called()

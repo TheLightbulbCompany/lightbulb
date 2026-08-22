@@ -63,7 +63,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, normalize
-from core.repositories.agent_mail_inbox_repo import put_message, reply_key
+from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
@@ -227,7 +227,11 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # Store first — every gated-clean message lands in the inbox whether or
         # not it wakes the agent. Waking (and the cap autoreply) is reserved for
         # the owner + the owner's allowlist.
-        stored = await put_message(
+        #
+        # Idempotent on SES's message_id: the 503 paths below roll back the
+        # dedup row so SES retries, and that retry must reuse the row the
+        # first attempt stored rather than add a second one.
+        stored = await find_by_message_id(row["address"], body.message_id) or await put_message(
             address=row["address"],
             owner_id=row["owner_id"],
             agent_id=row["agent_id"],

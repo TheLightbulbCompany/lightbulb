@@ -71,6 +71,7 @@ def _dedup_recorded(monkeypatch):
         "record_event_or_skip",
         AsyncMock(return_value=WebhookDedupResult.RECORDED),
     )
+    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         ses_inbound,
         "put_message",
@@ -181,6 +182,7 @@ def test_empty_message_id_skips_dedup_and_delivers(client, monkeypatch):
     dedup_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "record_event_or_skip", dedup_mock)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
     )
@@ -519,6 +521,7 @@ def test_happy_path_delivers(client, monkeypatch):
     dedup_mock = AsyncMock(return_value=WebhookDedupResult.RECORDED)
     monkeypatch.setattr(ses_inbound, "record_event_or_skip", dedup_mock)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
     )
@@ -541,6 +544,30 @@ def test_happy_path_delivers(client, monkeypatch):
     reply_line = next(line for line in kwargs["message"].splitlines() if line.startswith("Reply-Key:"))
     key = reply_line.split("Reply-Key:", 1)[1].strip()
     assert len(key) > 0
+
+
+def test_retry_with_same_message_id_reuses_stored_row(client, monkeypatch):
+    """An SES retry (same message_id) must reuse the row the first attempt
+    stored, not mint a second one -- find_by_message_id short-circuits
+    put_message."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        ses_inbound,
+        "find_by_message_id",
+        AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"}),
+    )
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "delivered"
+    ses_inbound.put_message.assert_not_awaited()
+    assert f"Reply-Key: {RECIPIENT}/2026#m" in deliver_mock.call_args.kwargs["message"]
 
 
 def test_unexpected_seam_error_returns_503_for_retry(client, monkeypatch):
@@ -623,6 +650,7 @@ def _real_dedup(monkeypatch):
 
     monkeypatch.setattr(ses_inbound, "record_event_or_skip", _record)
     monkeypatch.setattr(ses_inbound, "delete_event", _delete)
+    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
     )

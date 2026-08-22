@@ -18,7 +18,7 @@ _MAX_MANIFEST_ATTACHMENTS = 10
 # Body is capped so a single oversized email can't push the delivered
 # `/hooks/agent` payload over OpenClaw's ~1 MB request-body limit — an
 # over-limit request 413s and the whole delivery is silently dropped. The
-# header block, reply-token, and attachment manifest are all small/bounded,
+# header block, reply-key, and attachment manifest are all small/bounded,
 # so capping body_text alone keeps the total safely under the limit.
 _MAX_BODY_CHARS = 500_000
 
@@ -110,12 +110,12 @@ def build_delivered_message(
     from_addr: str,
     subject: str,
     body_text: str,
-    reply_token: str,
+    reply_key: str,
     attachments_manifest: str = "",
 ) -> str:
     """Format the string delivered to the agent via `/hooks/agent`.
 
-    A header block (sender/subject/reply-token) comes first so the agent
+    A header block (sender/subject/reply-key) comes first so the agent
     can see how to reply before reading the body, followed by a separator
     and the raw body text. When `attachments_manifest` is non-empty it is
     appended after the body under a blank-line separator; when empty
@@ -134,9 +134,10 @@ def build_delivered_message(
         "\n"
         f"From: {from_addr}\n"
         f"Subject: {subject}\n"
-        f"Reply-Token: {reply_token}\n"
+        f"Reply-Key: {reply_key}\n"
         "\n"
-        "To reply, use the isol8-mail tool with the Reply-Token above.\n"
+        "To reply, run: /app/skills/isol8/scripts/isol8-mail.sh send --reply <the Reply-Key> "
+        "(reply body on stdin).\n"
         "\n"
         "---\n"
         f"{body_text}"

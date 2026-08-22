@@ -7,6 +7,7 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import agent_mail_inbound as inbound  # noqa: E402
+from core.services.agent_mail_inbound import build_delivered_message  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -49,7 +50,7 @@ def test_build_delivered_message_inlines_header_and_token():
         from_addr="alice@example.com",
         subject="Need a hand",
         body_text="Can you draft a reply?",
-        reply_token="TOKEN123",
+        reply_key="TOKEN123",
     )
     assert "alice@example.com" in msg
     assert "Need a hand" in msg
@@ -57,6 +58,12 @@ def test_build_delivered_message_inlines_header_and_token():
     assert "Can you draft a reply?" in msg
     # The body must come after the header block.
     assert msg.index("TOKEN123") < msg.index("Can you draft a reply?")
+
+
+def test_delivered_message_names_the_reply_command():
+    msg = build_delivered_message(from_addr="a@b.c", subject="S", body_text="B", reply_key="a@b.c/2026#m1")
+    assert "Reply-Key: a@b.c/2026#m1" in msg
+    assert "isol8-mail.sh send --reply" in msg
 
 
 def test_build_attachment_manifest_empty_list():
@@ -121,7 +128,7 @@ def test_build_delivered_message_empty_manifest_is_byte_identical():
         from_addr="alice@example.com",
         subject="Need a hand",
         body_text="Can you draft a reply?",
-        reply_token="TOKEN123",
+        reply_key="TOKEN123",
     )
     assert inbound.build_delivered_message(**kwargs) == inbound.build_delivered_message(
         **kwargs, attachments_manifest=""
@@ -134,7 +141,7 @@ def test_build_delivered_message_with_manifest_appends_after_body():
         from_addr="alice@example.com",
         subject="Need a hand",
         body_text="Can you draft a reply?",
-        reply_token="TOKEN123",
+        reply_key="TOKEN123",
         attachments_manifest=manifest_text,
     )
     assert manifest_text in msg
@@ -150,7 +157,7 @@ def test_build_delivered_message_truncates_oversized_body():
         from_addr="alice@example.com",
         subject="Huge",
         body_text=huge_body,
-        reply_token="TOKEN123",
+        reply_key="TOKEN123",
     )
     assert len(msg) < 520_000
     assert "truncated" in msg
@@ -161,7 +168,7 @@ def test_build_delivered_message_short_body_is_unchanged():
         from_addr="alice@example.com",
         subject="Short",
         body_text="a normal short body",
-        reply_token="TOKEN123",
+        reply_key="TOKEN123",
     )
     assert "truncated" not in msg
     assert "a normal short body" in msg

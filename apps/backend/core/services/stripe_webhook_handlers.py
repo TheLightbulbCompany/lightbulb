@@ -135,6 +135,15 @@ def conversion_guard_active(container: dict | None) -> bool:
     """
     if not container:
         return False
+    # A DEFERRED conversion (``conversion_deferred_reason`` set) never stopped
+    # the container — nothing is draining, so there is nothing for recover /
+    # start to stand down for. Its stamp is kept only as the self-heal's
+    # rate-limit anchor (``maybe_resume_stuck_conversion`` reads the raw
+    # window for that); treating it as a guard would lock the manual recovery
+    # doors on a RUNNING box for as long as the owner takes to finish signing
+    # in, since every re-evaluation re-stamps the anchor.
+    if container.get("conversion_deferred_reason"):
+        return False
     return _within_guard_window(container.get("conversion_started_at"))
 
 
@@ -154,6 +163,11 @@ async def _stamp_conversion_dispatch(owner_id: str) -> None:
             "conversion_pending": True,
             "substatus": CONVERTING_SUBSTATUS,
             "conversion_started_at": utc_now_iso(),
+            # A fresh dispatch is NOT deferred until run_conversion_reprovision
+            # decides it is. Clearing here is load-bearing: a stale marker left
+            # from an earlier deferral would read as "never mid-drain" and
+            # disarm the guard during THIS dispatch's real stop + drain.
+            "conversion_deferred_reason": None,
         },
     )
 
@@ -321,7 +335,12 @@ async def _conversion_prerequisite_gate(owner_id: str) -> str | None:
     from core.services import provision_gate
 
     try:
-        gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id)
+        # probe_, not evaluate_: this is an internal check that runs on every
+        # conversion dispatch and every self-heal re-evaluation while deferred;
+        # the metric-emitting variant would inflate the provision.gate.blocked
+        # stream behind the spike alarm for a routine, separately-metered state
+        # (billing.trial_conversion.reprovision{outcome=deferred}).
+        gate = await provision_gate.probe_provision_gate(owner_id=owner_id)
     except Exception:  # noqa: BLE001 — fail open, see docstring
         logger.exception("Conversion prerequisite check failed for owner %s — proceeding to reprovision", owner_id)
         return None
@@ -457,6 +476,11 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
     if not container:
         return False
 
+    # Two different questions off the same stamp: ``window`` is the self-heal's
+    # rate limit (a dispatch happened recently — in flight OR deferred — so do
+    # not fire another); ``guard`` is whether a drain may be in flight, which a
+    # deferred row never is (see conversion_guard_active).
+    window = _within_guard_window(container.get("conversion_started_at"))
     guard = conversion_guard_active(container)
     if not container.get("conversion_pending"):
         # No pending conversion. `guard` is still honoured: it covers the brief
@@ -492,10 +516,15 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
             )
             return False
         return guard
-    if guard:
-        # In flight, or re-dispatched within the guard window. Hands off — this
-        # is the rate limit that keeps the ~3s poll from storming reprovisions.
-        return True
+    if window:
+        # In flight, re-dispatched, or DEFERRED within the window. Hands off —
+        # this is the rate limit that keeps the ~3s poll from storming
+        # reprovisions. A deferred row reports False: its container is running
+        # and nothing is draining, so the caller may auto-retry / recover it
+        # like any other row. It re-evaluates when the window lapses, or at
+        # once when the prerequisite's completion path re-arms it
+        # (``rearm_deferred_conversion`` drops the anchor).
+        return guard
 
     # Pending + the window lapsed == the dispatch died. Stripe will never
     # re-fire it. Re-dispatch, but only for an owner who is actually paying.

@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from core.services.credentials.materializers.base import NODE_GID, NODE_UID, owner_efs_root
 from core.dynamodb import utc_now_iso
@@ -54,12 +55,28 @@ def _config_path(owner_id: str) -> Path:
     return owner_efs_root(owner_id) / _MCPORTER_DIR / "mcporter.json"
 
 
+def _mcporter_url(server_url: str) -> str:
+    """The URL as mcporter sees it: it parses the configured URL with WHATWG
+    ``new URL()`` before hashing, which serializes a bare origin with a trailing
+    slash (``https://mcp.stripe.com`` -> ``https://mcp.stripe.com/``) and lowercases
+    scheme/host. Hash the raw string instead and a bare-origin server gets a vault
+    key mcporter never looks up — it reports "auth required" and starts its own
+    interactive login, which can't complete headless."""
+    parts = urlsplit(server_url)
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    # WHATWG also drops the scheme's default port from the serialization.
+    if (scheme, parts.port) in (("https", 443), ("http", 80)):
+        netloc = netloc.rsplit(":", 1)[0]
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, parts.fragment))
+
+
 def _vault_key(server_key: str, server_url: str) -> str:
     """mcporter's per-entry key: ``<name>|<sha256(json)[:16]>`` where json is
     ``{"name","url","command":null}`` for an HTTP server. The JSON byte-matches
     mcporter's ``JSON.stringify`` (insertion order, no spaces, null command) so the
     entry we seed is the exact one a ``mcporter call`` resolves from the config."""
-    payload = json.dumps({"name": server_key, "url": server_url, "command": None}, separators=(",", ":"))
+    payload = json.dumps({"name": server_key, "url": _mcporter_url(server_url), "command": None}, separators=(",", ":"))
     return f"{server_key}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
@@ -106,7 +123,7 @@ def seed(owner_id: str, server_key: str, server_url: str, credential: dict, scop
     key = _vault_key(server_key, server_url)
     entry = {
         "serverName": server_key,
-        "serverUrl": server_url,
+        "serverUrl": _mcporter_url(server_url),
         "tokens": _tokens(credential, scopes),
         "clientInfo": credential["client_information"],
         "updatedAt": utc_now_iso(),

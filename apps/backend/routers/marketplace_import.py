@@ -189,6 +189,9 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     staging_dir = _staging_dir(owner_id, import_id)
     try:
         normalized, report, package = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key)
+    except agent_export.ExportTooLargeError as exc:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except _USER_ERRORS as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -307,6 +310,16 @@ async def confirm_import(
                     "name": source_agent_id,
                     "ok": False,
                     "error": detail,
+                }
+            )
+        except agent_export.ExportTooLargeError as exc:
+            results.append(
+                {
+                    "source_agent_id": source_agent_id,
+                    "agent_id": None,
+                    "name": source_agent_id,
+                    "ok": False,
+                    "error": str(exc),
                 }
             )
         except _USER_ERRORS as exc:

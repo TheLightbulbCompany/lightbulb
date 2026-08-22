@@ -184,6 +184,19 @@ def test_import_400_unrecognized_archive_cleans_up(client):
     assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 
+def test_import_413_export_too_large_cleans_up(client):
+    c, user_root, _, _ = client
+    with patch(
+        "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+        side_effect=marketplace_import.agent_export.ExportTooLargeError(
+            file_count=50_000, byte_count=999_999_999, largest=[("workspace", 999_999_999)]
+        ),
+    ):
+        r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 413, r.text
+    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
+
+
 def _start(c) -> str:
     return c.post("/api/v1/marketplace/import", json={"key": KEY}).json()["import_id"]
 

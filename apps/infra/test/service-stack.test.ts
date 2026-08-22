@@ -58,6 +58,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       channelLinksTable: database.channelLinksTable,
       companySlugsTable: database.companySlugsTable,
       agentEmailAddressesTable: database.agentEmailAddressesTable,
+      agentMailInboxTable: database.agentMailInboxTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,

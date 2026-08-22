@@ -70,6 +70,7 @@ function build(environment: "dev" | "prod"): {
       channelLinksTable: database.channelLinksTable,
       companySlugsTable: database.companySlugsTable,
       agentEmailAddressesTable: database.agentEmailAddressesTable,
+      agentMailInboxTable: database.agentMailInboxTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,

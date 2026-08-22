@@ -118,6 +118,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     channelLinksTable: dynamodb.Table;
     companySlugsTable: dynamodb.Table;
     agentEmailAddressesTable: dynamodb.Table;
+    agentMailInboxTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
@@ -782,6 +783,9 @@ export class ServiceStack extends cdk.Stack {
     // on this grant, not push an earlier, already-tested statement into the
     // TaskRoleOverflowPolicy.
     props.database.agentEmailAddressesTable.grantReadWriteData(this.taskRole);
+
+    // Stored inbound agent mail — read by the inbox route, written by ses_inbound.
+    props.database.agentMailInboxTable.grantReadWriteData(this.taskRole);
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({

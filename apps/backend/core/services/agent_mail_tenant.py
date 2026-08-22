@@ -26,6 +26,10 @@ _sts_account: str | None = None
 # ponytail: per-process memo; after a restart the idempotent calls simply run again.
 _ensured: set[str] = set()
 
+# Bound on the synchronous SES/STS calls in _ensure_sync — a hung boto3 call
+# (dead network, throttled retries) must not stall the send path indefinitely.
+_ENSURE_TIMEOUT_S = 10.0
+
 
 def _client():
     global _ses_client
@@ -87,7 +91,14 @@ async def ensure_tenant(owner_id: str) -> str | None:
     if name in _ensured:
         return name
     try:
-        await anyio.to_thread.run_sync(_ensure_sync, owner_id)
+        # abandon_on_cancel=True: anyio's default (False) waits for the worker
+        # thread to finish before delivering the deadline's cancellation, which
+        # defeats fail_after as a wall-clock bound. Abandoning just means we
+        # stop waiting on it — the thread (boto3 calls) keeps running in the
+        # background, which is safe: _ensure_sync is idempotent and _ensured
+        # is only updated on a return we actually waited for.
+        with anyio.fail_after(_ENSURE_TIMEOUT_S):
+            await anyio.to_thread.run_sync(_ensure_sync, owner_id, abandon_on_cancel=True)
         _ensured.add(name)
         return name
     except Exception:  # noqa: BLE001 — a tenant hiccup must never block a send

@@ -331,7 +331,55 @@ async def test_ensure_agent_address_reports_reason(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolve_agent_name_friday_short_circuits(monkeypatch):
-    assert await ae.resolve_agent_name(agent_id="agent_friday", friday_agent_id="agent_friday") == "Friday"
+    assert (
+        await ae.resolve_agent_name(agent_id="agent_friday", friday_agent_id="agent_friday", company_id="co_1")
+        == "Friday"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_name_rejects_agent_from_a_different_company(monkeypatch):
+    """get_agent rides the shared admin cookie and is not company-scoped — a
+    container-supplied agent_id from a different owner's company must not
+    mint a foreign agent's name onto this owner's subdomain."""
+
+    class _Admin:
+        _http = None
+
+        async def get_agent(self, *, session_cookie, agent_id):
+            return {"name": "Mallory", "companyId": "co_other"}
+
+    monkeypatch.setattr(ae, "shared_admin_client", lambda: _Admin())
+    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    assert (
+        await ae.resolve_agent_name(agent_id="agent_mallory", friday_agent_id="agent_friday", company_id="co_1") is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_address_rejects_agent_from_a_different_company(monkeypatch):
+    monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
+
+    class _Repo:
+        def __init__(self, table_name): ...
+        async def get_onboarding_state(self, owner_id):
+            return {"company_id": "co_1", "friday_agent_id": "agent_friday"}
+
+    monkeypatch.setattr(ae, "PaperclipRepo", _Repo)
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme Robotics"))
+    monkeypatch.setattr(ae, "allocate_company_slug", AsyncMock(return_value="acme-robotics"))
+
+    class _Admin:
+        _http = None
+
+        async def get_agent(self, *, session_cookie, agent_id):
+            return {"name": "Mallory", "companyId": "co_other"}
+
+    monkeypatch.setattr(ae, "shared_admin_client", lambda: _Admin())
+    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+
+    result = await ae.ensure_agent_address(owner_id="o", agent_id="agent_mallory", owner_email="o@x.y")
+    assert result == (None, "agent_name_unavailable")
 
 
 @pytest.mark.asyncio

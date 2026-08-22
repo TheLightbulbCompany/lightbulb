@@ -158,14 +158,28 @@ async def resolve_company_name(company_id: str) -> str | None:
         return None
 
 
-async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None) -> str | None:
+async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None, company_id: str | None) -> str | None:
     if friday_agent_id and agent_id == friday_agent_id:
         return "Friday"
     try:
         admin = shared_admin_client()
         cookie = await get_admin_session_cookie(admin._http)
         agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-        name = (agent or {}).get("name")
+        agent = agent or {}
+        agent_company_id = agent.get("companyId")
+        if agent_company_id and agent_company_id != company_id:
+            # get_agent rides the shared admin cookie and is not company-scoped
+            # by itself — a container-supplied agent_id from a DIFFERENT
+            # owner's company must not mint a foreign agent's name onto this
+            # owner's subdomain.
+            logger.warning(
+                "agent_email: agent %s belongs to company %s, not owner's company %s — refusing name resolution",
+                agent_id,
+                agent_company_id,
+                company_id,
+            )
+            return None
+        name = agent.get("name")
         return name.strip() if isinstance(name, str) and name.strip() else None
     except Exception as e:  # noqa: BLE001
         logger.warning("agent_email: agent-name lookup failed for %s: %s", agent_id, e)
@@ -194,7 +208,9 @@ async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str
         slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
         if not slug:
             return None, "slug_allocation_failed"
-        agent_name = await resolve_agent_name(agent_id=agent_id, friday_agent_id=onboarding.get("friday_agent_id"))
+        agent_name = await resolve_agent_name(
+            agent_id=agent_id, friday_agent_id=onboarding.get("friday_agent_id"), company_id=company_id
+        )
         if not agent_name:
             return None, "agent_name_unavailable"
         address = await mint_agent_email_address(

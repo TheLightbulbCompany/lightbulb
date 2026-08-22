@@ -1,5 +1,6 @@
 """agent_mail_tenant: deterministic names, idempotent creation, fail-soft."""
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -60,3 +61,19 @@ async def test_ensure_tenant_off_when_no_config_set(ses, monkeypatch):
 async def test_ensure_tenant_never_raises(ses):
     ses.create_tenant.side_effect = RuntimeError("boom")
     assert await mod.ensure_tenant("user_1") is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_tenant_bounded_by_timeout(ses, monkeypatch):
+    """A hung _ensure_sync (dead network, throttled retries) must not stall
+    the send path indefinitely — anyio.fail_after bounds it and the resulting
+    TimeoutError is caught by the existing fail-soft except Exception."""
+    monkeypatch.setattr(mod, "_ENSURE_TIMEOUT_S", 0.05)
+
+    def _sleeper(owner_id):
+        time.sleep(0.5)
+        return mod.tenant_name_for(owner_id)
+
+    monkeypatch.setattr(mod, "_ensure_sync", _sleeper)
+    assert await mod.ensure_tenant("user_1") is None
+    assert "owner-user_1" not in mod._ensured

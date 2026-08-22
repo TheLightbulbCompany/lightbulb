@@ -22,18 +22,20 @@ export function PanelMasthead({
   return (
     <header
       className={cn(
-        "flex flex-col gap-3 pb-3 sm:flex-row sm:items-end sm:justify-between",
+        "flex flex-col gap-2 pb-2 sm:flex-row sm:items-end sm:justify-between",
         "border-b border-[var(--edge)]",
         className,
       )}
     >
-      <div className="space-y-1">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
-          {overline}
-        </p>
-        <Heading className="font-editorial-serif text-5xl leading-none text-[var(--ink)]">
+      <div className="flex items-baseline gap-2">
+        <Heading className="font-editorial-serif text-2xl leading-none text-[var(--ink)]">
           {title}
         </Heading>
+        {overline !== title && (
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
+            {overline}
+          </p>
+        )}
       </div>
       {(meta || actions) && (
         <div className="flex items-center gap-3 sm:pb-1">

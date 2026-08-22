@@ -199,7 +199,8 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
-- If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
+- If blocked on ANOTHER AGENT, create the child, assign it, and block on it with `blockedByIssueIds`.
+- If blocked on a HUMAN (the board must merge, deploy, pay, sign, grant access, or decide), do NOT create a child issue for them and never leave any issue unassigned. The recovery pass reassigns every unassigned blocker back to its creator within about a minute, and the delegation-cycle guard (`409 delegation_cycle`) refuses to route it to the agent that delegated the work to you — so a "board/operator must do X" child comes straight back to you as duplicate work. Stay on THIS issue instead: file a `request_board_approval` (or a `request_confirmation` with `continuationPolicy: wake_assignee`) naming the exact action and evidence, set this issue `blocked` (or `in_review`), and exit. When the wake arrives with the decision, do the action yourself. A board comment is never an approval, and any board comment cancels a pending confirmation card (`superseded_by_comment`) — re-file the card if you still need the decision.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
 ### Generated Artifacts and Work Products
@@ -242,7 +243,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout. On an assigned issue this **starts a run**, so choose it only when you mean "work this now".
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
-- `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
+- `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker. A human is never a `blockedByIssueIds` target: when the board must act, the blocker is an approval or confirmation card on this issue, not a child issue.
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
@@ -412,7 +413,8 @@ For commands, response fields, and MCP tools, read:
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
-- **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
+- **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them — except back to the agent that created an open ancestor of your issue (`409 delegation_cycle`). When the only remaining owner is a human, use an approval/confirmation card on your own issue (Step 7), never an unassigned child.
+- **Never create or leave a follow-up or blocker issue unassigned.** (Top-level `backlog` items filed for later may stay unassigned.) Unassigned blockers are reassigned to their creator by the recovery pass; an unassigned issue is not a handoff to the board.
 - **Hiring**: do not call Paperclip's `/agents` or `/agent-hires` endpoints. Isol8 owns agent limits, workspaces, and approval pairing. Search the live Isol8 marketplace and send a `recommend_agents` card first. If no listing fits, delegate a role specification to Atlas; only the owner's governed Isol8 deploy or approval flow may change the roster.
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 

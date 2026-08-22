@@ -17,10 +17,11 @@ import gzip
 import io
 import json
 import logging
+import os
 import re
 import tarfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Awaitable, Callable
 
 from core.containers import get_workspace
@@ -287,6 +288,40 @@ class BuiltAgentConfigError(Exception):
     """
 
 
+# Export ceiling (uncompressed). A working agent's workspace accumulates
+# things that are not the agent — repo checkouts, reports, run scratch —
+# and walking + tarring + scanning tens of thousands of EFS files takes
+# longer than the API gateway's 30 s integration cap. Past the cap the walk
+# stops and the seller is told to name what ships with ``paths``.
+_MAX_EXPORT_FILES = 2000
+_MAX_EXPORT_BYTES = 50 * 1024 * 1024
+
+
+class ExportTooLargeError(Exception):
+    """The workspace walk crossed ``_MAX_EXPORT_FILES`` / ``_MAX_EXPORT_BYTES``.
+    Raised mid-walk, so ``file_count`` / ``byte_count`` / ``largest`` (heaviest
+    top-level entries, bytes) describe what was seen up to that point. The
+    router maps this to 413.
+    """
+
+    def __init__(self, *, file_count: int, byte_count: int, largest: list[tuple[str, int]]):
+        self.file_count = file_count
+        self.byte_count = byte_count
+        self.largest = largest
+        dirs = ", ".join(f"{name} ({size / 1048576:.1f} MB)" for name, size in largest) or "-"
+        super().__init__(
+            f"agent workspace is too large to export as-is: stopped after {file_count} files / "
+            f"{byte_count / 1048576:.1f} MB (limit {_MAX_EXPORT_FILES} files / {_MAX_EXPORT_BYTES >> 20} MB); "
+            f"heaviest entries so far: {dirs}. Pass `paths` to export only the agent's own files"
+        )
+
+
+class InvalidExportPathsError(Exception):
+    """An explicit ``paths`` entry is absolute, traverses ``..``, resolves
+    outside the agent dir, or does not exist. The router maps this to 400.
+    """
+
+
 class PaperclipUnavailableError(Exception):
     """The Friday-guard's Paperclip fetch FAILED (network, auth, Paperclip
     down) — distinct from Paperclip answering with a genuinely empty agent
@@ -438,15 +473,58 @@ def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
     return _agent_id_from_dir_name(_resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name)
 
 
-def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
+def _validate_export_paths(agent_dir: Path, paths: list[str]) -> list[str]:
+    """Normalize explicit include paths to workspace-relative form, dropping
+    entries already covered by a listed ancestor (they would otherwise be
+    tarred twice). Raises ``InvalidExportPathsError`` naming every offender.
+    """
+    root = agent_dir.resolve()
+    clean: set[str] = set()
+    bad: list[str] = []
+    for raw in paths:
+        rel = PurePosixPath(raw.strip())
+        if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+            bad.append(raw)
+            continue
+        target = agent_dir / rel
+        try:
+            target.resolve().relative_to(root)
+        except ValueError:
+            bad.append(raw)
+            continue
+        if not target.exists():
+            bad.append(raw)
+            continue
+        clean.add(str(rel))
+    if bad:
+        raise InvalidExportPathsError(
+            "invalid export paths (must exist and be workspace-relative, no '..'): " + ", ".join(repr(b) for b in bad)
+        )
+    kept: list[str] = []
+    for p in sorted(clean):
+        if not any(p.startswith(k + "/") for k in kept):
+            kept.append(p)
+    return kept
+
+
+def _build_tarball(agent_dir: Path, *, paths: list[str] | None = None) -> tuple[bytes, list[str], list[str]]:
     """Tar (gzip) an agent directory, skipping junk dirs and dotfiles at the
     top level. File mtimes are zeroed so two snapshots of unchanged content
     produce identical bytes (deterministic SHA-256).
+
+    ``paths`` (workspace-relative files or dirs) restricts the export to
+    exactly those entries; ``None`` walks the whole dir, pruning nested repo
+    checkouts. Returns ``(gzip_bytes, shipped_files, pruned_dirs)``.
     """
     if not agent_dir.exists() or not agent_dir.is_dir():
         raise AgentNotFoundError(f"agent dir not found: {agent_dir}")
+    include = _validate_export_paths(agent_dir, paths) if paths is not None else None
 
     contents: list[str] = []
+    pruned: list[str] = []
+    seen_files = 0
+    seen_bytes = 0
+    bytes_per_top: dict[str, int] = {}
     # Build the tar UNCOMPRESSED first so we control the gzip wrapper
     # ourselves. ``tarfile.open(mode="w:gz")`` delegates to
     # ``GzipFile`` with no way to pass ``mtime=0`` through, so its
@@ -472,6 +550,15 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
                 if p in (".", ""):
                     continue
                 if p.startswith("."):
+                    return None
+            # A nested ``.git`` marks a repo the agent cloned to work on (the
+            # company's codebase, a dependency) — not the agent. Prune the
+            # whole subtree: ``.git`` itself is already skipped above, it's
+            # the working tree that leaks. The agent dir's own ``.git`` (a
+            # seller versioning their agent) doesn't prune the root.
+            if tarinfo.isdir() and include is None and len(parts) > 1:
+                if os.path.lexists(os.path.join(agent_dir, tarinfo.name, ".git")):
+                    pruned.append("/".join(parts[1:]))
                     return None
             # Filename-based credential-leak guard. The seller may have
             # plopped a credentials JSON (resy-credentials.json,
@@ -521,12 +608,26 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             tarinfo.uname = ""
             tarinfo.gname = ""
             if not tarinfo.isdir():
+                nonlocal seen_files, seen_bytes
+                seen_files += 1
+                seen_bytes += tarinfo.size
+                bytes_per_top[parts[1]] = bytes_per_top.get(parts[1], 0) + tarinfo.size
+                if seen_files > _MAX_EXPORT_FILES or seen_bytes > _MAX_EXPORT_BYTES:
+                    raise ExportTooLargeError(
+                        file_count=seen_files,
+                        byte_count=seen_bytes,
+                        largest=sorted(bytes_per_top.items(), key=lambda kv: -kv[1])[:3],
+                    )
                 contents.append(tarinfo.name)
             return tarinfo
 
         # arcname="." gives us paths like "./openclaw.json" — same convention
         # as catalog_package.tar_directory uses for catalog uploads.
-        tf.add(str(agent_dir), arcname=".", filter=_filter)
+        if include is None:
+            tf.add(str(agent_dir), arcname=".", filter=_filter)
+        else:
+            for rel in include:
+                tf.add(str(agent_dir / rel), arcname=f"./{rel}", filter=_filter)
 
     # Gzip the tar with mtime=0 so two consecutive exports of unchanged
     # content produce byte-identical artifacts (load-bearing for the
@@ -535,7 +636,7 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
     with gzip.GzipFile(fileobj=gz_buf, mode="wb", mtime=0) as gz:
         gz.write(tar_buf.getvalue())
 
-    return gz_buf.getvalue(), sorted(contents)
+    return gz_buf.getvalue(), sorted(contents), sorted(pruned)
 
 
 def _summarize_openclaw_config(agent_dir: Path) -> dict:
@@ -623,6 +724,7 @@ def export_agent_from_efs(
     selected_skills: list[str] | None = None,
     enable_acp: bool = False,
     requires_desktop: bool = False,
+    paths: list[str] | None = None,
 ) -> CatalogPackage:
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
@@ -659,12 +761,16 @@ def export_agent_from_efs(
             ``manifest["requires_desktop"]`` for buyer-facing disclosure only
             (a web-only buyer must know the agent won't fully run without the
             desktop app). Nothing on the deploy side can "install" it.
+        paths: Workspace-relative files/dirs to ship instead of the whole
+            workspace (see ``_build_tarball``).
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
         AgentNotFoundError: agent_id not found on EFS for this seller.
         AgentNotInConfigError: agent dir exists but agent_id isn't registered
             in the seller's openclaw.json (or the config file is missing).
+        InvalidExportPathsError: a ``paths`` entry is invalid or missing.
+        ExportTooLargeError: the walk crossed the export cap.
     """
     workspace = get_workspace()
     try:
@@ -679,7 +785,7 @@ def export_agent_from_efs(
     # filter, and manifest off the resolved UUID so the snapshot self-heals
     # (replace_artifact then persists the UUID onto the row).
     resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
-    tarball_bytes, contents = _build_tarball(agent_dir)
+    tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths)
 
     if not config:
         raise AgentNotInConfigError(
@@ -761,6 +867,7 @@ def export_agent_from_efs(
         openclaw_slice=slice_,
         tarball_bytes=tarball_bytes,
         tarball_contents=contents,
+        pruned_paths=pruned,
     )
 
 
@@ -847,7 +954,7 @@ def export_built_agent_from_staging(
     # back to the staging root if no workspace/ subdir exists (defensive).
     workspace_subdir = staging_dir / "workspace"
     tar_root = workspace_subdir if workspace_subdir.is_dir() else staging_dir
-    tarball_bytes, contents = _build_tarball(tar_root)
+    tarball_bytes, contents, _ = _build_tarball(tar_root)
 
     # Build the slice from the staging dir's OWN openclaw.json (not the owner's
     # root config) — agents.list[0] is the built agent. Same extract_agent_slice
@@ -1063,7 +1170,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     # Build the tarball + scan for safety_flags. We don't return the
     # tarball itself — just the flags. ``contents`` (the shipped-file list)
     # scopes the requirements scan below to exactly what ships.
-    tarball_bytes, contents = _build_tarball(agent_dir)
+    tarball_bytes, contents, _ = _build_tarball(agent_dir)
     # Snippets stay ON here and ONLY here: the preview is an authenticated,
     # seller-scoped response showing the seller their OWN workspace lines so
     # they can fix a finding before submit. It is never persisted.

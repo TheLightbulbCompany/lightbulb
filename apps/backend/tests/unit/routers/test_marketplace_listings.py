@@ -2951,3 +2951,110 @@ def test_json_safe_variables_coerces_ddb_decimals():
     assert out[2]["defaultValue"] == "founders"
     assert _json_safe_variables(None) is None
     assert _json_safe_variables([]) is None
+
+
+# ---------------------------------------------------------------------------
+# artifact-from-agent: off-loop export, explicit ``paths``, size cap
+# ---------------------------------------------------------------------------
+
+
+def _fake_package(**overrides):
+    from core.services.catalog_package import CatalogPackage
+
+    kwargs = dict(
+        format="openclaw",
+        manifest={"name": "x", "agent_id": "custom-1"},
+        openclaw_slice={"agent": {"name": "x"}, "plugins": {}, "tools": {}, "cron_jobs": []},
+        tarball_bytes=b"fake",
+        tarball_contents=["./openclaw.json"],
+    )
+    kwargs.update(overrides)
+    return CatalogPackage(**kwargs)
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.replace_artifact", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.run_in_thread", new_callable=AsyncMock)
+def test_artifact_from_agent_exports_off_loop_and_reports_pruned_paths(
+    mock_run_in_thread,
+    mock_is_friday,
+    mock_replace,
+    mock_find_active,
+    authed_client_factory,
+):
+    """The EFS walk + tar is synchronous; the router must hand it to the
+    thread helper (not await it inline) and pass ``paths`` through."""
+    from core.services import agent_export
+
+    mock_find_active.return_value = None
+    mock_is_friday.return_value = False
+    mock_run_in_thread.return_value = _fake_package(pruned_paths=["isol8"])
+    mock_replace.return_value = {"listing_id": "lst_42", "version": 1, "manifest_sha256": "abc123"}
+
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1", "paths": ["README.md", "skills"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pruned_paths"] == ["isol8"]
+    mock_run_in_thread.assert_called_once()
+    assert mock_run_in_thread.call_args.args[0] is agent_export.export_agent_from_efs
+    assert mock_run_in_thread.call_args.kwargs["paths"] == ["README.md", "skills"]
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_413s_when_workspace_exceeds_cap(
+    mock_export,
+    mock_is_friday,
+    mock_find_active,
+    authed_client_factory,
+):
+    from core.services.agent_export import ExportTooLargeError
+
+    mock_find_active.return_value = None
+    mock_is_friday.return_value = False
+    mock_export.side_effect = ExportTooLargeError(file_count=2001, byte_count=1, largest=[("isol8", 70 << 20)])
+
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post("/api/v1/marketplace/listings/lst_42/artifact-from-agent", json={"agent_id": "custom-1"})
+    assert resp.status_code == 413
+    assert "isol8" in resp.json()["detail"]
+    assert "paths" in resp.json()["detail"]
+
+
+@patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_400s_on_invalid_paths(
+    mock_export,
+    mock_is_friday,
+    mock_find_active,
+    authed_client_factory,
+):
+    from core.services.agent_export import InvalidExportPathsError
+
+    mock_find_active.return_value = None
+    mock_is_friday.return_value = False
+    mock_export.side_effect = InvalidExportPathsError("invalid export paths: '../x'")
+
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1", "paths": ["../x"]},
+    )
+    assert resp.status_code == 400
+    assert "../x" in resp.json()["detail"]
+
+
+def test_artifact_from_agent_rejects_empty_paths_list(authed_client_factory):
+    """``paths: []`` would ship nothing — a wizard bug, not a seller intent."""
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1", "paths": []},
+    )
+    assert resp.status_code == 422

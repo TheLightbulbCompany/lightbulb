@@ -140,3 +140,32 @@ export interface ListingDetailResponse {
   listing: Listing;
   manifest: ListingManifest | null;
 }
+
+export interface ImportPreview {
+  import_id: string;
+  kind: "backup" | "state-dir" | "workspace";
+  agent_id: string;
+  name: string;
+  description: string;
+  agents: { id: string; name: string; has_history: boolean; history_bytes: number }[];
+  plugins: { id: string; spec: string; has_dependencies: boolean }[];
+  file_count: number;
+  files: string[];
+  mcp_servers: string[];
+  skills: string[];
+  cron_jobs: number;
+  safety_flags: { pattern: string; severity: "high" | "medium" | "low"; file: string; line: number | null; snippet: string }[];
+  warnings: string[];
+  skipped_big_files: string[];
+  existing_agents: number;
+  standard_max_agents: number;
+  plan: string | null;
+}
+
+export interface ImportConfirmResult {
+  agents: { source_agent_id: string; agent_id: string | null; name: string; ok: boolean; error?: string | null; warnings: string[] }[];
+  plugins_installed: string[];
+  history_staged: string[];
+  restarting: boolean;
+  warnings: string[];
+}

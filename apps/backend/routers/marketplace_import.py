@@ -62,6 +62,7 @@ _USER_ERRORS = (
     agent_export.BuiltAgentConfigError,
     agent_export.CredentialLeakError,
     agent_export.InvalidAgentIdError,
+    agent_export.AgentNotFoundError,
 )
 
 

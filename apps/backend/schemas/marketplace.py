@@ -253,7 +253,12 @@ class SafetyFlag(BaseModel):
     severity: Literal["high", "medium", "low"]
     file: str
     line: int | None = None
-    snippet: str  # ~80 char excerpt for the admin UI
+    # ~80 char excerpt for the admin UI. Optional: manifests served by
+    # unauthenticated routes (listing-detail, search, and this import
+    # preview) carry snippet-stripped flag dicts (see
+    # marketplace_safety.flags_without_snippets) — only the authenticated
+    # seller-preview path opts back in with the real excerpt.
+    snippet: str = ""
 
 
 class OpenclawSummary(BaseModel):

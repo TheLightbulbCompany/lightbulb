@@ -135,10 +135,27 @@ def test_import_streams_from_s3_and_returns_preview(client):
     assert s3.deleted == [KEY]  # raw upload consumed
 
 
+def test_import_surfaces_safety_flags_without_required_snippet(client):
+    # export_built_agent_from_staging scans with include_snippets=False, which
+    # strips "snippet" from every flag dict (marketplace_safety.flags_without_snippets).
+    # SafetyFlag.snippet must tolerate that or this 500s (ResponseValidationError).
+    c, _, s3, _ = client
+    s3.objects[KEY] = _archive(
+        extra={
+            "workspace/IDENTITY.md": '- **Name:** Quill\napi_key = "sk-live-abcdefghijklmnop"\n',
+        }
+    )
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 200, r.text
+    assert r.json()["safety_flags"]
+
+
 def test_import_rejects_foreign_or_malformed_key(client):
     c, _, _, _ = client
     assert c.post("/api/v1/marketplace/import", json={"key": "imports/someone_else/abc.tar.gz"}).status_code == 400
     assert c.post("/api/v1/marketplace/import", json={"key": f"imports/{OWNER}/../x.tar.gz"}).status_code == 400
+    other_owner_key = "imports/someone_else/0123456789abcdef0123456789abcdef.tar.gz"
+    assert c.post("/api/v1/marketplace/import", json={"key": other_owner_key}).status_code == 400
 
 
 def test_import_404_missing_object_and_no_container(client):

@@ -39,13 +39,14 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_workspace
+from core.containers import get_ecs_manager, get_workspace
 from core.dynamodb import run_in_thread
 from core.openclaw_version import deployed_upstream_version
 from core.repositories import billing_repo, container_repo
 from core.services import agent_export
 from core.services import openclaw_backup_import as backup_import
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+from core.services.openclaw_backup_plugins import apply_plugins
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
 from schemas import marketplace as schemas
@@ -322,8 +323,22 @@ async def confirm_import(
     plugins_installed: list[str] = []
     history_staged: list[str] = []
     restarting = False
-    # Task 7 and Task 8 wire plugins + history here (they need `registered`).
 
+    if registered and payload.plugins != []:
+        plugin_res = await apply_plugins(
+            owner_id=owner_id,
+            plugins=backup_import.list_plugins(source),
+            chosen=set(payload.plugins) if payload.plugins is not None else None,
+        )
+        plugins_installed = plugin_res.installed
+        warnings.extend(plugin_res.warnings)
+        if plugins_installed:
+            restarting = True
+
+    # Task 8 wires history here.
+
+    if restarting:
+        await get_ecs_manager().force_redeploy_user_service(owner_id)
     if all(r["ok"] for r in results):
         shutil.rmtree(staging_dir, ignore_errors=True)
     return {

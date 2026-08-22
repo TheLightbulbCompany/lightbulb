@@ -7,7 +7,7 @@ import json
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from core.containers import workspace as workspace_module  # noqa: E402
+from core.services.openclaw_backup_plugins import PluginApplyResult  # noqa: E402
 from routers import marketplace_import  # noqa: E402
 
 OWNER = "user_owner_1"
@@ -260,6 +261,85 @@ def test_confirm_ultra_plan_passes_gate(client):
         reg.return_value = {"agent_id": "u", "name": "n", "registered": True, "publish_hint": "", "warnings": []}
         r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"agent_ids": ["a0"]})
     assert r.status_code == 200
+
+
+def _plugin_archive() -> bytes:
+    return _archive(
+        extra={
+            "plugins/installs.json": json.dumps(
+                {
+                    "version": 1,
+                    "plugins": [
+                        {
+                            "pluginId": "weather",
+                            "packageName": "openclaw-weather",
+                            "packageVersion": "1.2.0",
+                            "origin": "npm",
+                            "rootDir": "/home/node/.openclaw/extensions/weather",
+                            "enabled": True,
+                        }
+                    ],
+                }
+            ),
+            "extensions/weather/package.json": json.dumps({"name": "openclaw-weather", "version": "1.2.0"}),
+            "extensions/weather/index.js": "module.exports = {}\n",
+        }
+    )
+
+
+def test_confirm_with_plugins_installs_and_bounces_container(client):
+    c, _, s3, _ = client
+    s3.objects[KEY] = _plugin_archive()
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        apply.return_value = PluginApplyResult(installed=["weather"])
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plugins_installed"] == ["weather"]
+    assert body["restarting"] is True
+    apply.assert_awaited_once()
+    mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+
+def test_confirm_plugins_empty_skips_apply_and_bounce(client):
+    c, _, s3, _ = client
+    s3.objects[KEY] = _plugin_archive()
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"plugins": []})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plugins_installed"] == []
+    assert body["restarting"] is False
+    apply.assert_not_awaited()
+    mock_ecs.force_redeploy_user_service.assert_not_awaited()
 
 
 def test_confirm_unknown_import_404_and_bad_id_400(client):

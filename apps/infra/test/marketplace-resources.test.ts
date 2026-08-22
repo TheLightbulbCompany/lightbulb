@@ -218,6 +218,28 @@ describe("ServiceStack — marketplace S3 bucket", () => {
       },
     });
   });
+
+  it("artifacts bucket accepts presigned PUTs from the web origin and expires imports/", () => {
+    for (const env of ["dev", "prod"] as const) {
+      const t = buildServiceStack(env);
+      t.hasResourceProperties("AWS::S3::Bucket", {
+        BucketName: `isol8-${env}-marketplace-artifacts`,
+        CorsConfiguration: {
+          CorsRules: Match.arrayWith([
+            Match.objectLike({
+              AllowedMethods: ["PUT"],
+              AllowedOrigins: env === "prod" ? ["https://isol8.co"] : Match.arrayWith(["https://dev.isol8.co", "http://localhost:3000"]),
+            }),
+          ]),
+        },
+        LifecycleConfiguration: {
+          Rules: Match.arrayWith([
+            Match.objectLike({ Prefix: "imports/", ExpirationInDays: 1, Status: "Enabled" }),
+          ]),
+        },
+      });
+    }
+  });
 });
 
 describe("ServiceStack — gog file-keyring password", () => {

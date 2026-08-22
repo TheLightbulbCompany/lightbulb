@@ -201,6 +201,8 @@ async def _register_built_agent(
         raise HTTPException(status_code=404, detail=str(e))
     except agent_export.BuiltAgentConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.ExportTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except agent_export.CredentialLeakError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

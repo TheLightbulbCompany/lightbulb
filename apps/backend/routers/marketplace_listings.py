@@ -27,6 +27,7 @@ from core.auth import (
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
+from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, marketplace_repo
 from core.services import (
     agent_export,
@@ -1497,7 +1498,8 @@ async def my_agent_artifact_preview(
         )
 
     try:
-        preview = agent_export.enumerate_for_preview(
+        preview = await run_in_thread(
+            agent_export.enumerate_for_preview,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
         )
@@ -1507,6 +1509,8 @@ async def my_agent_artifact_preview(
         raise HTTPException(status_code=404, detail=str(e))
     except agent_export.AgentNotInConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.ExportTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
 
     # needs_config_patch flips True iff anything we'd merge into the
     # buyer's openclaw.json is present: an MCP exists at all OR a skill
@@ -1621,14 +1625,18 @@ async def upload_artifact_from_agent(
     selected_mcps = payload.bundle.mcps if payload.bundle else None
     selected_skills = payload.bundle.skills if payload.bundle else None
 
+    # The EFS walk + tar + scan is synchronous; run it in a worker thread so a
+    # large workspace can't stall the event loop for every other request.
     try:
-        package = agent_export.export_agent_from_efs(
+        package = await run_in_thread(
+            agent_export.export_agent_from_efs,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
             selected_mcps=selected_mcps,
             selected_skills=selected_skills,
             enable_acp=payload.enable_acp,
             requires_desktop=payload.requires_desktop,
+            paths=payload.paths,
         )
     except agent_export.InvalidAgentIdError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1636,6 +1644,10 @@ async def upload_artifact_from_agent(
         raise HTTPException(status_code=404, detail=str(e))
     except agent_export.AgentNotInConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.InvalidExportPathsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.ExportTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except agent_export.CredentialLeakError as e:
         # A credential survived the slice scrub — block the upload with a clear
         # 4xx naming the leaking field paths (never the secret) so the seller can
@@ -1673,4 +1685,5 @@ async def upload_artifact_from_agent(
         manifest_sha256=result["manifest_sha256"],
         file_count=len(package.tarball_contents),
         bytes=len(package.tarball_bytes),
+        pruned_paths=package.pruned_paths,
     )

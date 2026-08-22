@@ -25,6 +25,8 @@ class CatalogPackage:
     `tarball_bytes`: gzipped tar of the workspace contents.
     `tarball_contents`: sorted list of relative paths inside the tarball
               (used for catalog list views and audit logs).
+    `pruned_paths`: workspace-relative dirs the export dropped as nested
+              repo checkouts (reported to the seller, never persisted).
     """
 
     format: str
@@ -32,6 +34,7 @@ class CatalogPackage:
     openclaw_slice: dict[str, Any]
     tarball_bytes: bytes
     tarball_contents: list[str] = field(default_factory=list)
+    pruned_paths: list[str] = field(default_factory=list)
 
 
 def build_manifest(

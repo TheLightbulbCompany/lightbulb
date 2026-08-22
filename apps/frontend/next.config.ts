@@ -85,17 +85,6 @@ const nextConfig: NextConfig = {
     ];
   },
 
-  async redirects() {
-    return [
-      {
-        source: "/:path*",
-        has: [{ type: "host", value: "www.isol8.co" }],
-        destination: "https://isol8.co/:path*",
-        permanent: true,
-      },
-    ];
-  },
-
   turbopack: {
     root: path.resolve(__dirname, '../../'),
   },

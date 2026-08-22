@@ -85,9 +85,9 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
         <p className="text-[12px] text-[var(--danger)]" role="alert">
           {error}{" "}
           {/Ultra Pro/i.test(error) && (
-            <a href="/settings" className="font-bold underline hover:opacity-80">
+            <Link href="/settings" className="font-bold underline hover:opacity-80">
               Upgrade in Settings
-            </a>
+            </Link>
           )}
         </p>
       )}

@@ -64,11 +64,6 @@ export const websiteJsonLd = {
   url: SITE_URL,
   description:
     "isol8 gives companies persistent AI agents, an agent workspace, and an agent marketplace for autonomous operations.",
-  potentialAction: {
-    "@type": "SearchAction",
-    target: `${absoluteUrl("/marketplace/agents")}?q={search_term_string}`,
-    "query-input": "required name=search_term_string",
-  },
 };
 
 export const softwareApplicationJsonLd = {

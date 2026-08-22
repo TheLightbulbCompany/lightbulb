@@ -17,6 +17,8 @@ function findPage(slug: string) {
   return seoLandingPages.find((page) => page.slug === slug);
 }
 
+export const dynamicParams = false;
+
 export function generateStaticParams() {
   return seoLandingPages.map((page) => ({ seoSlug: page.slug }));
 }

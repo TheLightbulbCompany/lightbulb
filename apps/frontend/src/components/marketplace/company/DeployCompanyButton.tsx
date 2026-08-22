@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
+import Link from "next/link";
 import { useState } from "react";
 
 import { companyMeta } from "@/components/marketplace/storefront/Listing/CompanyCard";
@@ -49,12 +50,12 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
           appear in your Teams roster in about a minute — enable their routines
           from Teams once they&apos;re up.
         </p>
-        <a
+        <Link
           href="/chat"
           className="mt-5 inline-block font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--forest)] underline"
         >
           Open Teams
-        </a>
+        </Link>
       </section>
     );
   }
@@ -93,13 +94,13 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
         >
           {error}{" "}
           {/Ultra Pro/i.test(error) ? (
-            <a href="/settings" className="font-bold underline hover:opacity-80">
+            <Link href="/settings" className="font-bold underline hover:opacity-80">
               Upgrade in Settings
-            </a>
+            </Link>
           ) : /open the app/i.test(error) ? (
-            <a href="/chat" className="font-bold underline hover:opacity-80">
+            <Link href="/chat" className="font-bold underline hover:opacity-80">
               Open the app
-            </a>
+            </Link>
           ) : /already deployed/i.test(error) ? null : (
             <button onClick={deploy} className="font-bold underline hover:opacity-80" type="button">
               Try again

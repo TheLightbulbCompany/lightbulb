@@ -1160,6 +1160,76 @@ async def test_rearm_stands_down_when_a_fresh_dispatch_won_the_row(mock_containe
     mock_container_repo.update_conversion_fields.assert_not_awaited()
 
 
+def test_conversion_guard_is_inactive_for_a_deferred_conversion():
+    """A deferred conversion never stopped the container — nothing is
+    draining — so the guard that stands down /container/recover and the start
+    paths must not hold, even though the stamp (the self-heal's rate-limit
+    anchor) is fresh. Otherwise the manual recovery doors stay shut on a
+    RUNNING box for as long as the owner takes to finish signing in."""
+    row = {
+        "conversion_pending": True,
+        "conversion_started_at": _fresh_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    assert handlers.conversion_guard_active(row) is False
+    row.pop("conversion_deferred_reason")
+    assert handlers.conversion_guard_active(row) is True
+
+
+@pytest.mark.asyncio
+async def test_stamp_clears_a_stale_deferral_marker(mock_container_repo):
+    """A fresh dispatch is not deferred until it decides to be; a marker left
+    over from an earlier deferral would read as "never mid-drain" and disarm
+    the guard during THIS dispatch's real stop + drain."""
+    await handlers._stamp_conversion_dispatch("org_x")
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
+    assert fields["conversion_pending"] is True
+    assert fields["conversion_deferred_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_self_heal_rate_limits_a_deferred_row_without_guarding_it(mock_repo, mock_container_repo):
+    """Inside the window a deferred row is NOT re-fired (no reprovision storm
+    while the owner signs in) but is also NOT reported as guarded — its
+    container is running, the caller may recover/retry it like any row."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "active"})
+    container = {
+        "status": "running",
+        "conversion_pending": True,
+        "conversion_started_at": _fresh_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    captured: list = []
+    with patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: captured.append(coro)):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is False
+    assert captured == []
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reevaluates_a_deferred_row_once_the_window_lapses(mock_repo, mock_container_repo):
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "active"})
+    container = {
+        "status": "running",
+        "conversion_pending": True,
+        "conversion_started_at": _stale_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    captured: list[str] = []
+    with patch.object(
+        handlers.asyncio,
+        "create_task",
+        side_effect=lambda coro: captured.append(coro.__qualname__) or coro.close() or MagicMock(),
+    ):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is True
+    assert captured == ["run_conversion_reprovision"]
+    assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
+
+
 @pytest.mark.asyncio
 async def test_self_heal_refires_a_rearmed_deferred_conversion_at_once(mock_repo, mock_container_repo):
     """After the re-arm (anchor dropped) the status poll's self-heal sees a

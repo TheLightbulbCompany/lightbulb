@@ -1213,7 +1213,9 @@ async def release_provision_to_error(
 # ``update_conversion_fields`` enforces this allowlist so no future caller can
 # quietly grow it into a status/lease writer (the clobber class it exists to
 # close).
-_CONVERSION_MARKER_FIELDS = frozenset({"conversion_pending", "substatus", "conversion_started_at"})
+_CONVERSION_MARKER_FIELDS = frozenset(
+    {"conversion_pending", "substatus", "conversion_started_at", "conversion_deferred_reason"}
+)
 
 
 async def update_conversion_fields(owner_id: str, fields: dict) -> None:
@@ -1249,6 +1251,43 @@ async def update_conversion_fields(owner_id: str, fields: dict) -> None:
     if unknown:
         raise ValueError(f"update_conversion_fields: disallowed fields {sorted(unknown)}")
     await update_fields(owner_id, fields)
+
+
+async def clear_conversion_deferral(owner_id: str, *, deferred_reason: str) -> bool:
+    """CAS: drop a DEFERRED trial->paid conversion's self-heal anchor
+    (``conversion_started_at``) and its deferral marker, but ONLY while the row
+    still carries the deferral the caller observed.
+
+    The re-arm that calls this (``rearm_deferred_conversion``) reads the row
+    eventually-consistently and then writes. A fresh dispatch
+    (``_stamp_conversion_dispatch``) clears the marker on its way in, so a
+    re-arm racing it — or one whose read returned the pre-stamp row — must
+    refuse here rather than disarm the guard of a dispatch that may already be
+    stopping + draining the container. Returns whether the write landed.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET conversion_started_at = :null, conversion_deferred_reason = :null, updated_at = :iso"
+            ),
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND conversion_pending = :pending AND conversion_deferred_reason = :seen"
+            ),
+            ExpressionAttributeValues={
+                ":null": None,
+                ":pending": True,
+                ":seen": deferred_reason,
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    publish_status_changed(owner_id)
+    return True
 
 
 async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> bool:

@@ -68,6 +68,7 @@ def mock_container_repo():
         repo.update_conversion_fields = AsyncMock(return_value=None)
         repo.update_fields = AsyncMock(return_value=None)
         repo.get_by_owner_id = AsyncMock(return_value=None)
+        repo.clear_conversion_deferral = AsyncMock(return_value=True)
         yield repo
 
 
@@ -81,6 +82,30 @@ def metronome_provisioning(monkeypatch):
     dispatch = MagicMock()
     monkeypatch.setattr(handlers, "dispatch_metronome_provisioning", dispatch)
     return dispatch
+
+
+@pytest.fixture(autouse=True)
+def prerequisite_gate():
+    """``run_conversion_reprovision`` asks the provision gate whether a
+    prerequisite the PROVISIONER needs is still missing (ChatGPT tokens, BYO
+    sub-choice) before it stops anything. Default every test to "no gate"
+    (proceed); the deferral tests flip it."""
+    with patch("core.services.provision_gate.probe_provision_gate", new=AsyncMock(return_value=None)) as gate:
+        yield gate
+
+
+def _gate(code: str):
+    from core.services.provision_gate import Gate
+
+    return Gate(
+        code=code,
+        title="t",
+        message="m",
+        action_label="a",
+        action_href="/x",
+        action_admin_only=False,
+        owner_role="admin",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -975,6 +1000,253 @@ async def test_reprovision_failure_clears_substatus_but_keeps_pending(mock_conta
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert "conversion_pending" not in fields, "a failed conversion must stay pending so the self-heal re-fires it"
+
+
+# ---------------------------------------------------------------------------
+# Deferral: a conversion must not stop the trial box while the provisioner's
+# own prerequisite (ChatGPT tokens / BYO sub-choice) is still missing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reprovision_is_deferred_while_oauth_tokens_are_missing(mock_container_repo, prerequisite_gate):
+    """The owner chose ChatGPT at checkout; the webhook lands before the
+    device-code flow can finish. Stopping + dispatching here can only produce
+    a failed provision ("No ChatGPT OAuth tokens …") under a user who is mid
+    sign-in. So: NO stop, NO dispatch; keep conversion_pending (still on the
+    trial shape) and conversion_started_at (the self-heal's rate-limit
+    anchor); record why it was deferred so the completion path can re-arm."""
+    prerequisite_gate.return_value = _gate("oauth_required")
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock()
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_not_awaited()
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
+    assert fields == {"substatus": None, "conversion_deferred_reason": "oauth_required"}
+
+
+@pytest.mark.asyncio
+async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_marker_is_durable(
+    mock_container_repo, prerequisite_gate
+):
+    """The sign-in can complete between the first probe and the deferral
+    write; its completion hook then finds no marker and no-ops. The deferral
+    re-probes after its write and re-arms itself, so the next poll fires
+    instead of waiting out the guard window."""
+    prerequisite_gate.side_effect = [_gate("oauth_required"), None]
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "conversion_pending": True,
+            "conversion_deferred_reason": "oauth_required",
+            "conversion_started_at": _fresh_ts(),
+        }
+    )
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock()
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_not_awaited()
+    writes = [c.args[1] for c in mock_container_repo.update_conversion_fields.await_args_list]
+    assert writes == [{"substatus": None, "conversion_deferred_reason": "oauth_required"}]
+    mock_container_repo.clear_conversion_deferral.assert_awaited_once_with("org_x", deferred_reason="oauth_required")
+
+
+@pytest.mark.asyncio
+async def test_reprovision_is_deferred_while_byo_provider_is_unchosen(mock_container_repo, prerequisite_gate):
+    prerequisite_gate.return_value = _gate("byo_provider_required")
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock()
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_not_awaited()
+    assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] == (
+        "byo_provider_required"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reprovision_proceeds_past_gates_the_provisioner_can_survive(mock_container_repo, prerequisite_gate):
+    """Credits / past-due are UX on a box that CAN be built; deferring over
+    them would leave a paying owner on the trial shape."""
+    prerequisite_gate.return_value = _gate("credits_required")
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_awaited_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_prerequisite_gate_read_failure_fails_open_to_reprovision(mock_container_repo, prerequisite_gate):
+    """A gate-read blip must not strand a paying owner on the trial shape;
+    the provisioner is the real fence."""
+    prerequisite_gate.side_effect = RuntimeError("ddb blip")
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_awaited_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_a_real_attempt_spends_the_deferral_marker(mock_container_repo):
+    """Success or failure, once the reprovision was actually attempted the
+    deferral marker is cleared — it only describes a conversion that has NOT
+    been tried yet."""
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "ok"})
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+    assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
+
+    mock_container_repo.update_conversion_fields.reset_mock()
+    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs down"))
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+    assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_rearm_clears_the_anchor_only_for_a_deferred_pending_conversion(mock_container_repo):
+    """The ChatGPT device-code completion re-arms a DEFERRED conversion so the
+    next status poll fires it at once: anchor + marker cleared through the
+    CAS on the deferral it observed, pending kept. A pending-but-not-deferred
+    conversion is left alone — its guard stamp protects a drain that may be
+    in flight."""
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "conversion_pending": True,
+            "conversion_deferred_reason": "oauth_required",
+            "conversion_started_at": _fresh_ts(),
+        }
+    )
+    assert await handlers.rearm_deferred_conversion("org_x") is True
+    mock_container_repo.clear_conversion_deferral.assert_awaited_once_with("org_x", deferred_reason="oauth_required")
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+
+    mock_container_repo.clear_conversion_deferral.reset_mock()
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={"conversion_pending": True, "conversion_started_at": _fresh_ts()}
+    )
+    assert await handlers.rearm_deferred_conversion("org_x") is False
+    mock_container_repo.clear_conversion_deferral.assert_not_awaited()
+
+    mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+    assert await handlers.rearm_deferred_conversion("org_x") is False
+    mock_container_repo.clear_conversion_deferral.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rearm_stands_down_when_a_fresh_dispatch_won_the_row(mock_container_repo):
+    """Read-then-write race: the self-heal stamped a fresh dispatch (marker
+    cleared) between this read and this write. The CAS refuses, the fresh
+    dispatch's guard stays armed over its stop + drain, and rearm reports
+    nothing re-armed."""
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "conversion_pending": True,
+            "conversion_deferred_reason": "oauth_required",
+            "conversion_started_at": _fresh_ts(),
+        }
+    )
+    mock_container_repo.clear_conversion_deferral = AsyncMock(return_value=False)
+    assert await handlers.rearm_deferred_conversion("org_x") is False
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+
+
+def test_conversion_guard_is_inactive_for_a_deferred_conversion():
+    """A deferred conversion never stopped the container — nothing is
+    draining — so the guard that stands down /container/recover and the start
+    paths must not hold, even though the stamp (the self-heal's rate-limit
+    anchor) is fresh. Otherwise the manual recovery doors stay shut on a
+    RUNNING box for as long as the owner takes to finish signing in."""
+    row = {
+        "conversion_pending": True,
+        "conversion_started_at": _fresh_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    assert handlers.conversion_guard_active(row) is False
+    row.pop("conversion_deferred_reason")
+    assert handlers.conversion_guard_active(row) is True
+
+
+@pytest.mark.asyncio
+async def test_stamp_clears_a_stale_deferral_marker(mock_container_repo):
+    """A fresh dispatch is not deferred until it decides to be; a marker left
+    over from an earlier deferral would read as "never mid-drain" and disarm
+    the guard during THIS dispatch's real stop + drain."""
+    await handlers._stamp_conversion_dispatch("org_x")
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
+    assert fields["conversion_pending"] is True
+    assert fields["conversion_deferred_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_self_heal_rate_limits_a_deferred_row_without_guarding_it(mock_repo, mock_container_repo):
+    """Inside the window a deferred row is NOT re-fired (no reprovision storm
+    while the owner signs in) but is also NOT reported as guarded — its
+    container is running, the caller may recover/retry it like any row."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "active"})
+    container = {
+        "status": "running",
+        "conversion_pending": True,
+        "conversion_started_at": _fresh_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    captured: list = []
+    with patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: captured.append(coro)):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is False
+    assert captured == []
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_heal_reevaluates_a_deferred_row_once_the_window_lapses(mock_repo, mock_container_repo):
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "active"})
+    container = {
+        "status": "running",
+        "conversion_pending": True,
+        "conversion_started_at": _stale_ts(),
+        "conversion_deferred_reason": "oauth_required",
+    }
+    captured: list[str] = []
+    with patch.object(
+        handlers.asyncio,
+        "create_task",
+        side_effect=lambda coro: captured.append(coro.__qualname__) or coro.close() or MagicMock(),
+    ):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is True
+    assert captured == ["run_conversion_reprovision"]
+    assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_self_heal_refires_a_rearmed_deferred_conversion_at_once(mock_repo, mock_container_repo):
+    """After the re-arm (anchor dropped) the status poll's self-heal sees a
+    pending conversion with no guard and re-dispatches — the path that turns
+    the completed sign-in into the paid box without waiting a guard window."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "active"})
+    container = {"status": "running", "conversion_pending": True, "conversion_started_at": None}
+    captured: list[str] = []
+    with patch.object(
+        handlers.asyncio,
+        "create_task",
+        side_effect=lambda coro: captured.append(coro.__qualname__) or coro.close() or MagicMock(),
+    ):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is True
+    assert captured == ["run_conversion_reprovision"]
 
 
 # ---------------------------------------------------------------------------

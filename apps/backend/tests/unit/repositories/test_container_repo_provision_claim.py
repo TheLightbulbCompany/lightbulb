@@ -628,3 +628,64 @@ async def test_stranded_release_refuses_a_parked_trial_box(dynamodb_table):
     dynamodb_table.put_item(Item={"owner_id": "user_parked", "status": "stopped", "stop_reason": "trial_idle"})
     assert await container_repo.release_stranded_stop_to_error("user_parked", last_error="x") is False
     assert _row(dynamodb_table, "user_parked")["status"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# clear_conversion_deferral: the re-arm CAS
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clear_conversion_deferral_clears_only_the_deferral_it_observed(dynamodb_table):
+    """A re-arm drops the self-heal anchor + deferral marker ONLY while the row
+    still carries the deferral it read; pending and status are untouched."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "user_defer",
+            "status": "running",
+            "conversion_pending": True,
+            "conversion_started_at": "2026-07-24T00:00:00+00:00",
+            "conversion_deferred_reason": "oauth_required",
+        }
+    )
+    assert await container_repo.clear_conversion_deferral("user_defer", deferred_reason="oauth_required") is True
+    row = _row(dynamodb_table, "user_defer")
+    assert row["conversion_started_at"] is None
+    assert row["conversion_deferred_reason"] is None
+    assert row["conversion_pending"] is True
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_clear_conversion_deferral_refuses_when_a_fresh_dispatch_cleared_the_marker(dynamodb_table):
+    """The race the CAS exists for: a fresh stamp cleared the marker (and
+    re-armed the guard over a real stop + drain) between the re-arm's read and
+    write. The write must refuse and leave the fresh anchor alone."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "user_fresh",
+            "status": "running",
+            "conversion_pending": True,
+            "conversion_started_at": "2026-07-24T00:05:00+00:00",
+            "conversion_deferred_reason": None,
+        }
+    )
+    assert await container_repo.clear_conversion_deferral("user_fresh", deferred_reason="oauth_required") is False
+    row = _row(dynamodb_table, "user_fresh")
+    assert row["conversion_started_at"] == "2026-07-24T00:05:00+00:00"
+
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "user_other",
+            "status": "running",
+            "conversion_pending": False,
+            "conversion_started_at": "2026-07-24T00:05:00+00:00",
+            "conversion_deferred_reason": "oauth_required",
+        }
+    )
+    assert await container_repo.clear_conversion_deferral("user_other", deferred_reason="oauth_required") is False
+    assert await container_repo.clear_conversion_deferral("user_missing", deferred_reason="oauth_required") is False

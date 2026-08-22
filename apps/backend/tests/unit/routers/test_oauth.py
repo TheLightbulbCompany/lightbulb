@@ -18,6 +18,15 @@ from core.services.oauth_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def rearm_mock():
+    """The poll's completion hook re-arms a deferred trial conversion via the
+    containers row; stub it for every test here (no real DDB) and expose it
+    for the tests that assert on it."""
+    with patch("routers.oauth.rearm_deferred_conversion", new=AsyncMock(return_value=False)) as m:
+        yield m
+
+
 @pytest.fixture
 def oauth_table(monkeypatch):
     """A real (moto) oauth-tokens table so the binding logic runs end-to-end
@@ -115,6 +124,32 @@ async def test_poll_returns_pending_status(async_client):
 
 @pytest.mark.asyncio
 async def test_poll_returns_completed_status(async_client):
+    with patch(
+        "routers.oauth.poll_device_code",
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "completed", "account_id": "acc_1"}
+
+
+@pytest.mark.asyncio
+async def test_poll_completion_rearms_a_deferred_trial_conversion(async_client, rearm_mock):
+    """The Stripe webhook lands before the device-code flow can finish, so a
+    ChatGPT conversion is deferred until exactly this moment — completion must
+    re-arm it (best-effort) so the next status poll fires the reprovision."""
+    with patch(
+        "routers.oauth.poll_device_code",
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert resp.status_code == 200
+    rearm_mock.assert_awaited_once_with("user_test_123")
+
+
+@pytest.mark.asyncio
+async def test_poll_completion_rearm_failure_does_not_fail_the_poll(async_client, rearm_mock):
+    rearm_mock.side_effect = RuntimeError("ddb blip")
     with patch(
         "routers.oauth.poll_device_code",
         new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),

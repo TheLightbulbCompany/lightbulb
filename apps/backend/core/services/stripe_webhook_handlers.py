@@ -361,17 +361,18 @@ async def rearm_deferred_conversion(owner_id: str) -> bool:
     auto-retry put a second task on the EFS WAL. Best-effort by contract — the
     self-heal re-evaluates every guard window regardless.
 
-    Read-then-write, not a CAS: a fresh stamp landing in the milliseconds
-    between this read (marker set) and this write would have its anchor
-    dropped — the same order of race the webhook and self-heal already accept
-    between themselves, bounded by the provision lease underneath. Accepted.
+    The clear is a CAS on the deferral this call observed
+    (``container_repo.clear_conversion_deferral``): a fresh dispatch clears the
+    marker on its way in, so a re-arm racing it — or one whose eventually-
+    consistent read returned the pre-stamp row — refuses instead of disarming
+    the guard of a dispatch that may already be draining.
     """
     container = await container_repo.get_by_owner_id(owner_id)
-    if not container or not container.get("conversion_pending") or not container.get("conversion_deferred_reason"):
+    reason = (container or {}).get("conversion_deferred_reason")
+    if not container or not container.get("conversion_pending") or not reason:
         return False
-    await container_repo.update_conversion_fields(
-        owner_id, {"conversion_started_at": None, "conversion_deferred_reason": None}
-    )
+    if not await container_repo.clear_conversion_deferral(owner_id, deferred_reason=reason):
+        return False  # a fresh dispatch won the row in between — its guard stays
     put_metric("billing.trial_conversion.rearmed")
     logger.info("Re-armed the deferred trial-conversion reprovision for owner %s", owner_id)
     return True

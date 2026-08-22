@@ -131,6 +131,25 @@ async def test_routine_label_still_claims_the_first_contact_slot(wired):
 
 
 @pytest.mark.asyncio
+async def test_system_notice_never_claims_the_first_contact_slot(wired):
+    """A platform-originated notice (the outbound-paused complaint mail) sends
+    while first contact is still owed, but must not consume the slot — the
+    agent's own hello would otherwise be permanently marked `sent`."""
+    wired.first_contact_state = "not_started"
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Outbound email paused",
+        body_text="body",
+        system_notice=True,
+    )
+    assert result == "sent"
+    assert wired.ses_calls == 1
+    assert wired.claimed is False
+    assert wired.settled is None
+
+
+@pytest.mark.asyncio
 async def test_first_contact_label_confers_nothing_once_sent(wired):
     """A send labelled first_contact after the slot is taken is NOT blocked —
     that is the routine case, and it must go out."""

@@ -93,6 +93,31 @@ async def send_mail(owner_id: str, body: SendRequest, request: Request) -> dict:
     return {"status": result}
 
 
+class LegacyOwnerSendRequest(BaseModel):
+    purpose: str = "routine"
+    subject: str
+    body_text: str
+    body_html: str | None = None
+
+
+@router.post("/send-to-owner/u/{owner_id}", include_in_schema=False)
+async def send_owner_email_legacy(owner_id: str, body: LegacyOwnerSendRequest, request: Request) -> dict:
+    """TEMPORARY compatibility door for containers still running the image that
+    baked ``isol8-owner-email.sh``. Forwards to the one send door's OWNER path.
+    Delete once every container is on an image whose skill ships
+    ``isol8-mail.sh send --owner`` (tracked in the follow-up issue named in the PR)."""
+    await _require_hook_token(owner_id, request)
+    result = await send(
+        owner_id=owner_id,
+        agent_id="",
+        subject=body.subject,
+        body_text=body.body_text,
+        body_html=body.body_html,
+        purpose=body.purpose,
+    )
+    return {"status": result}
+
+
 class AddressRequest(BaseModel):
     agent_id: str
 

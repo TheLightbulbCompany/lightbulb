@@ -4,12 +4,12 @@ The address is built from the owner's company slug, which the Company
 Identity work already reserved, as a per-company SUBDOMAIN: each agent gets
 ``{agent}@{slug}.{domain}`` — e.g. ``friday@acme-robotics.isol8.co``. The
 agent name is the mailbox; the company slug is its own subdomain, not part
-of the local part. Because every agent is a distinct mailbox on the
-company's own subdomain, two agents of the same owner can never collide,
-and no truncation/disambiguation machinery is needed — the slug is already
-bounded (``company_identity.slugify`` caps it at 32 chars, a legal DNS
-label) and the agent name only has to be a legal local part, not fit
-alongside the slug in a single RFC 5321 budget.
+of the local part. No truncation/disambiguation machinery is needed — the
+slug is already bounded (``company_identity.slugify`` caps it at 32 chars,
+a legal DNS label) and the agent name only has to be a legal local part,
+not fit alongside the slug in a single RFC 5321 budget. Two agents of the
+SAME owner sharing a name still resolve to the same address; that is
+refused at mint (see ``mint_agent_email_address``), never silently shared.
 
 The slug is always passed IN, never looked up here. A rare provisioning
 re-entry can leave an owner holding two slug rows, and
@@ -48,9 +48,11 @@ def build_agent_email_address(*, slug: str, agent_name: str, domain: str) -> str
     Deterministic and lowercased. ``slug`` is already a valid DNS label
     (company_identity.slugify → ≤32 chars, ``[a-z0-9-]``); the agent name is
     slugified into the local part. No truncation/disambiguation is needed —
-    each agent is a distinct mailbox on the company's own subdomain, so two
-    agents of the same owner can never collide (this deletes the prior
-    per-agent address-collision bug)."""
+    the company subdomain separates owners, so two agents of DIFFERENT owners
+    can never collide (this deletes the prior per-agent address-collision
+    bug). Within one owner the agent NAME is the whole local part, so two
+    agents named the same map to the same address — ``mint_agent_email_address``
+    refuses that rather than handing one agent another's mailbox."""
     company = slug.strip().lower()
     agent = _agent_slug(agent_name)
     return f"{agent}@{company}.{domain.strip().lower()}"
@@ -70,13 +72,16 @@ async def mint_agent_email_address(
     Ownership is checked, not assumed: if the address already exists for a
     DIFFERENT owner, that's a collision — logged loudly (``logger.error``,
     naming the address and both owner ids) and treated as a failed mint, not
-    a silent success. ``agent_email_repo.put`` is itself a conditional put
+    a silent success. Same owner but a DIFFERENT ``agent_id`` is a collision
+    too: the address is derived from the agent NAME, so two same-owner agents
+    sharing a name would otherwise be handed each other's mailbox — including
+    each other's inbound mail. ``agent_email_repo.put`` is itself a conditional put
     (mirrors ``company_slug_repo.reserve``), so a race losing there also
     fails the mint rather than overwriting the winner's row.
 
     Returns the address, or None when the feature is unconfigured, the owner
-    has no slug, the address is already held by another owner, or the
-    conditional put lost a race. Never raises.
+    has no slug, the address is already held by another owner or another of
+    this owner's agents, or the conditional put lost a race. Never raises.
     """
     try:
         domain = (settings.AGENT_EMAIL_DOMAIN or "").strip()
@@ -93,7 +98,16 @@ async def mint_agent_email_address(
         existing = await agent_email_repo.get_by_address(address)
         if existing is not None:
             if existing.get("owner_id") == owner_id:
-                return address
+                if existing.get("agent_id") == agent_id:
+                    return address
+                logger.error(
+                    "agent_email.mint: same-owner collision for %s (owner %s) — held by agent %s, requested by agent %s",
+                    address,
+                    owner_id,
+                    existing.get("agent_id"),
+                    agent_id,
+                )
+                return None
             logger.error(
                 "agent_email.mint: address collision for %s — held by owner %s, requested by owner %s",
                 address,

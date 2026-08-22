@@ -334,7 +334,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 _PAUSED_SUBJECT = "Outbound email paused"
 _PAUSED_BODY = (
     "A recipient marked an email from one of your agents as spam, so outbound email "
-    "from your agents is paused. Replies to your own messages still work.\n\n"
+    "from your agents is paused. Your agents can still email you.\n\n"
     "Review who your agents may email and re-enable sending in Control → Agents → Email."
 )
 
@@ -383,7 +383,15 @@ async def handle_ses_events(request: Request):
             return JSONResponse(status_code=503, content={"status": "error"})
         put_metric("agent_email.complaint", dimensions={"result": "disabled"})
         try:
-            await send_to_owner(owner_id=owner_id, purpose="routine", subject=_PAUSED_SUBJECT, body_text=_PAUSED_BODY)
+            await send_to_owner(
+                owner_id=owner_id,
+                purpose="routine",
+                subject=_PAUSED_SUBJECT,
+                body_text=_PAUSED_BODY,
+                # Platform notice, not Friday saying hello — must not consume
+                # the owner's once-only first-contact slot.
+                system_notice=True,
+            )
         except Exception:  # noqa: BLE001 — notification is best-effort
             logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
         return {"status": "disabled", "owner_id": owner_id, "addresses": disabled}

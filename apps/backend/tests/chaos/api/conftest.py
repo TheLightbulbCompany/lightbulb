@@ -66,6 +66,7 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     "POST /api/v1/agent-mail/u/{owner_id}/send": "hook-token lookup; containers table not provisioned hermetically",
     "POST /api/v1/agent-mail/u/{owner_id}/address": "hook-token lookup; containers table not provisioned hermetically",
     "GET /api/v1/agent-mail/u/{owner_id}/inbox": "hook-token lookup; containers table not provisioned hermetically",
+    "POST /api/v1/agent-mail/send-to-owner/u/{owner_id}": "hook-token lookup; containers table not provisioned hermetically",
     # Pure-DDB read, but the seller-profile table-name env is not wired into the
     # chaos fixture → boto ParamValidationError (empty TableName). FOLLOW-UP:
     # wire the seller table into the fixture to fuzz this endpoint for real.

@@ -91,6 +91,11 @@ async def send_ses_email(
     plain text, or both for a multipart/alternative. ``kind`` is a short label
     ("welcome", "support_ticket", "agent_reply_ses") used only for metric
     dimensions and log context.
+
+    Every send is stamped with ``settings.AGENT_MAIL_CONFIGURATION_SET`` when
+    that setting is non-empty (so the configuration set must already exist in
+    the environment — SES rejects a send naming one that does not) and with
+    ``TenantName`` when ``tenant_name`` is given.
     """
     if not settings.AGENT_EMAIL_DOMAIN.strip():
         # Emit a metric, not just a log line. The other two outcomes are

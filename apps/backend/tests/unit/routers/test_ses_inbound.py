@@ -740,6 +740,9 @@ def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
     assert {c.args[0] for c in upd.call_args_list} == {"friday@acme-robotics.isol8.co", "atlas@acme-robotics.isol8.co"}
     assert all(c.kwargs == {"outbound_disabled": "complaint"} for c in upd.call_args_list)
     assert notify.call_args.kwargs["owner_id"] == OWNER_ID
+    # The notice is the PLATFORM speaking, not Friday saying hello — it must
+    # not consume the owner's once-only first-contact slot.
+    assert notify.call_args.kwargs["system_notice"] is True
 
 
 def test_ses_events_ignores_non_complaint(client, monkeypatch):

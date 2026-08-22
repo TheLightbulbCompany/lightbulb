@@ -64,12 +64,20 @@ async def send_to_owner(
     body_html: str | None = None,
     agent_id: str | None = None,
     tenant_name: str | None = None,
+    system_notice: bool = False,
 ) -> str:
     """Send one owner-directed email.
 
     Returns "sent", "already_sent", "no_address", "disabled", "rate_limited",
     or "error". Never raises — the caller is an HTTP route whose 500 would tell
     a container nothing useful.
+
+    ``system_notice=True`` marks a send the PLATFORM originates (e.g. the
+    outbound-paused complaint notice) rather than an agent reaching out. Such
+    a send skips the first-contact claim/settle entirely: it must never
+    consume the owner's once-only first-contact slot, which would leave the
+    agent's real hello permanently owed. Everything else is unchanged — it
+    still mints the address and still spends a daily-cap unit.
     """
     try:
         # Validated HERE, not only at the router: `purpose` is a metric
@@ -92,7 +100,8 @@ async def send_to_owner(
         state = onboarding.get("first_contact_state") or "not_started"
 
         # POLICY — inferred from state, never from the `purpose` label.
-        is_first_contact = state in _FIRST_CONTACT_PENDING
+        # A platform notice is never first contact regardless of state.
+        is_first_contact = not system_notice and state in _FIRST_CONTACT_PENDING
         if is_first_contact:
             if not await repo.claim_first_contact(row_user_id, onboarding_generation=generation):
                 put_metric(

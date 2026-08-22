@@ -128,7 +128,7 @@ async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch
     puts = []
 
     async def fake_get(address):
-        return {"address": address, "owner_id": "user_1"}
+        return {"address": address, "owner_id": "user_1", "agent_id": "agent_friday"}
 
     async def fake_put(**kwargs):
         puts.append(kwargs)
@@ -145,6 +145,38 @@ async def test_mint_is_idempotent_when_row_exists_for_the_same_owner(monkeypatch
     )
     assert address == "friday@acme.isol8.co"
     assert puts == []
+
+
+@pytest.mark.asyncio
+async def test_mint_refuses_when_same_owner_holds_the_address_for_another_agent(monkeypatch, caplog):
+    """The address is derived from the agent NAME, so two same-owner agents
+    named alike map to the same mailbox. Returning it would hand agent B
+    agent A's mailbox — including A's inbound mail. Refuse, loudly."""
+    monkeypatch.setattr(agent_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    puts = []
+
+    async def fake_get(address):
+        return {"address": address, "owner_id": "user_1", "agent_id": "agent_a"}
+
+    async def fake_put(**kwargs):
+        puts.append(kwargs)
+
+    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", fake_get)
+    monkeypatch.setattr(agent_email.agent_email_repo, "put", fake_put)
+
+    with caplog.at_level("ERROR"):
+        result = await agent_email.mint_agent_email_address(
+            owner_id="user_1",
+            agent_id="agent_b",
+            agent_name="Scout",
+            owner_email="o@example.com",
+            slug="acme",
+        )
+
+    assert result is None
+    assert puts == []
+    assert any("scout@acme.isol8.co" in r.message for r in caplog.records)
+    assert any("agent_a" in r.message and "agent_b" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio

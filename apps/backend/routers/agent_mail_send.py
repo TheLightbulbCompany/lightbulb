@@ -3,8 +3,7 @@
 A per-user OpenClaw container calls this to email its OWN owner unprompted —
 Friday's first contact today, seeded nightly routines later. There is no Clerk
 JWT (the container has no user session), so like ``routers/hooks_proxy.py``
-and ``routers/agent_mail_relay.py`` this router deliberately does NOT use
-``Depends(get_current_user)``.
+this router deliberately does NOT use ``Depends(get_current_user)``.
 
 **Auth model.** The owner is NAMED in the path and the presented bearer must
 timing-safe-match THAT owner's ``containers.hook_token``. Only that owner's own

@@ -30,7 +30,6 @@ from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_builder,
-    agent_mail_relay,
     agent_mail_send,
     apple_iap,
     automations,
@@ -897,13 +896,6 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Settings → Webhooks panel; the user's own browser fetches their own
 # webhook URL + token. See routers/hooks_credentials.py.
 app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
-
-# Authenticated outbound agent-email reply relay (hook_token auth, no Clerk)
-# — a per-user container calls this to send a threaded email reply on
-# behalf of one of its agents. See routers/agent_mail_relay.py for the auth
-# model (reply_token names the owner; hook_token proves the caller IS that
-# owner's container).
-app.include_router(agent_mail_relay.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
 
 # Agent-INITIATED owner email (hook_token auth, no Clerk) — the same container
 # calling out unprompted rather than replying. Same auth shape minus the

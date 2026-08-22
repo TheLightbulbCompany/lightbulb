@@ -511,7 +511,7 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
     DURABLE on purpose. This is the only fence against an agent looping on the
     owner-send endpoint, and the backend runs several ECS tasks behind an ALB —
-    an in-process bucket (the pattern ``agent_mail_relay`` uses for burst
+    an in-process bucket (the pattern the old agent-mail reply relay used for burst
     smoothing) would give a real limit of ``cap * task_count`` and reset on
     every deploy.
 

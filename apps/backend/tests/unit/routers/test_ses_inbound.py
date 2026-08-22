@@ -753,6 +753,20 @@ def test_ses_events_ignores_non_complaint(client, monkeypatch):
     assert r.json()["status"] == "ignored"
 
 
+def test_ses_events_garbage_source_is_ignored_not_a_500(client, monkeypatch):
+    """`normalize` would raise on a non-string source. An unhandled 500 makes
+    EventBridge retry a permanently invalid event until it expires."""
+    _enable(monkeypatch)
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(source=123), headers={"X-Isol8-SES-Secret": SECRET})
+    assert r.status_code == 200 and r.json()["status"] == "ignored"
+
+
+def test_ses_events_empty_source_is_terminal_200(client, monkeypatch):
+    _enable(monkeypatch)
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(source=""), headers={"X-Isol8-SES-Secret": SECRET})
+    assert r.status_code == 200 and r.json()["status"] == "unknown_source"
+
+
 def test_ses_events_bad_secret_401(client, monkeypatch):
     _enable(monkeypatch)
     assert (

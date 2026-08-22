@@ -363,7 +363,15 @@ async def handle_ses_events(request: Request):
         return {"status": "ignored"}
     mail = detail.get("mail")
     source = mail.get("source") if isinstance(mail, dict) else ""
-    row = await get_by_address(normalize(source)) if source else None
+    try:
+        candidate = normalize(source) if source else ""
+    except Exception:  # noqa: BLE001 — see below
+        # A non-string/garbage `source` is a PERMANENTLY invalid event.
+        # Letting normalize raise here would surface as an unhandled 500 and
+        # EventBridge would retry the same bad event until it expires. Same
+        # guard the inbound recipient loop uses.
+        return {"status": "ignored"}
+    row = await get_by_address(candidate) if candidate else None
     if not row:
         return {"status": "unknown_source"}
     owner_id = row["owner_id"]

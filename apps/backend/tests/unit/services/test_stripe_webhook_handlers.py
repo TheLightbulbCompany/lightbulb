@@ -1027,6 +1027,35 @@ async def test_reprovision_is_deferred_while_oauth_tokens_are_missing(mock_conta
 
 
 @pytest.mark.asyncio
+async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_marker_is_durable(
+    mock_container_repo, prerequisite_gate
+):
+    """The sign-in can complete between the first probe and the deferral
+    write; its completion hook then finds no marker and no-ops. The deferral
+    re-probes after its write and re-arms itself, so the next poll fires
+    instead of waiting out the guard window."""
+    prerequisite_gate.side_effect = [_gate("oauth_required"), None]
+    mock_container_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "conversion_pending": True,
+            "conversion_deferred_reason": "oauth_required",
+            "conversion_started_at": _fresh_ts(),
+        }
+    )
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock()
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    mgr.reprovision_for_user.assert_not_awaited()
+    writes = [c.args[1] for c in mock_container_repo.update_conversion_fields.await_args_list]
+    assert writes == [
+        {"substatus": None, "conversion_deferred_reason": "oauth_required"},
+        {"conversion_started_at": None, "conversion_deferred_reason": None},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reprovision_is_deferred_while_byo_provider_is_unchosen(mock_container_repo, prerequisite_gate):
     prerequisite_gate.return_value = _gate("byo_provider_required")
     mgr = MagicMock()

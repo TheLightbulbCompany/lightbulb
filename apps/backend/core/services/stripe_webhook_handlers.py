@@ -360,6 +360,11 @@ async def rearm_deferred_conversion(owner_id: str) -> bool:
     drain that may be in flight, and clearing it would let the poll's
     auto-retry put a second task on the EFS WAL. Best-effort by contract — the
     self-heal re-evaluates every guard window regardless.
+
+    Read-then-write, not a CAS: a fresh stamp landing in the milliseconds
+    between this read (marker set) and this write would have its anchor
+    dropped — the same order of race the webhook and self-heal already accept
+    between themselves, bounded by the provision lease underneath. Accepted.
     """
     container = await container_repo.get_by_owner_id(owner_id)
     if not container or not container.get("conversion_pending") or not container.get("conversion_deferred_reason"):
@@ -416,6 +421,17 @@ async def run_conversion_reprovision(owner_id: str) -> None:
             )
         except Exception:
             logger.exception("Failed to record the deferred conversion for owner %s", owner_id)
+            return
+        # Close the re-arm race: a completion that landed between the probe
+        # above and the write just made found no deferral marker to clear and
+        # no-op'd. Re-probe now that the marker is durable; if the prerequisite
+        # is already met, re-arm ourselves so the next poll fires instead of
+        # waiting out the window.
+        try:
+            if await _conversion_prerequisite_gate(owner_id) is None:
+                await rearm_deferred_conversion(owner_id)
+        except Exception:
+            logger.exception("Post-deferral re-check failed for owner %s — the self-heal will retry", owner_id)
         return
 
     succeeded = False

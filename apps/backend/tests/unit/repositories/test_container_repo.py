@@ -1132,6 +1132,36 @@ async def test_daily_email_cap_is_per_owner(dynamodb_table):
     assert await container_repo.try_consume_daily_email_send("user_b", day="2026-07-26", cap=1) is True
 
 
+# --- Once-per-day platform notice claim -----------------------------------
+#
+# The notices this fences ride `send_to_owner(system_notice=True)`, which
+# bypasses the daily send cap -- this claim is the only bound on them.
+
+
+@pytest.mark.asyncio
+async def test_daily_system_notice_claim_is_once_per_day(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+
+    assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26") is True
+    assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26") is False
+    assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-27") is True
+
+
+@pytest.mark.asyncio
+async def test_daily_system_notice_claim_is_per_owner_and_per_kind(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.upsert("user_b", {"hook_token": "t"})
+
+    assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26") is True
+    # A different owner, and a different notice kind, each have their own slot.
+    assert await container_repo.try_claim_daily_system_notice("user_b", day="2026-07-26") is True
+    assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26", kind="other") is True
+
+
 @pytest.mark.asyncio
 async def test_cold_wake_stamp_is_consumed_once(dynamodb_table):
     from core.repositories import container_repo

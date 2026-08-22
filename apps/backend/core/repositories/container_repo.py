@@ -562,6 +562,42 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
         return True  # fail open — see docstring
 
 
+async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:
+    """Claim the once-per-UTC-day slot for a ``kind`` platform notice to ``owner_id``.
+
+    ``try_consume_daily_email_send``'s shape minus the counter: one notice per
+    day, not N. A single conditional write flips ``system_notice_day_<kind>`` to
+    ``day``, admitted only when the stored value is absent or from another day —
+    so a burst of events (SES fans one complaint out per recipient address)
+    collapses to a single notice. DURABLE for the same reason as its sibling:
+    several backend tasks run behind one ALB, so an in-process guard would give
+    a real limit of one-per-task and reset on every deploy.
+
+    These notices ride ``send_to_owner(system_notice=True)``, which deliberately
+    BYPASSES the daily send cap — this is the only bound on them.
+
+    **Fails OPEN**, like its sibling: a DynamoDB fault returns True rather than
+    swallowing a notice the owner needs (their agents just lost the ability to
+    send mail). Worst case is a duplicate email. The ``attribute_exists`` guard
+    means an owner with no container row never claims, which is unreachable in
+    practice — provisioned agent addresses imply a container row.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #d = :d",
+            ConditionExpression="attribute_exists(owner_id) AND (attribute_not_exists(#d) OR #d <> :d)",
+            ExpressionAttributeNames={"#d": f"system_notice_day_{kind}"},
+            ExpressionAttributeValues={":d": day},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        return True  # fail open — see docstring
+
+
 # How long a marketplace-deploy claim stays exclusive before another deploy may
 # take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
 # a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so

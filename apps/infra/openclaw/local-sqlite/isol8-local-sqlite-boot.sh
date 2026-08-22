@@ -207,6 +207,41 @@ if [ -z "$DBS" ]; then
   log "cold start: no replica — fresh container"
 fi
 
+# --- 4b. Imported history hand-off (written by the backend's backup import).
+# The backend cannot reach the local agents/ volume, so it stages a sanitized
+# per-agent tree under the EFS spine; we move it into place AFTER the restores
+# so the import wins over whatever the briefly-running new agent replicated.
+# litestream opens a new generation for a replaced database.
+IMPORT_ROOT="$STATE_ROOT/import-state/agents"
+if [ -d "$IMPORT_ROOT" ]; then
+  for _src in "$IMPORT_ROOT"/*; do
+    [ -d "$_src" ] || continue
+    _id=$(basename "$_src")
+    case "$_id" in *[!A-Za-z0-9._-]*|"") log "import-state: ignoring bad agent dir name '$_id'"; continue ;; esac
+    _dst="$STATE_ROOT/agents/$_id"
+    mkdir -p "$_dst"
+    if [ -f "$_src/agent/openclaw-agent.sqlite" ]; then
+      if sqlite3 "$_src/agent/openclaw-agent.sqlite" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
+        mkdir -p "$_dst/agent"
+        rm -f "$_dst/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite-wal" "$_dst/agent/openclaw-agent.sqlite-shm"
+        mv "$_src/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite"
+        log "import-state: installed history database for agent $_id"
+      else
+        log "import-state: database for agent $_id failed integrity_check — skipped"
+      fi
+    fi
+    if [ -d "$_src/sessions" ]; then
+      mkdir -p "$_dst/sessions"
+      cp -R "$_src/sessions/." "$_dst/sessions/"
+      log "import-state: installed legacy session files for agent $_id"
+    fi
+    chown -R 1000:1000 "$_dst" 2>/dev/null || true
+    rm -rf "$_src"
+  done
+  rmdir "$IMPORT_ROOT" 2>/dev/null || true
+  rmdir "$STATE_ROOT/import-state" 2>/dev/null || true
+fi
+
 # --- 5. Clear-auth sentinel (written by the backend when it cannot reach the
 # container-local store). Applied BEFORE gateway start so a freshly staged
 # credentials/oauth.json re-imports — the import fires only when the persisted

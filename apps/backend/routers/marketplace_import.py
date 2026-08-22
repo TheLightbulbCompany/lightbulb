@@ -46,6 +46,7 @@ from core.repositories import billing_repo, container_repo
 from core.services import agent_export
 from core.services import openclaw_backup_import as backup_import
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+from core.services.openclaw_backup_history import stage_history
 from core.services.openclaw_backup_plugins import apply_plugins
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
@@ -335,7 +336,24 @@ async def confirm_import(
         if plugins_installed:
             restarting = True
 
-    # Task 8 wires history here.
+    if payload.include_history and registered:
+        by_source = {c.id: c for c in candidates}
+        for source_agent_id, new_agent_id in registered:
+            hist = by_source[source_agent_id].history
+            if hist is None:
+                continue
+            warnings.extend(
+                await run_in_thread(
+                    stage_history,
+                    owner_id=owner_id,
+                    source_agent_id=source_agent_id,
+                    new_agent_id=new_agent_id,
+                    history=hist,
+                )
+            )
+            history_staged.append(new_agent_id)
+        if history_staged:
+            restarting = True
 
     if restarting:
         await get_ecs_manager().force_redeploy_user_service(owner_id)

@@ -370,6 +370,69 @@ def test_confirm_plugins_empty_skips_apply_and_bounce(client):
     mock_ecs.force_redeploy_user_service.assert_not_awaited()
 
 
+def test_confirm_with_include_history_stages_and_bounces_container(client):
+    c, _, s3, _ = client
+    sqlite_bytes = b"SQLite format 3\x00" + bytes(84)
+    s3.objects[KEY] = _archive(
+        extra={
+            "agents/main/agent/openclaw-agent.sqlite": sqlite_bytes,
+            "agents/main/sessions/sessions.json": "{}",
+        }
+    )
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.stage_history", return_value=["staged"]) as stage,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"include_history": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["history_staged"] == ["uuid-main"]
+    assert body["restarting"] is True
+    assert "staged" in body["warnings"]
+    stage.assert_called_once()
+    assert stage.call_args.kwargs["owner_id"] == OWNER
+    assert stage.call_args.kwargs["source_agent_id"] == "main"
+    assert stage.call_args.kwargs["new_agent_id"] == "uuid-main"
+    mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+
+def test_confirm_without_include_history_skips_stage_history(client):
+    c, _, s3, _ = client
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.stage_history") as stage,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["history_staged"] == []
+    assert body["restarting"] is False
+    stage.assert_not_called()
+    mock_ecs.force_redeploy_user_service.assert_not_awaited()
+
+
 def test_confirm_unknown_import_404_and_bad_id_400(client):
     c, _, _, _ = client
     assert c.post("/api/v1/marketplace/import/import-000000000000/confirm", json={}).status_code == 404

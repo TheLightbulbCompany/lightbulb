@@ -25,18 +25,20 @@ command -v jq >/dev/null || die 'Missing jq'; command -v curl >/dev/null || die 
 [[ -n "${ISOL8_API_URL:-}" ]] || die 'Missing ISOL8_API_URL.'
 [[ -n "${ISOL8_OWNER_ID:-}" ]] || die 'Missing ISOL8_OWNER_ID.'
 
+need_val() { [[ $# -ge 2 && -n "${2:-}" ]] || die "Option $1 needs a value."; }
+
 agent_id="${PAPERCLIP_AGENT_ID:-}"
 case "$PWD" in */workspace-*) [[ -n "$agent_id" ]] || agent_id="${PWD##*/workspace-}" ;; esac
 to=""; subject=""; reply=""; owner=false; since=""; limit="20"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --as) agent_id="${2:-}"; shift 2 ;;
-    --to) to="${2:-}"; shift 2 ;;
-    --subject) subject="${2:-}"; shift 2 ;;
-    --reply) reply="${2:-}"; shift 2 ;;
+    --as) need_val "$@"; agent_id="$2"; shift 2 ;;
+    --to) need_val "$@"; to="$2"; shift 2 ;;
+    --subject) need_val "$@"; subject="$2"; shift 2 ;;
+    --reply) need_val "$@"; reply="$2"; shift 2 ;;
     --owner) owner=true; shift ;;
-    --since) since="${2:-}"; shift 2 ;;
-    --limit) limit="${2:-}"; shift 2 ;;
+    --since) need_val "$@"; since="$2"; shift 2 ;;
+    --limit) need_val "$@"; limit="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -58,10 +60,10 @@ case "$cmd" in
   address)
     res="$(call POST "$base/address" "$(jq -nc --arg a "$agent_id" '{agent_id:$a}')")"
     addr="$(jq -r '.address // empty' <<<"$res")"
-    [[ -n "$addr" ]] || die "No address yet ($(jq -r '.reason' <<<"$res")). Name your company first, then retry."
+    [[ -n "$addr" ]] || die "No address yet ($(jq -r '.reason // "unknown"' <<<"$res")). Name your company first, then retry."
     printf '%s\n' "$addr" ;;
   inbox)
-    q="agent_id=$(jq -rn --arg a "$agent_id" '$a|@uri')&limit=${limit}"
+    q="agent_id=$(jq -rn --arg a "$agent_id" '$a|@uri')&limit=$(jq -rn --arg l "$limit" '$l|@uri')"
     [[ -n "$since" ]] && q="$q&since=$(jq -rn --arg s "$since" '$s|@uri')"
     res="$(call GET "$base/inbox?$q")"
     jq -r 'if (.messages|length)==0 then "Inbox empty (address: \(.address // "none yet"))."

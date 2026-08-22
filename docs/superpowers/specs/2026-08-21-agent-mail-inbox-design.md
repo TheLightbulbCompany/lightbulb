@@ -42,17 +42,20 @@ FROM, dedicated IPs, egress-IP work for CAPTCHA walls (separate track).
 - `outbound_disabled: str | None` — reason string when a complaint disabled outbound.
 - `public` — deleted (dead).
 
-No new table. Inbox messages are S3 objects (below).
+Inbox messages live in a new per-env table `agent-mail-inbox` (pk `address`, sk
+`received_key = {received_at}#{message_id}`, 30-day TTL). (The brainstorm said "S3
+prefix on the attachments bucket"; that bucket is prod-only and the backend has no
+IAM on it, so a per-env table is the smaller change — see the plan.)
 
 ### 2. Inbound (`ses_inbound`)
 
 After the existing gates (secret → dedup → known recipient → spam/virus → DMARC/SPF →
 auto-submitted):
 
-1. **Store** the parsed payload (the `SesInboundBody` JSON as received, plus
-   `received_at`) at `s3://$AGENT_EMAIL_ATTACHMENTS_BUCKET/inbox/{address}/{received_at}_{message_id}.json`.
-   Bodies are bounded (truncate `text` at 64 KB). Attachment `download_url`s are the
-   Lambda's presigned URLs and expire — acceptable (`# ponytail`).
+1. **Store** the parsed payload (from/subject/text/threading headers/attachments +
+   `received_at`) as a row in `agent-mail-inbox`. Bodies are bounded (truncate `text`
+   at 64 KB). Attachment `download_url`s are the Lambda's presigned URLs and expire —
+   acceptable (`# ponytail`).
 2. **Wake** only if the sender matches the owner or `verified_senders` (exact or
    `@domain`). Everything else returns `stored_not_woken` instead of
    `dropped_unverified_sender`.
@@ -92,10 +95,12 @@ Reply tokens in chat messages delivered before this ships stop working — accep
 ### 4. Read — one route
 
 `GET /api/v1/agent-mail/u/{owner_id}/inbox?agent_id=&since=&limit=` — hook-token
-auth. Lists `inbox/{address}/` newest-first (S3 `ListObjectsV2` on the prefix,
-`StartAfter` for `since`), returns `[{key, from, subject, received_at, text}]` with
-`text` bounded at 8 KB. `# ponytail: N GETs per listing; DDB index when an inbox
-listing > ~50 msgs matters.`
+auth. Queries the agent's address partition newest-first (`received_key > since`),
+returns `{address, messages: [{key, from, subject, received_at, text}]}` with `text`
+bounded at 8 KB; `key` is the reply key `"{address}/{received_key}"`. A sibling
+`POST /api/v1/agent-mail/u/{owner_id}/address {agent_id}` mints-or-returns the
+agent's address (the CLI's `address` subcommand needs it BEFORE any send — that is
+the address the agent types into a signup form).
 
 ### 5. CLI + skill (`apps/infra/openclaw/skills/isol8/`)
 
@@ -127,16 +132,21 @@ read the code). `owner_facts` unchanged.
   `outbound_disabled="complaint"` on all of that owner's rows → email the owner through
   the send door ("Outbound email paused — a recipient marked a message as spam. Re-enable
   in Control → Agents → Email.").
-- Lifecycle rule: `inbox/` prefix expires after 30 days.
-- IAM (task role): `s3:PutObject/GetObject/ListBucket` on `inbox/*` of the attachments
-  bucket; `ses:CreateTenant`, `ses:CreateTenantResourceAssociation`, `ses:SendEmail`
-  also on the config set + tenant ARNs.
+- The config set + rule + API destination live in a small per-env stack
+  (`agent-mail-outbound-stack.ts`) — `ses-inbound-stack.ts` is prod-only (receipt
+  rule sets are account-scoped) and dev needs its own config set.
+- IAM (task role): `grantReadWriteData` on the inbox table; `ses:CreateTenant`,
+  `ses:GetTenant`, `ses:CreateTenantResourceAssociation`,
+  `ses:UpdateReputationEntityPolicy`, `ses:SendEmail` on `tenant/*`, the config set and
+  the `isol8.co` identity ARNs. Tenants get the SES-managed `standard` reputation
+  policy (`arn:aws:ses:{region}:aws:reputation-policy/standard`).
 - Per-owner tenants are created by the backend (like per-owner Bedrock AIPs), not CDK.
   No `aws-cdk-lib` bump.
 
 ### 7. Owner UI
 
-`AgentEmailSection({agentId})` next to `AgentChannelsSection` in `AgentsPanel.tsx`:
+`AgentEmailSection({agentId})` as its own **Email** tab in `AgentsPanel.tsx` (the
+Channels tab is subscription-gated; agent email exists on the free tier too):
 address (or "minted on first use"), `verified_senders` editor (emails / `@domain`),
 "Let this agent email anyone" switch, banner when `outbound_disabled` with a re-enable
 action. Backed by `GET /api/v1/agent-mail/addresses` (owner's rows) and

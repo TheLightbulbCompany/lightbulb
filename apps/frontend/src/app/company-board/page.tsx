@@ -1,5 +1,9 @@
 import type React from "react";
-import { BACKEND_URL } from "@/lib/api";
+
+// Read the backend URL inline rather than importing `@/lib/api`: that module
+// re-exports @isol8/shared, whose SWR-based hooks have no default export in
+// React's server build, which breaks this Server Component at build time.
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 type BoardIssue = {
   id: string;

@@ -1,3 +1,4 @@
+import json
 import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -59,7 +60,11 @@ def test_public_board_projection_is_read_only_and_sanitized(client, monkeypatch)
                 ]
             }
         if path.endswith("/routines"):
-            return {"routines": [{"id": "routine-1", "title": "Friday review", "prompt": "private", "reviewerAgentId": "agent-2"}]}
+            return {
+                "routines": [
+                    {"id": "routine-1", "title": "Friday review", "prompt": "private", "reviewerAgentId": "agent-2"}
+                ]
+            }
         if path.endswith("/heartbeat-runs"):
             return {"runs": [{"id": "run-1", "issueId": "issue-1", "status": "succeeded", "transcript": "private"}]}
         raise AssertionError(path)
@@ -80,13 +85,28 @@ def test_public_board_projection_is_read_only_and_sanitized(client, monkeypatch)
         "write endpoints",
     ]
 
-    raw = resp.text
+    # Scan the projected data only: the self-describing disclosureBoundary block
+    # legitimately spells out "secrets" as an EXCLUDED category (asserted above),
+    # so scanning the whole envelope would flag the guarantee as the leak.
+    raw = json.dumps({key: body[key] for key in ("issues", "routines", "runs")})
     for forbidden in ("private task body", "adapterConfig", "secret", "prompt", "transcript", "isol8-prod.local"):
         assert forbidden not in raw
 
     issue = body["issues"][0]
-    assert set(issue) == {"id", "identifier", "title", "status", "priority", "assigneeAgentId", "responsibleUserId", "workProducts"}
-    assert issue["workProducts"] == [{"id": "wp-1", "title": "PR", "url": "https://github.com/acme/repo/pull/1"}, {"id": "wp-2", "title": "internal"}]
+    assert set(issue) == {
+        "id",
+        "identifier",
+        "title",
+        "status",
+        "priority",
+        "assigneeAgentId",
+        "responsibleUserId",
+        "workProducts",
+    }
+    assert issue["workProducts"] == [
+        {"id": "wp-1", "title": "PR", "url": "https://github.com/acme/repo/pull/1"},
+        {"id": "wp-2", "title": "internal"},
+    ]
     assert body["routines"] == [{"id": "routine-1", "title": "Friday review", "reviewerAgentId": "agent-2"}]
     assert body["runs"] == [{"id": "run-1", "issueId": "issue-1", "status": "succeeded"}]
     assert calls[0] == (

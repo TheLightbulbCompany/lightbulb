@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urljoin
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
@@ -31,7 +30,9 @@ def _enabled() -> bool:
 
 
 def _api_base() -> str:
-    return os.getenv("PAPERCLIP_PUBLIC_BOARD_API_URL") or os.getenv("PAPERCLIP_API_URL", "http://paperclip.isol8-prod.local:3100/")
+    return os.getenv("PAPERCLIP_PUBLIC_BOARD_API_URL") or os.getenv(
+        "PAPERCLIP_API_URL", "http://paperclip.isol8-prod.local:3100/"
+    )
 
 
 def _api_key() -> str:
@@ -121,9 +122,7 @@ def _project_issue(item: dict[str, Any], work_products: list[dict[str, Any]]) ->
     )
     labels = item.get("labels")
     if isinstance(labels, list):
-        projected["labels"] = [
-            _pick(label, ("id", "name", "color")) for label in labels if isinstance(label, dict)
-        ]
+        projected["labels"] = [_pick(label, ("id", "name", "color")) for label in labels if isinstance(label, dict)]
     projected["workProducts"] = work_products
     return projected
 

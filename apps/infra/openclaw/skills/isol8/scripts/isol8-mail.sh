@@ -79,7 +79,7 @@ case "$cmd" in
     status="$(jq -r '.status // "unknown"' <<<"$res")"
     case "$status" in
       sent|already_sent) echo "Email $status." ;;
-      forbidden_recipient) die 'Not sent: your owner has not allowed you to email people other than them. Ask them to enable it in Control → Agents → Email.' ;;
+      forbidden_recipient) die 'Not sent: your owner has not allowed you to email people other than them (this includes replying to senders who are not on your wake list). Ask them to enable it in Control → Agents → Email.' ;;
       outbound_disabled) die 'Not sent: outbound email is paused for this account (a recipient reported spam). Your owner can re-enable it in Control → Agents → Email.' ;;
       rate_limited) die 'Not sent: daily email limit reached. Try tomorrow.' ;;
       no_address) die 'Not sent: you have no address yet — name your company, then run: isol8-mail.sh address' ;;

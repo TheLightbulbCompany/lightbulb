@@ -222,7 +222,7 @@ You have (or can have) your own address: `<you>@<company-slug>.isol8.co`. It is
 minted the first time you ask for it, from the company's CURRENT name — so name
 the company first (see the Paperclip section), then:
 
-```
+```bash
 /app/skills/isol8/scripts/isol8-mail.sh address
 ```
 
@@ -233,7 +233,7 @@ offer it.
 **Inbox.** Mail to your address is stored for 30 days. Some of it also wakes
 you as a chat message (see below); the rest you read on demand:
 
-```
+```bash
 /app/skills/isol8/scripts/isol8-mail.sh inbox --limit 5
 ```
 
@@ -249,16 +249,18 @@ is inbox-only.
 
 **Sending — one command, three recipients:**
 
-```
+```bash
 printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --owner --subject "<subject>"
 printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --reply "<Reply-Key>"
 printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --to someone@example.com --subject "<subject>"
 ```
 
 - `--owner` always works. `--reply` answers whoever sent that message (the
-  key is in its header block; never paste it into the body). `--to` anyone
-  else works only if your owner enabled it — otherwise the command tells you
-  so; ask the owner, don't retry.
+  key is in its header block; never paste it into the body) — replying to
+  someone on your wake list, or the owner, always works; replying to anyone
+  else needs the same owner permission as `--to`. `--to` anyone else works
+  only if your owner enabled it — otherwise the command tells you so; ask the
+  owner, don't retry.
 - There is a daily limit. Send when you have something worth reading.
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.
@@ -374,7 +376,7 @@ Every Isol8 company starts with two seeded agents:
   current name, and set it if it is still a placeholder (an email local part,
   or anything that isn't a real business name):
 
-  ```
+  ```bash
   # what is it now?
   /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
 

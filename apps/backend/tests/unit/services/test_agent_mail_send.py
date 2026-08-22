@@ -183,3 +183,33 @@ async def test_reply_path_blocked_when_current_address_outbound_disabled(wired):
     wired.row = dict(wired.row, outbound_disabled="complaint")
     assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "outbound_disabled"
     assert wired.reply_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_reply_path_stranger_sender_requires_send_to_anyone(wired):
+    """A stranger who emailed first (stored_not_woken) does not thereby earn
+    a reply — the inbox route hands the agent every stored message's reply
+    key, so without this gate a stranger only has to email first to receive
+    agent-authored mail with no owner opt-in."""
+    wired.row = dict(wired.row, send_to_anyone=False, verified_senders=[])
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "forbidden_recipient"
+    assert wired.reply_kwargs is None
+    mod.container_repo.try_consume_daily_email_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reply_path_stranger_sender_allowed_with_send_to_anyone(wired):
+    wired.row = dict(wired.row, send_to_anyone=True, verified_senders=[])
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "sent"
+
+
+@pytest.mark.asyncio
+async def test_reply_path_allowlisted_sender_allowed_without_send_to_anyone(wired):
+    wired.row = dict(wired.row, send_to_anyone=False, verified_senders=["bob@x.y"])
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "sent"
+
+
+@pytest.mark.asyncio
+async def test_reply_path_domain_allowlisted_sender_allowed_without_send_to_anyone(wired):
+    wired.row = dict(wired.row, send_to_anyone=False, verified_senders=["@x.y"])
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "sent"

@@ -6,7 +6,7 @@ passes can widen it:
 | recipient                       | allowed when                                   |
 |----------------------------------|------------------------------------------------|
 | owner (no ``to``/``reply_key``) | always — delegates to ``send_to_owner``        |
-| ``reply_key`` (stored inbound)  | row not ``outbound_disabled``; key is owner's   |
+| ``reply_key`` (stored inbound)  | row not ``outbound_disabled``; key is owner's; sender is owner/allowlisted, OR ``send_to_anyone`` |
 | arbitrary ``to``                | row ``send_to_anyone`` and not ``outbound_disabled`` |
 
 All paths share the per-owner durable daily cap and are stamped with the
@@ -24,7 +24,7 @@ from core.repositories import agent_email_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import get_message, parse_reply_key
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address, sender_allowed
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
 from core.services.agent_mail_reply import send_reply
 from core.services.agent_mail_tenant import ensure_tenant
@@ -121,6 +121,12 @@ async def send(
             row = await agent_email_repo.get_by_address(from_addr) or {}
             if row.get("outbound_disabled"):
                 return _done(path, "outbound_disabled")
+            # A stranger who emailed first (stored_not_woken) does not thereby
+            # earn a reply — only the owner/allowlist or an explicit
+            # send_to_anyone opt-in may receive agent-authored mail.
+            sender = msg.get("from_addr") or ""
+            if not sender_allowed(row, sender) and not row.get("send_to_anyone"):
+                return _done(path, "forbidden_recipient")
             if not await _consume_cap(owner_id):
                 return _done(path, "rate_limited")
             headers = msg.get("headers") or {}

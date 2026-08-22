@@ -100,3 +100,20 @@ def test_missing_refresh_token_is_dropped(efs):
 
     entry = next(iter(_vault(efs)["entries"].values()))
     assert "refresh_token" not in entry["tokens"]
+
+
+def test_bare_origin_url_is_keyed_like_mcporter(efs):
+    # mcporter hashes `new URL(url).toString()`, which gives a bare origin a
+    # trailing slash; seeding under the raw-string hash left Stripe's tokens
+    # under a key mcporter never looked up (401 "auth required").
+    mcporter_vault.seed("owner1", "stripe", "https://mcp.stripe.com", _cred("a", "r", "cid"), ["mcp"])
+    vault = _vault(efs)
+    assert _expected_key("stripe", "https://mcp.stripe.com/") in vault["entries"]
+    assert _expected_key("stripe", "https://mcp.stripe.com") not in vault["entries"]
+    entry = vault["entries"][_expected_key("stripe", "https://mcp.stripe.com/")]
+    assert entry["serverUrl"] == "https://mcp.stripe.com/"
+    # A URL that already carries a path is unchanged.
+    mcporter_vault.seed("owner1", "posthog", "https://mcp.posthog.com/mcp?mode=cli", _cred("a", "r", "cid"), ["x"])
+    assert _expected_key("posthog", "https://mcp.posthog.com/mcp?mode=cli") in _vault(efs)["entries"]
+    mcporter_vault.unseed("owner1", "stripe", "https://mcp.stripe.com")
+    assert not any(k.startswith("stripe|") for k in _vault(efs)["entries"])

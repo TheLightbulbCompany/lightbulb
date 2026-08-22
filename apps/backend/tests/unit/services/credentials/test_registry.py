@@ -60,7 +60,13 @@ def test_posthog_inbound_is_bearer_guided():
     assert p.inbound.secret_hint is None
     assert p.inbound.instructions
     assert "properties.code" in p.inbound.instructions
-    assert {e.id for e in p.inbound.events} == {"$identify", "$pageview", "$exception", "onboarding_gate_blocked", "any"}
+    assert {e.id for e in p.inbound.events} == {
+        "$identify",
+        "$pageview",
+        "$exception",
+        "onboarding_gate_blocked",
+        "any",
+    }
     event = next(e for e in p.inbound.events if e.id == "onboarding_gate_blocked")
     assert event.starter_prompt is not None
     assert "duplicate-activation-blocker" in event.starter_prompt

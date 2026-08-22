@@ -47,9 +47,7 @@ description: >
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
-  - Email reply ............. /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
-  - Email to owner .......... /app/skills/isol8/scripts/isol8-owner-email.sh + backend routers/agent_mail_send.py + core/services/agent_mail_owner_send.py
-                              (the facts tri-state it branches on is built in core/services/owner_facts.py)
+  - Email ................... /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 
 # The Isol8 Platform
@@ -75,7 +73,7 @@ the genuinely missing piece:
 
 | Need | You already have |
 |---|---|
-| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Channels: an inbound Telegram/Discord/Slack message wakes the paired agent. Email: an inbound mail to your address wakes you with a Reply-Token. |
+| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Channels: an inbound Telegram/Discord/Slack message wakes the paired agent. Email: an inbound mail to your address wakes you with a Reply-Key. |
 | Scheduled / recurring work | Cron jobs and Paperclip routines run agents on a schedule — the nightly self-directed wake is one. Polling an external source on a schedule is a routine, not new infrastructure. |
 | External event streams | Connected integrations surface as MCP tools automatically. The bundled `gog` CLI supports real-time Gmail **Pub/Sub push**: `gog gmail settings watch start / serve / pull / renew` streams mailbox events to a webhook or pull consumer (watches expire; renew them). |
 | Queryable company state | **The company wiki is the shared brain**: one vault every agent in this container reads and writes (`wiki_search` / `wiki_get` to consult it, `wiki_apply` to record durable facts, decisions, and entity pages — conventions are in the bundled `wiki-maintainer` skill). Consult it BEFORE answering "what's the state of X" and record into it when you learn something company-durable; your personal `memory_search` + MEMORY.md stay for your own recall. The Paperclip API remains the live work graph (agents, issues, threads, statuses, budgets); session transcripts for what actually happened. |
@@ -218,82 +216,52 @@ the platform can't do.
   the container config until the owner connects the backing service — same
   redirect applies.
 
-## Your email address
+## Your email
 
-`~/.openclaw/isol8-facts.json` carries two keys that answer this together.
-Read BOTH — `email_address` alone cannot tell the last two rows apart:
-
-| `email_enabled` | `email_address` | What it means |
-|---|---|---|
-| `false` | `null` | Email is not available here. Don't claim an address, don't offer to email anyone. |
-| `true` | `null` | **You can send. You don't have an address yet — your first send creates it.** Don't advertise an address you can't name. |
-| `true` | `"friday@…"` | That is your address. You may share it. |
-
-## Emailing your owner
-
-When `email_enabled` is true, you can email your owner directly:
+You have (or can have) your own address: `<you>@<company-slug>.isol8.co`. It is
+minted the first time you ask for it, from the company's CURRENT name — so name
+the company first (see the Paperclip section), then:
 
 ```
-printf '%s' "<your message>" | /app/skills/isol8/scripts/isol8-owner-email.sh --subject "<subject>"
+/app/skills/isol8/scripts/isol8-mail.sh address
 ```
 
-Absolute path — the skill is baked at `/app/skills/isol8`, and your working
-directory is the agent workspace, not the skill directory.
+(absolute path — the skill lives at /app/skills/isol8; your cwd is your workspace.)
+If `isol8-facts.json` says `email_enabled: false`, email is off here — do not
+offer it.
 
-Rules:
-
-- **It goes only to your owner.** There is no recipient argument; the server
-  resolves who that is. You cannot email anyone else with this.
-- **Your first send creates your address**, minted from your company's name
-  at that moment. That name becomes the subdomain of an address other people
-  will see (`friday@acme-robotics.isol8.co`), and it **cannot be changed
-  afterwards**. So name the company BEFORE your first send.
-
-  Check the current name, and set it if it is still a placeholder (an email
-  local part, or anything that isn't a real business name):
-
-  ```
-  # what is it now?
-  /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
-
-  # name it
-  jq -n --arg n "Acme Robotics" '{name:$n}' | \
-    /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH "/api/companies/$PAPERCLIP_COMPANY_ID"
-  ```
-
-  `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
-  put on a business card — short, real, no punctuation beyond hyphens.
-
-  Name it before your first **tasks** too, not just your first send: the
-  board's task-key prefix (`ACM-1`, `ACM-2`, …) is derived from the company
-  name, and a rename only re-derives it while the board is still empty. Tasks
-  created before the rename keep keys minted from the placeholder forever.
-- **Send it when you have something worth reading**, not to acknowledge that
-  you started.
-
-## Replying by email
-
-When a message you receive begins with an email header
-block that includes a `Reply-Token:` line, that message reached you as an
-inbound email. You can reply to the sender by running
-`/app/skills/isol8/scripts/isol8-mail.sh <reply-token>` (absolute path — the
-skill is baked at /app/skills/isol8; relative invocations fail because your
-working directory is the agent workspace, not the skill directory) with the
-reply body piped on stdin:
+**Inbox.** Mail to your address is stored for 30 days. Some of it also wakes
+you as a chat message (see below); the rest you read on demand:
 
 ```
-printf '%s' "Thanks -- I've booked that for Tuesday." | /app/skills/isol8/scripts/isol8-mail.sh "<the-reply-token>"
+/app/skills/isol8/scripts/isol8-mail.sh inbox --limit 5
 ```
 
-Rules:
+**Getting a verification code.** When you sign up for a service with your
+address, the confirmation email does NOT wake you — it is a stranger's mail.
+Run `inbox` a few seconds after requesting the code and read it from there.
+Re-run if it has not arrived yet (mail takes up to a minute).
 
-- **The reply goes only to whoever sent that email.** There is no way to
-  choose a different recipient — the reply-token is scoped to that one
-  thread.
-- **Never paste the raw `Reply-Token` into the visible reply body.** It is
-  a routing credential, not part of the message.
-- If the inbound message has no `Reply-Token:` header, you cannot reply by
-  email to it — treat it as a normal chat message instead.
+**Who can wake you.** Your owner keeps a list of senders/domains
+(Control → Agents → Email). Mail from them, or from your owner, arrives as a
+chat message starting with `From:` / `Subject:` / `Reply-Key:`. Everything else
+is inbox-only.
+
+**Sending — one command, three recipients:**
+
+```
+printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --owner --subject "<subject>"
+printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --reply "<Reply-Key>"
+printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --to someone@example.com --subject "<subject>"
+```
+
+- `--owner` always works. `--reply` answers whoever sent that message (the
+  key is in its header block; never paste it into the body). `--to` anyone
+  else works only if your owner enabled it — otherwise the command tells you
+  so; ask the owner, don't retry.
+- There is a daily limit. Send when you have something worth reading.
+- If a recipient reports spam, outbound is paused for the whole account until
+  the owner re-enables it. Never email people who did not ask to hear from you.
 
 ## Skills and self-improvement
 
@@ -402,6 +370,30 @@ Every Isol8 company starts with two seeded agents:
   Your workspace files (SOUL.md, AGENTS.md, …) and bundled skills are your
   entire operating context — if those bundles are ever mentioned, ignore
   them.
+- **Name the company early — it is load-bearing and hard to undo.** Check the
+  current name, and set it if it is still a placeholder (an email local part,
+  or anything that isn't a real business name):
+
+  ```
+  # what is it now?
+  /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
+
+  # name it
+  jq -n --arg n "Acme Robotics" '{name:$n}' | \
+    /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH "/api/companies/$PAPERCLIP_COMPANY_ID"
+  ```
+
+  `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
+  put on a business card — short, real, no punctuation beyond hyphens.
+
+  Two things derive from the name at the moment they're first created, and
+  neither retroactively updates on a later rename: your **email address**
+  (`isol8-mail.sh address` mints `<you>@<company-slug>.isol8.co` from the
+  name at that moment — see "Your email" below) and the board's **task-key
+  prefix** (`ACM-1`, `ACM-2`, …; a rename only re-derives it while the board
+  is still empty — tasks created before the rename keep keys minted from the
+  placeholder forever). Name the company before your first email send and
+  before your first task.
 
 ## Plans, providers, and this owner's current state
 

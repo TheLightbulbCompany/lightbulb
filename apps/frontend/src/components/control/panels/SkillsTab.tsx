@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { capture } from "@/lib/analytics";
@@ -469,14 +470,14 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   const integration = SKILL_INTEGRATIONS[skillName];
   if (!integration) return null;
   return (
-    <a
+    <Link
       href="/chat?panel=integrations"
       className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#5a5549] hover:text-[var(--ink)] flex-shrink-0"
       style={{ fontFamily: "'DM Sans', sans-serif" }}
       title="Connect this account under Integrations"
     >
       works with {integration.label}
-    </a>
+    </Link>
   );
 }
 

@@ -4,6 +4,7 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 
 export const metadata: Metadata = {
   title: "Accessibility Statement — isol8",
+  alternates: { canonical: "https://isol8.co/accessibility" },
   description: "isol8's commitment to digital accessibility and WCAG 2.2 AA.",
 };
 

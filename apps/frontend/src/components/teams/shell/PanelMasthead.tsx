@@ -7,6 +7,8 @@ export interface PanelMastheadProps {
   meta?: ReactNode;
   actions?: ReactNode;
   className?: string;
+  /** Heading level — h1 by default; the landing-page demo passes h2 so the hero keeps the page's only h1. */
+  as?: "h1" | "h2";
 }
 
 export function PanelMasthead({
@@ -15,6 +17,7 @@ export function PanelMasthead({
   meta,
   actions,
   className,
+  as: Heading = "h1",
 }: PanelMastheadProps) {
   return (
     <header
@@ -28,9 +31,9 @@ export function PanelMasthead({
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
           {overline}
         </p>
-        <h1 className="font-editorial-serif text-5xl leading-none text-[var(--ink)]">
+        <Heading className="font-editorial-serif text-5xl leading-none text-[var(--ink)]">
           {title}
-        </h1>
+        </Heading>
       </div>
       {(meta || actions) && (
         <div className="flex items-center gap-3 sm:pb-1">

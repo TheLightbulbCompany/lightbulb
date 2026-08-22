@@ -4,6 +4,7 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 
 export const metadata: Metadata = {
   title: "Disclaimer — isol8",
+  alternates: { canonical: "https://isol8.co/disclaimer" },
   description: "Disclaimers governing your use of isol8 and its AI agents.",
 };
 

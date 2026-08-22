@@ -4,6 +4,7 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 
 export const metadata: Metadata = {
   title: "Acceptable Use Policy — isol8",
+  alternates: { canonical: "https://isol8.co/acceptable-use" },
   description: "The rules governing acceptable use of the isol8 platform.",
 };
 

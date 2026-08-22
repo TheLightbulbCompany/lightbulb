@@ -334,7 +334,7 @@ export function WorkspaceDemo() {
 
   const tasksPanel = (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-      <PanelMasthead overline="Work" title="Tasks" />
+      <PanelMasthead as="h2" overline="Work" title="Tasks" />
       <PanelToolbar
         className="mt-4"
         searchValue={taskSearch}
@@ -403,7 +403,7 @@ export function WorkspaceDemo() {
 
   const dashboardPanel = (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-      <PanelMasthead overline="Operations" title="Dashboard" meta="Last 14 days" />
+      <PanelMasthead as="h2" overline="Operations" title="Dashboard" meta="Last 14 days" />
       <section aria-label="Active agents" className="mt-4 min-w-0">
         <h2 className="mb-2 font-editorial-serif text-2xl text-[var(--ink)]">
           Agents
@@ -479,6 +479,7 @@ export function WorkspaceDemo() {
   const inboxPanel = (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
       <PanelMasthead
+        as="h2"
         overline="Inbox"
         title="Inbox"
         meta={unreadCount > 0 ? `${unreadCount} unread` : undefined}

@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 
 import { getAllPosts } from "@/content/blog";
+import { seoLandingPages } from "@/lib/seo";
 
 const SITE_URL = "https://isol8.co";
 
@@ -32,5 +33,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.6,
   }));
 
-  return [...staticRoutes, ...blogRoutes];
+  const seoRoutes: MetadataRoute.Sitemap = seoLandingPages.map((page) => ({
+    url: `${SITE_URL}/${page.slug}`,
+    changeFrequency: "monthly",
+    priority: 0.75,
+  }));
+
+  return [...staticRoutes, ...seoRoutes, ...blogRoutes];
 }

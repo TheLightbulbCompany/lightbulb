@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import Link from "next/link";
 
 import { getListingById } from "@/lib/marketplace/api";
 import { ListingDetailView } from "@/components/marketplace/ListingDetailView";
@@ -84,12 +85,12 @@ export default function ManagePage({
     <MarketplaceDrawerProvider>
       <main className="min-h-screen bg-[#fbf9f4]">
         <nav className="border-b border-[var(--edge)] px-6 py-3">
-          <a
+          <Link
             href="/marketplace"
             className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline"
           >
             ← Marketplace
-          </a>
+          </Link>
         </nav>
         <ListingDetailView listingId={listing.listing_id} mode="page" />
       </main>

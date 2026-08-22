@@ -29,7 +29,7 @@ description: >
                               extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Integrations wiring ..... apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)
-  - Marketplace flows ....... apps/backend/routers/marketplace_listings.py; core/services/{marketplace_service,agent_export,catalog_service}.py
+  - Marketplace flows ....... apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service}.py
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
   - Plans / providers ....... apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Channels ................ apps/backend/routers/channels.py
@@ -470,6 +470,7 @@ change them.
 | Bypass a Sage security block | A command, file write, or URL fetch denied by Sage (the platform's threat guard) was flagged as dangerous — do NOT retry it or look for a workaround. Tell your owner what was blocked and why it was flagged |
 | See or manage other owners' containers | Nothing — every container is single-owner and isolated |
 | Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your container runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Open the page in your own container Chrome instead and say "it's running on port N — open the Browser panel (Chrome button, top of isol8.co/chat) and you'll see it." Same for a dev server you started: give the port and point at the panel, never a URL they cannot reach |
+| Import the owner's local OpenClaw setup | "Upload your `openclaw backup create` archive via the publish wizard → Import from an OpenClaw backup — I can't read files on your machine" |
 
 ## Quick answers
 
@@ -484,6 +485,15 @@ change them.
   to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.
 - **"How do I sell my agent?"** → Seller wizard on isol8.co/marketplace;
   Isol8 reviews before publishing. Atlas can build it; only you can publish.
+- **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
+  `openclaw backup create` there, then on isol8.co open the marketplace publish
+  wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (any size).
+  The owner picks which agents, skills, MCP servers (secrets stripped — they
+  re-enter them), memory logs, cron jobs and plugins come along, and can opt in
+  to conversation history (auth tokens stripped; applies on the next restart).
+  More than 10 agents in total needs Ultra Pro. Channels, credentials, the
+  browser profile and global state never import. Plugins with dependencies need
+  `openclaw plugins install <name@version>` run here in the container — offer to.
 - **"What plan am I on?" / "Which model are you?"** → Read
   `~/.openclaw/isol8-facts.json`, answer from it.
 - **"Why can't you do X?"** → Check the boundaries table above before

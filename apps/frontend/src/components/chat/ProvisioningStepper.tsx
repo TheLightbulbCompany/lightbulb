@@ -446,6 +446,11 @@ export function ProvisioningStepper({
     // Just regressed from ready -> not-ready? Force the conservative
     // early step until the reset effect clears stale timing state.
     if (isRegressingFromReady) return "container";
+    // Provider-specific signup step runs before both payment fallback and
+    // container provision. Checkout and OAuth redirects preserve ?provider=;
+    // if billing/provider state is still catching up, showing the generic
+    // payment card here strands the user and hides the real provider gate.
+    if (needsProviderStep) return "provider";
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription. A
     // provisioning container (200 from /container/status) means the backend
@@ -453,8 +458,6 @@ export function ProvisioningStepper({
     // auto-created trial_local there — so don't force payment while the
     // container is coming up, even if billing hasn't caught up to the trial.
     if (trigger !== "recovery" && !isSubscribed && !isTrialLocal && !container) return "payment";
-    // Provider-specific signup step runs before container provision.
-    if (needsProviderStep) return "provider";
 
     if (!container || !derived) return "container";
     // Parked (wake-gated trial box, deliberately asleep): render the app —

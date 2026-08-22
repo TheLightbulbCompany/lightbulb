@@ -24,6 +24,35 @@ const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // the real PostHog UI.
 const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
+const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
+const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
+
+function safeStorageGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Signup stitching is analytics-only; storage-disabled browsers still work.
+  }
+}
+
+function safeStorageRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Analytics-only cleanup.
+  }
+}
 
 /**
  * Initialise PostHog on first client mount.
@@ -117,6 +146,7 @@ function PostHogInit() {
 function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { isSignedIn } = useAuth();
   const lastCheckoutEventRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -126,6 +156,14 @@ function PostHogPageview() {
     pageview(url);
     if (pathname === "/") {
       capture("landing_viewed", { path: url });
+    }
+
+    if (!isSignedIn && pathname?.startsWith("/sign-up")) {
+      safeStorageSet(SIGNUP_INTENT_KEY, JSON.stringify({
+        path: url,
+        provider_choice: searchParams.get("provider"),
+        timestamp: new Date().toISOString(),
+      }));
     }
 
     const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
@@ -141,7 +179,7 @@ function PostHogPageview() {
         },
       );
     }
-  }, [pathname, searchParams]);
+  }, [pathname, searchParams, isSignedIn]);
 
   return null;
 }
@@ -161,6 +199,26 @@ function PostHogIdentify() {
         lastName: user?.lastName,
       });
       identifiedRef.current = userId;
+
+      const stitchedKey = `${SIGNUP_STARTED_IDENTIFIED_PREFIX}${userId}`;
+      const pendingSignupIntent = safeStorageGet(SIGNUP_INTENT_KEY);
+      if (pendingSignupIntent && safeStorageGet(stitchedKey) !== "1") {
+        let pending: Record<string, unknown> = {};
+        try {
+          pending = JSON.parse(pendingSignupIntent) as Record<string, unknown>;
+        } catch {
+          pending = {};
+        }
+        capture("signup_started", {
+          source: "clerk_signup_completed",
+          identity_stitched: true,
+          signup_path: pending.path,
+          provider_choice: pending.provider_choice,
+          signup_intent_timestamp: pending.timestamp,
+        });
+        safeStorageSet(stitchedKey, "1");
+        safeStorageRemove(SIGNUP_INTENT_KEY);
+      }
     } else if (!isSignedIn && identifiedRef.current) {
       reset();
       identifiedRef.current = null;

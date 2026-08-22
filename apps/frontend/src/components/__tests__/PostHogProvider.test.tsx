@@ -8,6 +8,19 @@ const mockCapture = vi.fn();
 const mockCaptureException = vi.fn();
 const mockIdentify = vi.fn();
 const mockReset = vi.fn();
+const mockRouterState = vi.hoisted(() => ({
+  pathname: "/",
+  search: "",
+}));
+const mockClerkState = vi.hoisted(() => ({
+  isSignedIn: false,
+  userId: null as string | null,
+  user: null as null | {
+    primaryEmailAddress?: { emailAddress?: string };
+    firstName?: string | null;
+    lastName?: string | null;
+  },
+}));
 
 vi.mock("posthog-js", () => {
   const posthog = {
@@ -27,18 +40,16 @@ vi.mock("posthog-js/react", () => ({
   ),
 }));
 
-// Clerk mocks — the provider reads `useAuth`/`useUser` but we don't care
-// about sign-in state in these tests.
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isSignedIn: false, userId: null }),
-  useUser: () => ({ user: null }),
+  useAuth: () => ({ isSignedIn: mockClerkState.isSignedIn, userId: mockClerkState.userId }),
+  useUser: () => ({ user: mockClerkState.user }),
 }));
 
 // Stubs for usePathname/useSearchParams: PostHogPageview reads them and
 // they'd otherwise throw outside a Next router context.
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/",
-  useSearchParams: () => new URLSearchParams(""),
+  usePathname: () => mockRouterState.pathname,
+  useSearchParams: () => new URLSearchParams(mockRouterState.search),
 }));
 
 describe("PostHogProvider", () => {
@@ -59,6 +70,12 @@ describe("PostHogProvider", () => {
     mockCaptureException.mockClear();
     mockIdentify.mockClear();
     mockReset.mockClear();
+    mockRouterState.pathname = "/";
+    mockRouterState.search = "";
+    mockClerkState.isSignedIn = false;
+    mockClerkState.userId = null;
+    mockClerkState.user = null;
+    window.localStorage.clear();
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
   });
 
@@ -133,6 +150,60 @@ describe("PostHogProvider", () => {
 
     expect(screen.getByTestId("child")).toBeTruthy();
     expect(screen.getByText("Hello")).toBeTruthy();
+  });
+
+  it("captures signup_started after Clerk identifies the user from a sign-up intent", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/chat";
+    mockRouterState.search = "";
+    window.localStorage.setItem("isol8:signup_intent:v1", JSON.stringify({
+      path: "/sign-up?provider=byo_key",
+      provider_choice: "byo_key",
+      timestamp: "2026-08-20T05:58:00.000Z",
+    }));
+    mockClerkState.isSignedIn = true;
+    mockClerkState.userId = "user_123";
+    mockClerkState.user = {
+      primaryEmailAddress: { emailAddress: "user@example.com" },
+      firstName: "A",
+      lastName: "User",
+    };
+
+    const mod = await import("../PostHogProvider");
+    render(
+      <mod.PostHogProvider>
+        <div>child</div>
+      </mod.PostHogProvider>
+    );
+
+    expect(mockIdentify).toHaveBeenCalledWith("user_123", expect.objectContaining({
+      email: "user@example.com",
+    }));
+    expect(mockCapture).toHaveBeenCalledWith("signup_started", expect.objectContaining({
+      source: "clerk_signup_completed",
+      identity_stitched: true,
+      provider_choice: "byo_key",
+      signup_path: "/sign-up?provider=byo_key",
+    }));
+  });
+
+  it("does not recapture stitched signup_started for the same user", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/chat";
+    mockRouterState.search = "";
+    mockClerkState.isSignedIn = true;
+    mockClerkState.userId = "user_123";
+    window.localStorage.setItem("isol8:signup_intent:v1", JSON.stringify({ path: "/sign-up" }));
+    window.localStorage.setItem("isol8:signup_started_identified:user_123", "1");
+
+    const mod = await import("../PostHogProvider");
+    render(
+      <mod.PostHogProvider>
+        <div>child</div>
+      </mod.PostHogProvider>
+    );
+
+    expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything());
   });
 
   it("forwards uncaught window errors to posthog.captureException", async () => {

@@ -7,6 +7,7 @@ import {
   Bot,
   Wrench,
   MessageSquare,
+  Mail,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
+import { AgentEmailSection } from "./AgentEmailSection";
 import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useAgents } from "@/hooks/useAgents";
@@ -23,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
-type AgentTab = "overview" | "tools" | "channels";
+type AgentTab = "overview" | "tools" | "channels" | "email";
 
 export interface AgentsPanelProps {
   /**
@@ -214,6 +216,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                     [
                       { id: "overview", icon: Bot, label: "Overview" },
                       { id: "tools", icon: Wrench, label: "Tools" },
+                      { id: "email", icon: Mail, label: "Email" },
                       ...(channelsEnabled
                         ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
                         : []),
@@ -244,6 +247,9 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               )}
               {activeTab === "channels" && channelsEnabled && (
                 <AgentChannelsSection agentId={selected.id} />
+              )}
+              {activeTab === "email" && (
+                <AgentEmailSection agentId={selected.id} />
               )}
             </>
           ) : (

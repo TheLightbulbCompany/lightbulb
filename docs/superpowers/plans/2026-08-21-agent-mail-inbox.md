@@ -521,10 +521,12 @@ def test_spam_is_dropped_before_store(client, monkeypatch):
   - imports: drop `encode_reply_token`; add `from core.repositories.agent_mail_inbox_repo import put_message, reply_key` and `from core.services.agent_email import sender_allowed`.
   - Delete the "Sender allowlist" block (the `if not row.get("public") and sender not in ...` return).
   - Keep spam/virus, DMARC, auto-submitted gates as they are (they now run for every sender — that is the point).
-  - Replace the cap block's `if not row.get("public"):` with `if sender_allowed(row, sender):` — the autoreply stays allowlist-only (same reflector argument as before).
-  - After the cap block, replace the `token = encode_reply_token(...)` block with:
+  - Immediately AFTER the auto-submitted gate and BEFORE the trial-cap block, insert the store + wake decision (storing is cheap and independent of the cap; only WAKING costs inference):
 
 ```python
+        # Store first — every gated-clean message lands in the inbox whether or
+        # not it wakes the agent. Waking (and the cap autoreply) is reserved for
+        # the owner + the owner's allowlist.
         stored = await put_message(
             address=row["address"],
             owner_id=row["owner_id"],
@@ -541,6 +543,8 @@ def test_spam_is_dropped_before_store(client, monkeypatch):
         key = reply_key(row["address"], stored["received_key"])
 ```
 
+  - In the cap block, drop the `if not row.get("public"):` condition — the autoreply is now unconditional there, because only allowlisted senders reach it (same reflector argument as before; update the comment to say so).
+  - Delete the `token = encode_reply_token(...)` block entirely.
   - `build_delivered_message(..., reply_key=key, ...)`.
   - Add `"stored_not_woken"` to `_METRIC_RESULTS`.
   - Delete `core/services/agent_mail_token.py` and `tests/unit/services/test_agent_mail_token.py` (`git rm`). `grep -rn agent_mail_token apps/backend` must return only `routers/agent_mail_relay.py` (deleted in Task 8).

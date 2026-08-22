@@ -47,7 +47,7 @@ export function ActivityPanel() {
   );
 
   return (
-    <div className="editorial-page p-4 sm:p-6 lg:p-8 flex flex-col gap-6 max-w-4xl mx-auto w-full">
+    <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
       <PanelMasthead
         overline="Operations"
         title="Activity"

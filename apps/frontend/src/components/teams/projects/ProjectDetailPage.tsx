@@ -154,7 +154,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
 
   return (
     <div
-      className="flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full"
+      className="flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full"
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
       <nav

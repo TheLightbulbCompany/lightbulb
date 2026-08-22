@@ -205,7 +205,7 @@ export function GoalsPanel() {
     );
 
   return (
-    <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+    <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
         overline="Strategy"
         title="Goals"

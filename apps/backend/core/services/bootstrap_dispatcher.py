@@ -710,18 +710,24 @@ def _kickoff_observer(
                 # nudge asks why it ended without a first email. The one thing
                 # that moved to ack time is delete_pending_brief (see
                 # ``_settle_ack``) -- it depends on DELIVERY, not completion.
-                await repo.mark_bootstrap_delivered(
+                won = await repo.mark_bootstrap_delivered(
                     row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
                 )
-                await _maybe_nudge_first_contact(
-                    repo,
-                    row_user_id,
-                    owner_id=owner_id,
-                    generation=generation,
-                    session_key=session_key,
-                    friday_agent_id=friday_agent_id,
-                    submitted_by=submitted_by,
-                )
+                # Two processes can legitimately observe the same run (the one
+                # that dispatched and one that re-attached during a rolling
+                # deploy's overlap); both see the terminal, but only the CAS
+                # winner owns the delivered-only follow-up, or Friday gets two
+                # nudges for one run.
+                if won:
+                    await _maybe_nudge_first_contact(
+                        repo,
+                        row_user_id,
+                        owner_id=owner_id,
+                        generation=generation,
+                        session_key=session_key,
+                        friday_agent_id=friday_agent_id,
+                        submitted_by=submitted_by,
+                    )
             else:
                 err_msg = payload.get("errorMessage") or payload.get("error") or f"chat.{state}"
                 await repo.mark_bootstrap_failed(

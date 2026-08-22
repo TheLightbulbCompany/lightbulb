@@ -1540,9 +1540,11 @@ class GatewayConnection:
         branch — the same gate ``_dispatch_push_notification`` uses, so an
         interim `final` that only closes a tool-approval bracket (the run
         continues as a separate follow-up) does NOT resolve this callback.
-        Overwrites any prior registration for the same *run_id* (callers mint
-        a fresh run_id per dispatch, so a collision would only happen on a
-        genuine retry, where "latest wins" is correct).
+        Overwrites any prior registration for the same *run_id*. The two
+        callers that can collide both want "latest wins": a genuine retry of
+        the same dispatch, and bootstrap_dispatcher's re-attach, which
+        deliberately registers the SAME observer under the kickoff's persisted
+        dispatch id from a process that did not dispatch it.
         """
         self._run_completion_callbacks[run_id] = callback
 
@@ -2531,35 +2533,11 @@ class GatewayConnection:
                     "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
-        # Pending run-completion observers are HANDED OFF here, never failed.
-        # close() is this process letting go of the socket — graceful shutdown
-        # (rolling deploy), the frontend-gone grace close, an IP-change
-        # recreate — and says nothing about the run, which keeps going inside
-        # OpenClaw. Failing the observer here marks a kickoff that is visibly
-        # working as "Friday couldn't start". The observer's durable record (the
-        # ``sent`` row keyed by the kickoff's dispatch id == runId) is what lets
-        # whichever process polls next re-attach an observer on its own
-        # connection (bootstrap_dispatcher). Only a genuine gateway drop
-        # (``_on_reader_loop_exit``) still resolves pending observers as failed.
-        if self._run_completion_callbacks:
-            put_metric("gateway.run_completion.handoff", value=float(len(self._run_completion_callbacks)))
-            logger.info(
-                "Handing off %d pending run-completion observer(s) for user %s on close",
-                len(self._run_completion_callbacks),
-                self.user_id,
-            )
-            self._run_completion_callbacks.clear()
-        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
-        # dispatcher) too, so teardown doesn't cancel a DDB completion write
-        # mid-flight -- mirrors the push-dispatch drain above.
-        if self._run_completion_tasks:
-            try:
-                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
-            except Exception:
-                logger.exception(
-                    "Error waiting for run-completion tasks during close for user %s",
-                    self.user_id,
-                )
+        # Pending run-completion observers are left REGISTERED through the
+        # drains below: the reader loop is still alive until it is cancelled
+        # further down, so a genuine terminal that lands during the billing/
+        # push/RPC drains must still be able to fire its observer — see the
+        # handoff after the reader is cancelled.
         # Graceful RPC drain: the reader loop is still alive here, so in-flight
         # RPCs can still receive their `res` and resolve. Wait (bounded) for the
         # pending set to settle BEFORE tearing down the transport, instead of
@@ -2587,6 +2565,41 @@ class GatewayConnection:
                 await self._reader_task
             except asyncio.CancelledError:
                 pass
+        # The reader is provably dead now: nothing more can arrive on this
+        # socket. Whatever run-completion observer is STILL registered is
+        # HANDED OFF, never failed. close() is this process letting go of the
+        # socket — graceful shutdown (rolling deploy), the frontend-gone grace
+        # close, an IP-change recreate — and says nothing about the run, which
+        # keeps going inside OpenClaw. Failing the observer here marks a kickoff
+        # that is visibly working as "Friday couldn't start". The observer's
+        # durable record (the ``sent`` row keyed by the kickoff's dispatch id ==
+        # runId) is what lets whichever process polls next re-attach an observer
+        # on its own connection (bootstrap_dispatcher). Only a genuine gateway
+        # drop (``_on_reader_loop_exit``) still resolves pending observers as
+        # failed. Done AFTER the reader cancel, not before the drains: a terminal
+        # that arrived during the drains above has already fired its observer
+        # and popped it from this dict — clearing earlier would have dropped
+        # that terminal on the floor with no record and no lever.
+        if self._run_completion_callbacks:
+            put_metric("gateway.run_completion.handoff", value=float(len(self._run_completion_callbacks)))
+            logger.info(
+                "Handing off %d pending run-completion observer(s) for user %s on close",
+                len(self._run_completion_callbacks),
+                self.user_id,
+            )
+            self._run_completion_callbacks.clear()
+        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
+        # dispatcher) — including ones a terminal spawned during the drains
+        # above — so teardown doesn't cancel a DDB completion write mid-flight;
+        # mirrors the push-dispatch drain.
+        if self._run_completion_tasks:
+            try:
+                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for run-completion tasks during close for user %s",
+                    self.user_id,
+                )
         if self._ws:
             await self._ws.close()
         # Reject any RPCs that did NOT settle during the drain window.

@@ -57,7 +57,7 @@ def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1
     # Both stamps report whether their CAS landed — "no exception" is not the
     # same as "recorded", and the dispatcher acts on the difference.
     repo.mark_bootstrap_sent = AsyncMock(return_value=True)
-    repo.mark_bootstrap_delivered = AsyncMock()
+    repo.mark_bootstrap_delivered = AsyncMock(return_value=True)
     repo.mark_bootstrap_failed = AsyncMock()
     repo.rearm_bootstrap_dispatch = AsyncMock()
     repo.delete_pending_brief = AsyncMock(return_value=True)
@@ -757,6 +757,30 @@ async def test_completion_observer_marks_delivered_on_final():
         "creator_1", onboarding_generation="01G", dispatch_id="dispatch-1"
     )
     repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completion_observer_nudges_only_when_it_won_the_delivered_cas():
+    """Two processes can observe the same run (dispatcher + a re-attach during
+    a rolling deploy's overlap); both see the terminal. Only the CAS winner
+    may run the delivered-only follow-up, or Friday gets two nudges."""
+    repo = _fake_repo()
+    repo.mark_bootstrap_delivered = AsyncMock(return_value=False)
+    nudge = AsyncMock()
+    with patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=nudge):
+        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
+        callback = pool.register_run_completion_callback.call_args.args[2]
+        await callback("final", {"runId": "dispatch-1"})
+    repo.mark_bootstrap_delivered.assert_awaited_once()
+    nudge.assert_not_awaited()
+
+    repo = _fake_repo()  # default: the CAS lands
+    nudge = AsyncMock()
+    with patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=nudge):
+        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
+        callback = pool.register_run_completion_callback.call_args.args[2]
+        await callback("final", {"runId": "dispatch-1"})
+    nudge.assert_awaited_once()
 
 
 @pytest.mark.asyncio

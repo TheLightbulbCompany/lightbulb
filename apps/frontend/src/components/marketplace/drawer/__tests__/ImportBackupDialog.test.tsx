@@ -81,4 +81,20 @@ describe("ImportBackupDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("renders safety flags in the preview", async () => {
+    mockPost.mockImplementation(async (url: string) => {
+      if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
+      if (url === "/marketplace/import") return {
+        ...PREVIEW,
+        safety_flags: [{ pattern: "hardcoded-secret", severity: "high", file: "IDENTITY.md", line: 3, snippet: "" }],
+      };
+      throw new Error("unexpected " + url);
+    });
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
+    pickFile();
+    await screen.findByText("Quill");
+    expect(screen.getByText(/hardcoded-secret/)).toBeInTheDocument();
+    expect(screen.getByText(/IDENTITY\.md/)).toBeInTheDocument();
+  });
 });

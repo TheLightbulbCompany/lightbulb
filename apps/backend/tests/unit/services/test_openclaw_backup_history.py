@@ -99,4 +99,4 @@ def test_stage_history_writes_handoff_under_efs_root(tmp_path: Path):
     handoff = tmp_path / "users" / "owner_1" / "import-state" / "agents" / "new-uuid"
     assert (handoff / "agent" / "openclaw-agent.sqlite").is_file()
     assert (handoff / "sessions" / "sessions.json").is_file()
-    assert any("next restart" in w for w in warnings)
+    assert any("updated platform image" in w for w in warnings)

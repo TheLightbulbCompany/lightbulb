@@ -59,10 +59,10 @@ import shutil
 import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
-from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import (
     _scrub_plugins_block,
     _scrub_secret_fields,
@@ -812,7 +812,7 @@ def materialize_staging(
                 "skills": skill_names,
                 "cron_jobs": len(cron_jobs),
                 "warnings": warnings,
-                "created_at": utc_now_iso(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
         ),
         encoding="utf-8",

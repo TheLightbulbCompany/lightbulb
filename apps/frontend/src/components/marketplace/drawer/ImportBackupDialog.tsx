@@ -55,7 +55,10 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
       setAgents(new Set(p.agents.map((a) => a.id)));
       setSkills(new Set(p.skills)); setMcps(new Set(p.mcp_servers)); setPlugins(new Set(p.plugins.map((x) => x.id)));
       setPhase("preview");
-    } catch (e) { setError(errMessage(e)); setPhase("pick"); }
+    } catch (e) {
+      setError(errMessage(e)); setPhase("pick");
+      if (inputRef.current) inputRef.current.value = "";
+    }
   }
 
   const needsUltra = useMemo(() => !!preview && preview.plan !== "ultra_pro" && preview.existing_agents + agents.size > preview.standard_max_agents, [preview, agents]);
@@ -156,13 +159,28 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             <label className="flex items-center gap-2"><input type="checkbox" checked={memory} disabled={busy} onChange={() => setMemory(!memory)} />Memory logs (MEMORY.md, memory/)</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={cron} disabled={busy} onChange={() => setCron(!cron)} />Scheduled jobs</label>
             {anyHistory && (
-              <label className="flex items-center gap-2"><input type="checkbox" aria-label="Bring conversation history" checked={history} disabled={busy} onChange={() => setHistory(!history)} />Bring conversation history (auth tokens are stripped; applies on the next workspace restart)</label>
+              <label className="flex items-center gap-2"><input type="checkbox" aria-label="Bring conversation history" checked={history} disabled={busy} onChange={() => setHistory(!history)} />Bring conversation history (auth tokens are stripped; applied the next time your workspace starts on an updated platform image)</label>
             )}
 
             {preview.warnings.length > 0 && (
               <ul className="list-disc space-y-1 rounded-2xl border border-amber-200 bg-amber-50 p-3 pl-7 text-amber-900">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
             )}
             {preview.skipped_big_files.length > 0 && <p className="text-[#5b5b5b]">Skipped {preview.skipped_big_files.length} file(s) over 512 MB.</p>}
+            {preview.safety_flags.length > 0 && (
+              <fieldset>
+                <legend className="text-[12px] text-[#5b5b5b]">
+                  Safety notes (don&apos;t block the import; you&apos;ll see them again if you publish)
+                </legend>
+                <ul className="space-y-1">
+                  {preview.safety_flags.map((f, i) => (
+                    <li key={`${f.file}-${f.line ?? 0}-${i}`} className="rounded-lg border border-[var(--edge)] bg-[#f3eee5] px-2 py-1 font-mono text-[11.5px] text-[#5b5b5b]">
+                      <span className="mr-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] uppercase text-[#5b5b5b]">{f.severity}</span>
+                      {f.pattern} · {f.file}{f.line ? `:${f.line}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </fieldset>
+            )}
           </div>
         )}
 

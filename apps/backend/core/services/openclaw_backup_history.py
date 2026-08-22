@@ -126,4 +126,7 @@ def stage_history(*, owner_id: str, source_agent_id: str, new_agent_id: str, his
     if history.sessions_dir is not None:
         rewrite_legacy_sessions(history.sessions_dir, handoff / "sessions", old_id=source_agent_id, new_id=new_agent_id)
     _chown_tree(handoff)
-    return [f"conversation history for {source_agent_id!r} is staged and applies on the workspace's next restart"]
+    return [
+        f"conversation history for {source_agent_id!r} is staged; it is applied the next time your "
+        "workspace starts on an updated platform image"
+    ]

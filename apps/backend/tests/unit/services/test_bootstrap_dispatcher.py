@@ -47,6 +47,14 @@ def _ago(seconds: float) -> str:
 _STALE = bootstrap_dispatcher.STALE_DISPATCH_AFTER_S + 60
 
 
+@pytest.fixture(autouse=True)
+def _fresh_reattach_backoff():
+    """The re-attach backoff map is process-local module state; isolate tests."""
+    bootstrap_dispatcher._reattach_not_before.clear()
+    yield
+    bootstrap_dispatcher._reattach_not_before.clear()
+
+
 def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1", onboarding=None):
     repo = MagicMock()
     repo.get_onboarding_state = AsyncMock(return_value=onboarding or _onboarding())
@@ -57,7 +65,7 @@ def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1
     # Both stamps report whether their CAS landed — "no exception" is not the
     # same as "recorded", and the dispatcher acts on the difference.
     repo.mark_bootstrap_sent = AsyncMock(return_value=True)
-    repo.mark_bootstrap_delivered = AsyncMock()
+    repo.mark_bootstrap_delivered = AsyncMock(return_value=True)
     repo.mark_bootstrap_failed = AsyncMock()
     repo.rearm_bootstrap_dispatch = AsyncMock()
     repo.delete_pending_brief = AsyncMock(return_value=True)
@@ -80,6 +88,7 @@ def _fake_pool(*, register_returns=True):
     pool.ensure_connection = AsyncMock()
     pool.register_run_completion_callback = MagicMock(return_value=register_returns)
     pool.unregister_run_completion_callback = MagicMock()
+    pool.has_run_completion_callback = MagicMock(return_value=False)
     pool.mark_run_active = MagicMock()
     pool.clear_active_run = MagicMock()
     pool.send_rpc = AsyncMock()
@@ -172,16 +181,144 @@ async def test_bootstrap_already_dispatched_is_a_noop():
     pool.send_rpc.assert_not_awaited()
 
 
+def _sent_onboarding(**overrides) -> dict:
+    """A row whose chat.send was ACKED (``sent``) by some process that may no
+    longer exist — exactly what a backend restart mid-kickoff leaves behind."""
+    base = dict(
+        bootstrap_state="sent",
+        bootstrap_dispatch_id="dispatch-1",
+        bootstrap_dispatched_at=_ago(5),
+        bootstrap_sent_at=_ago(4),
+    )
+    base.update(overrides)
+    return _onboarding(**base)
+
+
 @pytest.mark.asyncio
-async def test_bootstrap_sent_is_a_noop():
+async def test_bootstrap_sent_is_never_resent_rearmed_or_failed_however_old():
     """`sent` means the chat.send was ACKED: delivery happened and only the
     completion bookkeeping can still be outstanding. Re-sending would
-    double-run Friday, so this state is left alone no matter how old it is."""
-    repo, ecs, pool, _ = await _run(_onboarding(bootstrap_state="sent", bootstrap_dispatched_at=_ago(_STALE)))
+    double-run Friday, so no claim/re-arm/send/failed — no matter how old."""
+    repo, ecs, pool, _ = await _run(_sent_onboarding(bootstrap_dispatched_at=_ago(_STALE)))
     repo.claim_bootstrap_dispatch.assert_not_awaited()
     repo.rearm_bootstrap_dispatch.assert_not_awaited()
     repo.mark_bootstrap_failed.assert_not_awaited()
     pool.send_rpc.assert_not_awaited()
+    pool.mark_run_active.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sent_row_reattaches_the_completion_observer_in_this_process():
+    """The observer that resolves ``sent`` lives in the memory of the process
+    that dispatched. After that process is gone (rolling deploy, grace close)
+    the row is still ``sent`` and the run is still going in OpenClaw — so the
+    poll re-attaches an observer HERE, keyed by the persisted dispatch id
+    (== the kickoff's runId), on a live connection. No chat.send."""
+    repo, ecs, pool, _ = await _run(_sent_onboarding())
+
+    pool.ensure_connection.assert_awaited_once_with("user_owner", "10.0.0.5", "tok-123")
+    pool.register_run_completion_callback.assert_called_once()
+    reg_args = pool.register_run_completion_callback.call_args.args
+    assert reg_args[0] == "user_owner"
+    assert reg_args[1] == "dispatch-1"
+    pool.send_rpc.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reattached_observer_marks_delivered_on_final():
+    repo, ecs, pool, _ = await _run(_sent_onboarding())
+
+    callback = pool.register_run_completion_callback.call_args.args[2]
+    await callback("final", {"runId": "dispatch-1"})
+
+    repo.mark_bootstrap_delivered.assert_awaited_once_with(
+        "creator_1", onboarding_generation="01G", dispatch_id="dispatch-1"
+    )
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reattached_observer_marks_failed_on_error():
+    repo, ecs, pool, _ = await _run(_sent_onboarding())
+
+    callback = pool.register_run_completion_callback.call_args.args[2]
+    await callback("error", {"errorMessage": "boom"})
+
+    repo.mark_bootstrap_failed.assert_awaited_once_with(
+        "creator_1", onboarding_generation="01G", dispatch_id="dispatch-1", reason="boom"
+    )
+    repo.mark_bootstrap_delivered.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sent_row_already_observed_here_is_left_alone():
+    """Steady state for the common case (the dispatching process is the one
+    polling): the observer is already registered, so the poll does nothing —
+    not even a container resolve."""
+    pool = _fake_pool()
+    pool.has_run_completion_callback = MagicMock(return_value=True)
+    repo, ecs, pool, _ = await _run(_sent_onboarding(), pool=pool)
+
+    pool.has_run_completion_callback.assert_called_once_with("user_owner", "dispatch-1")
+    ecs.resolve_running_container.assert_not_awaited()
+    pool.ensure_connection.assert_not_awaited()
+    pool.register_run_completion_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sent_row_without_a_reachable_runtime_waits_for_the_next_poll():
+    repo, ecs, pool, _ = await _run(_sent_onboarding(), ecs=_fake_ecs_manager(container=None, ip=None))
+
+    pool.ensure_connection.assert_not_awaited()
+    pool.register_run_completion_callback.assert_not_called()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sent_row_missing_its_dispatch_id_is_left_alone():
+    repo, ecs, pool, _ = await _run(_sent_onboarding(bootstrap_dispatch_id=None))
+
+    pool.register_run_completion_callback.assert_not_called()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reattach_connect_failure_is_swallowed_and_never_marks_failed():
+    """A re-attach that cannot reach the gateway right now is simply retried by
+    the next poll; it must never raise into /container/status nor settle the
+    row, which is still truthfully ``sent``."""
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=OSError("connection refused"))
+    repo, ecs, pool, _ = await _run(_sent_onboarding(), pool=pool)
+
+    pool.register_run_completion_callback.assert_not_called()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reattach_that_did_not_register_backs_off_before_retrying():
+    """``sent`` has no staleness rule, so a row that can never re-attach would
+    otherwise pay a container resolve + EFS read + dial on every poll forever.
+    A miss arms a per-owner backoff; the next poll inside it does nothing, and
+    a poll after it tries again."""
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=OSError("connection refused"))
+    repo, ecs, pool, _ = await _run(_sent_onboarding(), pool=pool)
+    ecs.resolve_running_container.assert_awaited_once()
+    assert "user_owner" in bootstrap_dispatcher._reattach_not_before
+
+    # Inside the backoff window: not even a container resolve.
+    repo, ecs2, pool2, _ = await _run(_sent_onboarding())
+    ecs2.resolve_running_container.assert_not_awaited()
+    pool2.register_run_completion_callback.assert_not_called()
+
+    # Window elapsed: retried, and a successful register clears the stamp.
+    bootstrap_dispatcher._reattach_not_before["user_owner"] = 0.0
+    repo, ecs3, pool3, _ = await _run(_sent_onboarding())
+    ecs3.resolve_running_container.assert_awaited_once()
+    pool3.register_run_completion_callback.assert_called_once()
+    assert "user_owner" not in bootstrap_dispatcher._reattach_not_before
 
 
 @pytest.mark.asyncio
@@ -568,10 +705,15 @@ async def test_won_claim_dispatches_chat_send_addressed_at_the_submitting_member
     assert send_kwargs["token"] == "tok-123"
     assert send_kwargs["req_id"] == "bootstrap-dispatch-dispatch-1"
 
-    # Completion observer registered BEFORE the send.
+    # Completion observer registered BEFORE the send, keyed by the persisted
+    # dispatch id — which is also the chat.send idempotencyKey OpenClaw echoes
+    # back as runId. That is what lets a DIFFERENT process re-attach an observer
+    # from the row alone after this one is gone.
     pool.register_run_completion_callback.assert_called_once()
     reg_args = pool.register_run_completion_callback.call_args.args
     assert reg_args[0] == "user_owner"
+    assert reg_args[1] == "dispatch-1"
+    assert send_kwargs["params"]["idempotencyKey"] == "dispatch-1"
 
 
 @pytest.mark.asyncio
@@ -648,6 +790,30 @@ async def test_completion_observer_marks_delivered_on_final():
         "creator_1", onboarding_generation="01G", dispatch_id="dispatch-1"
     )
     repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completion_observer_nudges_only_when_it_won_the_delivered_cas():
+    """Two processes can observe the same run (dispatcher + a re-attach during
+    a rolling deploy's overlap); both see the terminal. Only the CAS winner
+    may run the delivered-only follow-up, or Friday gets two nudges."""
+    repo = _fake_repo()
+    repo.mark_bootstrap_delivered = AsyncMock(return_value=False)
+    nudge = AsyncMock()
+    with patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=nudge):
+        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
+        callback = pool.register_run_completion_callback.call_args.args[2]
+        await callback("final", {"runId": "dispatch-1"})
+    repo.mark_bootstrap_delivered.assert_awaited_once()
+    nudge.assert_not_awaited()
+
+    repo = _fake_repo()  # default: the CAS lands
+    nudge = AsyncMock()
+    with patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=nudge):
+        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
+        callback = pool.register_run_completion_callback.call_args.args[2]
+        await callback("final", {"runId": "dispatch-1"})
+    nudge.assert_awaited_once()
 
 
 @pytest.mark.asyncio

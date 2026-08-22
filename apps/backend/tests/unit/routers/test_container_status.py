@@ -2127,6 +2127,53 @@ class TestContainerStatusTeamsStatus:
         # Dispatch STILL fires despite not being "ready" -- this is the fix.
         dispatch_mock.assert_awaited_once_with("user_x", onboarding=onboarding_state)
 
+    @pytest.mark.asyncio
+    async def test_bootstrap_sent_row_still_schedules_the_dispatcher_for_observer_reattach(self):
+        """A ``sent`` kickoff's only outstanding work is OBSERVING its terminal,
+        and that observer is in-process memory the dispatching process may
+        have taken with it (rolling deploy, grace close). The dispatcher
+        re-attaches one from the row -- but only if this poll admits ``sent``
+        and actually calls in; a pre-check that stops at dispatched would
+        leave the restart case unobservable. ``delivered`` stays filtered."""
+        from routers.container import container_status
+
+        async def _poll(bootstrap_state: str) -> AsyncMock:
+            dispatch_mock = AsyncMock()
+            fake_ecs = AsyncMock()
+            fake_ecs.resolve_running_container = AsyncMock(
+                return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+            )
+            onboarding_state = _onboarding_state_stub("active")
+            onboarding_state["onboarding_generation"] = "01G"
+            onboarding_state["funnel_state"] = "submitted"
+            onboarding_state["bootstrap_state"] = bootstrap_state
+            onboarding_state["bootstrap_dispatch_id"] = "dispatch-1"
+            onboarding_state["user_id"] = "creator_1"
+            repo = MagicMock()
+            repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
+            repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
+            with (
+                patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+                patch("routers.container.resolve_owner_id", return_value="user_x"),
+                patch(
+                    "core.services.connection_service.is_gateway_connected",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+                patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+                patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
+            ):
+                await container_status(_personal_auth())
+                await asyncio.sleep(0)
+            return dispatch_mock
+
+        sent = await _poll("sent")
+        sent.assert_awaited_once()
+        assert sent.call_args.kwargs["onboarding"]["bootstrap_state"] == "sent"
+
+        delivered = await _poll("delivered")
+        delivered.assert_not_awaited()
+
 
 def _onboarding_state_with(
     *, funnel_state: str, onboarding_generation: str | None, teams_state: str | None = None

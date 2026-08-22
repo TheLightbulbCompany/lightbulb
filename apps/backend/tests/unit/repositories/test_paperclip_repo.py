@@ -955,7 +955,7 @@ async def test_mark_bootstrap_delivered_completes_funnel(repo):
         )
     )
     _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    assert await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id) is True
     fetched = await repo.get("u1")
     assert fetched.bootstrap_state == "delivered"
     assert fetched.bootstrap_delivered_at is not None
@@ -972,7 +972,9 @@ async def test_mark_bootstrap_delivered_fenced_on_dispatch_id(repo):
             user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
         )
     )
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id")
+    assert (
+        await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id") is False
+    )
     fetched = await repo.get("u1")
     # No-op: still not_started, funnel still submitted.
     assert fetched.bootstrap_state == "not_started"
@@ -988,7 +990,7 @@ async def test_mark_bootstrap_delivered_is_a_noop_against_a_superseded_generatio
     _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01OLD")
     # Company reprovisioned mid-flight: new generation, fresh not_started state.
     await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id)
+    assert await repo.mark_bootstrap_delivered("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id) is False
     fetched = await repo.get("u1")
     assert fetched.onboarding_generation == "01NEW"
     assert fetched.funnel_state == "not_started"

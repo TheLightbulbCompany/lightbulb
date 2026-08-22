@@ -1600,7 +1600,7 @@ class PaperclipRepo:
         except Exception as e:  # noqa: BLE001 — best-effort annotation of an already-degraded row
             logger.warning("_record_late_ack failed for %s: %s", user_id, e)
 
-    async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+    async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> bool:
         """Conditional ``bootstrap_state: dispatched|sent -> delivered``, fenced
         on ``onboarding_generation`` AND ``bootstrap_dispatch_id`` (so a
         stale completion observer from a superseded dispatch attempt can
@@ -1616,12 +1616,15 @@ class PaperclipRepo:
         ``dispatched`` is still admitted for a terminal that beats the
         ack-time bookkeeping write.
 
-        A lost guard (``ConditionalCheckFailedException`` -- the generation
-        moved on, or a duplicate/re-delivered terminal for a dispatch that
-        already resolved) is swallowed: the completion observer that calls
-        this is fire-and-forget by contract (see the ``bootstrap_dispatcher``
-        module docstring), and a caller racing a superseded write has
-        nothing further to do.
+        Returns whether THIS call landed the transition. A lost guard
+        (``ConditionalCheckFailedException`` -- the generation moved on, or a
+        duplicate/re-delivered terminal for a dispatch that already resolved)
+        is swallowed and reported as False: the completion observer that
+        calls this is fire-and-forget by contract (see the
+        ``bootstrap_dispatcher`` module docstring), and a caller racing a
+        superseded write has nothing further to do -- in particular it must
+        NOT run the delivered-only follow-ups (the first-contact nudge), which
+        is how two processes observing the same run send one nudge, not two.
         """
         table = self._table()
         try:
@@ -1647,7 +1650,8 @@ class PaperclipRepo:
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+            return False
+        return True
 
     async def mark_bootstrap_failed(
         self,

@@ -78,6 +78,21 @@ what flips ``bootstrap_state`` to ``delivered`` on ``chat.final`` (and
 ``error``/``aborted``, or a chat.send that never reaches OpenClaw at all,
 marks ``bootstrap_state`` ``failed`` with the reason recorded.
 
+That observer is in-process memory, so it dies with the process that
+dispatched (a rolling deploy's graceful shutdown, the frontend-gone grace
+close) while the kickoff keeps running inside OpenClaw. Two things make
+completion survive that. The kickoff's ``idempotencyKey`` -- which OpenClaw
+echoes back as ``runId`` on every event of the run -- IS the persisted
+``bootstrap_dispatch_id``, so the row alone identifies the run. And a poll
+that finds the row ``sent`` with no observer registered in ITS process
+re-attaches one (``_reattach_kickoff_observer``) on a live connection --
+no claim, no chat.send. The pool's ``close()`` accordingly hands observers
+off (drops them) instead of failing them; only a genuine gateway drop (dead
+reader loop) still resolves a pending observer as failed. If the terminal
+fires while no process is connected at all, the row stays ``sent`` --
+truthful (the kickoff WAS delivered), invisible to the owner, legible on
+the admin page.
+
 THREE STAMPS, EACH WRITTEN AT THE MOMENT IT BECOMES TRUE. The claim used
 to be the only stamp before the terminal one, which meant a row sat at
 ``dispatched`` across the whole ~3-minute connect ladder AND the entire
@@ -171,12 +186,13 @@ Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
   The post-connect exclusion is the load-bearing safety property: once the
   connect succeeds, a ``chat.send`` may already have been written and
   ACCEPTED by OpenClaw when its ack merely times out or the socket drops
-  WHILE WAITING (``connection_pool.send_rpc``). Re-arming there would mint a
-  NEW ``run_id`` / ``idempotencyKey`` on the next poll (the dispatch derives
-  both fresh, NOT from the stable ``bootstrap_dispatch_id``), which OpenClaw
-  cannot dedup against a run it already took -- so Friday's kickoff could
-  execute more than once. Marking ``failed`` instead keeps that ambiguous
-  case recoverable by a human / the next ``onboarding_generation`` without
+  WHILE WAITING (``connection_pool.send_rpc``). Re-arming there would re-claim
+  the row on the next poll, and every claim mints a NEW
+  ``bootstrap_dispatch_id`` -- which IS the kickoff's ``idempotencyKey`` /
+  runId -- so OpenClaw cannot dedup the second send against a run it already
+  took -- so Friday's kickoff could execute more than once. Marking ``failed``
+  instead keeps that ambiguous case recoverable by a human / the next
+  ``onboarding_generation`` without
   ever risking a double kickoff. Without ANY re-arm, ``failed`` was terminal
   (``claim_bootstrap_dispatch`` admits only ``not_started``) and one boot
   race killed the onboarding forever; scoping re-arm to the provably-pre-send
@@ -194,6 +210,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -238,6 +255,16 @@ STALE_DISPATCH_AFTER_S = 600
 # a KNOWN-delivered kickoff into a row that reads as an unacked send (terminal,
 # and admin-retryable into a double delivery). See ``_settle_ack``.
 _ACK_STAMP_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2, 5)
+
+# A re-attach that did NOT end with an observer registered (runtime not up,
+# no default agent in the EFS config, connect refused, connection vanished
+# between dial and register) is retried by the next poll -- but no sooner than
+# this. ``sent`` has no staleness rule, so without a bound a row that can
+# never re-attach would pay a container resolve + EFS read + gateway dial on
+# every ~3s poll, forever. Process-local: a wedged row is throttled per
+# backend task, which is the only place the cost is paid.
+_REATTACH_BACKOFF_S = 60.0
+_reattach_not_before: dict[str, float] = {}
 
 # Recorded on ``bootstrap_last_error`` by the staleness rule. Written for a
 # human (the admin surface renders it verbatim), so they say what happened and
@@ -665,6 +692,150 @@ async def _maybe_nudge_first_contact(
         logger.exception("bootstrap_dispatcher: first-contact nudge failed for %s", owner_id)
 
 
+def _kickoff_observer(
+    repo,
+    *,
+    row_user_id: str,
+    owner_id: str,
+    generation: str,
+    dispatch_id: str,
+    session_key: str,
+    friday_agent_id: str,
+    submitted_by: str,
+):
+    """The run-completion observer for one kickoff (``dispatch_id`` == runId).
+
+    Built from the row's fields rather than closed over a dispatch's locals so
+    the SAME observer can be registered by the process that dispatched and,
+    after that process is gone, by whichever process re-attaches from the
+    ``sent`` row (``_reattach_kickoff_observer``). The repo writes it makes
+    are fenced on ``dispatch_id`` + live state, so two processes observing
+    the same run cannot double-resolve it.
+    """
+
+    async def _on_terminal(state: str, payload: dict) -> None:
+        try:
+            if state == "final":
+                # Both of these are COMPLETION-dependent and stay here: the
+                # delivered/complete marks describe a run that ENDED, and the
+                # nudge asks why it ended without a first email. The one thing
+                # that moved to ack time is delete_pending_brief (see
+                # ``_settle_ack``) -- it depends on DELIVERY, not completion.
+                won = await repo.mark_bootstrap_delivered(
+                    row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
+                )
+                # Two processes can legitimately observe the same run (the one
+                # that dispatched and one that re-attached during a rolling
+                # deploy's overlap); both see the terminal, but only the CAS
+                # winner owns the delivered-only follow-up, or Friday gets two
+                # nudges for one run.
+                if won:
+                    await _maybe_nudge_first_contact(
+                        repo,
+                        row_user_id,
+                        owner_id=owner_id,
+                        generation=generation,
+                        session_key=session_key,
+                        friday_agent_id=friday_agent_id,
+                        submitted_by=submitted_by,
+                    )
+            else:
+                err_msg = payload.get("errorMessage") or payload.get("error") or f"chat.{state}"
+                await repo.mark_bootstrap_failed(
+                    row_user_id,
+                    onboarding_generation=generation,
+                    dispatch_id=dispatch_id,
+                    reason=str(err_msg),
+                )
+        except Exception:  # noqa: BLE001 -- a completion-observer callback must never raise
+            logger.exception(
+                "bootstrap_dispatcher: completion observer failed for %s dispatch_id=%s",
+                owner_id,
+                dispatch_id,
+            )
+
+    return _on_terminal
+
+
+async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -> None:
+    """Make sure THIS process observes a ``sent`` kickoff's terminal.
+
+    The completion observer is in-process memory. The process that dispatched
+    can be gone before Friday finishes -- a rolling deploy's graceful
+    shutdown, the frontend-gone grace close -- while the kickoff keeps running
+    inside OpenClaw (the pool's ``close()`` hands observers off rather than
+    failing them for exactly this reason). The row is still truthfully
+    ``sent``, and its ``bootstrap_dispatch_id`` IS the run's ``runId``, so any
+    poll that finds it can register an observer keyed by that id on a live
+    connection -- no claim, no chat.send, nothing that could run Friday twice.
+
+    Cheap in steady state: when this process already holds the observer (the
+    common case -- the dispatching process is usually the one polling) this
+    is one dict lookup. Otherwise it resolves the runtime and opens/reuses the
+    gateway connection -- the same dial the dispatch itself makes. Failures
+    (runtime not up, connect refused) are left for the next poll; nothing here
+    ever settles the row, which is still truthfully ``sent``.
+
+    Ceiling, accepted: if the terminal fires while no process is connected at
+    all (the shutdown-to-reconnect gap, an owner away with the grace close
+    done), no observer sees it and the row stays ``sent`` -- invisible to the
+    owner (the kickoff WAS delivered) and legible on the admin page.
+    Reconciling that from ``chat.history`` is the upgrade path if it matters.
+    """
+    row_user_id = onboarding.get("user_id")
+    generation = onboarding.get("onboarding_generation")
+    dispatch_id = onboarding.get("bootstrap_dispatch_id")
+    if not (row_user_id and generation and dispatch_id):
+        return
+
+    from core.containers import get_ecs_manager, get_gateway_pool
+
+    pool = get_gateway_pool()
+    if pool.has_run_completion_callback(owner_id, dispatch_id):
+        return
+    now = time.monotonic()
+    if _reattach_not_before.get(owner_id, 0.0) > now:
+        return
+
+    registered = False
+    try:
+        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+        friday_agent_id = await _resolve_default_agent_id(owner_id) if container and ip else None
+        if friday_agent_id:
+            from routers.websocket_chat import build_chat_session_key
+
+            submitted_by = onboarding.get("onboarding_submitted_by") or row_user_id
+            session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+            registered = pool.register_run_completion_callback(
+                owner_id,
+                dispatch_id,
+                _kickoff_observer(
+                    repo,
+                    row_user_id=row_user_id,
+                    owner_id=owner_id,
+                    generation=generation,
+                    dispatch_id=dispatch_id,
+                    session_key=session_key,
+                    friday_agent_id=friday_agent_id,
+                    submitted_by=submitted_by,
+                ),
+            )
+    except Exception as e:  # noqa: BLE001 -- best-effort; a later poll tries again
+        logger.info("bootstrap_dispatcher: observer re-attach for %s deferred: %s", owner_id, e)
+
+    if registered:
+        _reattach_not_before.pop(owner_id, None)
+        put_metric("bootstrap.observer_reattached")
+        logger.info("bootstrap_dispatcher: re-attached kickoff observer for %s dispatch_id=%s", owner_id, dispatch_id)
+    else:
+        # Runtime not up, no default agent, dial failed, or the connection
+        # vanished between dial and register -- the next poll after the backoff
+        # retries. Metered so a row that NEVER re-attaches is visible.
+        _reattach_not_before[owner_id] = now + _REATTACH_BACKOFF_S
+        put_metric("bootstrap.observer_reattach_missed")
+
+
 async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = None) -> None:
     """Best-effort: dispatch Friday's first-run kickoff if it is this
     caller's turn to (INV-5) and the runtime is reachable right now -- and,
@@ -697,6 +868,13 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # not_started: nothing to dispatch yet. complete: already delivered.
         return
     bootstrap_state = onboarding.get("bootstrap_state") or "not_started"
+    if bootstrap_state == "sent":
+        # The chat.send was ACKED -- by some process, maybe not this one, maybe
+        # one that no longer exists. Nothing to claim or send; the only
+        # outstanding work is observing the run's terminal, and that observer
+        # is in-process memory. Make sure THIS process holds one.
+        await _reattach_kickoff_observer(repo, onboarding, owner_id=owner_id)
+        return
     if bootstrap_state == "dispatched":
         # A peer holds the claim (possibly mid connect-retry) -- UNLESS its
         # process is gone. This is the lazy staleness expiry (module
@@ -707,9 +885,7 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         if not await _recover_stale_dispatch(repo, onboarding, owner_id=owner_id):
             return
     elif bootstrap_state != "not_started":
-        # sent: the chat.send was ACKED -- delivery happened, and only the
-        # completion bookkeeping can still be outstanding; re-sending would
-        # double-run Friday. delivered: done. failed: terminal -- a
+        # delivered: done. failed: terminal -- a
         # DETERMINISTIC connect failure, the attempts cap, an AMBIGUOUS
         # post-connect failure (chat.send may already have been accepted; see
         # the failure classifier below), or an expired ambiguous claim. Only
@@ -775,42 +951,23 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
     # docstring: this is what makes the kickoff visible to whoever actually
     # submitted the brief, not just the org creator.
     session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
-    run_id = str(uuid4())
-
-    async def _on_terminal(state: str, payload: dict) -> None:
-        try:
-            if state == "final":
-                # Both of these are COMPLETION-dependent and stay here: the
-                # delivered/complete marks describe a run that ENDED, and the
-                # nudge asks why it ended without a first email. The one thing
-                # that moved to ack time is delete_pending_brief (see
-                # ``_settle_ack``) — it depends on DELIVERY, not completion.
-                await repo.mark_bootstrap_delivered(
-                    row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
-                )
-                await _maybe_nudge_first_contact(
-                    repo,
-                    row_user_id,
-                    owner_id=owner_id,
-                    generation=generation,
-                    session_key=session_key,
-                    friday_agent_id=friday_agent_id,
-                    submitted_by=submitted_by,
-                )
-            else:
-                err_msg = payload.get("errorMessage") or payload.get("error") or f"chat.{state}"
-                await repo.mark_bootstrap_failed(
-                    row_user_id,
-                    onboarding_generation=generation,
-                    dispatch_id=dispatch_id,
-                    reason=str(err_msg),
-                )
-        except Exception:  # noqa: BLE001 — a completion-observer callback must never raise
-            logger.exception(
-                "bootstrap_dispatcher: completion observer failed for %s dispatch_id=%s",
-                owner_id,
-                dispatch_id,
-            )
+    # The kickoff's chat.send idempotencyKey -- which OpenClaw echoes back as
+    # ``runId`` on every event of the run -- is the persisted dispatch id, NOT
+    # a fresh uuid: the row alone then identifies the run, so a process that
+    # did not dispatch (the one that survives a rolling deploy) can still
+    # observe its terminal (``_reattach_kickoff_observer``). Re-arm safety is
+    # unchanged: every claim mints a new dispatch id (module docstring).
+    run_id = dispatch_id
+    _on_terminal = _kickoff_observer(
+        repo,
+        row_user_id=row_user_id,
+        owner_id=owner_id,
+        generation=generation,
+        dispatch_id=dispatch_id,
+        session_key=session_key,
+        friday_agent_id=friday_agent_id,
+        submitted_by=submitted_by,
+    )
 
     registered = False
     # Tracks whether the gateway WebSocket connect SUCCEEDED. It is the pivot

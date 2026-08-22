@@ -25,7 +25,7 @@ description: >
   change this file too:
   - Capability inventory .... routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
                               routers/channels.py (SUPPORTED_PROVIDERS — keep the channel list in lockstep);
-                              routers/agent_mail_relay.py (email wake); container cron via backend RPC;
+                              routers/ses_inbound.py (email wake — allowlisted senders only); container cron via backend RPC;
                               extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Integrations wiring ..... apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)

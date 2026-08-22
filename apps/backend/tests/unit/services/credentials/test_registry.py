@@ -54,12 +54,14 @@ def test_posthog_inbound_is_bearer_guided():
     # the owner configures, verified by Paperclip's native bearer mode.
     assert p.inbound.webhook_registration == "guided_paste"
     assert p.inbound.signing_mode == "bearer"
+    assert p.inbound.event_in_body is True
     assert p.inbound.signature_header is None
     # No paste-back step, so no secret_hint — but the destination form is
     # buried enough that the instructions are load-bearing.
     assert p.inbound.secret_hint is None
     assert p.inbound.instructions
     assert "properties.code" in p.inbound.instructions
+    assert "Never add URLs" in p.inbound.instructions
     assert {e.id for e in p.inbound.events} == {
         "$identify",
         "$pageview",
@@ -71,6 +73,7 @@ def test_posthog_inbound_is_bearer_guided():
     assert event.starter_prompt is not None
     assert "duplicate-activation-blocker" in event.starter_prompt
     assert "CloudWatch" in event.starter_prompt
+    assert "{{code, service=isol8-backend, env=prod}}" in event.starter_prompt
     assert "conversation data" in event.starter_prompt
     assert "{event_label}" in p.inbound.template.title
 

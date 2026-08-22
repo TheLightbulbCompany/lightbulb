@@ -243,7 +243,8 @@ async def test_seed_trigger_routine_posthog_bearer_guided_returns_webhook_secret
     assert "Exception captured" in out["instructions"]
     assert "default event JSON body" in out["instructions"]
     assert "properties.code" in out["instructions"]
-    assert "conversation transcript" in out["instructions"]
+    assert "Never add URLs" in out["instructions"]
+    assert "conversation fields" in out["instructions"]
     # No paste-back input on this variant, so no hint to shape it.
     assert out["secret_hint"] is None
 
@@ -261,6 +262,7 @@ async def test_seed_trigger_routine_posthog_onboarding_gate_prompt_names_require
     assert "properties.code" in routine["description"]
     assert "distinct_id" in routine["description"]
     assert "properties.$session_id" in routine["description"]
+    assert "Isol8/provision.gate.blocked{code, service=isol8-backend, env=prod}" in routine["description"]
     assert "CloudWatch" in routine["description"]
     assert "duplicate-activation-blocker" in routine["description"]
     assert "conversation data" in routine["description"]

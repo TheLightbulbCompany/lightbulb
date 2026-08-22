@@ -60,7 +60,9 @@ describe("AgentEmailSection", () => {
     });
   });
 
-  it("shows the paused-outbound banner and re-enables via PATCH outbound_disabled: null", async () => {
+  it("shows the paused-outbound banner and re-enables via PATCH outbound_disabled: null ONLY", async () => {
+    // Re-enable must not also persist unsaved edits — it PATCHes exactly
+    // { outbound_disabled: null }, not save()'s full body.
     mockGet.mockResolvedValue({
       addresses: [{ ...baseAddress, outbound_disabled: "complaint" }],
     });
@@ -73,8 +75,6 @@ describe("AgentEmailSection", () => {
 
     await waitFor(() => expect(mockPatch).toHaveBeenCalled());
     expect(mockPatch).toHaveBeenCalledWith("/agent-mail/addresses/agent_f", {
-      verified_senders: ["o@x.y"],
-      send_to_anyone: false,
       outbound_disabled: null,
     });
   });
@@ -98,6 +98,30 @@ describe("AgentEmailSection", () => {
     await waitFor(() => {
       const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
       expect(textarea.value).toBe("new@x.y");
+    });
+  });
+
+  // Regression: a deep-link retarget (AgentsPanel changes the selected agent
+  // without resetting tabs) can move from one agent with no row to ANOTHER
+  // agent with no row — same `undefined` derived values, so the reseed
+  // effect didn't re-fire on `row?.address`/`sendersFromRow`/`anyoneFromRow`
+  // alone, and the first agent's unsaved textarea text carried over.
+  it("clears unsaved textarea text when the deep link retargets to a different agent with no row", async () => {
+    mockGet.mockResolvedValue({ addresses: [baseAddress] }); // neither agent_a nor agent_b has a row here
+    const { rerender } = renderSection("agent_a");
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "typed@x.y" } });
+    expect(textarea.value).toBe("typed@x.y");
+
+    rerender(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <AgentEmailSection agentId="agent_b" />
+      </SWRConfig>,
+    );
+
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
 

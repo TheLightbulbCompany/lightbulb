@@ -56,25 +56,45 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
   // every save and clobbers whatever the user is mid-typing. Deriving
   // primitive keys first means the effect only fires on a real content
   // change, and satisfies exhaustive-deps without a lint escape hatch.
+  // `agentId` is also a dep: on a deep-link retarget (AgentsPanel changes the
+  // selected agent without resetting tabs) two agents can both have no row —
+  // same `undefined` derived values — so without keying on agentId the
+  // effect would not re-fire and the old agent's unsaved edits would carry
+  // over onto the new one.
   const sendersFromRow = (row?.verified_senders ?? []).join("\n");
   const anyoneFromRow = row?.send_to_anyone ?? false;
   useEffect(() => {
     setSenders(sendersFromRow);
     setAnyone(anyoneFromRow);
-  }, [row?.address, sendersFromRow, anyoneFromRow]);
+  }, [agentId, row?.address, sendersFromRow, anyoneFromRow]);
 
   if (error && !data) return <div className="p-4 text-sm text-[#dc2626]">Failed to load email settings.</div>;
   if (isLoading || !data) return <div className="p-4 text-sm text-[var(--mute)]">Loading email…</div>;
 
-  const save = async (extra: Record<string, unknown> = {}) => {
+  const save = async () => {
     setSaving(true);
     setErr(null);
     try {
       await api.patch(`/agent-mail/addresses/${agentId}`, {
         verified_senders: senders.split("\n").map((s) => s.trim()).filter(Boolean),
         send_to_anyone: anyone,
-        ...extra,
       });
+      await mutate();
+    } catch (e) {
+      setErr(describeSaveError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Its own handler, not save({ outbound_disabled: null }) — save() also
+  // persists whatever the user has mid-typed in the textarea/checkbox, which
+  // Re-enable must not do.
+  const reenable = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      await api.patch(`/agent-mail/addresses/${agentId}`, { outbound_disabled: null });
       await mutate();
     } catch (e) {
       setErr(describeSaveError(e));
@@ -98,7 +118,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
         {row?.outbound_disabled && (
           <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
             Outbound email is paused: a recipient reported a message as spam.
-            <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={() => save({ outbound_disabled: null })}>
+            <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
               Re-enable
             </Button>
           </div>

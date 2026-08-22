@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { Mail } from "lucide-react";
+import { ApiError } from "@isol8/shared";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
@@ -13,6 +14,26 @@ interface AddressRow {
   verified_senders: string[];
   send_to_anyone: boolean;
   outbound_disabled: string | null;
+}
+
+// The backend raises HTTPException(detail={"status": "bad_sender", "entry": …})
+// / {"status": reason} — a structured, non-string detail that @isol8/shared's
+// extractDetailMessage doesn't promote (it only lifts a string `detail` or a
+// `detail.message`), so ApiError.message falls back to the opaque "API 400".
+// Read the structured body ourselves rather than touching the shared client.
+function describeSaveError(e: unknown): string {
+  if (e instanceof ApiError && e.body && typeof e.body === "object" && "detail" in e.body) {
+    const detail = (e.body as { detail?: unknown }).detail;
+    if (detail && typeof detail === "object") {
+      const status = (detail as { status?: unknown }).status;
+      if (status === "bad_sender") {
+        const entry = (detail as { entry?: unknown }).entry;
+        return `Invalid sender "${entry}" — use an address (bob@example.com) or a domain (@example.com).`;
+      }
+      if (typeof status === "string") return `Save failed (${status}).`;
+    }
+  }
+  return e instanceof Error ? e.message : "Save failed";
 }
 
 export function AgentEmailSection({ agentId }: { agentId: string }) {
@@ -28,10 +49,19 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Reseed local edit state only when the SERVER VALUES actually change, not
+  // on every SWR revalidation — `row?.verified_senders` is a fresh array
+  // reference on every fetch even when the content is identical, and `save()`
+  // awaits `mutate()`, so a naive array/boolean dependency reruns this on
+  // every save and clobbers whatever the user is mid-typing. Deriving
+  // primitive keys first means the effect only fires on a real content
+  // change, and satisfies exhaustive-deps without a lint escape hatch.
+  const sendersFromRow = (row?.verified_senders ?? []).join("\n");
+  const anyoneFromRow = row?.send_to_anyone ?? false;
   useEffect(() => {
-    setSenders((row?.verified_senders ?? []).join("\n"));
-    setAnyone(row?.send_to_anyone ?? false);
-  }, [row?.address, row?.verified_senders, row?.send_to_anyone]);
+    setSenders(sendersFromRow);
+    setAnyone(anyoneFromRow);
+  }, [row?.address, sendersFromRow, anyoneFromRow]);
 
   if (error && !data) return <div className="p-4 text-sm text-[#dc2626]">Failed to load email settings.</div>;
   if (isLoading || !data) return <div className="p-4 text-sm text-[var(--mute)]">Loading email…</div>;
@@ -47,7 +77,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
       });
       await mutate();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Save failed");
+      setErr(describeSaveError(e));
     } finally {
       setSaving(false);
     }
@@ -66,9 +96,9 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           )}
         </div>
         {row?.outbound_disabled && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+          <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
             Outbound email is paused: a recipient reported a message as spam.
-            <Button variant="outline" size="sm" className="ml-2" disabled={saving} onClick={() => save({ outbound_disabled: null })}>
+            <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={() => save({ outbound_disabled: null })}>
               Re-enable
             </Button>
           </div>
@@ -80,15 +110,16 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
             value={senders}
+            disabled={saving}
             onChange={(e) => setSenders(e.target.value)}
           />
         </label>
         <label className="flex items-center gap-2 text-xs">
-          <input type="checkbox" checked={anyone} onChange={(e) => setAnyone(e.target.checked)} />
+          <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
           Let this agent email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
         {err && <p className="text-xs text-[#dc2626]">{err}</p>}
-        <Button size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
+        <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
       </div>
     </div>
   );

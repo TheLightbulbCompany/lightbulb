@@ -6,10 +6,13 @@ path and the bearer must timing-safe-match THAT owner's ``containers.hook_token`
 own owner. Policy for WHO a message may go to lives in
 ``core/services/agent_mail_send.send``; this router only authenticates, rate
 limits, validates shapes, and relays the result string.
+
+The per-minute bucket below is burst smoothing ONLY — it is per-process, and
+several backend tasks run behind the ALB, so it is not a real quota. The
+durable fence is the per-owner daily cap enforced in ``agent_mail_send``.
 """
 
 import hmac
-import logging
 import re
 import time
 from collections import defaultdict, deque
@@ -24,7 +27,6 @@ from core.services.agent_email import ensure_agent_address
 from core.services.agent_mail_reply import resolve_from_address
 from core.services.agent_mail_send import _owner_email, send
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 RATE_LIMIT_PER_MINUTE = 60
@@ -52,6 +54,11 @@ async def _require_hook_token(owner_id: str, request: Request) -> None:
     presented = auth[len("Bearer ") :]
     container = await container_repo.get_by_owner_id(owner_id)
     expected = container.get("hook_token") if container else ""
+    # Compare bytes, not str: hmac.compare_digest raises TypeError on `str`
+    # arguments containing non-ASCII characters, and `presented` comes straight
+    # from the raw Authorization header. An unhandled TypeError would surface
+    # as a 500 instead of the intended 401. `.encode("utf-8")` on any `str`
+    # always succeeds, and comparing bytes is still constant-time.
     if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail={"status": "invalid_token"})
     if not _check_rate_limit(owner_id):

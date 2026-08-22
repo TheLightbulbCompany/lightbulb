@@ -67,6 +67,80 @@ def test_send_delegates(client):
     assert send.call_args.kwargs["to"] == "v@x.y" and send.call_args.kwargs["agent_id"] == AGENT
 
 
+# ---- ported from the deleted routers/agent_mail_send.py test suite --------
+# (same auth boundary, now on POST /u/{owner_id}/send instead of
+# /send-to-owner/u/{owner_id} — see git show 28e83f275:apps/backend/tests/unit/routers/test_agent_mail_send.py)
+
+
+def _send_body(agent_id=AGENT):
+    return {"agent_id": agent_id, "subject": "s", "body_text": "b"}
+
+
+def test_send_unknown_owner_401(client):
+    with patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=None)):
+        r = client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H)
+    assert r.status_code == 401
+
+
+def test_send_owner_as_token_holder_cannot_send_for_a_different_owner(client):
+    """owner_b's row carries a DIFFERENT hook_token, so owner_a's token fails
+    the compare — the whole point of naming the owner in the path."""
+    with patch.object(
+        agent_mail.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_b", "hook_token": "hook-token-for-b"}),
+    ):
+        r = client.post(
+            "/api/v1/agent-mail/u/user_b/send",
+            json=_send_body(),
+            headers=H,
+        )
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_send_non_ascii_bearer_is_401_not_500():
+    """hmac.compare_digest raises TypeError on a non-ASCII `str`, which would
+    surface as a 500 instead of a 401.
+
+    Driven directly against `_require_hook_token`: httpx refuses to transmit a
+    non-ASCII header at all, but Starlette decodes real headers as latin-1, so
+    a raw ASGI request genuinely can hand us one.
+    """
+    from fastapi import HTTPException
+
+    class _Req:
+        headers = {"Authorization": "Bearer ünïcode"}
+
+    with patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())):
+        with pytest.raises(HTTPException) as exc:
+            await agent_mail._require_hook_token(OWNER, _Req())
+    assert exc.value.status_code == 401
+
+
+def test_send_rate_limit_returns_429(client):
+    with (
+        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
+        patch.object(agent_mail, "send", AsyncMock(return_value="sent")),
+    ):
+        for _ in range(agent_mail.RATE_LIMIT_PER_MINUTE):
+            assert client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H).status_code == 200
+        assert client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H).status_code == 429
+
+
+def test_send_401s_do_not_charge_the_rate_limit_bucket(client):
+    """Auth runs before the limiter, so an unauthenticated flood cannot lock
+    the real owner out."""
+    with patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())):
+        for _ in range(80):
+            client.post(
+                f"/api/v1/agent-mail/u/{OWNER}/send",
+                json=_send_body(),
+                headers={"Authorization": "Bearer WRONG"},
+            )
+    assert len(agent_mail._RATE_BUCKETS_PER_OWNER[OWNER]) == 0
+
+
 def test_inbox_lists_with_keys_and_truncates(client):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),

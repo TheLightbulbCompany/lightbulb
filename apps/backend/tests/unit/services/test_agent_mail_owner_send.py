@@ -18,6 +18,7 @@ def wired(monkeypatch):
     """Wire every collaborator to a recorder so each test can flip one thing."""
     st = types.SimpleNamespace(
         cap_allows=True,
+        cap_calls=0,
         claim_returns=True,
         claimed=False,
         settled=None,
@@ -42,6 +43,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "prod")
 
     async def _cap(owner_id, *, day, cap):
+        st.cap_calls += 1
         return st.cap_allows
 
     class _Repo:
@@ -199,6 +201,24 @@ async def test_cap_exceeded_releases_the_claim_rather_than_wedging_it(wired):
     assert wired.ses_calls == 0
     assert wired.settled == "failed"
     assert wired.settle_reason == "daily_cap_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_system_notice_ignores_the_daily_cap(wired):
+    """The cap fences a LOOPING AGENT. The outbound-paused notice has to reach
+    the owner precisely when that fence has tripped, so a system notice must
+    not even consult it."""
+    wired.cap_allows = False
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Outbound email paused",
+        body_text="body",
+        system_notice=True,
+    )
+    assert result == "sent"
+    assert wired.cap_calls == 0
+    assert wired.ses_calls == 1
 
 
 @pytest.mark.asyncio

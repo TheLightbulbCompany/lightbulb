@@ -74,10 +74,17 @@ async def send_to_owner(
 
     ``system_notice=True`` marks a send the PLATFORM originates (e.g. the
     outbound-paused complaint notice) rather than an agent reaching out. Such
-    a send skips the first-contact claim/settle entirely: it must never
-    consume the owner's once-only first-contact slot, which would leave the
-    agent's real hello permanently owed. Everything else is unchanged — it
-    still mints the address and still spends a daily-cap unit.
+    a send skips TWO agent-facing fences:
+
+    - the first-contact claim/settle, which it must never consume — that
+      would leave the agent's real hello permanently owed; and
+    - the daily send cap, which exists to fence a LOOPING AGENT. A platform
+      notice ("your outbound is paused") has to reach the owner precisely
+      when the agent has been misbehaving, which is exactly when the cap is
+      exhausted. It stays bounded anyway: only the backend can set this flag,
+      and the router's per-minute burst limiter still applies.
+
+    Everything else is unchanged — it still mints the address and sends.
     """
     try:
         # Validated HERE, not only at the router: `purpose` is a metric
@@ -138,9 +145,14 @@ async def send_to_owner(
         # Routed through _fail so a cap hit after a successful claim releases
         # it (`failed` is retryable and nudged) instead of leaving the row
         # stuck at `sending`.
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
-            return await _fail("daily_cap_exhausted", "rate_limited")
+        #
+        # NOT charged for a platform notice: the cap fences a looping AGENT,
+        # and the outbound-paused notice must reach the owner exactly when
+        # that fence has already tripped. See the docstring.
+        if not system_notice:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+                return await _fail("daily_cap_exhausted", "rate_limited")
 
         owner_email = await lookup_owner_email(
             org_id=owner_id if is_org_owner_id(owner_id) else None,

@@ -253,3 +253,16 @@ async def test_mint_never_raises_on_non_string_domain(monkeypatch):
         slug="acme",
     )
     assert result is None
+
+
+from core.services.agent_email import sender_allowed  # noqa: E402
+
+
+def test_sender_allowed_exact_and_domain():
+    row = {"verified_senders": ["owner@example.com", "@clientco.com"]}
+    assert sender_allowed(row, "owner@example.com")
+    assert sender_allowed(row, "Owner@Example.com")
+    assert sender_allowed(row, "anyone@clientco.com")
+    assert not sender_allowed(row, "anyone@notclientco.com")
+    assert not sender_allowed(row, "anyone@sub.clientco.com")
+    assert not sender_allowed({}, "owner@example.com")

@@ -116,3 +116,24 @@ async def mint_agent_email_address(
     except Exception as e:  # noqa: BLE001 — minting must never break provisioning
         logger.warning("agent_email.mint: failed for owner %s: %s", owner_id, e)
         return None
+
+
+def sender_allowed(row: dict, sender: str) -> bool:
+    """True when ``sender`` may WAKE this address's agent: an exact entry in
+    ``verified_senders`` or an ``@domain`` entry matching the sender's domain
+    exactly (no subdomain matching — ``@clientco.com`` does not admit
+    ``x@sub.clientco.com``)."""
+    sender = (sender or "").strip().lower()
+    if not sender or "@" not in sender:
+        return False
+    domain = "@" + sender.rsplit("@", 1)[1]
+    for entry in row.get("verified_senders") or []:
+        entry = (entry or "").strip().lower()
+        if not entry:
+            continue
+        if entry.startswith("@"):
+            if entry == domain:
+                return True
+        elif entry == sender:
+            return True
+    return False

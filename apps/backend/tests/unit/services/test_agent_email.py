@@ -266,3 +266,93 @@ def test_sender_allowed_exact_and_domain():
     assert not sender_allowed(row, "anyone@notclientco.com")
     assert not sender_allowed(row, "anyone@sub.clientco.com")
     assert not sender_allowed({}, "owner@example.com")
+
+
+import pytest  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
+from core.services import agent_email as ae  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_address_fast_path_uses_existing_row(monkeypatch):
+    monkeypatch.setattr(
+        ae.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"agent_id": "agent_x", "status": "active", "address": "atlas@acme.isol8.co"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(side_effect=AssertionError("must not be called")))
+    assert await ae.ensure_agent_address(owner_id="o", agent_id="agent_x", owner_email="o@x.y") == (
+        "atlas@acme.isol8.co",
+        "ok",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_address_mints_for_non_friday_agent(monkeypatch):
+    monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
+
+    class _Repo:
+        def __init__(self, table_name): ...
+        async def get_onboarding_state(self, owner_id):
+            return {"company_id": "co_1", "friday_agent_id": "agent_friday"}
+
+    monkeypatch.setattr(ae, "PaperclipRepo", _Repo)
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme Robotics"))
+    monkeypatch.setattr(ae, "allocate_company_slug", AsyncMock(return_value="acme-robotics"))
+    monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value="Atlas"))
+    mint = AsyncMock(return_value="atlas@acme-robotics.isol8.co")
+    monkeypatch.setattr(ae, "mint_agent_email_address", mint)
+    out = await ae.ensure_agent_address(owner_id="o", agent_id="agent_atlas", owner_email="o@x.y")
+    assert out == ("atlas@acme-robotics.isol8.co", "ok")
+    assert mint.call_args.kwargs["agent_name"] == "Atlas"
+    assert mint.call_args.kwargs["agent_id"] == "agent_atlas"
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_address_reports_reason(monkeypatch):
+    monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
+
+    class _Repo:
+        def __init__(self, table_name): ...
+        async def get_onboarding_state(self, owner_id):
+            return {"company_id": "co_1", "friday_agent_id": "agent_friday"}
+
+    monkeypatch.setattr(ae, "PaperclipRepo", _Repo)
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value=None))
+    assert await ae.ensure_agent_address(owner_id="o", agent_id="agent_friday", owner_email="o@x.y") == (
+        None,
+        "company_name_unavailable",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_name_friday_short_circuits(monkeypatch):
+    assert await ae.resolve_agent_name(agent_id="agent_friday", friday_agent_id="agent_friday") == "Friday"
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_address_slug_derives_from_live_company_name(monkeypatch):
+    """Not the provisioning placeholder — that is the whole point of minting
+    late (preserves the intent of the old
+    test_slug_derives_from_the_LIVE_company_name in test_agent_mail_owner_send.py,
+    which can no longer express this now that owner_send delegates wholesale
+    to ensure_agent_address)."""
+    monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
+
+    class _Repo:
+        def __init__(self, table_name): ...
+        async def get_onboarding_state(self, owner_id):
+            return {"company_id": "co_1", "friday_agent_id": "agent_friday"}
+
+    monkeypatch.setattr(ae, "PaperclipRepo", _Repo)
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Renamed By Friday"))
+    slug_mock = AsyncMock(return_value="renamed-by-friday")
+    monkeypatch.setattr(ae, "allocate_company_slug", slug_mock)
+    monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value="Friday"))
+    monkeypatch.setattr(ae, "mint_agent_email_address", AsyncMock(return_value="friday@renamed-by-friday.isol8.co"))
+    await ae.ensure_agent_address(owner_id="o", agent_id="agent_friday", owner_email="o@x.y")
+    assert slug_mock.call_args.kwargs["name"] == "Renamed By Friday"

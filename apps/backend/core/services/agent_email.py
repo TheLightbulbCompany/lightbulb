@@ -26,6 +26,10 @@ import re
 
 from core.config import settings
 from core.repositories import agent_email_repo
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.company_identity import allocate_company_slug
+from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -137,3 +141,66 @@ def sender_allowed(row: dict, sender: str) -> bool:
         elif entry == sender:
             return True
     return False
+
+
+async def resolve_company_name(company_id: str) -> str | None:
+    """The company's CURRENT name from Paperclip, or None. Read live, never
+    cached — the agent renames the company during its first run and that
+    rename lands in Paperclip, not in our row."""
+    try:
+        admin = shared_admin_client()
+        cookie = await get_admin_session_cookie(admin._http)
+        company = await admin.get_company(session_cookie=cookie, company_id=company_id)
+        name = (company or {}).get("name")
+        return name.strip() if isinstance(name, str) and name.strip() else None
+    except Exception as e:  # noqa: BLE001 — caller maps None to a failed mint
+        logger.warning("agent_email: company-name lookup failed for %s: %s", company_id, e)
+        return None
+
+
+async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None) -> str | None:
+    if friday_agent_id and agent_id == friday_agent_id:
+        return "Friday"
+    try:
+        admin = shared_admin_client()
+        cookie = await get_admin_session_cookie(admin._http)
+        agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
+        name = (agent or {}).get("name")
+        return name.strip() if isinstance(name, str) and name.strip() else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("agent_email: agent-name lookup failed for %s: %s", agent_id, e)
+        return None
+
+
+async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str) -> tuple[str | None, str]:
+    """The active address for ``agent_id`` — minted now if it does not exist.
+
+    Returns ``(address, "ok")`` or ``(None, reason)``. Minting is deferred to
+    first use on purpose: the slug derives from the company name the agent
+    actually chose (see agent_mail_owner_send's module docstring). Never raises.
+    """
+    try:
+        for row in await agent_email_repo.query_by_owner(owner_id):
+            if row.get("agent_id") == agent_id and row.get("status") == "active" and row.get("address"):
+                return row["address"], "ok"
+
+        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+        company_id = onboarding.get("company_id")
+        if not company_id:
+            return None, "incomplete_provisioning"
+        company_name = await resolve_company_name(company_id)
+        if not company_name:
+            return None, "company_name_unavailable"
+        slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
+        if not slug:
+            return None, "slug_allocation_failed"
+        agent_name = await resolve_agent_name(agent_id=agent_id, friday_agent_id=onboarding.get("friday_agent_id"))
+        if not agent_name:
+            return None, "agent_name_unavailable"
+        address = await mint_agent_email_address(
+            owner_id=owner_id, agent_id=agent_id, agent_name=agent_name, owner_email=owner_email, slug=slug
+        )
+        return (address, "ok") if address else (None, "mint_failed")
+    except Exception:  # noqa: BLE001
+        logger.exception("agent_email: ensure_agent_address failed for %s/%s", owner_id, agent_id)
+        return None, "mint_failed"

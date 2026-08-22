@@ -101,7 +101,7 @@ async def resolve_from_address(owner_id: str, agent_id: str) -> str | None:
     return None
 
 
-async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None) -> str:
+async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None, tenant_name: str | None = None) -> str:
     """Send a threaded reply for a decoded ReplyContext ``ctx``.
 
     Returns "sent", "not_sent", "no_address", "disabled", or "error". Never raises.
@@ -145,6 +145,7 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
             body_text=body_text,
             body_html=body_html,
             headers=(headers or None),
+            tenant_name=tenant_name,
         )
         if message_id is None:
             logger.error(

@@ -16,10 +16,13 @@ For each record this Lambda:
   - extracts SES's own SPF/DKIM/DMARC/spam/virus verdicts (SES's receipt
     pipeline has already run these scans by the time this Lambda sees the
     mail — they are authoritative, not best-effort), plus the two identities
-    those flat verdicts do not carry: SES's own ``Authentication-Results``
-    (the DKIM ``header.d=`` signing domain) and the envelope ``Return-Path``
-    from the receipt, both forwarded in ``headers`` for the backend's wake
-    gate,
+    those flat verdicts do not carry, as FIRST-CLASS verdict fields:
+    ``dkim_domains`` (the ``d=`` tags of the message's DKIM signatures, and
+    only when SES itself reported ``dkimVerdict == PASS``) and ``spf_domain``
+    (the domain of SES's recorded envelope sender). Neither is read out of a
+    trustworthy-looking header: an attacker with a valid signature for their
+    own domain can also paste a forged ``Authentication-Results`` into the
+    message, so the backend's wake gate must never parse one,
   - stores each attachment to S3 and mints a 1h presigned GET URL,
   - and POSTs a clean JSON payload to the backend's ``/webhooks/ses-inbound``
     ingest endpoint, authenticated with a shared secret (``X-Isol8-SES-Secret``,
@@ -67,6 +70,7 @@ simply skipped (logged), not treated as an error.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from email import message_from_bytes, policy
@@ -127,8 +131,57 @@ def _get_secret(arn=None):
     return _SECRET_CACHE[arn]
 
 
-def _extract_verdicts(receipt):
-    """Map SES's per-check verdict objects to a flat {name: status} dict.
+# A `DKIM-Signature` value is a `tag=value; …` list; the signing domain is its
+# `d=` tag. Anchored on the start of a tag (string start or a `;`) so a stray
+# "d=" inside another tag's value — the base64 in `b=`/`bh=` — cannot match.
+_DKIM_D_TAG_RE = re.compile(r"(?:^|;)\s*d\s*=\s*([^;\s]+)", re.IGNORECASE)
+
+
+def _dkim_signer_domains(msg, dkim_status):
+    """The `d=` signing domains of this message's own DKIM signatures.
+
+    Returned ONLY when SES reported ``dkimVerdict == PASS``: SES cryptograph-
+    ically verified a signature on this message, and a signature's `d=` tag is
+    itself covered by that signature, so it cannot be rewritten without
+    breaking it. That is why this is read off `DKIM-Signature` and NOT off
+    `Authentication-Results` — the latter is a plain header any sender can
+    paste (see the module docstring).
+
+    CONSERVATIVE, NOT PERFECT. SES's flat PASS says *at least one* signature
+    verified, not which one, so every signature's domain is forwarded and the
+    backend accepts alignment against any of them. An attacker who can get one
+    genuinely valid signature past SES could therefore attach a second,
+    unverified signature naming a domain they do not own. DMARC=PASS is the
+    strong path; this fallback exists only for senders SES gives no DMARC
+    verdict for, and it gates WAKING the agent, never storing the mail.
+    """
+    if str(dkim_status or "").strip().upper() != "PASS":
+        return []
+    domains = []
+    for raw in msg.get_all("DKIM-Signature") or []:
+        match = _DKIM_D_TAG_RE.search(str(raw))
+        if not match:
+            continue
+        domain = match.group(1).strip().strip(".").lower()
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _envelope_sender_domain(mail):
+    """Domain of SES's recorded envelope sender — the identity SPF authenticated.
+
+    ``mail["source"]`` is the SMTP MAIL FROM from SES's own receipt event. The
+    MIME's `Return-Path` is deliberately NOT used: that is whatever the sender
+    typed.
+    """
+    source = str(mail.get("source") or "").strip().strip("<>").strip().lower()
+    return source.rsplit("@", 1)[-1].strip().strip(".") if source else ""
+
+
+def _extract_verdicts(receipt, msg, mail):
+    """Map SES's per-check verdict objects to a flat {name: status} dict, plus
+    the two authenticated identities those flat verdicts do not carry.
 
     Every lookup is guarded with ``.get`` — a receipt missing a key (a
     verdict SES chose not to run, e.g. virus scanning disabled on some
@@ -144,6 +197,11 @@ def _extract_verdicts(receipt):
         "dmarc": _status("dmarcVerdict"),
         "spam": _status("spamVerdict"),
         "virus": _status("virusVerdict"),
+        # First-class identities for the backend's wake gate — derived from
+        # SES's receipt + the signed `DKIM-Signature`, never from a header
+        # the sender controls. See the two helpers above.
+        "dkim_domains": _dkim_signer_domains(msg, _status("dkimVerdict")),
+        "spf_domain": _envelope_sender_domain(mail),
     }
 
 
@@ -246,28 +304,10 @@ def _build_payload(ses, raw_mime):
     body = msg.get_body(preferencelist=("plain",))
     text = str(body.get_content()) if body is not None else ""
 
+    # Headers are forwarded verbatim for the inbox/threading, and are NOT an
+    # authentication source: the backend's wake gate reads the identity fields
+    # in `verdicts` below instead (see `_extract_verdicts`).
     headers = {str(k): str(v) for k, v in msg.items()}
-
-    # The backend's WAKE gate needs the two authenticated identities SES's
-    # flat verdicts do not carry: the DKIM signing domain and the ENVELOPE
-    # sender (see `authenticated_sender` in core/services/agent_mail_inbound).
-    # Both are pinned to SES's own view here, because the flat dict above
-    # keeps only the LAST value of a repeated header — a forwarded message
-    # carrying the original sender's `Authentication-Results` would otherwise
-    # win over SES's, and a `Return-Path` in the MIME is whatever the sender
-    # typed. `mail["source"]` is the envelope MAIL FROM from SES's receipt.
-    ses_authres = next(
-        (
-            str(v)
-            for v in (msg.get_all("Authentication-Results") or [])
-            if str(v).lstrip().lower().startswith("amazonses.com")
-        ),
-        "",
-    )
-    if ses_authres:
-        headers["Authentication-Results"] = ses_authres
-    if mail.get("source"):
-        headers["Return-Path"] = str(mail["source"])
 
     return {
         "message_id": message_id,
@@ -279,7 +319,7 @@ def _build_payload(ses, raw_mime):
         "subject": subject,
         "text": text,
         "headers": headers,
-        "verdicts": _extract_verdicts(receipt),
+        "verdicts": _extract_verdicts(receipt, msg, mail),
         "attachments": _process_attachments(msg, message_id),
     }
 

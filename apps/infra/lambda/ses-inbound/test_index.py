@@ -180,6 +180,10 @@ def test_handler_posts_clean_payload_with_verdicts_and_attachment():
         "dmarc": "PASS",
         "spam": "PASS",
         "virus": "PASS",
+        # No DKIM-Signature on this fixture; the envelope domain comes from
+        # SES's receipt (mail.source), never from a header.
+        "dkim_domains": [],
+        "spf_domain": "example.com",
     }
 
     assert len(body["attachments"]) == 1
@@ -677,9 +681,12 @@ def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Sender-identity forwarding: the two identities SES's flat verdicts do not
-# carry, which the backend's WAKE gate needs (authenticated_sender).
+# Sender-identity forwarding: the two authenticated identities SES's flat
+# verdicts do not carry, forwarded as FIRST-CLASS `verdicts` fields. Neither is
+# read out of a header — see index.py's module docstring.
 # ---------------------------------------------------------------------------
+
+_DKIM_SIG = "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from:to; bh=Zm8=; b=c2ln"
 
 
 def _post_and_capture(raw, event=None):
@@ -696,42 +703,54 @@ def _post_and_capture(raw, event=None):
     return captured["body"]
 
 
-def test_forwards_ses_authentication_results_and_envelope_return_path():
-    raw = _build_raw_mime(
-        extra_headers={
-            "Authentication-Results": "amazonses.com; spf=pass smtp.mailfrom=example.com; dkim=pass header.d=example.com;"
-        }
-    )
-    headers = _post_and_capture(raw)["headers"]
+def test_dkim_signer_domain_is_forwarded_when_ses_verified_the_signature():
+    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
 
-    assert "header.d=example.com" in headers["Authentication-Results"]
-    # From SES's receipt envelope (mail.source), not the MIME.
-    assert headers["Return-Path"] == "jane@example.com"
+    verdicts = _post_and_capture(raw)["verdicts"]
+
+    assert verdicts["dkim_domains"] == ["example.com"]
+    # From SES's receipt envelope (mail.source), not the MIME's Return-Path.
+    assert verdicts["spf_domain"] == "example.com"
 
 
-def test_ses_authentication_results_wins_over_a_forwarded_copy():
-    """A flat {name: value} dict keeps only the LAST repeated header, so a
-    forwarded message carrying the original sender's Authentication-Results
-    would otherwise outrank SES's own and let a forged `From` authenticate."""
-    import email.message
+def test_dkim_signer_domain_is_empty_when_ses_did_not_pass_dkim():
+    """SES's PASS is the only thing that makes a `d=` tag mean anything: without
+    it the signature is unverified and its domain proves nothing about `From`."""
+    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+    event = _ses_event(verdict_overrides={"dkimVerdict": {"status": "FAIL"}})
 
+    assert _post_and_capture(raw, event)["verdicts"]["dkim_domains"] == []
+
+
+def test_all_dkim_signature_domains_are_forwarded():
+    """SES's flat PASS says at least one signature verified, not which — so
+    every `d=` is forwarded and the backend aligns against any of them."""
     msg = email.message.EmailMessage()
     msg["From"] = "Jane Doe <jane@example.com>"
     msg["To"] = "agent@agents.isol8.co"
     msg["Subject"] = "Hello agent"
-    msg["Authentication-Results"] = "amazonses.com; dkim=pass header.d=example.com;"
-    msg["Authentication-Results"] = "attacker.test; dkim=pass header.d=github.com;"
+    msg["DKIM-Signature"] = _DKIM_SIG
+    msg["DKIM-Signature"] = _DKIM_SIG.replace("d=example.com", "d=Mail.Example.NET")
     msg.set_content("body\n")
 
-    headers = _post_and_capture(msg.as_bytes())["headers"]
-
-    assert headers["Authentication-Results"].startswith("amazonses.com")
-    assert "github.com" not in headers["Authentication-Results"]
+    assert _post_and_capture(msg.as_bytes())["verdicts"]["dkim_domains"] == ["example.com", "mail.example.net"]
 
 
-def test_return_path_is_overwritten_by_the_envelope_sender():
-    """A `Return-Path` in the MIME is whatever the sender typed; SES's receipt
-    envelope is the identity SPF actually authenticated."""
-    raw = _build_raw_mime(extra_headers={"Return-Path": "<spoofed@attacker.test>"})
+def test_forged_authentication_results_is_not_an_identity_source():
+    """The whole point of the first-class fields: an attacker can paste any
+    `Authentication-Results` into the message, and none of it may be forwarded
+    as an authenticated identity."""
+    raw = _build_raw_mime(
+        extra_headers={
+            "Authentication-Results": "amazonses.com; dkim=pass header.d=github.com;",
+            "Return-Path": "<spoofed@attacker.test>",
+        }
+    )
 
-    assert _post_and_capture(raw)["headers"]["Return-Path"] == "jane@example.com"
+    body = _post_and_capture(raw)
+
+    assert body["verdicts"]["dkim_domains"] == []
+    assert body["verdicts"]["spf_domain"] == "example.com"
+    # Headers are still forwarded verbatim for the inbox — they are simply not
+    # an authentication source any more.
+    assert body["headers"]["Return-Path"] == "<spoofed@attacker.test>"

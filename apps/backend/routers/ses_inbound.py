@@ -56,6 +56,8 @@ observability (log/metric correlation); the Lambda does not parse it.
 
 import hmac
 import logging
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -65,6 +67,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, normalize, query_by_owner, update_settings
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
+from core.repositories.container_repo import try_claim_daily_system_notice
 from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
@@ -138,7 +141,11 @@ class SesInboundBody(BaseModel):
     subject: str = ""
     text: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
-    verdicts: dict[str, str] = Field(default_factory=dict)
+    # `dict[str, Any]`, not `dict[str, str]`: `verdicts["dkim_domains"]` is a
+    # LIST of DKIM signing domains (see the Lambda's `_extract_verdicts`), and
+    # a str-valued dict would reject the whole payload. Everything reading a
+    # flat verdict off this dict must therefore `str()` it first.
+    verdicts: dict[str, Any] = Field(default_factory=dict)
     attachments: list[dict] = Field(default_factory=list)
 
 
@@ -201,7 +208,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # mail for spam/viruses before the Lambda ever saw it, so an explicit
         # FAIL here is authoritative — always dropped.
         verdicts = body.verdicts or {}
-        if (verdicts.get("virus") or "").upper() == "FAIL" or (verdicts.get("spam") or "").upper() == "FAIL":
+        if str(verdicts.get("virus") or "").upper() == "FAIL" or str(verdicts.get("spam") or "").upper() == "FAIL":
             return _final("dropped_spam_or_virus")
 
         # Anti-spoof gate: DMARC is authoritative when SES reports a verdict
@@ -215,11 +222,11 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # reaches the agent; the message is always stored either way.
         dmarc = verdicts.get("dmarc")
         if dmarc is not None:
-            if dmarc.upper() == "FAIL":
+            if str(dmarc).upper() == "FAIL":
                 return _final("dropped_failed_authentication")
         else:
-            spf = (verdicts.get("spf") or "").upper()
-            dkim = (verdicts.get("dkim") or "").upper()
+            spf = str(verdicts.get("spf") or "").upper()
+            dkim = str(verdicts.get("dkim") or "").upper()
             if spf == "FAIL" and dkim == "FAIL":
                 return _final("dropped_failed_authentication")
 
@@ -398,20 +405,31 @@ async def handle_ses_events(request: Request):
             # EventBridge API destination to retry (it retries on 5xx) rather
             # than claim success or silently notify the owner of a no-op.
             return JSONResponse(status_code=503, content={"status": "error"})
-        put_metric("agent_email.complaint", dimensions={"result": "disabled"})
-        try:
-            await send_to_owner(
-                owner_id=owner_id,
-                purpose="routine",
-                subject=_PAUSED_SUBJECT,
-                body_text=_PAUSED_BODY,
-                # Platform notice, not Friday saying hello — must not consume
-                # the owner's once-only first-contact slot.
-                system_notice=True,
-            )
-        except Exception:  # noqa: BLE001 — notification is best-effort
-            logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
-        return {"status": "disabled", "owner_id": owner_id, "addresses": disabled}
+        # ONE notice per owner per UTC day. SES fans a complaint out per
+        # recipient address, and `send_to_owner(system_notice=True)` bypasses
+        # the daily send cap by design — this durable claim is the only bound
+        # on it. Losing the claim suppresses the email only; the addresses are
+        # disabled either way.
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        notified = await try_claim_daily_system_notice(owner_id, day=day, kind="complaint")
+        put_metric(
+            "agent_email.complaint",
+            dimensions={"result": "disabled" if notified else "disabled_notice_suppressed"},
+        )
+        if notified:
+            try:
+                await send_to_owner(
+                    owner_id=owner_id,
+                    purpose="routine",
+                    subject=_PAUSED_SUBJECT,
+                    body_text=_PAUSED_BODY,
+                    # Platform notice, not Friday saying hello — must not consume
+                    # the owner's once-only first-contact slot.
+                    system_notice=True,
+                )
+            except Exception:  # noqa: BLE001 — notification is best-effort
+                logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
+        return {"status": "disabled", "owner_id": owner_id, "addresses": disabled, "notified": notified}
     except Exception:  # noqa: BLE001 — mirrors handle_ses_inbound's transient-vs-terminal split
         logger.exception("ses_events handler failed for owner %s", owner_id)
         return JSONResponse(status_code=503, content={"status": "error"})

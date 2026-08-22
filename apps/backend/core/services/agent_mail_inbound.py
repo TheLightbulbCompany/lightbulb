@@ -9,7 +9,6 @@ to `/hooks/agent`.
 """
 
 import logging
-import re
 from email.utils import parseaddr
 
 logger = logging.getLogger(__name__)
@@ -77,29 +76,56 @@ def _domain_of(value: str) -> str:
     return v.strip().strip(".")
 
 
-def _org_domain(domain: str) -> str:
-    """The relaxed-alignment key: the last two labels of ``domain``.
-
-    ``mail.github.com`` and ``github.com`` share ``github.com``, which is what
-    relaxed DMARC alignment means and what real senders need (bounce and
-    signing subdomains are ubiquitous).
-    """
-    # ponytail: last-two-labels, not the Public Suffix List. `a.co.uk` and
-    # `b.co.uk` would wrongly align; swap in a PSL lookup if that matters.
-    labels = [p for p in _domain_of(domain).split(".") if p]
-    return ".".join(labels[-2:])
+# Multi-label public suffixes under which two domains are NOT the same
+# organization. Hand-picked, not the Public Suffix List — see `_aligned`.
+_MULTI_LABEL_PUBLIC_SUFFIXES = frozenset(
+    {
+        "co.uk",
+        "com.au",
+        "co.jp",
+        "com.br",
+        "co.nz",
+        "co.za",
+        "org.uk",
+        "ac.uk",
+        "gov.uk",
+        "com.mx",
+        "co.in",
+        "com.sg",
+    }
+)
 
 
 def _aligned(candidate: str, sender_domain: str) -> bool:
-    key = _org_domain(candidate)
-    return bool(key) and key == _org_domain(sender_domain)
+    """Relaxed alignment: same domain, or one a subdomain of the other.
 
+    A CONSERVATIVE APPROXIMATION of DMARC's organizational-domain rule, not
+    the Public Suffix List (which would need a dependency and a refreshed
+    suffix database). Two domains align when they are EQUAL, or when the
+    shorter one has at least two labels, is not a known multi-label public
+    suffix (`co.uk`, `com.au`, …), and the longer one is a subdomain of it.
 
-# SES stamps its own `Authentication-Results` on inbound mail. DKIM's signing
-# domain is `header.d=` (or `header.i=@…`); SPF's authenticated identity is
-# `smtp.mailfrom=`.
-_DKIM_DOMAIN_RE = re.compile(r"header\.(?:d|i)=@?([^\s;,]+)", re.IGNORECASE)
-_MAILFROM_RE = re.compile(r"smtp\.mailfrom=([^\s;,]+)", re.IGNORECASE)
+    That errs toward FALSE NEGATIVES — a real sender under an unlisted
+    multi-label suffix, or one signing from a sibling domain, is merely
+    ``stored_not_woken`` rather than woken — and never toward a false
+    POSITIVE for the listed suffixes: `attacker.co.uk` does not align with
+    `victim.co.uk`, which the old last-two-labels key wrongly did.
+
+    Fails closed on empty/invalid input. DMARC=PASS is the strong path; this
+    only decides the no-DMARC-verdict fallback.
+    """
+    a = _domain_of(candidate)
+    b = _domain_of(sender_domain)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len([label for label in shorter.split(".") if label]) < 2:
+        return False
+    if shorter in _MULTI_LABEL_PUBLIC_SUFFIXES:
+        return False
+    return longer.endswith("." + shorter)
 
 
 def authenticated_sender(verdicts: dict, headers: dict, sender: str) -> bool:
@@ -113,16 +139,18 @@ def authenticated_sender(verdicts: dict, headers: dict, sender: str) -> bool:
 
     - ``dmarc == PASS`` is sufficient: DMARC *is* the From-alignment check.
     - With no DMARC verdict, either authenticated identity is accepted only
-      when it ALIGNS with the sender's domain (relaxed: same organizational
-      domain, see ``_org_domain``) — the DKIM signing domain from
-      ``header.d=``, or the envelope sender from ``Return-Path`` /
-      ``smtp.mailfrom=``.
+      when it ALIGNS with the sender's domain (relaxed, see ``_aligned``):
+      ``verdicts["dkim_domains"]`` (the `d=` tags of the signatures SES
+      verified) or ``verdicts["spf_domain"]`` (SES's envelope MAIL FROM).
     - Anything else (including no verdicts at all) is False.
 
-    ``Return-Path`` is preferred over the ``smtp.mailfrom=`` parse because the
-    SES-ingest Lambda sets it from SES's own receipt envelope, which no sender
-    can forge; a message's own embedded `Authentication-Results` can be
-    anything the sender typed.
+    ``headers`` IS DELIBERATELY IGNORED and stays only so callers keep the
+    payload's shape at this seam. Both identities come from ``verdicts``,
+    which the SES-ingest Lambda derives from SES's own receipt and from the
+    signed `DKIM-Signature` — never from a header. An attacker holding a
+    valid signature for `attacker.net` can also paste a forged
+    `Authentication-Results: … dkim=pass header.d=github.com` into the
+    message, so no header may be an authentication source here.
     """
     if not isinstance(verdicts, dict):
         return False
@@ -137,21 +165,13 @@ def authenticated_sender(verdicts: dict, headers: dict, sender: str) -> bool:
     if not sender_domain:
         return False
 
-    lowered = {str(k).lower(): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
-    authres = lowered.get("authentication-results", "")
-
     if _verdict("dkim") == "PASS":
-        match = _DKIM_DOMAIN_RE.search(authres)
-        if match and _aligned(match.group(1), sender_domain):
+        dkim_domains = verdicts.get("dkim_domains")
+        if isinstance(dkim_domains, (list, tuple)) and any(_aligned(str(d), sender_domain) for d in dkim_domains):
             return True
 
-    if _verdict("spf") == "PASS":
-        mailfrom = lowered.get("return-path", "")
-        if not mailfrom:
-            match = _MAILFROM_RE.search(authres)
-            mailfrom = match.group(1) if match else ""
-        if mailfrom and _aligned(mailfrom, sender_domain):
-            return True
+    if _verdict("spf") == "PASS" and _aligned(str(verdicts.get("spf_domain") or ""), sender_domain):
+        return True
 
     return False
 

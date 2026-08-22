@@ -519,12 +519,15 @@ def test_allowlisted_sender_with_unaligned_spf_is_stored_not_woken(client, monke
     resp = _post(
         client,
         _body(
-            verdicts={"spf": "PASS", "dkim": "GRAY", "spam": "PASS", "virus": "PASS"},
-            headers={
-                "Auto-Submitted": "no",
-                "Message-ID": "<orig@x>",
-                "Return-Path": "<bounce@attacker.test>",
+            verdicts={
+                "spf": "PASS",
+                "dkim": "GRAY",
+                "spam": "PASS",
+                "virus": "PASS",
+                # SES's own envelope MAIL FROM — the attacker's domain.
+                "spf_domain": "attacker.test",
             },
+            headers={"Auto-Submitted": "no", "Message-ID": "<orig@x>"},
         ),
     )
 
@@ -547,12 +550,15 @@ def test_aligned_dkim_without_dmarc_still_wakes(client, monkeypatch):
     resp = _post(
         client,
         _body(
-            verdicts={"spf": "PASS", "dkim": "PASS", "spam": "PASS", "virus": "PASS"},
-            headers={
-                "Auto-Submitted": "no",
-                "Message-ID": "<orig@x>",
-                "Authentication-Results": f"amazonses.com; dkim=pass header.d=mail.{sender_domain};",
+            verdicts={
+                "spf": "PASS",
+                "dkim": "PASS",
+                "spam": "PASS",
+                "virus": "PASS",
+                # The `d=` of the signature SES verified, forwarded by the Lambda.
+                "dkim_domains": [f"mail.{sender_domain}"],
             },
+            headers={"Auto-Submitted": "no", "Message-ID": "<orig@x>"},
         ),
     )
 
@@ -770,6 +776,13 @@ def test_a_terminal_drop_keeps_its_dedup_row(client, monkeypatch):
     assert _post(client, _body()).json()["status"] == "duplicate"
 
 
+def _claim_notice(monkeypatch, granted=True):
+    """Stub the durable once-per-day claim guarding the complaint notice."""
+    claim = AsyncMock(return_value=granted)
+    monkeypatch.setattr(ses_inbound, "try_claim_daily_system_notice", claim)
+    return claim
+
+
 def _complaint(source="friday@acme-robotics.isol8.co", event_type="Complaint"):
     return {
         "detail-type": "Email Complaint Received",
@@ -784,6 +797,7 @@ def _complaint(source="friday@acme-robotics.isol8.co", event_type="Complaint"):
 
 def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
     _enable(monkeypatch)
+    _claim_notice(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
     monkeypatch.setattr(
         ses_inbound,
@@ -796,6 +810,7 @@ def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
     r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
     assert r.status_code == 200 and r.json()["status"] == "disabled" and r.json()["addresses"] == 2
+    assert r.json()["notified"] is True
     assert {c.args[0] for c in upd.call_args_list} == {"friday@acme-robotics.isol8.co", "atlas@acme-robotics.isol8.co"}
     assert all(c.kwargs == {"outbound_disabled": "complaint"} for c in upd.call_args_list)
     assert notify.call_args.kwargs["owner_id"] == OWNER_ID
@@ -854,6 +869,7 @@ def test_ses_events_partial_disable_failure_still_disables_and_notifies(client, 
     owner notification for the rows that DID succeed -- only the failed row
     is excluded from the `addresses` count."""
     _enable(monkeypatch)
+    _claim_notice(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
     monkeypatch.setattr(
         ses_inbound,
@@ -876,6 +892,7 @@ def test_ses_events_all_disable_failures_returns_503_no_notify(client, monkeypat
     EventBridge API destination retries, and the owner is NOT told sending is
     paused when it demonstrably isn't yet."""
     _enable(monkeypatch)
+    _claim_notice(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
     monkeypatch.setattr(
         ses_inbound,
@@ -890,3 +907,29 @@ def test_ses_events_all_disable_failures_returns_503_no_notify(client, monkeypat
 
     assert r.status_code == 503 and r.json()["status"] == "error"
     notify.assert_not_awaited()
+
+
+def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
+    """SES fans one complaint out per recipient address, and the notice rides
+    `send_to_owner(system_notice=True)` which bypasses the daily send cap -- the
+    durable claim is the only bound. The rows are still disabled on the
+    suppressed event."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "query_by_owner", AsyncMock(return_value=[_row()]))
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    notify = AsyncMock(return_value="sent")
+    monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
+    # First event claims the day, second one loses it.
+    monkeypatch.setattr(ses_inbound, "try_claim_daily_system_notice", AsyncMock(side_effect=[True, False]))
+
+    first = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    second = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+
+    notify.assert_awaited_once()
+    assert first.json()["notified"] is True
+    assert second.status_code == 200
+    assert second.json()["status"] == "disabled" and second.json()["notified"] is False
+    # Disabling is NOT suppressed -- only the email is.
+    assert upd.await_count == 2

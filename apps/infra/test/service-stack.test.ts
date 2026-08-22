@@ -811,9 +811,30 @@ describe("ServiceStack — agent-mail outbound wiring", () => {
           Match.objectLike({
             Sid: "AgentMailTenants",
             Action: Match.arrayWith(["ses:CreateTenant"]),
+            Resource: Match.arrayWith([
+              "arn:aws:ses:us-east-1:877352799272:tenant/owner-*",
+              "arn:aws:ses:us-east-1:aws:reputation-policy/standard",
+            ]),
           }),
         ]),
       }),
     });
+  });
+
+  test("the AgentMailTenants tenant resource is tightened to owner-* (not a bare wildcard)", () => {
+    // Tenant names are deterministic `owner-{owner_id}` — a bare `tenant/*`
+    // would also authorize actions against tenants outside this fleet's
+    // naming convention.
+    const policies = template.findResources("AWS::IAM::ManagedPolicy");
+    const sesSend = Object.values(policies).find(
+      (p: any) => p.Properties?.ManagedPolicyName === "isol8-dev-backend-ses-send",
+    ) as any;
+    expect(sesSend).toBeDefined();
+    const statement = sesSend.Properties.PolicyDocument.Statement.find(
+      (s: any) => s.Sid === "AgentMailTenants",
+    );
+    expect(statement.Resource).not.toContain(
+      "arn:aws:ses:us-east-1:877352799272:tenant/*",
+    );
   });
 });

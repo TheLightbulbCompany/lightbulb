@@ -498,7 +498,13 @@ export class ServiceStack extends cdk.Stack {
         // send (core/services/agent_mail_tenant.py) — dynamic per owner, so
         // not declared as CDK resources. Scoped to this env's configuration
         // set + the shared domain identity, same posture as the statement
-        // above.
+        // above. Tenant names are deterministic `owner-{owner_id}` (see
+        // agent_mail_tenant.py), so `tenant/owner-*` is tight instead of a
+        // bare wildcard; the real ARN shape is `tenant/{name}/{tn-id}`, which
+        // `owner-*` still matches. ses:UpdateReputationEntityPolicy
+        // authorizes against BOTH the tenant resource AND a
+        // `reputation-policy` resource in the AWS-owned `aws` account (SES's
+        // managed-policy ARN convention — not a typo).
         new iam.PolicyStatement({
           sid: "AgentMailTenants",
           actions: [
@@ -511,7 +517,8 @@ export class ServiceStack extends cdk.Stack {
             "ses:SendRawEmail",
           ],
           resources: [
-            `arn:aws:ses:${this.region}:${this.account}:tenant/*`,
+            `arn:aws:ses:${this.region}:${this.account}:tenant/owner-*`,
+            `arn:aws:ses:${this.region}:aws:reputation-policy/standard`,
             `arn:aws:ses:${this.region}:${this.account}:configuration-set/isol8-${env}-agent-mail`,
             `arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`,
           ],

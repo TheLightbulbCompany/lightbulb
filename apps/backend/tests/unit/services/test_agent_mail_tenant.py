@@ -29,9 +29,15 @@ def ses(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_tenant_creates_associates_and_sets_policy(ses):
+    # The real tenant ARN carries a trailing tenant-id segment
+    # (tenant/{name}/{tn-id}) that a caller cannot predict — it must come
+    # from create_tenant's own response, not be hand-built.
+    tenant_arn = "arn:aws:ses:us-east-1:123456789012:tenant/owner-user_1/tn-abc"
+    ses.create_tenant.return_value = {"TenantArn": tenant_arn}
     name = await mod.ensure_tenant("user_1")
     assert name == "owner-user_1"
     ses.create_tenant.assert_called_once_with(TenantName="owner-user_1")
+    ses.get_tenant.assert_not_called()
     arns = {c.kwargs["ResourceArn"] for c in ses.create_tenant_resource_association.call_args_list}
     assert arns == {
         "arn:aws:ses:us-east-1:123456789012:identity/isol8.co",
@@ -39,15 +45,22 @@ async def test_ensure_tenant_creates_associates_and_sets_policy(ses):
     }
     pol = ses.update_reputation_entity_policy.call_args.kwargs
     assert pol["ReputationEntityPolicy"] == "arn:aws:ses:us-east-1:aws:reputation-policy/standard"
-    assert pol["ReputationEntityReference"] == "arn:aws:ses:us-east-1:123456789012:tenant/owner-user_1"
+    assert pol["ReputationEntityReference"] == tenant_arn
 
 
 @pytest.mark.asyncio
 async def test_ensure_tenant_is_idempotent_and_memoized(ses):
+    # AlreadyExistsException means create_tenant's response never arrives, so
+    # the real ARN has to be fetched back via get_tenant instead.
+    tenant_arn = "arn:aws:ses:us-east-1:123456789012:tenant/owner-user_1/tn-abc"
     ses.create_tenant.side_effect = ClientError({"Error": {"Code": "AlreadyExistsException"}}, "CreateTenant")
+    ses.get_tenant.return_value = {"Tenant": {"TenantArn": tenant_arn}}
     assert await mod.ensure_tenant("user_1") == "owner-user_1"
     assert await mod.ensure_tenant("user_1") == "owner-user_1"
     assert ses.create_tenant.call_count == 1
+    ses.get_tenant.assert_called_once_with(TenantName="owner-user_1")
+    pol = ses.update_reputation_entity_policy.call_args.kwargs
+    assert pol["ReputationEntityReference"] == tenant_arn
 
 
 @pytest.mark.asyncio

@@ -70,7 +70,16 @@ def _ensure_sync(owner_id: str) -> str:
     name = tenant_name_for(owner_id)
     region, account = settings.AWS_REGION, _account_id()
     ses = _client()
-    _ignore_exists(ses.create_tenant, TenantName=name)
+    # The real tenant ARN is `tenant/{name}/{tenant-id}` — a hand-built
+    # `tenant/{name}` doesn't match anything, so UpdateReputationEntityPolicy
+    # needs the ARN AWS actually assigned. create_tenant returns it directly;
+    # on a second call (AlreadyExistsException) get_tenant fetches it back.
+    try:
+        tenant_arn = ses.create_tenant(TenantName=name)["TenantArn"]
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "AlreadyExistsException":
+            raise
+        tenant_arn = ses.get_tenant(TenantName=name)["Tenant"]["TenantArn"]
     for arn in (
         f"arn:aws:ses:{region}:{account}:identity/{_identity_domain()}",
         f"arn:aws:ses:{region}:{account}:configuration-set/{settings.AGENT_MAIL_CONFIGURATION_SET.strip()}",
@@ -78,7 +87,7 @@ def _ensure_sync(owner_id: str) -> str:
         _ignore_exists(ses.create_tenant_resource_association, TenantName=name, ResourceArn=arn)
     ses.update_reputation_entity_policy(
         ReputationEntityType="RESOURCE",
-        ReputationEntityReference=f"arn:aws:ses:{region}:{account}:tenant/{name}",
+        ReputationEntityReference=tenant_arn,
         ReputationEntityPolicy=f"arn:aws:ses:{region}:aws:reputation-policy/standard",
     )
     return name

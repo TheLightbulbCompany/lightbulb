@@ -255,8 +255,11 @@ printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --reply "<Re
 printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --to someone@example.com --subject "<subject>"
 ```
 
-- `--owner` always works. `--reply` answers whoever sent that message (the
-  key is in its header block; never paste it into the body) — replying to
+- `--owner` needs no permission from your owner (it is never gated by the
+  wake list or the "email anyone" switch), but the daily limit and the
+  other failure statuses the command prints still apply. `--reply` answers
+  whoever sent that message (the key is in its header block; never paste
+  it into the body) — replying to
   someone on your wake list, or the owner, always works; replying to anyone
   else needs the same owner permission as `--to`. `--to` anyone else works
   only if your owner enabled it — otherwise the command tells you so; ask the

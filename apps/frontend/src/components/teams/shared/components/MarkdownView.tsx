@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { handleShellLinkClick, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 /**
@@ -19,6 +20,31 @@ export function attachmentPathFromHref(href?: string | null): string | null {
   if (!href) return null;
   const m = /^\/api(\/attachments\/[^/?#]+\/content)(?:[?#].*)?$/.exec(href);
   return m ? m[1] : null;
+}
+
+// The bundled paperclip skill ("Company-prefixed URLs (required)") instructs
+// agents to write every internal link as a native Paperclip path —
+// `/ISOA/issues/ISOA-171`, `/ISOA/approvals/<id>`, `/ISOA/agents/<key>/runs/<id>`.
+// Those routes do not exist in this app (the /teams/* tree was retired without a
+// redirect), so a bare anchor left the shell and 404'd. Maps such a path onto its
+// in-shell equivalent, or null when the href isn't one (external URLs, /api/…,
+// already-in-app /chat?… links — the uppercase prefix keeps those out).
+//
+// Issue identifiers need no lookup: upstream Paperclip resolves `ISOA-171` for
+// all /issues/:id routes and the Teams BFF passes issue_id straight through.
+const PAPERCLIP_LINK =
+  /^\/[A-Z][A-Z0-9]{0,9}\/(issues|approvals|projects|agents)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
+
+export function shellUrlFromPaperclipPath(href?: string | null): string | null {
+  const m = href ? PAPERCLIP_LINK.exec(href) : null;
+  if (!m) return null;
+  const [, section, id, runId, hash = ""] = m;
+  if (runId) return teamsDetailUrl("run", runId);
+  if (section === "issues") return teamsDetailUrl("issue", id) + hash;
+  // No detail panel takes these ids — agent url-keys and project url-keys are
+  // not the uuids our panels resolve, and approvals only ever render inside the
+  // Inbox. Land on the list panel that owns them; a list beats a dead link.
+  return teamsPanelUrl(section === "approvals" ? "inbox" : section);
 }
 
 function textContent(node: React.ReactNode): string {
@@ -82,14 +108,26 @@ const markdownComponents: Components = {
         </AttachmentLink>
       );
     }
-    const safe = safeHref(href);
-    return safe ? (
-      <a href={safe} target="_blank" rel="noopener noreferrer"
-         style={{ color: "var(--forest)", textDecoration: "underline" }} {...props}>
+    const shellUrl = shellUrlFromPaperclipPath(href);
+    const safe = shellUrl ?? safeHref(href);
+    if (!safe) return <span {...props}>{children}</span>;
+    // In-shell links keep their real href (native middle-click / cmd-click) but
+    // commit through pushState — and only when the shell is already on that
+    // route: handleShellLinkClick swaps query params in place, so from another
+    // page (e.g. the unauthenticated landing demo) the anchor must navigate.
+    const shellAttrs = shellUrl
+      ? {
+          onClick: (e: React.MouseEvent<HTMLAnchorElement>) => {
+            if (shellUrl.split("?")[0] === window.location.pathname)
+              handleShellLinkClick(e, shellUrl);
+          },
+        }
+      : { target: "_blank", rel: "noopener noreferrer" };
+    return (
+      <a href={safe} style={{ color: "var(--forest)", textDecoration: "underline" }}
+         {...props} {...shellAttrs}>
         {children}
       </a>
-    ) : (
-      <span {...props}>{children}</span>
     );
   },
   h1: ({ children }) => <h1 className="text-base font-semibold mt-3 mb-1">{children}</h1>,

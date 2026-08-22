@@ -76,17 +76,19 @@ async def test_close_hands_off_pending_completion_callbacks_instead_of_failing_t
 
 @pytest.mark.asyncio
 async def test_terminal_arriving_during_close_drains_still_resolves_the_observer():
-    """close() keeps observers registered through its drains (the reader is
-    alive until it is cancelled near the end), so a genuine terminal that
-    lands mid-close fires the observer instead of being dropped — the
-    handoff only takes what is STILL unresolved once the reader is dead.
-    Simulated: a billing task whose completion is a terminal arriving."""
+    """close() keeps observers registered until the reader task is cancelled
+    — the reader is alive through every drain before that — so a genuine
+    terminal that lands mid-close fires the observer instead of being
+    dropped; the handoff only takes what is STILL unresolved once the reader
+    is dead. Simulated at the RPC drain: the terminal arrives while close()
+    is awaiting a pending RPC — a point AFTER the billing/push drains, where
+    an observer cleared too early would already be gone."""
     fired: list = []
     conn = _conn_with_callback(fired)
     conn._closed = False
+    conn._billing_tasks = set()
     conn._analytics_tasks = set()
     conn._push_tasks = set()
-    conn._pending_rpcs = {}
     conn._grace_task = None
     conn._parked_watchdog_task = None
     conn._reader_task = None
@@ -96,13 +98,18 @@ async def test_terminal_arriving_during_close_drains_still_resolves_the_observer
     conn._emit_status_change = lambda state, reason: None
     conn._note_gateway_liveness = lambda *, connected: None
 
-    async def _terminal_lands_mid_close():
-        await asyncio.sleep(0)
-        conn._dispatch_run_completion("run-1", "final", {"runId": "run-1"})
+    in_flight_rpc: asyncio.Future = asyncio.get_running_loop().create_future()
+    conn._pending_rpcs = {"req-1": in_flight_rpc}
 
-    conn._billing_tasks = {asyncio.create_task(_terminal_lands_mid_close())}
+    async def _terminal_lands_while_rpc_drains():
+        await asyncio.sleep(0)  # close() is now parked on the RPC drain
+        conn._dispatch_run_completion("run-1", "final", {"runId": "run-1"})
+        in_flight_rpc.set_result({"ok": True})
+
+    landing = asyncio.create_task(_terminal_lands_while_rpc_drains())
 
     await conn.close()
+    await landing
 
     assert fired == [("final", {"runId": "run-1"})]
     assert conn._run_completion_callbacks == {}

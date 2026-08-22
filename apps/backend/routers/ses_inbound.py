@@ -21,8 +21,9 @@ DETERMINISTIC drop (disabled, unknown recipient, over cap, spam/virus, failed
 authentication, auto-submitted, duplicate) is terminal — retrying would
 produce the identical drop again — so those stay 200, as does a successful
 ``delivered`` and a ``stored_not_woken`` (the message is saved to the inbox
-either way; only WAKING the agent is gated on the sender allowlist — see
-``sender_allowed`` below). ``container_not_running`` also stays 200: it now
+either way; only WAKING the agent is gated, on the sender allowlist AND on
+that sender being authenticated — see ``sender_allowed`` and
+``authenticated_sender`` below). ``container_not_running`` also stays 200: it now
 only means the owner is OVER CAP (the cap gate below already normally
 intercepts that case before ``deliver_to_agent`` is even called; this is
 belt-and-suspenders for the same predicate) — waking a capped owner is
@@ -70,6 +71,7 @@ from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_owner_send import send_to_owner
 from core.services.agent_mail_inbound import (
+    authenticated_sender,
     build_attachment_manifest,
     build_delivered_message,
     is_auto_submitted,
@@ -208,8 +210,9 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # further fallback. Only when SES surfaces NO dmarc verdict at all do
         # we fall back to requiring SPF and DKIM to both explicitly FAIL
         # before dropping. A missing/GRAY verdict on any of these is never a
-        # hard drop — the sender allowlist below is the primary control on
-        # whether the message WAKES the agent (it is always stored either way).
+        # hard drop — the WAKE gate below (`sender_allowed` AND
+        # `authenticated_sender`) is what decides whether an unproven sender
+        # reaches the agent; the message is always stored either way.
         dmarc = verdicts.get("dmarc")
         if dmarc is not None:
             if dmarc.upper() == "FAIL":
@@ -243,7 +246,13 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             headers=body.headers or {},
             attachments=body.attachments or [],
         )
-        if not sender_allowed(row, sender):
+        # Waking takes BOTH: the owner listed this sender, AND the `From` it
+        # was listed under is actually authenticated. `sender_allowed` alone
+        # is not enough — `From` is a bare header parse, so an attacker whose
+        # own domain passes SPF can forge an allowlisted `From` and wake
+        # somebody else's agent. See `authenticated_sender`. The message is
+        # still STORED either way; only the wake tightens.
+        if not (sender_allowed(row, sender) and authenticated_sender(verdicts, body.headers or {}, sender)):
             return _final("stored_not_woken")
         key = reply_key(row["address"], stored["received_key"])
 

@@ -15,7 +15,11 @@ For each record this Lambda:
     boto3 is the only dependency),
   - extracts SES's own SPF/DKIM/DMARC/spam/virus verdicts (SES's receipt
     pipeline has already run these scans by the time this Lambda sees the
-    mail — they are authoritative, not best-effort),
+    mail — they are authoritative, not best-effort), plus the two identities
+    those flat verdicts do not carry: SES's own ``Authentication-Results``
+    (the DKIM ``header.d=`` signing domain) and the envelope ``Return-Path``
+    from the receipt, both forwarded in ``headers`` for the backend's wake
+    gate,
   - stores each attachment to S3 and mints a 1h presigned GET URL,
   - and POSTs a clean JSON payload to the backend's ``/webhooks/ses-inbound``
     ingest endpoint, authenticated with a shared secret (``X-Isol8-SES-Secret``,
@@ -243,6 +247,27 @@ def _build_payload(ses, raw_mime):
     text = str(body.get_content()) if body is not None else ""
 
     headers = {str(k): str(v) for k, v in msg.items()}
+
+    # The backend's WAKE gate needs the two authenticated identities SES's
+    # flat verdicts do not carry: the DKIM signing domain and the ENVELOPE
+    # sender (see `authenticated_sender` in core/services/agent_mail_inbound).
+    # Both are pinned to SES's own view here, because the flat dict above
+    # keeps only the LAST value of a repeated header — a forwarded message
+    # carrying the original sender's `Authentication-Results` would otherwise
+    # win over SES's, and a `Return-Path` in the MIME is whatever the sender
+    # typed. `mail["source"]` is the envelope MAIL FROM from SES's receipt.
+    ses_authres = next(
+        (
+            str(v)
+            for v in (msg.get_all("Authentication-Results") or [])
+            if str(v).lstrip().lower().startswith("amazonses.com")
+        ),
+        "",
+    )
+    if ses_authres:
+        headers["Authentication-Results"] = ses_authres
+    if mail.get("source"):
+        headers["Return-Path"] = str(mail["source"])
 
     return {
         "message_id": message_id,

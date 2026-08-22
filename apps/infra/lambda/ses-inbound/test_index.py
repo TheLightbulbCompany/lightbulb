@@ -674,3 +674,64 @@ def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
     url, _ = index._route_for(["friday@acme.notdev.isol8.co"])
 
     assert url == BACKEND_INGEST_URL
+
+
+# ---------------------------------------------------------------------------
+# Sender-identity forwarding: the two identities SES's flat verdicts do not
+# carry, which the backend's WAKE gate needs (authenticated_sender).
+# ---------------------------------------------------------------------------
+
+
+def _post_and_capture(raw, event=None):
+    import index
+
+    s3, secretsmanager = _stub_clients(raw)
+    captured = {}
+    with (
+        patch.object(index, "_s3", return_value=s3),
+        patch.object(index, "_secretsmanager", return_value=secretsmanager),
+        patch("index.urllib.request.urlopen", side_effect=_fake_urlopen_capturing(captured)),
+    ):
+        index.handler(event or _ses_event(), None)
+    return captured["body"]
+
+
+def test_forwards_ses_authentication_results_and_envelope_return_path():
+    raw = _build_raw_mime(
+        extra_headers={
+            "Authentication-Results": "amazonses.com; spf=pass smtp.mailfrom=example.com; dkim=pass header.d=example.com;"
+        }
+    )
+    headers = _post_and_capture(raw)["headers"]
+
+    assert "header.d=example.com" in headers["Authentication-Results"]
+    # From SES's receipt envelope (mail.source), not the MIME.
+    assert headers["Return-Path"] == "jane@example.com"
+
+
+def test_ses_authentication_results_wins_over_a_forwarded_copy():
+    """A flat {name: value} dict keeps only the LAST repeated header, so a
+    forwarded message carrying the original sender's Authentication-Results
+    would otherwise outrank SES's own and let a forged `From` authenticate."""
+    import email.message
+
+    msg = email.message.EmailMessage()
+    msg["From"] = "Jane Doe <jane@example.com>"
+    msg["To"] = "agent@agents.isol8.co"
+    msg["Subject"] = "Hello agent"
+    msg["Authentication-Results"] = "amazonses.com; dkim=pass header.d=example.com;"
+    msg["Authentication-Results"] = "attacker.test; dkim=pass header.d=github.com;"
+    msg.set_content("body\n")
+
+    headers = _post_and_capture(msg.as_bytes())["headers"]
+
+    assert headers["Authentication-Results"].startswith("amazonses.com")
+    assert "github.com" not in headers["Authentication-Results"]
+
+
+def test_return_path_is_overwritten_by_the_envelope_sender():
+    """A `Return-Path` in the MIME is whatever the sender typed; SES's receipt
+    envelope is the identity SPF actually authenticated."""
+    raw = _build_raw_mime(extra_headers={"Return-Path": "<spoofed@attacker.test>"})
+
+    assert _post_and_capture(raw)["headers"]["Return-Path"] == "jane@example.com"

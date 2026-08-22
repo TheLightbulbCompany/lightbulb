@@ -1,12 +1,15 @@
 """Inbound provisioned-agent email: sender parsing, loop guard, message format.
 
 Shared by `routers/ses_inbound.py` (the SES ingest endpoint): normalize the
-`From` address, guard against autoresponder loops (an agent replying to a
-bounce or a mailing-list digest would otherwise re-trigger itself
-indefinitely), and format the string handed to `/hooks/agent`.
+`From` address, decide whether that `From` is actually AUTHENTICATED
+(`authenticated_sender` — the gate on waking the agent), guard against
+autoresponder loops (an agent replying to a bounce or a mailing-list digest
+would otherwise re-trigger itself indefinitely), and format the string handed
+to `/hooks/agent`.
 """
 
 import logging
+import re
 from email.utils import parseaddr
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,93 @@ def is_auto_submitted(headers: dict[str, str]) -> bool:
     precedence = lowered.get(_PRECEDENCE_HEADER)
     if precedence is not None and precedence.strip().lower() in _PRECEDENCE_BLOCK_VALUES:
         return True
+
+    return False
+
+
+def _domain_of(value: str) -> str:
+    """Bare lowercased domain from an address, an `@domain`, or a bare domain."""
+    v = (value or "").strip().strip("<>").strip().lower()
+    if "@" in v:
+        v = v.rsplit("@", 1)[1]
+    return v.strip().strip(".")
+
+
+def _org_domain(domain: str) -> str:
+    """The relaxed-alignment key: the last two labels of ``domain``.
+
+    ``mail.github.com`` and ``github.com`` share ``github.com``, which is what
+    relaxed DMARC alignment means and what real senders need (bounce and
+    signing subdomains are ubiquitous).
+    """
+    # ponytail: last-two-labels, not the Public Suffix List. `a.co.uk` and
+    # `b.co.uk` would wrongly align; swap in a PSL lookup if that matters.
+    labels = [p for p in _domain_of(domain).split(".") if p]
+    return ".".join(labels[-2:])
+
+
+def _aligned(candidate: str, sender_domain: str) -> bool:
+    key = _org_domain(candidate)
+    return bool(key) and key == _org_domain(sender_domain)
+
+
+# SES stamps its own `Authentication-Results` on inbound mail. DKIM's signing
+# domain is `header.d=` (or `header.i=@…`); SPF's authenticated identity is
+# `smtp.mailfrom=`.
+_DKIM_DOMAIN_RE = re.compile(r"header\.(?:d|i)=@?([^\s;,]+)", re.IGNORECASE)
+_MAILFROM_RE = re.compile(r"smtp\.mailfrom=([^\s;,]+)", re.IGNORECASE)
+
+
+def authenticated_sender(verdicts: dict, headers: dict, sender: str) -> bool:
+    """True when the parsed `From` (``sender``) is actually authenticated.
+
+    This gates WAKING the agent, not storing the mail. A bare `spf=PASS` is
+    NOT enough on its own: SPF authenticates the ENVELOPE sender, and DKIM can
+    carry a valid signature for a domain unrelated to `From` — so an attacker
+    sending from their own SPF-passing domain can forge an allowlisted `From`
+    and, without this check, wake somebody else's agent.
+
+    - ``dmarc == PASS`` is sufficient: DMARC *is* the From-alignment check.
+    - With no DMARC verdict, either authenticated identity is accepted only
+      when it ALIGNS with the sender's domain (relaxed: same organizational
+      domain, see ``_org_domain``) — the DKIM signing domain from
+      ``header.d=``, or the envelope sender from ``Return-Path`` /
+      ``smtp.mailfrom=``.
+    - Anything else (including no verdicts at all) is False.
+
+    ``Return-Path`` is preferred over the ``smtp.mailfrom=`` parse because the
+    SES-ingest Lambda sets it from SES's own receipt envelope, which no sender
+    can forge; a message's own embedded `Authentication-Results` can be
+    anything the sender typed.
+    """
+    if not isinstance(verdicts, dict):
+        return False
+
+    def _verdict(name: str) -> str:
+        return str(verdicts.get(name) or "").strip().upper()
+
+    if _verdict("dmarc") == "PASS":
+        return True
+
+    sender_domain = _domain_of(sender)
+    if not sender_domain:
+        return False
+
+    lowered = {str(k).lower(): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
+    authres = lowered.get("authentication-results", "")
+
+    if _verdict("dkim") == "PASS":
+        match = _DKIM_DOMAIN_RE.search(authres)
+        if match and _aligned(match.group(1), sender_domain):
+            return True
+
+    if _verdict("spf") == "PASS":
+        mailfrom = lowered.get("return-path", "")
+        if not mailfrom:
+            match = _MAILFROM_RE.search(authres)
+            mailfrom = match.group(1) if match else ""
+        if mailfrom and _aligned(mailfrom, sender_domain):
+            return True
 
     return False
 

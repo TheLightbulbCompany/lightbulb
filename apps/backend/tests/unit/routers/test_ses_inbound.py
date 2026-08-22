@@ -13,8 +13,10 @@ auto-reply rather than dropped silently -- see the `capped_owner` fixture
 and its tests, plus the unknown-recipient test proving that one stays
 silent), the SES-verdict gate (virus/spam explicit FAIL, DMARC-authoritative
 sender-auth FAIL, the SPF+DKIM fallback when DMARC is absent, and a
-missing/GRAY verdict set that must still deliver), the auto-submitted loop
-guard, the happy path, and the transient-vs-terminal outcome split: an
+missing/GRAY verdict set that is stored but not woken), the sender-identity
+alignment gate on WAKING (an allowlisted `From` backed only by an unaligned
+SPF-passing envelope is stored, not woken; an aligned DKIM signature with no
+DMARC verdict still wakes), the auto-submitted loop guard, the happy path, and the transient-vs-terminal outcome split: an
 unexpected exception, a "error" delivery result, or a "woken" result (an
 asleep container was just cold-started -- 503 so SES's own retry lands after
 it finishes booting) return 503, while "container_not_running" (now: the
@@ -485,9 +487,10 @@ def test_missing_dmarc_falls_back_to_spf_and_dkim_both_fail_drops(client, monkey
     deliver_mock.assert_not_called()
 
 
-def test_missing_or_gray_verdicts_still_deliver(client, monkeypatch):
-    """A PASS or a missing/GRAY verdict must never hard-drop — only an
-    explicit FAIL does."""
+def test_missing_or_gray_verdicts_are_stored_not_dropped(client, monkeypatch):
+    """A missing/GRAY verdict must never hard-drop — only an explicit FAIL
+    does. It does not WAKE either: with no verdict there is nothing proving
+    the `From` is real, so the mail is stored and left for the inbox."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
@@ -496,6 +499,62 @@ def test_missing_or_gray_verdicts_still_deliver(client, monkeypatch):
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body(verdicts={}))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "stored_not_woken"
+    deliver_mock.assert_not_awaited()
+
+
+def test_allowlisted_sender_with_unaligned_spf_is_stored_not_woken(client, monkeypatch):
+    """THE ATTACK: SPF authenticates the ENVELOPE sender, so an attacker whose
+    own domain passes SPF can forge an allowlisted `From`. Allowlisted or not,
+    an unaligned sender must not wake the agent — the mail is still stored."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    resp = _post(
+        client,
+        _body(
+            verdicts={"spf": "PASS", "dkim": "GRAY", "spam": "PASS", "virus": "PASS"},
+            headers={
+                "Auto-Submitted": "no",
+                "Message-ID": "<orig@x>",
+                "Return-Path": "<bounce@attacker.test>",
+            },
+        ),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "stored_not_woken"
+    deliver_mock.assert_not_awaited()
+
+
+def test_aligned_dkim_without_dmarc_still_wakes(client, monkeypatch):
+    """The tightening must not break a real sender that DKIM-signs from a
+    subdomain and gets no DMARC verdict."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver_mock = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    sender_domain = SENDER.rsplit("@", 1)[1]
+    resp = _post(
+        client,
+        _body(
+            verdicts={"spf": "PASS", "dkim": "PASS", "spam": "PASS", "virus": "PASS"},
+            headers={
+                "Auto-Submitted": "no",
+                "Message-ID": "<orig@x>",
+                "Authentication-Results": f"amazonses.com; dkim=pass header.d=mail.{sender_domain};",
+            },
+        ),
+    )
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "delivered"

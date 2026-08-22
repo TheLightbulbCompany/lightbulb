@@ -1,4 +1,4 @@
-"""agent_mail_inbound: sender parsing, loop guard, message format."""
+"""agent_mail_inbound: sender parsing, sender authentication, loop guard, message format."""
 
 import os
 
@@ -172,3 +172,63 @@ def test_build_delivered_message_short_body_is_unchanged():
     )
     assert "truncated" not in msg
     assert "a normal short body" in msg
+
+
+# ---------------------------------------------------------------------------
+# authenticated_sender — the WAKE gate. SPF authenticates the ENVELOPE sender
+# and DKIM can sign an unrelated domain, so neither PASS counts unless the
+# identity it authenticated ALIGNS with the `From` domain.
+# ---------------------------------------------------------------------------
+
+_DKIM_GITHUB = {"Authentication-Results": "amazonses.com; dkim=pass header.d=github.com;"}
+_DKIM_MAIL_GITHUB = {"Authentication-Results": "amazonses.com; dkim=pass header.d=mail.github.com;"}
+_SPF_ATTACKER = {"Authentication-Results": "amazonses.com; spf=pass smtp.mailfrom=bounce@attacker.net;"}
+
+
+@pytest.mark.parametrize(
+    "verdicts,headers,sender,expected",
+    [
+        # DMARC PASS is the From-alignment check itself — sufficient alone.
+        ({"dmarc": "PASS"}, {}, "anyone@example.com", True),
+        ({"dmarc": "PASS", "spf": "FAIL"}, {}, "anyone@example.com", True),
+        # No DMARC: an aligned DKIM signing domain authenticates the From.
+        ({"dkim": "PASS"}, _DKIM_GITHUB, "noreply@github.com", True),
+        # Relaxed alignment — a signing SUBdomain still aligns.
+        ({"dkim": "PASS"}, _DKIM_MAIL_GITHUB, "x@github.com", True),
+        # THE ATTACK: the attacker's own envelope passes SPF, `From` is forged.
+        ({"spf": "PASS"}, _SPF_ATTACKER, "owner@example.com", False),
+        # ...and the same with Return-Path, which SES sets from the envelope.
+        ({"spf": "PASS"}, {"Return-Path": "<bounce@attacker.net>"}, "owner@example.com", False),
+        # An ALIGNED envelope is fine.
+        ({"spf": "PASS"}, {"Return-Path": "<bounce@mail.example.com>"}, "owner@example.com", True),
+        # A DKIM PASS for an unrelated signing domain proves nothing about From.
+        ({"dkim": "PASS"}, _DKIM_GITHUB, "owner@example.com", False),
+        # A PASS with no identity to align against is not an authentication.
+        ({"spf": "PASS", "dkim": "PASS"}, {}, "owner@example.com", False),
+        # No signal at all.
+        ({}, {}, "owner@example.com", False),
+        ({"dmarc": "GRAY"}, {}, "owner@example.com", False),
+        # Junk input must be False, never an exception.
+        (None, None, "owner@example.com", False),
+        ({"dmarc": "PASS"}, {}, "", True),
+        ({"dkim": "PASS"}, _DKIM_GITHUB, "", False),
+    ],
+)
+def test_authenticated_sender(verdicts, headers, sender, expected):
+    assert inbound.authenticated_sender(verdicts, headers, sender) is expected
+
+
+def test_return_path_is_preferred_over_a_forgeable_authentication_results():
+    """SES's ingest Lambda sets Return-Path from the receipt envelope, which no
+    sender can forge; a message's own Authentication-Results can say anything."""
+    assert (
+        inbound.authenticated_sender(
+            {"spf": "PASS"},
+            {
+                "Return-Path": "<bounce@attacker.net>",
+                "Authentication-Results": "x; spf=pass smtp.mailfrom=owner@example.com;",
+            },
+            "owner@example.com",
+        )
+        is False
+    )

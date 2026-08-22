@@ -78,6 +78,35 @@ describe("AgentMailOutboundStack", () => {
     });
   });
 
+  test("the API-destination target has a DLQ and a bounded retry policy", () => {
+    // Without these, a complaint EventBridge cannot deliver is dropped and
+    // the owner's outbound stays ENABLED after a spam complaint.
+    template.resourceCountIs("AWS::SQS::Queue", 1);
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "isol8-dev-agent-mail-complaint-dlq",
+    });
+    template.hasResourceProperties("AWS::Events::Rule", {
+      Targets: Match.arrayWith([
+        Match.objectLike({
+          DeadLetterConfig: { Arn: Match.anyValue() },
+          RetryPolicy: {
+            MaximumRetryAttempts: 8,
+            MaximumEventAgeInSeconds: 7200,
+          },
+        }),
+      ]),
+    });
+  });
+
+  test("alarms on the complaint DLQ being non-empty", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "isol8-dev-agent-mail-complaint-dlq",
+      MetricName: "ApproximateNumberOfMessagesVisible",
+      ComparisonOperator: "GreaterThanThreshold",
+      Threshold: 0,
+    });
+  });
+
   test("prod env names its configuration set and endpoint distinctly from dev", () => {
     const prodTemplate = buildStack("prod");
     prodTemplate.hasResourceProperties("AWS::SES::ConfigurationSet", {

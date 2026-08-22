@@ -1,7 +1,11 @@
 import * as cdk from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as ses from "aws-cdk-lib/aws-ses";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
 export interface AgentMailOutboundStackProps extends cdk.StackProps {
@@ -61,6 +65,22 @@ export class AgentMailOutboundStack extends cdk.Stack {
       endpoint: `https://${apiDomain}/api/v1/webhooks/ses-events`,
       httpMethod: events.HttpMethod.POST,
     });
+    // A complaint that never reaches the backend leaves the owner's outbound
+    // ENABLED after a recipient marked their mail as spam — the exact state
+    // that gets the sending domain blocked. EventBridge's default is to drop
+    // the event once retries are exhausted, so it gets a DLQ.
+    //
+    // REPLAY: `aws sqs receive-message --queue-url <this queue>`, then re-POST
+    // the message body (the EventBridge event) to
+    // https://{apiDomain}/api/v1/webhooks/ses-events with the
+    // X-Isol8-SES-Secret header. Replay is safe to repeat — the handler's
+    // disable is an `update_settings` SET, not an increment.
+    const dlq = new sqs.Queue(this, "ComplaintDlq", {
+      queueName: `isol8-${envName}-agent-mail-complaint-dlq`,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+    });
+
     new events.Rule(this, "SesComplaintRule", {
       description: `isol8 ${envName}: SES complaints on ${this.configurationSetName}`,
       eventPattern: {
@@ -70,8 +90,43 @@ export class AgentMailOutboundStack extends cdk.Stack {
         // configuration-set tag SES stamps on every event.
         detail: { mail: { tags: { "ses:configuration-set": [this.configurationSetName] } } },
       },
-      targets: [new targets.ApiDestination(destination)],
+      targets: [
+        new targets.ApiDestination(destination, {
+          deadLetterQueue: dlq,
+          // Well short of EventBridge's 185/24h default: a complaint is only
+          // actionable while it is fresh, and holding it in the DLQ where an
+          // alarm can see it beats retrying silently for a day.
+          retryAttempts: 8,
+          maxEventAge: cdk.Duration.hours(2),
+        }),
+      ],
     });
+
+    // Topic imported by ARN convention (same as bedrock-meter-stack) —
+    // ObservabilityStack creates it per env with this fixed name, and a real
+    // prop would add a cross-stack dependency for one alarm action.
+    const alarm = new cloudwatch.Alarm(this, "ComplaintDlqNotEmptyAlarm", {
+      alarmName: `isol8-${envName}-agent-mail-complaint-dlq`,
+      alarmDescription:
+        "SES complaint events failed delivery to the backend ses-events webhook and are held for replay. Until they are replayed the affected owners' agent outbound is still ENABLED after a spam complaint. See the replay note in agent-mail-outbound-stack.ts.",
+      metric: dlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+        statistic: "Maximum",
+      }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    alarm.addAlarmAction(
+      new cloudwatchActions.SnsAction(
+        sns.Topic.fromTopicArn(
+          this,
+          "AlertsWarn",
+          `arn:aws:sns:${this.region}:${this.account}:isol8-${envName}-alerts-warn`,
+        ),
+      ),
+    );
 
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", envName);

@@ -104,6 +104,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     connectionsTableName: `isol8-${environment}-ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
+    agentMailConfigurationSet: "isol8-test-agent-mail",
   });
 
   return Template.fromStack(service);
@@ -780,4 +781,39 @@ describe("ServiceStack — browser egress proxy knob", () => {
       }
     },
   );
+});
+
+describe("ServiceStack — agent-mail outbound wiring", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("backend task definition carries AGENT_MAIL_CONFIGURATION_SET", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "AGENT_MAIL_CONFIGURATION_SET",
+              Value: "isol8-test-agent-mail",
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("the backend-ses-send managed policy grants per-owner SES tenant creation", () => {
+    // Per-owner SES tenants are created lazily by the backend at first send
+    // (core/services/agent_mail_tenant.py) — this is the IAM side of that.
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-ses-send",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentMailTenants",
+            Action: Match.arrayWith(["ses:CreateTenant"]),
+          }),
+        ]),
+      }),
+    });
+  });
 });

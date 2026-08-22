@@ -173,6 +173,13 @@ export interface ServiceStackProps extends cdk.StackProps {
    * email off", keeping dev/local/CI inert.
    */
   agentEmailDomain?: string;
+  /**
+   * SES configuration set every agent-mail send is stamped with; empty ⇒
+   * unstamped. Sourced from the AgentMailOutboundStack instantiated in
+   * lockstep with agentEmailDomain (see isol8-stage.ts) — undefined in any
+   * env/deploy where that stack isn't instantiated.
+   */
+  agentMailConfigurationSet?: string;
 }
 
 export class ServiceStack extends cdk.Stack {
@@ -486,6 +493,28 @@ export class ServiceStack extends cdk.Stack {
           sid: "AgentMailSesSend",
           actions: ["ses:SendEmail", "ses:SendRawEmail"],
           resources: [`arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`],
+        }),
+        // Per-owner SES tenants are created lazily by the backend at first
+        // send (core/services/agent_mail_tenant.py) — dynamic per owner, so
+        // not declared as CDK resources. Scoped to this env's configuration
+        // set + the shared domain identity, same posture as the statement
+        // above.
+        new iam.PolicyStatement({
+          sid: "AgentMailTenants",
+          actions: [
+            "ses:CreateTenant",
+            "ses:GetTenant",
+            "ses:CreateTenantResourceAssociation",
+            "ses:UpdateReputationEntityPolicy",
+            "ses:GetReputationEntity",
+            "ses:SendEmail",
+            "ses:SendRawEmail",
+          ],
+          resources: [
+            `arn:aws:ses:${this.region}:${this.account}:tenant/*`,
+            `arn:aws:ses:${this.region}:${this.account}:configuration-set/isol8-${env}-agent-mail`,
+            `arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`,
+          ],
         }),
       ],
     });
@@ -1456,6 +1485,12 @@ export class ServiceStack extends cdk.Stack {
       // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
       // "empty defaults keep the app booting" posture above.
       AGENT_EMAIL_ATTACHMENTS_BUCKET: props.agentEmailAttachmentsBucket ?? "",
+      // SES configuration set stamped on every agent-mail send
+      // (core/services/ses_email.py), from the AgentMailOutboundStack
+      // instantiated in lockstep with AGENT_EMAIL_DOMAIN above. Empty string
+      // wherever that stack isn't deployed — sends stay unstamped, a
+      // harmless no-op.
+      AGENT_MAIL_CONFIGURATION_SET: props.agentMailConfigurationSet ?? "",
     };
 
     const backendContainerSecrets: Record<string, ecs.Secret> = {

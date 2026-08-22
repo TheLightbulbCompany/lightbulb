@@ -479,6 +479,7 @@ export function WorkspaceDemo() {
   const inboxPanel = (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
       <PanelMasthead
+        as="h2"
         overline="Inbox"
         title="Inbox"
         meta={unreadCount > 0 ? `${unreadCount} unread` : undefined}

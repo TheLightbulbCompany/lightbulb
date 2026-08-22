@@ -38,6 +38,7 @@ from core.services.paperclip_agent_lifecycle import (
 from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing
 from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
+from core.dynamodb import run_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,8 @@ async def _register_built_agent(
     #    doesn't list the not-yet-registered staging agent). EFS is keyed by
     #    owner_id. Credential scrub gate runs inside the export.
     try:
-        package = agent_export.export_built_agent_from_staging(
+        package = await run_in_thread(
+            agent_export.export_built_agent_from_staging,
             owner_id=owner_id,
             staging_agent_id=payload.staging_agent_id,
         )
@@ -201,6 +203,8 @@ async def _register_built_agent(
         raise HTTPException(status_code=404, detail=str(e))
     except agent_export.BuiltAgentConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except agent_export.ExportTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except agent_export.CredentialLeakError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -162,6 +162,8 @@ class ArtifactUploadResponse(BaseModel):
     manifest_sha256: str
     file_count: int
     bytes: int
+    # Workspace-relative dirs the export dropped as nested repo checkouts.
+    pruned_paths: list[str] = Field(default_factory=list)
 
 
 class BundleSelection(BaseModel):
@@ -194,6 +196,9 @@ class ArtifactFromAgentRequest(BaseModel):
     # publisher sets it. Recorded as ``manifest.requires_desktop`` for
     # buyer-facing disclosure only (nothing on deploy can provision it).
     requires_desktop: bool = False
+    # Explicit include list: workspace-relative files/dirs to ship instead of
+    # the whole workspace. Omitted → everything (minus nested repo checkouts).
+    paths: list[str] | None = Field(default=None, min_length=1, max_length=256)
 
 
 class DeployListingRequest(BaseModel):

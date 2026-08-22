@@ -1816,3 +1816,135 @@ async def test_capture_routines_drops_routine_when_variable_default_is_unsafe():
         fetch_routine_details=fetch,
     )
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# Explicit include list (``paths``), nested repo-checkout pruning, export cap
+# ---------------------------------------------------------------------------
+
+
+def _add_repo_checkout(agent_dir: Path, rel: str, *, gitfile: bool = False) -> None:
+    """A cloned repo inside the workspace: ``.git`` (dir, or a worktree-style
+    gitfile) plus a working tree that must never reach a buyer."""
+    repo = agent_dir / rel
+    (repo / "src").mkdir(parents=True)
+    if gitfile:
+        (repo / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    else:
+        (repo / ".git").mkdir()
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (repo / "src" / "main.py").write_text("print('private')\n", encoding="utf-8")
+    (repo / "README.md").write_text("# private repo\n", encoding="utf-8")
+
+
+def test_paths_ships_only_listed_entries_and_recurses_dirs(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "reports").mkdir()
+    (agent_dir / "reports" / "finance.md").write_text("revenue\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["README.md", "scripts/"])
+
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert "./README.md" in names
+    assert "./scripts/run.sh" in names
+    assert "./openclaw.json" not in names
+    assert "./reports/finance.md" not in names
+    assert pkg.tarball_contents == ["./README.md", "./scripts/run.sh"]
+    assert pkg.manifest["file_count"] == 2
+    assert pkg.pruned_paths == []
+
+
+def test_paths_ancestor_and_descendant_do_not_double_ship(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    pkg = agent_export.export_agent_from_efs(
+        seller_id=seller_id, agent_id=agent_id, paths=["scripts", "scripts/run.sh"]
+    )
+    assert _list_tar_names(pkg.tarball_bytes).count("./scripts/run.sh") == 1
+
+
+def test_paths_rejects_traversal_absolute_and_missing(fake_efs):
+    seller_id, agent_id, _ = fake_efs
+    with pytest.raises(agent_export.InvalidExportPathsError) as exc:
+        agent_export.export_agent_from_efs(
+            seller_id=seller_id,
+            agent_id=agent_id,
+            paths=["README.md", "../openclaw.json", "/etc/passwd", "never-there.md", "scripts/../../x"],
+        )
+    msg = str(exc.value)
+    for bad in ("../openclaw.json", "/etc/passwd", "never-there.md", "scripts/../../x"):
+        assert bad in msg
+    assert "'README.md'" not in msg
+
+
+def test_paths_symlink_escape_is_rejected(fake_efs, tmp_path):
+    seller_id, agent_id, agent_dir = fake_efs
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("x", encoding="utf-8")
+    (agent_dir / "link").symlink_to(outside)
+    with pytest.raises(agent_export.InvalidExportPathsError):
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["link"])
+
+
+def test_nested_repo_checkouts_are_pruned_by_default(fake_efs):
+    seller_id, agent_id, agent_dir = fake_efs
+    _add_repo_checkout(agent_dir, "isol8")
+    _add_repo_checkout(agent_dir, "vendor/lib", gitfile=True)
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert not any(n.startswith("./isol8") for n in names)
+    assert not any(n.startswith("./vendor/lib") for n in names)
+    # The agent dir's own .git (fixture) never prunes the root.
+    assert "./README.md" in names
+    assert pkg.pruned_paths == ["isol8", "vendor/lib"]
+
+
+def test_explicit_paths_ship_a_checkouts_working_tree_but_never_its_git_dir(fake_efs):
+    """Naming a checkout in ``paths`` is the seller opting in: the working
+    tree ships, ``.git`` itself still falls to the junk-dir skip."""
+    seller_id, agent_id, agent_dir = fake_efs
+    _add_repo_checkout(agent_dir, "isol8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["isol8"])
+
+    names = _list_tar_names(pkg.tarball_bytes)
+    assert "./isol8/src/main.py" in names
+    assert "./isol8/README.md" in names
+    assert not any(".git" in n for n in names)
+    assert pkg.pruned_paths == []
+
+
+def test_file_cap_stops_the_walk_immediately(fake_efs, monkeypatch):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "out").mkdir()
+    for i in range(50):
+        (agent_dir / "out" / f"run-{i:03d}.log").write_text("x" * 500, encoding="utf-8")
+    monkeypatch.setattr(agent_export, "_MAX_EXPORT_FILES", 5)
+
+    with pytest.raises(agent_export.ExportTooLargeError) as exc:
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+
+    # Raised on the first file past the cap, not after tarring all 50+.
+    assert exc.value.file_count == 6
+    assert exc.value.largest[0][0] == "out"
+    assert "out" in str(exc.value) and "paths" in str(exc.value)
+
+
+def test_byte_cap_stops_the_walk(fake_efs, monkeypatch):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "dump.json").write_bytes(b"{" * 4096)
+    monkeypatch.setattr(agent_export, "_MAX_EXPORT_BYTES", 1024)
+
+    with pytest.raises(agent_export.ExportTooLargeError) as exc:
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    assert exc.value.byte_count > 1024
+
+
+def test_cap_applies_to_explicit_paths_too(fake_efs, monkeypatch):
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "dump.json").write_bytes(b"{" * 4096)
+    monkeypatch.setattr(agent_export, "_MAX_EXPORT_BYTES", 1024)
+    with pytest.raises(agent_export.ExportTooLargeError):
+        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["dump.json"])

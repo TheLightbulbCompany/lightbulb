@@ -798,3 +798,48 @@ def test_a_timed_out_registration_holds_the_claim_through_the_502_wrap(
 
     release.assert_awaited_once()
     assert _has_timeout_cause(release.await_args.kwargs["cause"]), "the 502-wrapped timeout must still hold the claim"
+
+
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.agent_builder.emit_agent_deployed")
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock, return_value=("tok", None)
+)
+@patch("routers.agent_builder.is_at_agent_budget", new_callable=AsyncMock, return_value=False)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+def test_register_staged_agent_under_claim_uses_given_package(
+    mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, _ceo, _budget, mock_claim, mock_release, _emit, _pair
+):
+    import asyncio
+
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Quill"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw"}, "10.0.0.9"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.live_install_for_agent = MagicMock(return_value=None)
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+    pkg = _pkg()
+    pkg.openclaw_slice["cron_jobs"] = [{"name": "Daily digest"}]
+    result = asyncio.run(
+        agent_builder.register_staged_agent_under_claim(
+            owner_id=OWNER,
+            payload=agent_builder.RegisterBuiltAgentRequest(staging_agent_id="import-abcdef123456-main", name="Quill"),
+            auth_container={"gateway_token": "gw"},
+            claim_label="import:import-abcdef123456",
+            package=pkg,
+        )
+    )
+    assert result["agent_id"] == "new-agent-uuid"
+    mock_export.assert_not_called()
+    assert catalog.deploy_from_artifact.await_args.kwargs["slice_"]["cron_jobs"] == [{"name": "Daily digest"}]
+    assert mock_claim.await_args.kwargs["listing_id"] == "import:import-abcdef123456"
+    mock_release.assert_awaited_once()

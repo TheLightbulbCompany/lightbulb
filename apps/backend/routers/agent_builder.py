@@ -29,6 +29,7 @@ from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import agent_export
 from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
+from core.services.catalog_package import CatalogPackage
 from core.services.catalog_service import emit_agent_deployed, get_catalog_service
 from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
 from core.services.paperclip_agent_lifecycle import (
@@ -132,14 +133,36 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     before the Paperclip mint, so a refusal costs nothing to undo.
     """
     auth_container = await _require_hook_token(owner_id, request)
+    return await register_staged_agent_under_claim(
+        owner_id=owner_id,
+        payload=payload,
+        auth_container=auth_container,
+        claim_label=f"builder:{payload.staging_agent_id}",
+    )
 
+
+async def register_staged_agent_under_claim(
+    *,
+    owner_id: str,
+    payload: RegisterBuiltAgentRequest,
+    auth_container: dict,
+    claim_label: str,
+    package: CatalogPackage | None = None,
+) -> dict:
+    """Plan-budget gate + owner-wide deploy claim around ``_register_built_agent``.
+
+    Shared by the Atlas bridge (hook-token) and the OpenClaw backup import
+    (Clerk; routers/marketplace_import.py): both call deploy_from_artifact (→
+    pair_with_openclaw) against the one running container, so they serialize on
+    the SAME claim a marketplace Hire takes. ``package`` lets a caller that
+    already built the CatalogPackage skip the staging export.
+    """
     # An exact-cap retry may recover this staging operation's existing UUID;
     # Paperclip atomically refuses replay-only when the key is absent.
     at_agent_budget = await is_at_agent_budget(owner_id)
 
     # ``listing_id`` is a diagnostics label on this claim, not a key (the claim
-    # is owner-wide) — tag it so a held claim reads as an Atlas build in the log.
-    claim_label = f"builder:{payload.staging_agent_id}"
+    # is owner-wide) — tag it so a held claim reads as which caller owns it.
     claim_token, held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=claim_label)
     if not claim_token:
         # Same split as the marketplace route: a refusal by THIS build is
@@ -167,6 +190,7 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             payload=payload,
             auth_container=auth_container,
             idempotency_replay_only=at_agent_budget,
+            package=package,
         )
     except Exception as exc:
         deploy_cause = exc
@@ -183,26 +207,29 @@ async def _register_built_agent(
     payload: RegisterBuiltAgentRequest,
     auth_container: dict,
     idempotency_replay_only: bool = False,
+    package: CatalogPackage | None = None,
 ) -> dict:
     """The registration itself, run under the caller's deploy claim."""
     # 1. Snapshot the staging workspace Atlas built. The built agent is
     #    self-describing — its slice comes from the staging dir's OWN
     #    openclaw.json (under workspace/), not the owner's root config (which
     #    doesn't list the not-yet-registered staging agent). EFS is keyed by
-    #    owner_id. Credential scrub gate runs inside the export.
-    try:
-        package = agent_export.export_built_agent_from_staging(
-            owner_id=owner_id,
-            staging_agent_id=payload.staging_agent_id,
-        )
-    except agent_export.InvalidAgentIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except agent_export.AgentNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except agent_export.BuiltAgentConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except agent_export.CredentialLeakError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    #    owner_id. Credential scrub gate runs inside the export. Skipped when
+    #    the caller already built the package (e.g. the OpenClaw backup import).
+    if package is None:
+        try:
+            package = agent_export.export_built_agent_from_staging(
+                owner_id=owner_id,
+                staging_agent_id=payload.staging_agent_id,
+            )
+        except agent_export.InvalidAgentIdError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except agent_export.AgentNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except agent_export.BuiltAgentConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except agent_export.CredentialLeakError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     slice_ = package.openclaw_slice or {}
     warnings: list[str] = []

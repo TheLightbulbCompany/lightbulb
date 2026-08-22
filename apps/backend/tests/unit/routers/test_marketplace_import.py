@@ -306,13 +306,41 @@ def test_confirm_with_plugins_installs_and_bounces_container(client):
             "warnings": [],
         }
         apply.return_value = PluginApplyResult(installed=["weather"])
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"plugins": ["weather"]})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["plugins_installed"] == ["weather"]
     assert body["restarting"] is True
     apply.assert_awaited_once()
+    assert apply.await_args.kwargs["owner_id"] == OWNER
+    assert apply.await_args.kwargs["chosen"] == {"weather"}
+    assert [p.id for p in apply.await_args.kwargs["plugins"]] == ["weather"]
     mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+
+def test_confirm_no_plugins_field_selects_all(client):
+    c, _, s3, _ = client
+    s3.objects[KEY] = _plugin_archive()
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        apply.return_value = PluginApplyResult(installed=["weather"])
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 200, r.text
+    apply.assert_awaited_once()
+    assert apply.await_args.kwargs["chosen"] is None
 
 
 def test_confirm_plugins_empty_skips_apply_and_bounce(client):

@@ -117,3 +117,16 @@ def test_bare_origin_url_is_keyed_like_mcporter(efs):
     assert _expected_key("posthog", "https://mcp.posthog.com/mcp?mode=cli") in _vault(efs)["entries"]
     mcporter_vault.unseed("owner1", "stripe", "https://mcp.stripe.com")
     assert not any(k.startswith("stripe|") for k in _vault(efs)["entries"])
+
+
+@pytest.mark.parametrize(
+    ("raw", "normalized"),
+    [
+        ("https://mcp.stripe.com:443", "https://mcp.stripe.com/"),
+        ("http://mcp.example.com:80/mcp", "http://mcp.example.com/mcp"),
+        ("https://mcp.example.com:8443", "https://mcp.example.com:8443/"),
+        ("HTTPS://MCP.Example.com/MCP", "https://mcp.example.com/MCP"),
+    ],
+)
+def test_mcporter_url_matches_whatwg_serialization(raw, normalized):
+    assert mcporter_vault._mcporter_url(raw) == normalized

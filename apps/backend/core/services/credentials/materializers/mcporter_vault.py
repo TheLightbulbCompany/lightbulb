@@ -63,7 +63,12 @@ def _mcporter_url(server_url: str) -> str:
     key mcporter never looks up — it reports "auth required" and starts its own
     interactive login, which can't complete headless."""
     parts = urlsplit(server_url)
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, parts.fragment))
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    # WHATWG also drops the scheme's default port from the serialization.
+    if (scheme, parts.port) in (("https", 443), ("http", 80)):
+        netloc = netloc.rsplit(":", 1)[0]
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, parts.fragment))
 
 
 def _vault_key(server_key: str, server_url: str) -> str:

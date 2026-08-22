@@ -444,8 +444,13 @@ arrives in the wake text:
 - If you're blocked, mark the issue `blocked` with a comment naming the
   blocker and who needs to act, then exit the heartbeat. Don't busy-poll.
 - If you create a follow-up issue that must complete before this one can
-  proceed, set `parentId` to this issue's id and mark this one `blocked`
-  with the dependency.
+  proceed, set `parentId` to this issue's id, ASSIGN it, and mark this one
+  `blocked` with the dependency. Never leave an issue unassigned — Paperclip
+  hands unassigned blockers back to whoever created them within a minute.
+- If the one who must act is {owner_display} (merge, deploy, pay, decide),
+  do not create a child issue for them. File a `request_board_approval` on
+  this issue naming the exact action, leave it `blocked`, and exit; the
+  approval wakes you with the decision. Their comment is not an approval.
 
 ## The orchestration loop
 

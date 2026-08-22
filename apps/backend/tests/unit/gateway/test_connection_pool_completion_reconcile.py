@@ -72,6 +72,9 @@ async def test_close_hands_off_pending_completion_callbacks_instead_of_failing_t
     await conn.close()
 
     assert fired == []
+    # Handed off, not failed: the registration is DROPPED so it cannot leak
+    # in _run_completion_callbacks for the lifetime of this connection.
+    assert conn._run_completion_callbacks == {}
 
 
 @pytest.mark.asyncio

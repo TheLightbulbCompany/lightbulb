@@ -210,6 +210,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -254,6 +255,16 @@ STALE_DISPATCH_AFTER_S = 600
 # a KNOWN-delivered kickoff into a row that reads as an unacked send (terminal,
 # and admin-retryable into a double delivery). See ``_settle_ack``.
 _ACK_STAMP_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2, 5)
+
+# A re-attach that did NOT end with an observer registered (runtime not up,
+# no default agent in the EFS config, connect refused, connection vanished
+# between dial and register) is retried by the next poll -- but no sooner than
+# this. ``sent`` has no staleness rule, so without a bound a row that can
+# never re-attach would pay a container resolve + EFS read + gateway dial on
+# every ~3s poll, forever. Process-local: a wedged row is throttled per
+# backend task, which is the only place the cost is paid.
+_REATTACH_BACKOFF_S = 60.0
+_reattach_not_before: dict[str, float] = {}
 
 # Recorded on ``bootstrap_last_error`` by the staleness rule. Written for a
 # human (the admin surface renders it verbatim), so they say what happened and
@@ -782,39 +793,47 @@ async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -
     pool = get_gateway_pool()
     if pool.has_run_completion_callback(owner_id, dispatch_id):
         return
+    now = time.monotonic()
+    if _reattach_not_before.get(owner_id, 0.0) > now:
+        return
 
+    registered = False
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-        if not container or not ip:
-            return
-        friday_agent_id = await _resolve_default_agent_id(owner_id)
-        if not friday_agent_id:
-            return
-        from routers.websocket_chat import build_chat_session_key
+        friday_agent_id = await _resolve_default_agent_id(owner_id) if container and ip else None
+        if friday_agent_id:
+            from routers.websocket_chat import build_chat_session_key
 
-        submitted_by = onboarding.get("onboarding_submitted_by") or row_user_id
-        session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
-        await pool.ensure_connection(owner_id, ip, container["gateway_token"])
-        registered = pool.register_run_completion_callback(
-            owner_id,
-            dispatch_id,
-            _kickoff_observer(
-                repo,
-                row_user_id=row_user_id,
-                owner_id=owner_id,
-                generation=generation,
-                dispatch_id=dispatch_id,
-                session_key=session_key,
-                friday_agent_id=friday_agent_id,
-                submitted_by=submitted_by,
-            ),
-        )
-    except Exception as e:  # noqa: BLE001 -- best-effort; the next poll tries again
-        logger.info("bootstrap_dispatcher: observer re-attach for %s deferred to the next poll: %s", owner_id, e)
-        return
+            submitted_by = onboarding.get("onboarding_submitted_by") or row_user_id
+            session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
+            await pool.ensure_connection(owner_id, ip, container["gateway_token"])
+            registered = pool.register_run_completion_callback(
+                owner_id,
+                dispatch_id,
+                _kickoff_observer(
+                    repo,
+                    row_user_id=row_user_id,
+                    owner_id=owner_id,
+                    generation=generation,
+                    dispatch_id=dispatch_id,
+                    session_key=session_key,
+                    friday_agent_id=friday_agent_id,
+                    submitted_by=submitted_by,
+                ),
+            )
+    except Exception as e:  # noqa: BLE001 -- best-effort; a later poll tries again
+        logger.info("bootstrap_dispatcher: observer re-attach for %s deferred: %s", owner_id, e)
+
     if registered:
+        _reattach_not_before.pop(owner_id, None)
         put_metric("bootstrap.observer_reattached")
         logger.info("bootstrap_dispatcher: re-attached kickoff observer for %s dispatch_id=%s", owner_id, dispatch_id)
+    else:
+        # Runtime not up, no default agent, dial failed, or the connection
+        # vanished between dial and register -- the next poll after the backoff
+        # retries. Metered so a row that NEVER re-attaches is visible.
+        _reattach_not_before[owner_id] = now + _REATTACH_BACKOFF_S
+        put_metric("bootstrap.observer_reattach_missed")
 
 
 async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = None) -> None:
@@ -866,9 +885,7 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         if not await _recover_stale_dispatch(repo, onboarding, owner_id=owner_id):
             return
     elif bootstrap_state != "not_started":
-        # sent: the chat.send was ACKED -- delivery happened, and only the
-        # completion bookkeeping can still be outstanding; re-sending would
-        # double-run Friday. delivered: done. failed: terminal -- a
+        # delivered: done. failed: terminal -- a
         # DETERMINISTIC connect failure, the attempts cap, an AMBIGUOUS
         # post-connect failure (chat.send may already have been accepted; see
         # the failure classifier below), or an expired ambiguous claim. Only

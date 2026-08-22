@@ -47,6 +47,14 @@ def _ago(seconds: float) -> str:
 _STALE = bootstrap_dispatcher.STALE_DISPATCH_AFTER_S + 60
 
 
+@pytest.fixture(autouse=True)
+def _fresh_reattach_backoff():
+    """The re-attach backoff map is process-local module state; isolate tests."""
+    bootstrap_dispatcher._reattach_not_before.clear()
+    yield
+    bootstrap_dispatcher._reattach_not_before.clear()
+
+
 def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1", onboarding=None):
     repo = MagicMock()
     repo.get_onboarding_state = AsyncMock(return_value=onboarding or _onboarding())
@@ -286,6 +294,31 @@ async def test_reattach_connect_failure_is_swallowed_and_never_marks_failed():
 
     pool.register_run_completion_callback.assert_not_called()
     repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reattach_that_did_not_register_backs_off_before_retrying():
+    """``sent`` has no staleness rule, so a row that can never re-attach would
+    otherwise pay a container resolve + EFS read + dial on every poll forever.
+    A miss arms a per-owner backoff; the next poll inside it does nothing, and
+    a poll after it tries again."""
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=OSError("connection refused"))
+    repo, ecs, pool, _ = await _run(_sent_onboarding(), pool=pool)
+    ecs.resolve_running_container.assert_awaited_once()
+    assert "user_owner" in bootstrap_dispatcher._reattach_not_before
+
+    # Inside the backoff window: not even a container resolve.
+    repo, ecs2, pool2, _ = await _run(_sent_onboarding())
+    ecs2.resolve_running_container.assert_not_awaited()
+    pool2.register_run_completion_callback.assert_not_called()
+
+    # Window elapsed: retried, and a successful register clears the stamp.
+    bootstrap_dispatcher._reattach_not_before["user_owner"] = 0.0
+    repo, ecs3, pool3, _ = await _run(_sent_onboarding())
+    ecs3.resolve_running_container.assert_awaited_once()
+    pool3.register_run_completion_callback.assert_called_once()
+    assert "user_owner" not in bootstrap_dispatcher._reattach_not_before
 
 
 @pytest.mark.asyncio

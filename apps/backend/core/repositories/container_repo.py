@@ -1213,7 +1213,9 @@ async def release_provision_to_error(
 # ``update_conversion_fields`` enforces this allowlist so no future caller can
 # quietly grow it into a status/lease writer (the clobber class it exists to
 # close).
-_CONVERSION_MARKER_FIELDS = frozenset({"conversion_pending", "substatus", "conversion_started_at"})
+_CONVERSION_MARKER_FIELDS = frozenset(
+    {"conversion_pending", "substatus", "conversion_started_at", "conversion_deferred_reason"}
+)
 
 
 async def update_conversion_fields(owner_id: str, fields: dict) -> None:

@@ -93,6 +93,17 @@ CONVERSION_GUARD_SECONDS = 300.0
 # local `trial_local`.)
 _PAID_SUBSCRIPTION_STATUSES = ("trialing", "active")
 
+# Provision-gate codes the PROVISIONER itself cannot survive: it pre-stages the
+# ChatGPT token (``_pre_stage_oauth_for_user`` raises without one) and needs
+# the BYO sub-choice before it can reference a key. Dispatching a conversion
+# reprovision past one of these can only end in a failed provision — and the
+# owner reaches that state legitimately: the ChatGPT device-code flow only
+# STARTS after checkout, so the Stripe webhook lands minutes before the tokens
+# do. Every other gate (credits, past-due, subscription) is UX on a box that
+# can still be built, and the conversion must not leave a paying owner on the
+# trial shape over it.
+_CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_required"})
+
 
 def _within_guard_window(started_at: str | None) -> bool:
     if not started_at:
@@ -302,9 +313,61 @@ async def start_trial_conversion(owner_id: str, flight_key: str) -> bool:
         return False
 
 
+async def _conversion_prerequisite_gate(owner_id: str) -> str | None:
+    """The prerequisite gate code that would make the provisioner fail, or
+    None when the reprovision can proceed. Fails OPEN on a gate-read error: a
+    DDB blip must not strand a paying owner on the trial shape — the
+    provisioner is the real fence and its failure is the recoverable kind."""
+    from core.services import provision_gate
+
+    try:
+        gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id)
+    except Exception:  # noqa: BLE001 — fail open, see docstring
+        logger.exception("Conversion prerequisite check failed for owner %s — proceeding to reprovision", owner_id)
+        return None
+    if gate is not None and gate.code in _CONVERSION_PREREQUISITE_GATES:
+        return gate.code
+    return None
+
+
+async def rearm_deferred_conversion(owner_id: str) -> bool:
+    """Completion hook for a conversion prerequisite (the ChatGPT device-code
+    flow finishing): if this owner's conversion is pending AND deferred, drop
+    the self-heal's rate-limit anchor and the deferral marker so the very next
+    ``/container/status`` poll re-fires the reprovision, instead of waiting
+    out the guard window. Returns whether it re-armed anything.
+
+    Leaves a non-deferred pending conversion alone: its guard stamp protects a
+    drain that may be in flight, and clearing it would let the poll's
+    auto-retry put a second task on the EFS WAL. Best-effort by contract — the
+    self-heal re-evaluates every guard window regardless.
+    """
+    container = await container_repo.get_by_owner_id(owner_id)
+    if not container or not container.get("conversion_pending") or not container.get("conversion_deferred_reason"):
+        return False
+    await container_repo.update_conversion_fields(
+        owner_id, {"conversion_started_at": None, "conversion_deferred_reason": None}
+    )
+    put_metric("billing.trial_conversion.rearmed")
+    logger.info("Re-armed the deferred trial-conversion reprovision for owner %s", owner_id)
+    return True
+
+
 async def run_conversion_reprovision(owner_id: str) -> None:
     """Reprovision a converted owner's container off the trial shape, then
     release the row. asyncio.create_task target — never raises.
+
+    Deferral: when a prerequisite the PROVISIONER needs is still missing
+    (``_CONVERSION_PREREQUISITE_GATES`` — the owner chose ChatGPT at checkout
+    and has not finished the device-code flow yet), the container is NOT
+    stopped. Stopping it and dispatching would only produce a failed provision
+    (``No ChatGPT OAuth tokens …``) and an owner staring at "Setup failed"
+    while they are mid sign-in. The trial box keeps serving; the row keeps
+    ``conversion_pending`` (the record that this paying owner is still on the
+    trial shape) AND ``conversion_started_at`` (the self-heal's rate-limit
+    anchor, so it re-evaluates every guard window), and gains
+    ``conversion_deferred_reason`` so the prerequisite's completion path can
+    re-arm it at once (``rearm_deferred_conversion``).
 
     Release semantics, both paths:
       - success: substatus cleared AND `conversion_pending` dropped. The
@@ -318,6 +381,23 @@ async def run_conversion_reprovision(owner_id: str) -> None:
         and it is what `maybe_resume_stuck_conversion` re-fires off.
     """
     from core.containers import get_ecs_manager
+
+    missing = await _conversion_prerequisite_gate(owner_id)
+    if missing:
+        put_metric("billing.trial_conversion.reprovision", dimensions={"outcome": "deferred"})
+        logger.info(
+            "Trial-conversion reprovision for owner %s deferred (%s): container left running on the "
+            "trial shape until the owner completes it",
+            owner_id,
+            missing,
+        )
+        try:
+            await container_repo.update_conversion_fields(
+                owner_id, {"substatus": None, "conversion_deferred_reason": missing}
+            )
+        except Exception:
+            logger.exception("Failed to record the deferred conversion for owner %s", owner_id)
+        return
 
     succeeded = False
     try:
@@ -341,7 +421,8 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     # #1428 dev incident's terminal state: stopped, lease-less, last_error
     # null). The scoped write touches only the marker fields, so the claim —
     # and the execution behind it — survive.
-    fields: dict[str, Any] = {"substatus": None}
+    # A real attempt was made either way: the deferral marker is spent.
+    fields: dict[str, Any] = {"substatus": None, "conversion_deferred_reason": None}
     if succeeded:
         fields["conversion_pending"] = False
         # Clear the TIMESTAMP too, not just the flag. ``conversion_guard_active``

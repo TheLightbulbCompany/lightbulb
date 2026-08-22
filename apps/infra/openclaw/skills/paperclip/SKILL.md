@@ -414,7 +414,7 @@ For commands, response fields, and MCP tools, read:
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them — except back to the agent that created an open ancestor of your issue (`409 delegation_cycle`). When the only remaining owner is a human, use an approval/confirmation card on your own issue (Step 7), never an unassigned child.
-- **Never create or leave an issue unassigned.** Unassigned blockers are reassigned to their creator by the recovery pass; an unassigned issue is not a handoff to the board.
+- **Never create or leave a follow-up or blocker issue unassigned.** (Top-level `backlog` items filed for later may stay unassigned.) Unassigned blockers are reassigned to their creator by the recovery pass; an unassigned issue is not a handoff to the board.
 - **Hiring**: do not call Paperclip's `/agents` or `/agent-hires` endpoints. Isol8 owns agent limits, workspaces, and approval pairing. Search the live Isol8 marketplace and send a `recommend_agents` card first. If no listing fits, delegate a role specification to Atlas; only the owner's governed Isol8 deploy or approval flow may change the roster.
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 

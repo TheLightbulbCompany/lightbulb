@@ -49,6 +49,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "send_reply", _reply)
     monkeypatch.setattr(mod.ses_email, "send_ses_email", _free)
     monkeypatch.setattr(mod, "ensure_agent_address", AsyncMock(return_value=(st.row["address"], "ok")))
+    monkeypatch.setattr(mod, "resolve_from_address", AsyncMock(return_value=st.row["address"]))
     # _owner_email reads the paperclip-companies table — stub the whole helper, not just lookup_owner_email.
     monkeypatch.setattr(mod, "_owner_email", AsyncMock(return_value="owner@x.y"))
     monkeypatch.setattr(mod.agent_email_repo, "get_by_address", AsyncMock(side_effect=lambda a: st.row))
@@ -136,3 +137,49 @@ async def test_disabled_when_domain_unset(wired, monkeypatch):
 @pytest.mark.asyncio
 async def test_to_and_reply_key_together_is_error(wired):
     assert await _send(to="a@b.c", reply_key="x/y") == "error"
+
+
+@pytest.mark.asyncio
+async def test_free_path_rejects_multiple_recipients(wired):
+    """One `to` header comma-joined IS the SES recipient list — a single cap
+    unit must not buy an arbitrary-size blast."""
+    assert await _send(to="v@x.y, attacker@evil.com") == "forbidden_recipient"
+    assert wired.free_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_free_path_accepts_display_name_and_sends_bare_address(wired):
+    assert await _send(to="Vendor <v@x.y>") == "sent"
+    assert wired.free_kwargs["to"] == "v@x.y"
+
+
+@pytest.mark.asyncio
+async def test_free_path_rejects_malformed_recipient(wired):
+    assert await _send(to="garbage") == "forbidden_recipient"
+    assert wired.free_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_reply_path_requires_stored_agent_id(wired):
+    """Stored state decides the replying agent — a message with no agent_id
+    must not fall back to the caller-supplied agent_id."""
+    wired.msg = {k: v for k, v in wired.msg.items() if k != "agent_id"}
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "bad_reply_key"
+    assert wired.reply_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_reply_path_no_address_when_agent_has_no_active_address(wired, monkeypatch):
+    monkeypatch.setattr(mod, "resolve_from_address", AsyncMock(return_value=None))
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "no_address"
+    assert wired.reply_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_reply_path_blocked_when_current_address_outbound_disabled(wired):
+    """outbound_disabled is checked on the row resolve_from_address returns —
+    the agent's CURRENT active address — not the inbound message's address,
+    which can differ under alias rotation."""
+    wired.row = dict(wired.row, outbound_disabled="complaint")
+    assert await _send(reply_key="atlas@acme.isol8.co/2026#m1") == "outbound_disabled"
+    assert wired.reply_kwargs is None

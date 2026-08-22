@@ -14,7 +14,9 @@ owner's SES tenant. Never raises — the router returns the result string.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
+from email.utils import getaddresses
 
 from core.auth import is_org_owner_id
 from core.config import settings
@@ -25,11 +27,13 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import ensure_agent_address
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
-from core.services.agent_mail_reply import send_reply
+from core.services.agent_mail_reply import resolve_from_address, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.paperclip_owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
+
+_ADDR_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _header(headers: dict, name: str) -> str:
@@ -37,6 +41,19 @@ def _header(headers: dict, name: str) -> str:
         if k.lower() == name.lower():
             return v or ""
     return ""
+
+
+def _single_address(to: str | None) -> str | None:
+    """The one bare address ``to`` names, or None if it names zero, more than
+    one, or a malformed address. ``send_ses_email`` puts ``to`` straight into
+    the MIME ``To:`` header with no ``Destination`` override, so a raw
+    comma-joined string IS the SES recipient list — this is the only gate
+    between one daily-cap unit and an arbitrary-size blast from a verified
+    isol8.co subdomain."""
+    addrs = [a for _, a in getaddresses([to or ""]) if a]
+    if len(addrs) != 1 or not _ADDR_RE.match(addrs[0]):
+        return None
+    return addrs[0]
 
 
 async def _consume_cap(owner_id: str) -> bool:
@@ -91,7 +108,20 @@ async def send(
             msg = await get_message(address, received_key)
             if not msg or msg.get("owner_id") != owner_id:
                 return _done(path, "bad_reply_key")
-            row = await agent_email_repo.get_by_address(address) or {}
+            # Stored state decides the replying agent — never fall back to the
+            # caller-supplied agent_id, which would let a container claim to
+            # be replying as an agent it isn't.
+            msg_agent_id = msg.get("agent_id")
+            if not msg_agent_id:
+                return _done(path, "bad_reply_key")
+            # send_reply sends from the agent's CURRENT active address
+            # (resolve_from_address), which can differ from the inbound
+            # message's address under alias rotation — check outbound_disabled
+            # on the row it will actually send from, not the inbound one.
+            from_addr = await resolve_from_address(owner_id, msg_agent_id)
+            if not from_addr:
+                return _done(path, "no_address")
+            row = await agent_email_repo.get_by_address(from_addr) or {}
             if row.get("outbound_disabled"):
                 return _done(path, "outbound_disabled")
             if not await _consume_cap(owner_id):
@@ -100,7 +130,7 @@ async def send(
             result = await send_reply(
                 ctx={
                     "owner_id": owner_id,
-                    "agent_id": msg.get("agent_id") or agent_id,
+                    "agent_id": msg_agent_id,
                     "reply_to": msg.get("from_addr") or "",
                     "in_reply_to": _header(headers, "Message-ID"),
                     "references": _header(headers, "References"),
@@ -113,6 +143,9 @@ async def send(
             return _done(path, "error" if result == "not_sent" else result)
 
         # free
+        to_addr = _single_address(to)
+        if not to_addr:
+            return _done(path, "forbidden_recipient")
         owner_email = await _owner_email(owner_id)
         address, _reason = await ensure_agent_address(
             owner_id=owner_id, agent_id=agent_id, owner_email=owner_email or ""
@@ -128,7 +161,7 @@ async def send(
             return _done(path, "rate_limited")
         message_id = await ses_email.send_ses_email(
             from_addr=address,
-            to=to,
+            to=to_addr,
             subject=_env_subject(subject),
             body_text=body_text,
             body_html=body_html,

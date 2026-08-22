@@ -85,6 +85,7 @@ def _row(*, verified_senders=None, address: str = RECIPIENT):
         "agent_id": AGENT_ID,
         "address": address,
         "verified_senders": verified_senders if verified_senders is not None else [SENDER],
+        "status": "active",
     }
 
 
@@ -708,3 +709,52 @@ def test_a_terminal_drop_keeps_its_dedup_row(client, monkeypatch):
     assert _post(client, _body()).json()["status"] == "dropped_unknown_recipient"
     assert seen == {MESSAGE_ID}
     assert _post(client, _body()).json()["status"] == "duplicate"
+
+
+def _complaint(source="friday@acme-robotics.isol8.co", event_type="Complaint"):
+    return {
+        "detail-type": "Email Complaint Received",
+        "source": "aws.ses",
+        "detail": {
+            "eventType": event_type,
+            "mail": {"source": source},
+            "complaint": {"complaintFeedbackType": "abuse"},
+        },
+    }
+
+
+def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        ses_inbound,
+        "query_by_owner",
+        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
+    )
+    upd = AsyncMock(return_value={})
+    monkeypatch.setattr(ses_inbound, "update_settings", upd)
+    notify = AsyncMock(return_value="sent")
+    monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    assert r.status_code == 200 and r.json()["status"] == "disabled" and r.json()["addresses"] == 2
+    assert {c.args[0] for c in upd.call_args_list} == {"friday@acme-robotics.isol8.co", "atlas@acme-robotics.isol8.co"}
+    assert all(c.kwargs == {"outbound_disabled": "complaint"} for c in upd.call_args_list)
+    assert notify.call_args.kwargs["owner_id"] == OWNER_ID
+
+
+def test_ses_events_ignores_non_complaint(client, monkeypatch):
+    _enable(monkeypatch)
+    r = client.post(
+        "/api/v1/webhooks/ses-events", json=_complaint(event_type="Delivery"), headers={"X-Isol8-SES-Secret": SECRET}
+    )
+    assert r.json()["status"] == "ignored"
+
+
+def test_ses_events_bad_secret_401(client, monkeypatch):
+    _enable(monkeypatch)
+    assert (
+        client.post(
+            "/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": "nope"}
+        ).status_code
+        == 401
+    )

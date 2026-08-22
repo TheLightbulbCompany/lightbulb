@@ -62,12 +62,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address, normalize
+from core.repositories.agent_email_repo import get_by_address, normalize, query_by_owner, update_settings
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
+from core.services.agent_mail_owner_send import send_to_owner
 from core.services.agent_mail_inbound import (
     build_attachment_manifest,
     build_delivered_message,
@@ -328,3 +329,42 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # Same reason as the two 503s above: this one asks SES to retry too.
         await _rollback_dedup(body.message_id)
         return _final("error", code=503)
+
+
+_PAUSED_SUBJECT = "Outbound email paused"
+_PAUSED_BODY = (
+    "A recipient marked an email from one of your agents as spam, so outbound email "
+    "from your agents is paused. Replies to your own messages still work.\n\n"
+    "Review who your agents may email and re-enable sending in Control → Agents → Email."
+)
+
+
+@router.post("/ses-events", include_in_schema=False)
+async def handle_ses_events(request: Request):
+    """SES complaint events (configuration-set → EventBridge → API destination)."""
+    if not settings.SES_INBOUND_SECRET or not settings.AGENT_EMAIL_DOMAIN.strip():
+        return {"status": "disabled"}
+    presented = request.headers.get("X-Isol8-SES-Secret", "")
+    if not presented or not hmac.compare_digest(presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")):
+        return JSONResponse(status_code=401, content={"status": "bad_secret"})
+    try:
+        event = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"status": "bad_json"})
+    detail = (event or {}).get("detail") or {}
+    if (detail.get("eventType") or "").lower() != "complaint":
+        return {"status": "ignored"}
+    source = (detail.get("mail") or {}).get("source") or ""
+    row = await get_by_address(normalize(source)) if source else None
+    if not row:
+        return {"status": "unknown_source"}
+    owner_id = row["owner_id"]
+    rows = [r for r in await query_by_owner(owner_id) if r.get("status") == "active"]
+    for r in rows:
+        await update_settings(r["address"], outbound_disabled="complaint")
+    put_metric("agent_email.complaint", dimensions={"result": "disabled"})
+    try:
+        await send_to_owner(owner_id=owner_id, purpose="routine", subject=_PAUSED_SUBJECT, body_text=_PAUSED_BODY)
+    except Exception:  # noqa: BLE001 — notification is best-effort
+        logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
+    return {"status": "disabled", "owner_id": owner_id, "addresses": len(rows)}

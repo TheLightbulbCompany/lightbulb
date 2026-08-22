@@ -403,3 +403,157 @@ def test_list_plugins_none_without_installs(tmp_path: Path):
     raw = tmp_path / "raw"
     bi.extract_archive(_stream(backup_archive(with_plugins=False)), raw)
     assert bi.list_plugins(bi.locate_source(raw)) == []
+
+
+# ---------------------------------------------------------------------------
+# materialize / stage_upload / restage
+# ---------------------------------------------------------------------------
+
+FLEET = "2026.7.2"
+ALL = bi.ImportSelection()
+
+
+def test_stage_upload_backup_writes_self_describing_workspace(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    norm, report = bi.stage_upload(_stream(backup_archive()), staging, fleet_version=FLEET)
+    assert norm.kind == "backup" and norm.agent_id == "main" and norm.name == "Quill"
+    ws = staging / "workspace"
+    assert (ws / "AGENTS.md").is_file() and (ws / "MEMORY.md").is_file()
+    assert (ws / "memory" / "2026-08-01.md").is_file()
+    assert (ws / "skills" / "remotion" / "SKILL.md").is_file()
+    assert not (ws / "agents").exists() and not list(ws.rglob("*.sqlite"))
+    assert (staging / "raw").is_dir()
+    cfg = json.loads((ws / "openclaw.json").read_text())
+    assert [a["id"] for a in cfg["agents"]["list"]] == ["main"]
+    assert cfg["agents"]["list"][0]["name"] == "Quill"
+    assert cfg["agents"]["list"][0]["description"] == "dry, precise"
+    assert cfg["mcp"]["servers"]["gh"]["env"] == {"GITHUB_TOKEN": ""}
+    assert cfg["skills"]["entries"]["notes"]["apiKey"] == ""
+    assert cfg["tools"] == {"deny": ["browser"]}
+    assert "meta" not in cfg and "channels" not in cfg
+    assert norm.mcp_names == ["gh"] and sorted(norm.skill_names) == ["notes", "remotion"]
+    assert [p.id for p in norm.plugins] == ["weather"]
+    assert report.files > 0
+
+
+def test_stage_upload_cron_default_agent_and_filtered(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    norm, _ = bi.stage_upload(_stream(backup_archive()), staging, fleet_version=FLEET)
+    assert [j["name"] for j in norm.cron_jobs] == ["Daily digest"]
+    sidecar = json.loads((staging / "cron-jobs.json").read_text())
+    assert [j["name"] for j in sidecar] == ["Daily digest"] and "id" not in sidecar[0]
+
+
+def test_restage_applies_selection(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    bi.stage_upload(_stream(backup_archive()), staging, fleet_version=FLEET)
+    sel = bi.ImportSelection(skills={"notes"}, mcp_servers=set(), include_memory=False, include_cron=False)
+    norm = bi.restage(staging, agent_id="main", selection=sel, fleet_version=FLEET)
+    ws = staging / "workspace"
+    assert not (ws / "skills" / "remotion").exists()  # workspace skill deselected
+    assert not (ws / "memory").exists() and not (ws / "MEMORY.md").exists()
+    cfg = json.loads((ws / "openclaw.json").read_text())
+    assert cfg["mcp"] == {} and list(cfg["skills"]["entries"]) == ["notes"]
+    assert norm.mcp_names == [] and norm.skill_names == ["notes"] and norm.cron_jobs == []
+    assert json.loads((staging / "cron-jobs.json").read_text()) == []
+
+
+def test_stage_upload_warnings(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    archive = backup_archive(
+        agents_list=[
+            {
+                "id": "main",
+                "default": True,
+                "model": "anthropic/claude-opus-4-6",
+                "archetype": "general",
+                "channels": {"telegram": {}},
+            },
+            {"id": "work", "name": "Work Bot", "workspace": "~/.openclaw/workspace-work"},
+        ],
+        extra_tree={f"{PAYLOAD_STATE}/workspace-work/AGENTS.md": "# work\n"},
+    )
+    norm, _ = bi.stage_upload(_stream(archive), staging, fleet_version=FLEET)
+    joined = "\n".join(norm.warnings)
+    assert "2026.3.11" in joined and FLEET in joined
+    assert "archetype" in joined and "channel" in joined.lower() and "model" in joined.lower()
+    manifest = json.loads((staging / "import-manifest.json").read_text())
+    assert [a["id"] for a in manifest["agents"]] == ["main", "work"] and manifest["agent_id"] == "main"
+
+
+def test_stage_upload_warns_on_local_mcp_paths(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    cfg_tree = {
+        f"{PAYLOAD_STATE}/openclaw.json": _config(
+            mcp={"servers": {"fs": {"command": "node", "args": ["/Users/alice/mcp/fs.js"]}}}
+        )
+    }
+    norm, _ = bi.stage_upload(_stream(backup_archive(extra_tree=cfg_tree)), staging, fleet_version=FLEET)
+    assert any("'fs'" in w and "/Users/alice/mcp/fs.js" in w for w in norm.warnings)
+
+
+def test_restage_other_agent_and_unknown(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    archive = backup_archive(
+        agents_list=[
+            {"id": "main", "default": True},
+            {"id": "work", "name": "Work Bot", "workspace": "~/.openclaw/workspace-work"},
+        ],
+        extra_tree={f"{PAYLOAD_STATE}/workspace-work/AGENTS.md": "# work only\n"},
+    )
+    bi.stage_upload(_stream(archive), staging, fleet_version=FLEET)
+    norm = bi.restage(staging, agent_id="work", selection=ALL, fleet_version=FLEET)
+    assert norm.agent_id == "work"
+    assert (staging / "workspace" / "AGENTS.md").read_text() == "# work only\n"
+    assert not (staging / "workspace" / "SOUL.md").exists()
+    with pytest.raises(bi.BackupImportError, match="not in this backup"):
+        bi.restage(staging, agent_id="nope", selection=ALL, fleet_version=FLEET)
+
+
+def test_stage_upload_state_dir_and_bare_workspace(tmp_path: Path):
+    s1 = tmp_path / "workspace-import-aaaaaaaaaaaa"
+    norm, _ = bi.stage_upload(_stream(state_dir_archive()), s1, fleet_version=FLEET)
+    assert norm.kind == "state-dir" and (s1 / "workspace" / "skills" / "remotion" / "SKILL.md").is_file()
+    s2 = tmp_path / "workspace-import-bbbbbbbbbbbb"
+    norm, _ = bi.stage_upload(_stream(workspace_archive()), s2, fleet_version=FLEET)
+    assert norm.kind == "workspace" and norm.name == "Bare Bones" and norm.plugins == []
+    cfg = json.loads((s2 / "workspace" / "openclaw.json").read_text())
+    assert cfg["agents"]["list"] == [{"id": "main", "name": "Bare Bones"}]
+    assert cfg["mcp"] == {} and cfg["skills"] == {} and cfg["plugins"] == {} and cfg["tools"] == {}
+
+
+def test_stage_upload_agent_without_workspace_warns(tmp_path: Path):
+    staging = tmp_path / "workspace-import-abcdef123456"
+    archive = backup_archive(
+        agents_list=[{"id": "ghost", "name": "Ghost"}],
+        extra_tree={f"{PAYLOAD_STATE}/workspace-other/AGENTS.md": "# other\n"},
+    )
+    norm, _ = bi.stage_upload(_stream(archive), staging, fleet_version=FLEET)
+    assert any("no workspace directory" in w for w in norm.warnings)
+    assert (staging / "workspace" / "openclaw.json").is_file()
+
+
+def test_stage_upload_state_level_extras_ship_as_workspace_content(tmp_path: Path):
+    """R2: an Isol8 artifact re-upload (openclaw.json beside persona files,
+    the state dir IS the workspace) keeps memory/ and tools/ as ordinary
+    workspace content — they are NOT in _STATE_RUNTIME_DIRS, unlike a real
+    state dir where memory/*.sqlite is already dropped at extraction time."""
+    staging = tmp_path / "workspace-import-cccccccccccc"
+    archive = _tar_from_tree(
+        {
+            "openclaw.json": _config(),
+            "AGENTS.md": "# a\n",
+            "IDENTITY.md": "- **Name:** Re\n",
+            "memory/2026-08-01.md": "x\n",
+            "tools/helper.sh": "#!/bin/sh\n",
+        }
+    )
+    norm, _ = bi.stage_upload(_stream(archive), staging, fleet_version=FLEET)
+    ws = staging / "workspace"
+    assert (ws / "memory" / "2026-08-01.md").is_file()
+    assert (ws / "tools" / "helper.sh").is_file()
+    cfg = json.loads((ws / "openclaw.json").read_text())
+    assert cfg["agents"]["list"] == [{"id": "main", "name": "Re"}]
+    assert cfg["mcp"]["servers"]["gh"]["env"] == {"GITHUB_TOKEN": ""}
+    assert cfg["skills"]["entries"]["notes"]["apiKey"] == ""
+    assert cfg["tools"] == {"deny": ["browser"]}

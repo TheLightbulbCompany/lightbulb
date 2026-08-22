@@ -60,9 +60,17 @@ import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
-from core.services.catalog_slice import _scrub_plugins_block
+from core.dynamodb import utc_now_iso
+from core.services.catalog_slice import (
+    _scrub_plugins_block,
+    _scrub_secret_fields,
+    _scrub_tools_block,
+    filter_cron_jobs_for_agent,
+    sanitize_agent_entry_for_schema,
+    strip_user_specific_fields,
+)
 
 MAX_UPLOAD_BYTES = 2 * 1024**3  # S3 presigned PUT; far above any real archive
 MAX_EXTRACTED_BYTES = 2 * 1024**3
@@ -446,7 +454,11 @@ def _resolve_config_path(source: BackupSource, raw: str) -> Path | None:
 
 def _workspace_for_entry(source: BackupSource, entry: dict, defaults: dict) -> Path | None:
     raw = entry.get("workspace") if isinstance(entry.get("workspace"), str) else None
-    if raw is None and isinstance(defaults.get("workspace"), str):
+    is_default_agent = entry["id"] == "main" or entry.get("default") is True
+    # The shared agents.defaults.workspace path is the main/default agent's
+    # workspace, same restriction as the unsuffixed "workspace" dir fallback
+    # below — an arbitrary non-default agent id must not silently inherit it.
+    if raw is None and is_default_agent and isinstance(defaults.get("workspace"), str):
         raw = defaults["workspace"]
     if raw:
         resolved = _resolve_config_path(source, raw)
@@ -571,3 +583,278 @@ def list_plugins(source: BackupSource) -> list[PluginCandidate]:
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# 4. Materialization
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImportSelection:
+    skills: set[str] | None = None  # None = all
+    mcp_servers: set[str] | None = None  # None = all
+    include_memory: bool = True
+    include_cron: bool = True
+
+
+@dataclass
+class ImportNormalized:
+    kind: str
+    agent_id: str
+    name: str
+    agents: list[AgentCandidate]
+    plugins: list[PluginCandidate]
+    cron_jobs: list[dict]
+    mcp_names: list[str]
+    skill_names: list[str]
+    warnings: list[str]
+
+
+# State-relative top-level dirs treated as runtime (not content) when the
+# agent's workspace_dir IS the state dir itself (an Isol8 artifact re-upload
+# — see the module docstring's "candidate prefix" note). "memory" and "tools"
+# are deliberately NOT here (R2): both are legitimate workspace content in
+# that shape — an Isol8 artifact re-upload keeps persona files + memory/ at
+# the same level as openclaw.json — and true state-dir memory/*.sqlite is
+# already dropped by the streaming extraction's skip rules (_STATE_SKIP_DIRS).
+_STATE_RUNTIME_DIRS = (
+    "agents",
+    "sessions",
+    "logs",
+    "credentials",
+    "devices",
+    "identity",
+    "canvas",
+    "completions",
+    "delivery-queue",
+    "session-delivery-queue",
+    "state",
+    "extensions",
+    "plugins",
+    "dev",
+    "git",
+    "npm",
+    "npm-runtime",
+    "cron",
+    "browser",
+    "media",
+)
+
+
+def _read_cron_jobs(state_dir: Path | None) -> list[dict]:
+    if state_dir is None or not (state_dir / "cron" / "jobs.json").is_file():
+        return []
+    try:
+        data = json.loads((state_dir / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    return [j for j in (jobs or []) if isinstance(j, dict)] if isinstance(jobs, list) else []
+
+
+def _copy_tree(src: Path, dst: Path, *, ignore_top: tuple[str, ...] = ()) -> None:
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        skipped = {n for n in names if n in _UNIVERSAL_SKIP_DIRS or n in _UNIVERSAL_SKIP_FILES or n.startswith(".")}
+        if Path(directory) == src:
+            skipped.update(n for n in names if n in ignore_top)
+        return skipped
+
+    shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False, ignore=_ignore)
+
+
+def _scrubbed_config_blocks(config: dict, selection: ImportSelection) -> tuple[dict, dict, dict, dict]:
+    mcp_src = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
+    servers_src = mcp_src.get("servers") if isinstance(mcp_src.get("servers"), dict) else {}
+    servers = {
+        n: _scrub_secret_fields(s)
+        for n, s in servers_src.items()
+        if isinstance(s, dict) and (selection.mcp_servers is None or n in selection.mcp_servers)
+    }
+    mcp = {"servers": servers} if servers else {}
+    skills_src = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+    skills: dict[str, Any] = {}
+    entries_src = skills_src.get("entries") if isinstance(skills_src.get("entries"), dict) else {}
+    entries = {
+        n: _scrub_secret_fields(e)
+        for n, e in entries_src.items()
+        if isinstance(e, dict) and (selection.skills is None or n in selection.skills)
+    }
+    if entries:
+        skills["entries"] = entries
+    for key in ("allowBundled", "load"):
+        if key in skills_src:
+            skills[key] = skills_src[key]
+    plugins = _scrub_plugins_block(config["plugins"]) if isinstance(config.get("plugins"), dict) else {}
+    tools = _scrub_tools_block(config["tools"]) if isinstance(config.get("tools"), dict) else {}
+    return mcp, skills, plugins, tools
+
+
+def _local_path_hits(server: dict) -> list[str]:
+    parts: list[str] = []
+    if isinstance(server.get("command"), str):
+        parts.append(server["command"])
+    parts.extend(a for a in (server.get("args") or []) if isinstance(a, str))
+    if isinstance(server.get("cwd"), str):
+        parts.append(server["cwd"])
+    return [p for p in parts if _LOCAL_PATH_RE.match(p)]
+
+
+def materialize_staging(
+    source: BackupSource,
+    agent: AgentCandidate,
+    candidates: list[AgentCandidate],
+    staging_dir: Path,
+    *,
+    selection: ImportSelection,
+    fleet_version: str,
+) -> ImportNormalized:
+    warnings: list[str] = []
+    ws_out = staging_dir / "workspace"
+    if ws_out.exists():
+        shutil.rmtree(ws_out)
+    ws_out.mkdir(parents=True)
+
+    if agent.workspace_dir is not None:
+        copying_state_dir = source.state_dir is not None and agent.workspace_dir == source.state_dir
+        _copy_tree(agent.workspace_dir, ws_out, ignore_top=_STATE_RUNTIME_DIRS if copying_state_dir else ())
+    else:
+        warnings.append(f"no workspace directory found for agent {agent.id!r} — only its config entry was imported")
+
+    if source.state_dir is not None and (source.state_dir / "skills").is_dir():
+        for skill_dir in sorted(
+            p for p in (source.state_dir / "skills").iterdir() if p.is_dir() and (p / "SKILL.md").is_file()
+        ):
+            dest = ws_out / "skills" / skill_dir.name
+            if not dest.exists():
+                _copy_tree(skill_dir, dest)
+    if selection.skills is not None and (ws_out / "skills").is_dir():
+        for d in list((ws_out / "skills").iterdir()):
+            if d.is_dir() and d.name not in selection.skills:
+                shutil.rmtree(d)
+    workspace_skills = (
+        sorted(p.name for p in (ws_out / "skills").iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
+        if (ws_out / "skills").is_dir()
+        else []
+    )
+
+    if not selection.include_memory:
+        shutil.rmtree(ws_out / "memory", ignore_errors=True)
+        (ws_out / "MEMORY.md").unlink(missing_ok=True)
+    (ws_out / "openclaw.json").unlink(missing_ok=True)
+    (ws_out / "build-manifest.json").unlink(missing_ok=True)
+
+    entry = dict(agent.entry)
+    entry["id"] = agent.id
+    entry["name"] = agent.name
+    if not entry.get("description"):
+        vibe = _identity_md_field(agent.workspace_dir, "Vibe")
+        if vibe:
+            entry["description"] = vibe
+    if "channels" in entry:
+        warnings.append("channel bindings are not imported — reconnect channels in Isol8 after the agent lands")
+    if isinstance(entry.get("model"), str) and entry["model"]:
+        warnings.append(
+            f"model {entry['model']!r} is not carried over — the agent runs on your Isol8 provider and model"
+        )
+    _sanitized, dropped = sanitize_agent_entry_for_schema(strip_user_specific_fields(entry))
+    if dropped:
+        warnings.append(
+            "config keys this OpenClaw version does not accept were dropped from the agent entry: "
+            + ", ".join(sorted(dropped))
+        )
+
+    mcp, skills, plugins, tools = _scrubbed_config_blocks(source.config, selection)
+    for name, server in (mcp.get("servers") or {}).items():
+        hits = _local_path_hits(server)
+        if hits:
+            warnings.append(
+                f"MCP server {name!r} points at a path on your machine ({hits[0]}) — it will not resolve inside the container; edit it after import"
+            )
+    meta = source.config.get("meta") if isinstance(source.config.get("meta"), dict) else {}
+    src_version = meta.get("lastTouchedVersion")
+    if isinstance(src_version, str) and src_version and src_version.split("-", 1)[0] != fleet_version.split("-", 1)[0]:
+        warnings.append(
+            f"backup was written by OpenClaw {src_version}; Isol8 runs {fleet_version} — unsupported config keys are dropped, not failed"
+        )
+
+    (ws_out / "openclaw.json").write_text(
+        json.dumps(
+            {"agents": {"list": [entry]}, "mcp": mcp, "skills": skills, "plugins": plugins, "tools": tools}, indent=2
+        ),
+        encoding="utf-8",
+    )
+
+    jobs = _read_cron_jobs(source.state_dir) if selection.include_cron else []
+    if len(candidates) == 1:
+        for job in jobs:
+            job.setdefault("agentId", agent.id)
+    cron_jobs = filter_cron_jobs_for_agent(jobs, agent.id)
+    (staging_dir / "cron-jobs.json").write_text(json.dumps(cron_jobs), encoding="utf-8")
+
+    mcp_names = sorted((mcp.get("servers") or {}).keys())
+    skill_names = sorted(set((skills.get("entries") or {}).keys()) | set(workspace_skills))
+    plugin_candidates = list_plugins(source)
+    (staging_dir / "import-manifest.json").write_text(
+        json.dumps(
+            {
+                "kind": source.kind,
+                "agent_id": agent.id,
+                "name": agent.name,
+                "agents": [{"id": c.id, "name": c.name, "has_history": c.history is not None} for c in candidates],
+                "plugins": [
+                    {"id": p.id, "spec": f"{p.package_name}@{p.version}", "has_dependencies": p.has_dependencies}
+                    for p in plugin_candidates
+                ],
+                "mcp_servers": mcp_names,
+                "skills": skill_names,
+                "cron_jobs": len(cron_jobs),
+                "warnings": warnings,
+                "created_at": utc_now_iso(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return ImportNormalized(
+        kind=source.kind,
+        agent_id=agent.id,
+        name=agent.name,
+        agents=candidates,
+        plugins=plugin_candidates,
+        cron_jobs=cron_jobs,
+        mcp_names=mcp_names,
+        skill_names=skill_names,
+        warnings=warnings,
+    )
+
+
+def _pick(candidates: list[AgentCandidate], agent_id: str | None) -> AgentCandidate:
+    if agent_id is not None:
+        for c in candidates:
+            if c.id == agent_id:
+                return c
+        raise BackupImportError(f"agent {agent_id!r} is not in this backup")
+    for c in candidates:
+        if c.entry.get("default") is True:
+            return c
+    for c in candidates:
+        if c.id == "main":
+            return c
+    return candidates[0]
+
+
+def restage(
+    staging_dir: Path, *, agent_id: str | None, selection: ImportSelection, fleet_version: str
+) -> ImportNormalized:
+    source = locate_source(staging_dir / "raw")
+    candidates = list_agents(source)
+    return materialize_staging(
+        source, _pick(candidates, agent_id), candidates, staging_dir, selection=selection, fleet_version=fleet_version
+    )
+
+
+def stage_upload(
+    open_stream: Callable[[], BinaryIO], staging_dir: Path, *, fleet_version: str
+) -> tuple[ImportNormalized, ExtractReport]:
+    report = extract_archive(open_stream, staging_dir / "raw")
+    return restage(staging_dir, agent_id=None, selection=ImportSelection(), fleet_version=fleet_version), report

@@ -351,20 +351,42 @@ async def handle_ses_events(request: Request):
         event = await request.json()
     except Exception:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"status": "bad_json"})
-    detail = (event or {}).get("detail") or {}
+    if not isinstance(event, dict):
+        # Valid JSON, but not an object — e.g. a bare list/string/number. Same
+        # drop as a decode failure: there is no `detail` to read off of it.
+        return JSONResponse(status_code=400, content={"status": "bad_json"})
+    detail = event.get("detail")
+    if not isinstance(detail, dict):
+        # No object to read eventType/mail off of — not a complaint we can act on.
+        return {"status": "ignored"}
     if (detail.get("eventType") or "").lower() != "complaint":
         return {"status": "ignored"}
-    source = (detail.get("mail") or {}).get("source") or ""
+    mail = detail.get("mail")
+    source = mail.get("source") if isinstance(mail, dict) else ""
     row = await get_by_address(normalize(source)) if source else None
     if not row:
         return {"status": "unknown_source"}
     owner_id = row["owner_id"]
-    rows = [r for r in await query_by_owner(owner_id) if r.get("status") == "active"]
-    for r in rows:
-        await update_settings(r["address"], outbound_disabled="complaint")
-    put_metric("agent_email.complaint", dimensions={"result": "disabled"})
     try:
-        await send_to_owner(owner_id=owner_id, purpose="routine", subject=_PAUSED_SUBJECT, body_text=_PAUSED_BODY)
-    except Exception:  # noqa: BLE001 — notification is best-effort
-        logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
-    return {"status": "disabled", "owner_id": owner_id, "addresses": len(rows)}
+        rows = [r for r in await query_by_owner(owner_id) if r.get("status") == "active"]
+        disabled = 0
+        for r in rows:
+            try:
+                await update_settings(r["address"], outbound_disabled="complaint")
+                disabled += 1
+            except Exception:  # noqa: BLE001 — per-row best-effort; keep disabling the rest
+                logger.warning("ses_events: disable failed for %s", r["address"], exc_info=True)
+        if rows and disabled == 0:
+            # Every row failed -- nothing was actually disabled, so ask the
+            # EventBridge API destination to retry (it retries on 5xx) rather
+            # than claim success or silently notify the owner of a no-op.
+            return JSONResponse(status_code=503, content={"status": "error"})
+        put_metric("agent_email.complaint", dimensions={"result": "disabled"})
+        try:
+            await send_to_owner(owner_id=owner_id, purpose="routine", subject=_PAUSED_SUBJECT, body_text=_PAUSED_BODY)
+        except Exception:  # noqa: BLE001 — notification is best-effort
+            logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
+        return {"status": "disabled", "owner_id": owner_id, "addresses": disabled}
+    except Exception:  # noqa: BLE001 — mirrors handle_ses_inbound's transient-vs-terminal split
+        logger.exception("ses_events handler failed for owner %s", owner_id)
+        return JSONResponse(status_code=503, content={"status": "error"})

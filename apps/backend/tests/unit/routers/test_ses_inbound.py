@@ -758,3 +758,59 @@ def test_ses_events_bad_secret_401(client, monkeypatch):
         ).status_code
         == 401
     )
+
+
+def test_ses_events_non_dict_json_body_400(client, monkeypatch):
+    """Valid JSON that isn't an object (a bare list, string, number, bool)
+    must not crash `.get("detail")` on it -- same bad_json drop as a decode
+    failure."""
+    _enable(monkeypatch)
+    r = client.post(
+        "/api/v1/webhooks/ses-events",
+        content=b"[1,2,3]",
+        headers={"Content-Type": "application/json", "X-Isol8-SES-Secret": SECRET},
+    )
+    assert r.status_code == 400 and r.json()["status"] == "bad_json"
+
+
+def test_ses_events_partial_disable_failure_still_disables_and_notifies(client, monkeypatch):
+    """One row's update_settings raising must not abort the loop or skip the
+    owner notification for the rows that DID succeed -- only the failed row
+    is excluded from the `addresses` count."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        ses_inbound,
+        "query_by_owner",
+        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
+    )
+    monkeypatch.setattr(ses_inbound, "update_settings", AsyncMock(side_effect=[RuntimeError("ddb blip"), {}]))
+    notify = AsyncMock(return_value="sent")
+    monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
+
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "disabled" and r.json()["addresses"] == 1
+    notify.assert_awaited_once()
+
+
+def test_ses_events_all_disable_failures_returns_503_no_notify(client, monkeypatch):
+    """Every row failing means nothing was actually disabled -- 503 so the
+    EventBridge API destination retries, and the owner is NOT told sending is
+    paused when it demonstrably isn't yet."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        ses_inbound,
+        "query_by_owner",
+        AsyncMock(return_value=[_row(), dict(_row(), address="atlas@acme-robotics.isol8.co")]),
+    )
+    monkeypatch.setattr(ses_inbound, "update_settings", AsyncMock(side_effect=RuntimeError("ddb blip")))
+    notify = AsyncMock(return_value="sent")
+    monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
+
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+
+    assert r.status_code == 503 and r.json()["status"] == "error"
+    notify.assert_not_awaited()

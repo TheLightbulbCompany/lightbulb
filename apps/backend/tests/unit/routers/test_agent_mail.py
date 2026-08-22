@@ -268,6 +268,19 @@ def test_patch_address_reenable_sends_null(client):
     assert upd.call_args.kwargs == {"outbound_disabled": None}
 
 
+def test_patch_address_nonnull_outbound_disabled_400(client):
+    """outbound_disabled is read-only from the owner settings surface except
+    for the explicit-null re-enable — any other value must be rejected, not
+    silently ignored."""
+    with (
+        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
+        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock()) as upd,
+    ):
+        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"outbound_disabled": "spam"})
+    assert r.status_code == 400 and r.json()["detail"]["status"] == "outbound_disabled_readonly"
+    upd.assert_not_called()
+
+
 def test_patch_address_mint_failure_409(client):
     with (
         patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value=None)),

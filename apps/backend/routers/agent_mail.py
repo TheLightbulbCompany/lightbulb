@@ -199,7 +199,9 @@ async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext 
             raise HTTPException(status_code=400, detail={"status": "bad_sender", "entry": str(e)}) from e
     if body.send_to_anyone is not None:
         kwargs["send_to_anyone"] = body.send_to_anyone
-    if "outbound_disabled" in body.model_fields_set and body.outbound_disabled is None:
+    if "outbound_disabled" in body.model_fields_set:
+        if body.outbound_disabled is not None:
+            raise HTTPException(status_code=400, detail={"status": "outbound_disabled_readonly"})
         kwargs["outbound_disabled"] = None
     row = await agent_email_repo.update_settings(address, **kwargs)
     if row is None:

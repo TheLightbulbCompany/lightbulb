@@ -352,6 +352,11 @@ class Settings(BaseSettings):
     # entirely, so an env without a verified mail domain never mints.
     AGENT_EMAIL_DOMAIN: str = ""
 
+    # SES configuration set every agent-mail send is stamped with (the
+    # complaint event destination hangs off it). Empty ⇒ sends carry no
+    # configuration set — fine for envs without the outbound stack.
+    AGENT_MAIL_CONFIGURATION_SET: str = ""
+
     # Stripe Connect (seller payout onboarding) — environment-specific URLs
     # set by CDK so the marketplace UI can return the user back to the right
     # host after Stripe-hosted onboarding.

@@ -191,3 +191,34 @@ async def test_stalled_send_respects_timeout(monkeypatch):
     # Without abandon_on_cancel this blocks ~2s for the thread; the fix returns
     # at the ~0.1s deadline. Generous bound to stay non-flaky under CI load.
     assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_send_stamps_configuration_set_and_tenant(monkeypatch):
+    from core.services import ses_email
+
+    monkeypatch.setattr(ses_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    monkeypatch.setattr(ses_email.settings, "AGENT_MAIL_CONFIGURATION_SET", "isol8-dev-agent-mail")
+    fake = MagicMock()
+    fake.send_email.return_value = {"MessageId": "m"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake)
+    await ses_email.send_ses_reply(
+        from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b", tenant_name="owner-user_1"
+    )
+    kwargs = fake.send_email.call_args.kwargs
+    assert kwargs["ConfigurationSetName"] == "isol8-dev-agent-mail"
+    assert kwargs["TenantName"] == "owner-user_1"
+
+
+@pytest.mark.asyncio
+async def test_send_omits_stamps_when_unset(monkeypatch):
+    from core.services import ses_email
+
+    monkeypatch.setattr(ses_email.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    monkeypatch.setattr(ses_email.settings, "AGENT_MAIL_CONFIGURATION_SET", "")
+    fake = MagicMock()
+    fake.send_email.return_value = {"MessageId": "m"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake)
+    await ses_email.send_ses_reply(from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b")
+    kwargs = fake.send_email.call_args.kwargs
+    assert "ConfigurationSetName" not in kwargs and "TenantName" not in kwargs

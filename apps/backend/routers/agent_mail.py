@@ -14,8 +14,6 @@ durable fence is the per-owner daily cap enforced in ``agent_mail_send``.
 
 import hmac
 import re
-import time
-from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -23,28 +21,20 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import agent_email_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import list_messages, reply_key
-from core.services.agent_email import ensure_agent_address
-from core.services.agent_mail_reply import resolve_from_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address
 from core.services.agent_mail_send import _owner_email, send
+from core.services.rate_bucket import RateBucket
 
 router = APIRouter()
 
 RATE_LIMIT_PER_MINUTE = 60
-_RATE_BUCKETS_PER_OWNER: dict[str, deque[float]] = defaultdict(deque)
+_RATE = RateBucket(RATE_LIMIT_PER_MINUTE)
 _INBOX_TEXT_CHARS = 8_000
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DOMAIN_RE = re.compile(r"^@[^@\s]+\.[^@\s]+$")
 
 
 def _check_rate_limit(owner_id: str) -> bool:
-    now = time.monotonic()
-    q = _RATE_BUCKETS_PER_OWNER[owner_id]
-    while q and q[0] < now - 60.0:
-        q.popleft()
-    if len(q) >= RATE_LIMIT_PER_MINUTE:
-        return False
-    q.append(now)
-    return True
+    return _RATE.allow(owner_id)
 
 
 async def _require_hook_token(owner_id: str, request: Request) -> None:
@@ -172,7 +162,7 @@ def _validate_senders(entries: list[str]) -> list[str]:
     out: list[str] = []
     for raw in entries:
         e = (raw or "").strip().lower()
-        if not (_EMAIL_RE.match(e) or _DOMAIN_RE.match(e)):
+        if not (EMAIL_ADDRESS_RE.match(e) or _DOMAIN_RE.match(e)):
             raise ValueError(e)
         out.append(e)
     return out

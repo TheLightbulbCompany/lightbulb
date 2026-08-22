@@ -18,8 +18,14 @@ caller can log/metric on instead.
 import logging
 
 from core.config import settings
-from core.repositories import agent_email_repo, billing_repo, container_repo
+
+# agent_email_repo is unused directly in this module now that
+# resolve_from_address lives in core.services.agent_email — kept imported so
+# tests can still reach it as `agent_mail_reply.agent_email_repo` (it's the
+# same shared repo module resolve_from_address queries).
+from core.repositories import agent_email_repo, billing_repo, container_repo  # noqa: F401
 from core.services import ses_email
+from core.services.agent_email import resolve_from_address
 
 logger = logging.getLogger(__name__)
 
@@ -86,19 +92,6 @@ def reply_subject(original: str) -> str:
     if original.strip().lower().startswith("re:"):
         return original
     return f"Re: {original}"
-
-
-async def resolve_from_address(owner_id: str, agent_id: str) -> str | None:
-    """The active address row for ``agent_id`` among ``owner_id``'s rows, or None.
-
-    An owner can accumulate multiple rows per agent over time (aliases); only
-    the current ``status == "active"`` row is a valid from-address.
-    """
-    rows = await agent_email_repo.query_by_owner(owner_id)
-    for row in rows:
-        if row.get("agent_id") == agent_id and row.get("status") == "active":
-            return row.get("address")
-    return None
 
 
 async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None, tenant_name: str | None = None) -> str:

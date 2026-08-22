@@ -19,13 +19,13 @@ from main import app
 def _reset_rate_limiter():
     """Each test starts with an empty rate-limit bucket. Shared in-process
     state otherwise causes cross-test pollution (the 60-POST rate-limit test
-    leaves 60 entries in _RATE_BUCKETS_PER_OWNER['u_1'] which would
+    leaves 60 entries in _RATE._buckets['u_1'] which would
     pre-charge any new test that hits the same owner)."""
     from routers import hooks_proxy
 
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     yield
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
 
 
 @pytest.fixture

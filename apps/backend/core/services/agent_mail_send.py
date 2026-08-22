@@ -14,7 +14,6 @@ owner's SES tenant. Never raises — the router returns the result string.
 """
 
 import logging
-import re
 from datetime import datetime, timezone
 from email.utils import getaddresses
 
@@ -25,15 +24,13 @@ from core.repositories import agent_email_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import get_message, parse_reply_key
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import ensure_agent_address
+from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
-from core.services.agent_mail_reply import resolve_from_address, send_reply
+from core.services.agent_mail_reply import send_reply
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.paperclip_owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
-
-_ADDR_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _header(headers: dict, name: str) -> str:
@@ -51,7 +48,7 @@ def _single_address(to: str | None) -> str | None:
     between one daily-cap unit and an arbitrary-size blast from a verified
     isol8.co subdomain."""
     addrs = [a for _, a in getaddresses([to or ""]) if a]
-    if len(addrs) != 1 or not _ADDR_RE.match(addrs[0]):
+    if len(addrs) != 1 or not EMAIL_ADDRESS_RE.match(addrs[0]):
         return None
     return addrs[0]
 

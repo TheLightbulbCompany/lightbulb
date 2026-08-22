@@ -34,6 +34,7 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _agent_slug(agent_name: str) -> str:
@@ -200,6 +201,19 @@ async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None, comp
         return None
 
 
+async def resolve_from_address(owner_id: str, agent_id: str) -> str | None:
+    """The active address row for ``agent_id`` among ``owner_id``'s rows, or None.
+
+    An owner can accumulate multiple rows per agent over time (aliases); only
+    the current ``status == "active"`` row is a valid from-address.
+    """
+    rows = await agent_email_repo.query_by_owner(owner_id)
+    for row in rows:
+        if row.get("agent_id") == agent_id and row.get("status") == "active":
+            return row.get("address")
+    return None
+
+
 async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str) -> tuple[str | None, str]:
     """The active address for ``agent_id`` — minted now if it does not exist.
 
@@ -208,9 +222,9 @@ async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str
     actually chose (see agent_mail_owner_send's module docstring). Never raises.
     """
     try:
-        for row in await agent_email_repo.query_by_owner(owner_id):
-            if row.get("agent_id") == agent_id and row.get("status") == "active" and row.get("address"):
-                return row["address"], "ok"
+        address = await resolve_from_address(owner_id, agent_id)
+        if address:
+            return address, "ok"
 
         onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
         company_id = onboarding.get("company_id")

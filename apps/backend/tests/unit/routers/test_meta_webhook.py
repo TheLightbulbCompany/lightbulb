@@ -31,10 +31,10 @@ def _reset_shared_state():
     pollute their neighbours."""
     from routers import hooks_proxy, meta_webhook
 
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     meta_webhook._reset_bindings_cache()
     yield
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     meta_webhook._reset_bindings_cache()
 
 

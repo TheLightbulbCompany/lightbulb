@@ -10,9 +10,9 @@ H = {"Authorization": f"Bearer {TOKEN}"}
 
 @pytest.fixture(autouse=True)
 def _reset():
-    agent_mail._RATE_BUCKETS_PER_OWNER.clear()
+    agent_mail._RATE.clear()
     yield
-    agent_mail._RATE_BUCKETS_PER_OWNER.clear()
+    agent_mail._RATE.clear()
 
 
 # `client` comes from tests/conftest.py: TestClient(app) with get_current_user
@@ -138,7 +138,7 @@ def test_send_401s_do_not_charge_the_rate_limit_bucket(client):
                 json=_send_body(),
                 headers={"Authorization": "Bearer WRONG"},
             )
-    assert len(agent_mail._RATE_BUCKETS_PER_OWNER[OWNER]) == 0
+    assert len(agent_mail._RATE._buckets[OWNER]) == 0
 
 
 def test_inbox_lists_with_keys_and_truncates(client):

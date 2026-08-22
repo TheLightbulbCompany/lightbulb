@@ -54,9 +54,9 @@ def _reset_rate_limiter():
     (and vice versa, so this test doesn't poison anything that runs after)."""
     from routers import hooks_proxy
 
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     yield
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
 
 
 @pytest.mark.integration

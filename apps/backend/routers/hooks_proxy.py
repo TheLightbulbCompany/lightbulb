@@ -25,8 +25,6 @@ we scale out (flagged in the spec, not v1 work).
 
 import hmac
 import logging
-import time
-from collections import defaultdict, deque
 from urllib.parse import urlparse
 
 import httpx
@@ -36,6 +34,7 @@ from core.config import settings
 from core.containers import get_ecs_manager
 from core.repositories import billing_repo, container_repo
 from core.services.provision_gate import has_always_on_entitlement
+from core.services.rate_bucket import RateBucket
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -45,7 +44,7 @@ RATE_LIMIT_PER_MINUTE = 60
 
 # Module-level so the bucket survives across requests inside one process.
 # Multi-task fleets get independent buckets — fine for v1, flagged in spec.
-_RATE_BUCKETS_PER_OWNER: dict[str, deque[float]] = defaultdict(deque)
+_RATE = RateBucket(RATE_LIMIT_PER_MINUTE)
 
 # Module-level instance so tests can patch
 # ``routers.hooks_proxy.ecs_manager.resolve_running_container``.
@@ -59,15 +58,7 @@ def _client_factory() -> httpx.AsyncClient:
 
 def _check_rate_limit(owner_id: str) -> bool:
     """In-process sliding-window token bucket. True = allowed."""
-    now = time.monotonic()
-    cutoff = now - 60.0
-    q = _RATE_BUCKETS_PER_OWNER[owner_id]
-    while q and q[0] < cutoff:
-        q.popleft()
-    if len(q) >= RATE_LIMIT_PER_MINUTE:
-        return False
-    q.append(now)
-    return True
+    return _RATE.allow(owner_id)
 
 
 def _extract_caller_ip(request: Request) -> str:

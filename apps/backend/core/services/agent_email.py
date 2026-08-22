@@ -182,17 +182,25 @@ async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None, comp
         agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
         agent = agent or {}
         agent_company_id = agent.get("companyId")
-        if agent_company_id and agent_company_id != company_id:
+        if agent_company_id != company_id:
             # get_agent rides the shared admin cookie and is not company-scoped
             # by itself — a container-supplied agent_id from a DIFFERENT
             # owner's company must not mint a foreign agent's name onto this
-            # owner's subdomain.
-            logger.warning(
-                "agent_email: agent %s belongs to company %s, not owner's company %s — refusing name resolution",
-                agent_id,
-                agent_company_id,
-                company_id,
-            )
+            # owner's subdomain. A MISSING companyId is unresolved, not
+            # authorized — a record with no companyId at all must not be
+            # treated as if it belonged to the owner's company.
+            if not agent_company_id:
+                logger.warning(
+                    "agent_email: agent %s has no companyId — refusing name resolution",
+                    agent_id,
+                )
+            else:
+                logger.warning(
+                    "agent_email: agent %s belongs to company %s, not owner's company %s — refusing name resolution",
+                    agent_id,
+                    agent_company_id,
+                    company_id,
+                )
             return None
         name = agent.get("name")
         return name.strip() if isinstance(name, str) and name.strip() else None

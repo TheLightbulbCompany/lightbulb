@@ -400,6 +400,18 @@ async def test_resolve_agent_name_rejects_agent_from_a_different_company(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_resolve_agent_name_rejects_agent_with_no_companyid(monkeypatch):
+    """A record with no ``companyId`` at all is unresolved, not authorized —
+    the cross-company guard must not treat a falsy companyId as a pass."""
+    monkeypatch.setattr(ae, "shared_admin_client", lambda: _admin_returning({"name": "Nameless"})())
+    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    assert (
+        await ae.resolve_agent_name(agent_id="agent_nameless", friday_agent_id="agent_friday", company_id="co_1")
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_ensure_agent_address_rejects_agent_from_a_different_company(monkeypatch):
     monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
     monkeypatch.setattr(ae, "PaperclipRepo", _onboarding_repo())

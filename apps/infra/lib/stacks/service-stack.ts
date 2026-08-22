@@ -1388,7 +1388,7 @@ export class ServiceStack extends cdk.Stack {
       // carrying layer 9c, confirm "[warp] connected" in their logs, THEN
       // flip dev here. Flipping first just points Chrome at a dead loopback
       // port — harmless (the PAC falls back to DIRECT) but pointless.
-      BROWSER_EGRESS_PROXY_PORT: "0",
+      BROWSER_EGRESS_PROXY_PORT: String(BROWSER_EGRESS_PROXY_PORT),
       // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
       // env vars via core.config.settings; empty defaults keep the app
       // booting in non-marketplace contexts (unit tests, smoke tests).

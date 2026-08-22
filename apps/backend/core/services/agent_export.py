@@ -790,7 +790,13 @@ def _read_staging_openclaw_config(staging_dir: Path) -> dict | None:
     return None
 
 
-def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> CatalogPackage:
+def export_built_agent_from_staging(
+    owner_id: str,
+    staging_agent_id: str,
+    *,
+    selected_mcps: list[str] | None = None,
+    selected_skills: list[str] | None = None,
+) -> CatalogPackage:
     """Snapshot an Atlas-built STAGING agent dir on EFS into a CatalogPackage.
 
     Atlas (the in-container recruiter) builds a new specialist agent's files
@@ -820,6 +826,7 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
         owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
             plays in ``export_agent_from_efs``).
         staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
+        selected_mcps / selected_skills: forwarded to extract_agent_slice; None (Atlas) keeps the {agent, plugins, tools} shape.
 
     Raises:
         InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
@@ -881,6 +888,8 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
         slice_ = extract_agent_slice(
             staging_config,
             built_agent_id,
+            selected_mcps=selected_mcps,
+            selected_skills=selected_skills,
             workspace_skill_names=workspace_skill_names,
         )
     except KeyError as exc:

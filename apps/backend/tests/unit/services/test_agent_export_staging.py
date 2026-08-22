@@ -307,3 +307,19 @@ def test_staging_export_invalid_id_rejected(fake_staging):
     owner_id, _, _ = fake_staging
     with pytest.raises(agent_export.InvalidAgentIdError):
         agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id="../escape")
+
+
+def test_staging_export_selected_mcps_and_skills_ride_the_slice(fake_staging):
+    owner_id, staging_agent_id, staging_dir = fake_staging
+    cfg = json.loads((staging_dir / "workspace" / "openclaw.json").read_text())
+    cfg["mcp"] = {
+        "servers": {"gh": {"command": "npx", "args": ["-y", "@mcp/github"], "env": {"GITHUB_TOKEN": "ghp_x"}}}
+    }
+    (staging_dir / "workspace" / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
+    plain = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    assert "mcp" not in plain.openclaw_slice
+    pkg = agent_export.export_built_agent_from_staging(
+        owner_id=owner_id, staging_agent_id=staging_agent_id, selected_mcps=["gh"], selected_skills=["contract-review"]
+    )
+    assert pkg.openclaw_slice["mcp"]["servers"]["gh"]["env"] == {"GITHUB_TOKEN": ""}
+    assert pkg.openclaw_slice["skills"]["entries"] == {"contract-review": {"enabled": True}}

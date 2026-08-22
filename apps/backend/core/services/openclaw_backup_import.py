@@ -778,9 +778,11 @@ def materialize_staging(
             f"backup was written by OpenClaw {src_version}; Isol8 runs {fleet_version} — unsupported config keys are dropped, not failed"
         )
 
+    persisted_entry = {"id": agent.id, **_sanitized}
     (ws_out / "openclaw.json").write_text(
         json.dumps(
-            {"agents": {"list": [entry]}, "mcp": mcp, "skills": skills, "plugins": plugins, "tools": tools}, indent=2
+            {"agents": {"list": [persisted_entry]}, "mcp": mcp, "skills": skills, "plugins": plugins, "tools": tools},
+            indent=2,
         ),
         encoding="utf-8",
     )

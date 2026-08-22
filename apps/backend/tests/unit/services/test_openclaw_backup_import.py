@@ -479,6 +479,13 @@ def test_stage_upload_warnings(tmp_path: Path):
     assert "archetype" in joined and "channel" in joined.lower() and "model" in joined.lower()
     manifest = json.loads((staging / "import-manifest.json").read_text())
     assert [a["id"] for a in manifest["agents"]] == ["main", "work"] and manifest["agent_id"] == "main"
+    # R4: the entry ships in workspace/openclaw.json into the buyer-side
+    # container — user-specific + non-schema keys must not travel, even
+    # though they were warned about above.
+    persisted = json.loads((staging / "workspace" / "openclaw.json").read_text())["agents"]["list"][0]
+    assert persisted["id"] == "main" and "name" in persisted
+    assert "channels" not in persisted and "model" not in persisted
+    assert "archetype" not in persisted and "workspace" not in persisted
 
 
 def test_stage_upload_warns_on_local_mcp_paths(tmp_path: Path):

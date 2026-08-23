@@ -187,7 +187,13 @@ def test_hosted_oauth_mcp_provider_shape(key, url):
 def test_apollo_mcp_requests_read_oriented_scopes_only():
     p = registry.get_provider("apollo")
     scopes = set(p.oauth.scopes)
-    assert {"read_user_profile", "mixed_people_api_search", "organizations_search", "contacts_search", "contact_read"}.issubset(scopes)
+    assert {
+        "read_user_profile",
+        "mixed_people_api_search",
+        "organizations_search",
+        "contacts_search",
+        "contact_read",
+    }.issubset(scopes)
     assert not any(s.endswith("_write") or s.endswith("_create") or s.endswith("_approve") for s in scopes)
     assert "emailer_messages_send_now" not in scopes
     assert "emailer_campaigns_add_contact_ids" not in scopes

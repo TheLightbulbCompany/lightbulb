@@ -146,6 +146,8 @@ out=$(run_boot "$L" 2>&1) || fail "corrupt hand-off run exited nonzero: $out"
 [ -f "$L/agents/impbad/agent/openclaw-agent.sqlite" ] && fail "corrupt database was installed: $out"
 [ -f "$L/agents/impbad/sessions/sessions.json" ] && fail "sessions installed despite failed integrity check: $out"
 [ -d "$L/import-state/agents/impbad" ] || fail "hand-off was removed despite failed integrity check: $out"
+[ -f "$L/import-state/agents/impbad/agent/openclaw-agent.sqlite" ] || fail "hand-off db file was removed despite failed integrity check: $out"
+[ -f "$L/import-state/agents/impbad/sessions/sessions.json" ] || fail "hand-off sessions file was removed despite failed integrity check: $out"
 echo "$out" | grep -q "failed integrity_check" || fail "no integrity-check failure log: $out"
 echo "PASS 2j corrupt hand-off db retained for diagnosis, sessions not installed"
 

@@ -487,14 +487,14 @@ change them.
   Isol8 reviews before publishing. Atlas can build it; only you can publish.
 - **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
   `openclaw backup create` there, then on isol8.co open the marketplace publish
-  wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (any size).
+  wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (up to 2 GB).
   The owner picks which agents, skills, MCP servers (secrets stripped — they
   re-enter them), memory logs, cron jobs and plugins come along, and can opt in
   to conversation history (auth tokens stripped; applies when the workspace
   next starts on an updated platform image).
   More than 10 agents in total needs Ultra Pro. Channels, credentials, the
   browser profile and global state never import. Plugins with dependencies need
-  `openclaw plugins install <name@version>` run here in the container — offer to.
+  `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
 - **"What plan am I on?" / "Which model are you?"** → Read
   `~/.openclaw/isol8-facts.json`, answer from it.
 - **"Why can't you do X?"** → Check the boundaries table above before

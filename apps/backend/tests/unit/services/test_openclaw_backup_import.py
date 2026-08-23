@@ -256,6 +256,33 @@ def test_extract_caps(tmp_path: Path, monkeypatch):
         bi.extract_archive(_stream(_tar_from_tree({"a": "x" * 11})), tmp_path / "b")
 
 
+def test_extract_pass2_enforces_member_cap_independently(tmp_path: Path, monkeypatch):
+    """Pass 1 and pass 2 each call open_stream() fresh — for an S3-backed
+    upload that means two separate GETs that could observe different content
+    (see the ETag-pinning fix in marketplace_import.py). Pass 2 must enforce
+    MAX_MEMBERS on its own rather than trusting pass 1's count."""
+    monkeypatch.setattr(bi, "MAX_MEMBERS", 3)
+    small = _tar_from_tree({"a": "x"})
+    big = _tar_from_tree({f"f{i}": "x" for i in range(5)})
+    calls = {"n": 0}
+
+    def open_stream():
+        calls["n"] += 1
+        return io.BytesIO(small if calls["n"] == 1 else big)
+
+    with pytest.raises(bi.BackupImportError, match="entries"):
+        bi.extract_archive(open_stream, tmp_path / "raw")
+    assert calls["n"] == 2  # pass 1 (1 member, under cap) succeeded; pass 2 caught the swap
+
+
+def test_read_json_rejects_oversize_metadata(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bi, "MAX_METADATA_BYTES", 10)
+    raw = tmp_path / "raw"
+    bi.extract_archive(_stream(state_dir_archive()), raw)
+    with pytest.raises(bi.BackupImportError, match="too large"):
+        bi.locate_source(raw)
+
+
 def test_extract_skips_oversize_single_file_with_report(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(bi, "MAX_FILE_BYTES", 100)
     big = {f"{PAYLOAD_STATE}/agents/main/agent/openclaw-agent.sqlite": b"\x00" * 200}
@@ -377,6 +404,32 @@ def test_list_agents_explicit_list_with_per_agent_workspaces(tmp_path: Path):
     assert by_id["work"].name == "Work Bot" and by_id["work"].history is None
 
 
+def test_list_agents_workspace_traversal_falls_back_to_conventional(tmp_path: Path):
+    """R5(a): a config-derived `workspace` path that escapes the extracted
+    archive root (via `..` traversal) must be rejected by _resolve_config_path's
+    containment check — the candidate falls through to the conventional
+    workspace-dir fallback instead of resolving to a real directory outside
+    the sandbox (e.g. /etc, which the backend process can read)."""
+    raw = tmp_path / "raw"
+    archive = backup_archive(agents_list=[{"id": "main", "default": True, "workspace": "~/.openclaw/../../../etc"}])
+    bi.extract_archive(_stream(archive), raw)
+    agents = bi.list_agents(bi.locate_source(raw))
+    assert len(agents) == 1
+    assert agents[0].workspace_dir == raw / PAYLOAD_STATE / "workspace"
+
+
+def test_list_agents_drops_invalid_id_falls_back_to_main(tmp_path: Path):
+    """R5(b): an agent id that isn't a safe path component (e.g. traversal
+    characters) must never reach `agents/<id>` / `workspace-<id>` path
+    construction — list_agents drops it at the source instead of synthesizing
+    a candidate for it."""
+    raw = tmp_path / "raw"
+    archive = backup_archive(agents_list=[{"id": "../../evil"}])
+    bi.extract_archive(_stream(archive), raw)
+    agents = bi.list_agents(bi.locate_source(raw))
+    assert [a.id for a in agents] == ["main"]
+
+
 def test_list_agents_bare_workspace_synthesizes_main(tmp_path: Path):
     raw = tmp_path / "raw"
     bi.extract_archive(_stream(workspace_archive()), raw)
@@ -395,14 +448,37 @@ def test_list_plugins_skips_bundled_and_reads_deps(tmp_path: Path):
     assert p.has_dependencies is True
     # _scrub_secret_fields only scrubs an entry's OWN top-level secret-shaped
     # keys; "apiKey" here sits nested under "config", one level below the
-    # entry, so it survives the scrub as-is (per catalog_slice.py semantics).
-    assert p.config == {"enabled": True, "config": {"apiKey": "w-secret", "units": "c"}}
+    # entry — but list_plugins additionally deep-scrubs with
+    # _scrub_tools_block (catalog_slice.py), which walks arbitrary nesting,
+    # so it is blanked anyway.
+    assert p.config == {"enabled": True, "config": {"apiKey": "", "units": "c"}}
 
 
 def test_list_plugins_none_without_installs(tmp_path: Path):
     raw = tmp_path / "raw"
     bi.extract_archive(_stream(backup_archive(with_plugins=False)), raw)
     assert bi.list_plugins(bi.locate_source(raw)) == []
+
+
+def test_list_plugins_deep_scrubs_nested_secret_fields(tmp_path: Path):
+    """Plugin configs are free-form (unlike MCP/skill entries whose upstream
+    schema pins secrets at the top level), so a secret nested two levels down
+    (config.auth.apiKey) must still be blanked — both on the PluginCandidate
+    and in the staged workspace/openclaw.json that ships to the buyer."""
+    staging = tmp_path / "workspace-import-deepscrub12"
+    cfg = _config(
+        plugins={
+            "entries": {
+                "weather": {"enabled": True, "config": {"auth": {"apiKey": "deep-secret"}, "units": "c"}},
+            }
+        }
+    )
+    archive = backup_archive(extra_tree={f"{PAYLOAD_STATE}/openclaw.json": cfg})
+    norm, _ = bi.stage_upload(_stream(archive), staging, fleet_version=FLEET)
+    plugin = next(p for p in norm.plugins if p.id == "weather")
+    assert plugin.config == {"enabled": True, "config": {"auth": {"apiKey": ""}, "units": "c"}}
+    persisted = json.loads((staging / "workspace" / "openclaw.json").read_text())["plugins"]["entries"]["weather"]
+    assert persisted["config"]["auth"]["apiKey"] == "" and persisted["config"]["units"] == "c"
 
 
 # ---------------------------------------------------------------------------

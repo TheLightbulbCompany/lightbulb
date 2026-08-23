@@ -76,7 +76,13 @@ MAX_UPLOAD_BYTES = 2 * 1024**3  # S3 presigned PUT; far above any real archive
 MAX_EXTRACTED_BYTES = 2 * 1024**3
 MAX_FILE_BYTES = 512 * 1024**2  # a single member over this is skipped + reported
 MAX_MEMBERS = 200_000
+MAX_METADATA_BYTES = 4 * 1024 * 1024  # manifest.json / openclaw.json / installs.json / package.json / cron jobs.json
 IMPORT_ID_RE = re.compile(r"^import-[0-9a-f]{12}$")
+# Agent/plugin ids are config-derived (an attacker-controlled archive's JSON),
+# not archive member names — tarfile's own traversal checks (_check_member)
+# don't cover them. Anything that fails this can't be used to build an
+# `agents/<id>` / `workspace-<id>` / `extensions/<id>` path.
+AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 _PERSONA_MARKERS = ("AGENTS.md", "SOUL.md", "IDENTITY.md")
 _UNIVERSAL_SKIP_DIRS = frozenset({"node_modules", ".git", "__pycache__"})
@@ -257,6 +263,8 @@ def extract_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> ExtractRe
                 target = _check_member(member, dst_resolved, dst)
                 parts = [p for p in member.name.split("/") if p not in ("", ".")]
                 if len(parts) == 2 and parts[1] == "manifest.json" and member.isfile():
+                    if member.size > MAX_METADATA_BYTES:
+                        continue  # not a real backup manifest — never this big
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(tf.extractfile(member).read())  # type: ignore[union-attr]
                 elif parts and parts[-1] == "openclaw.json" and len(parts) <= 2 and member.isfile():
@@ -273,7 +281,11 @@ def extract_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> ExtractRe
     report = ExtractReport()
     try:
         with tarfile.open(fileobj=open_stream(), mode="r|gz") as tf:
+            count = 0
             for member in tf:
+                count += 1
+                if count > MAX_MEMBERS:
+                    raise BackupImportError(f"archive has more than {MAX_MEMBERS} entries")
                 target = _check_member(member, dst_resolved, dst)
                 if _skip_reason(member.name, state_prefixes) is not None:
                     continue
@@ -306,6 +318,11 @@ def extract_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> ExtractRe
 
 
 def _read_json(path: Path) -> dict:
+    try:
+        if path.stat().st_size > MAX_METADATA_BYTES:
+            raise BackupImportError(f"{path.name} is too large to read")
+    except OSError as exc:
+        raise BackupImportError(f"{path.name} is not valid JSON") from exc
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -409,8 +426,11 @@ def locate_source(root: Path) -> BackupSource:
 def _identity_md_field(ws: Path | None, label: str) -> str | None:
     if ws is None:
         return None
+    path = ws / "IDENTITY.md"
     try:
-        text = (ws / "IDENTITY.md").read_text(encoding="utf-8")
+        if path.stat().st_size > MAX_METADATA_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     pattern = re.compile(rf"^\s*[-*]?\s*\**{re.escape(label)}\**\s*[:：]\s*(.+?)\s*$", re.IGNORECASE)
@@ -423,17 +443,35 @@ def _identity_md_field(ws: Path | None, label: str) -> str | None:
     return None
 
 
+def _contained(source: BackupSource, candidate: Path) -> Path | None:
+    """Reject a config-derived candidate that resolves outside the extracted
+    archive root — ``state_dir`` is always under ``source.root``, so one
+    containment root suffices for every branch below. Config values like
+    ``agents.list[].workspace`` are attacker-controlled JSON from the upload,
+    not archive member names, so tarfile's own traversal checks don't cover
+    them; without this a ``workspace: "~/.openclaw/../../../etc"`` entry
+    would resolve to a real directory outside the staging sandbox and get
+    copied into the buyer-visible workspace."""
+    try:
+        candidate.resolve().relative_to(source.root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
 def _resolve_config_path(source: BackupSource, raw: str) -> Path | None:
     norm = raw.replace("\\", "/").rstrip("/")
     if source.state_dir is not None:
         if norm == "~/.openclaw" or norm.startswith("~/.openclaw/"):
             rest = norm[len("~/.openclaw") :].lstrip("/")
-            return source.state_dir / rest if rest else source.state_dir
+            candidate = source.state_dir / rest if rest else source.state_dir
+            return _contained(source, candidate)
         if source.state_source_path:
             st = source.state_source_path.replace("\\", "/").rstrip("/")
             if norm == st or norm.startswith(st + "/"):
                 rest = norm[len(st) :].lstrip("/")
-                return source.state_dir / rest if rest else source.state_dir
+                candidate = source.state_dir / rest if rest else source.state_dir
+                return _contained(source, candidate)
     if source.kind == "backup":
         if norm.startswith("~/") and source.state_source_path:
             home = str(PurePosixPath(source.state_source_path.replace("\\", "/")).parent)
@@ -448,13 +486,19 @@ def _resolve_config_path(source: BackupSource, raw: str) -> Path | None:
         for payload in source.root.glob("*/payload"):
             candidate = payload / rel
             if candidate.exists():
-                return candidate
+                return _contained(source, candidate)
     return None
 
 
 def _workspace_for_entry(source: BackupSource, entry: dict, defaults: dict) -> Path | None:
+    agent_id = entry.get("id")
+    # Defense in depth: list_agents already drops entries with a bad id before
+    # calling this, but this builds `workspace-<id>` paths directly from it —
+    # never trust a second call site not to skip that filter.
+    if not isinstance(agent_id, str) or not AGENT_ID_RE.match(agent_id):
+        return None
     raw = entry.get("workspace") if isinstance(entry.get("workspace"), str) else None
-    is_default_agent = entry["id"] == "main" or entry.get("default") is True
+    is_default_agent = agent_id == "main" or entry.get("default") is True
     # The shared agents.defaults.workspace path is the main/default agent's
     # workspace, same restriction as the unsuffixed "workspace" dir fallback
     # below — an arbitrary non-default agent id must not silently inherit it.
@@ -465,8 +509,8 @@ def _workspace_for_entry(source: BackupSource, entry: dict, defaults: dict) -> P
         if resolved is not None and resolved.is_dir():
             return resolved
     if source.state_dir is not None:
-        candidates = [source.state_dir / f"workspace-{entry['id']}"]
-        if entry["id"] == "main" or entry.get("default") is True:
+        candidates = [source.state_dir / f"workspace-{agent_id}"]
+        if is_default_agent:
             candidates.append(source.state_dir / "workspace")
         for c in candidates:
             if c.is_dir():
@@ -487,7 +531,7 @@ def _display_name(entry: dict, ws: Path | None) -> str:
 
 
 def _history_for(source: BackupSource, agent_id: str) -> HistoryInfo | None:
-    if source.state_dir is None:
+    if source.state_dir is None or not AGENT_ID_RE.match(agent_id):
         return None
     agent_root = source.state_dir / "agents" / agent_id
     sqlite = agent_root / "agent" / "openclaw-agent.sqlite"
@@ -506,7 +550,9 @@ def list_agents(source: BackupSource) -> list[AgentCandidate]:
     agents_block = source.config.get("agents") if isinstance(source.config.get("agents"), dict) else {}
     defaults = agents_block.get("defaults") if isinstance(agents_block.get("defaults"), dict) else {}
     entries = [
-        e for e in (agents_block.get("list") or []) if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]
+        e
+        for e in (agents_block.get("list") or [])
+        if isinstance(e, dict) and isinstance(e.get("id"), str) and AGENT_ID_RE.match(e["id"])
     ]
     if not entries:
         entries = [{"id": "main"}]
@@ -534,6 +580,8 @@ def list_plugins(source: BackupSource) -> list[PluginCandidate]:
     if not installs.is_file():
         return []
     try:
+        if installs.stat().st_size > MAX_METADATA_BYTES:
+            return []
         data = json.loads(installs.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
@@ -553,7 +601,7 @@ def list_plugins(source: BackupSource) -> list[PluginCandidate]:
         if not isinstance(rec, dict) or rec.get("origin") == "bundled":
             continue
         pid = rec.get("pluginId")
-        if not isinstance(pid, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", pid):
+        if not isinstance(pid, str) or not AGENT_ID_RE.match(pid):
             continue
         src_dir: Path | None = None
         root_dir = rec.get("rootDir")
@@ -566,12 +614,22 @@ def list_plugins(source: BackupSource) -> list[PluginCandidate]:
             src_dir = source.state_dir / "extensions" / pid
         has_deps = False
         if src_dir is not None and (src_dir / "package.json").is_file():
+            pkg_path = src_dir / "package.json"
             try:
-                pkg = json.loads((src_dir / "package.json").read_text(encoding="utf-8"))
-                has_deps = bool(isinstance(pkg, dict) and pkg.get("dependencies"))
+                if pkg_path.stat().st_size <= MAX_METADATA_BYTES:
+                    pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+                    has_deps = bool(isinstance(pkg, dict) and pkg.get("dependencies"))
             except (OSError, ValueError):
                 has_deps = False
         cfg = scrubbed_entries.get(pid) if isinstance(scrubbed_entries.get(pid), dict) else {"enabled": True}
+        # Plugin configs are free-form (unlike MCP/skill entries, whose
+        # upstream schema pins secrets at the top level — see
+        # catalog_slice._scrub_secret_fields's docstring), so a nested
+        # `config: {"auth": {"apiKey": ...}}` survives the shallow scrub
+        # above. _scrub_tools_block already walks arbitrary nesting blanking
+        # any secret-shaped key at any depth (same job the free-form `tools`
+        # block needs) — reuse it here instead of a second bespoke walker.
+        cfg = _scrub_tools_block(cfg)
         out.append(
             PluginCandidate(
                 id=pid,
@@ -643,10 +701,15 @@ _STATE_RUNTIME_DIRS = (
 
 
 def _read_cron_jobs(state_dir: Path | None) -> list[dict]:
-    if state_dir is None or not (state_dir / "cron" / "jobs.json").is_file():
+    if state_dir is None:
+        return []
+    path = state_dir / "cron" / "jobs.json"
+    if not path.is_file():
         return []
     try:
-        data = json.loads((state_dir / "cron" / "jobs.json").read_text(encoding="utf-8"))
+        if path.stat().st_size > MAX_METADATA_BYTES:
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     jobs = data.get("jobs") if isinstance(data, dict) else data
@@ -685,7 +748,12 @@ def _scrubbed_config_blocks(config: dict, selection: ImportSelection) -> tuple[d
     for key in ("allowBundled", "load"):
         if key in skills_src:
             skills[key] = skills_src[key]
-    plugins = _scrub_plugins_block(config["plugins"]) if isinstance(config.get("plugins"), dict) else {}
+    # Wrap the shallow plugin scrub with the same deep walk applied in
+    # list_plugins — plugin entries carry free-form nested config that
+    # _scrub_plugins_block's top-level-only pass does not reach.
+    plugins = (
+        _scrub_tools_block(_scrub_plugins_block(config["plugins"])) if isinstance(config.get("plugins"), dict) else {}
+    )
     tools = _scrub_tools_block(config["tools"]) if isinstance(config.get("tools"), dict) else {}
     return mcp, skills, plugins, tools
 

@@ -23,6 +23,7 @@ import {
 } from "@/components/teams/dashboard/ActivityCharts";
 import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
 import { ActiveAgentsPanel } from "@/components/teams/dashboard/ActiveAgentsPanel";
+import { useAgentNameMap } from "@/components/teams/shared/hooks/useAgentNameMap";
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { PanelMasthead } from "@/components/teams/shell";
@@ -36,7 +37,6 @@ import {
   teamsPanelUrl,
 } from "@/lib/shellNav";
 import type {
-  CompanyAgent,
   DashboardResponse,
   DashboardSummary,
   Issue,
@@ -181,15 +181,15 @@ export function DashboardPanel() {
   const { read } = useTeamsApi();
   const dashboardQuery = read<DashboardResponse>("/dashboard");
   const issuesQuery = read<unknown>("/issues");
-  // Company roster so the activity feed can resolve agent actors + agent
-  // entity references to names (same /agents read InboxPanel/IssuesPanel use).
-  // Called unconditionally (rules of hooks) above the loading/error returns.
-  const agentsQuery = read<{ agents: CompanyAgent[] }>("/agents");
   const { events, isLoading: activityLoading } = useActivityFeed(10);
   // Live-agent-runs feed for the "Agents" panel. Hook is called
   // unconditionally (rules of hooks) — the panel renders below, after the
   // loading/error early-returns. SWR self-refreshes the feed on an interval.
   const { runs: liveRuns } = useLiveRuns();
+  // Must sit above the loading/error early returns with the other hooks. Same
+  // map the Activity page builds, off the same deduped `/agents` read, so the
+  // two feeds cannot drift on what a name is -- they share one ActivityRow.
+  const agentNames = useAgentNameMap();
 
   if (dashboardQuery.isLoading && !dashboardQuery.data) {
     return (
@@ -224,9 +224,7 @@ export function DashboardPanel() {
   const issuesById = new Map(issues.map((i) => [i.id, i]));
   // agentId → name map for the activity feed's actor/entity resolution +
   // the Recent Tasks assignee labels.
-  const agentNames = new Map(
-    (agentsQuery.data?.agents ?? []).map((a) => [a.id, a.name] as const),
-  );
+  // Declared with the other hooks above the loading/error returns; see there.
 
   // Recent Tasks — the most-recently-updated issues, newest first. Reuses the
   // already-fetched /issues feed (non-mutating copy before sort).

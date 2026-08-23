@@ -12,15 +12,18 @@
 // formatting, entity links). The type-filter facets on `entityType`, matching
 // upstream's Activity page (`data.filter((e) => e.entityType === filter)`).
 //
-// Deferred (not yet ported): upstream's agentMap / userProfileMap /
-// entityNameMap / entityTitleMap enrichment (resolves agent + entity display
-// names from sibling reads) and the ActivityCharts. ActivityRow degrades to the
-// raw entity id without those maps. Charts live on the Dashboard already.
+// agentMap is wired (useAgentNameMap), so agent actors and agent entity
+// references resolve to names here exactly as they do on the Dashboard.
+// Still deferred: upstream's userProfileMap / entityNameMap / entityTitleMap
+// (issue, project and goal references still render "{type}: {shortId}" -- they
+// need sibling reads this panel does not make) and the ActivityCharts, which
+// live on the Dashboard already.
 
 import { useMemo, useState } from "react";
 import { PanelMasthead } from "@/components/teams/shell";
 import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
+import { useAgentNameMap } from "@/components/teams/shared/hooks/useAgentNameMap";
 
 // Matches upstream's ACTIVITY_PAGE_LIMIT (paperclip/ui/src/pages/Activity.tsx).
 // `useActivityFeed` reads the full BFF response and slices to this cap, so the
@@ -29,6 +32,9 @@ const ACTIVITY_PAGE_LIMIT = 200;
 
 export function ActivityPanel() {
   const { events, isLoading, isError } = useActivityFeed(ACTIVITY_PAGE_LIMIT);
+  // Without this the page renders shortened raw ids where the Dashboard's feed
+  // -- same component, same data -- renders names.
+  const agentNames = useAgentNameMap();
   const [filter, setFilter] = useState("all");
 
   // Facet on entityType (upstream's Activity-page filter). Drop null/empty
@@ -106,7 +112,7 @@ export function ActivityPanel() {
                     i === 0 ? undefined : { borderTop: "1px solid var(--edge)" }
                   }
                 >
-                  <ActivityRow event={evt} />
+                  <ActivityRow event={evt} agentNames={agentNames} />
                 </div>
               ))}
             </div>

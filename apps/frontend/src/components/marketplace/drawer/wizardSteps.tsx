@@ -102,9 +102,10 @@ export function PickAgentStep({
   selected?: string;
   onSelect: (id: string) => void;
 }) {
-  const { agents, defaultId } = useAgents() as unknown as {
+  const { agents, defaultId, refresh } = useAgents() as unknown as {
     agents: Agent[];
     defaultId?: string;
+    refresh: () => void;
   };
   const [importOpen, setImportOpen] = useState(false);
 
@@ -120,7 +121,7 @@ export function PickAgentStep({
           Import from an OpenClaw backup
         </button>
       </div>
-      <ImportBackupDialog open={importOpen} onOpenChange={setImportOpen} onImported={(id) => { setImportOpen(false); onSelect(id); }} />
+      <ImportBackupDialog open={importOpen} onOpenChange={setImportOpen} onImported={(id) => { setImportOpen(false); refresh(); onSelect(id); }} />
       {agents.length === 0 && (
         <div className="rounded-2xl border border-dashed border-[var(--edge)] bg-white p-6 text-center">
           <p className="text-[14px] font-medium text-[var(--ink)]">No agents to publish yet.</p>

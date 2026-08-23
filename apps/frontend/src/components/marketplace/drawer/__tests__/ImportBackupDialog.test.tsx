@@ -82,6 +82,34 @@ describe("ImportBackupDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("shows partial failures and lets the user continue with what succeeded", async () => {
+    mockPost.mockImplementation(async (url: string) => {
+      if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
+      if (url === "/marketplace/import") return PREVIEW;
+      if (url.endsWith("/confirm")) return {
+        agents: [
+          { source_agent_id: "main", agent_id: "uuid-ok", name: "Quill", ok: true, warnings: [] },
+          { source_agent_id: "work", agent_id: null, name: "Work Bot", ok: false, error: "container starting — retry in a moment" },
+        ],
+        plugins_installed: [], history_staged: [], restarting: false, warnings: [],
+      };
+      throw new Error("unexpected " + url);
+    });
+    const onImported = vi.fn();
+    const onOpenChange = vi.fn();
+    render(<ImportBackupDialog open onOpenChange={onOpenChange} onImported={onImported} />);
+    pickFile();
+    await screen.findByText("Quill");
+    fireEvent.click(screen.getByRole("button", { name: /add to my team/i }));
+    expect(await screen.findByText(/Work Bot — container starting/)).toBeInTheDocument();
+    // dialog must NOT have closed: no onImported/onOpenChange call yet
+    expect(onImported).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /continue with 1 imported/i }));
+    expect(onImported).toHaveBeenCalledWith("uuid-ok");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("renders safety flags in the preview", async () => {
     mockPost.mockImplementation(async (url: string) => {
       if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };

@@ -27,6 +27,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [phase, setPhase] = useState<Phase>("pick");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [partial, setPartial] = useState<{ okIds: string[]; failed: ImportConfirmResult["agents"] } | null>(null);
   const [agents, setAgents] = useState<Set<string>>(new Set());
   const [skills, setSkills] = useState<Set<string>>(new Set());
   const [mcps, setMcps] = useState<Set<string>>(new Set());
@@ -36,7 +37,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [history, setHistory] = useState(false);
 
   function reset() {
-    setPhase("pick"); setPreview(null); setError(null);
+    setPhase("pick"); setPreview(null); setError(null); setPartial(null);
     setAgents(new Set()); setSkills(new Set()); setMcps(new Set()); setPlugins(new Set());
     setMemory(true); setCron(true); setHistory(false);
     if (inputRef.current) inputRef.current.value = "";
@@ -66,18 +67,34 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
   async function confirm() {
     if (!preview) return;
-    setError(null); setPhase("confirming");
+    setError(null); setPartial(null); setPhase("confirming");
     try {
       const r = (await api.post(`/marketplace/import/${preview.import_id}/confirm`, {
         agent_ids: [...agents], skills: [...skills], mcp_servers: [...mcps], include_memory: memory, include_cron: cron,
         plugins: [...plugins], include_history: history && anyHistory,
       })) as ImportConfirmResult;
-      const first = r.agents.find((a) => a.ok && a.agent_id);
+      const ok = r.agents.filter((a) => a.ok && a.agent_id);
       const failed = r.agents.filter((a) => !a.ok);
-      if (!first) throw new Error(failed[0]?.error || "nothing was imported");
-      onImported(first.agent_id as string);
+      if (!ok.length) throw new Error(failed[0]?.error || "nothing was imported");
+      if (failed.length > 0) {
+        // Some agents landed, some didn't — the staged import is kept (the
+        // backend only sweeps it when every agent succeeds), so don't close
+        // the dialog out from under a fixable failure. Let the seller retry
+        // (re-runs confirm against the same staging) or continue with what
+        // did land.
+        setPartial({ okIds: ok.map((a) => a.agent_id as string), failed });
+        setPhase("preview");
+        return;
+      }
+      onImported(ok[0].agent_id as string);
       onOpenChange(false); reset();
     } catch (e) { setError(errMessage(e)); setPhase("preview"); }
+  }
+
+  function continueWithPartial() {
+    if (!partial) return;
+    onImported(partial.okIds[0]);
+    onOpenChange(false); reset();
   }
 
   function cancel() {
@@ -162,6 +179,18 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
               <label className="flex items-center gap-2"><input type="checkbox" aria-label="Bring conversation history" checked={history} disabled={busy} onChange={() => setHistory(!history)} />Bring conversation history (auth tokens are stripped; applied the next time your workspace starts on an updated platform image)</label>
             )}
 
+            {partial && (
+              <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+                <p className="font-medium">Some agents couldn&apos;t be imported</p>
+                <ul className="list-disc space-y-0.5 pl-5 mt-1">
+                  {partial.failed.map((a) => (
+                    <li key={a.source_agent_id}>{a.name} — {a.error}</li>
+                  ))}
+                </ul>
+                <p className="mt-2">The staged import is kept — fix and retry, or continue.</p>
+              </div>
+            )}
+
             {preview.warnings.length > 0 && (
               <ul className="list-disc space-y-1 rounded-2xl border border-amber-200 bg-amber-50 p-3 pl-7 text-amber-900">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
             )}
@@ -188,10 +217,16 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
         <DialogFooter>
           <button type="button" onClick={cancel} disabled={busy} className="rounded-full px-4 py-2 text-[13px] text-[#5b5b5b] hover:bg-black/5">Cancel</button>
+          {partial && (
+            <button type="button" onClick={continueWithPartial} disabled={busy}
+              className="rounded-full border border-[var(--edge)] px-4 py-2 text-[13px] font-medium text-[var(--ink)] hover:bg-black/5">
+              Continue with {partial.okIds.length} imported
+            </button>
+          )}
           {preview && (
             <button type="button" onClick={() => void confirm()} disabled={busy || agents.size === 0 || needsUltra}
               className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
-              {phase === "confirming" ? "Adding…" : "Add to my team"}
+              {phase === "confirming" ? "Adding…" : partial ? "Retry" : "Add to my team"}
             </button>
           )}
         </DialogFooter>

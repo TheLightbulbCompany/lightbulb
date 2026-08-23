@@ -490,7 +490,8 @@ change them.
   wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (any size).
   The owner picks which agents, skills, MCP servers (secrets stripped — they
   re-enter them), memory logs, cron jobs and plugins come along, and can opt in
-  to conversation history (auth tokens stripped; applies on the next restart).
+  to conversation history (auth tokens stripped; applies when the workspace
+  next starts on an updated platform image).
   More than 10 agents in total needs Ultra Pro. Channels, credentials, the
   browser profile and global state never import. Plugins with dependencies need
   `openclaw plugins install <name@version>` run here in the container — offer to.

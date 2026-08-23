@@ -1,0 +1,176 @@
+/* Workspace motion + dock chrome.
+ *
+ * Two jobs, kept in one file because they share a vocabulary:
+ *
+ *   1. The motion contract every workspace surface animates against.
+ *   2. Repainting dockview's stock light theme into the editorial system.
+ *
+ * The performance rule is absolute and load-bearing, not stylistic: nothing
+ * here animates a property that forces layout (padding, margin, width,
+ * height, top, left). A dock renders long scrolling lists inside every panel,
+ * and a hover that reflows one row invalidates its siblings — measurably the
+ * difference between a surface that tracks the cursor and one that lags it.
+ * Transform, opacity and colour only.
+ */
+
+.workspace-shell {
+  --ws-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ws-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* Press feedback has to land before the next paint at 60fps (16.7ms/frame),
+   * so it is deliberately shorter than every other duration here. */
+  --ws-tap: 90ms;
+  --ws-fast: 140ms;
+  --ws-med: 220ms;
+}
+
+/* ── Press ──────────────────────────────────────────────────────────────
+ * One class for every clickable surface in the workspace, so acknowledgement
+ * is identical whether you hit a tab, a row action, or a header button. */
+.ws-tap {
+  transition:
+    transform var(--ws-tap) var(--ws-ease),
+    background-color var(--ws-fast) var(--ws-ease),
+    color var(--ws-fast) var(--ws-ease),
+    border-color var(--ws-fast) var(--ws-ease);
+}
+.ws-tap:active { transform: scale(0.975); }
+
+/* ── Disclosure ─────────────────────────────────────────────────────────
+ * grid-template-rows 0fr→1fr animates at unknown content height, which
+ * max-height cannot do without guessing a ceiling: guess low and long
+ * content clips, guess high and the easing curve is served from the wrong
+ * part of the transition, so short content appears to hang before moving. */
+.ws-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--ws-med) var(--ws-ease);
+}
+.ws-reveal > * { overflow: hidden; }
+.ws-reveal[data-open="true"] { grid-template-rows: 1fr; }
+
+/* ── Dock chrome ────────────────────────────────────────────────────────
+ * Stock dockview draws hard-edged cells separated by gutters, which reads as
+ * a spreadsheet against the rest of the editorial system. Panels become cards
+ * ON the cream field instead of boxes cut INTO it: soft radius, one hairline,
+ * and a shadow tinted to the background rather than a black drop shadow. */
+.workspace-dock .dv-groupview {
+  background: var(--cream);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  overflow: hidden;
+  transition:
+    border-color var(--ws-med) var(--ws-ease),
+    box-shadow var(--ws-med) var(--ws-ease);
+  box-shadow:
+    0 1px 2px rgba(120, 110, 90, 0.05),
+    0 6px 20px rgba(120, 110, 90, 0.045);
+}
+.workspace-dock .dv-groupview.dv-active-group {
+  border-color: #d2cbbc;
+  box-shadow:
+    0 1px 2px rgba(120, 110, 90, 0.06),
+    0 10px 30px rgba(120, 110, 90, 0.075);
+}
+
+/* Tabs sized like every other control in the app rather than 35px blocks
+ * with dividers. */
+.workspace-dock .dv-tabs-and-actions-container {
+  background: transparent;
+  border-bottom: 1px solid var(--edge-soft);
+}
+.workspace-dock .dv-tab {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  margin: 6px 2px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  color: var(--mute);
+  transition:
+    background-color var(--ws-fast) var(--ws-ease),
+    color var(--ws-fast) var(--ws-ease);
+}
+.workspace-dock .dv-tab:hover { background: var(--cream-deeper); color: var(--ink-soft); }
+.workspace-dock .dv-tab.dv-active-tab {
+  background: var(--forest-tint);
+  color: var(--forest);
+  font-weight: 500;
+}
+
+/* The sash was a 4px gutter you had to hunt for. The hit area stays where
+ * dockview put it; only the visible line changes, and it thickens and tints
+ * on hover so the affordance is findable before you commit to a drag. */
+.workspace-dock .dv-sash {
+  background: transparent;
+  transition: background-color var(--ws-med) var(--ws-ease);
+}
+.workspace-dock .dv-sash:hover,
+.workspace-dock .dv-sash.dv-active { background: var(--forest-soft); }
+
+/* Drop targets: a tinted region rather than a hard slab. */
+.workspace-dock .dv-drop-target-selection {
+  background: rgba(6, 64, 43, 0.07);
+  border: 1.5px dashed var(--forest-soft);
+  border-radius: 8px;
+  transition: opacity var(--ws-fast) var(--ws-ease);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────
+ * Everything above collapses to instant. Disclosure keeps its end state so
+ * content is still reachable; only the travel is removed. */
+@media (prefers-reduced-motion: reduce) {
+  .workspace-shell *,
+  .workspace-shell *::before,
+  .workspace-shell *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Header buttons ─────────────────────────────────────────────────────
+ * Icon-only, so the hit target is the padded box rather than the glyph. */
+.workspace-header__btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--mute);
+}
+.workspace-header__btn:hover { background: var(--cream-deeper); color: var(--ink); }
+.workspace-header__btn:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 2px;
+}
+
+/* Tooltip for any icon-only control that carries data-tip. Pointer-events
+ * are off so it can never swallow the click it is describing, and the delay
+ * is on the hover transition only — moving away hides it immediately. */
+.workspace-shell [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translate3d(-50%, -3px, 0);
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 4px 9px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 60;
+  transition:
+    opacity var(--ws-fast) var(--ws-ease),
+    transform var(--ws-fast) var(--ws-ease);
+}
+.workspace-shell [data-tip]:hover::after,
+.workspace-shell [data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translate3d(-50%, 0, 0);
+  transition-delay: 320ms;
+}

@@ -6,7 +6,7 @@
 // ExecApprovalsProvider (Task 13); mobile keeps ChatLayout.
 import "dockview-react/dist/styles/dockview.css";
 import "./workspace.css";
-import { constrainGroupHeight } from "./groupConstraints";
+import { constrainGroup } from "./groupConstraints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth, useOrganization } from "@clerk/nextjs";
@@ -223,9 +223,9 @@ export function WorkspaceShell(): React.ReactElement {
       // Floor every group's height so none can be crushed to its tab bar —
       // both the ones we just restored/built and any added later. See
       // groupConstraints.ts for why this is two operations, not one.
-      api.groups.forEach((group) => constrainGroupHeight(group));
+      api.groups.forEach((group) => constrainGroup(group));
       disposablesRef.current.push(
-        api.onDidAddGroup((group) => constrainGroupHeight(group)),
+        api.onDidAddGroup((group) => constrainGroup(group)),
       );
 
       // URL wins focus (spec §6 rule 4): execute the current URL command on

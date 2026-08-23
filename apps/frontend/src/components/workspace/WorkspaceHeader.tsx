@@ -8,6 +8,12 @@
 //     dock world.
 // What remains: the workspace-file browser button, the layout-reset button,
 // the support button, and the Clerk UserButton.
+//
+// The bar is icon-only by design, so every control carries a tooltip on a
+// delay long enough that sweeping across the bar does not flash all of them,
+// and short enough to answer "what is this" when the cursor rests. `title`
+// alone is not enough: it is inconsistent across platforms and invisible to
+// touch, so the label is also the accessible name.
 import "./workspace.css";
 
 import { UserButton } from "@clerk/nextjs";

@@ -20,6 +20,8 @@
  * Palette matches the cream/forest sidebar: cream #f3efe6 / #faf7f2, border
  * #e0dbd0, forest #06402B.
  */
+@import "./workspace-motion.css";
+
 .workspace-shell {
   display: grid;
   grid-template-columns: 280px 1fr;

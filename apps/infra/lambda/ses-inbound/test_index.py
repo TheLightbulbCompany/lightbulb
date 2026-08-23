@@ -180,6 +180,10 @@ def test_handler_posts_clean_payload_with_verdicts_and_attachment():
         "dmarc": "PASS",
         "spam": "PASS",
         "virus": "PASS",
+        # No DKIM-Signature on this fixture; the envelope domain comes from
+        # SES's receipt (mail.source), never from a header.
+        "dkim_domains": [],
+        "spf_domain": "example.com",
     }
 
     assert len(body["attachments"]) == 1
@@ -674,3 +678,79 @@ def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
     url, _ = index._route_for(["friday@acme.notdev.isol8.co"])
 
     assert url == BACKEND_INGEST_URL
+
+
+# ---------------------------------------------------------------------------
+# Sender-identity forwarding: the two authenticated identities SES's flat
+# verdicts do not carry, forwarded as FIRST-CLASS `verdicts` fields. Neither is
+# read out of a header — see index.py's module docstring.
+# ---------------------------------------------------------------------------
+
+_DKIM_SIG = "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from:to; bh=Zm8=; b=c2ln"
+
+
+def _post_and_capture(raw, event=None):
+    import index
+
+    s3, secretsmanager = _stub_clients(raw)
+    captured = {}
+    with (
+        patch.object(index, "_s3", return_value=s3),
+        patch.object(index, "_secretsmanager", return_value=secretsmanager),
+        patch("index.urllib.request.urlopen", side_effect=_fake_urlopen_capturing(captured)),
+    ):
+        index.handler(event or _ses_event(), None)
+    return captured["body"]
+
+
+def test_dkim_signer_domain_is_forwarded_when_ses_verified_the_signature():
+    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+
+    verdicts = _post_and_capture(raw)["verdicts"]
+
+    assert verdicts["dkim_domains"] == ["example.com"]
+    # From SES's receipt envelope (mail.source), not the MIME's Return-Path.
+    assert verdicts["spf_domain"] == "example.com"
+
+
+def test_dkim_signer_domain_is_empty_when_ses_did_not_pass_dkim():
+    """SES's PASS is the only thing that makes a `d=` tag mean anything: without
+    it the signature is unverified and its domain proves nothing about `From`."""
+    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+    event = _ses_event(verdict_overrides={"dkimVerdict": {"status": "FAIL"}})
+
+    assert _post_and_capture(raw, event)["verdicts"]["dkim_domains"] == []
+
+
+def test_all_dkim_signature_domains_are_forwarded():
+    """SES's flat PASS says at least one signature verified, not which — so
+    every `d=` is forwarded and the backend aligns against any of them."""
+    msg = email.message.EmailMessage()
+    msg["From"] = "Jane Doe <jane@example.com>"
+    msg["To"] = "agent@agents.isol8.co"
+    msg["Subject"] = "Hello agent"
+    msg["DKIM-Signature"] = _DKIM_SIG
+    msg["DKIM-Signature"] = _DKIM_SIG.replace("d=example.com", "d=Mail.Example.NET")
+    msg.set_content("body\n")
+
+    assert _post_and_capture(msg.as_bytes())["verdicts"]["dkim_domains"] == ["example.com", "mail.example.net"]
+
+
+def test_forged_authentication_results_is_not_an_identity_source():
+    """The whole point of the first-class fields: an attacker can paste any
+    `Authentication-Results` into the message, and none of it may be forwarded
+    as an authenticated identity."""
+    raw = _build_raw_mime(
+        extra_headers={
+            "Authentication-Results": "amazonses.com; dkim=pass header.d=github.com;",
+            "Return-Path": "<spoofed@attacker.test>",
+        }
+    )
+
+    body = _post_and_capture(raw)
+
+    assert body["verdicts"]["dkim_domains"] == []
+    assert body["verdicts"]["spf_domain"] == "example.com"
+    # Headers are still forwarded verbatim for the inbox — they are simply not
+    # an authentication source any more.
+    assert body["headers"]["Return-Path"] == "<spoofed@attacker.test>"

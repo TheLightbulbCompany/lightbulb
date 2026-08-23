@@ -34,11 +34,8 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import mint_agent_email_address
-from core.services.company_identity import allocate_company_slug
+from core.services.agent_email import ensure_agent_address
 from core.services.owner_facts import write_owner_facts
-from core.services.paperclip_admin_client import shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
@@ -46,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Runaway fence. With the one-shot latch gone (it was wrong — see module
 # docstring), this is what stops an agent stuck in a loop from mailing its
 # owner hundreds of times an hour. Enforced durably in container_repo.
-DAILY_SEND_CAP = 10
+DAILY_SEND_CAP = 50
 
 # Validated to bound metric cardinality, NOT for safety: policy never reads
 # `purpose`.
@@ -58,24 +55,6 @@ VALID_PURPOSES = ("first_contact", "routine")
 _FIRST_CONTACT_PENDING = ("not_started", "failed")
 
 
-async def _resolve_company_name(company_id: str) -> str | None:
-    """The company's CURRENT name from Paperclip, or None.
-
-    Read live and never cached: the agent renames the company during its first
-    run, and that rename lands in Paperclip. Reading our own row would give
-    back the provisioning placeholder and defeat the deferred mint entirely.
-    """
-    try:
-        admin = shared_admin_client()
-        cookie = await get_admin_session_cookie(admin._http)
-        company = await admin.get_company(session_cookie=cookie, company_id=company_id)
-        name = (company or {}).get("name")
-        return name.strip() if isinstance(name, str) and name.strip() else None
-    except Exception as e:  # noqa: BLE001 — caller maps None to a failed send
-        logger.warning("owner_send: company-name lookup failed for %s: %s", company_id, e)
-        return None
-
-
 async def send_to_owner(
     *,
     owner_id: str,
@@ -83,12 +62,29 @@ async def send_to_owner(
     subject: str,
     body_text: str,
     body_html: str | None = None,
+    agent_id: str | None = None,
+    tenant_name: str | None = None,
+    system_notice: bool = False,
 ) -> str:
     """Send one owner-directed email.
 
     Returns "sent", "already_sent", "no_address", "disabled", "rate_limited",
     or "error". Never raises — the caller is an HTTP route whose 500 would tell
     a container nothing useful.
+
+    ``system_notice=True`` marks a send the PLATFORM originates (e.g. the
+    outbound-paused complaint notice) rather than an agent reaching out. Such
+    a send skips TWO agent-facing fences:
+
+    - the first-contact claim/settle, which it must never consume — that
+      would leave the agent's real hello permanently owed; and
+    - the daily send cap, which exists to fence a LOOPING AGENT. A platform
+      notice ("your outbound is paused") has to reach the owner precisely
+      when the agent has been misbehaving, which is exactly when the cap is
+      exhausted. It stays bounded anyway: only the backend can set this flag,
+      and the router's per-minute burst limiter still applies.
+
+    Everything else is unchanged — it still mints the address and sends.
     """
     try:
         # Validated HERE, not only at the router: `purpose` is a metric
@@ -111,7 +107,8 @@ async def send_to_owner(
         state = onboarding.get("first_contact_state") or "not_started"
 
         # POLICY — inferred from state, never from the `purpose` label.
-        is_first_contact = state in _FIRST_CONTACT_PENDING
+        # A platform notice is never first contact regardless of state.
+        is_first_contact = not system_notice and state in _FIRST_CONTACT_PENDING
         if is_first_contact:
             if not await repo.claim_first_contact(row_user_id, onboarding_generation=generation):
                 put_metric(
@@ -148,9 +145,14 @@ async def send_to_owner(
         # Routed through _fail so a cap hit after a successful claim releases
         # it (`failed` is retryable and nudged) instead of leaving the row
         # stuck at `sending`.
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
-            return await _fail("daily_cap_exhausted", "rate_limited")
+        #
+        # NOT charged for a platform notice: the cap fences a looping AGENT,
+        # and the outbound-paused notice must reach the owner exactly when
+        # that fence has already tripped. See the docstring.
+        if not system_notice:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+                return await _fail("daily_cap_exhausted", "rate_limited")
 
         owner_email = await lookup_owner_email(
             org_id=owner_id if is_org_owner_id(owner_id) else None,
@@ -162,26 +164,12 @@ async def send_to_owner(
         if not company_id or not friday_agent_id:
             return await _fail("incomplete_provisioning", "error")
 
-        company_name = await _resolve_company_name(company_id)
-        # No name means Paperclip was unreachable. Minting from a fallback
-        # would freeze a junk slug permanently (no delete path), so fail and
-        # let the bounded nudge retry instead.
-        if not company_name:
-            return await _fail("company_name_unavailable", "error")
-
-        slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
-        if not slug:
-            return await _fail("slug_allocation_failed", "no_address")
-
-        address = await mint_agent_email_address(
-            owner_id=owner_id,
-            agent_id=friday_agent_id,
-            agent_name="Friday",
-            owner_email=owner_email,
-            slug=slug,
+        address, reason = await ensure_agent_address(
+            owner_id=owner_id, agent_id=agent_id or friday_agent_id, owner_email=owner_email
         )
         if not address:
-            return await _fail("mint_failed", "no_address")
+            result = "no_address" if reason in ("slug_allocation_failed", "mint_failed") else "error"
+            return await _fail(reason, result)
 
         # Facts must reflect the address before the agent reads them again: a
         # stale null makes the isol8 skill tell her she has no address, and she
@@ -199,6 +187,7 @@ async def send_to_owner(
             body_text=body_text,
             body_html=body_html,
             headers=None,
+            tenant_name=tenant_name,
         )
         if message_id is None:
             return await _fail("ses_send_failed", "error")

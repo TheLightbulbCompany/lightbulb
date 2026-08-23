@@ -18,17 +18,18 @@ def wired(monkeypatch):
     """Wire every collaborator to a recorder so each test can flip one thing."""
     st = types.SimpleNamespace(
         cap_allows=True,
+        cap_calls=0,
         claim_returns=True,
         claimed=False,
         settled=None,
         settle_reason=None,
         first_contact_state="not_started",
-        company_name="Acme Robotics",
         owner_email="owner@example.com",
         company_id="co_1",
         friday_agent_id="agent_friday",
-        slug="acme-robotics",
         minted="friday@acme-robotics.isol8.co",
+        ensure_agent_id=None,
+        ensure_reason="mint_failed",
         facts_written=False,
         facts_raises=False,
         ses_calls=0,
@@ -36,13 +37,13 @@ def wired(monkeypatch):
         sent_subject=None,
         sent_to=None,
         sent_from=None,
-        slug_name_seen=None,
     )
 
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "prod")
 
     async def _cap(owner_id, *, day, cap):
+        st.cap_calls += 1
         return st.cap_allows
 
     class _Repo:
@@ -64,25 +65,19 @@ def wired(monkeypatch):
             st.settled = state
             st.settle_reason = reason
 
-    async def _company_name(company_id):
-        return st.company_name
-
     async def _owner_email(*, org_id, fallback_user_id):
         return st.owner_email
 
-    async def _slug(*, owner_id, name):
-        st.slug_name_seen = name
-        return st.slug
-
-    async def _mint(*, owner_id, agent_id, agent_name, owner_email, slug):
-        return st.minted
+    async def _ensure(*, owner_id, agent_id, owner_email):
+        st.ensure_agent_id = agent_id
+        return (st.minted, "ok") if st.minted else (None, st.ensure_reason)
 
     async def _facts(owner_id):
         if st.facts_raises:
             raise RuntimeError("efs down")
         st.facts_written = True
 
-    async def _send(*, from_addr, to, subject, body_text, body_html, headers):
+    async def _send(*, from_addr, to, subject, body_text, body_html, headers, tenant_name=None):
         st.ses_calls += 1
         st.sent_subject = subject
         st.sent_to = to
@@ -101,10 +96,8 @@ def wired(monkeypatch):
         return _Repo()
 
     monkeypatch.setattr(mod, "PaperclipRepo", _repo_factory)
-    monkeypatch.setattr(mod, "_resolve_company_name", _company_name)
     monkeypatch.setattr(mod, "lookup_owner_email", _owner_email)
-    monkeypatch.setattr(mod, "allocate_company_slug", _slug)
-    monkeypatch.setattr(mod, "mint_agent_email_address", _mint)
+    monkeypatch.setattr(mod, "ensure_agent_address", _ensure)
     monkeypatch.setattr(mod, "write_owner_facts", _facts)
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _send)
 
@@ -133,19 +126,29 @@ async def test_happy_path_sends_and_settles_sent(wired):
 
 
 @pytest.mark.asyncio
-async def test_slug_derives_from_the_LIVE_company_name(wired):
-    """Not the provisioning placeholder — that is the whole point of minting
-    late."""
-    wired.company_name = "Renamed By Friday"
-    await _send()
-    assert wired.slug_name_seen == "Renamed By Friday"
-
-
-@pytest.mark.asyncio
 async def test_routine_label_still_claims_the_first_contact_slot(wired):
     """The LABEL must not select the guard — policy comes from state."""
     assert await _send(purpose="routine") == "sent"
     assert wired.claimed is True
+
+
+@pytest.mark.asyncio
+async def test_system_notice_never_claims_the_first_contact_slot(wired):
+    """A platform-originated notice (the outbound-paused complaint mail) sends
+    while first contact is still owed, but must not consume the slot — the
+    agent's own hello would otherwise be permanently marked `sent`."""
+    wired.first_contact_state = "not_started"
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Outbound email paused",
+        body_text="body",
+        system_notice=True,
+    )
+    assert result == "sent"
+    assert wired.ses_calls == 1
+    assert wired.claimed is False
+    assert wired.settled is None
 
 
 @pytest.mark.asyncio
@@ -201,6 +204,24 @@ async def test_cap_exceeded_releases_the_claim_rather_than_wedging_it(wired):
 
 
 @pytest.mark.asyncio
+async def test_system_notice_ignores_the_daily_cap(wired):
+    """The cap fences a LOOPING AGENT. The outbound-paused notice has to reach
+    the owner precisely when that fence has tripped, so a system notice must
+    not even consult it."""
+    wired.cap_allows = False
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Outbound email paused",
+        body_text="body",
+        system_notice=True,
+    )
+    assert result == "sent"
+    assert wired.cap_calls == 0
+    assert wired.ses_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_ses_failure_settles_failed(wired):
     wired.ses_returns = None
     assert await _send() == "error"
@@ -211,8 +232,11 @@ async def test_ses_failure_settles_failed(wired):
 @pytest.mark.asyncio
 async def test_unreachable_paperclip_fails_rather_than_minting_a_junk_slug(wired):
     """company_slug_repo has no delete path, so a fallback name would freeze
-    permanently."""
-    wired.company_name = None
+    permanently. (The company-name→slug resolution itself now lives inside
+    ensure_agent_address, tested in test_agent_email.py; here we only verify
+    that owner_send propagates the reason and fails closed.)"""
+    wired.minted = None
+    wired.ensure_reason = "company_name_unavailable"
     assert await _send() == "error"
     assert wired.settled == "failed"
     assert wired.settle_reason == "company_name_unavailable"
@@ -295,3 +319,19 @@ async def test_unset_environment_still_prefixes(monkeypatch, wired):
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "")
     await _send()
     assert wired.sent_subject == "[non-prod] Hello"
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_uses_calling_agent_for_from_address(wired):
+    await mod.send_to_owner(owner_id="user_1", purpose="routine", subject="s", body_text="b", agent_id="agent_atlas")
+    assert wired.ensure_agent_id == "agent_atlas"
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_defaults_to_friday(wired):
+    await mod.send_to_owner(owner_id="user_1", purpose="routine", subject="s", body_text="b")
+    assert wired.ensure_agent_id == "agent_friday"
+
+
+def test_daily_cap_is_fifty():
+    assert mod.DAILY_SEND_CAP == 50

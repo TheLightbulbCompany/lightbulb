@@ -511,7 +511,7 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
     DURABLE on purpose. This is the only fence against an agent looping on the
     owner-send endpoint, and the backend runs several ECS tasks behind an ALB —
-    an in-process bucket (the pattern ``agent_mail_relay`` uses for burst
+    an in-process bucket (the pattern the old agent-mail reply relay used for burst
     smoothing) would give a real limit of ``cap * task_count`` and reset on
     every deploy.
 
@@ -554,6 +554,42 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
             UpdateExpression="SET email_send_count = email_send_count + :one",
             ConditionExpression="email_send_day = :d AND email_send_count < :cap",
             ExpressionAttributeValues={":d": day, ":one": 1, ":cap": cap},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        return True  # fail open — see docstring
+
+
+async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:
+    """Claim the once-per-UTC-day slot for a ``kind`` platform notice to ``owner_id``.
+
+    ``try_consume_daily_email_send``'s shape minus the counter: one notice per
+    day, not N. A single conditional write flips ``system_notice_day_<kind>`` to
+    ``day``, admitted only when the stored value is absent or from another day —
+    so a burst of events (SES fans one complaint out per recipient address)
+    collapses to a single notice. DURABLE for the same reason as its sibling:
+    several backend tasks run behind one ALB, so an in-process guard would give
+    a real limit of one-per-task and reset on every deploy.
+
+    These notices ride ``send_to_owner(system_notice=True)``, which deliberately
+    BYPASSES the daily send cap — this is the only bound on them.
+
+    **Fails OPEN**, like its sibling: a DynamoDB fault returns True rather than
+    swallowing a notice the owner needs (their agents just lost the ability to
+    send mail). Worst case is a duplicate email. The ``attribute_exists`` guard
+    means an owner with no container row never claims, which is unreachable in
+    practice — provisioned agent addresses imply a container row.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #d = :d",
+            ConditionExpression="attribute_exists(owner_id) AND (attribute_not_exists(#d) OR #d <> :d)",
+            ExpressionAttributeNames={"#d": f"system_notice_day_{kind}"},
+            ExpressionAttributeValues={":d": day},
         )
         return True
     except ClientError as e:

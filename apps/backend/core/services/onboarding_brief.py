@@ -293,7 +293,7 @@ _INTEGRATIONS_STEP = (
 _CLOSING_STEPS = (
     "\n\nOne more thing before you stop: email me a short note in your own "
     "voice about what you found:\n"
-    "printf '%s' \"<your note>\" | /app/skills/isol8/scripts/isol8-owner-email.sh "
+    "printf '%s' \"<your note>\" | /app/skills/isol8/scripts/isol8-mail.sh send --owner "
     '--subject "<subject>"\n'
     "That script is how you send email here — there is no Gmail, himalaya, or "
     "email channel to configure."

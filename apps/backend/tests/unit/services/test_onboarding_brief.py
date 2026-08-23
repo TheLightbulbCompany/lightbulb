@@ -318,7 +318,7 @@ def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
 # hands it the command directly so first contact does not depend on the agent
 # making that leap.
 
-SCRIPT = "/app/skills/isol8/scripts/isol8-owner-email.sh"
+SCRIPT = "/app/skills/isol8/scripts/isol8-mail.sh"
 
 
 def test_first_run_message_instructs_naming_and_email():

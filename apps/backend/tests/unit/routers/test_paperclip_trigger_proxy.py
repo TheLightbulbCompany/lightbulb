@@ -32,11 +32,11 @@ def _reset_shared_state():
     empty or tests pollute their neighbours."""
     from routers import hooks_proxy, paperclip_trigger_proxy
 
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
     yield
-    hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
+    hooks_proxy._RATE.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
 
@@ -532,8 +532,8 @@ def test_trigger_buckets_are_independent_of_container_hook_bucket(client):
         _stub_client(captured),
     ):
         client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
-    assert len(hooks_proxy._RATE_BUCKETS_PER_OWNER[f"trigger:{PUBLIC_ID}"]) == 1
-    assert "u_1" not in hooks_proxy._RATE_BUCKETS_PER_OWNER
+    assert len(hooks_proxy._RATE._buckets[f"trigger:{PUBLIC_ID}"]) == 1
+    assert "u_1" not in hooks_proxy._RATE._buckets
 
 
 # ---------------------------------------------------------------------------

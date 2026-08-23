@@ -294,9 +294,18 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     const sesStack = stacks.find((s) => s.node.id === "isol8-dev-ses-inbound");
     expect(sesStack).toBeUndefined();
 
+    // The account+region-scoped SINGLETON resources (SetActiveReceiptRuleSet
+    // is a one-active-rule-set-per-account operation, and the domain
+    // identity is likewise account-scoped) must never exist twice. This does
+    // NOT forbid every "AWS::SES::" resource type fleet-wide: the per-env
+    // AgentMailOutboundStack (task 10) creates a per-env-NAMED
+    // AWS::SES::ConfigurationSet + ConfigurationSetEventDestination, and
+    // those are deliberately live in dev AND prod — see agent-mail-outbound-stack.test.ts.
     for (const s of stacks) {
       const json = JSON.stringify(Template.fromStack(s).toJSON());
-      expect(json).not.toContain("AWS::SES::");
+      expect(json).not.toContain("AWS::SES::ReceiptRuleSet");
+      expect(json).not.toContain("AWS::SES::ReceiptRule");
+      expect(json).not.toContain("AWS::SES::EmailIdentity");
     }
   });
 

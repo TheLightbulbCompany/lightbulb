@@ -606,8 +606,8 @@ async def _maybe_nudge_first_contact(
     """Remind the agent if its run ended without sending the owner's first email.
 
     This observer NEVER composes or sends mail — the send stays the agent's own
-    tool call against ``/agent-mail/send-to-owner``. It only notices she hasn't
-    and reminds her.
+    tool call against ``/agent-mail/u/{owner_id}/send``. It only notices she
+    hasn't and reminds her.
 
     The ``/container/status`` poll cannot drive this: ``useProvisioningState``
     documents that cadence as "0/off once ready", and first contact happens

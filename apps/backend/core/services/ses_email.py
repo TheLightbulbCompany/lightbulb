@@ -77,6 +77,7 @@ async def send_ses_email(
     body_html: str | None = None,
     headers: dict[str, str] | None = None,
     kind: str = "generic",
+    tenant_name: str | None = None,
 ) -> str | None:
     """Send one email via AWS SES (sesv2 send_email, raw MIME).
 
@@ -90,6 +91,11 @@ async def send_ses_email(
     plain text, or both for a multipart/alternative. ``kind`` is a short label
     ("welcome", "support_ticket", "agent_reply_ses") used only for metric
     dimensions and log context.
+
+    Every send is stamped with ``settings.AGENT_MAIL_CONFIGURATION_SET`` when
+    that setting is non-empty (so the configuration set must already exist in
+    the environment — SES rejects a send naming one that does not) and with
+    ``TenantName`` when ``tenant_name`` is given.
     """
     if not settings.AGENT_EMAIL_DOMAIN.strip():
         # Emit a metric, not just a log line. The other two outcomes are
@@ -122,11 +128,17 @@ async def send_ses_email(
 
         raw = bytes(msg)
 
+        send_kwargs: dict = {"Content": {"Raw": {"Data": raw}}}
+        if settings.AGENT_MAIL_CONFIGURATION_SET.strip():
+            send_kwargs["ConfigurationSetName"] = settings.AGENT_MAIL_CONFIGURATION_SET.strip()
+        if tenant_name:
+            send_kwargs["TenantName"] = tenant_name
+
         with anyio.fail_after(_SEND_TIMEOUT_S):
             # abandon_on_cancel=True so fail_after can actually return at the
             # deadline instead of waiting for a stalled worker thread.
             resp = await anyio.to_thread.run_sync(
-                lambda: _client().send_email(Content={"Raw": {"Data": raw}}),
+                lambda: _client().send_email(**send_kwargs),
                 abandon_on_cancel=True,
             )
         message_id = resp.get("MessageId") if isinstance(resp, dict) else None
@@ -147,6 +159,7 @@ async def send_ses_reply(
     body_text: str,
     body_html: str | None = None,
     headers: dict[str, str] | None = None,
+    tenant_name: str | None = None,
 ) -> str | None:
     """Send an agent reply. Thin wrapper over send_ses_email that pins the
     metric kind — kept as its own name because ``agent_mail_reply`` treats a
@@ -159,4 +172,5 @@ async def send_ses_reply(
         body_html=body_html,
         headers=headers,
         kind="agent_reply_ses",
+        tenant_name=tenant_name,
     )

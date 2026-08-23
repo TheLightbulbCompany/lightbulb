@@ -1,13 +1,16 @@
 """agent_email_repo: address-keyed rows with a by-owner GSI."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+from core.repositories import agent_email_repo as repo  # noqa: E402
 
 
 @pytest.fixture
@@ -54,7 +57,7 @@ async def test_put_normalizes_and_get_by_address(agent_email_table):
     assert row["owner_id"] == "user_1"
     assert row["agent_id"] == "agent_friday"
     assert row["verified_senders"] == ["owner@example.com"]
-    assert row["public"] is False
+    assert "public" not in row
     assert row["status"] == "active"
     assert row["created_at"]
 
@@ -203,3 +206,43 @@ async def test_query_by_owner_returns_only_that_owner(agent_email_table):
         "acme@agents.isol8.co",
         "acme-atlas@agents.isol8.co",
     }
+
+
+@pytest.mark.asyncio
+async def test_update_settings_sets_only_supplied_fields(monkeypatch):
+    table = MagicMock()
+    table.update_item.return_value = {"Attributes": {"address": "a@b.c", "send_to_anyone": True}}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    out = await repo.update_settings("A@b.c", send_to_anyone=True)
+    assert out["send_to_anyone"] is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "a@b.c"}
+    assert "send_to_anyone" in kwargs["UpdateExpression"]
+    assert "verified_senders" not in kwargs["UpdateExpression"]
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+
+
+@pytest.mark.asyncio
+async def test_update_settings_none_removes_outbound_disabled(monkeypatch):
+    table = MagicMock()
+    table.update_item.return_value = {"Attributes": {"address": "a@b.c"}}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.update_settings("a@b.c", outbound_disabled=None)
+    assert "REMOVE outbound_disabled" in table.update_item.call_args.kwargs["UpdateExpression"]
+
+
+@pytest.mark.asyncio
+async def test_update_settings_missing_row_returns_none(monkeypatch):
+    table = MagicMock()
+    table.update_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.update_settings("a@b.c", send_to_anyone=False) is None
+
+
+@pytest.mark.asyncio
+async def test_put_has_no_public_field(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    item = await repo.put(address="a@b.c", owner_id="o", agent_id="ag", verified_senders=["O@x.y"])
+    assert "public" not in item
+    assert item["verified_senders"] == ["o@x.y"]

@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
@@ -67,6 +68,19 @@ export class Isol8Stage extends cdk.Stage {
       sesInbound.addDependency(dns);
     }
 
+    // Outbound agent-mail plumbing exists wherever agent email is on (dev + prod).
+    const agentEmailDomain = env === "prod" ? "isol8.co" : env === "dev" ? "dev.isol8.co" : "";
+    let agentMailOutbound: AgentMailOutboundStack | undefined;
+    if (agentEmailDomain) {
+      agentMailOutbound = new AgentMailOutboundStack(this, `isol8-${env}-agent-mail-outbound`, {
+        stackName: `isol8-${env}-agent-mail-outbound`,
+        envName: env,
+        apiDomain: env === "prod" ? "api.isol8.co" : `api-${env}.isol8.co`,
+        sesIngestSecretName: `isol8/${env}/ses_ingest_secret`,
+      });
+      agentMailOutbound.addDependency(auth);
+    }
+
     const network = new NetworkStack(this, `isol8-${env}-network`, {
       stackName: `isol8-${env}-network`,
       environment: env,
@@ -131,6 +145,7 @@ export class Isol8Stage extends cdk.Stage {
         channelLinksTable: database.channelLinksTable,
         companySlugsTable: database.companySlugsTable,
         agentEmailAddressesTable: database.agentEmailAddressesTable,
+        agentMailInboxTable: database.agentMailInboxTable,
         adminActionsTable: database.adminActionsTable,
         oauthTokensTable: database.oauthTokensTable,
         webhookDedupTable: database.webhookDedupTable,
@@ -186,13 +201,22 @@ export class Isol8Stage extends cdk.Stage {
       //
       // Every OTHER env stays empty, which keeps the backend's guards inert —
       // there is no DNS, and nothing would route.
-      agentEmailDomain:
-        env === "prod" ? "isol8.co" : env === "dev" ? "dev.isol8.co" : "",
+      agentEmailDomain,
       // Undefined in every env/deploy where SesInboundStack isn't
       // instantiated (non-prod stage) — ServiceStack defaults this to an
       // empty string, which is inert without AGENT_EMAIL_DOMAIN.
       agentEmailAttachmentsBucket: sesInbound?.attachmentsBucketName,
+      // Undefined wherever AgentMailOutboundStack isn't instantiated —
+      // ServiceStack defaults this to an empty string, which stamps no
+      // configuration set on outbound sends (core/services/ses_email.py).
+      agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
     });
+
+    // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps
+    // it on EVERY platform send (agent mail, welcome, support tickets) — SES
+    // rejects a send naming a configuration set that does not exist, so the
+    // outbound stack has to be deployed before the service that references it.
+    if (agentMailOutbound) service.addDependency(agentMailOutbound);
 
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,
     // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from

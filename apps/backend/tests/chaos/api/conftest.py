@@ -60,15 +60,12 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # tests/unit/routers/test_connections.py::TestAuthorizeFromContainer
     # (401 / 409 / mint paths).
     "GET /api/v1/connections/u/{owner_id}/{provider}/authorize": "hook-token lookup; containers table not provisioned hermetically",
-    # Agent-initiated owner email: same hook-token lookup on the DDB containers
-    # table, before anything else can run, so an unmocked GetItem raises
-    # ResourceNotFoundException → 5xx. Same class as hooks/u/... and
-    # agent-builder above. Covered by tests/unit/routers/test_agent_mail_send.py
-    # (401/400/429 paths) + tests/unit/services/test_agent_mail_owner_send.py.
-    #
-    # NOT excluded: POST /api/v1/agent-mail/reply, the sibling reply relay. It
-    # decodes its reply_token first and 400s before reaching DynamoDB, so it
-    # stays fuzzed here.
+    # Agent-mail container routes: hook-token lookup on the DDB containers
+    # table before anything else can run → unmocked GetItem 5xx. Covered by
+    # tests/unit/routers/test_agent_mail.py.
+    "POST /api/v1/agent-mail/u/{owner_id}/send": "hook-token lookup; containers table not provisioned hermetically",
+    "POST /api/v1/agent-mail/u/{owner_id}/address": "hook-token lookup; containers table not provisioned hermetically",
+    "GET /api/v1/agent-mail/u/{owner_id}/inbox": "hook-token lookup; containers table not provisioned hermetically",
     "POST /api/v1/agent-mail/send-to-owner/u/{owner_id}": "hook-token lookup; containers table not provisioned hermetically",
     # Pure-DDB read, but the seller-profile table-name env is not wired into the
     # chaos fixture → boto ParamValidationError (empty TableName). FOLLOW-UP:

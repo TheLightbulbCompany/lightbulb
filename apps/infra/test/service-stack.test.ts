@@ -58,6 +58,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       channelLinksTable: database.channelLinksTable,
       companySlugsTable: database.companySlugsTable,
       agentEmailAddressesTable: database.agentEmailAddressesTable,
+      agentMailInboxTable: database.agentMailInboxTable,
       adminActionsTable: database.adminActionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,
@@ -103,6 +104,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     connectionsTableName: `isol8-${environment}-ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
+    agentMailConfigurationSet: "isol8-test-agent-mail",
   });
 
   return Template.fromStack(service);
@@ -779,4 +781,60 @@ describe("ServiceStack — browser egress proxy knob", () => {
       }
     },
   );
+});
+
+describe("ServiceStack — agent-mail outbound wiring", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("backend task definition carries AGENT_MAIL_CONFIGURATION_SET", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: "AGENT_MAIL_CONFIGURATION_SET",
+              Value: "isol8-test-agent-mail",
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("the backend-ses-send managed policy grants per-owner SES tenant creation", () => {
+    // Per-owner SES tenants are created lazily by the backend at first send
+    // (core/services/agent_mail_tenant.py) — this is the IAM side of that.
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "isol8-dev-backend-ses-send",
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentMailTenants",
+            Action: Match.arrayWith(["ses:CreateTenant"]),
+            Resource: Match.arrayWith([
+              "arn:aws:ses:us-east-1:877352799272:tenant/owner-*",
+              "arn:aws:ses:us-east-1:aws:reputation-policy/standard",
+            ]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("the AgentMailTenants tenant resource is tightened to owner-* (not a bare wildcard)", () => {
+    // Tenant names are deterministic `owner-{owner_id}` — a bare `tenant/*`
+    // would also authorize actions against tenants outside this fleet's
+    // naming convention.
+    const policies = template.findResources("AWS::IAM::ManagedPolicy");
+    const sesSend = Object.values(policies).find(
+      (p: any) => p.Properties?.ManagedPolicyName === "isol8-dev-backend-ses-send",
+    ) as any;
+    expect(sesSend).toBeDefined();
+    const statement = sesSend.Properties.PolicyDocument.Statement.find(
+      (s: any) => s.Sid === "AgentMailTenants",
+    );
+    expect(statement.Resource).not.toContain(
+      "arn:aws:ses:us-east-1:877352799272:tenant/*",
+    );
+  });
 });

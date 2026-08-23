@@ -358,7 +358,7 @@ class ConnectionService:
         a no-op instead of writing on every single one. The throttle dict
         lives on this instance/process -- same posture as other in-process
         rate-limit state in this codebase (e.g.
-        ``routers/hooks_proxy.py::_RATE_BUCKETS_PER_OWNER``,
+        ``routers/hooks_proxy.py::_RATE`` (a ``RateBucket``),
         ``routers/connections.py::_aws_cli_rate_buckets``): correct as
         long as the backend runs at desiredCount=1. If it's ever scaled
         horizontally, each instance throttles independently -- a

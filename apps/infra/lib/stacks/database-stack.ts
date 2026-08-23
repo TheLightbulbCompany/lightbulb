@@ -30,6 +30,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly channelLinksTable: dynamodb.Table;
   public readonly companySlugsTable: dynamodb.Table;
   public readonly agentEmailAddressesTable: dynamodb.Table;
+  public readonly agentMailInboxTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
   public readonly metronomeFastGateTable: dynamodb.Table;
@@ -177,6 +178,21 @@ export class DatabaseStack extends cdk.Stack {
     this.agentEmailAddressesTable.addGlobalSecondaryIndex({
       indexName: "by-owner",
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+
+    // Stored inbound agent mail (inbox the agent reads on demand — OTPs etc.).
+    // PK = the agent's address, SK = "{received_at}#{message_id}" so a query
+    // is newest-first by ISO timestamp. 30-day TTL: the inbox is a working
+    // buffer, not an archive.
+    this.agentMailInboxTable = createTable("AgentMailInboxTable", "agent-mail-inbox", {
+      partitionKey: { name: "address", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "received_key", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+      ephemeral: true,
+    });
+    this.agentMailInboxTable.addGlobalSecondaryIndex({
+      indexName: "by-message-id",
+      partitionKey: { name: "message_id", type: dynamodb.AttributeType.STRING },
     });
 
     // Webhook event dedup table — shared by Stripe and Clerk webhooks

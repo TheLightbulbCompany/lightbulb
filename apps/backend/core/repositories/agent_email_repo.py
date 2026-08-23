@@ -33,7 +33,6 @@ async def put(
     owner_id: str,
     agent_id: str,
     verified_senders: list[str],
-    public: bool = False,
 ) -> dict | None:
     """Claim ``address`` for ``owner_id`` — a CREATE primitive, not an update.
 
@@ -55,7 +54,6 @@ async def put(
         "owner_id": owner_id,
         "agent_id": agent_id,
         "verified_senders": [normalize(s) for s in verified_senders],
-        "public": public,
         "status": "active",
         "created_at": utc_now_iso(),
     }
@@ -142,3 +140,55 @@ async def delete_by_address(address: str) -> None:
     """Delete one address row by primary key. Used by the orphan sweep, which
     has the row in hand and must not re-derive it from a dead owner id."""
     await run_in_thread(_get_table().delete_item, Key={"address": normalize(address)})
+
+
+_UNSET = object()
+
+
+async def update_settings(
+    address: str,
+    *,
+    verified_senders: list[str] | None = None,
+    send_to_anyone: bool | None = None,
+    outbound_disabled: str | None | object = _UNSET,
+) -> dict | None:
+    """SET the supplied owner-editable fields on an existing row; None for
+    ``outbound_disabled`` REMOVEs it. Returns the updated item, or None when
+    the row does not exist (conditional on ``attribute_exists(address)``)."""
+    sets: list[str] = []
+    removes: list[str] = []
+    values: dict = {}
+    if verified_senders is not None:
+        sets.append("verified_senders = :vs")
+        values[":vs"] = [normalize(s) for s in verified_senders]
+    if send_to_anyone is not None:
+        sets.append("send_to_anyone = :sta")
+        values[":sta"] = bool(send_to_anyone)
+    if outbound_disabled is not _UNSET:
+        if outbound_disabled is None:
+            removes.append("outbound_disabled")
+        else:
+            sets.append("outbound_disabled = :od")
+            values[":od"] = str(outbound_disabled)
+    if not sets and not removes:
+        return await get_by_address(address)
+    expr = ""
+    if sets:
+        expr += "SET " + ", ".join(sets)
+    if removes:
+        expr += (" " if expr else "") + "REMOVE " + ", ".join(removes)
+    kwargs = {
+        "Key": {"address": normalize(address)},
+        "UpdateExpression": expr,
+        "ConditionExpression": "attribute_exists(address)",
+        "ReturnValues": "ALL_NEW",
+    }
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
+    try:
+        resp = await run_in_thread(_get_table().update_item, **kwargs)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return resp.get("Attributes")

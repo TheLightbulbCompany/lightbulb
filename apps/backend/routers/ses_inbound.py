@@ -17,10 +17,13 @@ infrastructure we control, not a third party. An empty secret disables the
 endpoint entirely (fail-closed).
 
 **Outcome -> HTTP status is deliberate, not uniformly 200.** Every
-DETERMINISTIC drop (disabled, unknown recipient, unverified sender, over cap,
-spam/virus, failed authentication, auto-submitted, duplicate) is terminal —
-retrying would produce the identical drop again — so those stay 200, as does
-a successful ``delivered``. ``container_not_running`` also stays 200: it now
+DETERMINISTIC drop (disabled, unknown recipient, over cap, spam/virus, failed
+authentication, auto-submitted, duplicate) is terminal — retrying would
+produce the identical drop again — so those stay 200, as does a successful
+``delivered`` and a ``stored_not_woken`` (the message is saved to the inbox
+either way; only WAKING the agent is gated, on the sender allowlist AND on
+that sender being authenticated — see ``sender_allowed`` and
+``authenticated_sender`` below). ``container_not_running`` also stays 200: it now
 only means the owner is OVER CAP (the cap gate below already normally
 intercepts that case before ``deliver_to_agent`` is even called; this is
 belt-and-suspenders for the same predicate) — waking a capped owner is
@@ -53,6 +56,8 @@ observability (log/metric correlation); the Lambda does not parse it.
 
 import hmac
 import logging
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -60,18 +65,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address, normalize
+from core.repositories.agent_email_repo import get_by_address, normalize, query_by_owner, update_settings
+from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
+from core.repositories.container_repo import try_claim_daily_system_notice
+from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
+from core.services.agent_mail_owner_send import send_to_owner
 from core.services.agent_mail_inbound import (
+    authenticated_sender,
     build_attachment_manifest,
     build_delivered_message,
     is_auto_submitted,
     parse_from_address,
 )
 from core.services.agent_mail_reply import reply_subject
-from core.services.agent_mail_token import encode_reply_token
 from core.services.trial_cap import trial_block_reason
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
@@ -82,7 +91,7 @@ router = APIRouter()
 # The outcomes worth counting individually. Everything else — every
 # deterministic drop, plus the transient `error` — collapses to `dropped` so
 # the dimension stays bounded.
-_METRIC_RESULTS = ("delivered", "woken", "capped_notified")
+_METRIC_RESULTS = ("delivered", "woken", "capped_notified", "stored_not_woken")
 
 
 def _final(status: str, *, code: int = 200):
@@ -132,7 +141,11 @@ class SesInboundBody(BaseModel):
     subject: str = ""
     text: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
-    verdicts: dict[str, str] = Field(default_factory=dict)
+    # `dict[str, Any]`, not `dict[str, str]`: `verdicts["dkim_domains"]` is a
+    # LIST of DKIM signing domains (see the Lambda's `_extract_verdicts`), and
+    # a str-valued dict would reject the whole payload. Everything reading a
+    # flat verdict off this dict must therefore `str()` it first.
+    verdicts: dict[str, Any] = Field(default_factory=dict)
     attachments: list[dict] = Field(default_factory=list)
 
 
@@ -189,17 +202,13 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if row is None:
             return _final("dropped_unknown_recipient")
 
-        # Sender allowlist — skipped entirely for public addresses (no
-        # allowlist to enforce), enforced for private ones.
         sender = parse_from_address(body.from_)
-        if not row.get("public") and sender not in (row.get("verified_senders") or []):
-            return _final("dropped_unverified_sender")
 
         # Anti-abuse gate: SES's own receipt pipeline already scanned this
         # mail for spam/viruses before the Lambda ever saw it, so an explicit
         # FAIL here is authoritative — always dropped.
         verdicts = body.verdicts or {}
-        if (verdicts.get("virus") or "").upper() == "FAIL" or (verdicts.get("spam") or "").upper() == "FAIL":
+        if str(verdicts.get("virus") or "").upper() == "FAIL" or str(verdicts.get("spam") or "").upper() == "FAIL":
             return _final("dropped_spam_or_virus")
 
         # Anti-spoof gate: DMARC is authoritative when SES reports a verdict
@@ -208,14 +217,16 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # further fallback. Only when SES surfaces NO dmarc verdict at all do
         # we fall back to requiring SPF and DKIM to both explicitly FAIL
         # before dropping. A missing/GRAY verdict on any of these is never a
-        # hard drop — the sender allowlist above is the primary control.
+        # hard drop — the WAKE gate below (`sender_allowed` AND
+        # `authenticated_sender`) is what decides whether an unproven sender
+        # reaches the agent; the message is always stored either way.
         dmarc = verdicts.get("dmarc")
         if dmarc is not None:
-            if dmarc.upper() == "FAIL":
+            if str(dmarc).upper() == "FAIL":
                 return _final("dropped_failed_authentication")
         else:
-            spf = (verdicts.get("spf") or "").upper()
-            dkim = (verdicts.get("dkim") or "").upper()
+            spf = str(verdicts.get("spf") or "").upper()
+            dkim = str(verdicts.get("dkim") or "").upper()
             if spf == "FAIL" and dkim == "FAIL":
                 return _final("dropped_failed_authentication")
 
@@ -224,16 +235,43 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if is_auto_submitted(body.headers or {}):
             return _final("dropped_auto_submitted")
 
+        # Store first — every gated-clean message lands in the inbox whether or
+        # not it wakes the agent. Waking (and the cap autoreply) is reserved for
+        # the owner + the owner's allowlist.
+        #
+        # Idempotent on SES's message_id: the 503 paths below roll back the
+        # dedup row so SES retries, and that retry must reuse the row the
+        # first attempt stored rather than add a second one.
+        stored = await find_by_message_id(row["address"], body.message_id) or await put_message(
+            address=row["address"],
+            owner_id=row["owner_id"],
+            agent_id=row["agent_id"],
+            message_id=body.message_id,
+            from_addr=sender,
+            subject=body.subject or "",
+            text=body.text or "",
+            headers=body.headers or {},
+            attachments=body.attachments or [],
+        )
+        # Waking takes BOTH: the owner listed this sender, AND the `From` it
+        # was listed under is actually authenticated. `sender_allowed` alone
+        # is not enough — `From` is a bare header parse, so an attacker whose
+        # own domain passes SPF can forge an allowlisted `From` and wake
+        # somebody else's agent. See `authenticated_sender`. The message is
+        # still STORED either way; only the wake tightens.
+        if not (sender_allowed(row, sender) and authenticated_sender(verdicts, body.headers or {}, sender)):
+            return _final("stored_not_woken")
+        key = reply_key(row["address"], stored["received_key"])
+
         # Free-tier cost cap — same predicate the chat/container-start
         # gates use, so an over-cap owner can't route around it via email.
         #
-        # ANSWERED, not silently dropped — but ONLY for a private address,
-        # where the sender allowlist above actually ran and proved this is the
-        # OWNER. That proof is the whole safety argument for replying here in
-        # a way we do NOT for the two drops above (replying to those would
-        # confirm the address exists and turn this into a reflector). A
-        # `public` row SKIPS that allowlist, so its `sender` is nothing but an
-        # attacker-chosen `From` header — it gets the silent drop instead.
+        # ANSWERED, not silently dropped — because only an allowlisted sender
+        # (`sender_allowed` above) reaches this point at all: every other
+        # sender already exited with `stored_not_woken`. That allowlist check
+        # is the whole safety argument for replying here in a way we do NOT
+        # for the drops above (replying to those would confirm the address
+        # exists and turn this into a reflector).
         #
         # The reply is server-templated with no agent run — that is the whole
         # reason we can answer at all when the cap says we cannot think.
@@ -241,40 +279,23 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # POSITION IS LOAD-BEARING: this is the first branch that originates
         # real outbound mail, so it must sit AFTER every gate above that
         # decides whether this inbound is trustworthy (spam/virus, DMARC/
-        # SPF+DKIM anti-spoof, auto-submitted loop guard) — `From` is a bare
-        # header parse with no DKIM/SPF binding, so the sender allowlist
-        # alone does not prove the message wasn't spoofed or a mail-loop
-        # auto-reply. Sending here before those gates run would turn this
-        # endpoint into a reflector or a loop. Do not move this block back
-        # above them.
+        # SPF+DKIM anti-spoof, auto-submitted loop guard, sender allowlist) —
+        # `From` is a bare header parse with no DKIM/SPF binding, so the
+        # sender allowlist alone does not prove the message wasn't spoofed or
+        # a mail-loop auto-reply. Sending here before those gates run would
+        # turn this endpoint into a reflector or a loop. Do not move this
+        # block back above them.
         cap_reason = await trial_block_reason(row["owner_id"])
         if cap_reason is not None:
-            notified = False
-            if not row.get("public"):
-                notified = await send_cap_autoreply(
-                    owner_id=row["owner_id"],
-                    reason=cap_reason,
-                    from_addr=row["address"],
-                    to=sender,
-                    in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
-                    subject=reply_subject(body.subject or ""),
-                )
+            notified = await send_cap_autoreply(
+                owner_id=row["owner_id"],
+                reason=cap_reason,
+                from_addr=row["address"],
+                to=sender,
+                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
+                subject=reply_subject(body.subject or ""),
+            )
             return _final("capped_notified" if notified else "dropped_over_cap")
-
-        token = encode_reply_token(
-            {
-                "owner_id": row["owner_id"],
-                "agent_id": row["agent_id"],
-                "reply_to": sender,
-                "in_reply_to": body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
-                # Carried so the reply can emit the FULL chain. Without it the
-                # relay could only echo the parent, which truncates References
-                # on every agent reply and lets the thread root drift — see
-                # agent_mail_reply for why that matters.
-                "references": body.headers.get("References", "") or body.headers.get("references", ""),
-                "subject": body.subject,
-            }
-        )
 
         # Attachment manifest — best-effort. A manifest-formatting bug must
         # not drop a real delivery: a working text delivery beats a dropped one.
@@ -287,7 +308,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             from_addr=sender,
             subject=body.subject,
             body_text=body.text or "",
-            reply_token=token,
+            reply_key=key,
             attachments_manifest=manifest,
         )
 
@@ -324,3 +345,91 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # Same reason as the two 503s above: this one asks SES to retry too.
         await _rollback_dedup(body.message_id)
         return _final("error", code=503)
+
+
+_PAUSED_SUBJECT = "Outbound email paused"
+_PAUSED_BODY = (
+    "A recipient marked an email from one of your agents as spam, so outbound email "
+    "from your agents is paused. Your agents can still email you.\n\n"
+    "Review who your agents may email and re-enable sending in Control → Agents → Email."
+)
+
+
+@router.post("/ses-events", include_in_schema=False)
+async def handle_ses_events(request: Request):
+    """SES complaint events (configuration-set → EventBridge → API destination)."""
+    if not settings.SES_INBOUND_SECRET or not settings.AGENT_EMAIL_DOMAIN.strip():
+        return {"status": "disabled"}
+    presented = request.headers.get("X-Isol8-SES-Secret", "")
+    if not presented or not hmac.compare_digest(presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")):
+        return JSONResponse(status_code=401, content={"status": "bad_secret"})
+    try:
+        event = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"status": "bad_json"})
+    if not isinstance(event, dict):
+        # Valid JSON, but not an object — e.g. a bare list/string/number. Same
+        # drop as a decode failure: there is no `detail` to read off of it.
+        return JSONResponse(status_code=400, content={"status": "bad_json"})
+    detail = event.get("detail")
+    if not isinstance(detail, dict):
+        # No object to read eventType/mail off of — not a complaint we can act on.
+        return {"status": "ignored"}
+    if (detail.get("eventType") or "").lower() != "complaint":
+        return {"status": "ignored"}
+    mail = detail.get("mail")
+    source = mail.get("source") if isinstance(mail, dict) else ""
+    try:
+        candidate = normalize(source) if source else ""
+    except Exception:  # noqa: BLE001 — see below
+        # A non-string/garbage `source` is a PERMANENTLY invalid event.
+        # Letting normalize raise here would surface as an unhandled 500 and
+        # EventBridge would retry the same bad event until it expires. Same
+        # guard the inbound recipient loop uses.
+        return {"status": "ignored"}
+    row = await get_by_address(candidate) if candidate else None
+    if not row:
+        return {"status": "unknown_source"}
+    owner_id = row["owner_id"]
+    try:
+        rows = [r for r in await query_by_owner(owner_id) if r.get("status") == "active"]
+        disabled = 0
+        for r in rows:
+            try:
+                await update_settings(r["address"], outbound_disabled="complaint")
+                disabled += 1
+            except Exception:  # noqa: BLE001 — per-row best-effort; keep disabling the rest
+                logger.warning("ses_events: disable failed for %s", r["address"], exc_info=True)
+        if rows and disabled == 0:
+            # Every row failed -- nothing was actually disabled, so ask the
+            # EventBridge API destination to retry (it retries on 5xx) rather
+            # than claim success or silently notify the owner of a no-op.
+            return JSONResponse(status_code=503, content={"status": "error"})
+        # ONE notice per owner per UTC day. SES fans a complaint out per
+        # recipient address, and `send_to_owner(system_notice=True)` bypasses
+        # the daily send cap by design — this durable claim is the only bound
+        # on it. Losing the claim suppresses the email only; the addresses are
+        # disabled either way.
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        notified = await try_claim_daily_system_notice(owner_id, day=day, kind="complaint")
+        put_metric(
+            "agent_email.complaint",
+            dimensions={"result": "disabled" if notified else "disabled_notice_suppressed"},
+        )
+        if notified:
+            try:
+                await send_to_owner(
+                    owner_id=owner_id,
+                    purpose="routine",
+                    subject=_PAUSED_SUBJECT,
+                    body_text=_PAUSED_BODY,
+                    # Platform notice, not Friday saying hello — must not consume
+                    # the owner's once-only first-contact slot.
+                    system_notice=True,
+                )
+            except Exception:  # noqa: BLE001 — notification is best-effort
+                logger.warning("ses_events: owner notify failed for %s", owner_id, exc_info=True)
+        return {"status": "disabled", "owner_id": owner_id, "addresses": disabled, "notified": notified}
+    except Exception:  # noqa: BLE001 — mirrors handle_ses_inbound's transient-vs-terminal split
+        logger.exception("ses_events handler failed for owner %s", owner_id)
+        return JSONResponse(status_code=503, content={"status": "error"})

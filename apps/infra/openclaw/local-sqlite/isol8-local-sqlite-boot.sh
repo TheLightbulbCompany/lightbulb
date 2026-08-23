@@ -227,7 +227,11 @@ if [ -d "$IMPORT_ROOT" ]; then
         mv "$_src/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite"
         log "import-state: installed history database for agent $_id"
       else
-        log "import-state: database for agent $_id failed integrity_check — skipped"
+        # Do NOT install sessions and do NOT rm -rf "$_src" — retain the
+        # whole hand-off so the next boot (or a human) can retry/diagnose it,
+        # instead of silently discarding a corrupt import.
+        log "import-state: database for agent $_id failed integrity_check — leaving the hand-off in place for diagnosis"
+        continue
       fi
     fi
     if [ -d "$_src/sessions" ]; then

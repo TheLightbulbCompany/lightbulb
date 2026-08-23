@@ -135,6 +135,20 @@ out=$(run_boot "$L" 2>&1) || fail "import-state hand-off run exited nonzero: $ou
 [ -d "$L/import-state" ] && fail "import-state hand-off root not removed: $out"
 echo "PASS 2f import-state hand-off"
 
+# ---- 2j. import-state hand-off with a CORRUPT db: integrity_check fails, so
+# the hand-off must be RETAINED (not rm -rf'd) for the next boot/diagnosis,
+# and sessions must NOT be installed for that agent either — a failed db must
+# not let its sibling sessions land as if the import had succeeded.
+L="$WORK/t2j/local"; mkdir -p "$L/import-state/agents/impbad/agent" "$L/import-state/agents/impbad/sessions"
+printf 'not a database' > "$L/import-state/agents/impbad/agent/openclaw-agent.sqlite"
+echo '{}' > "$L/import-state/agents/impbad/sessions/sessions.json"
+out=$(run_boot "$L" 2>&1) || fail "corrupt hand-off run exited nonzero: $out"
+[ -f "$L/agents/impbad/agent/openclaw-agent.sqlite" ] && fail "corrupt database was installed: $out"
+[ -f "$L/agents/impbad/sessions/sessions.json" ] && fail "sessions installed despite failed integrity check: $out"
+[ -d "$L/import-state/agents/impbad" ] || fail "hand-off was removed despite failed integrity check: $out"
+echo "$out" | grep -q "failed integrity_check" || fail "no integrity-check failure log: $out"
+echo "PASS 2j corrupt hand-off db retained for diagnosis, sessions not installed"
+
 # ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
 # the marker, so a failure leaves the marker for the next boot to retry.
 L="$WORK/t2g/local"; mkdir -p "$L"

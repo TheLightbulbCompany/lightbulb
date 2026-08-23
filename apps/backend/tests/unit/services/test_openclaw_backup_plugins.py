@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -98,3 +99,37 @@ async def test_apply_rolls_back_fresh_install_on_patch_failure(efs, tmp_path):
         await bp.apply_plugins(owner_id="owner_1", plugins=[_plugin(tmp_path)], chosen=None)
     assert not (user_root / "extensions" / "weather").exists()
     assert not (user_root / "extensions" / ".bak-weather").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_rolls_back_plugin_whose_own_copy_fails(efs, tmp_path):
+    """(dest, backup) is tracked BEFORE copytree, not after — if the copy for
+    the CURRENT plugin fails (disk full, permission, vanished source), the
+    except block must still see its own pair, not just earlier plugins'."""
+    user_root, patch_cfg = efs
+    dest_a = user_root / "extensions" / "a"  # plugin "a": prior content, replace case
+    dest_a.mkdir(parents=True)
+    (dest_a / "old.js").write_text("old a")
+
+    real_copytree = shutil.copytree
+    calls = {"n": 0}
+
+    def flaky_copytree(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # plugin "b"'s own copy — the one currently being staged
+            raise OSError("disk full")
+        return real_copytree(*args, **kwargs)
+
+    with patch.object(bp.shutil, "copytree", side_effect=flaky_copytree):
+        with pytest.raises(OSError, match="disk full"):
+            await bp.apply_plugins(
+                owner_id="owner_1", plugins=[_plugin(tmp_path, "a"), _plugin(tmp_path, "b")], chosen=None
+            )
+    # plugin "a" (replace, copied successfully before "b" failed): rolled back
+    assert (dest_a / "old.js").read_text() == "old a"
+    assert not (dest_a / "index.js").exists()
+    assert not (user_root / "extensions" / ".bak-a").exists()
+    # plugin "b" (fresh install, its own copytree raised): nothing left behind
+    assert not (user_root / "extensions" / "b").exists()
+    assert not (user_root / "extensions" / ".bak-b").exists()
+    patch_cfg.assert_not_awaited()

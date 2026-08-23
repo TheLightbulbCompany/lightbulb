@@ -74,8 +74,14 @@ async def apply_plugins(*, owner_id: str, plugins: list[PluginCandidate], chosen
             had_prior = dest.exists()
             if had_prior:
                 dest.rename(backup)
-            shutil.copytree(p.source_dir, dest, symlinks=False, ignore=shutil.ignore_patterns(*_SKIP))
+            # Track BEFORE copytree, not after — if this plugin's own copy
+            # fails (disk full, permission, vanished source), the except
+            # block below must still see this pair to clean up: a replace
+            # would otherwise strand the original at .bak-<id> forever, and
+            # a fresh install would leave a half-copied dest with no record
+            # to remove it.
             staged.append((dest, backup if had_prior else None))
+            shutil.copytree(p.source_dir, dest, symlinks=False, ignore=shutil.ignore_patterns(*_SKIP))
             _chown_tree(dest)
             entries[p.id] = {**p.config, "enabled": True}
             res.installed.append(p.id)

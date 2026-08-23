@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # attribute_not_exists drops replays at the edge. Wired via CDK service-stack.
     WEBHOOK_DEDUP_TABLE: str = ""
 
+    # Opt-in controlled capture of raw provider webhook deliveries for event-reference
+    # verification/replay. Emits WEBHOOK_DELIVERY_CAPTURE JSON lines to backend
+    # logs; keep false outside short verification windows because payloads may
+    # contain customer/provider data and signature material.
+    WEBHOOK_DELIVERY_CAPTURE_LOG_ENABLED: bool = False
+
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = "isol8-websocket-connections"
     WS_MANAGEMENT_API_URL: str = ""  # Set by Terraform

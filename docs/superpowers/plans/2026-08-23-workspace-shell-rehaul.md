@@ -1,94 +1,113 @@
 # Workspace shell rehaul
 
-**Branch:** `feat/workspace-shell-rehaul` (off `origin/main` @ 12a88a9d4)
-**Design source:** `~/Desktop/isol8-chat-previews/` (12 screens, `index.html` is the hub,
-`MAP.html` is the panel-by-panel inventory). Iteration 1 frozen at
+**Branches:** `feat/workspace-shell-rehaul` (#1979) → `feat/workspace-rail-restructure`
+(#1980) → `feat/workspace-completion-beats` (#1981), stacked in that order.
+**Design source:** `~/Desktop/isol8-chat-previews/` — 13 screens, `index.html` is
+the hub, `MAP.html` is the panel-by-panel inventory. Iteration 1 frozen at
 `~/Desktop/isol8-chat-previews-v1/`.
 
 ## Why
 
 The chat/control surface stacks seven navigation systems in one 244px rail, gives
-every agent row four hover actions, renders session lists with no disclosure
-animation, and keeps connectors behind Settings. Density measures around 8/10
-against roughly 4/10 for the products it is compared to. The value the platform
-delivers is real and almost none of it is on screen: the default landing state is
-an empty chat while agents are working and tasks are blocked.
+every agent row four hover actions, and keeps connectors behind Settings. Density
+measures around 8/10 against roughly 4/10 for the products it is compared to.
+Almost none of the value the platform delivers is on screen: the default landing
+state is an empty chat while agents are working and tasks are blocked.
 
-## Shape of the work
+## Decisions (settled, do not re-litigate)
 
-Three phases, each independently shippable and independently revertible. The
-design survives any of the later ones slipping.
-
-### Phase 1 — Rail and shell (this PR)
-
-The chrome everything else hangs off. No panel internals change.
-
-1. **Rail restructure.** Roster first, then three destinations. One overflow menu
-   per agent row replacing four hover actions. One state glyph replacing the
-   status dot plus published dot. Real disclosure for sessions using
-   `grid-template-rows: 0fr → 1fr` with staggered children.
-2. **Persistent workspace bar.** Icon-only, on every screen, carrying the layout
-   presets. This is the discovery path for split view, which today is reachable
-   only by an undiscoverable drag gesture.
-3. **Motion foundation.** Shared tokens and helpers: cross-document view
-   transitions with the rail held still by name, sequenced pane swaps, 90ms press
-   feedback, and a hard rule that no interaction animates a layout property.
-4. **Dock chrome.** Panels become cards on the cream field rather than boxes cut
-   into it. Sash gains a real hit area and a minimum-width clamp that announces
-   itself instead of clipping content.
-5. **Logo.** Align the preview and the app on one declaration.
-
-### Phase 2 — Work and Agent
-
-1. **Work** as one surface at three zoom levels (Goals / Projects / Tasks) with a
-   travelling scope indicator, group-by (status / agent / project), and inline
-   completion that advances the parent project ring.
-2. **Create flow.** The scope declares what New means, so no type picker. One
-   title field, a leading status glyph, and inferred chips for agent, project and
-   due date.
-3. **Agent page.** Overview / Files / Connectors / Channels / Skills / History,
-   all scoped to one agent. Extends the existing `AgentInspectorPanel`.
-4. **Routines** out of Work into its own destination, with expandable steps.
-
-### Phase 3 — Dashboard
-
-1. **Four readings of one business** behind a scope switch: Today, Company
-   (org chart), Activity, Ledger.
-2. **Completion beats.** Drawing checkmark, wash, segmented tracker, closing ring.
-3. **Company brain.** Folder tree over the existing EFS file surface.
-
-## Carved out — backend work, tracked separately
-
-These are features wearing a UI, not reskins. Each is a separate piece of work and
-the design degrades cleanly without it.
-
-| Item | Why it is not UI |
+| Question | Decision |
 |---|---|
-| Dashboard digest | "Needs you / working / finished" is a new read model |
-| Activity stream | Agent-to-agent handoffs are not recorded as durable events |
-| Browser panel | No `browser` PanelKind, and no frame streaming to the web client |
-| Company brain writes | Folder creation and upload do not exist |
+| `dreams`, `skill-proposals` | **Stay in Settings.** Out of scope for the rehaul entirely. |
+| `DesktopUpdater` | **Already home** in the sidebar footer. Renders a version label in the browser and the updater UI only under Tauri. No action. |
+| Wordmark typeface | **Keep Lora.** Georgia stays the fallback. `.brand-logo` is unchanged. |
+| Activity | **Already functional.** A reskin, not a backend feature. See below. |
 
-## Undecided, needs a product call
+## Two corrections made while mapping
 
-- `dreams` and `skill-proposals` have no home in the new structure.
-- `DesktopUpdater` needs a home; the account menu is the suggestion.
-- Whether the wordmark becomes real Georgia, which means dropping Lora from
-  `.brand-logo`'s stack rather than adding Georgia to it.
+Both were wrong in the original scope and would have caused duplicated work:
+
+1. **The `browser` PanelKind already exists.** `BrowserDockPanel` renders a noVNC
+   live view, singleton-keyed to the container's one Xvfb display, and
+   `useBrowserToolAutoOpen` surfaces it when an agent picks up the browser tool.
+   Nothing to build.
+2. **Activity already has a real feed.** `ActivityPanel` reads `useActivityFeed`
+   off the BFF's `/teams/activity`, with `action` / `actorType` / `entityType`
+   per event. The gap is display enrichment, not data: the panel's own header
+   records that upstream's `agentMap` / `userProfileMap` / `entityNameMap` were
+   never ported, so `ActivityRow` degrades to raw entity ids. That is a port,
+   not a schema change.
+
+`AgentInspectorPanel` also already carries five tabs including Channels.
+
+## Shipped
+
+- **#1979** Motion foundation, dock chrome, and a width floor for dock groups.
+  `groupConstraints` guarded height but not width, while `layoutStorage`
+  persists sash positions verbatim — one drag past the edge left a panel too
+  narrow to render and every reload restored it.
+- **#1980** Session disclosure and Connectors in the rail. Sessions could never
+  have animated: `AgentRoster` mounted the element and its content in the same
+  commit, so `grid-template-rows` had no start value.
+- **#1981** The completion layer, wired to a resolved approval.
+
+## Remaining — UI only
+
+Each row is one PR. Ordered by risk, lowest first.
+
+| # | Work | Notes |
+|---|---|---|
+| 1 | Agent page: add **Files** tab | `AgentInspectorPanel` already has the tab shell |
+| 2 | Routines → own rail destination | Panel exists; this is a nav move |
+| 3 | **Activity cleanup** | Port `agentMap` / `entityNameMap` so rows read as names, not ids. Reskin the row to the handoff shape from the preview. |
+| 4 | Work: scope switch (Goals / Projects / Tasks) | New chrome over three existing panels |
+| 5 | Work: group-by agent and project | Data-driven regroup |
+| 6 | Work: create flow | Scope declares the type, so no type picker. Status glyph plus inferred chips. |
+| 7 | Rail: one state glyph | Drops the status dot plus published dot |
+| 8 | Rail: four row actions → one overflow | **Highest risk.** `ChatLayout.css` is dual-owned with the mobile shell and 13 test files assert on `.agent-item`. Alone in its own PR, mobile explicitly regression-tested. |
+| 9 | Layout presets in the header | Needs dockview maximize/split API verified first |
+| 10 | Completion beats on the remaining moments | Task done, routine completes, connector reconnects, agent hired |
+
+## Remaining — backend first
+
+Down to two, after the Activity correction.
+
+| Item | What is missing |
+|---|---|
+| Dashboard → **Today** | A digest read model. "Needs you / working / finished" is not a rearrangement of `teams-dashboard`. |
+| **Company brain** | Folder creation and upload endpoints. The EFS file-viewer and `teams-artifacts` cover part of it. |
+
+**Dashboard → Ledger** is probably neither: `UsagePanel` already computes billed
+spend with a per-model split, so it may be a reskin. Confirm before scoping.
+
+## Not yet scoped
+
+- **Chat streaming.** The likeliest source of "what we have now is just slow" —
+  tokens snapping per chunk rather than settling per word, the thinking block
+  staying expanded once the answer starts, the composer jumping. Independent of
+  everything above and worth doing early.
+- **Empty states**, every screen. A workspace with no agents, no tasks and no
+  files is the first thing a new customer sees and none of that copy exists.
+- **Provisioning.** Bind to real phases rather than a timer, and survive a step
+  failing.
+- **Calendar.** Does not exist in any form. Needs a product call on what it is
+  for — scheduled routines and due dates, or real external sync — before it can
+  be scoped.
+- **Mobile** and the **Tauri shell.** Every decision so far is desktop-only.
+- **Marketplace** reskin.
 
 ## Constraints held throughout
 
-- URL grammar and panel keys are unchanged. No deep link breaks.
-- Palette, type and radii come from `globals.css`. This is a density and hierarchy
-  problem, not a brand problem.
-- Every interaction animates transform, opacity or colour only.
+- URL grammar and panel keys unchanged. No deep link breaks.
+- Palette, type and radii come from `globals.css`. Density and hierarchy problem,
+  not a brand problem.
+- Every interaction animates transform, opacity or colour only. Never a property
+  that forces layout.
 - Everything collapses under `prefers-reduced-motion`.
 - No text that does not tell the reader something.
 
 ## Done means
 
-- `turbo run test --filter=@isol8/frontend` green
-- `turbo run lint` green
-- `pnpm run build` green
-- Every control in `MAP.html`'s button inventory either present and wired, or
-  listed in the PR body as deliberately deferred.
+`vitest run` green, `eslint` clean on touched files, `tsc --noEmit` adding no new
+errors, and every control in `MAP.html`'s button inventory either wired or listed
+in the PR body as deliberately deferred.

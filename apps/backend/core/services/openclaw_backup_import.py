@@ -192,8 +192,6 @@ def _check_member(member: tarfile.TarInfo, dst_resolved: Path, dst: Path) -> Pat
     real-world backups outright. Absolute paths and traversal stay fatal —
     those only appear in crafted archives.
     """
-    if member.issym() or member.islnk():
-        return None
     if member.name.startswith("/"):
         raise BackupImportError(f"archive member has an absolute path: {member.name!r}")
     target = (dst / member.name).resolve()
@@ -201,6 +199,8 @@ def _check_member(member: tarfile.TarInfo, dst_resolved: Path, dst: Path) -> Pat
         target.relative_to(dst_resolved)
     except ValueError as exc:
         raise BackupImportError(f"archive member escapes the extraction directory: {member.name!r}") from exc
+    if member.issym() or member.islnk():
+        return None
     return target
 
 

@@ -243,10 +243,15 @@ def test_extract_skips_symlink_member(tmp_path: Path):
         link.type = tarfile.SYMTYPE
         link.linkname = "/etc/passwd"
         tf.addfile(link)
+        hard = tarfile.TarInfo(name="workspace/AGENTS-hardlink.md")
+        hard.type = tarfile.LNKTYPE
+        hard.linkname = "workspace/AGENTS.md"
+        tf.addfile(hard)
     report = bi.extract_archive(_stream(buf.getvalue()), tmp_path / "raw")
-    assert report.skipped_links == 1
+    assert report.skipped_links == 2
     assert (tmp_path / "raw" / "workspace" / "AGENTS.md").is_file()
     assert not (tmp_path / "raw" / "skills" / "linked-skill").exists()
+    assert not (tmp_path / "raw" / "workspace" / "AGENTS-hardlink.md").exists()
 
 
 def test_extract_rejects_traversal(tmp_path: Path):

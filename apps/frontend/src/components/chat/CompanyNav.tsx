@@ -11,6 +11,7 @@ import {
   History,
   Images,
   Search,
+  Plug,
 } from "lucide-react";
 import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
 
@@ -21,9 +22,17 @@ type Item = {
 };
 
 // Grouped to mirror upstream Paperclip's sidebar: an unlabeled top block, then
-// "Work", then "Company". Every panel renders inline via InlineTeamsPanel
+// "Work", then "Company". Most panels render inline via InlineTeamsPanel
 // (TeamsPanelRouter maps each key). `agents` and `settings` are intentionally
 // excluded — agents are the roster, settings is the Settings home.
+//
+// Connectors is the one entry whose key is NOT teams-prefixed: it is the
+// `integrations` control panel. It sits here rather than in Settings because
+// a connector is something the roster USES, not something the workspace is
+// configured with — a broken connector reads as a blocked agent, and burying
+// it two surfaces away from the agent it blocks is what made it invisible.
+// panelRegistry gives control keys the id `control:<key>`, so the active
+// comparison in WorkspaceSidebar has to strip that prefix.
 const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
   {
     label: null,
@@ -48,6 +57,7 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
       { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Artifacts", Icon: Images },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
+      { panel: "integrations", label: "Connectors", Icon: Plug },
     ],
   },
 ];

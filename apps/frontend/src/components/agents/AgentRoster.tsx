@@ -406,7 +406,17 @@ export function AgentRoster({
               )}
             </div>
 
-            {isActive && renderSessions?.(agent.id)}
+            {/* The wrapper is rendered for every row, always, even though its
+                content only exists for the active one. That is what makes the
+                open animate: `grid-template-rows` can only transition between
+                two computed values, so the element has to have been painted at
+                0fr before it is asked to go to 1fr. Mounting the wrapper at the
+                same moment as the content — the previous behaviour — gives the
+                browser no start value, and the list simply appears and shoves
+                the rows below it down. */}
+            <div className="ws-reveal agent-item__sessions" data-open={isActive || undefined}>
+              <div>{isActive && renderSessions?.(agent.id)}</div>
+            </div>
           </div>
         );
       })}

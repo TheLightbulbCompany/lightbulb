@@ -174,3 +174,41 @@
   transform: translate3d(-50%, 0, 0);
   transition-delay: 320ms;
 }
+
+/* ── Session disclosure ─────────────────────────────────────────────────
+ * `.agent-item` is a wrapping flex row and `.session-list` used its own
+ * `flex-basis: 100%` to drop onto its own line. The reveal wrapper now sits
+ * between them, so it inherits that job. */
+.agent-item__sessions {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+/* Children arrive in reading order rather than all at once, which reads as
+ * a list opening instead of a block appearing. Capped at four: past that the
+ * last row would land after the disclosure itself has finished. */
+.agent-item__sessions[data-open] .session-item,
+.agent-item__sessions[data-open] .session-new {
+  opacity: 0;
+  transform: translate3d(0, -3px, 0);
+  animation: ws-session-in var(--ws-med) var(--ws-ease) forwards;
+}
+.agent-item__sessions[data-open] .session-item:nth-child(1) { animation-delay: 20ms; }
+.agent-item__sessions[data-open] .session-item:nth-child(2) { animation-delay: 55ms; }
+.agent-item__sessions[data-open] .session-item:nth-child(3) { animation-delay: 90ms; }
+.agent-item__sessions[data-open] .session-item:nth-child(n + 4) { animation-delay: 120ms; }
+
+@keyframes ws-session-in {
+  to { opacity: 1; transform: none; }
+}
+
+/* Reduced motion: the list must still be readable, so only the travel goes.
+ * Without this the children would keep opacity 0 from the rule above. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-item__sessions[data-open] .session-item,
+  .agent-item__sessions[data-open] .session-new {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
+}

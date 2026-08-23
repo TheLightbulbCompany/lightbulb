@@ -128,8 +128,19 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
 
   // Delta 5: CompanyNav highlights only when a teams panel is the active dock
   // panel; any other active panel (chat, inspector, control) → no highlight.
-  const companyActivePanel =
-    activePanelId && activePanelId.startsWith(TEAMS_PANEL_PREFIX) ? activePanelId : undefined;
+  // CompanyNav highlights when a panel it owns is the active dock panel.
+  // Teams panels are compared by their full id; the one control-panel entry
+  // (Connectors) is compared by its bare key, because panelRegistry ids
+  // control panels as `control:<key>` while the nav item carries the key.
+  // Any other active panel — chat, inspector, file viewer — highlights nothing.
+  const CONTROL_PANEL_ID_PREFIX = "control:";
+  const companyActivePanel = !activePanelId
+    ? undefined
+    : activePanelId.startsWith(TEAMS_PANEL_PREFIX)
+      ? activePanelId
+      : activePanelId.startsWith(CONTROL_PANEL_ID_PREFIX)
+        ? activePanelId.slice(CONTROL_PANEL_ID_PREFIX.length)
+        : undefined;
 
   return (
     <div className="cream-sidebar">

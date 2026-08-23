@@ -52,4 +52,22 @@ describe("CompanyNav", () => {
     expect(nav.className).not.toMatch(/overflow-/);
     expect(nav.className).not.toMatch(/\boverscroll-/);
   });
+  it("carries Connectors, whose key is a control panel rather than a teams one", () => {
+    // The only non-teams entry in the nav. It lives here because a connector
+    // is something the roster USES: a broken one reads as a blocked agent, so
+    // burying it in Settings put it two surfaces away from what it breaks.
+    const onPanelChange = vi.fn();
+    render(<CompanyNav onPanelChange={onPanelChange} />);
+    fireEvent.click(screen.getByText("Connectors"));
+    expect(onPanelChange).toHaveBeenCalledWith("integrations");
+  });
+
+  it("highlights Connectors from the bare control key, not a prefixed panel id", () => {
+    // panelRegistry ids control panels `control:<key>`; the caller strips that
+    // prefix before handing it here. If the two ever disagree the item simply
+    // never lights up, which is silent — so pin the shape both sides agree on.
+    render(<CompanyNav activePanel="integrations" />);
+    const btn = screen.getByText("Connectors").closest("button");
+    expect(btn?.className).toMatch(/forest/);
+  });
 });

@@ -375,4 +375,26 @@ describe("WorkspaceSidebar", () => {
     expect(screen.getByText("Free tier ended")).toBeInTheDocument();
     expect(screen.queryByText("Free tier")).not.toBeInTheDocument();
   });
+
+  it("passes the bare control key to CompanyNav for an active control panel", () => {
+    // Connectors is the one CompanyNav entry that is not a teams panel.
+    // panelRegistry ids it `control:integrations` while the nav item carries
+    // `integrations`, and the sidebar owns that translation. Getting it wrong
+    // fails silently: the item simply never lights up.
+    snapshot = { activePanelId: "control:integrations", focusedChatAgentId: null };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.getByTestId("companynav").getAttribute("data-active-panel")).toBe(
+      "integrations",
+    );
+  });
+
+  it("still passes activePanel=undefined for a chat panel", () => {
+    // Guards the widened derivation: adding the control-panel branch must not
+    // start highlighting the nav for panels it does not own.
+    snapshot = { activePanelId: "chat:a2", focusedChatAgentId: "a2" };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.getByTestId("companynav").getAttribute("data-active-panel")).toBe("");
+  });
 });

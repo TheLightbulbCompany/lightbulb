@@ -153,13 +153,20 @@ async def presign_import(
     return {"upload_url": url, "key": key, "max_bytes": backup_import.MAX_UPLOAD_BYTES, "expires_in": PRESIGN_TTL_S}
 
 
-def _stage_from_s3(owner_id: str, import_id: str, key: str):
+def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
     s3 = _s3()
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     staging_dir = _staging_dir(owner_id, import_id)
-    normalized, report = backup_import.stage_upload(
-        lambda: s3.get_object(Bucket=bucket, Key=key)["Body"], staging_dir, fleet_version=deployed_upstream_version()
-    )
+
+    # extract_archive calls open_stream() TWICE (two independent GETs) — pin
+    # both to the object head_object saw so a re-upload landing between pass
+    # 1 and pass 2 fails loud (412) instead of silently splicing two
+    # different archives together.
+    def _get():
+        kwargs = {"IfMatch": etag} if etag else {}
+        return s3.get_object(Bucket=bucket, Key=key, **kwargs)["Body"]
+
+    normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
     package = _export(owner_id, import_id, normalized)
     try:
         s3.delete_object(Bucket=bucket, Key=key)
@@ -181,6 +188,7 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
         raise HTTPException(status_code=404, detail="upload not found — it may have expired; upload again")
     if int(head.get("ContentLength") or 0) > backup_import.MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="archive is over the upload limit")
+    etag = head.get("ETag")
 
     workspace = get_workspace()
     workspace.ensure_user_dir(owner_id)
@@ -188,13 +196,19 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     import_id = f"import-{uuid.uuid4().hex[:12]}"
     staging_dir = _staging_dir(owner_id, import_id)
     try:
-        normalized, report, package = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key)
+        normalized, report, package = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
     except agent_export.ExportTooLargeError as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except _USER_ERRORS as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClientError as exc:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("PreconditionFailed", "412"):
+            raise HTTPException(status_code=409, detail="upload changed while importing — upload it again") from exc
+        raise
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
@@ -369,7 +383,18 @@ async def confirm_import(
             restarting = True
 
     if restarting:
-        await get_ecs_manager().force_redeploy_user_service(owner_id)
+        try:
+            await get_ecs_manager().force_redeploy_user_service(owner_id)
+        except Exception:
+            # The bounce is a convenience, not a correctness requirement —
+            # plugins/history are already staged on EFS and the container
+            # picks them up on its NEXT restart regardless. Failing the whole
+            # confirm here would make the caller think nothing landed.
+            logger.exception("import %s: could not start a workspace restart", import_id)
+            restarting = False
+            warnings.append(
+                "workspace restart could not be started — imported plugins/history will apply on its next restart"
+            )
     if all(r["ok"] for r in results):
         shutil.rmtree(staging_dir, ignore_errors=True)
     return {

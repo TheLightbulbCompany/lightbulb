@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import pytest  # noqa: E402
+
 from core.containers import workspace as workspace_module  # noqa: E402
 from core.services import openclaw_backup_history as bh  # noqa: E402
 from core.services.openclaw_backup_import import HistoryInfo  # noqa: E402
@@ -71,6 +73,16 @@ def test_sanitize_tolerates_missing_tables(tmp_path: Path):
     assert sqlite3.connect(tmp_path / "out.sqlite").execute("SELECT agent_id FROM schema_meta").fetchone()[0] == "n"
 
 
+def test_sanitize_agent_db_raises_on_non_database_source(tmp_path: Path):
+    """_exec now only swallows OperationalError for "no such table/column" —
+    a genuinely corrupt/non-database source must raise, not silently produce
+    an empty output db."""
+    src = tmp_path / "in.sqlite"
+    src.write_bytes(b"not a database, just garbage bytes padded to look plausible")
+    with pytest.raises(sqlite3.DatabaseError):
+        bh.sanitize_agent_db(src, tmp_path / "out.sqlite", old_id="main", new_id="n")
+
+
 def test_rewrite_legacy_sessions(tmp_path: Path):
     src = tmp_path / "sessions"
     src.mkdir()
@@ -96,7 +108,9 @@ def test_stage_history_writes_handoff_under_efs_root(tmp_path: Path):
             new_agent_id="new-uuid",
             history=HistoryInfo(sqlite=src_db, sessions_dir=sessions, bytes=1),
         )
-    handoff = tmp_path / "users" / "owner_1" / "import-state" / "agents" / "new-uuid"
+    import_state = tmp_path / "users" / "owner_1" / "import-state"
+    handoff = import_state / "agents" / "new-uuid"
     assert (handoff / "agent" / "openclaw-agent.sqlite").is_file()
     assert (handoff / "sessions" / "sessions.json").is_file()
     assert any("updated platform image" in w for w in warnings)
+    assert not list(import_state.glob(".tmp-*"))  # atomic hand-off leaves no tmp dir behind

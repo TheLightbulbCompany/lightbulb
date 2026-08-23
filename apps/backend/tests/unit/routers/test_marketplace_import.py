@@ -61,6 +61,7 @@ class FakeS3:
         self.objects = objects
         self.deleted: list[str] = []
         self.presigned: list[dict] = []
+        self.etag = '"etag-1"'  # bump/override in a test to simulate the object changing mid-import
 
     def generate_presigned_url(self, op, Params, ExpiresIn):
         self.presigned.append({"op": op, **Params, "ExpiresIn": ExpiresIn})
@@ -69,9 +70,11 @@ class FakeS3:
     def head_object(self, Bucket, Key):
         if Key not in self.objects:
             raise marketplace_import.ClientError({"Error": {"Code": "404"}}, "HeadObject")
-        return {"ContentLength": len(self.objects[Key])}
+        return {"ContentLength": len(self.objects[Key]), "ETag": self.etag}
 
-    def get_object(self, Bucket, Key):
+    def get_object(self, Bucket, Key, IfMatch=None):
+        if IfMatch is not None and IfMatch != self.etag:
+            raise marketplace_import.ClientError({"Error": {"Code": "PreconditionFailed"}}, "GetObject")
         return {"Body": io.BytesIO(self.objects[Key])}
 
     def delete_object(self, Bucket, Key):
@@ -134,6 +137,30 @@ def test_import_streams_from_s3_and_returns_preview(client):
     staging = user_root / f"workspace-{body['import_id']}"
     assert (staging / "raw").is_dir() and (staging / "workspace" / "openclaw.json").is_file()
     assert s3.deleted == [KEY]  # raw upload consumed
+
+
+def test_import_412_etag_mismatch_returns_409(client):
+    """extract_archive calls open_stream() twice (pass 1, pass 2). If the
+    object changes between those two GETs, the second must fail on the
+    IfMatch precondition rather than silently splicing two different
+    archives together — the router maps that 412 to a 409 telling the user
+    to re-upload."""
+    c, user_root, s3, _ = client
+    real_get = s3.get_object
+    calls = {"n": 0}
+
+    def flaky_get(Bucket, Key, IfMatch=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise marketplace_import.ClientError({"Error": {"Code": "PreconditionFailed"}}, "GetObject")
+        return real_get(Bucket, Key, IfMatch=IfMatch)
+
+    s3.get_object = flaky_get
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 409, r.text
+    assert "upload it again" in r.json()["detail"]
+    assert calls["n"] == 2
+    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 
 def test_import_surfaces_safety_flags_without_required_snippet(client):
@@ -329,6 +356,34 @@ def test_confirm_with_plugins_installs_and_bounces_container(client):
     assert apply.await_args.kwargs["chosen"] == {"weather"}
     assert [p.id for p in apply.await_args.kwargs["plugins"]] == ["weather"]
     mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+
+def test_confirm_bounce_failure_is_best_effort(client):
+    c, user_root, s3, _ = client
+    s3.objects[KEY] = _plugin_archive()
+    import_id = _start(c)
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock(side_effect=RuntimeError("ecs unreachable"))
+    with (
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        apply.return_value = PluginApplyResult(installed=["weather"])
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"plugins": ["weather"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["restarting"] is False
+    assert any("workspace restart could not be started" in w for w in body["warnings"])
+    # all agents succeeded, so staging is still removed despite the bounce failure
+    assert not (user_root / f"workspace-{import_id}").exists()
 
 
 def test_confirm_no_plugins_field_selects_all(client):

@@ -70,3 +70,31 @@ async def test_apply_skips_plugin_without_source(efs, tmp_path):
     res = await bp.apply_plugins(owner_id="owner_1", plugins=[p], chosen=None)
     assert res.installed == [] and any("no source" in w for w in res.warnings)
     patch_cfg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_rolls_back_on_patch_failure(efs, tmp_path):
+    user_root, patch_cfg = efs
+    patch_cfg.side_effect = RuntimeError("boom")
+    dest = user_root / "extensions" / "weather"
+    dest.mkdir(parents=True)
+    (dest / "old.js").write_text("old content")
+    with pytest.raises(RuntimeError, match="boom"):
+        await bp.apply_plugins(owner_id="owner_1", plugins=[_plugin(tmp_path)], chosen=None)
+    # the replace was rolled back: original content restored, new content gone
+    assert (dest / "old.js").read_text() == "old content"
+    assert not (dest / "index.js").exists()
+    assert not (user_root / "extensions" / ".bak-weather").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_rolls_back_fresh_install_on_patch_failure(efs, tmp_path):
+    """A plugin with no prior extensions/<id> content (a fresh install, not a
+    replace) must be removed entirely on rollback — there is nothing to
+    restore it to."""
+    user_root, patch_cfg = efs
+    patch_cfg.side_effect = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        await bp.apply_plugins(owner_id="owner_1", plugins=[_plugin(tmp_path)], chosen=None)
+    assert not (user_root / "extensions" / "weather").exists()
+    assert not (user_root / "extensions" / ".bak-weather").exists()

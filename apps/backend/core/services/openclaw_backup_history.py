@@ -62,8 +62,16 @@ def _chown_tree(path: Path) -> None:
 def _exec(db: sqlite3.Connection, sql: str, params: tuple = ()) -> None:
     try:
         db.execute(sql, params)
-    except sqlite3.OperationalError:
-        pass  # table/column absent in this schema version
+    except sqlite3.OperationalError as exc:
+        # Tolerate ONLY "this schema doesn't have that table/column" — the
+        # documented reason every statement here is wrapped. Anything else
+        # (a locked db, a genuinely malformed statement) must not be
+        # silently swallowed; it means something is wrong with the source
+        # file, not just a schema-version mismatch.
+        msg = str(exc)
+        if "no such table" in msg or "no such column" in msg:
+            return
+        raise
 
 
 def sanitize_agent_db(src: Path, dst: Path, *, old_id: str, new_id: str) -> None:
@@ -116,16 +124,29 @@ def rewrite_legacy_sessions(src_dir: Path, dst_dir: Path, *, old_id: str, new_id
 
 
 def stage_history(*, owner_id: str, source_agent_id: str, new_agent_id: str, history: HistoryInfo) -> list[str]:
-    handoff = get_workspace().user_path(owner_id) / "import-state" / "agents" / new_agent_id
-    if handoff.exists():
-        shutil.rmtree(handoff)
+    import_state = get_workspace().user_path(owner_id) / "import-state"
+    # Build under a hidden `.tmp-<id>` sibling of agents/, then atomically
+    # rename into place. The boot script's hand-off (isol8-local-sqlite-boot.sh
+    # step 4b) only globs import-state/agents/*, so a `.tmp-*` dir left behind
+    # by a crash mid-build is never partially consumed — os.replace is what
+    # makes the final agents/<id> either fully old or fully new, never a
+    # half-written directory the boot script could pick up.
+    tmp = import_state / f".tmp-{new_agent_id}"
+    final = import_state / "agents" / new_agent_id
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
     if history.sqlite is not None:
         sanitize_agent_db(
-            history.sqlite, handoff / "agent" / "openclaw-agent.sqlite", old_id=source_agent_id, new_id=new_agent_id
+            history.sqlite, tmp / "agent" / "openclaw-agent.sqlite", old_id=source_agent_id, new_id=new_agent_id
         )
     if history.sessions_dir is not None:
-        rewrite_legacy_sessions(history.sessions_dir, handoff / "sessions", old_id=source_agent_id, new_id=new_agent_id)
-    _chown_tree(handoff)
+        rewrite_legacy_sessions(history.sessions_dir, tmp / "sessions", old_id=source_agent_id, new_id=new_agent_id)
+    _chown_tree(tmp)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    if final.exists():
+        shutil.rmtree(final)
+    os.replace(tmp, final)
     return [
         f"conversation history for {source_agent_id!r} is staged; it is applied the next time your "
         "workspace starts on an updated platform image"

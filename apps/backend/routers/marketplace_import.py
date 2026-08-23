@@ -212,6 +212,11 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
+    if report.skipped_links:
+        normalized.warnings.append(
+            f"{report.skipped_links} symlinked file(s) in the archive were skipped — symlinks cannot be "
+            "imported; copy the real files into the workspace and re-export if you need them"
+        )
     existing, plan = await _ultra_facts(owner_id)
     return {
         "import_id": import_id,

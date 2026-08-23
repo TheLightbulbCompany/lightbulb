@@ -229,15 +229,24 @@ def test_extract_rejects_not_a_tarball(tmp_path: Path):
         bi.extract_archive(_stream(b"this is not gzip"), tmp_path / "raw")
 
 
-def test_extract_rejects_symlink_member(tmp_path: Path):
+def test_extract_skips_symlink_member(tmp_path: Path):
+    """Real ``openclaw backup create`` archives carry symlinks (e.g. a skill
+    dir linked from another harness); they are skipped, never fatal — found
+    live on dev with a genuine backup of ~/.openclaw."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name="evil")
-        info.type = tarfile.SYMTYPE
-        info.linkname = "/etc/passwd"
-        tf.addfile(info)
-    with pytest.raises(bi.BackupImportError, match="symlink"):
-        bi.extract_archive(_stream(buf.getvalue()), tmp_path / "raw")
+        data = b"# real\n"
+        info = tarfile.TarInfo(name="workspace/AGENTS.md")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo(name="skills/linked-skill")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/passwd"
+        tf.addfile(link)
+    report = bi.extract_archive(_stream(buf.getvalue()), tmp_path / "raw")
+    assert report.skipped_links == 1
+    assert (tmp_path / "raw" / "workspace" / "AGENTS.md").is_file()
+    assert not (tmp_path / "raw" / "skills" / "linked-skill").exists()
 
 
 def test_extract_rejects_traversal(tmp_path: Path):

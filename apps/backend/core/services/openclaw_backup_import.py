@@ -138,6 +138,7 @@ class ExtractReport:
     files: int = 0
     bytes: int = 0
     skipped_big: list[str] = field(default_factory=list)
+    skipped_links: int = 0
 
 
 @dataclass
@@ -181,9 +182,18 @@ class PluginCandidate:
 # ---------------------------------------------------------------------------
 
 
-def _check_member(member: tarfile.TarInfo, dst_resolved: Path, dst: Path) -> Path:
+def _check_member(member: tarfile.TarInfo, dst_resolved: Path, dst: Path) -> Path | None:
+    """Validate one member; None means SKIP it (never extract).
+
+    Link members are skipped, not fatal: real ``openclaw backup create``
+    archives legitimately carry symlinks (e.g. a skill dir linked from
+    another harness's skills folder), and a skipped link is never followed
+    or extracted, so skipping is strictly safe while hard-failing rejects
+    real-world backups outright. Absolute paths and traversal stay fatal —
+    those only appear in crafted archives.
+    """
     if member.issym() or member.islnk():
-        raise BackupImportError(f"archive contains a symlink or hardlink: {member.name!r}")
+        return None
     if member.name.startswith("/"):
         raise BackupImportError(f"archive member has an absolute path: {member.name!r}")
     target = (dst / member.name).resolve()
@@ -261,6 +271,8 @@ def extract_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> ExtractRe
                 if count > MAX_MEMBERS:
                     raise BackupImportError(f"archive has more than {MAX_MEMBERS} entries")
                 target = _check_member(member, dst_resolved, dst)
+                if target is None:
+                    continue
                 parts = [p for p in member.name.split("/") if p not in ("", ".")]
                 if len(parts) == 2 and parts[1] == "manifest.json" and member.isfile():
                     if member.size > MAX_METADATA_BYTES:
@@ -287,6 +299,9 @@ def extract_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> ExtractRe
                 if count > MAX_MEMBERS:
                     raise BackupImportError(f"archive has more than {MAX_MEMBERS} entries")
                 target = _check_member(member, dst_resolved, dst)
+                if target is None:
+                    report.skipped_links += 1
+                    continue
                 if _skip_reason(member.name, state_prefixes) is not None:
                     continue
                 if member.isdir():

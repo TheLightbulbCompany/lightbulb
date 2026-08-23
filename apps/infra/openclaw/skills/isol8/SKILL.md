@@ -488,7 +488,8 @@ change them.
 - **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
   `openclaw backup create` there, then on isol8.co open the marketplace publish
   wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (up to 2 GB).
-  A plain tarball of the state dir (`tar -czf setup.tgz -C ~/.openclaw openclaw.json workspace skills cron`)
+  A plain tarball of the state dir (`cd ~/.openclaw && tar -czf ~/setup.tgz openclaw.json workspace* skills cron` —
+  the glob picks up per-agent `workspace-<id>` dirs too)
   or of a single agent workspace is accepted too — the importer detects all three shapes.
   The owner picks which agents, skills, MCP servers (secrets stripped — they
   re-enter them), memory logs, cron jobs and plugins come along, and can opt in

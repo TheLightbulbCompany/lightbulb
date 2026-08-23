@@ -164,6 +164,16 @@ REDACT_PATTERNS: tuple[str, ...] = (
     # how a live key reached an owner's transcript on 2026-08-14 — it arrived
     # as prose ("token: pcp_…"), so the KEY=value pattern missed it too.
     r"(pcp_[A-Za-z0-9]{16,})",
+    # Stripe shapes upstream misses: rk_test_ sits in upstream's prefilter
+    # with no pattern behind it (rk_live_/sk_live_/sk_test_ are covered);
+    # whsec_ is a webhook signing secret our own connect flow tells owners to
+    # paste; ac_ is a Stripe OAuth authorization code. Prefix patterns cannot
+    # catch a bare opaque OAuth token — that needs redaction at the sinks —
+    # but they stop every prefixed Stripe credential from reaching a
+    # transcript as prose.
+    r"(rk_test_[A-Za-z0-9]{8,})",
+    r"(whsec_[A-Za-z0-9]{16,})",
+    r"(ac_[A-Za-z0-9]{16,})",
 )
 
 # tools.toolSearch.mode. THE single source — provision-time (below) and the
@@ -939,19 +949,13 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       it used to, and the model printed the token into its visible reasoning,
       which persists to the transcript DB and replicates to S3.
 
-      FORWARD-ONLY, deliberately. This entry lands in NEWLY generated configs;
-      the fleet image rollout reuses the existing on-disk ``openclaw.json`` and
-      does not regenerate ``plugins.entries`` (``update_service``), so owners
-      provisioned before this keep running without the plugin — and keep their
-      old playbook, which still reads the key file, so they keep working. The
-      two must move together: enabling the plugin without the new playbook is
-      harmless, but the new playbook WITHOUT the plugin tells an agent its
-      credentials are in the environment when they are not, and every Paperclip
-      call fails. Do not "helpfully" patch this key onto existing owners in
-      isolation, and do not rewrite their AGENTS.md in isolation either.
-      Existing owners converge on reprovision, when both are regenerated
-      together. The ``pcp_`` redaction pattern below is what limits their
-      exposure meanwhile.
+      No longer forward-only: ``update_service`` now carries this entry onto
+      already-provisioned owners during an image roll (``ensure_plugin_entries``,
+      additive-only) alongside ``ensure_redact_patterns``, so the fleet
+      converges without reprovision. The original constraint still holds in
+      one direction — a playbook that says credentials are in the environment
+      requires the plugin to actually be enabled — which is why the roll path
+      applies the plugin entry and never rewrites AGENTS.md in isolation.
     - ``tokenjuice`` — deterministic exec/bash tool-result compaction
       (baked, Dockerfile Layer 13b). Strict-empty configSchema: enable-only,
       never add a ``config`` key or the container crash-loops at boot.

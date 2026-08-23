@@ -152,6 +152,8 @@ def test_direct_oauth_requires_oauth_block():
         ("sentry", "https://mcp.sentry.dev/mcp"),
         ("intercom", "https://mcp.intercom.com/mcp"),
         ("stripe", "https://mcp.stripe.com"),
+        ("apollo", "https://mcp.apollo.io/mcp"),
+        ("cloudflare", "https://mcp.cloudflare.com/mcp"),
     ],
 )
 def test_hosted_oauth_mcp_provider_shape(key, url):
@@ -172,9 +174,31 @@ def test_hosted_oauth_mcp_provider_shape(key, url):
     # DCR mints a public PKCE client; not BYO, no local validate spec.
     assert p.oauth.registration_url is not None
     assert p.oauth.pkce is True
-    assert p.oauth.scopes  # non-empty
+    if key == "cloudflare":
+        # Cloudflare's 2026-08-23 OAuth metadata advertises no scope strings;
+        # permissions are selected in Cloudflare during OAuth/account consent.
+        assert p.oauth.scopes == []
+    else:
+        assert p.oauth.scopes  # non-empty
     assert p.byo_required is False
     assert p.validation is None
+
+
+def test_apollo_mcp_requests_read_oriented_scopes_only():
+    p = registry.get_provider("apollo")
+    scopes = set(p.oauth.scopes)
+    assert {"read_user_profile", "mixed_people_api_search", "organizations_search", "contacts_search", "contact_read"}.issubset(scopes)
+    assert not any(s.endswith("_write") or s.endswith("_create") or s.endswith("_approve") for s in scopes)
+    assert "emailer_messages_send_now" not in scopes
+    assert "emailer_campaigns_add_contact_ids" not in scopes
+
+
+def test_cloudflare_mcp_uses_hosted_oauth_metadata_without_declared_scopes():
+    p = registry.get_provider("cloudflare")
+    assert p.oauth.authorization_url == "https://mcp.cloudflare.com/authorize"
+    assert p.oauth.token_url == "https://mcp.cloudflare.com/token"
+    assert p.oauth.registration_url == "https://mcp.cloudflare.com/register"
+    assert p.oauth.scopes == []
 
 
 def test_mcp_server_wiring_parses():
@@ -429,7 +453,13 @@ def test_registry_materializers_and_oauth_are_self_consistent():
 
     for key, p in registry.all_providers().items():
         if p.acquisition == "direct_oauth":
-            assert p.oauth and p.oauth.scopes, f"{key}: direct_oauth missing oauth scopes"
+            assert p.oauth, f"{key}: direct_oauth missing oauth spec"
+            if key == "cloudflare":
+                # Cloudflare hosted MCP metadata advertises no scope strings;
+                # permissions are chosen during Cloudflare OAuth/account consent.
+                assert p.oauth.scopes == []
+            else:
+                assert p.oauth.scopes, f"{key}: direct_oauth missing oauth scopes"
         mat = p.wiring.materializer
         if mat and mat not in _PENDING_MATERIALIZERS:
             assert mat in MATERIALIZERS, f"{key}: unknown materializer {mat!r}"

@@ -114,6 +114,8 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
             return_value=[
                 {"provider": "attio", "status": "connected"},
                 {"provider": "stripe", "status": "connected"},
+                {"provider": "apollo", "status": "connected"},
+                {"provider": "cloudflare", "status": "connected"},
                 {"provider": "google", "status": "connected"},
             ]
         ),
@@ -136,6 +138,18 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
         "stripe": {
             "transport": "streamable-http",
             "url": "https://mcp.stripe.com",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
+        },
+        "apollo": {
+            "transport": "streamable-http",
+            "url": "https://mcp.apollo.io/mcp",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
+        },
+        "cloudflare": {
+            "transport": "streamable-http",
+            "url": "https://mcp.cloudflare.com/mcp",
             "auth": "oauth",
             "requestTimeoutMs": 60000,
         },

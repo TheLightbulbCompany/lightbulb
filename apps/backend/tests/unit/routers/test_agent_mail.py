@@ -69,7 +69,7 @@ def test_send_delegates(client):
 
 # ---- ported from the deleted routers/agent_mail_send.py test suite --------
 # (same auth boundary, now on POST /u/{owner_id}/send instead of
-# /send-to-owner/u/{owner_id} — see git show 28e83f275:apps/backend/tests/unit/routers/test_agent_mail_send.py)
+# the deleted owner-send router — see git show 28e83f275:apps/backend/tests/unit/routers/test_agent_mail_send.py)
 
 
 def _send_body(agent_id=AGENT):
@@ -289,39 +289,3 @@ def test_patch_address_mint_failure_409(client):
     ):
         r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"send_to_anyone": True})
     assert r.status_code == 409 and r.json()["detail"]["status"] == "company_name_unavailable"
-
-
-# ---- legacy compat door (containers on the pre-isol8-mail.sh image) --------
-# TEMPORARY, deleted with the route once the fleet is rolled. Old containers
-# still POST /send-to-owner/u/{owner_id}; the backend auto-deploys on merge
-# while the image ships later, so the door has to outlive the CLI rename.
-
-
-def test_legacy_owner_send_missing_bearer_401(client):
-    assert (
-        client.post(
-            f"/api/v1/agent-mail/send-to-owner/u/{OWNER}",
-            json={"purpose": "routine", "subject": "s", "body_text": "b"},
-        ).status_code
-        == 401
-    )
-
-
-def test_legacy_owner_send_forwards_to_the_owner_path(client):
-    with (
-        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "send", AsyncMock(return_value="sent")) as send,
-    ):
-        r = client.post(
-            f"/api/v1/agent-mail/send-to-owner/u/{OWNER}",
-            json={"purpose": "first_contact", "subject": "s", "body_text": "b"},
-            headers=H,
-        )
-    assert r.status_code == 200 and r.json() == {"status": "sent"}
-    kwargs = send.call_args.kwargs
-    # No recipient of any kind => send() takes the OWNER path, which defaults
-    # the empty agent_id to Friday.
-    assert kwargs.get("to") is None and kwargs.get("reply_key") is None
-    assert kwargs["owner_id"] == OWNER and kwargs["agent_id"] == ""
-    assert kwargs["subject"] == "s" and kwargs["body_text"] == "b"
-    assert kwargs["purpose"] == "first_contact"

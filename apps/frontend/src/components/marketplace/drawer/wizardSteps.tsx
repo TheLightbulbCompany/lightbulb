@@ -12,6 +12,7 @@ import {
   type SafetyFlag,
 } from "@/lib/marketplace/api";
 import type { PublishForm } from "./PublishWizard";
+import { ImportBackupDialog } from "./ImportBackupDialog";
 
 /**
  * Whether the seller has a Stripe Connect payout account on file.
@@ -101,10 +102,12 @@ export function PickAgentStep({
   selected?: string;
   onSelect: (id: string) => void;
 }) {
-  const { agents, defaultId } = useAgents() as unknown as {
+  const { agents, defaultId, refresh } = useAgents() as unknown as {
     agents: Agent[];
     defaultId?: string;
+    refresh: () => void;
   };
+  const [importOpen, setImportOpen] = useState(false);
 
   return (
     <div>
@@ -112,6 +115,13 @@ export function PickAgentStep({
         Pick which agent in your workspace you&apos;d like to publish. The next
         step lets you choose which integrations ride along.
       </p>
+      <div className="mb-4 flex items-center justify-between rounded-2xl border border-[var(--edge)] bg-white px-3 py-2 text-[13px]">
+        <span className="text-[#5b5b5b]">Already running OpenClaw somewhere else?</span>
+        <button type="button" onClick={() => setImportOpen(true)} className="rounded-full border border-[var(--edge)] px-3 py-1 font-medium text-[var(--ink)] hover:bg-black/5">
+          Import from an OpenClaw backup
+        </button>
+      </div>
+      <ImportBackupDialog open={importOpen} onOpenChange={setImportOpen} onImported={(id) => { setImportOpen(false); refresh(); onSelect(id); }} />
       {agents.length === 0 && (
         <div className="rounded-2xl border border-dashed border-[var(--edge)] bg-white p-6 text-center">
           <p className="text-[14px] font-medium text-[var(--ink)]">No agents to publish yet.</p>

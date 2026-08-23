@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-import { BundleStep, PricingStep, ReviewStep } from "../wizardSteps";
+import { BundleStep, PickAgentStep, PricingStep, ReviewStep } from "../wizardSteps";
 import type { PublishForm } from "../PublishWizard";
 import type { ArtifactPreview } from "@/lib/marketplace/api";
 
@@ -10,6 +10,23 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
+}));
+
+// PickAgentStep's roster comes from @/hooks/useAgents; stub it out so the
+// test controls `refresh` directly instead of standing up the real gateway.
+const mockRefresh = vi.fn();
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ agents: [], defaultId: undefined, refresh: mockRefresh }),
+  agentDisplayName: (a: { identity?: { name?: string }; name?: string }) => a.identity?.name ?? a.name ?? "",
+}));
+
+// Stand in for the real dialog so the test can fire onImported directly
+// without driving the upload/preview/confirm flow (that's ImportBackupDialog's
+// own test file's job).
+vi.mock("../ImportBackupDialog", () => ({
+  ImportBackupDialog: ({ onImported }: { onImported: (id: string) => void }) => (
+    <button type="button" onClick={() => onImported("uuid-ok")}>fake-import</button>
+  ),
 }));
 
 // PricingStep calls useApi().get("/marketplace/payouts/dashboard") to gate
@@ -69,6 +86,20 @@ function basePreview(overrides: Partial<ArtifactPreview> = {}): ArtifactPreview 
     ...overrides,
   };
 }
+
+describe("PickAgentStep", () => {
+  beforeEach(() => {
+    mockRefresh.mockReset();
+  });
+
+  it("refreshes the agent roster after an import lands, before selecting it", () => {
+    const onSelect = vi.fn();
+    render(<PickAgentStep onSelect={onSelect} />);
+    fireEvent.click(screen.getByText("fake-import"));
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("uuid-ok");
+  });
+});
 
 describe("BundleStep", () => {
   beforeEach(() => {

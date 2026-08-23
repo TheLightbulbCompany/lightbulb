@@ -258,7 +258,12 @@ class SafetyFlag(BaseModel):
     severity: Literal["high", "medium", "low"]
     file: str
     line: int | None = None
-    snippet: str  # ~80 char excerpt for the admin UI
+    # ~80 char excerpt for the admin UI. Optional: manifests served by
+    # unauthenticated routes (listing-detail, search, and this import
+    # preview) carry snippet-stripped flag dicts (see
+    # marketplace_safety.flags_without_snippets) — only the authenticated
+    # seller-preview path opts back in with the real excerpt.
+    snippet: str = ""
 
 
 class OpenclawSummary(BaseModel):
@@ -386,3 +391,87 @@ class ArtifactPreviewResponse(BaseModel):
     requirements: list[RequirementRow] = Field(default_factory=list)
     scan_incomplete: bool = False
     needs_config_patch: bool = False
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw backup import (routers/marketplace_import.py)
+# ---------------------------------------------------------------------------
+
+
+class ImportPresignRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    size_bytes: int = Field(..., ge=1)
+
+
+class ImportPresignResponse(BaseModel):
+    upload_url: str
+    key: str
+    max_bytes: int
+    expires_in: int
+
+
+class ImportStartRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=512)
+
+
+class ImportAgentCandidate(BaseModel):
+    id: str
+    name: str
+    has_history: bool = False
+    history_bytes: int = 0
+
+
+class ImportPluginCandidate(BaseModel):
+    id: str
+    spec: str
+    has_dependencies: bool = False
+
+
+class ImportPreviewResponse(BaseModel):
+    import_id: str
+    kind: Literal["backup", "state-dir", "workspace"]
+    agent_id: str
+    name: str
+    description: str = ""
+    agents: list[ImportAgentCandidate] = Field(default_factory=list)
+    plugins: list[ImportPluginCandidate] = Field(default_factory=list)
+    file_count: int = 0
+    files: list[str] = Field(default_factory=list)
+    mcp_servers: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    cron_jobs: int = 0
+    safety_flags: list[SafetyFlag] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    skipped_big_files: list[str] = Field(default_factory=list)
+    # Ultra gate facts so the dialog can say "8 + 4 > 10" before confirm.
+    existing_agents: int = 0
+    standard_max_agents: int = 10
+    plan: str | None = None
+
+
+class ImportConfirmRequest(BaseModel):
+    agent_ids: list[str] | None = None  # None = all
+    skills: list[str] | None = None  # None = all
+    mcp_servers: list[str] | None = None  # None = all
+    include_memory: bool = True
+    include_cron: bool = True
+    plugins: list[str] | None = None  # plugin ids to install; None = all non-bundled
+    include_history: bool = False
+    reports_to: str | None = None
+
+
+class ImportAgentResult(BaseModel):
+    source_agent_id: str
+    agent_id: str | None = None
+    name: str
+    ok: bool
+    error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ImportConfirmResponse(BaseModel):
+    agents: list[ImportAgentResult] = Field(default_factory=list)
+    plugins_installed: list[str] = Field(default_factory=list)
+    history_staged: list[str] = Field(default_factory=list)
+    restarting: bool = False
+    warnings: list[str] = Field(default_factory=list)

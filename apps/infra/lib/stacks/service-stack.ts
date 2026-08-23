@@ -1081,6 +1081,30 @@ export class ServiceStack extends cdk.Stack {
       removalPolicy:
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: env !== "prod",
+      // Backup-import uploads go browser → S3 directly via a presigned PUT
+      // (API Gateway caps bodies at 10 MB; real OpenClaw backups are 10×–100×
+      // that, dominated by a Chrome profile the importer discards anyway).
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins:
+            env === "prod"
+              ? ["https://isol8.co"]
+              : ["https://dev.isol8.co", "http://localhost:3000", "https://*.vercel.app"],
+          allowedHeaders: ["content-type"],
+          maxAge: 3600,
+        },
+      ],
+      lifecycleRules: [
+        {
+          // Raw uploads are consumed within minutes; nothing under imports/
+          // is ever read twice. Versioned bucket → expire noncurrent too.
+          prefix: "imports/",
+          expiration: cdk.Duration.days(1),
+          noncurrentVersionExpiration: cdk.Duration.days(1),
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        },
+      ],
     });
 
     marketplaceArtifactsBucket.grantReadWrite(this.taskRole);

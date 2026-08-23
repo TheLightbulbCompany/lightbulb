@@ -13,7 +13,11 @@
  * Transform, opacity and colour only.
  */
 
-.workspace-shell {
+/* Tokens live at :root, not on .workspace-shell. Several surfaces that need
+ * them — the Teams rows especially — render in BOTH the dock and the mobile
+ * shell, and a token scoped to the dock would leave mobile animating against
+ * undefined values (which computes to no transition at all, silently). */
+:root {
   --ws-ease: cubic-bezier(0.16, 1, 0.3, 1);
   --ws-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   /* Press feedback has to land before the next paint at 60fps (16.7ms/frame),
@@ -211,4 +215,62 @@
     transform: none;
     animation: none;
   }
+}
+
+
+/* ── Completion ─────────────────────────────────────────────────────────
+ * A resolved action gets an acknowledgement, because the alternative is a
+ * row that mutates under the cursor with nothing marking that YOU caused it.
+ * Deliberately two beats and no more: a mark that draws itself, and one
+ * sweep of forest tint across the row. Both are decoration over a state
+ * change that already happened, so neither gates the result.
+ *
+ * Unscoped on purpose — these ride Teams rows, which render in the dock and
+ * in the mobile shell.
+ */
+
+/* The mark. Drawn rather than popped: a checkmark that traces itself reads
+ * as "this completed", where one that fades in reads as "this was always
+ * true". Targets the path inside a lucide <Check>, so no icon is hand-rolled.
+ * 24 is the path length of lucide's check at its default 24-unit box. */
+.ws-tick path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: ws-tick-draw 340ms var(--ws-ease) forwards;
+}
+@keyframes ws-tick-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+/* The wash. One pass, left to right, then gone. The row needs a stacking
+ * context for the overlay, and pointer-events are off so it can never
+ * intercept the click that follows. */
+.ws-settling {
+  position: relative;
+}
+.ws-settling::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--forest-tint) 45%,
+    transparent
+  );
+  animation: ws-wash 620ms var(--ws-ease) forwards;
+}
+@keyframes ws-wash {
+  0% { opacity: 0; }
+  22% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The mark must still READ as a mark, so it keeps its end state and only
+   * loses the draw. The wash is pure decoration and is dropped entirely. */
+  .ws-tick path { stroke-dashoffset: 0; animation: none; }
+  .ws-settling::after { display: none; }
 }

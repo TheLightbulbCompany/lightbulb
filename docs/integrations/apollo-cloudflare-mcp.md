@@ -27,6 +27,31 @@ published under `mcp.servers.apollo`, and perform only tool discovery or safe
 read/list/search probes. Never send outreach, enroll contacts in sequences, or
 mutate real leads during verification.
 
+## Apollo prospect-source contract for ISOA-188
+
+The cold-outreach routine consumes Apollo as a read-only prospect source, not as
+an outbound sequencer. A pilot source run should return at most 10 prospects in
+the companion JSON contract at `docs/integrations/apollo-prospect-source.schema.json`:
+
+- batch-level `campaign_id` and `source_run_id` for attribution;
+- stable `apollo_person_id`, optional `apollo_organization_id`, and normalized
+  `company_domain` for dedupe;
+- contact name, role/title, business email, LinkedIn/profile URL when Apollo has
+  them;
+- company name, website, description/category, and headcount/stage signals when
+  available;
+- source URLs/evidence snippets used for personalization so ISOA-188 can pass or
+  reject drafts deterministically;
+- suppression hints from Apollo contact/sequence state when available;
+- `enriched_at`, confidence, flags, and optional structured rejection reason.
+
+Tooling guidance for the routine: use Apollo MCP search/enrichment/read tools
+(`mixed_people_api_search`, `mixed_companies_search`, `organizations_search`,
+`organizations_enrich`, `people_match`, `contacts_search`, `contact_read`) to
+assemble that payload. Do not call Apollo send, campaign, sequence-enrollment,
+or approval tools from this integration path; ISOA-188 remains draft-only and
+human-send-gated.
+
 ## Cloudflare
 
 - Provider key: `cloudflare`

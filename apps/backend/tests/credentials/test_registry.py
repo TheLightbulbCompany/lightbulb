@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from core.services.credentials import registry
 
@@ -197,6 +200,35 @@ def test_apollo_mcp_requests_read_oriented_scopes_only():
     assert not any(s.endswith("_write") or s.endswith("_create") or s.endswith("_approve") for s in scopes)
     assert "emailer_messages_send_now" not in scopes
     assert "emailer_campaigns_add_contact_ids" not in scopes
+
+
+def test_apollo_prospect_source_contract_documents_isoa188_payload():
+    schema_path = Path(__file__).parents[4] / "docs" / "integrations" / "apollo-prospect-source.schema.json"
+    schema = json.loads(schema_path.read_text())
+
+    assert schema["required"] == ["campaign_id", "source_run_id", "prospects"]
+    assert schema["properties"]["prospects"]["maxItems"] == 10
+
+    prospect = schema["$defs"]["prospect"]
+    assert {
+        "apollo_person_id",
+        "apollo_organization_id",
+        "company_domain",
+        "contact",
+        "company",
+        "evidence",
+        "suppression_hints",
+        "enriched_at",
+        "quality",
+    }.issubset(prospect["properties"])
+    assert "apollo_person_id" in prospect["required"]
+    assert "company_domain" in prospect["required"]
+
+    contact = prospect["properties"]["contact"]["properties"]
+    assert {"name", "role", "business_email", "linkedin_url", "profile_url"}.issubset(contact)
+
+    quality = prospect["properties"]["quality"]["properties"]
+    assert {"confidence", "flags", "rejection_reason"}.issubset(quality)
 
 
 def test_cloudflare_mcp_uses_hosted_oauth_metadata_without_declared_scopes():

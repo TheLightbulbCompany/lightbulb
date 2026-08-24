@@ -124,6 +124,30 @@ personal email) at https://dev.isol8.co/sign-up. The dev Clerk instance is
 the same one used for prod previews, so test accounts created in dev are
 real accounts -- don't use a production email.
 
+**Signing a browser E2E in as an EXISTING dev test account without its
+password** (Claude-in-Chrome / automation): mint a Clerk **sign-in token**
+with the admin API and redeem it via the ticket strategy in the page — no
+password/OTP typed, the same ticket mechanism `routers/desktop_auth.py`
+uses. Get the dev Clerk secret from Secrets Manager
+(`isol8/dev/clerk_secret_key`), find the user id via
+`GET https://api.clerk.com/v1/users` (dev accounts are `+clerk_test`
+addresses; the users table has no email, Clerk is the only email truth),
+then:
+```bash
+curl -sX POST https://api.clerk.com/v1/sign_in_tokens \
+  -H "Authorization: Bearer $CLERK_SECRET_KEY" -H 'Content-Type: application/json' \
+  -d '{"user_id":"user_XXX"}'   # -> {token, status:"pending"} (one-time, ~mins TTL)
+```
+In the browser (already on a dev.isol8.co page, Clerk loaded):
+```js
+const si = await window.Clerk.client.signIn.create({strategy:'ticket', ticket:'<token>'});
+await window.Clerk.setActive({session: si.createdSessionId});
+```
+Password prompts and OTP entry are off-limits; this admin-issued ticket is
+the sanctioned path. NOTE the `+clerk_test` bootstrap-admin collision bug
+(`admin@isol8.co` as an owner can never seed Paperclip — issue #2003); pick
+a different test account for import/Teams flows.
+
 ### CI/CD Monitoring
 
 ```bash

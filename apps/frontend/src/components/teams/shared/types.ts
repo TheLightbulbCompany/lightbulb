@@ -242,6 +242,39 @@ export interface IssueMonitorPolicy {
   recoveryPolicy?: string | null;
 }
 
+/** LIVE monitor state, mirroring upstream's issueExecutionMonitorStateSchema.
+ * Distinct from ``IssueMonitorPolicy``: the policy is the schedule someone
+ * asked for, this is what actually happened to it.
+ *
+ * This matters because a monitor is ONE-SHOT upstream — when it fires, the
+ * monitor is stripped from ``executionPolicy`` and only this state survives.
+ * Rendering the policy alone therefore makes a task that is mid-wait (or that
+ * just woke) look like nothing was ever scheduled. */
+export interface IssueMonitorState {
+  /** Upstream ISSUE_EXECUTION_MONITOR_STATE_STATUSES. */
+  status?: "scheduled" | "triggered" | "cleared" | null;
+  nextCheckAt?: string | null;
+  lastTriggeredAt?: string | null;
+  attemptCount?: number | null;
+  notes?: string | null;
+  serviceName?: string | null;
+  timeoutAt?: string | null;
+  maxAttempts?: number | null;
+  clearedAt?: string | null;
+  /** Upstream ISSUE_EXECUTION_MONITOR_CLEAR_REASONS — e.g. ``timeout_exceeded``,
+   * ``max_attempts_exhausted``, ``triggered``, ``manual``. */
+  clearReason?: string | null;
+}
+
+/** Upstream's executionState. Only the monitor slice is modeled — the stage
+ * fields are read through ``executionPolicy`` today.
+ *
+ * NOTE: the issues LIST route hard-nulls ``executionState`` upstream, so this
+ * is populated on the fetch-by-id detail response only. */
+export interface IssueExecutionState {
+  monitor?: IssueMonitorState | null;
+}
+
 /** A single participant in a reviewer/approver stage. Mirrors upstream
  * Paperclip's issueExecutionStageParticipantSchema
  * (packages/shared/src/validators/issue.ts). A participant is EITHER an agent
@@ -331,6 +364,10 @@ export interface Issue {
    * get_issue passthrough returns upstream's executionPolicy shape verbatim.
    * ``null``/absent means no monitor and no review/approval gate. */
   executionPolicy?: IssueExecutionPolicy | null;
+  /** Live execution state (detail route only — the list route nulls it). Carries
+   * the monitor's real status/attempt count, which outlives the one-shot policy
+   * entry once the monitor fires. */
+  executionState?: IssueExecutionState | null;
 }
 
 export interface Approval {

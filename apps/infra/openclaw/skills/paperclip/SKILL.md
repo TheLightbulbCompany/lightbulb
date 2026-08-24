@@ -60,6 +60,17 @@ description: >
      effects, own-agent ruleKey stats, and decision queues/triage. Dedicated
      helper commands encode their payloads and query strings. The unified
      attention feed is documented truthfully as board-only, not agent-readable.
+  9. Issue monitors ("Waiting on an External Thing" + the `monitor` helper
+     subcommand + the api-reference monitor shapes): upstream ships the
+     execution monitor but never documents it to agents, so the whole fleet
+     defaulted to a `request_confirmation` card for waits a monitor handles
+     natively — one such card sat 38 hours and spawned duplicate blocker
+     issues. The section also pins the monitor-vs-approval boundary (a
+     monitor is the WAIT, an approval is the AUTHORITY) so nothing reads a
+     scheduled wait as permission to act. The helper subcommand exists
+     because `executionPolicy` is REPLACE-semantics upstream: a hand-built
+     `raw PATCH` of just `{monitor}` silently wipes the issue's
+     reviewer/approver stages. Keep all three on re-vendor.
 -->
 
 # Paperclip Skill
@@ -92,6 +103,7 @@ Every write you do in a heartbeat has a subcommand:
 | ----- | ------- |
 | Comment on an issue | `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
 | Update status / fields / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--title T] [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Wait on an external thing (monitor) | `/app/skills/paperclip/scripts/paperclip-api.sh monitor <issueId> --at ISO [--service NAME] [--notes TEXT] [--timeout-at ISO] [--recovery escalate_to_board]` (`--clear` to remove) |
 | Checkout | `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>` |
 | Release | `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>` |
 | Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` (optional description on stdin) |
@@ -200,6 +212,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked on ANOTHER AGENT, create the child, assign it, and block on it with `blockedByIssueIds`.
+- If blocked on an EXTERNAL THING that will resolve itself (a PR merging, CI finishing, a deploy landing, a vendor replying), schedule a **monitor** and exit — see "Waiting on an External Thing". Do not file a confirmation card asking a human to tell you it happened, and do not busy-poll it.
 - If blocked on a HUMAN (the board must merge, deploy, pay, sign, grant access, or decide), do NOT create a child issue for them and never leave any issue unassigned. The recovery pass reassigns every unassigned blocker back to its creator within about a minute, and the delegation-cycle guard (`409 delegation_cycle`) refuses to route it to the agent that delegated the work to you — so a "board/operator must do X" child comes straight back to you as duplicate work. Stay on THIS issue instead: file a `request_board_approval` (or a `request_confirmation` with `continuationPolicy: wake_assignee`) naming the exact action and evidence, set this issue `blocked` (or `in_review`), and exit. When the wake arrives with the decision, do the action yourself. A board comment is never an approval, and any board comment cancels a pending confirmation card (`superseded_by_comment`) — re-file the card if you still need the decision.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
@@ -274,6 +287,52 @@ The array **replaces** the current set on each update — pass `--blocked-by ""`
 - `PAPERCLIP_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
 
 `cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
+
+## Waiting on an External Thing (Issue Monitors)
+
+Some work is not blocked on a person or another issue — it is blocked on a **thing that will happen on its own**: a PR gets merged, CI goes green, a deploy finishes, a vendor replies, a domain propagates. For those, schedule a **monitor**. Paperclip re-checks the issue at `nextCheckAt` and wakes you, so nobody has to sit in the loop just to tell you the thing happened.
+
+```bash
+# "Wake me when PR acme/api#1979 has landed; if it stalls, take it to the board."
+/app/skills/paperclip/scripts/paperclip-api.sh monitor "$PAPERCLIP_TASK_ID" \
+  --at 2026-08-25T09:00:00Z \
+  --service GitHub \
+  --notes "acme/api#1979 — resume the release checklist once it merges" \
+  --timeout-at 2026-08-27T09:00:00Z \
+  --max-attempts 8 \
+  --recovery escalate_to_board
+```
+
+- `--at` (required) is the next check — an ISO-8601 instant, not a duration.
+- `--service` and `--notes` say what you are watching, so a human reading the board can see the wait is real and pointed at something. Put the identifier (PR number, build id, ticket) in `--notes`: it is stored verbatim. There is **no `--ref` flag** on purpose — upstream redacts `externalRef` at write time, so anything sent there is replaced with `[redacted]` before it is stored and can never be read back.
+- `--timeout-at` / `--max-attempts` bound the wait. **Always bound it.** An unbounded monitor is just a stall with better manners.
+- `--recovery` is what happens when that bound is hit (default `wake_owner` if you omit it):
+  - `wake_owner` — you get another heartbeat carrying the clear reason, and you decide what next.
+  - `create_recovery_issue` — a high-priority child issue is filed against the source issue and its assignee is woken.
+  - `escalate_to_board` — **the timeout path.** A comment is posted on the issue telling the board the wait did not pay off. Note that **no agent is woken**: this deliberately hands the problem to humans and stops. Pick it when a stalled wait is the owner's problem to solve, not yours to keep retrying.
+- Clear a monitor when you no longer need it: `monitor <issueId> --clear`.
+- Force an immediate re-check instead of waiting: `POST /api/issues/{issueId}/monitor/check-now`.
+
+**Preconditions — upstream 422s otherwise.** A monitor can only be scheduled on an issue that is `in_progress` or `in_review` **and** assigned to an agent (not to a human user). So check the issue out, or set the status, *before* scheduling. Scheduling with bounds that are already in the past is also rejected.
+
+**A monitor is one-shot.** When it fires, it is consumed — `nextCheckAt` is cleared and the monitor is stripped from the policy. If the thing you were waiting for still has not happened, schedule a new one on that wake. Do not assume it repeats.
+
+Read the live state from `GET /api/issues/{issueId}` at `executionState.monitor` — `status` (`scheduled` / `triggered` / `cleared`), `nextCheckAt`, `lastTriggeredAt`, `attemptCount`, `clearReason`. Use it to tell "still waiting, checked twice" apart from "the wait ended and I was woken". Note the issues **list** route always returns `executionPolicy` and `executionState` as `null`; fetch the issue by id when you need monitor detail.
+
+While a monitor is live the issue has a real liveness path, so `in_progress` (or `in_review`) is a valid posture — this is one of the explicit continuation paths in the final-disposition checklist. Do **not** additionally leave the issue `blocked` on a phantom child.
+
+**Use a monitor instead of a `request_confirmation` card whenever the human would only be confirming a fact you could observe yourself.** Asking someone "did the PR merge yet?" spends their attention on something Paperclip can poll. A confirmation card is for a **decision** or for information only they hold. This distinction has real cost: an unnecessary confirmation card once sat for 38 hours and spawned duplicate blocker issues while everyone waited on everyone else.
+
+### A monitor is the wait. An approval is the authority.
+
+These are different things and you need both when both apply:
+
+| | What it gets you | What it does NOT get you |
+| - | - | - |
+| **Monitor** | You are woken when the external thing happens, with no human round-trip | Permission to do anything about it |
+| **Approval** (`request_board_approval`) | Authority to take a named, gated action | Any notification that the moment has arrived |
+
+So: watching a PR with a monitor does not entitle you to merge it. If the action you intend to take on the other side of the wait is gated — by your contract, by a `ruleKey`, by company policy — you still need the approved `request_board_approval` before you take it. Schedule the monitor so you are not idling, and request the approval so you are allowed to act. Scheduling a monitor never widens what you are allowed to do.
 
 ## Requesting Board Approval
 
@@ -508,6 +567,8 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
 | Update task (write)                   | `PATCH /api/issues/:issueId` — `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S]` (comment on stdin)                      |
+| Schedule / clear a monitor (write)    | `PATCH /api/issues/:issueId` (`executionPolicy.monitor`) — `/app/skills/paperclip/scripts/paperclip-api.sh monitor <issueId> --at ISO \| --clear`                     |
+| Re-check a monitor now (write)        | `POST /api/issues/:issueId/monitor/check-now`                                                                                   |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment (write)                   | `POST /api/issues/:issueId/comments` — `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (body on stdin)                            |
 | Issue-thread interactions             | `GET /api/issues/:issueId/interactions` (read) • write via `/app/skills/paperclip/scripts/paperclip-api.sh {confirm,accept,reject,respond}`           |

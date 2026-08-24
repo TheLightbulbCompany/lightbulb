@@ -113,3 +113,75 @@ describe("IssueProperties parent / sub-tasks / related rows", () => {
     ).toBeTruthy();
   });
 });
+
+describe("IssueProperties monitor row", () => {
+  function monitorRow() {
+    return screen.getByText("Monitor").closest("div") as HTMLElement;
+  }
+
+  it("shows how far a live monitor has got, not just its next check", () => {
+    renderProperties({
+      executionPolicy: {
+        monitor: { nextCheckAt: "2099-01-01T00:00:00Z", serviceName: "GitHub" },
+      },
+      executionState: {
+        monitor: {
+          status: "scheduled",
+          attemptCount: 2,
+          maxAttempts: 8,
+          timeoutAt: "2099-02-01T00:00:00Z",
+        },
+      },
+    });
+
+    expect(within(monitorRow()).getByText(/2 checks of 8/)).toBeInTheDocument();
+    // "gives up" is a FUTURE instant; it must read forwards, not "just now".
+    expect(within(monitorRow()).getByText(/gives up in /)).toBeInTheDocument();
+  });
+
+  it("reads a cleared-because-triggered monitor as woken, not as a failure", () => {
+    // Upstream reports a fired monitor two ways: status "triggered", or status
+    // "cleared" with clearReason "triggered" once the wake consumed it.
+    renderProperties({
+      executionState: {
+        monitor: {
+          status: "cleared",
+          clearReason: "triggered",
+          clearedAt: "2020-01-01T00:00:00Z",
+        },
+      },
+    });
+
+    expect(within(monitorRow()).getByText(/Woke/)).toBeInTheDocument();
+    expect(within(monitorRow()).queryByText("Not scheduled")).toBeNull();
+  });
+
+  it("does not report a fired monitor as 'Not scheduled'", () => {
+    // Upstream consumes executionPolicy.monitor when the monitor fires, so the
+    // policy is empty here while the wait genuinely happened.
+    renderProperties({
+      executionPolicy: { monitor: null },
+      executionState: {
+        monitor: { status: "triggered", lastTriggeredAt: "2020-01-01T00:00:00Z" },
+      },
+    });
+
+    expect(within(monitorRow()).queryByText("Not scheduled")).toBeNull();
+    expect(within(monitorRow()).getByText(/Woke/)).toBeInTheDocument();
+  });
+
+  it("names an exhausted wait so it is not mistaken for an idle task", () => {
+    renderProperties({
+      executionState: {
+        monitor: { status: "cleared", clearReason: "timeout_exceeded" },
+      },
+    });
+
+    expect(within(monitorRow()).getByText("Timed out")).toBeInTheDocument();
+  });
+
+  it("still reads 'Not scheduled' when no monitor was ever set", () => {
+    renderProperties();
+    expect(within(monitorRow()).getByText("Not scheduled")).toBeInTheDocument();
+  });
+});

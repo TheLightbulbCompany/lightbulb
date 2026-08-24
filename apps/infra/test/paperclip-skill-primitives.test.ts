@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
 
 const skillRoot = resolve(__dirname, "../openclaw/skills/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
@@ -16,6 +17,68 @@ function runHelper(args: string[], input = "") {
     },
   });
 }
+
+/** Run the helper against a stubbed `curl` so read-modify-write subcommands can
+ * be exercised for real. The stub answers a GET with `issue` and echoes back a
+ * write's request body, so the assertion sees the exact bytes that would hit
+ * Paperclip. `--dry-run` cannot cover this: it deliberately skips the read, and
+ * the read IS the behaviour under test. */
+function runHelperWithIssue(args: string[], issue: unknown) {
+  const stubDir = mkdtempSync(join(tmpdir(), "paperclip-curl-"));
+  const stub = join(stubDir, "curl");
+  writeFileSync(
+    stub,
+    [
+      "#!/usr/bin/env bash",
+      'method=GET; out=""; data=""',
+      'while [[ $# -gt 0 ]]; do',
+      '  case "$1" in',
+      '    -X) method="$2"; shift 2 ;;',
+      '    -o) out="$2"; shift 2 ;;',
+      '    --data-binary) data="$2"; shift 2 ;;',
+      "    *) shift ;;",
+      "  esac",
+      "done",
+      'if [[ "$method" == "GET" ]]; then',
+      '  printf \'%s\' "$MOCK_ISSUE_JSON" > "$out"',
+      "else",
+      '  printf \'%s\' "$data" > "$out"',
+      "fi",
+      "printf '200'",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(stub, 0o755);
+
+  return spawnSync("bash", [helper, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      PAPERCLIP_API_URL: "https://paperclip.test",
+      PAPERCLIP_API_KEY: "test-key",
+      MOCK_ISSUE_JSON: JSON.stringify(issue),
+    },
+  });
+}
+
+/** An issue already carrying a reviewer stage — the thing a naive
+ * `raw PATCH {executionPolicy:{monitor}}` would silently destroy. */
+const ISSUE_WITH_STAGES = {
+  id: "issue-1",
+  executionPolicy: {
+    mode: "normal",
+    commentRequired: true,
+    stages: [
+      {
+        id: "stage-review",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: "p-1", type: "agent", agentId: "reviewer-1" }],
+      },
+    ],
+  },
+};
 
 describe("bundled Paperclip operating primitives", () => {
   it("builds run-scoped decisions with a stable ruleKey and idempotency key", () => {
@@ -140,5 +203,76 @@ describe("bundled Paperclip operating primitives", () => {
     expect(reference).toContain("Agents are always server-scoped to the caller's own decisions");
     expect(reference).toContain("Approval does **not** prove application");
     expect(reference).toMatch(/`executed`, `skipped`,\s+or `failed`/);
+  });
+
+  it("merges a scheduled monitor onto the issue's existing execution policy", () => {
+    const result = runHelperWithIssue(
+      [
+        "monitor",
+        "issue-1",
+        "--at",
+        "2026-08-25T09:00:00Z",
+        "--service",
+        "GitHub",
+        "--notes",
+        "acme/api#1979 — resume once merged",
+        "--recovery",
+        "escalate_to_board",
+        "--max-attempts",
+        "8",
+      ],
+      ISSUE_WITH_STAGES,
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    const sent = JSON.parse(result.stdout);
+    // The reviewer stage and commentRequired survive the monitor write — this
+    // is the whole reason the subcommand reads before it writes.
+    expect(sent.executionPolicy.stages).toEqual(ISSUE_WITH_STAGES.executionPolicy.stages);
+    expect(sent.executionPolicy.commentRequired).toBe(true);
+    expect(sent.executionPolicy.monitor).toEqual({
+      nextCheckAt: "2026-08-25T09:00:00Z",
+      kind: "external_service",
+      serviceName: "GitHub",
+      notes: "acme/api#1979 — resume once merged",
+      recoveryPolicy: "escalate_to_board",
+      maxAttempts: 8,
+    });
+  });
+
+  it("offers no --ref flag, since upstream redacts externalRef at write time", () => {
+    // A flag whose value is silently replaced with "[redacted]" before storage
+    // is exactly the quiet data loss this helper exists to prevent.
+    const result = runHelper([
+      "monitor", "issue-1", "--at", "2026-08-25T09:00:00Z", "--ref", "acme/api#1979", "--dry-run",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("unknown argument: --ref");
+  });
+
+  it("clears only the monitor, leaving review gates in place", () => {
+    const result = runHelperWithIssue(["monitor", "issue-1", "--clear"], ISSUE_WITH_STAGES);
+
+    expect(result.status, result.stderr).toBe(0);
+    const sent = JSON.parse(result.stdout);
+    expect(sent.executionPolicy.monitor).toBeNull();
+    expect(sent.executionPolicy.stages).toEqual(ISSUE_WITH_STAGES.executionPolicy.stages);
+  });
+
+  it("rejects a recovery policy outside Paperclip's enum", () => {
+    const result = runHelper([
+      "monitor", "issue-1", "--at", "2026-08-25T09:00:00Z", "--recovery", "page_the_ceo", "--dry-run",
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("wake_owner,create_recovery_issue,escalate_to_board");
+  });
+
+  it("teaches agents that a monitor is the wait and an approval is the authority", () => {
+    const skill = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
+
+    expect(skill).toContain("A monitor is the wait. An approval is the authority.");
+    expect(skill).toContain("escalate_to_board");
   });
 });

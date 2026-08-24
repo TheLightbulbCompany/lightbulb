@@ -28,6 +28,11 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
   "teams.activity.logged": [
     "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues",
     "/teams/approvals",
+    // The unified "needs you" feed. Every mutation that can raise or resolve
+    // a decision publishes `activity.logged`, so this is what keeps the tab's
+    // badge honest without polling — a decision raised while the user sits on
+    // another tab still lights the count.
+    "/teams/attention",
   ],
   "teams.agent.status": ["/teams/dashboard", "/teams/agents"],
   "teams.heartbeat.run.queued": ["/teams/dashboard", "/teams/inbox", "/teams/inbox/runs"],

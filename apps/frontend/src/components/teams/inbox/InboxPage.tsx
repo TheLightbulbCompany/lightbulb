@@ -11,6 +11,7 @@ import { Inbox as InboxIcon } from "lucide-react";
 
 import { InboxToolbar } from "@/components/teams/inbox/InboxToolbar";
 import { InboxList } from "@/components/teams/inbox/InboxList";
+import { AttentionList } from "@/components/teams/inbox/AttentionList";
 import { NeedsAttentionBand } from "@/components/teams/inbox/NeedsAttentionBand";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
@@ -24,6 +25,7 @@ import {
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
+import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
@@ -180,8 +182,17 @@ export function InboxPage({
   }, [newIssue, onNewIssueConsumed]);
 
   // 4. Data + side-effect hooks.
+  //
+  // The "Needs you" tab renders its OWN list from the unified attention feed,
+  // so the three issue reads are gated off while it is active — that tab
+  // never consults the issue list (which silently caps around 120 rows,
+  // isol8 #1992; a decision backlog must not be derived from a capped scan).
+  const isAttentionTab = tab === "approvals";
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =
-    useInboxData();
+    useInboxData({ enabled: !isAttentionTab });
+  // Read here as well as inside AttentionList: SWR dedupes on the shared key,
+  // so the badge and the list are one request and can never disagree.
+  const attention = useAttentionFeed();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
   // Per-issue live-run state (running / stalled + tooltip) drives BOTH the
@@ -346,8 +357,9 @@ export function InboxPage({
         unreadCount={unreadCount}
         onMarkAllRead={handleMarkAllRead}
         onNewIssue={() => setNewIssueOpen(true)}
+        attentionCount={attention.count}
       />
-      {isError && (
+      {isError && !isAttentionTab && (
         <div
           role="alert"
           className="mt-4 rounded-md border px-4 py-3 text-sm"
@@ -361,7 +373,15 @@ export function InboxPage({
         </div>
       )}
       <div className="mt-4 flex flex-1 flex-col min-h-0">
-        {isLoading && sections.length === 0 ? (
+        {isAttentionTab ? (
+          <div className="h-full overflow-y-auto">
+            <AttentionList
+              agents={agents}
+              currentUserId={currentUserId}
+              onOpenIssue={openIssue}
+            />
+          </div>
+        ) : isLoading && sections.length === 0 ? (
           <PageSkeleton variant="inbox" />
         ) : sections.length === 0 ? (
           <PanelEmptyState

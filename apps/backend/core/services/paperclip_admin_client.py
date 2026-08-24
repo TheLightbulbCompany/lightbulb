@@ -1104,6 +1104,42 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Attention
+    #
+    # The unified "what needs a human" feed. Upstream gates it as
+    # BOARD-ONLY (``assertBoard`` — agent actors are 403'd) and scopes it
+    # to ``req.actor.userId``, because the per-user dismissal/snooze state
+    # is joined into every row. It MUST therefore be called with the
+    # caller's per-user Paperclip session cookie, never an instance-admin
+    # cookie: an admin cookie would both bypass the upstream company scope
+    # (cross-tenant IDOR) and resolve dismissals against the wrong user.
+    # ------------------------------------------------------------------
+
+    async def list_attention(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """Fetch the unified attention feed for the company.
+
+        Maps to ``GET /api/companies/{companyId}/attention``. Returns an
+        ``AttentionFeed`` object (NOT a bare array like the sibling list
+        endpoints): ``{companyId, generatedAt, totalCount, deskBadgeCount,
+        nextCursor, countsBySourceKind, items[]}``.
+
+        ``totalCount`` / ``countsBySourceKind`` are computed upstream BEFORE
+        pagination, so a small first page still carries the company-wide
+        count — which is what makes them safe to render as a badge.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/attention",
+            session_cookie=session_cookie,
+            params=params,
+        )
+
+    # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------
 

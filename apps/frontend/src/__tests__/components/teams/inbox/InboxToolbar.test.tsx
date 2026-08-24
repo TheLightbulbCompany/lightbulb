@@ -141,4 +141,30 @@ describe("InboxToolbar", () => {
     const trigger = document.querySelector('button[title="Filters: 2"]');
     expect(trigger).not.toBeNull();
   });
+
+  test("leads with a 'Needs you' tab", () => {
+    render(<InboxToolbar {...baseProps} />);
+    const tabs = screen.getAllByRole("tab").map((t) => t.textContent ?? "");
+    // First, because a decision nobody can find is a decision nobody makes.
+    expect(tabs[0]).toMatch(/needs you/i);
+  });
+
+  test("badges the count of decisions waiting", () => {
+    render(<InboxToolbar {...baseProps} attentionCount={9} />);
+    const tab = screen.getByRole("tab", { name: /needs you/i });
+    expect(tab).toHaveTextContent("9");
+  });
+
+  test("renders no badge when nothing is waiting", () => {
+    // A hopeful zero is a fabricated count. Absent means absent.
+    render(<InboxToolbar {...baseProps} attentionCount={0} />);
+    expect(screen.getByRole("tab", { name: /needs you/i })).not.toHaveTextContent("0");
+  });
+
+  test("the tab bar is rendered once, so mobile can reach it too", () => {
+    // It used to live inside the desktop-only row; the one surface listing
+    // pending approvals would have been unreachable on a phone.
+    render(<InboxToolbar {...baseProps} />);
+    expect(screen.getAllByRole("tablist")).toHaveLength(1);
+  });
 });

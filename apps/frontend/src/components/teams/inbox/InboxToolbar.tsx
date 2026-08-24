@@ -59,9 +59,24 @@ export interface InboxToolbarProps {
 
   /** Fired when the user clicks the primary "New task" button. */
   onNewIssue: () => void;
+
+  /**
+   * Decisions waiting on this human, badged on the "Needs you" tab.
+   *
+   * This is what makes the surface findable — the tab bar is on screen no
+   * matter which tab is active, so the number is always visible. Pass 0 (or
+   * omit) to render no badge: an absent count must never be drawn as a
+   * hopeful zero, and a fabricated number here would be worse than none.
+   */
+  attentionCount?: number;
 }
 
+// "Needs you" leads deliberately. It is the only tab whose contents are
+// blocking someone, and the owner's complaint was that approvals were
+// findable only by knowing where to look — so it sits where the eye starts,
+// carrying a count.
 const TABS: { value: InboxTab; label: string }[] = [
+  { value: "approvals", label: "Needs you" },
   { value: "mine", label: "Mine" },
   { value: "recent", label: "Recent" },
   { value: "unread", label: "Unread" },
@@ -98,6 +113,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
     unreadCount,
     onMarkAllRead,
     onNewIssue,
+    attentionCount = 0,
   } = props;
 
   const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
@@ -209,8 +225,69 @@ export function InboxToolbar(props: InboxToolbarProps) {
     </>
   );
 
+  // Tab bar — bespoke pill styling, intentionally does not use PanelTabs
+  // (which renders an underline-style tab list).
+  // TODO(teams-ui-parity): migrate to PanelTabs once that atom supports a
+  // pill variant matching this forest-tint active style.
+  //
+  // Promoted to its own always-visible row (it used to sit inline inside the
+  // desktop-only toolbar row). Mobile had NO tab bar at all, which was
+  // survivable while every tab was a view of the same issue list — but the
+  // "Needs you" tab is the only place pending approvals are listed, so
+  // leaving the bar desktop-only would put them out of reach on a phone.
+  // Scrolls horizontally rather than wrapping so the leading tab, which is
+  // the one carrying a count, is always the one you see first.
+  const tabsSlot = (
+    <div
+      role="tablist"
+      aria-label="Inbox tabs"
+      className="inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-md p-0.5"
+      style={{ background: "var(--cream-deeper)" }}
+    >
+      {TABS.map((t) => {
+        const isActive = tab === t.value;
+        const badge = t.value === "approvals" ? attentionCount : 0;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onTabChange(t.value)}
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-3 text-xs font-medium transition-colors",
+            )}
+            style={
+              isActive
+                ? {
+                    background: "var(--forest-tint)",
+                    color: "var(--forest)",
+                  }
+                : { color: "var(--mute)" }
+            }
+          >
+            {t.label}
+            {badge > 0 && (
+              <span
+                // Forest, not red: these are answers owed, not incidents. The
+                // urgency of an individual decision is carried by its age in
+                // the list, not by shouting on the tab.
+                className="rounded-full px-1.5 text-[10px] font-semibold leading-4 tabular-nums"
+                style={{ background: "var(--forest)", color: "var(--cream)" }}
+              >
+                {badge}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="space-y-2">
+      {tabsSlot}
+
       {/* Mobile-only search row — search input only, mirroring the
           original layout. Filter trigger + primary actions are deferred
           until the desktop breakpoint. */}
@@ -223,47 +300,9 @@ export function InboxToolbar(props: InboxToolbarProps) {
         />
       </div>
 
-      {/* Desktop toolbar row — tabs sit inline on the left, PanelToolbar
-          (search + filters + actions) takes the remaining width on the
-          right. */}
+      {/* Desktop toolbar row — PanelToolbar (search + filters + actions)
+          takes the full width beneath the tab bar. */}
       <div className="hidden flex-wrap items-center gap-3 sm:flex">
-        {/* Tab bar — bespoke pill styling, intentionally does not use
-            PanelTabs (which renders an underline-style tab list).
-            TODO(teams-ui-parity): migrate to PanelTabs once that atom
-            supports a pill variant matching this forest-tint active style. */}
-        <div
-          role="tablist"
-          aria-label="Inbox tabs"
-          className="inline-flex items-center gap-1 rounded-md p-0.5"
-          style={{ background: "var(--cream-deeper)" }}
-        >
-          {TABS.map((t) => {
-            const isActive = tab === t.value;
-            return (
-              <button
-                key={t.value}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                onClick={() => onTabChange(t.value)}
-                className={cn(
-                  "h-7 rounded-sm px-3 text-xs font-medium transition-colors",
-                )}
-                style={
-                  isActive
-                    ? {
-                        background: "var(--forest-tint)",
-                        color: "var(--forest)",
-                      }
-                    : { color: "var(--mute)" }
-                }
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-
         <PanelToolbar
           className="flex-1"
           searchValue={searchQuery}

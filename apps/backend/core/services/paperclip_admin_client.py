@@ -172,15 +172,37 @@ class PaperclipApiError(Exception):
     be retried; everything else (4xx state errors) is permanent and
     must not loop. T12's webhook handler reads ``retryable`` to decide
     whether to enqueue the failed event for async retry.
+
+    ``message`` is only "<VERB> <path> -> <code>" — it says WHAT failed
+    but never WHY. Paperclip puts the reason in the response body, so
+    ``__str__`` appends a truncated body: every existing
+    ``logger.exception``/``str(exc)`` call site then records the reason
+    without a new log line. Callers that forward text to a client must
+    use ``.message``, NOT ``str(exc)`` — see ``main.py``'s handler.
     """
+
+    #: Cap on the body appended by ``__str__``. Paperclip 4xx bodies are
+    #: ``{"error": ..., "details": [...]}``; a zod issue list fits well
+    #: inside this, and the cap stops a large upstream payload from
+    #: flooding a log record.
+    BODY_LOG_CHARS = 800
 
     def __init__(self, message: str, status_code: int, body: Any):
         super().__init__(message)
+        self.message = message
         self.status_code = status_code
         self.body = body
         # Auto-classify retryability: 5xx + 429 are retryable, everything
         # else (4xx state errors) is not.
         self.retryable: bool = status_code >= 500 or status_code == 429
+
+    def __str__(self) -> str:
+        if not self.body:
+            return self.message
+        body = str(self.body)
+        if len(body) > self.BODY_LOG_CHARS:
+            body = body[: self.BODY_LOG_CHARS] + "...[truncated]"
+        return f"{self.message}: {body}"
 
 
 class PaperclipAgentCreateReplayMiss(PaperclipApiError):

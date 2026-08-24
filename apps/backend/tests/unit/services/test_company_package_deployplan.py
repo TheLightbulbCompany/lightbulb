@@ -56,3 +56,39 @@ def test_frontmatter_body_split_survives_dashes_in_body(tmp_path):
     solo = next(a for a in plan.agents if a.slug == "solo")
     assert solo.role == "ceo"
     assert "second section" in solo.body_md  # body kept whole, dashes and all
+
+
+def test_every_planned_role_is_one_paperclip_accepts():
+    """Paperclip validates role with z.enum(AGENT_ROLES) and 400s anything else.
+
+    A 400 on agent-create rolls back the whole company deploy, so an
+    unmappable role in package frontmatter is not cosmetic — it kills the
+    import. Package AGENTS.md files routinely omit ``role:`` entirely (the
+    gstack fixture sets it on none of its five agents), so the fallback has
+    to land inside the enum.
+    """
+    from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
+
+    plan = parse_deploy_plan(FIXTURES / "gstack")
+    assert len(plan.agents) > 1, "need a non-CEO agent to exercise the fallback"
+    bad = [(a.slug, a.role) for a in plan.agents if a.role not in PAPERCLIP_AGENT_ROLES]
+    assert not bad, f"roles Paperclip would reject: {bad}"
+
+
+def test_free_text_role_is_coerced(tmp_path):
+    """Author-written frontmatter carries prose like 'Head of Growth'."""
+    from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
+
+    (tmp_path / "COMPANY.md").write_text("---\nslug: acme\n---\nAcme\n")
+    for slug, role in (("boss", "ceo"), ("growth", "Head of Growth"), ("eng", "CTO")):
+        d = tmp_path / "agents" / slug
+        d.mkdir(parents=True)
+        reports = "null" if slug == "boss" else "boss"
+        (d / "AGENTS.md").write_text(f"---\nname: {slug}\nrole: {role}\nreportsTo: {reports}\n---\nbody\n")
+
+    plan = parse_deploy_plan(tmp_path)
+    roles = {a.slug: a.role for a in plan.agents}
+    assert all(r in PAPERCLIP_AGENT_ROLES for r in roles.values()), roles
+    assert roles["boss"] == "ceo"
+    assert roles["eng"] == "cto"  # case-normalized, not dropped
+    assert roles["growth"] == "general"  # unmappable prose falls back

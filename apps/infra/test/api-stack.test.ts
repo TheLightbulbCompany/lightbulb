@@ -39,7 +39,7 @@ describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
   // audit rollout default.
   test.each([
     ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
-    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+    ["prod", "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"],
   ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
     template.hasResourceProperties("AWS::Lambda::Function", {

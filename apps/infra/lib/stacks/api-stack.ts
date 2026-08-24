@@ -361,7 +361,7 @@ export class ApiStack extends cdk.Stack {
         // native (mobile/desktop-node) tokens carry no azp and always pass.
         // Ships in audit mode; flip to "enforce" once AzpMismatch is clean.
         CLERK_AUTHORIZED_PARTIES: isProd
-          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          ? "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"
           : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
         CLERK_AZP_MODE: "audit",
         // Owner row holding paired_devices[deviceId].publicKey for device-key

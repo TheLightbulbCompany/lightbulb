@@ -687,7 +687,7 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
   // list in the wild.
   test.each([
     ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
-    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+    ["prod", "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"],
   ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
@@ -696,6 +696,22 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
           Environment: Match.arrayWith([
             Match.objectLike({ Name: "CLERK_AUTHORIZED_PARTIES", Value: parties }),
             Match.objectLike({ Name: "CLERK_AZP_MODE", Value: "audit" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+});
+
+
+describe("ServiceStack — production HTTP CORS origins", () => {
+  test("prod backend accepts apex and www frontend origins", () => {
+    const template = buildServiceStack("prod");
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "CORS_ORIGINS", Value: "https://isol8.co,https://www.isol8.co" }),
           ]),
         }),
       ]),

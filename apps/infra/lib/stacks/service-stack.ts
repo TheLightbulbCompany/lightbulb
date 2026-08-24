@@ -1251,7 +1251,7 @@ export class ServiceStack extends cdk.Stack {
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
-      CORS_ORIGINS: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+      CORS_ORIGINS: env === "prod" ? "https://isol8.co,https://www.isol8.co" : "https://dev.isol8.co",
       // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
       // backend validates the `azp` (authorized party) claim against this
       // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
@@ -1265,7 +1265,7 @@ export class ServiceStack extends cdk.Stack {
       // auth.azp.mismatch metric shows zero legitimate mismatches.
       CLERK_AUTHORIZED_PARTIES:
         env === "prod"
-          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          ? "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"
           : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
       CLERK_AZP_MODE: "audit",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to

@@ -22,6 +22,7 @@ export function Footer() {
               <span>Product</span>
               <Link href="/#workspace">The workspace</Link>
               <Link href="/marketplace">Marketplace</Link>
+              <Link href="/docs">Docs</Link>
               <Link href="/#pricing">Pricing</Link>
             </div>
             <div className="ld-footer-col">

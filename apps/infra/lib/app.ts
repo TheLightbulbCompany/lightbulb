@@ -216,6 +216,11 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           env: vercelEnv,
         },
         {
+          name: "Alias to www.isol8.co",
+          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} www.isol8.co --token=$VERCEL_TOKEN",
+          env: vercelEnv,
+        },
+        {
           name: "Alias to admin.isol8.co",
           run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,

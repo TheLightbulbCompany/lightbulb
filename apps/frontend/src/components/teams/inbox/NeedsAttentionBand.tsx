@@ -3,7 +3,6 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import { FailedRunRow } from "@/components/teams/inbox/FailedRunRow";
 import { useInboxTriage } from "@/components/teams/inbox/hooks/useInboxTriage";
 import { useAcknowledgedRuns } from "@/components/teams/inbox/hooks/useAcknowledgedRuns";
@@ -71,7 +70,7 @@ export function NeedsAttentionBand({
   agents: CompanyAgent[];
 }) {
   const { acknowledgedRunIds, ack } = useAcknowledgedRuns(companyId);
-  const { approvals, failedRuns, count, isLoading, isError } =
+  const { failedRuns, count, isLoading, isError } =
     useInboxTriage(acknowledgedRunIds);
   const [collapsed, setCollapsed] = useState<boolean>(() => loadBandCollapsed(companyId));
 
@@ -88,7 +87,7 @@ export function NeedsAttentionBand({
           color: "var(--danger)",
         }}
       >
-        Couldn&apos;t load items that need attention. Try refreshing.
+        Couldn&apos;t load recent agent failures. Try refreshing.
       </section>
     );
   }
@@ -142,14 +141,11 @@ export function NeedsAttentionBand({
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        <span className="font-medium text-[var(--ink)]">Needs attention</span>
+        <span className="font-medium text-[var(--ink)]">Agent failures</span>
         <span className="text-xs text-[var(--mute)]">{count}</span>
       </button>
       {!collapsed && (
         <ul className="divide-y" style={{ borderColor: "var(--edge)" }}>
-          {approvals.map((a) => (
-            <ApprovalRow key={a.id} approval={a} />
-          ))}
           {failedRunGroups.map((g) => (
             <FailedRunRow
               key={g.key || g.representative.id}

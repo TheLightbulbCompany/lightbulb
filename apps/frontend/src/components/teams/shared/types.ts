@@ -1370,3 +1370,60 @@ export interface CompanySearchResponse {
   zeroResults: CompanySearchZeroResults | null;
   hasMore: boolean;
 }
+
+// --- Attention feed (the unified "needs you" list) -------------------------
+//
+// Mirrors upstream Paperclip's `AttentionFeed` (packages/shared/src/types/
+// attention.ts), narrowed to the fields this UI reads, PLUS the two rows the
+// Isol8 BFF hydrates onto each item (`approval`, `interaction`) so a decision
+// can be resolved from the list without a follow-up fetch. See
+// apps/backend/routers/teams/attention.py.
+
+export type AttentionSourceKind =
+  | "approval"
+  | "decision"
+  | "issue_thread_interaction"
+  | "join_request"
+  | "recovery_action"
+  | "productivity_review"
+  | "blocker_attention"
+  | "review"
+  | "failed_run"
+  | "budget_alert"
+  | "agent_error_alert";
+
+export type AttentionSeverity = "critical" | "high" | "medium" | "low";
+
+export interface AttentionSubject {
+  kind: string;
+  id: string;
+  title: string | null;
+  identifier: string | null;
+  status: string | null;
+  href: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AttentionItem {
+  id: string;
+  sourceKind: AttentionSourceKind;
+  subject: AttentionSubject;
+  /** Upstream's one-line reason this is on the list. Rendered verbatim. */
+  whyNow: string;
+  severity: AttentionSeverity;
+  activityAt: string;
+  createdAt: string;
+  relatedIssue: AttentionSubject | null;
+  originAgentName: string | null;
+  /** BFF-hydrated: the full approval row (`sourceKind: "approval"`). */
+  approval?: Approval | null;
+  /** BFF-hydrated: the full interaction row (`issue_thread_interaction`). */
+  interaction?: IssueThreadInteraction | null;
+}
+
+export interface AttentionFeedResponse {
+  items?: AttentionItem[];
+  /** Computed upstream BEFORE pagination — safe to render as a badge. */
+  totalCount?: number;
+  countsBySourceKind?: Partial<Record<AttentionSourceKind, number>>;
+}

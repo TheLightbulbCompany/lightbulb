@@ -2,28 +2,20 @@
 "use client";
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { Approval, HeartbeatRun } from "@/components/teams/shared/types";
+import type { HeartbeatRun } from "@/components/teams/shared/types";
 
 export interface UseInboxTriageResult {
-  approvals: Approval[];
   failedRuns: HeartbeatRun[];
   count: number;
   isLoading: boolean;
   isError: boolean;
 }
 
-type ApprovalsResponse = { approvals?: Approval[] } | Approval[] | undefined;
 type RunsResponse =
   | { runs?: HeartbeatRun[] }
   | { items?: HeartbeatRun[] }
   | HeartbeatRun[]
   | undefined;
-
-function asApprovals(data: ApprovalsResponse): Approval[] {
-  if (!data) return [];
-  if (Array.isArray(data)) return data;
-  return data.approvals ?? [];
-}
 
 function asRuns(data: RunsResponse): HeartbeatRun[] {
   if (!data) return [];
@@ -32,37 +24,35 @@ function asRuns(data: RunsResponse): HeartbeatRun[] {
 }
 
 /**
- * Merge the two triage sources for the "Needs attention" band.
+ * Failed agent runs for the "Agent failures" band.
  *
- * - Approvals: the real list endpoint `/approvals` (the `/inbox/approvals`
- *   query key is an empty tab stub — do NOT use it). Filtered to the actionable
- *   states: `pending` AND `revision_requested` (the agent asked for changes —
- *   it still needs the reviewer to act, so it belongs in the band).
- * - Failed runs: `/inbox/runs` (BFF already forwards status=failed; we
- *   re-filter defensively) minus the locally-acknowledged ids.
+ * Source: `/inbox/runs` (the BFF already forwards status=failed; we re-filter
+ * defensively) minus the locally-acknowledged ids. `acknowledgedRunIds` is
+ * owned by the caller (NeedsAttentionBand via useAcknowledgedRuns) so the
+ * dismiss state is shared with the rows.
  *
- * `acknowledgedRunIds` is owned by the caller (NeedsAttentionBand via
- * useAcknowledgedRuns) so the dismiss state is shared with the rows.
+ * APPROVALS DELIBERATELY LEFT OUT. They used to be read here too, which meant
+ * an approval was both a band row and — once the unified feed shipped — a
+ * "Needs you" row, under two labels with two different counts. A decision now
+ * has exactly one home (the "Needs you" tab, via `useAttentionFeed`) and this
+ * band has exactly one meaning: something an agent did went wrong. Failures
+ * are FYI and dismissible; decisions block work until answered. Merging them
+ * is what made "needs attention" impossible to act on.
  */
 export function useInboxTriage(acknowledgedRunIds: Set<string>): UseInboxTriageResult {
   const { read } = useTeamsApi();
-  const approvalsRes = read<ApprovalsResponse>("/approvals");
   const runsRes = read<RunsResponse>("/inbox/runs");
 
-  const approvals = asApprovals(approvalsRes.data).filter(
-    (a) => a.status === "pending" || a.status === "revision_requested",
-  );
   const failedRuns = asRuns(runsRes.data).filter(
     (r) => r.status === "failed" && !acknowledgedRunIds.has(r.id),
   );
 
   return {
-    approvals,
     failedRuns,
-    count: approvals.length + failedRuns.length,
-    isLoading: approvalsRes.isLoading || runsRes.isLoading,
-    // Either source failing leaves the band unable to vouch for "inbox zero",
-    // so surface the failure rather than silently hiding the band.
-    isError: Boolean(approvalsRes.error) || Boolean(runsRes.error),
+    count: failedRuns.length,
+    isLoading: runsRes.isLoading,
+    // A failed read leaves the band unable to vouch for "nothing broke", so
+    // surface the failure rather than silently hiding the band.
+    isError: Boolean(runsRes.error),
   };
 }

@@ -57,14 +57,11 @@ beforeAll(() => {
 // `allFailedRuns` is the full unfiltered source; the mocked useInboxTriage
 // re-derives `failedRuns` from it MINUS the acknowledged ids (just like the
 // real hook) so the bulk-dismiss test can observe rows disappearing after an
-// ack. `approvals` stays a plain array (approvals aren't grouped/acked).
+// ack.
+//
+// Approvals are deliberately absent: they moved to the "Needs you" tab so a
+// decision has exactly one home. This band is agent failures only.
 const triage = {
-  approvals: [] as {
-    id: string;
-    status: string;
-    type?: string;
-    payload?: Record<string, unknown>;
-  }[],
   allFailedRuns: [] as {
     id: string;
     agentId?: string | null;
@@ -77,19 +74,14 @@ vi.mock("@/components/teams/inbox/hooks/useInboxTriage", () => ({
   useInboxTriage: (acknowledgedRunIds: Set<string>) => {
     const failedRuns = triage.allFailedRuns.filter((r) => !acknowledgedRunIds.has(r.id));
     return {
-      approvals: triage.approvals,
       failedRuns,
-      count: triage.approvals.length + failedRuns.length,
+      count: failedRuns.length,
       isLoading: triage.isLoading,
       isError: false,
     };
   },
 }));
-// Real useAcknowledgedRuns + storage are fine (jsdom localStorage). Stub the
-// mutations the rows pull in so no network is touched.
-vi.mock("@/components/teams/inbox/hooks/useApprovalMutations", () => ({
-  useApprovalMutations: () => ({ approve: vi.fn(), reject: vi.fn() }),
-}));
+// Real useAcknowledgedRuns + storage are fine (jsdom localStorage).
 // FailedRunRow's Retry pulls in useAgentWake; stub it so the band test stays
 // network-free (typed so tsc accepts wakeAgent's signature).
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({
@@ -102,7 +94,6 @@ import { NeedsAttentionBand } from "@/components/teams/inbox/NeedsAttentionBand"
 
 beforeEach(() => {
   localStorage.clear();
-  triage.approvals = [];
   triage.allFailedRuns = [];
 });
 
@@ -112,13 +103,7 @@ describe("NeedsAttentionBand", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows count + both row types; collapse hides the rows", () => {
-    // The approval label is synthesized from `type` + `payload` (upstream
-    // never sends a top-level `title`), so drive the visible label via the
-    // payload subject → "Board Approval: Deploy?".
-    triage.approvals = [
-      { id: "a1", status: "pending", type: "request_board_approval", payload: { title: "Deploy?" } },
-    ];
+  it("shows failed runs under an unambiguous heading; collapse hides the rows", () => {
     triage.allFailedRuns = [{ id: "r1", agentId: "ag1", status: "failed" }];
     render(
       <NeedsAttentionBand
@@ -126,12 +111,13 @@ describe("NeedsAttentionBand", () => {
         agents={[{ id: "ag1", name: "Atlas" }]}
       />,
     );
-    expect(screen.getByText(/needs attention/i)).toBeInTheDocument();
-    expect(screen.getByText(/Deploy\?/)).toBeInTheDocument();
+    // "Agent failures", not "Needs attention" — the band no longer competes
+    // with the "Needs you" tab over what the human is supposed to act on.
+    expect(screen.getByText(/agent failures/i)).toBeInTheDocument();
     expect(screen.getByText(/Atlas — heartbeat run failed/)).toBeInTheDocument();
     // Collapse toggle hides the rows.
-    fireEvent.click(screen.getByRole("button", { name: /needs attention/i }));
-    expect(screen.queryByText(/Deploy\?/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /agent failures/i }));
+    expect(screen.queryByText(/Atlas — heartbeat run failed/)).toBeNull();
   });
 
   it("collapses identical failures (same agent + reason) into one row with a ×N badge", () => {
@@ -179,6 +165,6 @@ describe("NeedsAttentionBand", () => {
     // band renders nothing.
     expect(screen.queryByText("Atlas — boom")).toBeNull();
     // The whole band collapses to empty (count hit 0).
-    expect(screen.queryByText(/needs attention/i)).toBeNull();
+    expect(screen.queryByText(/agent failures/i)).toBeNull();
   });
 });

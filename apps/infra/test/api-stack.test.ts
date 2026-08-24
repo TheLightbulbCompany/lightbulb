@@ -54,6 +54,18 @@ describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
   });
 });
 
+
+describe("ApiStack — production browser CORS origins", () => {
+  test("prod API Gateway CORS accepts apex and www frontend origins", () => {
+    const prod = synthApiStack("prod");
+    prod.hasResourceProperties("AWS::ApiGatewayV2::Api", {
+      CorsConfiguration: Match.objectLike({
+        AllowOrigins: ["https://isol8.co", "https://www.isol8.co"],
+      }),
+    });
+  });
+});
+
 describe("ApiStack — API Gateway account CloudWatch role (access/execution logging)", () => {
   // The WS stage's accessLogSettings silently deliver NOTHING when the
   // account-level CloudWatch role is missing or points at a deleted IAM

@@ -217,7 +217,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         },
         {
           name: "Register www.isol8.co project domain",
-          run: "vercel domains add www.isol8.co frontend --force --token=$VERCEL_TOKEN",
+          run: 'vercel domains add www.isol8.co frontend --force --token="$VERCEL_TOKEN"',
           env: vercelEnv,
         },
         {

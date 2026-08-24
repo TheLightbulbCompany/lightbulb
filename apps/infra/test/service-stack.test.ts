@@ -703,6 +703,22 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
   });
 });
 
+
+describe("ServiceStack — production HTTP CORS origins", () => {
+  test("prod backend accepts apex and www frontend origins", () => {
+    const template = buildServiceStack("prod");
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "CORS_ORIGINS", Value: "https://isol8.co,https://www.isol8.co" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+});
+
 describe("ServiceStack — Metronome per-env wiring", () => {
   // METRONOME_LIFECYCLE_ENABLED is GONE (it defaulted false and gated only the
   // ledger-CREATING paths, never the ones that depend on a ledger, so any

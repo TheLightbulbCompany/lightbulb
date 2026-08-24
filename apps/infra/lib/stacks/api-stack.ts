@@ -122,7 +122,7 @@ export class ApiStack extends cdk.Stack {
       // FastAPI's middleware was correct, but AWS API Gateway returned its
       // own preflight response with PATCH missing from allow_methods.
       corsConfiguration: {
-        allowOrigins: [frontendUrl],
+        allowOrigins: isProd ? [frontendUrl, "https://www.isol8.co"] : [frontendUrl],
         allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowHeaders: [
           "Content-Type",

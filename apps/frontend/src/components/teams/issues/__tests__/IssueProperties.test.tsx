@@ -135,7 +135,25 @@ describe("IssueProperties monitor row", () => {
     });
 
     expect(within(monitorRow()).getByText(/2 checks of 8/)).toBeInTheDocument();
-    expect(within(monitorRow()).getByText(/gives up/)).toBeInTheDocument();
+    // "gives up" is a FUTURE instant; it must read forwards, not "just now".
+    expect(within(monitorRow()).getByText(/gives up in /)).toBeInTheDocument();
+  });
+
+  it("reads a cleared-because-triggered monitor as woken, not as a failure", () => {
+    // Upstream reports a fired monitor two ways: status "triggered", or status
+    // "cleared" with clearReason "triggered" once the wake consumed it.
+    renderProperties({
+      executionState: {
+        monitor: {
+          status: "cleared",
+          clearReason: "triggered",
+          clearedAt: "2020-01-01T00:00:00Z",
+        },
+      },
+    });
+
+    expect(within(monitorRow()).getByText(/Woke/)).toBeInTheDocument();
+    expect(within(monitorRow()).queryByText("Not scheduled")).toBeNull();
   });
 
   it("does not report a fired monitor as 'Not scheduled'", () => {

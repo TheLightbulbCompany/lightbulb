@@ -479,9 +479,15 @@ function MonitorRow({
   // No live schedule, but a monitor ran here. Upstream consumes the policy entry
   // when it fires, so without this branch a task that just finished waiting
   // reads as "Not scheduled" — indistinguishable from one that never waited.
+  // A fired monitor shows up two ways upstream: status "triggered", or status
+  // "cleared" with clearReason "triggered" once the wake is done with it. Both
+  // mean the wait paid off.
+  const firedAt = monitorState?.lastTriggeredAt ?? monitorState?.clearedAt ?? null;
   const spentLabel =
-    monitorState?.status === "triggered"
-      ? `Woke ${timeAgo(monitorState.lastTriggeredAt ?? monitorState.clearedAt ?? "")}`
+    monitorState?.status === "triggered" || monitorState?.clearReason === "triggered"
+      ? firedAt
+        ? `Woke ${timeAgo(firedAt)}`
+        : "Woke"
       : monitorState?.clearReason === "timeout_exceeded"
         ? "Timed out"
         : monitorState?.clearReason === "max_attempts_exhausted"

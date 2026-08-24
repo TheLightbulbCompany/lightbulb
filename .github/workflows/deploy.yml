@@ -2355,6 +2355,13 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to www.isol8.co
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          www.isol8.co --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       - name: Alias to admin.isol8.co
         run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
           admin.isol8.co --token=$VERCEL_TOKEN

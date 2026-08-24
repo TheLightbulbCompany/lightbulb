@@ -243,6 +243,70 @@ Interpretation:
 
 There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
 
+### Execution Monitors (waiting on an external service)
+
+`executionPolicy.monitor` schedules a re-check instead of parking the issue on a human. Set it through the same `PATCH /api/issues/:issueId` — there is no dedicated monitor write route. Use `/app/skills/paperclip/scripts/paperclip-api.sh monitor` rather than a hand-built body: `executionPolicy` is REPLACE-semantics, so a PATCH carrying only `{monitor}` **deletes the issue's `stages`, `reviewPreset`, `authorizationPolicy` and `maxReviewRounds`**. The helper reads the current policy and merges.
+
+Write shape (only `nextCheckAt` is required):
+
+```json
+PATCH /api/issues/:issueId
+{
+  "executionPolicy": {
+    "mode": "normal",
+    "stages": [],
+    "monitor": {
+      "nextCheckAt": "2026-08-25T09:00:00.000Z",
+      "kind": "external_service",
+      "serviceName": "GitHub",
+      "notes": "acme/api#1979 — resume the release checklist once it merges",
+      "timeoutAt": "2026-08-27T09:00:00.000Z",
+      "maxAttempts": 8,
+      "recoveryPolicy": "escalate_to_board"
+    }
+  }
+}
+```
+
+- `kind` has exactly one legal value today: `external_service`.
+- `recoveryPolicy`: `wake_owner` (default) | `create_recovery_issue` | `escalate_to_board`.
+- `scheduledBy` is **assigned by the server** from the actor (`assignee` for an agent, `board` for a board user). Sending it is pointless — the value is overwritten.
+- `externalRef` is **write-only**: upstream replaces whatever you send with the literal `[redacted]` before storing. Never round-trip an identifier through it; put it in `notes`.
+- Rejected with `422` unless the issue is `in_progress`/`in_review` **and** assigned to an agent (`assigneeUserId` must be null), or if `timeoutAt`/`maxAttempts` are already exhausted.
+
+Read shape — live state lives on `executionState.monitor`, not on the policy:
+
+```json
+{
+  "monitorNextCheckAt": "2026-08-25T09:00:00.000Z",
+  "monitorLastTriggeredAt": null,
+  "monitorAttemptCount": 0,
+  "executionState": {
+    "monitor": {
+      "status": "scheduled",
+      "nextCheckAt": "2026-08-25T09:00:00.000Z",
+      "lastTriggeredAt": null,
+      "attemptCount": 0,
+      "notes": "acme/api#1979 — resume the release checklist once it merges",
+      "serviceName": "GitHub",
+      "timeoutAt": "2026-08-27T09:00:00.000Z",
+      "maxAttempts": 8,
+      "recoveryPolicy": "escalate_to_board",
+      "clearedAt": null,
+      "clearReason": null
+    }
+  }
+}
+```
+
+`status` is `scheduled` | `triggered` | `cleared`. `clearReason` explains a cleared monitor (`manual`, `triggered`, `done`, `cancelled`, `invalid_status`, `invalid_assignee`, `dispatch_skipped`, `timeout_exceeded`, `max_attempts_exhausted`).
+
+**The issues LIST route always returns `executionPolicy: null` and `executionState: null`** — only the flat `monitorNextCheckAt` / `monitorLastTriggeredAt` / `monitorAttemptCount` / `monitorNotes` / `monitorScheduledBy` columns survive there. Fetch the issue by id for anything else.
+
+Firing is one-shot: the wake arrives with `PAPERCLIP_WAKE_REASON=issue_monitor_due`, `nextCheckAt` is cleared, and the monitor is stripped from the policy. Reschedule if the wait is not over. Run a check early with `POST /api/issues/:issueId/monitor/check-now` (empty body, returns `{"ok": true}`).
+
+A monitor is the **wait**, not the **authority** — see the skill's "A monitor is the wait. An approval is the authority."
+
 ### Cross-Agent Review Gates
 
 Use native execution stages for cross-agent code or deliverable review gates. The gate belongs on the source issue's `executionPolicy.stages[]`, with the reviewer or approver listed in `participants[]` and the stage `type` set to `review` or `approval`.

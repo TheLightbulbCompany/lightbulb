@@ -30,6 +30,7 @@ import type {
   IssueStatus,
   IssuePriority,
   IssueMonitorPolicy,
+  IssueMonitorState,
   CompanyAgent,
   CompanyMember,
   IssueProject,
@@ -250,15 +251,36 @@ function isoToLocalInput(iso: string | null | undefined): string {
  * actions; when unset it shows a muted "Not scheduled" with a Schedule
  * affordance that opens a themed popover editor. Read-only (no editor, no
  * actions) when the host wires none of the monitor handlers. */
+/** One line of live monitor state: how many times it has checked, when it last
+ * fired, and when the wait gives up. Without this a monitored task reads as
+ * stalled — "Re-check in 4h" alone does not say whether anything is happening.
+ * Returns null when there is nothing yet worth saying. */
+function monitorProgressLabel(state: IssueMonitorState | null | undefined): string | null {
+  if (!state) return null;
+  const parts: string[] = [];
+  const attempts = state.attemptCount ?? 0;
+  if (attempts > 0) {
+    parts.push(`${attempts} check${attempts === 1 ? "" : "s"}`);
+    if (state.maxAttempts) parts[parts.length - 1] += ` of ${state.maxAttempts}`;
+  }
+  if (state.lastTriggeredAt) parts.push(`last ${timeAgo(state.lastTriggeredAt)}`);
+  if (state.timeoutAt) parts.push(`gives up ${timeAgo(state.timeoutAt)}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 function MonitorRow({
   issueId,
   monitor,
+  monitorState,
   onMonitorChange,
   onMonitorClear,
   onCheckNow,
 }: {
   issueId: string;
   monitor: IssueMonitorPolicy | null;
+  /** Live state from ``executionState.monitor``. Outlives ``monitor`` — a fired
+   * monitor is stripped from the policy upstream but leaves its state behind. */
+  monitorState?: IssueMonitorState | null;
   onMonitorChange?: (
     monitor: Pick<IssueMonitorPolicy, "nextCheckAt" | "notes" | "serviceName">,
   ) => void;
@@ -378,6 +400,8 @@ function MonitorRow({
     </PopoverContent>
   );
 
+  const progress = monitorProgressLabel(monitorState);
+
   if (monitor) {
     return (
       <PropertyRow label="Monitor">
@@ -396,6 +420,11 @@ function MonitorRow({
           {monitor.notes && (
             <span className="text-xs" style={{ color: "var(--mute)" }}>
               {monitor.notes}
+            </span>
+          )}
+          {progress && (
+            <span className="text-xs" style={{ color: "var(--mute)" }}>
+              {progress}
             </span>
           )}
           <span className="flex items-center gap-3 pt-0.5">
@@ -447,11 +476,23 @@ function MonitorRow({
     );
   }
 
+  // No live schedule, but a monitor ran here. Upstream consumes the policy entry
+  // when it fires, so without this branch a task that just finished waiting
+  // reads as "Not scheduled" — indistinguishable from one that never waited.
+  const spentLabel =
+    monitorState?.status === "triggered"
+      ? `Woke ${timeAgo(monitorState.lastTriggeredAt ?? monitorState.clearedAt ?? "")}`
+      : monitorState?.clearReason === "timeout_exceeded"
+        ? "Timed out"
+        : monitorState?.clearReason === "max_attempts_exhausted"
+          ? "Gave up (out of attempts)"
+          : null;
+
   return (
     <PropertyRow label="Monitor">
       <span className="inline-flex items-baseline gap-2">
-        <span data-empty="true" style={{ color: "var(--mute)" }}>
-          Not scheduled
+        <span data-empty={spentLabel ? undefined : "true"} style={{ color: "var(--mute)" }}>
+          {spentLabel ?? "Not scheduled"}
         </span>
         {onMonitorChange && (
           <Popover
@@ -695,6 +736,7 @@ export function IssueProperties({
       <MonitorRow
         issueId={issue.id}
         monitor={issue.executionPolicy?.monitor ?? null}
+        monitorState={issue.executionState?.monitor ?? null}
         onMonitorChange={onMonitorChange}
         onMonitorClear={onMonitorClear}
         onCheckNow={onCheckNow}

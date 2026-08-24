@@ -50,6 +50,28 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       dispatches a heartbeat run for the assignee (see the skill's
       "Webchat and interactive sessions" section).
 
+  monitor <issueId> --at ISO8601 [--service NAME] [--notes TEXT]
+          [--timeout-at ISO8601] [--max-attempts N] [--recovery POLICY]
+  monitor <issueId> --clear
+      PATCH /api/issues/{id}  body: { executionPolicy: { ..., monitor } }
+      Wait for an EXTERNAL thing (a PR to merge, a build to finish, a reply to
+      land) without a human round-trip: Paperclip re-checks at --at and wakes
+      the assignee. Prefer this over a request_confirmation card that only
+      asks someone to tell you the thing happened.
+      RECOVERY (when the wait times out or runs out of attempts; default
+      wake_owner): wake_owner | create_recovery_issue | escalate_to_board
+      PRECONDITIONS (else upstream 422s): the issue must be in_progress or
+      in_review AND assigned to an agent (not to a human user).
+      ONE-SHOT: when it fires, the monitor is consumed — nextCheckAt is
+      cleared. Reschedule if you still need to wait.
+      Name what you are watching in --notes; there is deliberately no --ref
+      flag because upstream redacts externalRef at write time.
+      Reads the issue's current executionPolicy and MERGES the monitor onto it
+      — executionPolicy is REPLACE-semantics upstream, so sending the monitor
+      alone would wipe the issue's reviewer/approver stages.
+      A monitor is the WAIT, never the AUTHORITY: it does not entitle you to
+      act on what it observes. Keep the approval gate you already needed.
+
   checkout <issueId> [--agent-id ID] [--expect "s1,s2,..."]
       POST /api/issues/{id}/checkout   body: { agentId, expectedStatuses }
       agentId defaults to $PAPERCLIP_AGENT_ID.
@@ -455,6 +477,98 @@ cmd_update() {
          then {blockedByIssueIds: ($blockedBy | split(",") | map(select(length > 0)))}
          else {}
          end)
+    '
+  )"
+  send PATCH "$(api_base)/issues/$issue_id" "$payload"
+}
+
+# Paperclip's ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES enum
+# (packages/shared/src/constants.ts).
+MONITOR_RECOVERY_POLICIES="wake_owner,create_recovery_issue,escalate_to_board"
+
+cmd_monitor() {
+  # Schedule (or clear) an issue's execution monitor — the native "wait for an
+  # external thing" primitive. Paperclip re-checks at nextCheckAt and wakes the
+  # assignee, so the waiting costs no human round-trip.
+  #
+  # This needs its own subcommand rather than `raw PATCH` because
+  # executionPolicy has REPLACE semantics upstream: PATCHing
+  # {executionPolicy: {monitor: ...}} on its own silently WIPES the issue's
+  # reviewer/approver stages and every other policy field. So this reads the
+  # current policy first and merges the monitor onto it — the same
+  # read-modify-write the board UI does before it sends a monitor edit.
+  local issue_id="${1:-}"
+  shift || true
+  [[ -n "$issue_id" ]] || die 'monitor: missing <issueId>.'
+  # No --ref flag on purpose: upstream runs externalRef through
+  # redactIssueMonitorExternalRef at WRITE time, so any value sent is replaced
+  # with the literal "[redacted]" before it is ever stored. Offering the flag
+  # would silently discard whatever the agent put in it. The watched thing
+  # belongs in --notes, which is persisted verbatim (500 chars).
+  local at="" service="" notes="" timeout_at="" max_attempts="" recovery=""
+  local clear=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --at) at="${2:-}"; shift 2 ;;
+      --service) service="${2:-}"; shift 2 ;;
+      --notes) notes="${2:-}"; shift 2 ;;
+      --timeout-at) timeout_at="${2:-}"; shift 2 ;;
+      --max-attempts) max_attempts="${2:-}"; shift 2 ;;
+      --recovery) recovery="${2:-}"; shift 2 ;;
+      --clear) clear=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "monitor: unknown argument: $1" ;;
+    esac
+  done
+
+  if [[ "$clear" == "1" ]]; then
+    if [[ -n "$at$service$notes$timeout_at$max_attempts$recovery" ]]; then
+      die 'monitor: --clear takes no other monitor flags.'
+    fi
+  else
+    [[ -n "$at" ]] || die 'monitor: --at <ISO8601> is required (or pass --clear).'
+    if [[ -n "$max_attempts" ]]; then
+      require_integer_between monitor --max-attempts "$max_attempts" 1 100
+    fi
+    if [[ -n "$recovery" ]]; then
+      require_choice monitor --recovery "$recovery" "$MONITOR_RECOVERY_POLICIES"
+    fi
+  fi
+
+  # Merge base: the issue's CURRENT executionPolicy. Without this read the
+  # PATCH would drop the stages — see the REPLACE-semantics note above.
+  local existing='null'
+  if [[ "$dry_run" == "1" ]]; then
+    printf 'monitor: --dry-run skips the read, so the merge base below is empty; a live call preserves existing stages.\n' >&2
+  else
+    require_live_env
+    require_command jq
+    existing="$(send GET "$(api_base)/issues/$issue_id" | jq -c '.executionPolicy // null')"
+  fi
+
+  local payload
+  payload="$(
+    jq -nc \
+      --argjson existing "$existing" \
+      --argjson clear "$clear" \
+      --arg at "$at" \
+      --arg service "$service" \
+      --arg notes "$notes" \
+      --arg timeoutAt "$timeout_at" \
+      --arg maxAttempts "$max_attempts" \
+      --arg recovery "$recovery" '
+      def opt(key; value): if value == "" then {} else {(key): value} end;
+      (($existing // {}) | if type == "object" then . else {} end) as $policy
+      | (if $clear == 1 then null
+         else ($policy.monitor // {})
+              + {nextCheckAt: $at, kind: "external_service"}
+              + opt("serviceName"; $service)
+              + opt("notes"; $notes)
+              + opt("timeoutAt"; $timeoutAt)
+              + opt("recoveryPolicy"; $recovery)
+              + (if $maxAttempts == "" then {} else {maxAttempts: ($maxAttempts | tonumber)} end)
+         end) as $monitor
+      | {executionPolicy: ($policy + {monitor: $monitor})}
     '
   )"
   send PATCH "$(api_base)/issues/$issue_id" "$payload"
@@ -1129,6 +1243,7 @@ main() {
   case "$subcommand" in
     comment)  cmd_comment "$@" ;;
     update)   cmd_update "$@" ;;
+    monitor)  cmd_monitor "$@" ;;
     checkout) cmd_checkout "$@" ;;
     release)  cmd_release "$@" ;;
     subtask)  cmd_subtask "$@" ;;

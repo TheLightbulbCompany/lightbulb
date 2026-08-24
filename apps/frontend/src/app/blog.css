@@ -373,3 +373,130 @@
     transition: none;
   }
 }
+
+/* ============================================================ docs
+   Public documentation hub. Uses blog typography primitives and adds
+   dense, crawlable cards for SEO/GEO answer extraction.
+   ============================================================ */
+
+.docs-wrap {
+  max-width: 1120px;
+}
+
+.docs-hero {
+  max-width: 840px;
+}
+
+.docs-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.docs-toc {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 34px 0 42px;
+}
+
+.docs-toc a {
+  border: 1px solid rgba(23, 61, 43, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 252, 241, 0.72);
+  color: var(--forest);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 14px 16px;
+  text-decoration: none;
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.docs-toc a:hover {
+  background: rgba(255, 252, 241, 0.95);
+  border-color: rgba(23, 61, 43, 0.38);
+  transform: translateY(-1px);
+}
+
+.docs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.docs-card,
+.docs-faq {
+  border: 1px solid rgba(23, 61, 43, 0.16);
+  border-radius: 28px;
+  background: rgba(255, 252, 241, 0.78);
+  box-shadow: 0 18px 60px rgba(23, 61, 43, 0.08);
+  padding: 28px;
+}
+
+.docs-card h2,
+.docs-faq h2 {
+  color: var(--ink);
+  font-family: var(--font-lora), Georgia, serif;
+  font-size: clamp(1.55rem, 2.5vw, 2.25rem);
+  line-height: 1.05;
+  margin: 0 0 14px;
+}
+
+.docs-card h3 {
+  color: var(--forest);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  margin: 24px 0 10px;
+  text-transform: uppercase;
+}
+
+.docs-card p,
+.docs-card li,
+.docs-faq p {
+  color: rgba(31, 32, 28, 0.82);
+  font-size: 16px;
+  line-height: 1.72;
+}
+
+.docs-card ul,
+.docs-card ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.docs-card li + li {
+  margin-top: 8px;
+}
+
+.docs-faq {
+  margin-top: 22px;
+}
+
+.docs-faq-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.docs-faq details {
+  border: 1px solid rgba(23, 61, 43, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.38);
+  padding: 16px 18px;
+}
+
+.docs-faq summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+@media (max-width: 860px) {
+  .docs-toc,
+  .docs-grid {
+    grid-template-columns: 1fr;
+  }
+}

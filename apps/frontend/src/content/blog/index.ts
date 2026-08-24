@@ -2,12 +2,18 @@ import type { BlogPost } from "./types";
 import { persistentAiAgentWorkspace } from "./posts/persistent-ai-agent-workspace";
 import { connectAiAgentChannels } from "./posts/connect-ai-agent-slack-discord-telegram";
 import { webhookEventReference } from "./posts/webhook-event-reference";
+import { aiNativeCompanyOperatingSystem } from "./posts/ai-native-company-operating-system";
+import { browserAutomationForNonnativeIntegrations } from "./posts/browser-automation-for-nonnative-integrations";
+import { humanInTheLoopAiAgentApprovals } from "./posts/human-in-the-loop-ai-agent-approvals";
 
 /**
  * Registry of all blog posts. Add new posts here.
  * `getAllPosts()` returns them newest-first.
  */
 const registry: BlogPost[] = [
+  aiNativeCompanyOperatingSystem,
+  browserAutomationForNonnativeIntegrations,
+  humanInTheLoopAiAgentApprovals,
   webhookEventReference,
   persistentAiAgentWorkspace,
   connectAiAgentChannels,

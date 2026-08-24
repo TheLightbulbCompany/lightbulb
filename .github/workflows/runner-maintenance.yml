@@ -51,11 +51,20 @@ jobs:
           # (default 60m) so an in-flight job is never a candidate.
           # sudo because soci and cdk both run as root here.
           echo "=== reclaiming (untouched > ${MIN_AGE}m) ==="
-          # `cdk.out*` is the big one and is easy to miss: cdk synth leaves an
-          # ~81 MB /tmp/cdk.outXXXXXX behind per run and never collects it, so
-          # ~190 past deploys had quietly become the entire 16 GB. Note the
-          # DOT — a `cdk-*` glob does NOT match it, which is how the first
-          # pass reclaimed only megabytes and still came back 100% full.
+          # `cdk.out*` is the big one and is easy to miss. Note the DOT — a
+          # `cdk-*` glob does NOT match it, which is how the first pass
+          # reclaimed only megabytes and still came back 100% full.
+          #
+          # These are NOT from `cdk synth`, despite what this comment used to
+          # say: the CLI sets CDK_OUTDIR, so a synth writes to
+          # apps/infra/cdk.out on the 1 TB volume and leaves /tmp empty
+          # (measured). They came from `new App()` WITHOUT an outdir, which
+          # mkdtemps `os.tmpdir()/cdk.outXXXXXX` and never removes it — i.e.
+          # the apps/infra vitest suite, which built 54 Apps and stranded
+          # ~1.2 GB per run. infra-ci runs that suite on every PR touching
+          # apps/infra, so ~13 PR runs filled the 16 GB tmpfs. Fixed in
+          # apps/infra/test/scratch-tmpdir.ts; this sweep still covers runs
+          # that crashed before their cleanup hook.
           sudo find /tmp -maxdepth 1 -mmin "+${MIN_AGE}" \
             \( -name 'tmp.*' -o -name 'cdk-*' -o -name 'cdk.out*' -o -name 'soci*' \
                -o -name 'ztoc*' -o -name 'buildkit*' -o -name 'containerd*' \) \

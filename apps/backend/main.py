@@ -572,12 +572,13 @@ app = FastAPI(
 # whenever Paperclip responds with a non-2xx; without this handler the Teams
 # BFF (``routers/teams/*.py``) would propagate it as an unhandled exception
 # and FastAPI would return 500 with a useless body. We forward Paperclip's
-# original status code (e.g. 403 / 404) and surface the raw upstream body
-# under ``upstream_status`` so panel-side error handling has something to
-# branch on. The ``502`` fallback is for the (currently-impossible) case
-# where ``status_code`` is outside the standard HTTP range — we can't
-# legitimately return that to the client, so map to "bad gateway" which
-# is exactly what an out-of-range upstream status implies.
+# original status code (e.g. 403 / 404) under ``upstream_status`` so panel-side
+# error handling has something to branch on, and ``exc.message`` — NOT
+# ``str(exc)``, which now carries the upstream response body — as the detail, so
+# an upstream error payload never reaches the browser. The ``502`` fallback is
+# for the (currently-impossible) case where ``status_code`` is outside the
+# standard HTTP range — we can't legitimately return that to the client, so map
+# to "bad gateway" which is exactly what an out-of-range upstream status implies.
 @app.exception_handler(PaperclipApiError)
 async def paperclip_api_error_handler(request, exc: PaperclipApiError):
     # 401 self-heal (Teams BFF only). A Teams request forwards the browser's
@@ -623,15 +624,16 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
             logger.warning("teams 401 self-heal: re-mint failed for user %s", teams_user_id, exc_info=True)
             return JSONResponse(
                 status_code=401,
-                content={"detail": str(exc), "upstream_status": exc.status_code},
+                content={"detail": exc.message, "upstream_status": exc.status_code},
             )
         return refresh
 
     status = exc.status_code if 400 <= exc.status_code < 600 else 502
     if status >= 500:
-        # str(exc) is "GET /api/companies/<company_uuid>/... -> 5xx" — it embeds
-        # the internal Paperclip path + company UUID, and an upstream 5xx carries
-        # nothing client-actionable. Log the real detail server-side and return a
+        # str(exc) is "GET /api/companies/<company_uuid>/... -> 5xx: <body>" — it
+        # embeds the internal Paperclip path + company UUID, and an upstream 5xx
+        # carries nothing client-actionable. Log the real detail server-side
+        # (the body is the only place upstream says why) and return a
         # generic body so we don't leak backend architecture to the caller.
         logger.warning("paperclip upstream error: %s", exc, exc_info=True)
         return JSONResponse(
@@ -640,7 +642,7 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
         )
     return JSONResponse(
         status_code=status,
-        content={"detail": str(exc), "upstream_status": exc.status_code},
+        content={"detail": exc.message, "upstream_status": exc.status_code},
     )
 
 

@@ -50,3 +50,31 @@ async def test_4xx_detail_preserved():
     resp = await paperclip_api_error_handler(_Req(), PaperclipApiError("GET /thing -> 404", status_code=404, body=""))
     assert resp.status_code == 404
     assert json.loads(resp.body)["upstream_status"] == 404
+
+
+@pytest.mark.asyncio
+async def test_4xx_detail_excludes_upstream_body():
+    """str(exc) carries the upstream body for logs; the client must not see it."""
+    exc = PaperclipApiError(
+        "POST /api/companies/abc/agents -> 400",
+        status_code=400,
+        body='{"error":"Validation error","details":[{"path":["role"]}]}',
+    )
+    # The body is on str(exc) so logger.exception/traceback records the reason...
+    assert "Validation error" in str(exc)
+    # ...but never reaches the browser.
+    resp = await paperclip_api_error_handler(_Req(), exc)
+    assert resp.status_code == 400
+    assert json.loads(resp.body)["detail"] == "POST /api/companies/abc/agents -> 400"
+    assert b"Validation error" not in resp.body
+
+
+def test_str_truncates_a_large_body():
+    exc = PaperclipApiError("POST /x -> 400", status_code=400, body="z" * 5000)
+    rendered = str(exc)
+    assert rendered.endswith("...[truncated]")
+    assert len(rendered) < 1000
+
+
+def test_str_is_bare_message_when_body_is_empty():
+    assert str(PaperclipApiError("GET /x -> 404", status_code=404, body="")) == "GET /x -> 404"

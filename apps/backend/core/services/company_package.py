@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
+
 COMPANY_STANDARD_PLAN_MAX_AGENTS = 10
 
 
@@ -186,6 +188,24 @@ def _agent_slug_from_ref(ref) -> str:
     return p.name
 
 
+def _paperclip_role(raw: str | None, *, is_ceo: bool) -> str:
+    """Coerce an AGENTS.md ``role:`` to one Paperclip will accept.
+
+    Paperclip validates ``role`` with ``z.enum(AGENT_ROLES)``, so anything
+    outside ``PAPERCLIP_AGENT_ROLES`` fails agent-create with a 400 and
+    (because the deploy rolls back every agent it already created) takes the
+    whole company import down with it. Package frontmatter is author-written
+    and carries free text like "Head of Growth", and an agent with no
+    ``role:`` at all has nothing to map from — so coerce both to Paperclip's
+    own default rather than failing a deploy over a cosmetic field. Same
+    tolerant-read posture as ``paperclip_meta.read_from_agent_entry``.
+    """
+    role = (raw or "").strip().lower()
+    if role in PAPERCLIP_AGENT_ROLES:
+        return role
+    return "ceo" if is_ceo else "general"
+
+
 def _team_managers(pkg_dir: Path) -> dict[str, str]:
     """Map each team member's slug to its team ``manager`` slug.
 
@@ -347,7 +367,7 @@ def parse_deploy_plan(pkg_dir: Path) -> DeployPlan:
         ceo_slug = no_manager[0] if no_manager else (sorted(agents)[0] if agents else "")
 
     for s, agent in agents.items():
-        agent.role = raw_roles[s] or ("ceo" if s == ceo_slug else "member")
+        agent.role = _paperclip_role(raw_roles[s], is_ceo=s == ceo_slug)
 
     ordered = _topo_order(agents, ceo_slug)
     routines = _parse_routines(pkg_dir, set(agents))

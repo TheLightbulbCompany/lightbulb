@@ -330,7 +330,12 @@ async def test_apply_update_regenerates_config_before_image_roll():
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
-    regen.assert_awaited_once_with(owner_id)
+    # VALUE-checked, not just "was awaited": deployed_tag defaults to None, and
+    # None makes reapply_owner_config read the owner's CURRENT task-def. So a
+    # dropped kwarg still compiles, still passes an await-only assertion, and
+    # silently inverts every fork-level gate on the roll. The update_item's
+    # new_image is :2026.5.28-abc, deliberately unlike any tag an owner is on.
+    regen.assert_awaited_once_with(owner_id, deployed_tag="2026.5.28-abc")
     # The strip is now only the legacy-row fallback, not the normal path.
     migrate.assert_not_awaited()
     # An image roll also heals seeded workspace files — the only routine

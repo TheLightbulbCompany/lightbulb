@@ -534,7 +534,17 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                 # as identity and bindings) via _runtime_only_delta.
                 if new_image:
                     try:
-                        await reapply_owner_config(owner_id)
+                        # deployed_tag is the image that will READ this config,
+                        # i.e. the one we are rolling TO -- NOT the owner's
+                        # current task-def, which is what reapply_owner_config
+                        # looks up when this is omitted. Omitting it inverts
+                        # every fork-level gate on the one write that exists to
+                        # satisfy the new image: an owner on isol8.6 rolling to
+                        # 8.1 would have browser.sessionState gated OFF by the
+                        # image being replaced. It would have looked correct on
+                        # any owner already at the pin and been silently wrong
+                        # on the 20 prod owners that lag it.
+                        await reapply_owner_config(owner_id, deployed_tag=new_image.rpartition(":")[2])
                     except (LookupError, ValueError):
                         # Legacy rows (no gateway_token) cannot be regenerated
                         # -- reapply_owner_config is the same code the admin

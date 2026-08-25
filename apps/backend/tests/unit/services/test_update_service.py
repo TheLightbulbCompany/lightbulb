@@ -290,11 +290,17 @@ async def test_migrate_removed_config_keys_scrubs_defaults_and_entries():
 
 
 @pytest.mark.asyncio
-async def test_apply_update_migrates_removed_keys_before_image_roll():
-    """An image roll must strip removed-upstream keys from the existing
-    on-disk config BEFORE resizing onto the new image — otherwise the
-    rolled container boots against a stale key the strict schema rejects
-    and crash-loops."""
+async def test_apply_update_regenerates_config_before_image_roll():
+    """An image roll must REGENERATE the on-disk config BEFORE resizing onto
+    the new image.
+
+    It used to only strip a blacklist of removed keys, which held while every
+    roll was same-upstream (2026.7.2-isol8.N -> isol8.M, identical schema).
+    Across an upstream bump the blacklist is structurally insufficient — it
+    reaches only inside agents.*, and 7.2 -> 8.1 leaves 10 rejected keys at
+    the ROOT. Both schema roots are additionalProperties:false, so the rolled
+    gateway crash-loops at boot. The generator is version-aware, so a regen
+    needs no blacklist to maintain."""
     owner_id, update_id = "owner_1", "upd_1"
     update_item = {
         "owner_id": owner_id,
@@ -309,11 +315,13 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
     ecs = MagicMock()
     ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
     ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
+    regen = AsyncMock(side_effect=lambda *a, **k: order.append("regen"))
     migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
     heal = AsyncMock(side_effect=lambda *a, **k: order.append("heal"))
 
     with (
         patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "reapply_owner_config", regen),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
         patch.object(update_service, "heal_seeded_files", heal),
         patch("core.containers.get_ecs_manager", return_value=ecs),
@@ -322,13 +330,54 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
-    migrate.assert_awaited_once_with(owner_id)
+    regen.assert_awaited_once_with(owner_id)
+    # The strip is now only the legacy-row fallback, not the normal path.
+    migrate.assert_not_awaited()
     # An image roll also heals seeded workspace files — the only routine
     # fleet-wide touch-point for already-provisioned Fridays.
     heal.assert_awaited_once()
     assert heal.await_args.kwargs["owner_id"] == owner_id
     ecs.resize_user_container.assert_awaited_once()
-    assert order == ["migrate", "heal", "resize"]
+    assert order == ["regen", "heal", "resize"]
+
+
+async def test_apply_update_falls_back_to_strip_for_legacy_rows():
+    """A legacy row with no gateway_token cannot be regenerated —
+    reapply_owner_config is the same code the admin Regenerate button 409s
+    them from. The roll must fall back to the historical strip rather than
+    fail, so a SAME-upstream roll keeps working for them exactly as before."""
+    owner_id, update_id = "owner_legacy", "upd_1"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "image_update",
+        "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
+    }
+
+    repo = _claimed_repo(update_item)
+
+    order: list[str] = []
+    ecs = MagicMock()
+    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
+    ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
+    regen = AsyncMock(side_effect=ValueError("owner has no gateway_token"))
+    migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "reapply_owner_config", regen),
+        patch.object(update_service, "migrate_removed_config_keys", migrate),
+        patch.object(update_service, "heal_seeded_files", AsyncMock()),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=MagicMock()),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is True
+    migrate.assert_awaited_once_with(owner_id)
+    # The roll still happened — a legacy owner is not stranded on an old image.
+    ecs.resize_user_container.assert_awaited_once()
+    assert order == ["migrate", "resize"]
 
 
 async def _apply_image_only_update(owner_id, update_id, size):
@@ -348,6 +397,7 @@ async def _apply_image_only_update(owner_id, update_id, size):
 
     with (
         patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "reapply_owner_config", AsyncMock()),
         patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
         patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.containers.get_ecs_manager", return_value=ecs),

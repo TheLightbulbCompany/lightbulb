@@ -194,3 +194,74 @@ async def test_valid_seller_slice_still_deploys(efs_dir):
     written = json.loads(open(os.path.join(efs_dir, "user_1", "openclaw.json")).read())
     assert written["plugins"]["entries"]["resy"] == {"enabled": True}
     assert written["mcp"]["servers"]["resy"]["command"] == "node"
+
+
+# --- prune_schema_rejected -------------------------------------------------
+#
+# Guards the config REGEN on an image roll. The regen renders a fresh,
+# version-correct config and then restores the runtime-appended state the
+# generator does not know about. That restore preserves "anything the regen did
+# not emit", which is right within one upstream version and WRONG across a bump:
+# the new schema's DELETED keys also match that description, so the restore
+# resurrects exactly what the regen removed. Measured on 7.2 -> 8.1, the restore
+# re-added root `audit`/`web` and `skills.workshop.autonomous.enabled`, turning a
+# clean regen back into a crash-loop.
+
+
+def test_prune_drops_schema_rejected_keys_and_keeps_runtime_state():
+    """The pruner must be surgical: remove what the deployed schema rejects,
+    keep every schema-valid runtime subtree the container actually needs."""
+    base = {"skills": {"workshop": {"autonomous": {"mode": "propose"}}}}
+    restore = {
+        # Rejected by 2026.8.1: deleted root sections, and the pre-8.1 spelling
+        # of the workshop knob (`enabled` became `mode`).
+        "audit": {"enabled": False},
+        "web": {"enabled": True},
+        "skills": {
+            "workshop": {"autonomous": {"enabled": True}},
+            # Valid runtime state that MUST survive — a marketplace deploy's
+            # skill entry. skills.entries is an open map in the schema.
+            "entries": {"market_skill": {"enabled": True, "config": {"k": "v"}}},
+        },
+        # Valid runtime state the generator never emits.
+        "bindings": [{"agentId": "agent_x", "match": {"channel": "slack"}}],
+        "mcp": {"servers": {"deployed_mcp": {"command": "node"}}},
+    }
+
+    pruned = config_schema.prune_schema_rejected(base, restore)
+
+    assert "audit" not in pruned
+    assert "web" not in pruned
+    assert "enabled" not in pruned.get("skills", {}).get("workshop", {}).get("autonomous", {})
+    # Surgical, not scorched-earth: siblings of a rejected key survive.
+    assert pruned["skills"]["entries"]["market_skill"] == {"enabled": True, "config": {"k": "v"}}
+    assert pruned["bindings"] == [{"agentId": "agent_x", "match": {"channel": "slack"}}]
+    assert pruned["mcp"]["servers"]["deployed_mcp"] == {"command": "node"}
+
+
+def test_prune_leaves_a_clean_patch_untouched():
+    """No-op when nothing is rejected — the pruner must not perturb a restore
+    patch that is already valid, or every same-version roll pays for this."""
+    base = {"meta": {"lastTouchedVersion": "2026.8.1"}}
+    restore = {"bindings": [{"agentId": "a", "match": {"channel": "slack"}}]}
+    assert config_schema.prune_schema_rejected(base, restore) == restore
+
+
+def test_prune_strips_branches_left_empty():
+    """A subtree whose only content was rejected must not land as a bare {} —
+    the generator deliberately omitted it, and writing an empty section back
+    reintroduces a key the regen meant to drop."""
+    base = {"skills": {"workshop": {"autonomous": {"mode": "propose"}}}}
+    pruned = config_schema.prune_schema_rejected(
+        base, {"skills": {"workshop": {"autonomous": {"enabled": True}}}}
+    )
+    assert pruned == {}
+
+
+def test_prune_degrades_to_passthrough_without_a_schema():
+    """Schema unavailable is OUR bug, not the caller's. Same posture as the
+    rest of this module: degrade to audit-only rather than silently deleting
+    an owner's runtime state because we could not load an artifact."""
+    restore = {"audit": {"enabled": False}, "bindings": []}
+    with patch.object(config_schema, "_validator", return_value=None):
+        assert config_schema.prune_schema_rejected({}, restore) == restore

@@ -24,6 +24,7 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo, update_repo
 from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
+from core.services import config_schema
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
 from core.services.friday_identity import heal_seeded_files
 
@@ -383,6 +384,17 @@ async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None
         restore_patch.pop("channels", None)
         restore_patch.pop("bindings", None)
 
+    # _runtime_only_delta preserves whatever the regen did not emit. Within one
+    # upstream version that is exactly right — anything the generator skips is
+    # runtime state (identity, bindings). Across an upstream BUMP the same rule
+    # also re-adds every key the new schema DELETED, because "the generator
+    # stopped emitting it" describes both. Measured 7.2 -> 8.1: the restore
+    # brought back root `audit`/`web` and, via the co-owned recursion,
+    # `skills.workshop.autonomous.enabled` — turning a clean regen (0 schema
+    # errors) back into a crash-loop (2). Drop whatever the deployed schema
+    # rejects; runtime state is unaffected because it is schema-valid.
+    restore_patch = config_schema.prune_schema_rejected(fresh, restore_patch)
+
     if restore_patch:
         await config_patcher.patch_openclaw_config(owner_id, restore_patch)
 
@@ -499,12 +511,42 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     target_task_definition_arn,
                 )
             else:
-                # An image roll reuses the container's existing on-disk
-                # openclaw.json. Strip keys the new image's strict schema no
-                # longer accepts so the rolled gateway doesn't crash-loop at
-                # boot. No-op on a config already free of them.
+                # An image roll used to reuse the container's existing on-disk
+                # openclaw.json and merely STRIP keys the new image's strict
+                # schema no longer accepts. That worked while every roll was
+                # same-upstream (2026.7.2-isol8.N -> isol8.M, identical
+                # schema); it does not survive an upstream bump.
+                # migrate_removed_config_keys only reaches inside agents.*,
+                # and going 7.2 -> 8.1 leaves 12 rejected keys, 10 of them at
+                # the root (audit, web, cron.store, memory.backend,
+                # models.pricing, hooks.maxBodyBytes, gateway.nodes.
+                # allowCommands, browser.localLaunchTimeoutMs /
+                # localCdpReadyTimeoutMs / profiles.*.color / tabCleanup.*).
+                # Both schema roots are additionalProperties:false, so that is
+                # a boot crash-loop, not a degradation.
+                #
+                # Regenerate instead of scrubbing: the generator is already
+                # version-aware, so it emits whatever shape the pinned image
+                # wants without anyone maintaining a removal blacklist -- the
+                # blacklist is what rotted here. reapply_owner_config restores
+                # the runtime-appended subtrees the regen drops (channels /
+                # skills / mcp, plus anything the generator never emits such
+                # as identity and bindings) via _runtime_only_delta.
                 if new_image:
-                    await migrate_removed_config_keys(owner_id)
+                    try:
+                        await reapply_owner_config(owner_id)
+                    except (LookupError, ValueError):
+                        # Legacy rows (no gateway_token) cannot be regenerated
+                        # -- reapply_owner_config is the same code the admin
+                        # Regenerate button 409s them from. Fall back to the
+                        # historical strip so a SAME-upstream roll keeps
+                        # working for them exactly as before; they need a full
+                        # reprovision to cross an upstream bump either way.
+                        logger.warning(
+                            "update_service: config regen unavailable for owner=%s, falling back to key strip",
+                            owner_id,
+                        )
+                        await migrate_removed_config_keys(owner_id)
 
                     # Carry redaction rules onto already-provisioned containers.
                     # Nothing else does: the strip above only REMOVES keys, and

@@ -16,6 +16,7 @@ import pytest
 from hypothesis import given, settings
 
 from core.containers.config import build_openclaw_config_dict
+from core.services.config_schema import _normalized_for_validation
 from tests.chaos import strategies as ss
 
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "_schema"
@@ -72,9 +73,17 @@ def test_builder_never_raises(provider_choice, byo_provider, owner_type):
 )
 def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, owner_type):
     config = _build(provider_choice, byo_provider, owner_type)
+    # OpenClaw NEVER safeParses a raw on-disk config: validateConfigObject
+    # (validation-core.ts:423) runs migratePersistedImplicitMainRoster FIRST,
+    # converting the legacy agents.list[] roster into 8.1's agents.entries map,
+    # then re-projects a list view onto the result. The backend still writes the
+    # list shape, so parsing raw is STRICTER than the loader and rejects a
+    # config every container boots fine -- which is exactly what it did when the
+    # base moved to 8.1. Validate the migrated form, through the same mirror the
+    # production write-gate uses, so the harness and the gate agree.
     proc = subprocess.run(
         ["node", str(_VALIDATE)],
-        input=json.dumps(config),
+        input=json.dumps(_normalized_for_validation(config)),
         capture_output=True,
         text=True,
     )

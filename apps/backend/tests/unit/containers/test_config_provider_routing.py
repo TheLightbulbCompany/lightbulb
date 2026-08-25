@@ -71,7 +71,8 @@ def test_config_keeps_cron_service_and_heartbeat():
         aip_arns=_AIPS,
     )
     assert "enabled" not in cfg["cron"], "paid providers keep the cron service on"
-    assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json"
+    # cron.store retired at 2026.8.1 -- job state moved into the state DB.
+    assert "store" not in cfg["cron"]
     assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
 
@@ -302,7 +303,9 @@ async def test_memory_search_provider_resolves_per_auth_path(tmp_path, provider_
         kwargs["byo_provider"] = byo_provider
     await write_openclaw_config(**kwargs)
     cfg = json.loads((tmp_path / "openclaw.json").read_text())
-    memory_search = cfg["agents"]["defaults"]["memorySearch"]
+    # 2026.8.1 moved agents.defaults.memorySearch to the root memory.search.
+    assert "memorySearch" not in cfg["agents"]["defaults"]
+    memory_search = cfg["memory"]["search"]
     assert memory_search["enabled"] is True
     if provider_choice == "byo_key" and byo_provider == "openai":
         assert memory_search["provider"] == "openai"
@@ -802,7 +805,9 @@ def test_bedrock_without_sonnet_aip_fails_closed(provider_choice, bad_aips):
 
 
 def test_bedrock_trial_disables_cron_service():
-    assert _trial_cfg()["cron"] == {"enabled": False, "store": "/home/node/.openclaw/cron/jobs.json"}
+    # cron.store was retired at 2026.8.1 (job state lives in the state DB);
+    # cron.enabled is the part that actually gates the service.
+    assert _trial_cfg()["cron"] == {"enabled": False}
 
 
 def test_bedrock_trial_disables_heartbeat():
@@ -874,7 +879,10 @@ def test_paid_paths_enable_skill_workshop_autocapture(provider_choice, byo_provi
     if byo_provider is not None:
         kwargs["byo_provider"] = byo_provider
     cfg = build_openclaw_config_dict(**kwargs)
-    assert cfg["skills"]["workshop"] == {"autonomous": {"enabled": True}}
+    # 2026.8.1 replaced autonomous.enabled with a tri-state mode; "propose"
+    # is the old enabled:true semantics (capture + queue for review, never
+    # self-apply). "auto" WOULD self-apply, which is not what we want.
+    assert cfg["skills"]["workshop"] == {"autonomous": {"mode": "propose"}}
 
 
 def test_paid_bedrock_three_tier_ladder_is_unchanged():
@@ -918,11 +926,23 @@ def test_agent_run_deadline_is_thirty_minutes(provider_choice, kwargs):
 
 @pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
 def test_run_retries_capped(provider_choice, kwargs):
-    """Upstream default is 160 retries, each of which re-arms the deadline."""
+    """REGRESSION MARKER, not a preference: 2026.8.1 removed agents.defaults.runRetries.
+
+    We capped retries at 8 because the upstream default was 160 and each retry
+    re-arms the run deadline -- one of the four bounds that keep a runaway loop's
+    blast radius finite (alongside timeoutSeconds, subagents.maxConcurrent and
+    tools.loopDetection). At 2026.8.1 the key is gone from the schema with no
+    replacement: `runRetries` does not appear anywhere in upstream src/.
+
+    The loss is an accepted owner decision. What the runtime now does instead is
+    UNVERIFIED -- a name grep cannot tell us whether an internal bound survives --
+    so this asserts only what we know: we no longer emit the key, and nothing
+    silently reintroduces it.
+    """
     cfg = build_openclaw_config_dict(
         user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
     )
-    assert cfg["agents"]["defaults"]["runRetries"] == {"max": 8}
+    assert "runRetries" not in cfg["agents"]["defaults"]
 
 
 def test_subagent_concurrency_capped_on_trial_only():
@@ -988,7 +1008,14 @@ def test_bedrock_context_tokens_bounded(provider_choice, kwargs):
     cfg = build_openclaw_config_dict(
         user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
     )
-    assert cfg["agents"]["defaults"]["contextTokens"] == 200_000
+    # 2026.8.1 removed agents.defaults.contextTokens; the effective-budget bound
+    # is now per-model, so every Bedrock catalog entry has to carry it or the
+    # 1M-window models silently regain their full (expensive) budget.
+    assert "contextTokens" not in cfg["agents"]["defaults"]
+    models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
+    assert models, "bedrock catalog must not be empty"
+    for model in models:
+        assert model["contextTokens"] == 200_000, model["id"]
 
 
 @pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS[2:])

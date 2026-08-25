@@ -81,13 +81,14 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.8
+FROM ghcr.io/isol8ai/agent:2026.8.1-isol8.1
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
-# line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream
-# — its latest published dist is 2026.7.2-beta.3 (npm `beta` dist-tag; no stable
-# 2026.7.2 dist exists yet), so all eight baked plugins pin to 2026.7.2-beta.3 to
-# stay in lockstep with the 7.2 host (this base rolls to DEV only). Keep these
+# line on npm. The FROM tag is on the 2026.8.1 line, which is BETA-only upstream
+# — its latest published dist is 2026.8.1-beta.3 (npm `beta` dist-tag; no stable
+# 2026.8.1 dist exists yet, and upstream has cut no stable since v2026.7.1), so
+# all eight baked plugins pin to 2026.8.1-beta.3 to stay in lockstep with the 8.1
+# host (this base rolls to DEV only). Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel
 # plugin (slack/discord) on a newer host is not a safe skew. The dev canary boots
@@ -252,19 +253,33 @@ RUN npm i -g --ignore-scripts \
 # install above — with scripts skipped the `claude` wrapper is present but every
 # invocation dies with "claude native binary not installed", so the harness could
 # never launch. The smoke test fails the build if the binary didn't materialize.
-RUN npm i -g @anthropic-ai/claude-code && claude --version >/dev/null
+# 2026.8.1 BASE / npm allowScripts: the base image now runs
+# `npm install --global npm@latest`, and the newer npm BLOCKS install scripts by
+# default unless the package is named in --allow-scripts:
+#
+#   npm warn install-scripts 1 package had install scripts blocked because they
+#   are not covered by allowScripts: <pkg> (postinstall: ...)
+#
+# The three layers below deliberately skip the --ignore-scripts global install
+# above precisely because they need their postinstall to fetch a platform-native
+# binary. Without --allow-scripts the JS wrapper installs and every invocation
+# then dies ("claude native binary not installed", "xurl binary not found").
+# Each layer keeps its own smoke test, which is what fails the build if the
+# binary did not materialise -- this cannot regress silently.
+RUN npm i -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code \
+    && claude --version >/dev/null
 
 # xurl downloads its native Go binary in npm postinstall. Keep it outside the
 # --ignore-scripts global install above; otherwise the JS wrapper is present but
 # every `xurl` invocation fails with "xurl binary not found".
-RUN npm i -g @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
+RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
 # OpenCode: the ACP coding harness for chatgpt_oauth owners (registered via
 # the acpx agents map in openclaw.json — see backend build_acp_config). Its
 # platform binary arrives via optionalDependencies + postinstall, so like xurl
 # it stays outside the --ignore-scripts install above. Version-pinned; the
 # smoke test fails the build if the binary didn't materialize for this arch.
-RUN npm i -g opencode-ai@1.18.15 && opencode --version >/dev/null
+RUN npm i -g --allow-scripts=opencode-ai opencode-ai@1.18.15 && opencode --version >/dev/null
 
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral
@@ -412,7 +427,7 @@ RUN chmod 0755 /usr/local/bin/isol8-warp-boot.sh
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.7.2-beta.3"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.8.1-beta.3"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -436,7 +451,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
@@ -460,7 +475,7 @@ RUN set -eux; \
 # pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-lobster; \
-    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/lobster; \
     cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
     mkdir -p /app/dist/extensions/lobster/node_modules; \
@@ -481,7 +496,7 @@ RUN set -eux; \
 # lockstep with the FROM tag, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-parallel; \
-    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/parallel; \
     cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
     mkdir -p /app/dist/extensions/parallel/node_modules; \
@@ -507,13 +522,13 @@ RUN set -eux; \
 # any plugin dir not owned by uid 0; it auto-activates from
 # plugins.entries.firecrawl.enabled). The npm package is
 # `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
-# `@beta` resolves to 2026.7.2-beta.3 today — the same dist every other baked
-# plugin pins to on this 7.2 base — so it stays in lockstep with the FROM tag;
+# `@beta` resolves to 2026.8.1-beta.3 today — the same dist every other baked
+# plugin pins to on this 8.1 base — so it stays in lockstep with the FROM tag;
 # re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
 # bump. Bake it root-owned, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-firecrawl; \
-    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/firecrawl; \
     cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
     mkdir -p /app/dist/extensions/firecrawl/node_modules; \
@@ -569,7 +584,7 @@ RUN chown -R root:root /app/dist/extensions/isol8-marketplace
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-acpx; \
-    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/acpx; \
     cp -R /opt/stage-acpx/node_modules/@openclaw/acpx/. /app/dist/extensions/acpx/; \
     mkdir -p /app/dist/extensions/acpx/node_modules; \
@@ -595,7 +610,7 @@ RUN set -eux; \
 # openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-tokenjuice; \
-    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.7.2-beta.3"; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.8.1-beta.3"; \
     mkdir -p /app/dist/extensions/tokenjuice; \
     cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
     mkdir -p /app/dist/extensions/tokenjuice/node_modules; \

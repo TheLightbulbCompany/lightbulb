@@ -46,15 +46,23 @@ def test_hooks_block_renders_enabled_with_token_var():
     assert cfg["hooks"]["path"] == "/hooks"
 
 
-def test_hooks_max_body_bytes_overrides_upstream_64kb_default():
-    """Stripe/GitHub payloads regularly exceed 64KB; we must override.
+def test_hooks_max_body_bytes_is_no_longer_configurable():
+    """REGRESSION MARKER, not a preference: 2026.8.1 removed hooks.maxBodyBytes.
 
-    Upstream's pre-auth body cap defaults to 64 KB which is far too small
-    for real-world webhook traffic. 1 MB matches the upper bound documented
-    by the largest providers (Stripe, GitHub) we plan to ingest from.
+    We used to override upstream's 64 KB pre-auth body cap to 1 MB because real
+    webhook traffic exceeds 64 KB. At 2026.8.1 the knob is gone from the schema
+    and the cap is hardcoded at DEFAULT_HOOKS_MAX_BODY_BYTES = 256 * 1024
+    (src/gateway/hooks.ts:36). Upstream raised its floor 64 KB -> 256 KB, so most
+    traffic is fine, but we lost the ceiling: a GitHub PR webhook on a large diff
+    can exceed 500 KB and will now be REJECTED pre-auth where it previously fit
+    under our 1 MB override. There is no config surface to restore it -- it needs
+    an upstream change or a fork patch.
+
+    This test exists so the loss stays visible instead of silently disappearing
+    with the key.
     """
     cfg = _cfg()
-    assert cfg["hooks"]["maxBodyBytes"] == 1_048_576  # 1 MB
+    assert "maxBodyBytes" not in cfg["hooks"]
 
 
 def test_hooks_session_key_safety_settings():

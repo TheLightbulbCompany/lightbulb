@@ -1,10 +1,17 @@
+import{createRequire as __vendorCreateRequire}from'node:module';const require=__vendorCreateRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __commonJS = (cb, mod) => function __require() {
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+var __commonJS = (cb, mod) => function __require2() {
   try {
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   } catch (e) {
@@ -145,6 +152,1099 @@ var require_ms = __commonJS({
       var isPlural = msAbs >= n * 1.5;
       return Math.round(ms / n) + " " + name + (isPlural ? "s" : "");
     }
+  }
+});
+
+// node_modules/lru-cache/dist/commonjs/node/index.min.js
+var require_index_min = __commonJS({
+  "node_modules/lru-cache/dist/commonjs/node/index.min.js"(exports) {
+    "use strict";
+    var j = (u, t) => () => (t || u((t = { exports: {} }).exports, t), t.exports);
+    var I = j((O) => {
+      "use strict";
+      Object.defineProperty(O, "__esModule", { value: true });
+      O.tracing = O.metrics = void 0;
+      var U = __require("node:diagnostics_channel");
+      O.metrics = (0, U.channel)("lru-cache:metrics");
+      O.tracing = (0, U.tracingChannel)("lru-cache");
+    });
+    var P = j((R) => {
+      "use strict";
+      Object.defineProperty(R, "__esModule", { value: true });
+      R.defaultPerf = void 0;
+      R.defaultPerf = typeof performance == "object" && performance && typeof performance.now == "function" ? performance : Date;
+    });
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.LRUCache = void 0;
+    var g = I();
+    var N = P();
+    var C = () => g.metrics.hasSubscribers || g.tracing.hasSubscribers;
+    var k = /* @__PURE__ */ new Set();
+    var G = typeof process == "object" && process ? process : {};
+    var V = (u, t, e, i) => {
+      typeof G.emitWarning == "function" ? G.emitWarning(u, t, e, i) : console.error(`[${e}] ${t}: ${u}`);
+    };
+    var q = (u) => !k.has(u);
+    var T = (u) => !!u && u === Math.floor(u) && u > 0 && isFinite(u);
+    var H = (u) => T(u) ? u <= Math.pow(2, 8) ? Uint8Array : u <= Math.pow(2, 16) ? Uint16Array : u <= Math.pow(2, 32) ? Uint32Array : u <= Number.MAX_SAFE_INTEGER ? W : null : null;
+    var W = class extends Array {
+      constructor(t) {
+        super(t), this.fill(0);
+      }
+    };
+    var L = class u {
+      heap;
+      length;
+      static #o = false;
+      static create(t) {
+        let e = H(t);
+        if (!e) return [];
+        u.#o = true;
+        let i = new u(t, e);
+        return u.#o = false, i;
+      }
+      constructor(t, e) {
+        if (!u.#o) throw new TypeError("instantiate Stack using Stack.create(n)");
+        this.heap = new e(t), this.length = 0;
+      }
+      push(t) {
+        this.heap[this.length++] = t;
+      }
+      pop() {
+        return this.heap[--this.length];
+      }
+    };
+    var M = class u {
+      #o;
+      #c;
+      #m;
+      #W;
+      #S;
+      #x;
+      #j;
+      #w;
+      get perf() {
+        return this.#w;
+      }
+      ttl;
+      ttlResolution;
+      ttlAutopurge;
+      updateAgeOnGet;
+      updateAgeOnHas;
+      allowStale;
+      noDisposeOnSet;
+      noUpdateTTL;
+      maxEntrySize;
+      sizeCalculation;
+      noDeleteOnFetchRejection;
+      noDeleteOnStaleGet;
+      allowStaleOnFetchAbort;
+      allowStaleOnFetchRejection;
+      ignoreFetchAbort;
+      backgroundFetchSize;
+      #n;
+      #b;
+      #s;
+      #i;
+      #t;
+      #l;
+      #u;
+      #a;
+      #h;
+      #_;
+      #r;
+      #y;
+      #F;
+      #d;
+      #g;
+      #T;
+      #U;
+      #f;
+      #R;
+      static unsafeExposeInternals(t) {
+        return { starts: t.#F, ttls: t.#d, autopurgeTimers: t.#g, sizes: t.#y, keyMap: t.#s, keyList: t.#i, valList: t.#t, next: t.#l, prev: t.#u, get head() {
+          return t.#a;
+        }, get tail() {
+          return t.#h;
+        }, free: t.#_, isBackgroundFetch: (e) => t.#e(e), backgroundFetch: (e, i, s, n) => t.#G(e, i, s, n), moveToTail: (e) => t.#M(e), indexes: (e) => t.#A(e), rindexes: (e) => t.#z(e), isStale: (e) => t.#p(e) };
+      }
+      get max() {
+        return this.#o;
+      }
+      get maxSize() {
+        return this.#c;
+      }
+      get calculatedSize() {
+        return this.#b;
+      }
+      get size() {
+        return this.#n;
+      }
+      get fetchMethod() {
+        return this.#x;
+      }
+      get memoMethod() {
+        return this.#j;
+      }
+      get dispose() {
+        return this.#m;
+      }
+      get onInsert() {
+        return this.#W;
+      }
+      get disposeAfter() {
+        return this.#S;
+      }
+      constructor(t) {
+        let { max: e = 0, ttl: i, ttlResolution: s = 1, ttlAutopurge: n, updateAgeOnGet: o, updateAgeOnHas: l, allowStale: h, dispose: r, onInsert: c, disposeAfter: w, noDisposeOnSet: y, noUpdateTTL: d, maxSize: p = 0, maxEntrySize: f = 0, sizeCalculation: _, fetchMethod: a, memoMethod: S, noDeleteOnFetchRejection: F, noDeleteOnStaleGet: b, allowStaleOnFetchRejection: m, allowStaleOnFetchAbort: A, ignoreFetchAbort: z2, backgroundFetchSize: x = 1, perf: v } = t;
+        if (this.backgroundFetchSize = x, v !== void 0 && typeof v?.now != "function") throw new TypeError("perf option must have a now() method if specified");
+        if (this.#w = v ?? N.defaultPerf, e !== 0 && !T(e)) throw new TypeError("max option must be a nonnegative integer");
+        let E = e ? H(e) : Array;
+        if (!E) throw new Error("invalid max value: " + e);
+        if (this.#o = e, this.#c = p, this.maxEntrySize = f || this.#c, this.sizeCalculation = _, this.sizeCalculation) {
+          if (!this.#c && !this.maxEntrySize) throw new TypeError("cannot set sizeCalculation without setting maxSize or maxEntrySize");
+          if (typeof this.sizeCalculation != "function") throw new TypeError("sizeCalculation set to non-function");
+        }
+        if (S !== void 0 && typeof S != "function") throw new TypeError("memoMethod must be a function if defined");
+        if (this.#j = S, a !== void 0 && typeof a != "function") throw new TypeError("fetchMethod must be a function if specified");
+        if (this.#x = a, this.#U = !!a, this.#s = /* @__PURE__ */ new Map(), this.#i = Array.from({ length: e }).fill(void 0), this.#t = Array.from({ length: e }).fill(void 0), this.#l = new E(e), this.#u = new E(e), this.#a = 0, this.#h = 0, this.#_ = L.create(e), this.#n = 0, this.#b = 0, typeof r == "function" && (this.#m = r), typeof c == "function" && (this.#W = c), typeof w == "function" ? (this.#S = w, this.#r = []) : (this.#S = void 0, this.#r = void 0), this.#T = !!this.#m, this.#R = !!this.#W, this.#f = !!this.#S, this.noDisposeOnSet = !!y, this.noUpdateTTL = !!d, this.noDeleteOnFetchRejection = !!F, this.allowStaleOnFetchRejection = !!m, this.allowStaleOnFetchAbort = !!A, this.ignoreFetchAbort = !!z2, this.maxEntrySize !== 0) {
+          if (this.#c !== 0 && !T(this.#c)) throw new TypeError("maxSize must be a positive integer if specified");
+          if (!T(this.maxEntrySize)) throw new TypeError("maxEntrySize must be a positive integer if specified");
+          this.#X();
+        }
+        if (this.allowStale = !!h, this.noDeleteOnStaleGet = !!b, this.updateAgeOnGet = !!o, this.updateAgeOnHas = !!l, this.ttlResolution = T(s) || s === 0 ? s : 1, this.ttlAutopurge = !!n, this.ttl = i || 0, this.ttl) {
+          if (!T(this.ttl)) throw new TypeError("ttl must be a positive integer if specified");
+          this.#k();
+        }
+        if (this.#o === 0 && this.ttl === 0 && this.#c === 0) throw new TypeError("At least one of max, maxSize, or ttl is required");
+        if (!this.ttlAutopurge && !this.#o && !this.#c) {
+          let D = "LRU_CACHE_UNBOUNDED";
+          q(D) && (k.add(D), V("TTL caching without ttlAutopurge, max, or maxSize can result in unbounded memory consumption.", "UnboundedCacheWarning", D, u));
+        }
+      }
+      getRemainingTTL(t) {
+        return this.#s.has(t) ? 1 / 0 : 0;
+      }
+      #k() {
+        let t = new W(this.#o), e = new W(this.#o);
+        this.#d = t, this.#F = e;
+        let i = this.ttlAutopurge ? Array.from({ length: this.#o }) : void 0;
+        this.#g = i, this.#H = (h, r, c = this.#w.now()) => {
+          e[h] = r !== 0 ? c : 0, t[h] = r, s(h, r);
+        }, this.#D = (h) => {
+          e[h] = t[h] !== 0 ? this.#w.now() : 0, s(h, t[h]);
+        };
+        let s = this.ttlAutopurge ? (h, r) => {
+          if (i?.[h] && (clearTimeout(i[h]), i[h] = void 0), r && r !== 0 && i) {
+            let c = setTimeout(() => {
+              this.#p(h) ? (this.#v(this.#i[h], "expire"), i[h] = void 0) : s(h, l(h));
+            }, r + 1);
+            c.unref && c.unref(), i[h] = c;
+          }
+        } : () => {
+        };
+        this.#E = (h, r) => {
+          if (t[r]) {
+            let c = t[r], w = e[r];
+            if (!c || !w) return;
+            h.ttl = c, h.start = w, h.now = n || o();
+            let y = h.now - w;
+            h.remainingTTL = c - y;
+          }
+        };
+        let n = 0, o = () => {
+          let h = this.#w.now();
+          if (this.ttlResolution > 0) {
+            n = h;
+            let r = setTimeout(() => n = 0, this.ttlResolution);
+            r.unref && r.unref();
+          }
+          return h;
+        };
+        this.getRemainingTTL = (h) => {
+          let r = this.#s.get(h);
+          return r === void 0 ? 0 : l(r);
+        };
+        let l = (h) => {
+          let r = t[h], c = e[h];
+          if (!r || !c) return 1 / 0;
+          let w = (n || o()) - c;
+          return r - w;
+        };
+        this.#p = (h) => {
+          let r = e[h], c = t[h];
+          return !!c && !!r && (n || o()) - r > c;
+        };
+      }
+      #D = () => {
+      };
+      #E = () => {
+      };
+      #H = () => {
+      };
+      #p = () => false;
+      #X() {
+        let t = new W(this.#o);
+        this.#b = 0, this.#y = t, this.#C = (e) => {
+          this.#b -= t[e], t[e] = 0;
+        }, this.#N = (e, i, s, n) => {
+          if (!T(s)) {
+            if (this.#e(i)) return this.backgroundFetchSize;
+            if (n) {
+              if (typeof n != "function") throw new TypeError("sizeCalculation must be a function");
+              if (s = n(i, e), !T(s)) throw new TypeError("sizeCalculation return invalid (expect positive integer)");
+            } else throw new TypeError("invalid size value (must be positive integer). When maxSize or maxEntrySize is used, sizeCalculation or size must be set.");
+          }
+          return s;
+        }, this.#I = (e, i, s) => {
+          if (t[e] = i, this.#c) {
+            let n = this.#c - t[e];
+            for (; this.#b > n; ) this.#P(true);
+          }
+          this.#b += t[e], s && (s.entrySize = i, s.totalCalculatedSize = this.#b);
+        };
+      }
+      #C = (t) => {
+      };
+      #I = (t, e, i) => {
+      };
+      #N = (t, e, i, s) => {
+        if (i || s) throw new TypeError("cannot set size without setting maxSize or maxEntrySize on cache");
+        return 0;
+      };
+      *#A({ allowStale: t = this.allowStale } = {}) {
+        if (this.#n) for (let e = this.#h; this.#V(e) && ((t || !this.#p(e)) && (yield e), e !== this.#a); ) e = this.#u[e];
+      }
+      *#z({ allowStale: t = this.allowStale } = {}) {
+        if (this.#n) for (let e = this.#a; this.#V(e) && ((t || !this.#p(e)) && (yield e), e !== this.#h); ) e = this.#l[e];
+      }
+      #V(t) {
+        return t !== void 0 && this.#s.get(this.#i[t]) === t;
+      }
+      *entries() {
+        for (let t of this.#A()) this.#t[t] !== void 0 && this.#i[t] !== void 0 && !this.#e(this.#t[t]) && (yield [this.#i[t], this.#t[t]]);
+      }
+      *rentries() {
+        for (let t of this.#z()) this.#t[t] !== void 0 && this.#i[t] !== void 0 && !this.#e(this.#t[t]) && (yield [this.#i[t], this.#t[t]]);
+      }
+      *keys() {
+        for (let t of this.#A()) {
+          let e = this.#i[t];
+          e !== void 0 && !this.#e(this.#t[t]) && (yield e);
+        }
+      }
+      *rkeys() {
+        for (let t of this.#z()) {
+          let e = this.#i[t];
+          e !== void 0 && !this.#e(this.#t[t]) && (yield e);
+        }
+      }
+      *values() {
+        for (let t of this.#A()) this.#t[t] !== void 0 && !this.#e(this.#t[t]) && (yield this.#t[t]);
+      }
+      *rvalues() {
+        for (let t of this.#z()) this.#t[t] !== void 0 && !this.#e(this.#t[t]) && (yield this.#t[t]);
+      }
+      [Symbol.iterator]() {
+        return this.entries();
+      }
+      [Symbol.toStringTag] = "LRUCache";
+      find(t, e = {}) {
+        for (let i of this.#A()) {
+          let s = this.#t[i], n = this.#e(s) ? s.__staleWhileFetching : s;
+          if (n !== void 0 && t(n, this.#i[i], this)) return this.#L(this.#i[i], e);
+        }
+      }
+      forEach(t, e = this) {
+        for (let i of this.#A()) {
+          let s = this.#t[i], n = this.#e(s) ? s.__staleWhileFetching : s;
+          n !== void 0 && t.call(e, n, this.#i[i], this);
+        }
+      }
+      rforEach(t, e = this) {
+        for (let i of this.#z()) {
+          let s = this.#t[i], n = this.#e(s) ? s.__staleWhileFetching : s;
+          n !== void 0 && t.call(e, n, this.#i[i], this);
+        }
+      }
+      purgeStale() {
+        let t = false;
+        for (let e of this.#z({ allowStale: true })) this.#p(e) && (this.#v(this.#i[e], "expire"), t = true);
+        return t;
+      }
+      info(t) {
+        let e = this.#s.get(t);
+        if (e === void 0) return;
+        let i = this.#t[e], s = this.#e(i) ? i.__staleWhileFetching : i;
+        if (s === void 0) return;
+        let n = { value: s };
+        if (this.#d && this.#F) {
+          let o = this.#d[e], l = this.#F[e];
+          if (o && l) {
+            let h = o - (this.#w.now() - l);
+            n.ttl = h, n.start = Date.now();
+          }
+        }
+        return this.#y && (n.size = this.#y[e]), n;
+      }
+      dump() {
+        let t = [];
+        for (let e of this.#A({ allowStale: true })) {
+          let i = this.#i[e], s = this.#t[e], n = this.#e(s) ? s.__staleWhileFetching : s;
+          if (n === void 0 || i === void 0) continue;
+          let o = { value: n };
+          if (this.#d && this.#F) {
+            o.ttl = this.#d[e];
+            let l = this.#w.now() - this.#F[e];
+            o.start = Math.floor(Date.now() - l);
+          }
+          this.#y && (o.size = this.#y[e]), t.unshift([i, o]);
+        }
+        return t;
+      }
+      load(t) {
+        this.clear();
+        for (let [e, i] of t) {
+          if (i.start) {
+            let s = Date.now() - i.start;
+            i.start = this.#w.now() - s;
+          }
+          this.#O(e, i.value, i);
+        }
+      }
+      set(t, e, i = {}) {
+        let { status: s = g.metrics.hasSubscribers ? {} : void 0 } = i;
+        i.status = s, s && (s.op = "set", s.key = t, e !== void 0 && (s.value = e), s.cache = this);
+        let n = this.#O(t, e, i);
+        return s && g.metrics.hasSubscribers && g.metrics.publish(s), n;
+      }
+      #O(t, e, i, s) {
+        let { ttl: n = this.ttl, start: o, noDisposeOnSet: l = this.noDisposeOnSet, sizeCalculation: h = this.sizeCalculation, status: r } = i, c = this.#e(e);
+        if (e === void 0) return r && (r.set = "deleted"), this.delete(t), this;
+        let { noUpdateTTL: w = this.noUpdateTTL } = i;
+        r && !c && (r.value = e);
+        let y = this.#N(t, e, i.size || 0, h, r);
+        if (this.maxEntrySize && y > this.maxEntrySize) return this.#v(t, "set"), r && (r.set = "miss", r.maxEntrySizeExceeded = true), this;
+        let d = this.#n === 0 ? void 0 : this.#s.get(t);
+        if (d === void 0) d = this.#n === 0 ? this.#h : this.#_.length !== 0 ? this.#_.pop() : this.#n === this.#o ? this.#P(false) : this.#n, this.#i[d] = t, this.#t[d] = e, this.#s.set(t, d), this.#l[this.#h] = d, this.#u[d] = this.#h, this.#h = d, this.#n++, this.#I(d, y, r), r && (r.set = "add"), w = false, this.#R && !c && this.#W?.(e, t, "add");
+        else {
+          this.#M(d);
+          let p = this.#t[d];
+          if (e !== p) {
+            if (!l) if (this.#e(p)) {
+              p !== s && p.__abortController.abort(new Error("replaced"));
+              let { __staleWhileFetching: f } = p;
+              f !== void 0 && f !== e && (this.#T && this.#m?.(f, t, "set"), this.#f && this.#r?.push([f, t, "set"]));
+            } else this.#T && this.#m?.(p, t, "set"), this.#f && this.#r?.push([p, t, "set"]);
+            if (this.#C(d), this.#I(d, y, r), this.#t[d] = e, !c) {
+              let f = p && this.#e(p) ? p.__staleWhileFetching : p, _ = f === void 0 ? "add" : e !== f ? "replace" : "update";
+              r && (r.set = _, f !== void 0 && (r.oldValue = f)), this.#R && this.onInsert?.(e, t, _);
+            }
+          } else c || (r && (r.set = "update"), this.#R && this.onInsert?.(e, t, "update"));
+        }
+        if (n !== 0 && !this.#d && this.#k(), this.#d && (w || this.#H(d, n, o), r && this.#E(r, d)), !l && this.#f && this.#r) {
+          let p = this.#r, f;
+          for (; f = p?.shift(); ) this.#S?.(...f);
+        }
+        return this;
+      }
+      pop() {
+        try {
+          for (; this.#n; ) {
+            let t = this.#t[this.#a];
+            if (this.#P(true), this.#e(t)) {
+              if (t.__staleWhileFetching) return t.__staleWhileFetching;
+            } else if (t !== void 0) return t;
+          }
+        } finally {
+          if (this.#f && this.#r) {
+            let t = this.#r, e;
+            for (; e = t?.shift(); ) this.#S?.(...e);
+          }
+        }
+      }
+      #P(t) {
+        let e = this.#a, i = this.#i[e], s = this.#t[e], n = this.#e(s);
+        n && s.__abortController.abort(new Error("evicted"));
+        let o = n ? s.__staleWhileFetching : s;
+        return (this.#T || this.#f) && o !== void 0 && (this.#T && this.#m?.(o, i, "evict"), this.#f && this.#r?.push([o, i, "evict"])), this.#C(e), this.#g?.[e] && (clearTimeout(this.#g[e]), this.#g[e] = void 0), t && (this.#i[e] = void 0, this.#t[e] = void 0, this.#_.push(e)), this.#n === 1 ? (this.#a = this.#h = 0, this.#_.length = 0) : this.#a = this.#l[e], this.#s.delete(i), this.#n--, e;
+      }
+      has(t, e = {}) {
+        let { status: i = g.metrics.hasSubscribers ? {} : void 0 } = e;
+        e.status = i, i && (i.op = "has", i.key = t, i.cache = this);
+        let s = this.#Y(t, e);
+        return g.metrics.hasSubscribers && g.metrics.publish(i), s;
+      }
+      #Y(t, e = {}) {
+        let { updateAgeOnHas: i = this.updateAgeOnHas, status: s } = e, n = this.#s.get(t);
+        if (n !== void 0) {
+          let o = this.#t[n];
+          if (this.#e(o) && o.__staleWhileFetching === void 0) return false;
+          if (this.#p(n)) s && (s.has = "stale", this.#E(s, n));
+          else return i && this.#D(n), s && (s.has = "hit", this.#E(s, n)), true;
+        } else s && (s.has = "miss");
+        return false;
+      }
+      peek(t, e = {}) {
+        let { status: i = C() ? {} : void 0 } = e;
+        i && (i.op = "peek", i.key = t, i.cache = this), e.status = i;
+        let s = this.#J(t, e);
+        return g.metrics.hasSubscribers && g.metrics.publish(i), s;
+      }
+      #J(t, e) {
+        let { status: i, allowStale: s = this.allowStale } = e, n = this.#s.get(t);
+        if (n === void 0 || !s && this.#p(n)) {
+          i && (i.peek = n === void 0 ? "miss" : "stale");
+          return;
+        }
+        let o = this.#t[n], l = this.#e(o) ? o.__staleWhileFetching : o;
+        return i && (l !== void 0 ? (i.peek = "hit", i.value = l) : i.peek = "miss"), l;
+      }
+      #G(t, e, i, s) {
+        let n = e === void 0 ? void 0 : this.#t[e];
+        if (this.#e(n)) return n;
+        let o = new AbortController(), { signal: l } = i;
+        l?.addEventListener("abort", () => o.abort(l.reason), { signal: o.signal });
+        let h = { signal: o.signal, options: i, context: s }, r = (f, _ = false) => {
+          let { aborted: a } = o.signal, S = i.ignoreFetchAbort && f !== void 0, F = i.ignoreFetchAbort || !!(i.allowStaleOnFetchAbort && f !== void 0);
+          if (i.status && (a && !_ ? (i.status.fetchAborted = true, i.status.fetchError = o.signal.reason, S && (i.status.fetchAbortIgnored = true)) : i.status.fetchResolved = true), a && !S && !_) return w(o.signal.reason, F);
+          let b = d, m = this.#t[e];
+          return (m === d || m === void 0 && S && _) && (f === void 0 ? b.__staleWhileFetching !== void 0 ? this.#t[e] = b.__staleWhileFetching : this.#v(t, "fetch") : (i.status && (i.status.fetchUpdated = true), this.#O(t, f, h.options, b))), f;
+        }, c = (f) => (i.status && (i.status.fetchRejected = true, i.status.fetchError = f), w(f, false)), w = (f, _) => {
+          let { aborted: a } = o.signal, S = a && i.allowStaleOnFetchAbort, F = S || i.allowStaleOnFetchRejection, b = F || i.noDeleteOnFetchRejection, m = d;
+          if (this.#t[e] === d && (!b || !_ && m.__staleWhileFetching === void 0 ? this.#v(t, "fetch") : S || (this.#t[e] = m.__staleWhileFetching)), F) return i.status && m.__staleWhileFetching !== void 0 && (i.status.returnedStale = true), m.__staleWhileFetching;
+          if (m.__returned === m) throw f;
+        }, y = (f, _) => {
+          let a = this.#x?.(t, n, h);
+          o.signal.addEventListener("abort", () => {
+            (!i.ignoreFetchAbort || i.allowStaleOnFetchAbort) && (f(void 0), i.allowStaleOnFetchAbort && (f = (S) => r(S, true)));
+          }), a && a instanceof Promise ? a.then((S) => f(S === void 0 ? void 0 : S), _) : a !== void 0 && f(a);
+        };
+        i.status && (i.status.fetchDispatched = true);
+        let d = new Promise(y).then(r, c), p = Object.assign(d, { __abortController: o, __staleWhileFetching: n, __returned: void 0 });
+        return e === void 0 ? (this.#O(t, p, { ...h.options, status: void 0 }), e = this.#s.get(t)) : this.#t[e] = p, p;
+      }
+      #e(t) {
+        if (!this.#U) return false;
+        let e = t;
+        return !!e && e instanceof Promise && e.hasOwnProperty("__staleWhileFetching") && e.__abortController instanceof AbortController;
+      }
+      fetch(t, e = {}) {
+        let i = g.tracing.hasSubscribers, { status: s = C() ? {} : void 0 } = e;
+        e.status = s, s && e.context && (s.context = e.context);
+        let n = this.#q(t, e);
+        return s && i && (s.trace = true, g.tracing.tracePromise(() => n, s).catch(() => {
+        })), n;
+      }
+      async #q(t, e = {}) {
+        let { allowStale: i = this.allowStale, updateAgeOnGet: s = this.updateAgeOnGet, noDeleteOnStaleGet: n = this.noDeleteOnStaleGet, ttl: o = this.ttl, noDisposeOnSet: l = this.noDisposeOnSet, size: h = 0, sizeCalculation: r = this.sizeCalculation, noUpdateTTL: c = this.noUpdateTTL, noDeleteOnFetchRejection: w = this.noDeleteOnFetchRejection, allowStaleOnFetchRejection: y = this.allowStaleOnFetchRejection, ignoreFetchAbort: d = this.ignoreFetchAbort, allowStaleOnFetchAbort: p = this.allowStaleOnFetchAbort, context: f, forceRefresh: _ = false, status: a, signal: S } = e;
+        if (a && (a.op = "fetch", a.key = t, _ && (a.forceRefresh = true), a.cache = this), !this.#U) return a && (a.fetch = "get"), this.#L(t, { allowStale: i, updateAgeOnGet: s, noDeleteOnStaleGet: n, status: a });
+        let F = { allowStale: i, updateAgeOnGet: s, noDeleteOnStaleGet: n, ttl: o, noDisposeOnSet: l, size: h, sizeCalculation: r, noUpdateTTL: c, noDeleteOnFetchRejection: w, allowStaleOnFetchRejection: y, allowStaleOnFetchAbort: p, ignoreFetchAbort: d, status: a, signal: S }, b = this.#s.get(t);
+        if (b === void 0) {
+          a && (a.fetch = "miss");
+          let m = this.#G(t, b, F, f);
+          return m.__returned = m;
+        } else {
+          let m = this.#t[b];
+          if (this.#e(m)) {
+            let E = i && m.__staleWhileFetching !== void 0;
+            return a && (a.fetch = "inflight", E && (a.returnedStale = true)), E ? m.__staleWhileFetching : m.__returned = m;
+          }
+          let A = this.#p(b);
+          if (!_ && !A) return a && (a.fetch = "hit"), this.#M(b), s && this.#D(b), a && this.#E(a, b), m;
+          let z2 = this.#G(t, b, F, f), v = z2.__staleWhileFetching !== void 0 && i;
+          return a && (a.fetch = A ? "stale" : "refresh", v && A && (a.returnedStale = true)), v ? z2.__staleWhileFetching : z2.__returned = z2;
+        }
+      }
+      forceFetch(t, e = {}) {
+        let i = g.tracing.hasSubscribers, { status: s = C() ? {} : void 0 } = e;
+        e.status = s, s && e.context && (s.context = e.context);
+        let n = this.#K(t, e);
+        return s && i && (s.trace = true, g.tracing.tracePromise(() => n, s).catch(() => {
+        })), n;
+      }
+      async #K(t, e = {}) {
+        let i = await this.#q(t, e);
+        if (i === void 0) throw new Error("fetch() returned undefined");
+        return i;
+      }
+      memo(t, e = {}) {
+        let { status: i = g.metrics.hasSubscribers ? {} : void 0 } = e;
+        e.status = i, i && (i.op = "memo", i.key = t, e.context && (i.context = e.context), i.cache = this);
+        let s = this.#Q(t, e);
+        return i && (i.value = s), g.metrics.hasSubscribers && g.metrics.publish(i), s;
+      }
+      #Q(t, e = {}) {
+        let i = this.#j;
+        if (!i) throw new Error("no memoMethod provided to constructor");
+        let { context: s, status: n, forceRefresh: o, ...l } = e;
+        n && o && (n.forceRefresh = true);
+        let h = this.#L(t, l), r = o || h === void 0;
+        if (n && (n.memo = r ? "miss" : "hit", r || (n.value = h)), !r) return h;
+        let c = i(t, h, { options: l, context: s });
+        return n && (n.value = c), this.#O(t, c, l), c;
+      }
+      get(t, e = {}) {
+        let { status: i = g.metrics.hasSubscribers ? {} : void 0 } = e;
+        e.status = i, i && (i.op = "get", i.key = t, i.cache = this);
+        let s = this.#L(t, e);
+        return i && (s !== void 0 && (i.value = s), g.metrics.hasSubscribers && g.metrics.publish(i)), s;
+      }
+      #L(t, e = {}) {
+        let { allowStale: i = this.allowStale, updateAgeOnGet: s = this.updateAgeOnGet, noDeleteOnStaleGet: n = this.noDeleteOnStaleGet, status: o } = e, l = this.#s.get(t);
+        if (l === void 0) {
+          o && (o.get = "miss");
+          return;
+        }
+        let h = this.#t[l], r = this.#e(h);
+        return o && this.#E(o, l), this.#p(l) ? r ? (o && (o.get = "stale-fetching"), i && h.__staleWhileFetching !== void 0 ? (o && (o.returnedStale = true), h.__staleWhileFetching) : void 0) : (n || this.#v(t, "expire"), o && (o.get = "stale"), i ? (o && (o.returnedStale = true), h) : void 0) : (o && (o.get = r ? "fetching" : "hit"), this.#M(l), s && this.#D(l), r ? h.__staleWhileFetching : h);
+      }
+      #B(t, e) {
+        this.#u[e] = t, this.#l[t] = e;
+      }
+      #M(t) {
+        t !== this.#h && (t === this.#a ? this.#a = this.#l[t] : this.#B(this.#u[t], this.#l[t]), this.#B(this.#h, t), this.#h = t);
+      }
+      delete(t) {
+        return this.#v(t, "delete");
+      }
+      #v(t, e) {
+        g.metrics.hasSubscribers && g.metrics.publish({ op: "delete", delete: e, key: t, cache: this });
+        let i = false;
+        if (this.#n !== 0) {
+          let s = this.#s.get(t);
+          if (s !== void 0) if (this.#g?.[s] && (clearTimeout(this.#g[s]), this.#g[s] = void 0), i = true, this.#n === 1) this.#$(e);
+          else {
+            this.#C(s);
+            let n = this.#t[s];
+            if (this.#e(n) ? n.__abortController.abort(new Error("deleted")) : (this.#T || this.#f) && (this.#T && this.#m?.(n, t, e), this.#f && this.#r?.push([n, t, e])), this.#s.delete(t), this.#i[s] = void 0, this.#t[s] = void 0, s === this.#h) this.#h = this.#u[s];
+            else if (s === this.#a) this.#a = this.#l[s];
+            else {
+              let o = this.#u[s];
+              this.#l[o] = this.#l[s];
+              let l = this.#l[s];
+              this.#u[l] = this.#u[s];
+            }
+            this.#n--, this.#_.push(s);
+          }
+        }
+        if (this.#f && this.#r?.length) {
+          let s = this.#r, n;
+          for (; n = s?.shift(); ) this.#S?.(...n);
+        }
+        return i;
+      }
+      clear() {
+        return this.#$("delete");
+      }
+      #$(t) {
+        for (let e of this.#z({ allowStale: true })) {
+          let i = this.#t[e];
+          if (this.#e(i)) i.__abortController.abort(new Error("deleted"));
+          else {
+            let s = this.#i[e];
+            this.#T && this.#m?.(i, s, t), this.#f && this.#r?.push([i, s, t]);
+          }
+        }
+        if (this.#s.clear(), this.#t.fill(void 0), this.#i.fill(void 0), this.#d && this.#F) {
+          this.#d.fill(0), this.#F.fill(0);
+          for (let e of this.#g ?? []) e !== void 0 && clearTimeout(e);
+          this.#g?.fill(void 0);
+        }
+        if (this.#y && this.#y.fill(0), this.#a = 0, this.#h = 0, this.#_.length = 0, this.#b = 0, this.#n = 0, this.#f && this.#r) {
+          let e = this.#r, i;
+          for (; i = e?.shift(); ) this.#S?.(...i);
+        }
+      }
+    };
+    exports.LRUCache = M;
+  }
+});
+
+// node_modules/hosted-git-info/lib/hosts.js
+var require_hosts = __commonJS({
+  "node_modules/hosted-git-info/lib/hosts.js"(exports, module) {
+    "use strict";
+    var maybeJoin = (...args) => args.every((arg) => arg) ? args.join("") : "";
+    var maybeEncode = (arg) => arg ? encodeURIComponent(arg) : "";
+    var formatHashFragment = (f) => f.toLowerCase().replace(/^\W+/g, "").replace(/(?<!\W)\W+$/, "").replace(/\//g, "").replace(/\W+/g, "-");
+    var defaults = {
+      sshtemplate: ({ domain: domain2, user, project, committish }) => `git@${domain2}:${user}/${project}.git${maybeJoin("#", committish)}`,
+      sshurltemplate: ({ domain: domain2, user, project, committish }) => `git+ssh://git@${domain2}/${user}/${project}.git${maybeJoin("#", committish)}`,
+      edittemplate: ({ domain: domain2, user, project, committish, editpath, path: path9 }) => `https://${domain2}/${user}/${project}${maybeJoin("/", editpath, "/", maybeEncode(committish || "HEAD"), "/", path9)}`,
+      browsetemplate: ({ domain: domain2, user, project, committish, treepath }) => `https://${domain2}/${user}/${project}${maybeJoin("/", treepath, "/", maybeEncode(committish))}`,
+      browsetreetemplate: ({ domain: domain2, user, project, committish, treepath, path: path9, fragment, hashformat }) => `https://${domain2}/${user}/${project}/${treepath}/${maybeEncode(committish || "HEAD")}/${path9}${maybeJoin("#", hashformat(fragment || ""))}`,
+      browseblobtemplate: ({ domain: domain2, user, project, committish, blobpath, path: path9, fragment, hashformat }) => `https://${domain2}/${user}/${project}/${blobpath}/${maybeEncode(committish || "HEAD")}/${path9}${maybeJoin("#", hashformat(fragment || ""))}`,
+      docstemplate: ({ domain: domain2, user, project, treepath, committish }) => `https://${domain2}/${user}/${project}${maybeJoin("/", treepath, "/", maybeEncode(committish))}#readme`,
+      httpstemplate: ({ auth, domain: domain2, user, project, committish }) => `git+https://${maybeJoin(auth, "@")}${domain2}/${user}/${project}.git${maybeJoin("#", committish)}`,
+      filetemplate: ({ domain: domain2, user, project, committish, path: path9 }) => `https://${domain2}/${user}/${project}/raw/${maybeEncode(committish || "HEAD")}/${path9}`,
+      shortcuttemplate: ({ type, user, project, committish }) => `${type}:${user}/${project}${maybeJoin("#", committish)}`,
+      pathtemplate: ({ user, project, committish }) => `${user}/${project}${maybeJoin("#", committish)}`,
+      bugstemplate: ({ domain: domain2, user, project }) => `https://${domain2}/${user}/${project}/issues`,
+      hashformat: formatHashFragment
+    };
+    var hosts = {};
+    hosts.github = {
+      // First two are insecure and generally shouldn't be used any more, but
+      // they are still supported.
+      protocols: ["git:", "http:", "git+ssh:", "git+https:", "ssh:", "https:"],
+      domain: "github.com",
+      treepath: "tree",
+      blobpath: "blob",
+      editpath: "edit",
+      filetemplate: ({ auth, user, project, committish, path: path9 }) => `https://${maybeJoin(auth, "@")}raw.githubusercontent.com/${user}/${project}/${maybeEncode(committish || "HEAD")}/${path9}`,
+      gittemplate: ({ auth, domain: domain2, user, project, committish }) => `git://${maybeJoin(auth, "@")}${domain2}/${user}/${project}.git${maybeJoin("#", committish)}`,
+      tarballtemplate: ({ domain: domain2, user, project, committish }) => `https://codeload.${domain2}/${user}/${project}/tar.gz/${maybeEncode(committish || "HEAD")}`,
+      extract: (url2) => {
+        let [, user, project, type, committish] = url2.pathname.split("/", 5);
+        if (type && type !== "tree") {
+          return;
+        }
+        if (!type) {
+          committish = url2.hash.slice(1);
+        }
+        if (project && project.endsWith(".git")) {
+          project = project.slice(0, -4);
+        }
+        if (!user || !project) {
+          return;
+        }
+        return { user, project, committish };
+      }
+    };
+    hosts.bitbucket = {
+      protocols: ["git+ssh:", "git+https:", "ssh:", "https:"],
+      domain: "bitbucket.org",
+      treepath: "src",
+      blobpath: "src",
+      editpath: "?mode=edit",
+      edittemplate: ({ domain: domain2, user, project, committish, treepath, path: path9, editpath }) => `https://${domain2}/${user}/${project}${maybeJoin("/", treepath, "/", maybeEncode(committish || "HEAD"), "/", path9, editpath)}`,
+      tarballtemplate: ({ domain: domain2, user, project, committish }) => `https://${domain2}/${user}/${project}/get/${maybeEncode(committish || "HEAD")}.tar.gz`,
+      extract: (url2) => {
+        let [, user, project, aux] = url2.pathname.split("/", 4);
+        if (["get"].includes(aux)) {
+          return;
+        }
+        if (project && project.endsWith(".git")) {
+          project = project.slice(0, -4);
+        }
+        if (!user || !project) {
+          return;
+        }
+        return { user, project, committish: url2.hash.slice(1) };
+      }
+    };
+    hosts.gitlab = {
+      protocols: ["git+ssh:", "git+https:", "ssh:", "https:"],
+      domain: "gitlab.com",
+      treepath: "tree",
+      blobpath: "tree",
+      editpath: "-/edit",
+      tarballtemplate: ({ domain: domain2, user, project, committish }) => `https://${domain2}/api/v4/projects/${maybeEncode(user + "/" + project)}/repository/archive.tar.gz?sha=${maybeEncode(committish || "HEAD")}`,
+      extract: (url2) => {
+        const path9 = url2.pathname.slice(1);
+        if (path9.includes("/-/") || path9.includes("/archive.tar.gz")) {
+          return;
+        }
+        const segments = path9.split("/");
+        let project = segments.pop();
+        if (project.endsWith(".git")) {
+          project = project.slice(0, -4);
+        }
+        const user = segments.join("/");
+        if (!user || !project) {
+          return;
+        }
+        return { user, project, committish: url2.hash.slice(1) };
+      }
+    };
+    hosts.gist = {
+      protocols: ["git:", "git+ssh:", "git+https:", "ssh:", "https:"],
+      domain: "gist.github.com",
+      editpath: "edit",
+      sshtemplate: ({ domain: domain2, project, committish }) => `git@${domain2}:${project}.git${maybeJoin("#", committish)}`,
+      sshurltemplate: ({ domain: domain2, project, committish }) => `git+ssh://git@${domain2}/${project}.git${maybeJoin("#", committish)}`,
+      edittemplate: ({ domain: domain2, user, project, committish, editpath }) => `https://${domain2}/${user}/${project}${maybeJoin("/", maybeEncode(committish))}/${editpath}`,
+      browsetemplate: ({ domain: domain2, project, committish }) => `https://${domain2}/${project}${maybeJoin("/", maybeEncode(committish))}`,
+      browsetreetemplate: ({ domain: domain2, project, committish, path: path9, hashformat }) => `https://${domain2}/${project}${maybeJoin("/", maybeEncode(committish))}${maybeJoin("#", hashformat(path9))}`,
+      browseblobtemplate: ({ domain: domain2, project, committish, path: path9, hashformat }) => `https://${domain2}/${project}${maybeJoin("/", maybeEncode(committish))}${maybeJoin("#", hashformat(path9))}`,
+      docstemplate: ({ domain: domain2, project, committish }) => `https://${domain2}/${project}${maybeJoin("/", maybeEncode(committish))}`,
+      httpstemplate: ({ domain: domain2, project, committish }) => `git+https://${domain2}/${project}.git${maybeJoin("#", committish)}`,
+      filetemplate: ({ user, project, committish, path: path9 }) => `https://gist.githubusercontent.com/${user}/${project}/raw${maybeJoin("/", maybeEncode(committish))}/${path9}`,
+      shortcuttemplate: ({ type, project, committish }) => `${type}:${project}${maybeJoin("#", committish)}`,
+      pathtemplate: ({ project, committish }) => `${project}${maybeJoin("#", committish)}`,
+      bugstemplate: ({ domain: domain2, project }) => `https://${domain2}/${project}`,
+      gittemplate: ({ domain: domain2, project, committish }) => `git://${domain2}/${project}.git${maybeJoin("#", committish)}`,
+      tarballtemplate: ({ project, committish }) => `https://codeload.github.com/gist/${project}/tar.gz/${maybeEncode(committish || "HEAD")}`,
+      extract: (url2) => {
+        let [, user, project, aux] = url2.pathname.split("/", 4);
+        if (aux === "raw") {
+          return;
+        }
+        if (!project) {
+          if (!user) {
+            return;
+          }
+          project = user;
+          user = null;
+        }
+        if (project.endsWith(".git")) {
+          project = project.slice(0, -4);
+        }
+        return { user, project, committish: url2.hash.slice(1) };
+      },
+      hashformat: function(fragment) {
+        return fragment && "file-" + formatHashFragment(fragment);
+      }
+    };
+    hosts.sourcehut = {
+      protocols: ["git+ssh:", "https:"],
+      domain: "git.sr.ht",
+      treepath: "tree",
+      blobpath: "tree",
+      filetemplate: ({ domain: domain2, user, project, committish, path: path9 }) => `https://${domain2}/${user}/${project}/blob/${maybeEncode(committish) || "HEAD"}/${path9}`,
+      httpstemplate: ({ domain: domain2, user, project, committish }) => `https://${domain2}/${user}/${project}${maybeJoin("#", committish)}`,
+      tarballtemplate: ({ domain: domain2, user, project, committish }) => `https://${domain2}/${user}/${project}/archive/${maybeEncode(committish) || "HEAD"}.tar.gz`,
+      bugstemplate: () => null,
+      extract: (url2) => {
+        let [, user, project, aux] = url2.pathname.split("/", 4);
+        if (["archive"].includes(aux)) {
+          return;
+        }
+        if (project && project.endsWith(".git")) {
+          project = project.slice(0, -4);
+        }
+        if (!user || !project) {
+          return;
+        }
+        return { user, project, committish: url2.hash.slice(1) };
+      }
+    };
+    for (const [name, host] of Object.entries(hosts)) {
+      hosts[name] = Object.assign({}, defaults, host);
+    }
+    module.exports = hosts;
+  }
+});
+
+// node_modules/hosted-git-info/lib/parse-url.js
+var require_parse_url = __commonJS({
+  "node_modules/hosted-git-info/lib/parse-url.js"(exports, module) {
+    var lastIndexOfBefore = (str, char, beforeChar) => {
+      const startPosition = str.indexOf(beforeChar);
+      return str.lastIndexOf(char, startPosition > -1 ? startPosition : Infinity);
+    };
+    var safeUrl = (u) => {
+      try {
+        return new URL(u);
+      } catch {
+      }
+    };
+    var correctProtocol = (arg, protocols) => {
+      const firstColon = arg.indexOf(":");
+      const proto = arg.slice(0, firstColon + 1);
+      if (Object.prototype.hasOwnProperty.call(protocols, proto)) {
+        return arg;
+      }
+      if (arg.substr(firstColon, 3) === "://") {
+        return arg;
+      }
+      const firstAt = arg.indexOf("@");
+      if (firstAt > -1) {
+        if (firstAt > firstColon) {
+          return `git+ssh://${arg}`;
+        } else {
+          return arg;
+        }
+      }
+      return `${arg.slice(0, firstColon + 1)}//${arg.slice(firstColon + 1)}`;
+    };
+    var correctUrl = (giturl) => {
+      const firstAt = lastIndexOfBefore(giturl, "@", "#");
+      const lastColonBeforeHash = lastIndexOfBefore(giturl, ":", "#");
+      if (lastColonBeforeHash > firstAt) {
+        giturl = giturl.slice(0, lastColonBeforeHash) + "/" + giturl.slice(lastColonBeforeHash + 1);
+      }
+      if (lastIndexOfBefore(giturl, ":", "#") === -1 && giturl.indexOf("//") === -1) {
+        giturl = `git+ssh://${giturl}`;
+      }
+      return giturl;
+    };
+    module.exports = (giturl, protocols) => {
+      const withProtocol = protocols ? correctProtocol(giturl, protocols) : giturl;
+      return safeUrl(withProtocol) || safeUrl(correctUrl(withProtocol));
+    };
+  }
+});
+
+// node_modules/hosted-git-info/lib/from-url.js
+var require_from_url = __commonJS({
+  "node_modules/hosted-git-info/lib/from-url.js"(exports, module) {
+    "use strict";
+    var parseUrl2 = require_parse_url();
+    var isGitHubShorthand = (arg) => {
+      const firstHash = arg.indexOf("#");
+      const firstSlash = arg.indexOf("/");
+      const secondSlash = arg.indexOf("/", firstSlash + 1);
+      const firstColon = arg.indexOf(":");
+      const firstSpace = /\s/.exec(arg);
+      const firstAt = arg.indexOf("@");
+      const spaceOnlyAfterHash = !firstSpace || firstHash > -1 && firstSpace.index > firstHash;
+      const atOnlyAfterHash = firstAt === -1 || firstHash > -1 && firstAt > firstHash;
+      const colonOnlyAfterHash = firstColon === -1 || firstHash > -1 && firstColon > firstHash;
+      const secondSlashOnlyAfterHash = secondSlash === -1 || firstHash > -1 && secondSlash > firstHash;
+      const hasSlash = firstSlash > 0;
+      const doesNotEndWithSlash = firstHash > -1 ? arg[firstHash - 1] !== "/" : !arg.endsWith("/");
+      const doesNotStartWithDot = !arg.startsWith(".");
+      return spaceOnlyAfterHash && hasSlash && doesNotEndWithSlash && doesNotStartWithDot && atOnlyAfterHash && colonOnlyAfterHash && secondSlashOnlyAfterHash;
+    };
+    module.exports = (giturl, opts, { gitHosts, protocols }) => {
+      if (!giturl) {
+        return;
+      }
+      const correctedUrl = isGitHubShorthand(giturl) ? `github:${giturl}` : giturl;
+      const parsed = parseUrl2(correctedUrl, protocols);
+      if (!parsed) {
+        return;
+      }
+      const gitHostShortcut = gitHosts.byShortcut[parsed.protocol];
+      const gitHostDomain = gitHosts.byDomain[parsed.hostname.startsWith("www.") ? parsed.hostname.slice(4) : parsed.hostname];
+      const gitHostName = gitHostShortcut || gitHostDomain;
+      if (!gitHostName) {
+        return;
+      }
+      const gitHostInfo = gitHosts[gitHostShortcut || gitHostDomain];
+      let auth = null;
+      if (protocols[parsed.protocol]?.auth && (parsed.username || parsed.password)) {
+        auth = `${parsed.username}${parsed.password ? ":" + parsed.password : ""}`;
+      }
+      let committish = null;
+      let user = null;
+      let project = null;
+      let defaultRepresentation = null;
+      try {
+        if (gitHostShortcut) {
+          let pathname = parsed.pathname.startsWith("/") ? parsed.pathname.slice(1) : parsed.pathname;
+          const firstAt = pathname.indexOf("@");
+          if (firstAt > -1) {
+            pathname = pathname.slice(firstAt + 1);
+          }
+          const lastSlash = pathname.lastIndexOf("/");
+          if (lastSlash > -1) {
+            user = decodeURIComponent(pathname.slice(0, lastSlash));
+            if (!user) {
+              user = null;
+            }
+            project = decodeURIComponent(pathname.slice(lastSlash + 1));
+          } else {
+            project = decodeURIComponent(pathname);
+          }
+          if (project.endsWith(".git")) {
+            project = project.slice(0, -4);
+          }
+          if (parsed.hash) {
+            committish = decodeURIComponent(parsed.hash.slice(1));
+          }
+          defaultRepresentation = "shortcut";
+        } else {
+          if (!gitHostInfo.protocols.includes(parsed.protocol)) {
+            return;
+          }
+          const segments = gitHostInfo.extract(parsed);
+          if (!segments) {
+            return;
+          }
+          user = segments.user && decodeURIComponent(segments.user);
+          project = decodeURIComponent(segments.project);
+          committish = decodeURIComponent(segments.committish);
+          defaultRepresentation = protocols[parsed.protocol]?.name || parsed.protocol.slice(0, -1);
+        }
+      } catch (err2) {
+        if (err2 instanceof URIError) {
+          return;
+        } else {
+          throw err2;
+        }
+      }
+      return [gitHostName, user, auth, project, committish, defaultRepresentation, opts];
+    };
+  }
+});
+
+// node_modules/hosted-git-info/lib/index.js
+var require_lib = __commonJS({
+  "node_modules/hosted-git-info/lib/index.js"(exports, module) {
+    "use strict";
+    var { LRUCache } = require_index_min();
+    var hosts = require_hosts();
+    var fromUrl = require_from_url();
+    var parseUrl2 = require_parse_url();
+    var cache = new LRUCache({ max: 1e3 });
+    function unknownHostedUrl(url2) {
+      try {
+        const {
+          protocol,
+          hostname: hostname3,
+          pathname
+        } = new URL(url2);
+        if (!hostname3) {
+          return null;
+        }
+        const proto = /(?:git\+)http:$/.test(protocol) ? "http:" : "https:";
+        const path9 = pathname.replace(/\.git$/, "");
+        return `${proto}//${hostname3}${path9}`;
+      } catch {
+        return null;
+      }
+    }
+    var GitHost = class _GitHost {
+      constructor(type, user, auth, project, committish, defaultRepresentation, opts = {}) {
+        Object.assign(this, _GitHost.#gitHosts[type], {
+          type,
+          user,
+          auth,
+          project,
+          committish,
+          default: defaultRepresentation,
+          opts
+        });
+      }
+      static #gitHosts = { byShortcut: {}, byDomain: {} };
+      static #protocols = {
+        "git+ssh:": { name: "sshurl" },
+        "ssh:": { name: "sshurl" },
+        "git+https:": { name: "https", auth: true },
+        "git:": { auth: true },
+        "http:": { auth: true },
+        "https:": { auth: true },
+        "git+http:": { auth: true }
+      };
+      static addHost(name, host) {
+        _GitHost.#gitHosts[name] = host;
+        _GitHost.#gitHosts.byDomain[host.domain] = name;
+        _GitHost.#gitHosts.byShortcut[`${name}:`] = name;
+        _GitHost.#protocols[`${name}:`] = { name };
+      }
+      static fromUrl(giturl, opts) {
+        if (typeof giturl !== "string") {
+          return;
+        }
+        const key = giturl + JSON.stringify(opts || {});
+        if (!cache.has(key)) {
+          const hostArgs = fromUrl(giturl, opts, {
+            gitHosts: _GitHost.#gitHosts,
+            protocols: _GitHost.#protocols
+          });
+          cache.set(key, hostArgs ? new _GitHost(...hostArgs) : void 0);
+        }
+        return cache.get(key);
+      }
+      static fromManifest(manifest, opts = {}) {
+        if (!manifest || typeof manifest !== "object") {
+          return;
+        }
+        const r = manifest.repository;
+        const rurl = r && (typeof r === "string" ? r : typeof r === "object" && typeof r.url === "string" ? r.url : null);
+        if (!rurl) {
+          throw new Error("no repository");
+        }
+        const info = rurl && _GitHost.fromUrl(rurl.replace(/^git\+/, ""), opts) || null;
+        if (info) {
+          return info;
+        }
+        const unk = unknownHostedUrl(rurl);
+        return _GitHost.fromUrl(unk, opts) || unk;
+      }
+      static parseUrl(url2) {
+        return parseUrl2(url2);
+      }
+      #fill(template, opts) {
+        if (typeof template !== "function") {
+          return null;
+        }
+        const options = { ...this, ...this.opts, ...opts };
+        if (!options.path) {
+          options.path = "";
+        }
+        if (options.path.startsWith("/")) {
+          options.path = options.path.slice(1);
+        }
+        if (options.noCommittish) {
+          options.committish = null;
+        }
+        const result = template(options);
+        return options.noGitPlus && result.startsWith("git+") ? result.slice(4) : result;
+      }
+      hash() {
+        return this.committish ? `#${this.committish}` : "";
+      }
+      ssh(opts) {
+        return this.#fill(this.sshtemplate, opts);
+      }
+      sshurl(opts) {
+        return this.#fill(this.sshurltemplate, opts);
+      }
+      browse(path9, ...args) {
+        if (typeof path9 !== "string") {
+          return this.#fill(this.browsetemplate, path9);
+        }
+        if (typeof args[0] !== "string") {
+          return this.#fill(this.browsetreetemplate, { ...args[0], path: path9 });
+        }
+        return this.#fill(this.browsetreetemplate, { ...args[1], fragment: args[0], path: path9 });
+      }
+      // If the path is known to be a file, then browseFile should be used. For some hosts
+      // the url is the same as browse, but for others like GitHub a file can use both `/tree/`
+      // and `/blob/` in the path. When using a default committish of `HEAD` then the `/tree/`
+      // path will redirect to a specific commit. Using the `/blob/` path avoids this and
+      // does not redirect to a different commit.
+      browseFile(path9, ...args) {
+        if (typeof args[0] !== "string") {
+          return this.#fill(this.browseblobtemplate, { ...args[0], path: path9 });
+        }
+        return this.#fill(this.browseblobtemplate, { ...args[1], fragment: args[0], path: path9 });
+      }
+      docs(opts) {
+        return this.#fill(this.docstemplate, opts);
+      }
+      bugs(opts) {
+        return this.#fill(this.bugstemplate, opts);
+      }
+      https(opts) {
+        return this.#fill(this.httpstemplate, opts);
+      }
+      git(opts) {
+        return this.#fill(this.gittemplate, opts);
+      }
+      shortcut(opts) {
+        return this.#fill(this.shortcuttemplate, opts);
+      }
+      path(opts) {
+        return this.#fill(this.pathtemplate, opts);
+      }
+      tarball(opts) {
+        return this.#fill(this.tarballtemplate, { ...opts, noCommittish: false });
+      }
+      file(path9, opts) {
+        return this.#fill(this.filetemplate, { ...opts, path: path9 });
+      }
+      edit(path9, opts) {
+        return this.#fill(this.edittemplate, { ...opts, path: path9 });
+      }
+      getDefaultRepresentation() {
+        return this.default;
+      }
+      toString(opts) {
+        if (this.default && typeof this[this.default] === "function") {
+          return this[this.default](opts);
+        }
+        return this.sshurl(opts);
+      }
+    };
+    for (const [name, host] of Object.entries(hosts)) {
+      GitHost.addHost(name, host);
+    }
+    module.exports = GitHost;
   }
 });
 
@@ -914,10 +2014,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path5) {
-  if (!path5)
+function getElementAtPath(obj, path9) {
+  if (!path9)
     return obj;
-  return path5.reduce((acc, key) => acc?.[key], obj);
+  return path9.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1326,11 +2426,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path5, issues) {
+function prefixIssues(path9, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path5);
+    iss.path.unshift(path9);
     return iss;
   });
 }
@@ -1477,16 +2577,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path5 = []) => {
+  const processError = (error52, path9 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path5, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path5, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1513,17 +2613,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path5 = []) => {
+  const processError = (error52, path9 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path5, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path5, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1555,8 +2655,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path5 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path5) {
+  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path9) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -14248,13 +15348,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path5 = ref.slice(1).split("/").filter(Boolean);
-  if (path5.length === 0) {
+  const path9 = ref.slice(1).split("/").filter(Boolean);
+  if (path9.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path5[0] === defsKey) {
-    const key = path5[1];
+  if (path9[0] === defsKey) {
+    const key = path9[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -14662,6 +15762,11 @@ function date4(params) {
 // node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// packages/normalization-core/src/record-coerce.ts
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 // packages/normalization-core/src/string-coerce.ts
 function normalizeNullableString(value) {
   if (typeof value !== "string") {
@@ -14689,6 +15794,441 @@ function normalizeLowercaseStringOrEmpty(value) {
   return normalizeOptionalLowercaseString(value) ?? "";
 }
 
+// src/cli/profile-utils.ts
+import path2 from "node:path";
+
+// src/infra/home-dir.ts
+import os from "node:os";
+import path from "node:path";
+
+// src/infra/safe-cwd.ts
+function tryProcessCwd() {
+  try {
+    return process.cwd();
+  } catch {
+    return void 0;
+  }
+}
+
+// src/infra/home-dir.ts
+function normalize(value) {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === "undefined" || trimmed === "null") {
+    return void 0;
+  }
+  return trimmed;
+}
+function normalizeSafe(homedir) {
+  try {
+    return normalize(homedir());
+  } catch {
+    return void 0;
+  }
+}
+function resolveTermuxHome(env) {
+  const prefix = normalize(env.PREFIX);
+  if (!prefix || !normalize(env.ANDROID_DATA)) {
+    return void 0;
+  }
+  if (!/(?:^|\/)com\.termux\/files\/usr\/?$/u.test(prefix.replace(/\\/gu, "/"))) {
+    return void 0;
+  }
+  return path.resolve(prefix, "..", "home");
+}
+function resolveRawOsHomeDir(env, homedir) {
+  return normalize(env.HOME) ?? normalize(env.USERPROFILE) ?? resolveTermuxHome(env) ?? normalizeSafe(homedir);
+}
+function resolveRawHomeDir(env, homedir) {
+  const explicitHome = normalize(env.OPENCLAW_HOME);
+  if (!explicitHome) {
+    return resolveRawOsHomeDir(env, homedir);
+  }
+  if (explicitHome === "~" || explicitHome.startsWith("~/") || explicitHome.startsWith("~\\")) {
+    const fallbackHome = resolveRawOsHomeDir(env, homedir);
+    return fallbackHome ? explicitHome.replace(/^~(?=$|[\\/])/, fallbackHome) : void 0;
+  }
+  return explicitHome;
+}
+function resolveEffectiveHomeDir(env = process.env, homedir = os.homedir) {
+  const raw = resolveRawHomeDir(env, homedir);
+  return raw ? path.resolve(raw) : void 0;
+}
+function resolveRequiredHomeDir(env = process.env, homedir = os.homedir) {
+  const resolved = resolveEffectiveHomeDir(env, homedir) ?? tryProcessCwd();
+  if (resolved) {
+    return path.resolve(resolved);
+  }
+  throw new Error(
+    "Unable to resolve an OpenClaw home: set OPENCLAW_HOME, HOME, or USERPROFILE, or run from an existing directory."
+  );
+}
+function expandHomePrefix(input, opts) {
+  if (!input.startsWith("~")) {
+    return input;
+  }
+  const home = normalize(opts?.home) ?? resolveEffectiveHomeDir(opts?.env ?? process.env, opts?.homedir ?? os.homedir);
+  if (!home) {
+    return input;
+  }
+  return input.replace(/^~(?=$|[\\/])/, home);
+}
+function resolveHomeRelativePath(input, opts) {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("~")) {
+    const expanded = expandHomePrefix(trimmed, {
+      home: resolveRequiredHomeDir(opts?.env ?? process.env, opts?.homedir ?? os.homedir),
+      env: opts?.env,
+      homedir: opts?.homedir
+    });
+    return path.resolve(expanded);
+  }
+  return path.resolve(trimmed);
+}
+function resolveUserPath(input, env = process.env, homedir = os.homedir) {
+  if (!input) {
+    return "";
+  }
+  return resolveHomeRelativePath(input, { env, homedir });
+}
+
+// src/cli/profile-utils.ts
+var PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+function isValidProfileName(value) {
+  if (!value) {
+    return false;
+  }
+  return PROFILE_NAME_RE.test(value);
+}
+function resolveProfileStateDir(profile, env, homedir) {
+  const trimmed = profile.trim();
+  if (!isValidProfileName(trimmed)) {
+    throw new Error(`Invalid profile name: ${JSON.stringify(profile)}`);
+  }
+  const suffix = normalizeLowercaseStringOrEmpty(trimmed) === "default" ? "" : `-${trimmed}`;
+  return path2.join(resolveRequiredHomeDir(env, homedir), `.openclaw${suffix}`);
+}
+
+// src/utils.ts
+import fs from "node:fs";
+import os2 from "node:os";
+import path3 from "node:path";
+
+// node_modules/@openclaw/fs-safe/dist/native-config.js
+var overrideConfig = {};
+function configureFsSafeNative(config2) {
+  overrideConfig = { ...overrideConfig, ...config2 };
+}
+
+// src/infra/fs-safe-defaults.ts
+var hasModeOverride = Object.keys(process.env).some(
+  (key) => /^(?:OPENCLAW_)?FS_SAFE_(?:NATIVE|PYTHON)_MODE$/u.test(
+    process.platform === "win32" ? key.toUpperCase() : key
+  )
+);
+if (!hasModeOverride) {
+  configureFsSafeNative({ mode: "off" });
+}
+
+// packages/normalization-core/src/number-coercion.ts
+var MAX_TIMER_TIMEOUT_MS = 2147e6;
+var MAX_TIMER_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_TIMEOUT_MS / 1e3);
+
+// packages/retry/src/index.ts
+var MAX_TIMER_TIMEOUT_MS2 = 2147e6;
+var DEFAULT_RETRY_CONFIG = {
+  attempts: 3,
+  minDelayMs: 300,
+  maxDelayMs: 3e4,
+  jitter: 0
+};
+var defaultSleep = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+function clampNumber(value, fallback, min, max) {
+  const next = Number.isFinite(value) ? value : void 0;
+  if (next === void 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(next, min ?? Number.NEGATIVE_INFINITY), max ?? Number.POSITIVE_INFINITY);
+}
+function resolveAttemptCount(value, fallback) {
+  const attemptCount = Number.isFinite(value) ? value : fallback;
+  return Math.max(1, Math.round(attemptCount));
+}
+function resolveRetryDelayMs(value) {
+  const finite = value === Number.POSITIVE_INFINITY ? MAX_TIMER_TIMEOUT_MS2 : Number.isFinite(value) ? value : 0;
+  return Math.min(Math.max(Math.round(finite), 0), MAX_TIMER_TIMEOUT_MS2);
+}
+function resolveJitterConfig(value, fallback) {
+  if (value === "full") {
+    return "full";
+  }
+  const fraction = Number.isFinite(value) ? value : void 0;
+  return fraction === void 0 ? fallback : Math.min(Math.max(fraction, 0), 1);
+}
+function resolveRetryConfig(defaults = DEFAULT_RETRY_CONFIG, overrides) {
+  const attempts = resolveAttemptCount(overrides?.attempts, defaults.attempts);
+  const minDelayMs = resolveRetryDelayMs(
+    clampNumber(overrides?.minDelayMs, defaults.minDelayMs, 0)
+  );
+  const maxDelayMs = Math.max(
+    minDelayMs,
+    resolveRetryDelayMs(clampNumber(overrides?.maxDelayMs, defaults.maxDelayMs, 0))
+  );
+  return {
+    attempts,
+    minDelayMs,
+    maxDelayMs,
+    jitter: resolveJitterConfig(overrides?.jitter, defaults.jitter)
+  };
+}
+function applyJitter(delayMs, jitter, mode, random) {
+  if (jitter === "full") {
+    if (mode === "symmetric") {
+      return Math.max(0, Math.round(delayMs * (0.5 + random() * 0.5)));
+    }
+    return Math.max(0, Math.ceil(delayMs * (1 + random())));
+  }
+  if (jitter <= 0) {
+    return mode === "positive" ? Math.ceil(delayMs) : delayMs;
+  }
+  const fraction = random();
+  const offset = mode === "positive" ? fraction * jitter : (fraction * 2 - 1) * jitter;
+  const raw = delayMs * (1 + offset);
+  return Math.max(0, mode === "positive" ? Math.ceil(raw) : Math.round(raw));
+}
+function toRetryError(value, fallbackMessage = "Non-Error thrown") {
+  if (value instanceof Error) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return new Error(value);
+  }
+  const error51 = new Error(fallbackMessage, { cause: value });
+  if (typeof value === "object" && value !== null || typeof value === "function") {
+    Object.assign(error51, value);
+  }
+  return error51;
+}
+function createRetryRunner(runtime = {}) {
+  const runtimeSleep = runtime.sleep ?? defaultSleep;
+  const runtimeRandom = runtime.random ?? Math.random;
+  const createFailure = runtime.createFailure ?? ((errors) => toRetryError(errors.at(-1) ?? new Error("Retry failed")));
+  return async function retryAsync2(fn, attemptsOrOptions = 3, initialDelayMs = 300) {
+    const attemptErrors = [];
+    if (typeof attemptsOrOptions === "number") {
+      const attempts = resolveAttemptCount(attemptsOrOptions, DEFAULT_RETRY_CONFIG.attempts);
+      for (let index = 0; index < attempts; index += 1) {
+        try {
+          return await fn();
+        } catch (err2) {
+          attemptErrors.push(err2);
+          if (index === attempts - 1) {
+            break;
+          }
+          await runtimeSleep(resolveRetryDelayMs(initialDelayMs * 2 ** index));
+        }
+      }
+      throw createFailure(attemptErrors);
+    }
+    const options = attemptsOrOptions;
+    const resolved = resolveRetryConfig(DEFAULT_RETRY_CONFIG, options);
+    const maxAttempts = resolved.attempts;
+    const minDelayMs = resolved.minDelayMs;
+    const maxDelayMs = resolved.maxDelayMs > 0 ? resolved.maxDelayMs : Number.POSITIVE_INFINITY;
+    const retryAfterMaxDelayMs = options.retryAfterMaxDelayMs === void 0 ? maxDelayMs : Math.max(
+      minDelayMs,
+      resolveRetryDelayMs(clampNumber(options.retryAfterMaxDelayMs, maxDelayMs, 0))
+    );
+    const random = options.random ?? runtimeRandom;
+    const sleep2 = options.sleep ?? runtimeSleep;
+    const shouldRetry = options.shouldRetry ?? (() => true);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await fn();
+      } catch (err2) {
+        attemptErrors.push(err2);
+        if (attempt >= maxAttempts || !shouldRetry(err2, attempt)) {
+          break;
+        }
+        const context = {
+          attempt,
+          maxAttempts,
+          err: err2,
+          label: options.label
+        };
+        const retryAfterMs = options.retryAfterMs?.(err2);
+        const hasRetryAfter = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs);
+        const configuredDelay = typeof options.delayMs === "function" ? options.delayMs(context) : options.delayMs;
+        const resolvedConfiguredDelay = configuredDelay === void 0 ? void 0 : resolveRetryDelayMs(configuredDelay);
+        const baseDelay = hasRetryAfter ? Math.max(retryAfterMs, minDelayMs) : resolvedConfiguredDelay === void 0 ? minDelayMs * 2 ** (attempt - 1) : Math.max(resolvedConfiguredDelay, minDelayMs);
+        const delayCap = hasRetryAfter ? retryAfterMaxDelayMs : maxDelayMs;
+        let delay = Math.min(baseDelay, delayCap);
+        const canHonorRetryAfter = hasRetryAfter && (retryAfterMs ?? 0) <= delayCap;
+        const wantsPositiveDraw = resolved.jitter === "full" ? !hasRetryAfter || canHonorRetryAfter : canHonorRetryAfter;
+        delay = applyJitter(
+          delay,
+          resolved.jitter,
+          wantsPositiveDraw ? "positive" : "symmetric",
+          random
+        );
+        delay = Math.min(Math.max(delay, minDelayMs), delayCap);
+        await options.onRetry?.({ ...context, delayMs: delay });
+        if (delay > 0) {
+          await sleep2(delay);
+        }
+      }
+    }
+    throw createFailure(attemptErrors);
+  };
+}
+var retryAsync = createRetryRunner();
+
+// src/utils.ts
+function resolveConfigDir(env = process.env, homedir = os2.homedir) {
+  const override = env.OPENCLAW_STATE_DIR?.trim();
+  if (override) {
+    return resolveUserPath(override, env, homedir);
+  }
+  const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
+  if (configPath) {
+    return path3.dirname(resolveUserPath(configPath, env, homedir));
+  }
+  const newDir = path3.join(resolveRequiredHomeDir(env, homedir), ".openclaw");
+  try {
+    const hasNew = fs.existsSync(newDir);
+    if (hasNew) {
+      return newDir;
+    }
+  } catch {
+  }
+  return newDir;
+}
+var CONFIG_DIR = resolveConfigDir();
+
+// src/config/paths.ts
+import fs2 from "node:fs";
+import os3 from "node:os";
+import path4 from "node:path";
+
+// src/infra/test-runtime-env.ts
+function isVitestRuntimeEnv(env = process.env) {
+  return env.VITEST === "true" || env.VITEST === "1" || env.VITEST_POOL_ID !== void 0 || env.VITEST_WORKER_ID !== void 0 || env.NODE_ENV === "test";
+}
+function isFastTestRuntimeEnv(env = process.env) {
+  const isTestRuntime = isVitestRuntimeEnv(env) || env !== process.env && isVitestRuntimeEnv(process.env);
+  return isTestRuntime && env.OPENCLAW_TEST_FAST === "1";
+}
+
+// src/config/paths.ts
+function resolveIsNixMode(env = process.env) {
+  return env.OPENCLAW_NIX_MODE === "1";
+}
+var isNixMode = resolveIsNixMode();
+var LEGACY_STATE_DIRNAMES = [".clawdbot"];
+var NEW_STATE_DIRNAME = ".openclaw";
+var CONFIG_FILENAME = "openclaw.json";
+var LEGACY_CONFIG_FILENAMES = ["clawdbot.json"];
+function resolveDefaultHomeDir() {
+  return resolveRequiredHomeDir(process.env, os3.homedir);
+}
+function envHomedir(env) {
+  return () => resolveRequiredHomeDir(env, os3.homedir);
+}
+function legacyStateDirs(homedir = resolveDefaultHomeDir) {
+  return LEGACY_STATE_DIRNAMES.map((dir) => path4.join(homedir(), dir));
+}
+function newStateDir(homedir = resolveDefaultHomeDir) {
+  return path4.join(homedir(), NEW_STATE_DIRNAME);
+}
+function resolveStateDir(env = process.env, homedir = envHomedir(env)) {
+  const effectiveHomedir = () => resolveRequiredHomeDir(env, homedir);
+  const override = env.OPENCLAW_STATE_DIR?.trim();
+  if (override) {
+    return resolveUserPath2(override, env, effectiveHomedir);
+  }
+  const newDir = newStateDir(effectiveHomedir);
+  if (isFastTestRuntimeEnv(env)) {
+    return newDir;
+  }
+  const legacyDirs = legacyStateDirs(effectiveHomedir);
+  const hasNew = fs2.existsSync(newDir);
+  if (hasNew) {
+    return newDir;
+  }
+  const existingLegacy = legacyDirs.find((dir) => {
+    try {
+      return fs2.existsSync(dir);
+    } catch {
+      return false;
+    }
+  });
+  if (existingLegacy) {
+    return existingLegacy;
+  }
+  return newDir;
+}
+function resolveUserPath2(input, env = process.env, homedir = envHomedir(env)) {
+  return resolveHomeRelativePath(input, { env, homedir });
+}
+var STATE_DIR = resolveStateDir();
+function resolveCanonicalConfigPath(env = process.env, stateDir = resolveStateDir(env, envHomedir(env))) {
+  const override = env.OPENCLAW_CONFIG_PATH?.trim();
+  if (override) {
+    return resolveUserPath2(override, env, envHomedir(env));
+  }
+  return path4.join(stateDir, CONFIG_FILENAME);
+}
+function resolveConfigPathCandidate(env = process.env, homedir = envHomedir(env)) {
+  if (isFastTestRuntimeEnv(env)) {
+    return resolveCanonicalConfigPath(env, resolveStateDir(env, homedir));
+  }
+  const candidates = resolveDefaultConfigCandidates(env, homedir);
+  const existing = candidates.find((candidate) => {
+    try {
+      return fs2.existsSync(candidate);
+    } catch {
+      return false;
+    }
+  });
+  if (existing) {
+    return existing;
+  }
+  return resolveCanonicalConfigPath(env, resolveStateDir(env, homedir));
+}
+var CONFIG_PATH = resolveConfigPathCandidate();
+function resolveDefaultConfigCandidates(env = process.env, homedir = envHomedir(env)) {
+  const effectiveHomedir = () => resolveRequiredHomeDir(env, homedir);
+  const explicit = env.OPENCLAW_CONFIG_PATH?.trim();
+  if (explicit) {
+    return [resolveUserPath2(explicit, env, effectiveHomedir)];
+  }
+  const candidates = [];
+  const openclawStateDir = env.OPENCLAW_STATE_DIR?.trim();
+  if (openclawStateDir) {
+    const resolved = resolveUserPath2(openclawStateDir, env, effectiveHomedir);
+    candidates.push(path4.join(resolved, CONFIG_FILENAME));
+    candidates.push(...LEGACY_CONFIG_FILENAMES.map((name) => path4.join(resolved, name)));
+  }
+  const defaultDirs = [newStateDir(effectiveHomedir), ...legacyStateDirs(effectiveHomedir)];
+  for (const dir of defaultDirs) {
+    candidates.push(path4.join(dir, CONFIG_FILENAME));
+    candidates.push(...LEGACY_CONFIG_FILENAMES.map((name) => path4.join(dir, name)));
+  }
+  return candidates;
+}
+
+// packages/normalization-core/src/result.ts
+function ok(value) {
+  return { ok: true, value };
+}
+function err(error51) {
+  return { ok: false, error: error51 };
+}
+
 // packages/normalization-core/src/agent-id.ts
 var DEFAULT_AGENT_ID = "main";
 var VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -14696,21 +16236,89 @@ var INVALID_CHARS_RE = /[^a-z0-9_-]+/g;
 var LEADING_DASH_RE = /^-+/;
 var TRAILING_DASH_RE = /-+$/;
 function normalizeAgentId(value) {
+  const result = normalizeAgentIdStrict(value);
+  return result.ok ? result.value : DEFAULT_AGENT_ID;
+}
+function normalizeAgentIdStrict(value) {
   const trimmed = (value ?? "").trim();
-  if (!trimmed) {
-    return DEFAULT_AGENT_ID;
-  }
   const normalized = normalizeLowercaseStringOrEmpty(trimmed);
   if (VALID_ID_RE.test(trimmed)) {
-    return normalized;
+    return ok(normalized);
   }
-  return normalized.replace(INVALID_CHARS_RE, "-").replace(LEADING_DASH_RE, "").replace(TRAILING_DASH_RE, "").slice(0, 64) || DEFAULT_AGENT_ID;
+  const agentId = normalized.replace(INVALID_CHARS_RE, "-").replace(LEADING_DASH_RE, "").replace(TRAILING_DASH_RE, "").slice(0, 64);
+  return agentId ? ok(agentId) : err("unrepresentable");
 }
 
 // src/infra/prototype-keys.ts
 var BLOCKED_OBJECT_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
 function isBlockedObjectKey(key) {
   return BLOCKED_OBJECT_KEYS.has(key);
+}
+
+// src/routing/session-key.ts
+var LEGACY_IMPLICIT_AGENT_ID = "main";
+var DEFAULT_AGENT_ID2 = LEGACY_IMPLICIT_AGENT_ID;
+
+// src/agents/workspace-default.ts
+import os4 from "node:os";
+import path5 from "node:path";
+function resolveDefaultAgentWorkspaceDir(env = process.env, homedir = os4.homedir) {
+  const workspaceDir = env.OPENCLAW_WORKSPACE_DIR?.trim();
+  if (workspaceDir) {
+    return path5.resolve(workspaceDir);
+  }
+  if (env.OPENCLAW_STATE_DIR?.trim()) {
+    return path5.join(resolveStateDir(env, homedir), "workspace");
+  }
+  const home = resolveRequiredHomeDir(env, homedir);
+  const profile = env.OPENCLAW_PROFILE?.trim();
+  if (profile && normalizeOptionalLowercaseString(profile) !== "default") {
+    return path5.join(resolveProfileStateDir(profile, env, homedir), "workspace");
+  }
+  return path5.join(home, ".openclaw", "workspace");
+}
+var DEFAULT_AGENT_WORKSPACE_DIR = resolveDefaultAgentWorkspaceDir();
+
+// src/agents/agent-scope-config.ts
+function listAgentEntriesWithSource(cfg) {
+  const roster = readAgentRosterProperty(cfg);
+  if (roster?.kind === "entries" && isRecord(roster.value)) {
+    return Object.entries(roster.value).flatMap(
+      ([id, entry]) => isRecord(entry) ? [
+        {
+          entry: { ...entry, id },
+          source: { kind: "entries", key: id }
+        }
+      ] : []
+    );
+  }
+  if (roster?.kind !== "list" || !Array.isArray(roster.value)) {
+    return [];
+  }
+  return roster.value.flatMap(
+    (entry, index) => entry !== null && typeof entry === "object" ? [{ entry, source: { kind: "list", index } }] : []
+  );
+}
+function listAgentEntries(cfg) {
+  return listAgentEntriesWithSource(cfg).map(({ entry }) => entry);
+}
+function readAgentRosterProperty(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return void 0;
+  }
+  const agents = raw.agents;
+  if (!agents || typeof agents !== "object" || Array.isArray(agents)) {
+    return void 0;
+  }
+  const entries = agents["entries"];
+  if (Object.hasOwn(agents, "entries") && entries !== void 0) {
+    return { kind: "entries", value: entries };
+  }
+  const list = agents["list"];
+  if (Object.hasOwn(agents, "list") && list !== void 0) {
+    return { kind: "list", value: list };
+  }
+  return void 0;
 }
 
 // src/cli/parse-duration.ts
@@ -14832,11 +16440,6 @@ function isValidNonNegativeByteSizeString(value) {
   return parseNonNegativeByteSize(value) !== null;
 }
 
-// packages/normalization-core/src/record-coerce.ts
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 // packages/normalization-core/src/string-normalization.ts
 function uniqueValues(values) {
   return [...new Set(values)];
@@ -14871,18 +16474,6 @@ function getHostContainerSeparatorIndex(spec) {
     }
   }
   return -1;
-}
-
-// node_modules/@openclaw/fs-safe/dist/pinned-python-config.js
-var overrideConfig = {};
-function configureFsSafePython(config2) {
-  overrideConfig = { ...overrideConfig, ...config2 };
-}
-
-// src/infra/fs-safe-defaults.ts
-var hasPythonModeOverride = process.env.FS_SAFE_PYTHON_MODE != null || process.env.OPENCLAW_FS_SAFE_PYTHON_MODE != null;
-if (!hasPythonModeOverride) {
-  configureFsSafePython({ mode: "off" });
 }
 
 // src/agents/sandbox/host-paths.ts
@@ -14930,6 +16521,9 @@ function getBlockedNetworkModeReason(params) {
   return null;
 }
 
+// src/config/github-identity-profile-id.ts
+var MANAGED_GITHUB_PROFILE_ID_PATTERN = /^ghp_[a-f0-9]{32}$/u;
+
 // src/config/web-search-legacy-provider-keys.ts
 var LEGACY_WEB_SEARCH_PROVIDER_CONFIG_KEYS = /* @__PURE__ */ new Set([
   "brave",
@@ -14964,7 +16558,7 @@ var AgentToolModelSchema = external_exports.union([
 ]);
 
 // src/config/zod-schema.core.ts
-import path3 from "node:path";
+import path6 from "node:path";
 
 // packages/model-catalog-core/src/provider-id.ts
 function normalizeProviderId(provider) {
@@ -15014,134 +16608,6 @@ function isSafeExecutableValue(value) {
   return BARE_NAME_PATTERN.test(trimmed);
 }
 
-// packages/normalization-core/src/number-coercion.ts
-var MAX_TIMER_TIMEOUT_MS = 2147e6;
-var MAX_TIMER_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_TIMEOUT_MS / 1e3);
-
-// src/utils.ts
-import fs from "node:fs";
-import os2 from "node:os";
-import path2 from "node:path";
-
-// src/infra/home-dir.ts
-import os from "node:os";
-import path from "node:path";
-
-// src/infra/safe-cwd.ts
-function tryProcessCwd() {
-  try {
-    return process.cwd();
-  } catch {
-    return void 0;
-  }
-}
-
-// src/infra/home-dir.ts
-function normalize(value) {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed === "undefined" || trimmed === "null") {
-    return void 0;
-  }
-  return trimmed;
-}
-function normalizeSafe(homedir) {
-  try {
-    return normalize(homedir());
-  } catch {
-    return void 0;
-  }
-}
-function resolveTermuxHome(env) {
-  const prefix = normalize(env.PREFIX);
-  if (!prefix || !normalize(env.ANDROID_DATA)) {
-    return void 0;
-  }
-  if (!/(?:^|\/)com\.termux\/files\/usr\/?$/u.test(prefix.replace(/\\/gu, "/"))) {
-    return void 0;
-  }
-  return path.resolve(prefix, "..", "home");
-}
-function resolveRawOsHomeDir(env, homedir) {
-  return normalize(env.HOME) ?? normalize(env.USERPROFILE) ?? resolveTermuxHome(env) ?? normalizeSafe(homedir);
-}
-function resolveRawHomeDir(env, homedir) {
-  const explicitHome = normalize(env.OPENCLAW_HOME);
-  if (!explicitHome) {
-    return resolveRawOsHomeDir(env, homedir);
-  }
-  if (explicitHome === "~" || explicitHome.startsWith("~/") || explicitHome.startsWith("~\\")) {
-    const fallbackHome = resolveRawOsHomeDir(env, homedir);
-    return fallbackHome ? explicitHome.replace(/^~(?=$|[\\/])/, fallbackHome) : void 0;
-  }
-  return explicitHome;
-}
-function resolveEffectiveHomeDir(env = process.env, homedir = os.homedir) {
-  const raw = resolveRawHomeDir(env, homedir);
-  return raw ? path.resolve(raw) : void 0;
-}
-function resolveRequiredHomeDir(env = process.env, homedir = os.homedir) {
-  const resolved = resolveEffectiveHomeDir(env, homedir) ?? tryProcessCwd();
-  if (resolved) {
-    return path.resolve(resolved);
-  }
-  throw new Error(
-    "Unable to resolve an OpenClaw home: set OPENCLAW_HOME, HOME, or USERPROFILE, or run from an existing directory."
-  );
-}
-function expandHomePrefix(input, opts) {
-  if (!input.startsWith("~")) {
-    return input;
-  }
-  const home = normalize(opts?.home) ?? resolveEffectiveHomeDir(opts?.env ?? process.env, opts?.homedir ?? os.homedir);
-  if (!home) {
-    return input;
-  }
-  return input.replace(/^~(?=$|[\\/])/, home);
-}
-function resolveHomeRelativePath(input, opts) {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("~")) {
-    const expanded = expandHomePrefix(trimmed, {
-      home: resolveRequiredHomeDir(opts?.env ?? process.env, opts?.homedir ?? os.homedir),
-      env: opts?.env,
-      homedir: opts?.homedir
-    });
-    return path.resolve(expanded);
-  }
-  return path.resolve(trimmed);
-}
-function resolveUserPath(input, env = process.env, homedir = os.homedir) {
-  if (!input) {
-    return "";
-  }
-  return resolveHomeRelativePath(input, { env, homedir });
-}
-
-// src/utils.ts
-function resolveConfigDir(env = process.env, homedir = os2.homedir) {
-  const override = env.OPENCLAW_STATE_DIR?.trim();
-  if (override) {
-    return resolveUserPath(override, env, homedir);
-  }
-  const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
-  if (configPath) {
-    return path2.dirname(resolveUserPath(configPath, env, homedir));
-  }
-  const newDir = path2.join(resolveRequiredHomeDir(env, homedir), ".openclaw");
-  try {
-    const hasNew = fs.existsSync(newDir);
-    if (hasNew) {
-      return newDir;
-    }
-  } catch {
-  }
-  return newDir;
-}
-var CONFIG_DIR = resolveConfigDir();
-
 // src/config/types.secrets.ts
 var ENV_SECRET_REF_ID_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
 function isValidEnvSecretRefId(value) {
@@ -15154,7 +16620,7 @@ function isSecretRef(value) {
   if (Object.keys(value).length !== 3) {
     return false;
   }
-  return (value.source === "env" || value.source === "file" || value.source === "exec") && typeof value.provider === "string" && value.provider.trim().length > 0 && typeof value.id === "string" && value.id.trim().length > 0;
+  return (value.source === "env" || value.source === "file" || value.source === "exec" || value.source === "store") && typeof value.provider === "string" && value.provider.trim().length > 0 && typeof value.id === "string" && value.id.trim().length > 0;
 }
 
 // src/secrets/ref-contract.ts
@@ -15201,6 +16667,9 @@ function isValidSecretRef(ref) {
   if (ref.source === "file") {
     return isValidFileSecretRefId(ref.id);
   }
+  if (ref.source === "store") {
+    return isValidEnvSecretRefId(ref.id);
+  }
   return isValidExecSecretRefId(ref.id);
 }
 function formatExecSecretRefIdValidationMessage() {
@@ -15236,13 +16705,7 @@ var MODEL_THINKING_FORMATS = [
 
 // src/config/zod-schema.allowdeny.ts
 var AllowDenyActionSchema = external_exports.union([external_exports.literal("allow"), external_exports.literal("deny")]);
-var AllowDenyChatTypeSchema = external_exports.union([
-  external_exports.literal("direct"),
-  external_exports.literal("group"),
-  external_exports.literal("channel"),
-  /** @deprecated Use `direct` instead. Kept for backward compatibility. */
-  external_exports.literal("dm")
-]).optional();
+var AllowDenyChatTypeSchema = external_exports.union([external_exports.literal("direct"), external_exports.literal("group"), external_exports.literal("channel")]).optional();
 function createAllowDenyChannelRulesSchema() {
   return external_exports.object({
     default: AllowDenyActionSchema.optional(),
@@ -15262,30 +16725,29 @@ function createAllowDenyChannelRulesSchema() {
 
 // src/config/zod-schema.sensitive.ts
 var sensitive = external_exports.registry();
+var configUiMetadata = external_exports.registry();
 
 // src/config/zod-schema.core.ts
-var ENV_SECRET_REF_ID_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
-var SECRET_PROVIDER_ALIAS_PATTERN2 = /^[a-z][a-z0-9_-]{0,63}$/;
 var WINDOWS_ABS_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 var WINDOWS_UNC_PATH_PATTERN = /^\\\\[^\\]+\\[^\\]+/;
 function isAbsolutePath(value) {
-  return path3.isAbsolute(value) || WINDOWS_ABS_PATH_PATTERN.test(value) || WINDOWS_UNC_PATH_PATTERN.test(value);
+  return path6.isAbsolute(value) || WINDOWS_ABS_PATH_PATTERN.test(value) || WINDOWS_UNC_PATH_PATTERN.test(value);
 }
 var EnvSecretRefSchema = external_exports.object({
   source: external_exports.literal("env"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN2,
+    SECRET_PROVIDER_ALIAS_PATTERN,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().regex(
-    ENV_SECRET_REF_ID_PATTERN,
+    ENV_SECRET_REF_ID_RE,
     'Env secret reference id must match /^[A-Z][A-Z0-9_]{0,127}$/ (example: "OPENAI_API_KEY").'
   )
 }).strict();
 var FileSecretRefSchema = external_exports.object({
   source: external_exports.literal("file"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN2,
+    SECRET_PROVIDER_ALIAS_PATTERN,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().refine(
@@ -15296,28 +16758,45 @@ var FileSecretRefSchema = external_exports.object({
 var ExecSecretRefSchema = external_exports.object({
   source: external_exports.literal("exec"),
   provider: external_exports.string().regex(
-    SECRET_PROVIDER_ALIAS_PATTERN2,
+    SECRET_PROVIDER_ALIAS_PATTERN,
     'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
   ),
   id: external_exports.string().refine(isValidExecSecretRefId, formatExecSecretRefIdValidationMessage())
 }).strict();
+var StoreSecretRefSchema = external_exports.object({
+  source: external_exports.literal("store"),
+  provider: external_exports.string().regex(
+    SECRET_PROVIDER_ALIAS_PATTERN,
+    'Secret reference provider must match /^[a-z][a-z0-9_-]{0,63}$/ (example: "default").'
+  ),
+  id: external_exports.string().regex(
+    ENV_SECRET_REF_ID_RE,
+    'Store secret reference id must match /^[A-Z][A-Z0-9_]{0,127}$/ (example: "OPENAI_API_KEY").'
+  )
+}).strict();
 var SecretRefSchema = external_exports.discriminatedUnion("source", [
   EnvSecretRefSchema,
   FileSecretRefSchema,
-  ExecSecretRefSchema
+  ExecSecretRefSchema,
+  StoreSecretRefSchema
 ]);
 var SecretInputSchema = external_exports.union([external_exports.string(), SecretRefSchema]);
+var SsrFPolicyConfigSchema = external_exports.object({
+  dangerouslyAllowPrivateNetwork: external_exports.boolean().optional(),
+  allowRfc2544BenchmarkRange: external_exports.boolean().optional(),
+  allowIpv6UniqueLocalRange: external_exports.boolean().optional(),
+  allowedHostnames: external_exports.array(external_exports.string()).optional()
+}).strict();
 var SecretsEnvProviderSchema = external_exports.object({
   source: external_exports.literal("env"),
-  allowlist: external_exports.array(external_exports.string().regex(ENV_SECRET_REF_ID_PATTERN)).max(256).optional()
+  allowlist: external_exports.array(external_exports.string().regex(ENV_SECRET_REF_ID_RE)).max(256).optional()
 }).strict();
 var SecretsFileProviderSchema = external_exports.object({
   source: external_exports.literal("file"),
   path: external_exports.string().min(1),
   mode: external_exports.union([external_exports.literal("singleValue"), external_exports.literal("json")]).optional(),
   timeoutMs: external_exports.number().int().positive().max(12e4).optional(),
-  maxBytes: external_exports.number().int().positive().max(20 * 1024 * 1024).optional(),
-  allowInsecurePath: external_exports.boolean().optional()
+  maxBytes: external_exports.number().int().positive().max(20 * 1024 * 1024).optional()
 }).strict();
 var SecretsManualExecProviderSchema = external_exports.object({
   source: external_exports.literal("exec"),
@@ -15331,12 +16810,10 @@ var SecretsManualExecProviderSchema = external_exports.object({
   maxOutputBytes: external_exports.number().int().positive().max(20 * 1024 * 1024).optional(),
   jsonOnly: external_exports.boolean().optional(),
   env: external_exports.record(external_exports.string(), external_exports.string()).optional(),
-  passEnv: external_exports.array(external_exports.string().regex(ENV_SECRET_REF_ID_PATTERN)).max(128).optional(),
+  passEnv: external_exports.array(external_exports.string().regex(ENV_SECRET_REF_ID_RE)).max(128).optional(),
   trustedDirs: external_exports.array(
     external_exports.string().min(1).refine((value) => isAbsolutePath(value), "trustedDirs entries must be absolute paths.")
-  ).max(64).optional(),
-  allowInsecurePath: external_exports.boolean().optional(),
-  allowSymlinkCommand: external_exports.boolean().optional()
+  ).max(64).optional()
 }).strict();
 var SecretsPluginIntegrationExecProviderSchema = external_exports.object({
   source: external_exports.literal("exec"),
@@ -15349,24 +16826,26 @@ var SecretsExecProviderSchema = external_exports.union([
   SecretsManualExecProviderSchema,
   SecretsPluginIntegrationExecProviderSchema
 ]);
+var SecretsStoreProviderSchema = external_exports.object({ source: external_exports.literal("store") }).strict();
 var SecretProviderSchema = external_exports.union([
   SecretsEnvProviderSchema,
   SecretsFileProviderSchema,
-  SecretsExecProviderSchema
+  SecretsExecProviderSchema,
+  SecretsStoreProviderSchema
 ]);
 var SecretsConfigSchema = external_exports.object({
+  egressProxy: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    bypassHosts: external_exports.array(external_exports.string().trim().min(1)).max(256).optional()
+  }).strict().optional(),
   providers: external_exports.object({
     // Keep this as a record so users can define multiple named providers per source.
   }).catchall(SecretProviderSchema).optional(),
   defaults: external_exports.object({
-    env: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional(),
-    file: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional(),
-    exec: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN2).optional()
-  }).strict().optional(),
-  resolution: external_exports.object({
-    maxProviderConcurrency: external_exports.number().int().positive().max(16).optional(),
-    maxRefsPerProvider: external_exports.number().int().positive().max(4096).optional(),
-    maxBatchBytes: external_exports.number().int().positive().max(5 * 1024 * 1024).optional()
+    env: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional(),
+    file: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional(),
+    exec: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional(),
+    store: external_exports.string().regex(SECRET_PROVIDER_ALIAS_PATTERN).optional()
   }).strict().optional()
 }).strict().optional();
 var LEGACY_OPENAI_CODEX_RESPONSES_API = "openai-codex-responses";
@@ -15382,7 +16861,9 @@ var ModelCompatSchema = external_exports.object({
   supportsTemperature: external_exports.boolean().optional(),
   supportsUsageInStreaming: external_exports.boolean().optional(),
   supportsTools: external_exports.boolean().optional(),
+  codeMode: external_exports.enum(["preferred", "capable"]).optional(),
   supportsStrictMode: external_exports.boolean().optional(),
+  supportsJsonSchemaResponseFormat: external_exports.boolean().optional(),
   requiresStringContent: external_exports.boolean().optional(),
   strictMessageKeys: external_exports.boolean().optional(),
   visibleReasoningDetailTypes: external_exports.array(external_exports.string().min(1)).optional(),
@@ -15396,9 +16877,7 @@ var ModelCompatSchema = external_exports.object({
   requiresReasoningContentOnAssistantMessages: external_exports.boolean().optional(),
   toolSchemaProfile: external_exports.string().optional(),
   unsupportedToolSchemaKeywords: external_exports.array(external_exports.string().min(1)).optional(),
-  nativeWebSearchTool: external_exports.boolean().optional(),
   toolCallArgumentsEncoding: external_exports.string().optional(),
-  requiresMistralToolIds: external_exports.boolean().optional(),
   requiresOpenAiAnthropicToolPayload: external_exports.boolean().optional()
 }).strict().optional();
 var ConfiguredProviderRequestTlsSchema = external_exports.object({
@@ -15598,12 +17077,12 @@ function isBuiltInModelProviderOverlayId(providerId) {
   return BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS.has(normalizeProviderId(providerId));
 }
 var ModelProviderSchema = external_exports.object({
-  baseUrl: external_exports.string().min(1).optional(),
+  // Bundled provider overlays are materialized with an empty-string sentinel.
+  // ModelProvidersSchema below still rejects empty baseUrl values for custom providers.
+  baseUrl: external_exports.string().optional(),
   apiKey: SecretInputSchema.optional().register(sensitive),
   auth: external_exports.union([external_exports.literal("api-key"), external_exports.literal("aws-sdk"), external_exports.literal("oauth"), external_exports.literal("token")]).optional(),
   api: ModelApiSchema.optional(),
-  contextWindow: external_exports.number().positive().optional(),
-  contextTokens: external_exports.number().int().positive().optional(),
   maxTokens: external_exports.number().positive().optional(),
   timeoutSeconds: external_exports.number().int().positive().optional(),
   region: external_exports.string().min(1).optional(),
@@ -15637,13 +17116,26 @@ var ModelProvidersSchema = external_exports.record(external_exports.string(), Mo
     }
   }
 });
-var ModelPricingConfigSchema = external_exports.object({
-  enabled: external_exports.boolean().optional()
+var ModelCatalogRefreshConfigSchema = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  url: external_exports.string().refine(
+    (value) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "https:" || parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+      } catch {
+        return false;
+      }
+    },
+    {
+      message: "models.catalogRefresh.url must use https, or http on localhost"
+    }
+  ).optional()
 }).strict().optional();
 var ModelsConfigSchema = external_exports.object({
   mode: external_exports.union([external_exports.literal("merge"), external_exports.literal("replace")]).optional(),
   providers: ModelProvidersSchema.optional(),
-  pricing: ModelPricingConfigSchema
+  catalogRefresh: ModelCatalogRefreshConfigSchema
 }).strict().optional();
 var VisibleRepliesValueSchema = external_exports.enum(["automatic", "message_tool"]);
 var AmbientGroupInboundSchema = external_exports.enum(["user_request", "room_event"]);
@@ -15664,7 +17156,7 @@ var MentionPatternsPolicySchema = external_exports.object({
 }).strict();
 var GroupChatSchema = external_exports.object({
   mentionPatterns: external_exports.array(external_exports.string()).optional(),
-  historyLimit: external_exports.number().int().positive().optional(),
+  historyLimit: external_exports.number().int().min(0).optional(),
   unmentionedInbound: AmbientGroupInboundSchema.optional(),
   visibleReplies: VisibleRepliesSchema.optional()
 }).strict().optional();
@@ -15747,21 +17239,11 @@ var TtsProviderConfigSchema = external_exports.object({
     external_exports.record(external_exports.string(), external_exports.unknown())
   ])
 );
-var TtsPersonaPromptSchema = external_exports.object({
-  profile: external_exports.string().optional(),
-  scene: external_exports.string().optional(),
-  sampleContext: external_exports.string().optional(),
-  style: external_exports.string().optional(),
-  accent: external_exports.string().optional(),
-  pacing: external_exports.string().optional(),
-  constraints: external_exports.array(external_exports.string()).optional()
-}).strict();
 var TtsPersonaSchema = external_exports.object({
   label: external_exports.string().optional(),
   description: external_exports.string().optional(),
   provider: TtsProviderSchema.optional(),
   fallbackPolicy: external_exports.union([external_exports.literal("preserve-persona"), external_exports.literal("provider-defaults"), external_exports.literal("fail")]).optional(),
-  prompt: TtsPersonaPromptSchema.optional(),
   providers: external_exports.record(external_exports.string(), TtsProviderConfigSchema).optional()
 }).strict();
 var TtsConfigSchema = external_exports.object({
@@ -15783,7 +17265,6 @@ var TtsConfigSchema = external_exports.object({
     allowSeed: external_exports.boolean().optional()
   }).strict().optional(),
   providers: external_exports.record(external_exports.string(), TtsProviderConfigSchema).optional(),
-  prefsPath: external_exports.string().optional(),
   maxTextLength: external_exports.number().int().min(1).optional(),
   timeoutMs: external_exports.number().int().min(1e3).max(12e4).optional()
 }).strict().optional();
@@ -15792,61 +17273,7 @@ var HumanDelaySchema = external_exports.object({
   minMs: external_exports.number().int().nonnegative().optional(),
   maxMs: external_exports.number().int().nonnegative().optional()
 }).strict();
-var CliBackendWatchdogModeSchema = external_exports.object({
-  noOutputTimeoutMs: external_exports.number().int().min(1e3).optional(),
-  noOutputTimeoutRatio: external_exports.number().min(0.05).max(0.95).optional(),
-  minMs: external_exports.number().int().min(1e3).optional(),
-  maxMs: external_exports.number().int().min(1e3).optional()
-}).strict().optional();
-var CliBackendOutputLimitsSchema = external_exports.object({
-  maxTurnRawChars: external_exports.number().int().min(1024).max(64 * 1024 * 1024).optional(),
-  maxTurnLines: external_exports.number().int().min(100).max(1e5).optional()
-}).strict().optional();
-var CliBackendSchema = external_exports.object({
-  command: external_exports.string(),
-  args: external_exports.array(external_exports.string()).optional(),
-  output: external_exports.union([external_exports.literal("json"), external_exports.literal("text"), external_exports.literal("jsonl")]).optional(),
-  resumeOutput: external_exports.union([external_exports.literal("json"), external_exports.literal("text"), external_exports.literal("jsonl")]).optional(),
-  jsonlDialect: external_exports.union([external_exports.literal("claude-stream-json"), external_exports.literal("gemini-stream-json")]).optional(),
-  liveSession: external_exports.literal("claude-stdio").optional(),
-  input: external_exports.union([external_exports.literal("arg"), external_exports.literal("stdin")]).optional(),
-  maxPromptArgChars: external_exports.number().int().positive().optional(),
-  env: external_exports.record(external_exports.string(), external_exports.string()).optional(),
-  clearEnv: external_exports.array(external_exports.string()).optional(),
-  modelArg: external_exports.string().optional(),
-  modelAliases: external_exports.record(external_exports.string(), external_exports.string()).optional(),
-  sessionArg: external_exports.string().optional(),
-  sessionArgs: external_exports.array(external_exports.string()).optional(),
-  resumeArgs: external_exports.array(external_exports.string()).optional(),
-  forkArg: external_exports.string().optional(),
-  sessionMode: external_exports.union([external_exports.literal("always"), external_exports.literal("existing"), external_exports.literal("none")]).optional(),
-  sessionIdFields: external_exports.array(external_exports.string()).optional(),
-  systemPromptArg: external_exports.string().optional(),
-  systemPromptFileArg: external_exports.string().optional(),
-  systemPromptFileConfigArg: external_exports.string().optional(),
-  systemPromptFileConfigKey: external_exports.string().optional(),
-  systemPromptMode: external_exports.union([external_exports.literal("append"), external_exports.literal("replace")]).optional(),
-  systemPromptWhen: external_exports.union([external_exports.literal("first"), external_exports.literal("always"), external_exports.literal("never")]).optional(),
-  imageArg: external_exports.string().optional(),
-  imageMode: external_exports.union([external_exports.literal("repeat"), external_exports.literal("list")]).optional(),
-  imagePathScope: external_exports.union([external_exports.literal("temp"), external_exports.literal("workspace")]).optional(),
-  serialize: external_exports.boolean().optional(),
-  reseedFromRawTranscriptWhenUncompacted: external_exports.boolean().optional(),
-  reliability: external_exports.object({
-    outputLimits: CliBackendOutputLimitsSchema,
-    watchdog: external_exports.object({
-      fresh: CliBackendWatchdogModeSchema,
-      resume: CliBackendWatchdogModeSchema
-    }).strict().optional()
-  }).strict().optional()
-}).strict();
 var MSTeamsReplyStyleSchema = external_exports.enum(["thread", "top-level"]);
-var RetryConfigSchema = external_exports.object({
-  attempts: external_exports.number().int().min(1).optional(),
-  minDelayMs: external_exports.number().int().min(0).optional(),
-  maxDelayMs: external_exports.number().int().min(0).optional(),
-  jitter: external_exports.number().min(0).max(1).optional()
-}).strict().optional();
 var QueueModeBySurfaceSchema = external_exports.object({
   whatsapp: QueueModeSchema.optional(),
   telegram: QueueModeSchema.optional(),
@@ -15865,7 +17292,6 @@ var DebounceMsBySurfaceSchema = external_exports.record(external_exports.string(
 var QueueSchema = external_exports.object({
   mode: QueueModeSchema.optional(),
   byChannel: QueueModeBySurfaceSchema,
-  debounceMs: external_exports.number().int().nonnegative().optional(),
   debounceMsByChannel: DebounceMsBySurfaceSchema,
   cap: external_exports.number().int().positive().optional(),
   drop: QueueDropSchema.optional()
@@ -15877,17 +17303,12 @@ var InboundDebounceSchema = external_exports.object({
 var HexColorSchema = external_exports.string().regex(/^#?[0-9a-fA-F]{6}$/, "expected hex color (RRGGBB)");
 var ExecutableTokenSchema = external_exports.string().refine(isSafeExecutableValue, "expected safe executable name or path");
 var MediaUnderstandingScopeSchema = createAllowDenyChannelRulesSchema();
-var MediaUnderstandingCapabilitiesSchema = external_exports.array(external_exports.union([external_exports.literal("image"), external_exports.literal("audio"), external_exports.literal("video")])).optional();
 var MediaUnderstandingAttachmentsSchema = external_exports.object({
   mode: external_exports.union([external_exports.literal("first"), external_exports.literal("all")]).optional(),
   maxAttachments: external_exports.number().int().positive().optional(),
   prefer: external_exports.union([external_exports.literal("first"), external_exports.literal("last"), external_exports.literal("path"), external_exports.literal("url")]).optional()
 }).strict().optional();
-var DeepgramAudioSchema = external_exports.object({
-  detectLanguage: external_exports.boolean().optional(),
-  punctuate: external_exports.boolean().optional(),
-  smartFormat: external_exports.boolean().optional()
-}).strict().optional();
+var MediaUnderstandingCapabilitiesSchema = external_exports.array(external_exports.union([external_exports.literal("image"), external_exports.literal("audio"), external_exports.literal("video")])).optional();
 var ProviderOptionValueSchema = external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean()]);
 var ProviderOptionsSchema = external_exports.record(external_exports.string(), external_exports.record(external_exports.string(), ProviderOptionValueSchema)).optional();
 var MediaUnderstandingRuntimeFields = {
@@ -15895,7 +17316,6 @@ var MediaUnderstandingRuntimeFields = {
   timeoutSeconds: external_exports.number().int().positive().optional(),
   language: external_exports.string().optional(),
   providerOptions: ProviderOptionsSchema,
-  deepgram: DeepgramAudioSchema,
   baseUrl: external_exports.string().optional(),
   headers: external_exports.record(external_exports.string(), external_exports.string()).optional(),
   request: ConfiguredProviderRequestSchema
@@ -15913,26 +17333,32 @@ var MediaUnderstandingModelSchema = external_exports.object({
   profile: external_exports.string().optional(),
   preferredProfile: external_exports.string().optional()
 }).strict().optional();
-var ToolsMediaUnderstandingSchema = external_exports.object({
+var ToolsMediaCapabilitySchema = external_exports.object({
   enabled: external_exports.boolean().optional(),
+  preferredModel: external_exports.string().trim().min(1).optional(),
+  scope: MediaUnderstandingScopeSchema,
+  maxBytes: external_exports.number().int().positive().optional(),
+  maxChars: external_exports.number().int().positive().optional(),
+  ...MediaUnderstandingRuntimeFields,
+  attachments: MediaUnderstandingAttachmentsSchema
+}).strict().optional();
+var ToolsMediaAudioSchema = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  preferredModel: external_exports.string().trim().min(1).optional(),
   scope: MediaUnderstandingScopeSchema,
   maxBytes: external_exports.number().int().positive().optional(),
   maxChars: external_exports.number().int().positive().optional(),
   ...MediaUnderstandingRuntimeFields,
   attachments: MediaUnderstandingAttachmentsSchema,
-  models: external_exports.array(MediaUnderstandingModelSchema).optional(),
   echoTranscript: external_exports.boolean().optional(),
   echoFormat: external_exports.string().optional()
 }).strict().optional();
 var ToolsMediaSchema = external_exports.object({
   models: external_exports.array(MediaUnderstandingModelSchema).optional(),
   concurrency: external_exports.number().int().positive().optional(),
-  asyncCompletion: external_exports.object({
-    directSend: external_exports.boolean().optional()
-  }).strict().optional(),
-  image: ToolsMediaUnderstandingSchema.optional(),
-  audio: ToolsMediaUnderstandingSchema.optional(),
-  video: ToolsMediaUnderstandingSchema.optional()
+  image: ToolsMediaCapabilitySchema.optional(),
+  audio: ToolsMediaAudioSchema.optional(),
+  video: ToolsMediaCapabilitySchema.optional()
 }).strict().optional();
 var LinkModelSchema = external_exports.object({
   type: external_exports.literal("cli").optional(),
@@ -15979,23 +17405,10 @@ function validateSandboxBindEntries(binds, ctx) {
     }
   }
 }
-var AgentRunRetriesConfigSchema = external_exports.object({
-  base: external_exports.number().int().positive().optional(),
-  perProfile: external_exports.number().int().nonnegative().optional(),
-  min: external_exports.number().int().positive().optional(),
-  max: external_exports.number().int().positive().optional()
-}).strict().refine(
-  (data) => {
-    if (data.min !== void 0 && data.max !== void 0) {
-      return data.max >= data.min;
-    }
-    return true;
-  },
-  { message: "max must be greater than or equal to min", path: ["max"] }
-);
 var AgentEntryEmbeddedAgentConfigSchema = external_exports.object({
   executionContract: external_exports.union([external_exports.literal("default"), external_exports.literal("strict-agentic")]).optional()
 }).strict();
+var AgentTtsConfigSchema = TtsConfigSchema.unwrap().extend({ prefsPath: external_exports.string().optional() }).strict().optional();
 var HeartbeatSchema = external_exports.object({
   every: external_exports.string().optional(),
   activeHours: external_exports.object({
@@ -16005,45 +17418,39 @@ var HeartbeatSchema = external_exports.object({
   }).strict().optional(),
   model: external_exports.string().optional(),
   session: external_exports.string().optional(),
-  includeReasoning: external_exports.boolean().optional(),
   target: external_exports.string().optional(),
   directPolicy: external_exports.union([external_exports.literal("allow"), external_exports.literal("block")]).optional(),
   to: external_exports.string().optional(),
   accountId: external_exports.string().optional(),
   prompt: external_exports.string().optional(),
-  includeSystemPromptSection: external_exports.boolean().optional(),
-  ackMaxChars: external_exports.number().int().nonnegative().optional(),
-  suppressToolErrorWarnings: external_exports.boolean().optional(),
   timeoutSeconds: external_exports.number().int().positive().optional(),
   lightContext: external_exports.boolean().optional(),
-  isolatedSession: external_exports.boolean().optional(),
-  skipWhenBusy: external_exports.boolean().optional()
+  isolatedSession: external_exports.boolean().optional()
 }).strict().superRefine((val, ctx) => {
-  if (!val.every) {
-    return;
-  }
-  try {
-    parseDurationMs(val.every, { defaultUnit: "m" });
-  } catch {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["every"],
-      message: "invalid duration (use ms, s, m, h)"
-    });
+  if (val.every) {
+    try {
+      parseDurationMs(val.every, { defaultUnit: "m" });
+    } catch {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        path: ["every"],
+        message: "invalid duration (use ms, s, m, h)"
+      });
+    }
   }
   const active = val.activeHours;
   if (!active) {
     return;
   }
   const timePattern = /^([01]\d|2[0-3]|24):([0-5]\d)$/;
-  const validateTime = (raw, opts, path5) => {
+  const validateTime = (raw, opts, path9) => {
     if (!raw) {
       return;
     }
     if (!timePattern.test(raw)) {
       ctx.addIssue({
         code: external_exports.ZodIssueCode.custom,
-        path: ["activeHours", path5],
+        path: ["activeHours", path9],
         message: 'invalid time (use "HH:MM" 24h format)'
       });
       return;
@@ -16054,7 +17461,7 @@ var HeartbeatSchema = external_exports.object({
     if (hour === 24 && minute !== 0) {
       ctx.addIssue({
         code: external_exports.ZodIssueCode.custom,
-        path: ["activeHours", path5],
+        path: ["activeHours", path9],
         message: "invalid time (24:00 is the only allowed 24:xx value)"
       });
       return;
@@ -16062,7 +17469,7 @@ var HeartbeatSchema = external_exports.object({
     if (hour === 24 && !opts.allow24) {
       ctx.addIssue({
         code: external_exports.ZodIssueCode.custom,
-        path: ["activeHours", path5],
+        path: ["activeHours", path9],
         message: "invalid time (start cannot be 24:00)"
       });
     }
@@ -16150,7 +17557,7 @@ var SandboxBrowserSchema = external_exports.object({
   vncPort: external_exports.number().int().positive().optional(),
   noVncPort: external_exports.number().int().positive().optional(),
   headless: external_exports.boolean().optional(),
-  enableNoVnc: external_exports.boolean().optional(),
+  noVncEnabled: external_exports.boolean().optional(),
   allowHostControl: external_exports.boolean().optional(),
   autoStart: external_exports.boolean().optional(),
   autoStartTimeoutMs: external_exports.number().int().positive().optional(),
@@ -16171,8 +17578,6 @@ var SandboxPruneSchema = external_exports.object({
 }).strict().optional();
 var AgentContextLimitsSchema = external_exports.object({
   memoryGetMaxChars: external_exports.number().int().min(1).max(25e4).optional(),
-  memoryGetDefaultLines: external_exports.number().int().min(1).max(5e3).optional(),
-  toolResultMaxChars: external_exports.number().int().min(1).max(1e6).optional(),
   postCompactionMaxChars: external_exports.number().int().min(1).max(5e4).optional()
 }).strict().optional();
 var AgentSkillsLimitsSchema = external_exports.object({
@@ -16233,7 +17638,6 @@ var ToolsWebSearchSchema = external_exports.preprocess(
     maxResults: external_exports.number().int().positive().optional(),
     timeoutSeconds: external_exports.number().int().positive().optional(),
     cacheTtlMinutes: external_exports.number().nonnegative().optional(),
-    apiKey: SecretInputSchema.optional().register(sensitive),
     openaiCodex: external_exports.object({
       enabled: external_exports.boolean().optional(),
       mode: external_exports.union([external_exports.literal("cached"), external_exports.literal("live")]).optional(),
@@ -16259,7 +17663,7 @@ var ToolsWebSearchSchema = external_exports.preprocess(
       if (key === BLOCKED_WEB_SEARCH_KEYS_ISSUE_FIELD || isBlockedObjectKey(key)) {
         continue;
       }
-      if (LEGACY_WEB_SEARCH_PROVIDER_CONFIG_KEYS.has(key) && isRecord(entry)) {
+      if (key === "apiKey" || LEGACY_WEB_SEARCH_PROVIDER_CONFIG_KEYS.has(key) && isRecord(entry)) {
         ctx.addIssue({
           code: external_exports.ZodIssueCode.custom,
           path: [key],
@@ -16279,35 +17683,17 @@ var ToolsWebFetchSchema = external_exports.object({
   cacheTtlMinutes: external_exports.number().nonnegative().optional(),
   maxRedirects: external_exports.number().int().nonnegative().optional(),
   userAgent: external_exports.string().optional(),
+  // Values are registered sensitive so exposed config redacts them. Names are
+  // validated at request time rather than here, because a fail-closed config
+  // error over one header typo would disable the whole surface.
+  headers: external_exports.record(external_exports.string(), external_exports.string().register(sensitive)).optional(),
   readability: external_exports.boolean().optional(),
   useTrustedEnvProxy: external_exports.boolean().optional(),
-  ssrfPolicy: external_exports.object({
-    allowRfc2544BenchmarkRange: external_exports.boolean().optional(),
-    allowIpv6UniqueLocalRange: external_exports.boolean().optional()
-  }).strict().optional(),
-  // Keep the legacy Firecrawl fetch shape loadable so existing installs can
-  // start and then migrate cleanly through doctor.
-  firecrawl: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    apiKey: SecretInputSchema.optional().register(sensitive),
-    baseUrl: external_exports.string().optional(),
-    onlyMainContent: external_exports.boolean().optional(),
-    maxAgeMs: external_exports.number().int().nonnegative().optional(),
-    timeoutSeconds: external_exports.number().int().positive().optional()
-  }).strict().optional()
-}).strict().optional();
-var ToolsWebXSearchSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  model: external_exports.string().optional(),
-  inlineCitations: external_exports.boolean().optional(),
-  maxTurns: external_exports.number().int().optional(),
-  timeoutSeconds: external_exports.number().int().positive().optional(),
-  cacheTtlMinutes: external_exports.number().nonnegative().optional()
+  ssrfPolicy: SsrFPolicyConfigSchema.optional()
 }).strict().optional();
 var ToolsWebSchema = external_exports.object({
   search: ToolsWebSearchSchema,
-  fetch: ToolsWebFetchSchema,
-  x_search: ToolsWebXSearchSchema
+  fetch: ToolsWebFetchSchema
 }).strict().optional();
 var ToolProfileSchema = external_exports.union([external_exports.literal("minimal"), external_exports.literal("coding"), external_exports.literal("messaging"), external_exports.literal("full")]).optional();
 function addAllowAlsoAllowConflictIssue(value, ctx, message) {
@@ -16359,7 +17745,9 @@ var ToolExecBaseShape = {
     timeoutMs: external_exports.number().int().positive().optional()
   }).strict().optional(),
   backgroundMs: external_exports.number().int().positive().optional(),
-  timeoutSec: external_exports.number().int().positive().optional(),
+  // The documented global setting and per-agent override share one strict contract.
+  approvalRunningNoticeMs: external_exports.number().int().nonnegative().optional(),
+  timeoutSeconds: external_exports.number().int().positive().optional(),
   cleanupMs: external_exports.number().int().positive().optional(),
   notifyOnExit: external_exports.boolean().optional(),
   notifyOnExitEmptySuccess: external_exports.boolean().optional(),
@@ -16375,47 +17763,13 @@ function addExecPolicyModeConflictIssue(value, ctx) {
     message: "tools.exec.mode cannot be combined with tools.exec.security or tools.exec.ask"
   });
 }
-var AgentToolExecSchema = external_exports.object({
-  ...ToolExecBaseShape,
-  approvalRunningNoticeMs: external_exports.number().int().nonnegative().optional()
-}).strict().superRefine(addExecPolicyModeConflictIssue).optional();
 var ToolExecSchema = external_exports.object(ToolExecBaseShape).strict().superRefine(addExecPolicyModeConflictIssue).optional();
 var ToolFsSchema = external_exports.object({
   workspaceOnly: external_exports.boolean().optional()
 }).strict().optional();
-var ToolLoopDetectionDetectorSchema = external_exports.object({
-  genericRepeat: external_exports.boolean().optional(),
-  knownPollNoProgress: external_exports.boolean().optional(),
-  pingPong: external_exports.boolean().optional()
-}).strict().optional();
-var ToolLoopPostCompactionGuardSchema = external_exports.object({
-  windowSize: external_exports.number().int().positive().optional()
-}).strict().optional();
 var ToolLoopDetectionSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  historySize: external_exports.number().int().positive().optional(),
-  warningThreshold: external_exports.number().int().positive().optional(),
-  unknownToolThreshold: external_exports.number().int().positive().optional(),
-  criticalThreshold: external_exports.number().int().positive().optional(),
-  globalCircuitBreakerThreshold: external_exports.number().int().positive().optional(),
-  detectors: ToolLoopDetectionDetectorSchema,
-  postCompactionGuard: ToolLoopPostCompactionGuardSchema
-}).strict().superRefine((value, ctx) => {
-  if (value.warningThreshold !== void 0 && value.criticalThreshold !== void 0 && value.warningThreshold >= value.criticalThreshold) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["criticalThreshold"],
-      message: "tools.loopDetection.warningThreshold must be lower than criticalThreshold."
-    });
-  }
-  if (value.criticalThreshold !== void 0 && value.globalCircuitBreakerThreshold !== void 0 && value.criticalThreshold >= value.globalCircuitBreakerThreshold) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["globalCircuitBreakerThreshold"],
-      message: "tools.loopDetection.criticalThreshold must be lower than globalCircuitBreakerThreshold."
-    });
-  }
-}).optional();
+  enabled: external_exports.boolean().optional()
+}).strict().optional();
 var ToolSearchSchema = external_exports.union([
   external_exports.boolean(),
   external_exports.object({
@@ -16428,8 +17782,9 @@ var ToolSearchSchema = external_exports.union([
 ]).optional();
 var CodeModeSchema = external_exports.union([
   external_exports.boolean(),
+  external_exports.literal("auto"),
   external_exports.object({
-    enabled: external_exports.boolean().optional(),
+    enabled: external_exports.union([external_exports.boolean(), external_exports.literal("auto")]).optional(),
     runtime: external_exports.literal("quickjs-wasi").optional(),
     mode: external_exports.literal("only").optional(),
     languages: external_exports.array(external_exports.enum(["javascript", "typescript"])).optional(),
@@ -16441,6 +17796,17 @@ var CodeModeSchema = external_exports.union([
     snapshotTtlSeconds: external_exports.number().int().positive().optional(),
     searchDefaultLimit: external_exports.number().int().positive().optional(),
     maxSearchLimit: external_exports.number().int().positive().optional()
+  }).strict()
+]).optional();
+var SwarmSchema = external_exports.union([
+  external_exports.boolean(),
+  external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    maxConcurrent: external_exports.number().int().positive().optional(),
+    maxChildrenPerGroup: external_exports.number().int().positive().optional(),
+    maxTotalPerGroup: external_exports.number().int().positive().optional(),
+    waitTimeoutSecondsMax: external_exports.number().int().positive().optional(),
+    defaultAgentId: external_exports.string().optional()
   }).strict()
 ]).optional();
 var SandboxSshSchema = external_exports.object({
@@ -16489,7 +17855,6 @@ var CommonToolPolicyFields = {
   toolsBySender: ToolPolicyBySenderSchema
 };
 var MessageToolConfigSchema = external_exports.object({
-  allowCrossContextSend: external_exports.boolean().optional(),
   crossContext: external_exports.object({
     allowWithinProvider: external_exports.boolean().optional(),
     allowAcrossProviders: external_exports.boolean().optional(),
@@ -16506,14 +17871,24 @@ var MessageToolConfigSchema = external_exports.object({
     enabled: external_exports.boolean().optional()
   }).strict().optional()
 }).strict().optional();
+var GitHubToolIdentitySchema = external_exports.object({
+  profileId: external_exports.string().regex(MANAGED_GITHUB_PROFILE_ID_PATTERN),
+  kind: external_exports.literal("oauth").optional(),
+  gitAuthor: external_exports.object({
+    name: external_exports.string().trim().min(1).optional(),
+    email: external_exports.string().trim().min(1).optional()
+  }).strict().optional()
+}).strict().optional();
 var AgentToolsSchema = external_exports.object({
   ...CommonToolPolicyFields,
   codeMode: CodeModeSchema,
+  swarm: SwarmSchema,
   elevated: external_exports.object({
     enabled: external_exports.boolean().optional(),
     allowFrom: ElevatedAllowFromSchema
   }).strict().optional(),
-  exec: AgentToolExecSchema,
+  exec: ToolExecSchema,
+  github: GitHubToolIdentitySchema,
   fs: ToolFsSchema,
   loopDetection: ToolLoopDetectionSchema,
   message: MessageToolConfigSchema,
@@ -16531,36 +17906,25 @@ var MemorySearchSchema = external_exports.object({
   enabled: external_exports.boolean().optional(),
   rememberAcrossConversations: external_exports.boolean().optional(),
   sources: external_exports.array(external_exports.union([external_exports.literal("memory"), external_exports.literal("sessions")])).optional(),
-  extraPaths: external_exports.array(external_exports.string()).optional(),
-  qmd: external_exports.object({
-    extraCollections: external_exports.array(
-      external_exports.object({
-        path: external_exports.string(),
-        name: external_exports.string().optional(),
-        pattern: external_exports.string().optional()
-      }).strict()
-    ).optional()
-  }).strict().optional(),
+  extraPaths: external_exports.array(
+    external_exports.union([
+      external_exports.string(),
+      external_exports.object({ path: external_exports.string(), pattern: external_exports.string().optional() }).strict()
+    ])
+  ).optional(),
   multimodal: external_exports.object({
     enabled: external_exports.boolean().optional(),
     modalities: external_exports.array(external_exports.union([external_exports.literal("image"), external_exports.literal("audio"), external_exports.literal("all")])).optional(),
     maxFileBytes: external_exports.number().int().positive().optional()
   }).strict().optional(),
-  experimental: external_exports.object({
-    sessionMemory: external_exports.boolean().optional()
-  }).strict().optional(),
+  experimental: external_exports.object({ sessionMemory: external_exports.boolean().optional() }).strict().optional(),
   provider: external_exports.string().optional(),
   remote: external_exports.object({
     baseUrl: external_exports.string().optional(),
     apiKey: SecretInputSchema.optional().register(sensitive),
     headers: external_exports.record(external_exports.string(), external_exports.string()).optional(),
-    nonBatchConcurrency: external_exports.number().int().positive().optional(),
     batch: external_exports.object({
-      enabled: external_exports.boolean().optional(),
-      wait: external_exports.boolean().optional(),
-      concurrency: external_exports.number().int().positive().optional(),
-      pollIntervalMs: external_exports.number().int().nonnegative().optional(),
-      timeoutMinutes: external_exports.number().int().positive().optional()
+      enabled: external_exports.boolean().optional()
     }).strict().optional()
   }).strict().optional(),
   fallback: external_exports.string().optional(),
@@ -16570,12 +17934,9 @@ var MemorySearchSchema = external_exports.object({
   documentInputType: external_exports.string().min(1).optional(),
   outputDimensionality: external_exports.number().int().positive().optional(),
   local: external_exports.object({
-    modelPath: external_exports.string().optional(),
-    modelCacheDir: external_exports.string().optional(),
-    contextSize: external_exports.union([external_exports.number().int().positive(), external_exports.literal("auto")]).optional()
+    modelPath: external_exports.string().optional()
   }).strict().optional(),
   store: external_exports.object({
-    driver: external_exports.literal("sqlite").optional(),
     fts: external_exports.object({
       tokenizer: external_exports.union([external_exports.literal("unicode61"), external_exports.literal("trigram")]).optional()
     }).strict().optional(),
@@ -16584,44 +17945,12 @@ var MemorySearchSchema = external_exports.object({
       extensionPath: external_exports.string().optional()
     }).strict().optional()
   }).strict().optional(),
-  chunking: external_exports.object({
-    tokens: external_exports.number().int().positive().optional(),
-    overlap: external_exports.number().int().nonnegative().optional()
-  }).strict().optional(),
-  sync: external_exports.object({
-    onSessionStart: external_exports.boolean().optional(),
-    onSearch: external_exports.boolean().optional(),
-    watch: external_exports.boolean().optional(),
-    watchDebounceMs: external_exports.number().int().nonnegative().optional(),
-    intervalMinutes: external_exports.number().int().nonnegative().optional(),
-    embeddingBatchTimeoutSeconds: external_exports.number().int().positive().optional(),
-    sessions: external_exports.object({
-      deltaBytes: external_exports.number().int().nonnegative().optional(),
-      deltaMessages: external_exports.number().int().nonnegative().optional(),
-      postCompactionForce: external_exports.boolean().optional()
-    }).strict().optional()
-  }).strict().optional(),
   query: external_exports.object({
     maxResults: external_exports.number().int().positive().optional(),
-    minScore: external_exports.number().min(0).max(1).optional(),
-    hybrid: external_exports.object({
-      enabled: external_exports.boolean().optional(),
-      vectorWeight: external_exports.number().min(0).max(1).optional(),
-      textWeight: external_exports.number().min(0).max(1).optional(),
-      candidateMultiplier: external_exports.number().int().positive().optional(),
-      mmr: external_exports.object({
-        enabled: external_exports.boolean().optional(),
-        lambda: external_exports.number().min(0).max(1).optional()
-      }).strict().optional(),
-      temporalDecay: external_exports.object({
-        enabled: external_exports.boolean().optional(),
-        halfLifeDays: external_exports.number().int().positive().optional()
-      }).strict().optional()
-    }).strict().optional()
+    minScore: external_exports.number().min(0).max(1).optional()
   }).strict().optional(),
   cache: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    maxEntries: external_exports.number().int().positive().optional()
+    enabled: external_exports.boolean().optional()
   }).strict().optional()
 }).strict().optional();
 var AgentRuntimeAcpSchema = external_exports.object({
@@ -16648,9 +17977,11 @@ var AgentModelRuntimeEntrySchema = external_exports.object({
   agentRuntime: AgentRuntimePolicySchema,
   streaming: external_exports.boolean().optional()
 }).strict();
+var AgentModelPolicySchema = external_exports.object({
+  allow: external_exports.array(external_exports.string()).optional()
+}).strict();
 var AgentEntrySchema = external_exports.object({
   id: external_exports.string(),
-  default: external_exports.boolean().optional(),
   name: external_exports.string().optional(),
   description: external_exports.string().optional(),
   workspace: external_exports.string().optional(),
@@ -16658,6 +17989,7 @@ var AgentEntrySchema = external_exports.object({
   model: AgentModelSchema.optional(),
   utilityModel: external_exports.string().optional(),
   models: external_exports.record(external_exports.string(), AgentModelRuntimeEntrySchema).optional(),
+  modelPolicy: AgentModelPolicySchema.optional(),
   thinkingDefault: external_exports.enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]).optional(),
   verboseDefault: external_exports.enum(["off", "on", "full"]).optional(),
   toolProgressDetail: external_exports.enum(["explain", "raw"]).optional(),
@@ -16670,15 +18002,17 @@ var AgentEntrySchema = external_exports.object({
     localModelLean: external_exports.boolean().optional()
   }).strict().optional(),
   skills: external_exports.array(external_exports.string()).optional(),
-  memorySearch: MemorySearchSchema,
+  memory: external_exports.object({
+    search: MemorySearchSchema
+  }).strict().optional(),
   humanDelay: HumanDelaySchema.optional(),
-  tts: TtsConfigSchema,
+  typingMode: TypingModeSchema.optional(),
+  tts: AgentTtsConfigSchema,
   skillsLimits: AgentSkillsLimitsSchema,
   contextLimits: AgentContextLimitsSchema,
-  contextTokens: external_exports.number().int().positive().optional(),
   heartbeat: HeartbeatSchema,
   identity: IdentitySchema,
-  groupChat: GroupChatSchema,
+  groupChat: GroupChatSchema.unwrap().omit({ visibleReplies: true }).optional(),
   subagents: external_exports.object({
     delegationMode: external_exports.enum(["suggest", "prefer"]).optional(),
     allowAgents: external_exports.array(external_exports.string()).optional(),
@@ -16686,7 +18020,6 @@ var AgentEntrySchema = external_exports.object({
     thinking: external_exports.string().optional(),
     requireAgentId: external_exports.boolean().optional()
   }).strict().optional(),
-  runRetries: AgentRunRetriesConfigSchema.optional(),
   embeddedAgent: AgentEntryEmbeddedAgentConfigSchema.optional(),
   sandbox: AgentSandboxSchema,
   params: external_exports.record(external_exports.string(), external_exports.unknown()).optional(),
@@ -16696,6 +18029,7 @@ var AgentEntrySchema = external_exports.object({
 var ToolsSchema = external_exports.object({
   ...CommonToolPolicyFields,
   web: ToolsWebSchema,
+  github: GitHubToolIdentitySchema,
   media: ToolsMediaSchema,
   links: ToolsLinksSchema,
   sessions: external_exports.object({
@@ -16704,6 +18038,7 @@ var ToolsSchema = external_exports.object({
   loopDetection: ToolLoopDetectionSchema,
   toolSearch: ToolSearchSchema,
   codeMode: CodeModeSchema,
+  swarm: SwarmSchema,
   message: MessageToolConfigSchema,
   agentToAgent: external_exports.object({
     enabled: external_exports.boolean().optional(),
@@ -16730,9 +18065,7 @@ var ToolsSchema = external_exports.object({
       retainOnSessionKeep: external_exports.boolean().optional()
     }).strict().optional()
   }).strict().optional(),
-  experimental: external_exports.object({
-    planTool: external_exports.boolean().optional()
-  }).strict().optional()
+  updatePlan: external_exports.boolean().optional()
 }).strict().superRefine((value, ctx) => {
   addAllowAlsoAllowConflictIssue(
     value,
@@ -16753,6 +18086,17 @@ var OptionalBootstrapFileNameSchema = external_exports.enum([
   "HEARTBEAT.md",
   "IDENTITY.md"
 ]);
+var AgentThinkingLevelSchema = external_exports.enum([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "adaptive",
+  "max",
+  "ultra"
+]);
 var EmbeddedAgentConfigSchema = external_exports.object({
   projectSettingsPolicy: external_exports.union([external_exports.literal("trusted"), external_exports.literal("sanitize"), external_exports.literal("ignore")]).optional(),
   executionContract: external_exports.union([external_exports.literal("default"), external_exports.literal("strict-agentic")]).optional()
@@ -16767,24 +18111,21 @@ var AgentDefaultsSchema = external_exports.object({
   model: AgentModelSchema.optional(),
   utilityModel: external_exports.string().optional(),
   imageModel: AgentToolModelSchema.optional(),
-  imageGenerationModel: AgentToolModelSchema.optional(),
-  videoGenerationModel: AgentToolModelSchema.optional(),
-  musicGenerationModel: AgentToolModelSchema.optional(),
+  mediaModels: external_exports.object({
+    image: AgentToolModelSchema.optional(),
+    video: AgentToolModelSchema.optional(),
+    music: AgentToolModelSchema.optional()
+  }).strict().optional(),
   voiceModel: AgentToolModelSchema.optional(),
-  mediaGenerationAutoProviderFallback: external_exports.boolean().optional(),
   pdfModel: AgentToolModelSchema.optional(),
-  pdfMaxBytesMb: external_exports.number().positive().optional(),
+  pdfMaxMb: external_exports.number().positive().optional(),
   pdfMaxPages: external_exports.number().int().positive().optional(),
   models: external_exports.record(external_exports.string(), AgentModelRuntimeEntrySchema).optional(),
+  modelPolicy: AgentModelPolicySchema.optional(),
   workspace: external_exports.string().optional(),
   skills: external_exports.array(external_exports.string()).optional(),
   silentReply: SilentReplyPolicyConfigSchema.optional(),
   repoRoot: external_exports.string().optional(),
-  promptOverlays: external_exports.object({
-    gpt5: external_exports.object({
-      personality: external_exports.union([external_exports.literal("friendly"), external_exports.literal("on"), external_exports.literal("off")]).optional()
-    }).strict().optional()
-  }).strict().optional(),
   skipBootstrap: external_exports.boolean().optional(),
   skipOptionalBootstrapFiles: external_exports.array(OptionalBootstrapFileNameSchema).optional(),
   contextInjection: external_exports.union([external_exports.literal("always"), external_exports.literal("continuation-skip"), external_exports.literal("never")]).optional(),
@@ -16793,7 +18134,6 @@ var AgentDefaultsSchema = external_exports.object({
   experimental: external_exports.object({
     localModelLean: external_exports.boolean().optional()
   }).strict().optional(),
-  bootstrapPromptTruncationWarning: external_exports.union([external_exports.literal("off"), external_exports.literal("once"), external_exports.literal("always")]).optional(),
   userTimezone: external_exports.string().optional(),
   startupContext: external_exports.object({
     enabled: external_exports.boolean().optional(),
@@ -16804,28 +18144,12 @@ var AgentDefaultsSchema = external_exports.object({
     maxTotalChars: external_exports.number().int().min(1).max(5e4).optional()
   }).strict().optional(),
   contextLimits: AgentContextLimitsSchema,
-  timeFormat: external_exports.union([external_exports.literal("auto"), external_exports.literal("12"), external_exports.literal("24")]).optional(),
-  envelopeTimezone: external_exports.string().optional(),
-  envelopeTimestamp: external_exports.union([external_exports.literal("on"), external_exports.literal("off")]).optional(),
-  envelopeElapsed: external_exports.union([external_exports.literal("on"), external_exports.literal("off")]).optional(),
-  contextTokens: external_exports.number().int().positive().optional(),
-  cliBackends: external_exports.record(external_exports.string(), CliBackendSchema).optional(),
-  memorySearch: MemorySearchSchema,
   contextPruning: external_exports.object({
     mode: external_exports.union([external_exports.literal("off"), external_exports.literal("cache-ttl"), external_exports.literal("size")]).optional(),
     ttl: external_exports.string().optional(),
-    keepLastAssistants: external_exports.number().int().nonnegative().optional(),
-    softTrimRatio: external_exports.number().min(0).max(1).optional(),
-    hardClearRatio: external_exports.number().min(0).max(1).optional(),
-    minPrunableToolChars: external_exports.number().int().nonnegative().optional(),
     tools: external_exports.object({
       allow: external_exports.array(external_exports.string()).optional(),
       deny: external_exports.array(external_exports.string()).optional()
-    }).strict().optional(),
-    softTrim: external_exports.object({
-      maxChars: external_exports.number().int().nonnegative().optional(),
-      headChars: external_exports.number().int().nonnegative().optional(),
-      tailChars: external_exports.number().int().nonnegative().optional()
     }).strict().optional(),
     hardClear: external_exports.object({
       enabled: external_exports.boolean().optional(),
@@ -16833,15 +18157,12 @@ var AgentDefaultsSchema = external_exports.object({
     }).strict().optional()
   }).strict().optional(),
   compaction: external_exports.object({
+    enabled: external_exports.boolean().optional(),
     mode: external_exports.union([external_exports.literal("default"), external_exports.literal("safeguard")]).optional(),
     provider: external_exports.string().optional(),
-    reserveTokens: external_exports.number().int().nonnegative().optional(),
+    thinkingLevel: external_exports.union([AgentThinkingLevelSchema, external_exports.literal("inherit")]).optional(),
     keepRecentTokens: external_exports.number().int().positive().optional(),
-    reserveTokensFloor: external_exports.number().int().nonnegative().optional(),
-    maxHistoryShare: external_exports.number().min(0.1).max(0.9).optional(),
-    customInstructions: external_exports.string().optional(),
-    identifierPolicy: external_exports.union([external_exports.literal("strict"), external_exports.literal("off"), external_exports.literal("custom")]).optional(),
-    identifierInstructions: external_exports.string().optional(),
+    identifierPolicy: external_exports.union([external_exports.literal("strict"), external_exports.literal("off")]).optional(),
     recentTurnsPreserve: external_exports.number().int().min(0).max(12).optional(),
     qualityGuard: external_exports.object({
       enabled: external_exports.boolean().optional(),
@@ -16858,27 +18179,14 @@ var AgentDefaultsSchema = external_exports.object({
       enabled: external_exports.boolean().optional(),
       model: external_exports.string().optional(),
       softThresholdTokens: external_exports.number().int().nonnegative().optional(),
-      forceFlushTranscriptBytes: NonNegativeByteSizeSchema.optional(),
-      prompt: external_exports.string().optional(),
-      systemPrompt: external_exports.string().optional()
+      forceFlushTranscriptBytes: NonNegativeByteSizeSchema.optional()
     }).strict().optional(),
-    truncateAfterCompaction: external_exports.boolean().optional(),
     maxActiveTranscriptBytes: NonNegativeByteSizeSchema.optional(),
     notifyUser: external_exports.boolean().optional()
   }).strict().optional(),
-  runRetries: AgentRunRetriesConfigSchema.optional(),
   embeddedAgent: EmbeddedAgentConfigSchema.optional(),
-  thinkingDefault: external_exports.union([
-    external_exports.literal("off"),
-    external_exports.literal("minimal"),
-    external_exports.literal("low"),
-    external_exports.literal("medium"),
-    external_exports.literal("high"),
-    external_exports.literal("xhigh"),
-    external_exports.literal("adaptive"),
-    external_exports.literal("max"),
-    external_exports.literal("ultra")
-  ]).optional(),
+  thinkingDefault: AgentThinkingLevelSchema.optional(),
+  fastModeDefault: external_exports.union([external_exports.boolean(), external_exports.literal("auto")]).optional(),
   verboseDefault: external_exports.union([external_exports.literal("off"), external_exports.literal("on"), external_exports.literal("full")]).optional(),
   toolProgressDetail: external_exports.union([external_exports.literal("explain"), external_exports.literal("raw")]).optional(),
   reasoningDefault: external_exports.union([external_exports.literal("off"), external_exports.literal("on"), external_exports.literal("stream")]).optional(),
@@ -16895,7 +18203,16 @@ var AgentDefaultsSchema = external_exports.object({
   imageQuality: external_exports.enum(["auto", "efficient", "balanced", "high"]).optional(),
   typingIntervalSeconds: external_exports.number().int().positive().optional(),
   typingMode: TypingModeSchema.optional(),
-  heartbeat: HeartbeatSchema,
+  heartbeat: HeartbeatSchema.unwrap().safeExtend({ agentId: external_exports.string().trim().min(1).optional() }).optional(),
+  systemAgent: external_exports.object({
+    agentId: external_exports.string().trim().min(1).optional()
+  }).strict().optional(),
+  authInheritance: external_exports.object({
+    agentId: external_exports.string().trim().min(1).optional()
+  }).strict().optional(),
+  sessionStore: external_exports.object({
+    agentId: external_exports.string().trim().min(1).optional()
+  }).strict().optional(),
   maxConcurrent: external_exports.number().int().positive().optional(),
   subagents: external_exports.object({
     delegationMode: external_exports.enum(["suggest", "prefer"]).optional(),
@@ -16918,21 +18235,69 @@ var AgentDefaultsSchema = external_exports.object({
 }).strict().optional();
 
 // src/config/zod-schema.agents.ts
+var AgentEntryConfigSchema = external_exports.preprocess(
+  (value, ctx) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const key of Object.getOwnPropertyNames(value)) {
+        if (!isBlockedObjectKey(key)) {
+          continue;
+        }
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: [key],
+          message: "agent entries must not contain blocked object keys"
+        });
+        return external_exports.NEVER;
+      }
+    }
+    return value;
+  },
+  AgentEntrySchema.omit({ id: true }).extend({ default: external_exports.boolean().optional() })
+);
 var AgentsSchema = external_exports.object({
+  ownership: external_exports.literal("explicit").optional(),
   defaults: external_exports.lazy(() => AgentDefaultsSchema).optional(),
-  list: external_exports.array(AgentEntrySchema).optional()
-}).strict().optional();
+  entries: external_exports.record(
+    external_exports.string().regex(/^[a-z0-9_][a-z0-9_-]{0,63}$/i, "Invalid agent id"),
+    AgentEntryConfigSchema
+  ).optional()
+}).strict().superRefine((value, ctx) => {
+  const entries = Object.entries(value.entries ?? {});
+  if (entries.length === 0) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["entries"],
+      message: "agents.entries must contain at least one configured agent"
+    });
+  }
+  const marked = entries.filter(([, entry]) => entry.default === true);
+  if (marked.length > 1) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["entries"],
+      message: `agents.entries must contain at most one default=true entry (found ${marked.length})`
+    });
+  }
+  if (value.ownership === "explicit" && marked.length > 0) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["ownership"],
+      message: "agents.ownership=explicit cannot be combined with a legacy default=true marker"
+    });
+  }
+  if (entries.length > 1 && marked.length === 0 && value.ownership !== "explicit") {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["ownership"],
+      message: 'multi-agent rosters require agents.ownership="explicit" or one legacy default=true marker; add agents.ownership="explicit" or run openclaw doctor'
+    });
+  }
+}).optional();
 var BindingMatchSchema = external_exports.object({
   channel: external_exports.string(),
   accountId: external_exports.string().optional(),
   peer: external_exports.object({
-    kind: external_exports.union([
-      external_exports.literal("direct"),
-      external_exports.literal("group"),
-      external_exports.literal("channel"),
-      /** @deprecated Use `direct` instead. Kept for backward compatibility. */
-      external_exports.literal("dm")
-    ]),
+    kind: external_exports.union([external_exports.literal("direct"), external_exports.literal("group"), external_exports.literal("channel")]),
     id: external_exports.string()
   }).strict().optional(),
   guildId: external_exports.string().optional(),
@@ -16940,12 +18305,8 @@ var BindingMatchSchema = external_exports.object({
   roles: external_exports.array(external_exports.string()).optional()
 }).strict();
 var BindingSessionSchema = external_exports.object({
-  dmScope: external_exports.union([
-    external_exports.literal("main"),
-    external_exports.literal("per-peer"),
-    external_exports.literal("per-channel-peer"),
-    external_exports.literal("per-account-channel-peer")
-  ]).optional()
+  dmScope: external_exports.enum(["main", "per-peer", "per-channel-peer", "per-account-channel-peer"]).optional(),
+  groupScope: external_exports.enum(["main", "per-group"]).optional()
 }).strict();
 var RouteBindingSchema = external_exports.object({
   type: external_exports.literal("route").optional(),
@@ -17026,12 +18387,12 @@ var ChannelBotLoopProtectionSchema = external_exports.object({
   windowSeconds: external_exports.number().int().positive().optional(),
   cooldownSeconds: external_exports.number().int().positive().optional()
 }).strict();
-function addLegacyChannelAcpBindingIssues(value, ctx, path5 = []) {
+function addLegacyChannelAcpBindingIssues(value, ctx, path9 = []) {
   if (!value || typeof value !== "object") {
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => addLegacyChannelAcpBindingIssues(entry, ctx, [...path5, index]));
+    value.forEach((entry, index) => addLegacyChannelAcpBindingIssues(entry, ctx, [...path9, index]));
     return;
   }
   const record2 = value;
@@ -17041,20 +18402,20 @@ function addLegacyChannelAcpBindingIssues(value, ctx, path5 = []) {
     if (acp && typeof acp === "object") {
       ctx.addIssue({
         code: external_exports.ZodIssueCode.custom,
-        path: [...path5, "bindings", "acp"],
+        path: [...path9, "bindings", "acp"],
         message: "Legacy channel-local ACP bindings were removed; use top-level bindings[] entries."
       });
     }
   }
   for (const [key, entry] of Object.entries(record2)) {
-    addLegacyChannelAcpBindingIssues(entry, ctx, [...path5, key]);
+    addLegacyChannelAcpBindingIssues(entry, ctx, [...path9, key]);
   }
 }
 var ChannelsSchema = external_exports.object({
   defaults: external_exports.object({
     groupPolicy: GroupPolicySchema.optional(),
     contextVisibility: ContextVisibilityModeSchema.optional(),
-    heartbeat: ChannelHeartbeatVisibilitySchema,
+    heartbeatVisibility: ChannelHeartbeatVisibilitySchema,
     botLoopProtection: ChannelBotLoopProtectionSchema.optional(),
     implicitMentions: ChannelImplicitMentionsSchema.optional()
   }).strict().optional(),
@@ -17087,9 +18448,9 @@ function isPluginJsonValueWithinLimits(value, limits, state) {
   }
   if (Array.isArray(value)) {
     state.depth += 1;
-    const ok2 = value.every((entry) => isPluginJsonValueWithinLimits(entry, limits, state));
+    const ok3 = value.every((entry) => isPluginJsonValueWithinLimits(entry, limits, state));
     state.depth -= 1;
-    return ok2;
+    return ok3;
   }
   if (typeof value !== "object") {
     return false;
@@ -17103,11 +18464,11 @@ function isPluginJsonValueWithinLimits(value, limits, state) {
     return false;
   }
   state.depth += 1;
-  const ok = entries.every(
+  const ok2 = entries.every(
     ([key, entry]) => key.length <= limits.maxStringLength && isPluginJsonValueWithinLimits(entry, limits, state)
   );
   state.depth -= 1;
-  return ok;
+  return ok2;
 }
 function isPluginJsonValue(value) {
   if (!isPluginJsonValueWithinLimits(value, PLUGIN_JSON_VALUE_LIMITS, { depth: 0, nodes: 0 })) {
@@ -17118,6 +18479,130 @@ function isPluginJsonValue(value) {
   } catch {
     return false;
   }
+}
+
+// src/agents/utils/git.ts
+var import_hosted_git_info = __toESM(require_lib(), 1);
+function stripRef(url2) {
+  const protocolIndex = url2.indexOf("://");
+  const pathStart = url2.startsWith("git@") ? url2.indexOf(":") + 1 : url2.indexOf("/", protocolIndex < 0 ? 0 : protocolIndex + 3) + 1;
+  if (pathStart <= 0) {
+    return url2;
+  }
+  const suffixOffset = url2.slice(pathStart).search(/[?#]/);
+  const pathEnd = suffixOffset < 0 ? url2.length : pathStart + suffixOffset;
+  let refSeparator = url2.indexOf("@", pathStart);
+  if (refSeparator === pathStart) {
+    refSeparator = url2.indexOf("@", pathStart + 1);
+  }
+  if (refSeparator <= pathStart || refSeparator === pathEnd - 1 || refSeparator >= pathEnd) {
+    return url2;
+  }
+  return protocolIndex < 0 ? url2.slice(0, refSeparator) : url2.slice(0, refSeparator) + url2.slice(pathEnd);
+}
+function hasUnsafePathSegments(url2) {
+  const path9 = url2.split(/[?#]/, 1)[0] ?? "";
+  return path9.includes("\\") || /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i.test(path9);
+}
+function parseGenericGitUrl(url2) {
+  let host;
+  let path9;
+  const scpLikeMatch = url2.match(/^git@([^:]+):(.+)$/);
+  if (scpLikeMatch) {
+    host = scpLikeMatch[1] ?? "";
+    path9 = scpLikeMatch[2] ?? "";
+  } else if (/^(?:https?|ssh|git):\/\//.test(url2)) {
+    try {
+      const parsed = new URL(url2);
+      host = parsed.hostname;
+      path9 = parsed.pathname.replace(/^\/+/, "");
+    } catch {
+      return null;
+    }
+  } else {
+    const slashIndex = url2.indexOf("/");
+    if (slashIndex < 0) {
+      return null;
+    }
+    host = url2.slice(0, slashIndex);
+    path9 = url2.slice(slashIndex + 1);
+    if (!host.includes(".") && host !== "localhost") {
+      return null;
+    }
+  }
+  const normalizedPath = normalizeGitPath(path9);
+  if (!isSafeGitHost(host) || !normalizedPath) {
+    return null;
+  }
+  return {
+    type: "git",
+    host,
+    path: normalizedPath
+  };
+}
+function isSafeGitHost(host) {
+  return Boolean(host) && !host.includes("/") && !host.includes("\\") && host !== "." && host !== "..";
+}
+function normalizeGitPath(path9) {
+  const normalizedPath = path9.replace(/\.git$/, "").replace(/^\/+/, "");
+  const segments = normalizedPath.split("/");
+  if (segments.length < 2) {
+    return null;
+  }
+  if (segments.some(
+    (segment) => !segment || segment === "." || segment === ".." || segment.includes("\\")
+  )) {
+    return null;
+  }
+  return segments.join("/");
+}
+function parseHostedGitUrl(url2) {
+  const candidates = [url2];
+  if (!url2.includes("://") && !url2.startsWith("git@")) {
+    candidates.push(`https://${url2}`);
+  }
+  for (const candidate of candidates) {
+    const info = import_hosted_git_info.default.fromUrl(candidate);
+    if (!info) {
+      continue;
+    }
+    const host = info.domain || "";
+    const path9 = normalizeGitPath(`${info.user}/${info.project}`);
+    if (isSafeGitHost(host) && path9) {
+      return { type: "git", host, path: path9 };
+    }
+  }
+  return null;
+}
+function parseGitUrl(source) {
+  const trimmed = source.trim();
+  const hasGitPrefix = trimmed.startsWith("git:");
+  const url2 = hasGitPrefix ? trimmed.slice(4).trim() : trimmed;
+  if (!hasGitPrefix && !/^(https?|ssh|git):\/\//i.test(url2)) {
+    return null;
+  }
+  const urlWithoutRef = stripRef(url2);
+  if (hasUnsafePathSegments(urlWithoutRef)) {
+    return null;
+  }
+  return parseHostedGitUrl(urlWithoutRef) ?? parseGenericGitUrl(urlWithoutRef);
+}
+
+// src/config/cloud-worker-project-profiles.ts
+function normalizeCloudRepo(originUrl) {
+  const value = originUrl.trim();
+  if (!value) {
+    return void 0;
+  }
+  const source = parseGitUrl(`git:${value}`);
+  if (!source) {
+    return void 0;
+  }
+  const segments = source.path.split("/").filter(Boolean);
+  if (!source.host || segments.length < 2) {
+    return void 0;
+  }
+  return `${source.host}/${segments.join("/")}`.toLowerCase();
 }
 
 // src/config/sensitive-paths.ts
@@ -17145,30 +18630,25 @@ var SENSITIVE_PATTERNS = [
   /private.?key/i,
   /serviceaccount(?:ref)?$/i
 ];
-function isWhitelistedSensitivePath(path5) {
-  const lowerPath = normalizeLowercaseStringOrEmpty(path5);
+function isWhitelistedSensitivePath(path9) {
+  const lowerPath = normalizeLowercaseStringOrEmpty(path9);
   return NORMALIZED_SENSITIVE_KEY_WHITELIST_SUFFIXES.some((suffix) => lowerPath.endsWith(suffix));
 }
-function matchesSensitivePattern(path5) {
-  return SENSITIVE_PATTERNS.some((pattern) => pattern.test(path5));
+function matchesSensitivePattern(path9) {
+  return SENSITIVE_PATTERNS.some((pattern) => pattern.test(path9));
 }
-function isLocalServiceEnvValuePath(path5) {
-  const lowerPath = normalizeLowercaseStringOrEmpty(path5);
+function isLocalServiceEnvValuePath(path9) {
+  const lowerPath = normalizeLowercaseStringOrEmpty(path9);
   return lowerPath.includes("localservice.env.");
 }
-function isSensitiveConfigPath(path5) {
+function isSensitiveConfigPath(path9) {
   return (
     // Every local service env value is sensitive, even innocuous-looking names.
-    isLocalServiceEnvValuePath(path5) || !isWhitelistedSensitivePath(path5) && matchesSensitivePattern(path5)
+    isLocalServiceEnvValuePath(path9) || !isWhitelistedSensitivePath(path9) && matchesSensitivePattern(path9)
   );
 }
 
 // src/config/zod-schema.cloud-workers.ts
-var CloudWorkerLifetimePolicyShape = {
-  idleTimeoutMinutes: external_exports.number().int().positive().optional(),
-  maxLifetimeMinutes: external_exports.number().int().positive().optional()
-};
-var CloudWorkerLifetimePolicySchema = external_exports.object(CloudWorkerLifetimePolicyShape).strict();
 function validateCloudWorkerProfileSettings(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !isPluginJsonValue(value)) {
     return "Worker profile settings must be bounded finite JSON";
@@ -17205,74 +18685,153 @@ var CloudWorkerSettingsSchema = external_exports.record(external_exports.string(
   }
 });
 var CloudWorkerProfileShape = {
-  provider: external_exports.string().trim().min(1),
-  install: external_exports.enum(["bundle", "npm"]).optional().default("bundle"),
-  settings: CloudWorkerSettingsSchema.optional(),
-  lifetime: CloudWorkerLifetimePolicySchema.optional()
+  provider: external_exports.string().trim().min(1).register(configUiMetadata, {
+    label: "Cloud Worker Provider",
+    help: "Worker provider id registered by a plugin. The configured plugin must expose this id before the gateway can provision environments from the profile."
+  }),
+  install: external_exports.enum(["bundle", "npm"]).optional().default("bundle").register(configUiMetadata, {
+    label: "Cloud Worker Install Method",
+    help: `Worker installation method: "bundle" (default) transfers the gateway's content-hashed installed build and supports released, development, and unreleased versions; "npm" installs the exact gateway version and is available only when that version is released.`
+  }),
+  settings: CloudWorkerSettingsSchema.optional().register(configUiMetadata, {
+    label: "Cloud Worker Provider Settings",
+    help: "Provider-owned settings validated by the selected plugin. Use SecretRef objects for secret-bearing values; opaque settings do not gain automatic secret resolution."
+  })
 };
-var CloudWorkerProfileSchema = external_exports.object(CloudWorkerProfileShape).strict();
+var CloudWorkerProfileSchema = external_exports.object(CloudWorkerProfileShape).strict().register(configUiMetadata, {
+  label: "Cloud Worker Profile",
+  help: "One cloud worker profile selected by name when creating an environment. Keep provider credentials in supported references rather than embedding secret material in this block."
+});
 var CloudWorkerProfileIdSchema = external_exports.string().min(1).refine(
   (value) => value === value.trim(),
   "Worker profile ids must not contain outer whitespace"
 );
+var CloudWorkerProjectKeySchema = external_exports.string().min(1).refine(
+  (value) => normalizeCloudRepo(`https://${value}`) === value,
+  "Project profile keys must use lowercase host/owner/repo identities without trailing .git"
+);
+var CloudWorkerProjectProfileSchema = CloudWorkerProfileIdSchema.register(configUiMetadata, {
+  label: "Cloud Worker Project Profile",
+  help: "Cloud worker profile name used by default when a session worktree's origin matches this repository identity."
+});
 var CloudWorkersConfigShape = {
-  profiles: external_exports.record(CloudWorkerProfileIdSchema, CloudWorkerProfileSchema).optional()
+  desktop: external_exports.boolean().optional().register(configUiMetadata, {
+    label: "Cloud Worker Desktop (Labs)",
+    help: "Enables the experimental worker.desktop.observe surface and Control UI Desktop panel for desktop-capable cloud worker environments."
+  }),
+  projectProfiles: external_exports.record(CloudWorkerProjectKeySchema, CloudWorkerProjectProfileSchema).optional().register(configUiMetadata, {
+    label: "Cloud Worker Project Profiles",
+    help: "Default cloud worker profile names keyed by normalized lowercase repository identity (host/owner/repo). Explicit dispatch profile ids take precedence."
+  }),
+  profiles: external_exports.record(CloudWorkerProfileIdSchema, CloudWorkerProfileSchema).optional().register(configUiMetadata, {
+    label: "Cloud Worker Profiles",
+    help: "Named cloud worker profiles. Each profile selects a worker provider registered by a plugin and carries provider-owned settings."
+  })
 };
 var CloudWorkersConfigSchema = external_exports.object(CloudWorkersConfigShape).strict().optional();
+var CLOUD_WORKER_FIELD_SCHEMAS = {
+  "cloudWorkers.desktop": CloudWorkersConfigShape.desktop,
+  "cloudWorkers.projectProfiles": CloudWorkersConfigShape.projectProfiles,
+  "cloudWorkers.projectProfiles.*": CloudWorkerProjectProfileSchema,
+  "cloudWorkers.profiles": CloudWorkersConfigShape.profiles,
+  "cloudWorkers.profiles.*": CloudWorkerProfileSchema,
+  "cloudWorkers.profiles.*.provider": CloudWorkerProfileShape.provider,
+  "cloudWorkers.profiles.*.install": CloudWorkerProfileShape.install,
+  "cloudWorkers.profiles.*.settings": CloudWorkerProfileShape.settings
+};
+function projectCloudWorkerFieldMetadata(field) {
+  return Object.fromEntries(
+    Object.entries(CLOUD_WORKER_FIELD_SCHEMAS).flatMap(([path9, schema]) => {
+      const value = configUiMetadata.get(schema)?.[field];
+      return typeof value === "string" ? [[path9, value]] : [];
+    })
+  );
+}
+var CLOUD_WORKER_FIELD_LABELS = projectCloudWorkerFieldMetadata("label");
+var CLOUD_WORKER_FIELD_HELP = projectCloudWorkerFieldMetadata("help");
 
-// src/config/control-ui-css.ts
-var CSS_WIDTH_KEYWORDS = /* @__PURE__ */ new Set(["none", "min-content", "max-content"]);
-var CSS_WIDTH_FUNCTIONS = /* @__PURE__ */ new Set(["calc", "clamp", "fit-content", "max", "min"]);
-var CSS_WIDTH_UNITS = /* @__PURE__ */ new Set(["ch", "em", "rem", "vh", "vmax", "vmin", "vw", "px"]);
-var CSS_WIDTH_ALLOWED_CHARS = /^[0-9A-Za-z.%+\-*/(),\s]+$/;
-var CSS_WIDTH_IDENTIFIER_RE = /[A-Za-z][A-Za-z0-9-]*/g;
-var CSS_WIDTH_SIMPLE_RE = /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|ch|vw|vh|vmin|vmax|%)$/i;
-var CSS_WIDTH_MAX_LENGTH = 96;
-function hasBalancedParentheses(value) {
-  let depth = 0;
-  for (const char of value) {
-    if (char === "(") {
-      depth++;
-    } else if (char === ")") {
-      depth--;
-      if (depth < 0) {
-        return false;
-      }
-    }
-  }
-  return depth === 0;
+// src/config/zod-schema.desktop.ts
+import path7 from "node:path";
+var DesktopHostConfigShape = {
+  enabled: external_exports.boolean().register(configUiMetadata, {
+    label: "Gateway Host Desktop (Labs)",
+    help: "Enables the experimental gateway-host desktop source. Restart the gateway after changing this setting."
+  }),
+  managed: external_exports.boolean().optional().register(configUiMetadata, {
+    label: "Managed Linux Host Desktop",
+    help: "Runs and supervises a loopback-only headless TigerVNC/XFCE desktop on Linux. An explicit port or existing default-port VNC server still takes precedence."
+  }),
+  port: external_exports.number().int().min(1).max(65535).optional().register(configUiMetadata, {
+    label: "Gateway Host VNC Port",
+    help: "Loopback RFB port of an already-running VNC server on the gateway host (default: 5900)."
+  }),
+  passwordFile: external_exports.string().trim().min(1).refine(path7.isAbsolute, "Gateway host VNC passwordFile must be an absolute path").optional().register(configUiMetadata, {
+    label: "Gateway Host VNC Password File",
+    help: "Absolute path to the VNC password file. Omit on macOS to use account/ARD authentication after that support lands."
+  })
+};
+var DesktopHostConfigSchema = external_exports.object(DesktopHostConfigShape).strict().register(configUiMetadata, {
+  label: "Gateway Host Desktop",
+  help: "Connects to an existing loopback VNC server or, on Linux, an explicitly enabled managed headless desktop."
+});
+var DesktopConfigShape = {
+  host: DesktopHostConfigSchema.optional().register(configUiMetadata, {
+    label: "Gateway Host Desktop",
+    help: "Experimental gateway-host desktop observation backed by an existing or managed loopback VNC server."
+  })
+};
+var DesktopConfigSchema = external_exports.object(DesktopConfigShape).strict().optional();
+var DESKTOP_FIELD_SCHEMAS = {
+  "desktop.host": DesktopConfigShape.host,
+  "desktop.host.enabled": DesktopHostConfigShape.enabled,
+  "desktop.host.managed": DesktopHostConfigShape.managed,
+  "desktop.host.port": DesktopHostConfigShape.port,
+  "desktop.host.passwordFile": DesktopHostConfigShape.passwordFile
+};
+function projectDesktopFieldMetadata(field) {
+  return Object.fromEntries(
+    Object.entries(DESKTOP_FIELD_SCHEMAS).flatMap(([fieldPath, schema]) => {
+      const value = configUiMetadata.get(schema)?.[field];
+      return typeof value === "string" ? [[fieldPath, value]] : [];
+    })
+  );
 }
-function hasAllowedIdentifiers(value) {
-  for (const match of value.matchAll(CSS_WIDTH_IDENTIFIER_RE)) {
-    const identifier = match[0].toLowerCase();
-    if (!CSS_WIDTH_FUNCTIONS.has(identifier) && !CSS_WIDTH_KEYWORDS.has(identifier) && !CSS_WIDTH_UNITS.has(identifier)) {
-      return false;
-    }
-  }
-  return true;
-}
-function normalizeControlUiChatMessageMaxWidth(value) {
-  return value.trim().replace(/\s+/g, " ");
-}
-function isValidControlUiChatMessageMaxWidth(value) {
-  const normalized = normalizeControlUiChatMessageMaxWidth(value);
-  if (normalized.length === 0 || normalized.length > CSS_WIDTH_MAX_LENGTH) {
-    return false;
-  }
-  if (CSS_WIDTH_KEYWORDS.has(normalized.toLowerCase())) {
-    return true;
-  }
-  if (CSS_WIDTH_SIMPLE_RE.test(normalized)) {
-    return true;
-  }
-  if (!CSS_WIDTH_ALLOWED_CHARS.test(normalized)) {
-    return false;
-  }
-  if (!hasBalancedParentheses(normalized) || !hasAllowedIdentifiers(normalized)) {
-    return false;
-  }
-  return /^(?:calc|clamp|fit-content|max|min)\(.+\)$/i.test(normalized);
-}
+var DESKTOP_FIELD_LABELS = projectDesktopFieldMetadata("label");
+var DESKTOP_FIELD_HELP = projectDesktopFieldMetadata("help");
+
+// src/gateway/control-ui-bootstrap-contract.ts
+var CONTROL_UI_ENVIRONMENT_COLORS = [
+  "teal",
+  "amber",
+  "purple",
+  "coral",
+  "pink",
+  "blue",
+  "green",
+  "red",
+  "gray"
+];
+
+// src/gateway/operator-scopes.ts
+var ADMIN_SCOPE = "operator.admin";
+var READ_SCOPE = "operator.read";
+var WRITE_SCOPE = "operator.write";
+var APPROVALS_SCOPE = "operator.approvals";
+var QUESTIONS_SCOPE = "operator.questions";
+var PAIRING_SCOPE = "operator.pairing";
+var TALK_SCOPE = "operator.talk";
+var TALK_SECRETS_SCOPE = "operator.talk.secrets";
+var KNOWN_OPERATOR_SCOPE_VALUES = [
+  ADMIN_SCOPE,
+  READ_SCOPE,
+  WRITE_SCOPE,
+  APPROVALS_SCOPE,
+  QUESTIONS_SCOPE,
+  PAIRING_SCOPE,
+  TALK_SCOPE,
+  TALK_SECRETS_SCOPE
+];
+var KNOWN_OPERATOR_SCOPES = new Set(KNOWN_OPERATOR_SCOPE_VALUES);
 
 // packages/net-policy/src/url-protocol.ts
 function parseUrl(value) {
@@ -17293,46 +18852,48 @@ function isHttpsUrl(value) {
   return parseUrl(value)?.protocol === "https:";
 }
 
-// src/infra/ed25519-signature.ts
-import crypto from "node:crypto";
-var ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-var ED25519_PKCS8_PRIVATE_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
-function base64UrlEncode(buf) {
-  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-}
-var MAX_BASE64URL_DECODE_INPUT_LENGTH = 4096;
-function base64UrlDecode(input) {
-  if (input.length > MAX_BASE64URL_DECODE_INPUT_LENGTH) {
-    throw new Error("base64url input exceeds the maximum allowed length");
+// src/shared/gateway-edge-auth-headers.ts
+var HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+var TRANSPORT_OWNED_HEADERS = /* @__PURE__ */ new Set([
+  "host",
+  "connection",
+  "upgrade",
+  "content-length",
+  "sec-websocket-key",
+  "sec-websocket-version",
+  "sec-websocket-protocol",
+  "sec-websocket-extensions"
+]);
+function findEdgeAuthIssue(headers) {
+  const entries = Object.entries(headers);
+  if (entries.length === 0) {
+    return { message: "invalid gateway.remote.edgeAuth: header map must not be empty" };
   }
-  const normalized = input.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
-  return Buffer.from(padded, "base64");
-}
-function deriveEd25519PublicKeyRaw(publicKeyPem) {
-  const key = crypto.createPublicKey(publicKeyPem);
-  const spki = key.export({ type: "spki", format: "der" });
-  if (spki.length === ED25519_SPKI_PREFIX.length + 32 && spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)) {
-    return spki.subarray(ED25519_SPKI_PREFIX.length);
-  }
-  return spki;
-}
-function publicKeyRawBase64UrlFromEd25519Pem(publicKeyPem) {
-  return base64UrlEncode(deriveEd25519PublicKeyRaw(publicKeyPem));
-}
-function normalizeEd25519PublicKeyBase64Url(publicKey) {
-  try {
-    if (publicKey.includes("BEGIN")) {
-      return publicKeyRawBase64UrlFromEd25519Pem(publicKey);
+  const originalNames = /* @__PURE__ */ new Map();
+  for (const [headerName] of entries) {
+    if (!HTTP_HEADER_NAME_PATTERN.test(headerName)) {
+      return {
+        headerName,
+        message: `invalid gateway.remote.edgeAuth header name: ${JSON.stringify(headerName)}`
+      };
     }
-    const raw = base64UrlDecode(publicKey);
-    if (raw.length === 0) {
-      return null;
+    const normalizedName = headerName.toLowerCase();
+    if (TRANSPORT_OWNED_HEADERS.has(normalizedName)) {
+      return {
+        headerName,
+        message: `gateway.remote.edgeAuth cannot set transport-owned header "${headerName}"`
+      };
     }
-    return base64UrlEncode(raw);
-  } catch {
-    return null;
+    const originalName = originalNames.get(normalizedName);
+    if (originalName) {
+      return {
+        headerName,
+        message: `gateway.remote.edgeAuth header names "${originalName}" and "${headerName}" differ only by case`
+      };
+    }
+    originalNames.set(normalizedName, headerName);
   }
+  return null;
 }
 
 // src/config/zod-schema.node-host.ts
@@ -17344,198 +18905,35 @@ var NodeHostAgentRunsSchema = external_exports.object({
     enabled: external_exports.boolean().optional()
   }).strict().optional()
 }).strict().optional();
-
-// src/config/zod-schema.session.ts
-var SessionResetConfigSchema = external_exports.object({
-  mode: external_exports.union([external_exports.literal("daily"), external_exports.literal("idle")]).optional(),
-  atHour: external_exports.number().int().min(0).max(23).optional(),
-  idleMinutes: external_exports.number().int().positive().optional()
-}).strict();
-var PositiveDurationSchema = external_exports.union([external_exports.string(), external_exports.number()]).superRefine((value, ctx) => {
-  try {
-    const ms = parseDurationMs(normalizeStringifiedOptionalString(value) ?? "", {
-      defaultUnit: "d"
-    });
-    if (ms <= 0) {
-      ctx.addIssue({
-        code: external_exports.ZodIssueCode.custom,
-        message: "duration must be positive (use ms, s, m, h, d), e.g. 30d"
-      });
-    }
-  } catch {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      message: "invalid duration (use ms, s, m, h, d)"
-    });
-  }
-});
-var SessionSendPolicySchema = createAllowDenyChannelRulesSchema();
-var SessionSchema = external_exports.object({
-  scope: external_exports.union([external_exports.literal("per-sender"), external_exports.literal("global")]).optional(),
-  dmScope: external_exports.union([
-    external_exports.literal("main"),
-    external_exports.literal("per-peer"),
-    external_exports.literal("per-channel-peer"),
-    external_exports.literal("per-account-channel-peer")
-  ]).optional(),
-  identityLinks: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
-  resetTriggers: external_exports.array(external_exports.string()).optional(),
-  idleMinutes: external_exports.number().int().positive().optional(),
-  reset: SessionResetConfigSchema.optional(),
-  resetByType: external_exports.object({
-    direct: SessionResetConfigSchema.optional(),
-    /** @deprecated Use `direct` instead. Kept for backward compatibility. */
-    dm: SessionResetConfigSchema.optional(),
-    group: SessionResetConfigSchema.optional(),
-    thread: SessionResetConfigSchema.optional()
-  }).strict().optional(),
-  resetByChannel: external_exports.record(external_exports.string(), SessionResetConfigSchema).optional(),
-  store: external_exports.string().optional(),
-  typingIntervalSeconds: external_exports.number().int().positive().optional(),
-  typingMode: TypingModeSchema.optional(),
-  mainKey: external_exports.string().optional(),
-  sendPolicy: SessionSendPolicySchema.optional(),
-  writeLock: external_exports.object({
-    acquireTimeoutMs: external_exports.number().int().positive().optional(),
-    staleMs: external_exports.number().int().positive().optional(),
-    maxHoldMs: external_exports.number().int().positive().optional()
-  }).strict().optional(),
-  agentToAgent: external_exports.object({
-    maxPingPongTurns: external_exports.number().int().min(0).max(20).optional()
-  }).strict().optional(),
-  threadBindings: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    idleHours: external_exports.number().nonnegative().optional(),
-    maxAgeHours: external_exports.number().nonnegative().optional(),
-    spawnSessions: external_exports.boolean().optional(),
-    defaultSpawnContext: external_exports.enum(["isolated", "fork"]).optional()
-  }).strict().optional(),
-  maintenance: external_exports.object({
-    mode: external_exports.enum(["enforce", "warn"]).optional(),
-    pruneAfter: PositiveDurationSchema.optional(),
-    /** @deprecated Use pruneAfter instead. */
-    pruneDays: external_exports.number().int().positive().optional(),
-    maxEntries: external_exports.number().int().positive().optional(),
-    resetArchiveRetention: external_exports.union([PositiveDurationSchema, external_exports.literal(false)]).optional(),
-    maxDiskBytes: external_exports.union([external_exports.string(), external_exports.number(), external_exports.literal(false)]).optional(),
-    highWaterBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional()
-  }).strict().superRefine((val, ctx) => {
-    if (val.maxDiskBytes !== void 0 && val.maxDiskBytes !== false) {
-      try {
-        parseByteSize(normalizeStringifiedOptionalString(val.maxDiskBytes) ?? "", {
-          defaultUnit: "b"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["maxDiskBytes"],
-          message: "invalid size (use b, kb, mb, gb, tb)"
-        });
-      }
-    }
-    if (val.highWaterBytes !== void 0) {
-      try {
-        parseByteSize(normalizeStringifiedOptionalString(val.highWaterBytes) ?? "", {
-          defaultUnit: "b"
-        });
-      } catch {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["highWaterBytes"],
-          message: "invalid size (use b, kb, mb, gb, tb)"
-        });
-      }
-    }
-  }).optional()
+var NodeHostWorkerRunsSchema = external_exports.object({
+  enabled: external_exports.boolean().optional()
 }).strict().optional();
-var ResponseUsageModeSchema = external_exports.enum(["on", "off", "tokens", "full"]);
-var MessagesSchema = external_exports.object({
-  messagePrefix: external_exports.string().optional(),
-  visibleReplies: VisibleRepliesSchema.optional(),
-  responsePrefix: external_exports.string().optional(),
-  usageTemplate: external_exports.union([external_exports.string(), external_exports.record(external_exports.string(), external_exports.unknown())]).optional(),
-  responseUsage: external_exports.union([ResponseUsageModeSchema, external_exports.record(external_exports.string(), ResponseUsageModeSchema)]).optional(),
-  groupChat: GroupChatSchema,
-  queue: QueueSchema,
-  inbound: InboundDebounceSchema,
-  ackReaction: external_exports.string().optional(),
-  ackReactionScope: external_exports.enum(["group-mentions", "group-all", "direct", "all", "off", "none"]).optional(),
-  removeAckAfterReply: external_exports.boolean().optional(),
-  statusReactions: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    emojis: external_exports.object({
-      queued: external_exports.string().optional(),
-      thinking: external_exports.string().optional(),
-      tool: external_exports.string().optional(),
-      coding: external_exports.string().optional(),
-      web: external_exports.string().optional(),
-      deploy: external_exports.string().optional(),
-      build: external_exports.string().optional(),
-      concierge: external_exports.string().optional(),
-      done: external_exports.string().optional(),
-      error: external_exports.string().optional(),
-      stallSoft: external_exports.string().optional(),
-      stallHard: external_exports.string().optional(),
-      compacting: external_exports.string().optional()
-    }).strict().optional(),
-    timing: external_exports.object({
-      debounceMs: external_exports.number().int().min(0).optional(),
-      stallSoftMs: external_exports.number().int().min(0).optional(),
-      stallHardMs: external_exports.number().int().min(0).optional(),
-      doneHoldMs: external_exports.number().int().min(0).optional(),
-      errorHoldMs: external_exports.number().int().min(0).optional()
-    }).strict().optional()
-  }).strict().optional(),
-  suppressToolErrors: external_exports.boolean().optional(),
-  tts: TtsConfigSchema
-}).strict().optional();
-var CommandsSchema = external_exports.object({
-  native: NativeCommandsSettingSchema.optional().default("auto"),
-  nativeSkills: NativeCommandsSettingSchema.optional().default("auto"),
-  text: external_exports.boolean().optional(),
-  bash: external_exports.boolean().optional(),
-  bashForegroundMs: external_exports.number().int().min(0).max(3e4).optional(),
-  config: external_exports.boolean().optional(),
-  mcp: external_exports.boolean().optional(),
-  plugins: external_exports.boolean().optional(),
-  debug: external_exports.boolean().optional(),
-  restart: external_exports.boolean().optional().default(true),
-  useAccessGroups: external_exports.boolean().optional(),
-  ownerAllowFrom: external_exports.array(external_exports.union([external_exports.string(), external_exports.number()])).optional(),
-  ownerDisplay: external_exports.enum(["raw", "hash"]).optional().default("raw"),
-  ownerDisplaySecret: external_exports.string().optional().register(sensitive),
-  allowFrom: ElevatedAllowFromSchema.optional()
-}).strict().optional().default(
-  () => ({
-    native: "auto",
-    nativeSkills: "auto",
-    restart: true,
-    ownerDisplay: "raw"
-  })
-);
 
 // src/config/zod-schema.root-support.ts
+var EdgeAuthHeadersSchema = external_exports.record(external_exports.string(), SecretInputSchema.register(sensitive)).superRefine((headers, ctx) => {
+  const issue2 = findEdgeAuthIssue(headers);
+  if (!issue2) {
+    return;
+  }
+  ctx.addIssue({
+    code: "custom",
+    message: issue2.message,
+    ...issue2.headerName ? { path: [issue2.headerName] } : {}
+  });
+});
 var GatewayRemoteSchemaShape = {
   url: external_exports.string().optional(),
   transport: external_exports.union([external_exports.literal("ssh"), external_exports.literal("direct")]).optional(),
   remotePort: external_exports.number().int().min(1).max(65535).optional(),
   token: SecretInputSchema.optional().register(sensitive),
   password: SecretInputSchema.optional().register(sensitive),
+  edgeAuth: EdgeAuthHeadersSchema.optional(),
   tlsFingerprint: external_exports.string().optional(),
   sshTarget: external_exports.string().optional(),
   sshIdentity: external_exports.string().optional(),
   sshHostKeyPolicy: external_exports.union([external_exports.literal("strict"), external_exports.literal("openssh")]).optional()
 };
 var GatewayRemoteConfigSchema = external_exports.strictObject(GatewayRemoteSchemaShape).optional();
-var TailscaleServiceNameSchema = external_exports.string().regex(/^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
-  message: 'Tailscale serviceName must use the "svc:<dns-label>" format, for example "svc:openclaw"'
-});
-var LegacyCanvasHostSchema = external_exports.strictObject({
-  enabled: external_exports.boolean().optional(),
-  root: external_exports.string().optional(),
-  port: external_exports.number().int().positive().optional(),
-  liveReload: external_exports.boolean().optional()
-}).optional();
 var SecuritySchema = external_exports.strictObject({
   audit: external_exports.strictObject({
     suppressions: external_exports.array(
@@ -17559,9 +18957,7 @@ var SecuritySchema = external_exports.strictObject({
       maxOutputBytes: external_exports.number().int().min(1).optional(),
       env: external_exports.record(external_exports.string(), external_exports.string().register(sensitive)).optional(),
       passEnv: external_exports.array(external_exports.string()).optional(),
-      trustedDirs: external_exports.array(external_exports.string()).optional(),
-      allowInsecurePath: external_exports.boolean().optional(),
-      allowSymlinkCommand: external_exports.boolean().optional()
+      trustedDirs: external_exports.array(external_exports.string()).optional()
     }).optional()
   }).optional()
 }).optional();
@@ -17580,39 +18976,6 @@ var AccessGroupsSchema = external_exports.record(
     })
   ])
 ).optional();
-var MemoryQmdPathSchema = external_exports.strictObject({
-  path: external_exports.string(),
-  name: external_exports.string().optional(),
-  pattern: external_exports.string().optional()
-});
-var MemoryQmdSessionSchema = external_exports.strictObject({
-  enabled: external_exports.boolean().optional(),
-  exportDir: external_exports.string().optional(),
-  retentionDays: external_exports.number().int().nonnegative().optional()
-});
-var MemoryQmdUpdateSchema = external_exports.strictObject({
-  interval: external_exports.string().optional(),
-  debounceMs: external_exports.number().int().nonnegative().optional(),
-  onBoot: external_exports.boolean().optional(),
-  startup: external_exports.enum(["off", "idle", "immediate"]).optional(),
-  startupDelayMs: external_exports.number().int().nonnegative().optional(),
-  waitForBootSync: external_exports.boolean().optional(),
-  embedInterval: external_exports.string().optional(),
-  commandTimeoutMs: external_exports.number().int().nonnegative().optional(),
-  updateTimeoutMs: external_exports.number().int().nonnegative().optional(),
-  embedTimeoutMs: external_exports.number().int().nonnegative().optional()
-});
-var MemoryQmdLimitsSchema = external_exports.strictObject({
-  maxResults: external_exports.number().int().positive().optional(),
-  maxSnippetChars: external_exports.number().int().positive().optional(),
-  maxInjectedChars: external_exports.number().int().positive().optional(),
-  timeoutMs: external_exports.number().int().nonnegative().optional()
-});
-var MemoryQmdMcporterSchema = external_exports.strictObject({
-  enabled: external_exports.boolean().optional(),
-  serverName: external_exports.string().optional(),
-  startDaemon: external_exports.boolean().optional()
-});
 var LoggingLevelSchema = external_exports.union([
   external_exports.literal("silent"),
   external_exports.literal("fatal"),
@@ -17622,23 +18985,9 @@ var LoggingLevelSchema = external_exports.union([
   external_exports.literal("debug"),
   external_exports.literal("trace")
 ]);
-var MemoryQmdSchema = external_exports.strictObject({
-  command: external_exports.string().optional(),
-  mcporter: MemoryQmdMcporterSchema.optional(),
-  searchMode: external_exports.union([external_exports.literal("query"), external_exports.literal("search"), external_exports.literal("vsearch")]).optional(),
-  rerank: external_exports.boolean().optional(),
-  searchTool: external_exports.string().trim().min(1).optional(),
-  includeDefaultMemory: external_exports.boolean().optional(),
-  paths: external_exports.array(MemoryQmdPathSchema).optional(),
-  sessions: MemoryQmdSessionSchema.optional(),
-  update: MemoryQmdUpdateSchema.optional(),
-  limits: MemoryQmdLimitsSchema.optional(),
-  scope: SessionSendPolicySchema.optional()
-});
 var MemorySchema = external_exports.strictObject({
-  backend: external_exports.union([external_exports.literal("builtin"), external_exports.literal("qmd")]).optional(),
   citations: external_exports.union([external_exports.literal("auto"), external_exports.literal("on"), external_exports.literal("off")]).optional(),
-  qmd: MemoryQmdSchema.optional()
+  search: MemorySearchSchema
 }).optional();
 var HttpUrlSchema = external_exports.string().url().refine(isHttpUrl, "Expected http:// or https:// URL");
 var McpOAuthClientMetadataUrlSchema = external_exports.string().url().refine((value) => {
@@ -17674,6 +19023,8 @@ var PluginEntrySchema = external_exports.strictObject({
   llm: external_exports.strictObject({
     allowModelOverride: external_exports.boolean().optional(),
     allowedModels: external_exports.array(external_exports.string()).optional(),
+    allowedCompletionModels: external_exports.array(external_exports.string()).optional(),
+    allowAuthProfileOverride: external_exports.boolean().optional(),
     allowAgentIdOverride: external_exports.boolean().optional()
   }).optional(),
   config: external_exports.record(external_exports.string(), external_exports.unknown()).optional()
@@ -17687,7 +19038,6 @@ var TalkRealtimeSchema = external_exports.strictObject({
   model: external_exports.string().optional(),
   speakerVoice: external_exports.string().optional(),
   speakerVoiceId: external_exports.string().optional(),
-  voice: external_exports.string().optional(),
   instructions: external_exports.string().optional(),
   mode: external_exports.enum(["realtime", "stt-tts", "transcription"]).optional(),
   transport: external_exports.enum(["webrtc", "provider-websocket", "gateway-relay", "managed-room"]).optional(),
@@ -17716,6 +19066,7 @@ var TalkRealtimeSchema = external_exports.strictObject({
   }
 });
 var TalkSchema = external_exports.strictObject({
+  agentId: external_exports.string().trim().min(1).optional(),
   provider: external_exports.string().optional(),
   providers: external_exports.record(external_exports.string(), TalkProviderEntrySchema).optional(),
   realtime: TalkRealtimeSchema.optional(),
@@ -17751,7 +19102,6 @@ var McpServerSchema = external_exports.object({
     external_exports.union([external_exports.string().register(sensitive), external_exports.number(), external_exports.boolean()]).register(sensitive)
   ).optional(),
   cwd: external_exports.string().optional(),
-  workingDirectory: external_exports.string().optional(),
   url: HttpUrlSchema.optional(),
   transport: external_exports.union([external_exports.literal("stdio"), external_exports.literal("sse"), external_exports.literal("streamable-http")]).optional(),
   headers: external_exports.record(
@@ -17759,25 +19109,19 @@ var McpServerSchema = external_exports.object({
     external_exports.union([external_exports.string().register(sensitive), external_exports.number(), external_exports.boolean()]).register(sensitive)
   ).optional(),
   connectionTimeoutMs: external_exports.number().finite().positive().optional(),
-  connectTimeout: external_exports.number().finite().positive().optional(),
-  connect_timeout: external_exports.number().finite().positive().optional(),
   requestTimeoutMs: external_exports.number().finite().positive().optional(),
-  timeout: external_exports.number().finite().positive().optional(),
   supportsParallelToolCalls: external_exports.boolean().optional(),
-  supports_parallel_tool_calls: external_exports.boolean().optional(),
   auth: external_exports.literal("oauth").optional(),
   oauth: external_exports.strictObject({
+    identity: external_exports.enum(["shared", "per-requester"]).optional(),
     authProfileId: external_exports.string().trim().min(1).optional(),
     scope: external_exports.string().trim().min(1).optional(),
     redirectUrl: HttpUrlSchema.optional(),
     clientMetadataUrl: McpOAuthClientMetadataUrlSchema.optional()
   }).optional(),
   sslVerify: external_exports.boolean().optional(),
-  ssl_verify: external_exports.boolean().optional(),
   clientCert: external_exports.string().optional(),
-  client_cert: external_exports.string().optional(),
   clientKey: external_exports.string().optional(),
-  client_key: external_exports.string().optional(),
   toolFilter: external_exports.strictObject({
     include: external_exports.array(external_exports.string().trim().min(1)).min(1).optional(),
     exclude: external_exports.array(external_exports.string().trim().min(1)).min(1).optional()
@@ -17786,10 +19130,34 @@ var McpServerSchema = external_exports.object({
     agents: external_exports.array(
       external_exports.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/i)
     ).min(1).optional(),
-    defaultToolsApprovalMode: external_exports.enum(["auto", "prompt", "approve"]).optional(),
-    default_tools_approval_mode: external_exports.enum(["auto", "prompt", "approve"]).optional()
+    defaultToolsApprovalMode: external_exports.enum(["auto", "prompt", "approve"]).optional()
   }).optional()
 }).superRefine((data, ctx) => {
+  for (const key of [
+    "connectTimeout",
+    "connect_timeout",
+    "timeout",
+    "workingDirectory",
+    "supports_parallel_tool_calls",
+    "ssl_verify",
+    "client_cert",
+    "client_key"
+  ]) {
+    if (Object.hasOwn(data, key)) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: `Unrecognized key: "${key}"`
+      });
+    }
+  }
+  const codex = data.codex;
+  if (codex && Object.hasOwn(codex, "default_tools_approval_mode")) {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["codex", "default_tools_approval_mode"],
+      message: 'Unrecognized key: "default_tools_approval_mode"'
+    });
+  }
   if (Object.hasOwn(data, "disabled")) {
     const disabled = Reflect.get(data, "disabled");
     const replacement = typeof disabled === "boolean" ? `"enabled: ${!disabled}" instead, then run "openclaw doctor --fix" to migrate existing config` : 'the canonical "enabled" boolean instead';
@@ -17799,6 +19167,36 @@ var McpServerSchema = external_exports.object({
       path: ["disabled"]
     });
   }
+  if (data.oauth?.identity === "per-requester") {
+    if (data.auth !== "oauth") {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: 'oauth.identity "per-requester" requires auth: "oauth"',
+        path: ["oauth", "identity"]
+      });
+    }
+    if (data.oauth.authProfileId) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: 'oauth.authProfileId cannot be used with oauth.identity "per-requester"',
+        path: ["oauth", "authProfileId"]
+      });
+    }
+    if (!data.url) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: 'oauth.identity "per-requester" requires an HTTP server URL',
+        path: ["oauth", "identity"]
+      });
+    }
+    if (data.command !== void 0 || data.transport === "stdio") {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: 'oauth.identity "per-requester" cannot be combined with a command or "stdio" transport',
+        path: ["oauth", "identity"]
+      });
+    }
+  }
   if (data.transport === "stdio" && (typeof data.command !== "string" || data.command.trim().length === 0)) {
     ctx.addIssue({
       code: external_exports.ZodIssueCode.custom,
@@ -17807,154 +19205,87 @@ var McpServerSchema = external_exports.object({
     });
   }
 }).catchall(external_exports.unknown());
-var McpConfigSchema = external_exports.strictObject({
-  servers: external_exports.record(external_exports.string(), McpServerSchema).optional(),
-  apps: external_exports.strictObject({
-    enabled: external_exports.boolean().optional(),
-    sandboxOrigin: external_exports.string().url().refine((value) => {
-      try {
-        const url2 = new URL(value);
-        return (url2.protocol === "http:" || url2.protocol === "https:") && url2.origin === value.replace(/\/$/u, "") && !url2.username && !url2.password;
-      } catch {
-        return false;
-      }
-    }, "sandboxOrigin must be an HTTP(S) origin without a path, query, or credentials").optional(),
-    sandboxPort: external_exports.number().int().min(1).max(65535).optional()
-  }).optional(),
-  sessionIdleTtlMs: external_exports.number().finite().min(0).optional(),
-  // ISOL8 FORK PATCH (shared-runtime-scope): bundled MCP runtime sharing
-  // policy. "session" (default) = one runtime per gateway session; "shared"
-  // keys the runtime on (workspaceDir, configFingerprint) so sessions on the
-  // same workspace + mcp config reuse one ref-counted runtime (single-tenant
-  // per-user containers on EFS — avoids the per-session connect storm). This
-  // key is fork-only; it must live in THIS strictObject (McpConfigSchema
-  // relocated here from zod-schema.ts in upstream #106359) or the strict
-  // schema rejects mcp.runtimeScope and every MCP owner crash-loops on boot.
-  runtimeScope: external_exports.enum(["session", "shared"]).optional()
-}).optional();
-var NodeHostMcpServerNameSchema = external_exports.string().refine(
+var RESERVED_MCP_SERVER_NAME = "__proto__";
+var RESERVED_MCP_SERVER_NAME_ERROR = 'MCP server name "__proto__" is reserved; rename the server';
+var McpServerNameSchema = external_exports.string().refine((value) => value !== RESERVED_MCP_SERVER_NAME, RESERVED_MCP_SERVER_NAME_ERROR);
+var NodeHostMcpServerNameSchema = McpServerNameSchema.refine(
   (value) => value.length > 0 && value === value.trim(),
   "MCP server name must be non-empty and must not have surrounding whitespace"
 );
+function createMcpServersSchema(serverNameSchema) {
+  return external_exports.preprocess(
+    (value, ctx) => {
+      if (value !== null && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, RESERVED_MCP_SERVER_NAME)) {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: [RESERVED_MCP_SERVER_NAME],
+          message: RESERVED_MCP_SERVER_NAME_ERROR
+        });
+        return external_exports.NEVER;
+      }
+      return value;
+    },
+    external_exports.record(serverNameSchema, McpServerSchema)
+  );
+}
+function validateHttpOrigin(value) {
+  try {
+    const url2 = new URL(value);
+    return (url2.protocol === "http:" || url2.protocol === "https:") && url2.pathname === "/" && !url2.search && !url2.hash && !url2.username && !url2.password;
+  } catch {
+    return false;
+  }
+}
+var McpConfigSchema = external_exports.strictObject({
+  servers: createMcpServersSchema(McpServerNameSchema).optional(),
+  // ISOL8 FORK KEY: see agent-bundle-mcp-runtime-shared.ts. Omitting this from
+  // the strict object would crash-loop every MCP owner on boot.
+  runtimeScope: external_exports.enum(["session", "shared"]).optional(),
+  apps: external_exports.strictObject({
+    enabled: external_exports.boolean().optional(),
+    sandboxOrigin: external_exports.string().url().refine(
+      validateHttpOrigin,
+      "sandboxOrigin must be an HTTP(S) origin without a path, query, or credentials"
+    ).optional(),
+    sandboxPort: external_exports.number().int().min(1).max(65535).optional()
+  }).optional()
+}).optional();
 var NodeHostSchema = external_exports.strictObject({
   agentRuns: NodeHostAgentRunsSchema,
+  workerRuns: NodeHostWorkerRunsSchema,
   browserProxy: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     allowProfiles: external_exports.array(external_exports.string()).optional()
   }).optional(),
   mcp: external_exports.strictObject({
-    servers: external_exports.record(NodeHostMcpServerNameSchema, McpServerSchema).optional()
+    servers: createMcpServersSchema(NodeHostMcpServerNameSchema).optional()
   }).optional(),
   skills: external_exports.strictObject({
     enabled: external_exports.boolean().optional()
   }).optional()
 }).optional();
-var SystemAgentSchema = external_exports.strictObject({
-  rescue: external_exports.strictObject({
-    enabled: external_exports.union([external_exports.literal("auto"), external_exports.boolean()]).optional(),
-    ownerDmOnly: external_exports.boolean().optional(),
-    pendingTtlMinutes: external_exports.number().int().positive().optional()
-  }).optional()
-}).optional();
-function isPlainHttpsUrl(value) {
-  try {
-    const url2 = new URL(value);
-    return url2.protocol === "https:" && !url2.username && !url2.password && !url2.search && !url2.hash;
-  } catch {
-    return false;
-  }
-}
-function isEd25519PublicKeyConfig(value) {
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value)) {
-    return false;
-  }
-  if (!value.includes("BEGIN") && !/^[A-Za-z0-9_-]{43}$/.test(value)) {
-    return false;
-  }
-  try {
-    const normalized = normalizeEd25519PublicKeyBase64Url(value);
-    return normalized ? base64UrlDecode(normalized).length === 32 : false;
-  } catch {
-    return false;
-  }
-}
-var MarketplaceFeedTrustedPublicKeySchema = external_exports.strictObject({
-  keyId: external_exports.string().trim().min(1),
-  publicKey: external_exports.string().trim().min(1).refine(
-    (value) => isEd25519PublicKeyConfig(value),
-    "Expected Ed25519 public key as PEM or raw base64url"
-  )
-});
-var MarketplaceVerificationSchema = external_exports.union([
-  external_exports.strictObject({
-    mode: external_exports.literal("unsigned")
-  }),
-  external_exports.strictObject({
-    mode: external_exports.literal("signed"),
-    keys: external_exports.array(MarketplaceFeedTrustedPublicKeySchema).min(1),
-    threshold: external_exports.number().int().positive().optional()
-  }).superRefine((value, ctx) => {
-    const seenKeyIds = /* @__PURE__ */ new Map();
-    const seenPublicKeys = /* @__PURE__ */ new Map();
-    value.keys.forEach((key, index) => {
-      const previousKeyIdIndex = seenKeyIds.get(key.keyId);
-      if (previousKeyIdIndex !== void 0) {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["keys", index, "keyId"],
-          message: "Signed marketplace feed publisher key IDs must be unique"
-        });
-      } else {
-        seenKeyIds.set(key.keyId, index);
-      }
-      const normalizedPublicKey = normalizeEd25519PublicKeyBase64Url(key.publicKey);
-      if (!normalizedPublicKey) {
-        return;
-      }
-      const previousPublicKeyIndex = seenPublicKeys.get(normalizedPublicKey);
-      if (previousPublicKeyIndex !== void 0) {
-        ctx.addIssue({
-          code: external_exports.ZodIssueCode.custom,
-          path: ["keys", index, "publicKey"],
-          message: "Signed marketplace feed publisher public keys must be unique"
-        });
-      } else {
-        seenPublicKeys.set(normalizedPublicKey, index);
-      }
-    });
-    if (value.threshold !== void 0 && value.threshold > value.keys.length) {
-      ctx.addIssue({
-        code: external_exports.ZodIssueCode.custom,
-        path: ["threshold"],
-        message: "Signed marketplace feed threshold cannot exceed configured key count"
-      });
-    }
-  })
-]);
-var MarketplaceFeedProfileSchema = external_exports.strictObject({
-  url: external_exports.string().url().refine(
-    (value) => isPlainHttpsUrl(value),
-    "Expected https:// URL without credentials, query, or fragment"
-  ),
-  verification: MarketplaceVerificationSchema.optional()
-});
-var MarketplaceSourceProfileSchema = external_exports.union([
-  external_exports.strictObject({ type: external_exports.literal("npm") }),
-  external_exports.strictObject({ type: external_exports.literal("clawhub") }),
-  external_exports.strictObject({ type: external_exports.literal("git") })
-]);
-var MarketplacesSchema = external_exports.strictObject({
-  feeds: external_exports.record(external_exports.string().min(1), MarketplaceFeedProfileSchema).optional(),
-  sources: external_exports.record(external_exports.string().min(1), MarketplaceSourceProfileSchema).optional()
-}).optional();
-var CommitmentsSchema = external_exports.strictObject({
-  enabled: external_exports.boolean().optional(),
-  maxPerDay: external_exports.number().int().positive().optional()
-}).optional();
 
 // src/config/zod-schema.gateway.ts
+var OperatorScopeSchema = external_exports.enum([
+  ADMIN_SCOPE,
+  READ_SCOPE,
+  WRITE_SCOPE,
+  APPROVALS_SCOPE,
+  QUESTIONS_SCOPE,
+  PAIRING_SCOPE,
+  TALK_SCOPE,
+  TALK_SECRETS_SCOPE
+]);
+var GATEWAY_HTTP_LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
+function validateGatewayPublicOrigin(value) {
+  if (!validateHttpOrigin(value)) {
+    return false;
+  }
+  const url2 = new URL(value);
+  return url2.protocol === "https:" || GATEWAY_HTTP_LOOPBACK_HOSTS.has(url2.hostname);
+}
 var GatewayConfigSchema = external_exports.strictObject({
-  port: external_exports.number().int().positive().optional(),
+  port: external_exports.number().int().min(1).max(65535).optional(),
   mode: external_exports.union([external_exports.literal("local"), external_exports.literal("remote")]).optional(),
   bind: external_exports.union([
     external_exports.literal("auto"),
@@ -17964,20 +19295,31 @@ var GatewayConfigSchema = external_exports.strictObject({
     external_exports.literal("tailnet")
   ]).optional(),
   customBindHost: external_exports.string().optional(),
+  publicOrigin: external_exports.string().url().refine(
+    validateGatewayPublicOrigin,
+    "gateway.publicOrigin must be a bare HTTPS origin; HTTP is allowed only for localhost, 127.0.0.1, or [::1]"
+  ).optional(),
   controlUi: external_exports.strictObject({
+    // Shipped legacy input. Doctor removes it after recording migration state.
+    dangerouslyDisableDeviceAuth: external_exports.boolean().optional(),
     enabled: external_exports.boolean().optional(),
     basePath: external_exports.string().optional(),
     root: external_exports.string().optional(),
+    environment: external_exports.strictObject({
+      label: external_exports.string().trim().min(1).max(24),
+      color: external_exports.enum(CONTROL_UI_ENVIRONMENT_COLORS)
+    }).optional(),
+    github: external_exports.strictObject({ token: SecretInputSchema.optional().register(sensitive) }).optional(),
     toolTitles: external_exports.boolean().optional(),
+    sessionObserver: external_exports.boolean().optional(),
     embedSandbox: external_exports.union([external_exports.literal("strict"), external_exports.literal("scripts"), external_exports.literal("trusted")]).optional(),
     allowExternalEmbedUrls: external_exports.boolean().optional(),
-    chatMessageMaxWidth: external_exports.string().transform((value) => normalizeControlUiChatMessageMaxWidth(value)).refine((value) => isValidControlUiChatMessageMaxWidth(value), {
-      message: "Expected a CSS width value such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem)"
-    }).optional(),
+    automaticallyFetchFavicons: external_exports.boolean().optional(),
     allowedOrigins: external_exports.array(external_exports.string()).optional(),
-    dangerouslyAllowHostHeaderOriginFallback: external_exports.boolean().optional(),
-    allowInsecureAuth: external_exports.boolean().optional(),
-    dangerouslyDisableDeviceAuth: external_exports.boolean().optional()
+    dangerouslyAllowHostHeaderOriginFallback: external_exports.boolean().optional()
+  }).optional(),
+  cliAgents: external_exports.strictObject({
+    enabled: external_exports.boolean().optional()
   }).optional(),
   terminal: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
@@ -17994,6 +19336,7 @@ var GatewayConfigSchema = external_exports.strictObject({
     token: SecretInputSchema.optional().register(sensitive),
     password: SecretInputSchema.optional().register(sensitive),
     allowTailscale: external_exports.boolean().optional(),
+    identityScopes: external_exports.record(external_exports.string().min(1), external_exports.array(OperatorScopeSchema)).optional(),
     rateLimit: external_exports.strictObject({
       maxAttempts: external_exports.number().optional(),
       windowMs: external_exports.number().optional(),
@@ -18004,7 +19347,11 @@ var GatewayConfigSchema = external_exports.strictObject({
       userHeader: external_exports.string().min(1, "userHeader is required for trusted-proxy mode"),
       requiredHeaders: external_exports.array(external_exports.string()).optional(),
       allowUsers: external_exports.array(external_exports.string()).optional(),
-      allowLoopback: external_exports.boolean().optional()
+      allowLoopback: external_exports.boolean().optional(),
+      deviceAutoApprove: external_exports.strictObject({
+        enabled: external_exports.boolean().optional(),
+        scopes: external_exports.array(external_exports.string().min(1)).optional()
+      }).optional()
     }).optional()
   }).optional(),
   trustedProxies: external_exports.array(external_exports.string()).optional(),
@@ -18013,21 +19360,13 @@ var GatewayConfigSchema = external_exports.strictObject({
     deny: external_exports.array(external_exports.string()).optional(),
     allow: external_exports.array(external_exports.string()).optional()
   }).optional(),
-  handshakeTimeoutMs: external_exports.number().int().min(1).optional(),
-  channelHealthCheckMinutes: external_exports.number().int().min(0).optional(),
-  channelStaleEventThresholdMinutes: external_exports.number().int().min(1).optional(),
-  channelMaxRestartsPerHour: external_exports.number().int().min(1).optional(),
   tailscale: external_exports.strictObject({
     mode: external_exports.union([external_exports.literal("off"), external_exports.literal("serve"), external_exports.literal("funnel")]).optional(),
-    resetOnExit: external_exports.boolean().optional(),
-    serviceName: TailscaleServiceNameSchema.optional(),
     preserveFunnel: external_exports.boolean().optional()
   }).optional(),
   remote: GatewayRemoteConfigSchema,
   reload: external_exports.strictObject({
-    mode: external_exports.union([external_exports.literal("off"), external_exports.literal("restart"), external_exports.literal("hot"), external_exports.literal("hybrid")]).optional(),
-    debounceMs: external_exports.number().int().min(0).optional(),
-    deferralTimeoutMs: external_exports.number().int().min(0).optional()
+    mode: external_exports.union([external_exports.literal("off"), external_exports.literal("hybrid")]).optional()
   }).optional(),
   tls: external_exports.object({
     enabled: external_exports.boolean().optional(),
@@ -18044,16 +19383,12 @@ var GatewayConfigSchema = external_exports.strictObject({
     endpoints: external_exports.strictObject({
       chatCompletions: external_exports.strictObject({
         enabled: external_exports.boolean().optional(),
-        maxBodyBytes: external_exports.number().int().positive().optional(),
-        maxImageParts: external_exports.number().int().nonnegative().optional(),
-        maxTotalImageBytes: external_exports.number().int().positive().optional(),
         images: external_exports.strictObject({
           ...ResponsesEndpointUrlFetchShape
         }).optional()
       }).optional(),
       responses: external_exports.strictObject({
         enabled: external_exports.boolean().optional(),
-        maxBodyBytes: external_exports.number().int().positive().optional(),
         maxUrlParts: external_exports.number().int().nonnegative().optional(),
         files: external_exports.strictObject({
           ...ResponsesEndpointUrlFetchShape,
@@ -18087,6 +19422,7 @@ var GatewayConfigSchema = external_exports.strictObject({
       node: external_exports.string().optional()
     }).optional(),
     pairing: external_exports.strictObject({
+      autoApproveLocal: external_exports.boolean().optional(),
       autoApproveCidrs: external_exports.array(external_exports.string()).optional(),
       sshVerify: external_exports.union([
         external_exports.boolean(),
@@ -18101,93 +19437,22 @@ var GatewayConfigSchema = external_exports.strictObject({
     pluginTools: external_exports.strictObject({
       enabled: external_exports.boolean().optional()
     }).optional(),
-    skills: external_exports.strictObject({
-      enabled: external_exports.boolean().optional()
-    }).optional(),
-    allowCommands: external_exports.array(external_exports.string()).optional(),
-    denyCommands: external_exports.array(external_exports.string()).optional()
+    allowSkills: external_exports.boolean().optional(),
+    commands: external_exports.strictObject({
+      allow: external_exports.array(external_exports.string()).optional(),
+      deny: external_exports.array(external_exports.string()).optional()
+    }).optional()
   }).optional()
-}).superRefine((gateway, ctx) => {
-  const effectiveHealthCheckMinutes = gateway.channelHealthCheckMinutes ?? 5;
-  if (gateway.channelStaleEventThresholdMinutes != null && effectiveHealthCheckMinutes !== 0 && gateway.channelStaleEventThresholdMinutes < effectiveHealthCheckMinutes) {
-    ctx.addIssue({
-      code: external_exports.ZodIssueCode.custom,
-      path: ["channelStaleEventThresholdMinutes"],
-      message: "channelStaleEventThresholdMinutes should be >= channelHealthCheckMinutes to avoid delayed stale detection"
-    });
-  }
 }).optional();
 
 // src/config/zod-schema.hooks.ts
-import path4 from "node:path";
-
-// src/config/zod-schema.installs.ts
-var InstallSourceSchema = external_exports.union([
-  external_exports.literal("npm"),
-  external_exports.literal("archive"),
-  external_exports.literal("path"),
-  external_exports.literal("clawhub"),
-  external_exports.literal("git")
-]);
-var PluginInstallSourceSchema = external_exports.union([InstallSourceSchema, external_exports.literal("marketplace")]);
-var InstallRecordShape = {
-  source: InstallSourceSchema,
-  spec: external_exports.string().optional(),
-  sourcePath: external_exports.string().optional(),
-  installPath: external_exports.string().optional(),
-  version: external_exports.string().optional(),
-  resolvedName: external_exports.string().optional(),
-  resolvedVersion: external_exports.string().optional(),
-  resolvedSpec: external_exports.string().optional(),
-  integrity: external_exports.string().optional(),
-  shasum: external_exports.string().optional(),
-  resolvedAt: external_exports.string().optional(),
-  installedAt: external_exports.string().optional(),
-  clawhubUrl: external_exports.string().optional(),
-  clawhubPackage: external_exports.string().optional(),
-  clawhubFamily: external_exports.union([external_exports.literal("code-plugin"), external_exports.literal("bundle-plugin")]).optional(),
-  clawhubChannel: external_exports.union([external_exports.literal("official"), external_exports.literal("community"), external_exports.literal("private")]).optional(),
-  clawhubTrustDisposition: external_exports.union([
-    external_exports.literal("clean"),
-    external_exports.literal("review-recommended"),
-    external_exports.literal("review-required"),
-    external_exports.literal("blocked")
-  ]).optional(),
-  clawhubTrustScanStatus: external_exports.string().optional(),
-  clawhubTrustModerationState: external_exports.string().optional(),
-  clawhubTrustReasons: external_exports.array(external_exports.string()).optional(),
-  clawhubTrustPending: external_exports.boolean().optional(),
-  clawhubTrustStale: external_exports.boolean().optional(),
-  clawhubTrustCheckedAt: external_exports.string().optional(),
-  clawhubTrustAcknowledgedAt: external_exports.string().optional(),
-  artifactKind: external_exports.union([external_exports.literal("legacy-zip"), external_exports.literal("npm-pack")]).optional(),
-  artifactFormat: external_exports.union([external_exports.literal("zip"), external_exports.literal("tgz")]).optional(),
-  npmIntegrity: external_exports.string().optional(),
-  npmShasum: external_exports.string().optional(),
-  npmTarballName: external_exports.string().optional(),
-  clawpackSha256: external_exports.string().optional(),
-  clawpackSpecVersion: external_exports.number().int().nonnegative().optional(),
-  clawpackManifestSha256: external_exports.string().optional(),
-  clawpackSize: external_exports.number().int().nonnegative().optional(),
-  gitUrl: external_exports.string().optional(),
-  gitRef: external_exports.string().optional(),
-  gitCommit: external_exports.string().optional()
-};
-var PluginInstallRecordShape = {
-  ...InstallRecordShape,
-  source: PluginInstallSourceSchema,
-  marketplaceName: external_exports.string().optional(),
-  marketplaceSource: external_exports.string().optional(),
-  marketplacePlugin: external_exports.string().optional()
-};
-
-// src/config/zod-schema.hooks.ts
+import path8 from "node:path";
 function isSafeRelativeModulePath(raw) {
   const value = raw.trim();
   if (!value) {
     return false;
   }
-  if (path4.isAbsolute(value)) {
+  if (path8.isAbsolute(value)) {
     return false;
   }
   if (value.startsWith("~")) {
@@ -18214,6 +19479,7 @@ var HookMappingSchema = external_exports.object({
   name: external_exports.string().optional(),
   agentId: external_exports.string().optional(),
   sessionKey: external_exports.string().optional().register(sensitive),
+  sessionMode: external_exports.union([external_exports.literal("isolated"), external_exports.literal("persistent")]).optional(),
   messageTemplate: external_exports.string().optional(),
   textTemplate: external_exports.string().optional(),
   deliver: external_exports.boolean().optional(),
@@ -18231,27 +19497,16 @@ var HookMappingSchema = external_exports.object({
     export: external_exports.string().optional()
   }).strict().optional()
 }).strict().optional();
-var InternalHookHandlerSchema = external_exports.object({
-  event: external_exports.string(),
-  module: SafeRelativeModulePathSchema,
-  export: external_exports.string().optional()
-}).strict();
 var HookConfigSchema = external_exports.object({
   enabled: external_exports.boolean().optional(),
   env: external_exports.record(external_exports.string(), external_exports.string()).optional()
 }).passthrough();
-var HookInstallRecordSchema = external_exports.object({
-  ...InstallRecordShape,
-  hooks: external_exports.array(external_exports.string()).optional()
-}).strict();
 var InternalHooksSchema = external_exports.object({
   enabled: external_exports.boolean().optional(),
-  handlers: external_exports.array(InternalHookHandlerSchema).optional(),
   entries: external_exports.record(external_exports.string(), HookConfigSchema).optional(),
   load: external_exports.object({
     extraDirs: external_exports.array(external_exports.string()).optional()
-  }).strict().optional(),
-  installs: external_exports.record(external_exports.string(), HookInstallRecordSchema).optional()
+  }).strict().optional()
 }).strict().optional();
 var HooksGmailSchema = external_exports.object({
   account: external_exports.string().optional(),
@@ -18298,24 +19553,143 @@ var ProxyConfigSchema = external_exports.object({
   loopbackMode: ProxyLoopbackModeSchema.optional()
 }).strict().optional();
 
+// src/config/zod-schema.session.ts
+var SessionResetConfigSchema = external_exports.object({
+  mode: external_exports.union([external_exports.literal("none"), external_exports.literal("daily"), external_exports.literal("idle")]).optional(),
+  atHour: external_exports.number().int().min(0).max(23).optional(),
+  idleMinutes: external_exports.number().int().positive().optional()
+}).strict();
+var PositiveDurationSchema = external_exports.union([external_exports.string(), external_exports.number()]).superRefine((value, ctx) => {
+  try {
+    const ms = parseDurationMs(normalizeStringifiedOptionalString(value) ?? "", {
+      defaultUnit: "d"
+    });
+    if (ms <= 0) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        message: "duration must be positive (use ms, s, m, h, d), e.g. 30d"
+      });
+    }
+  } catch {
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      message: "invalid duration (use ms, s, m, h, d)"
+    });
+  }
+});
+var SessionSendPolicySchema = createAllowDenyChannelRulesSchema();
+var SessionSchema = external_exports.object({
+  scope: external_exports.union([external_exports.literal("per-sender"), external_exports.literal("global")]).optional(),
+  dmScope: external_exports.enum(["main", "per-peer", "per-channel-peer", "per-account-channel-peer"]).optional(),
+  groupScope: external_exports.enum(["main", "per-group"]).optional(),
+  identityLinks: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
+  resetTriggers: external_exports.array(external_exports.string()).optional(),
+  reset: SessionResetConfigSchema.optional(),
+  resetByType: external_exports.object({
+    direct: SessionResetConfigSchema.optional(),
+    group: SessionResetConfigSchema.optional(),
+    thread: SessionResetConfigSchema.optional()
+  }).strict().optional(),
+  resetByChannel: external_exports.record(external_exports.string(), SessionResetConfigSchema).optional(),
+  store: external_exports.string().optional(),
+  mainKey: external_exports.string().optional(),
+  sendPolicy: SessionSendPolicySchema.optional(),
+  threadBindings: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    idleHours: external_exports.number().nonnegative().optional(),
+    maxAgeHours: external_exports.number().nonnegative().optional(),
+    spawnSessions: external_exports.boolean().optional(),
+    defaultSpawnContext: external_exports.enum(["isolated", "fork"]).optional()
+  }).strict().optional(),
+  sharing: external_exports.object({
+    readOnly: external_exports.boolean().optional(),
+    suggest: external_exports.boolean().optional(),
+    drafts: external_exports.boolean().optional()
+  }).strict().optional(),
+  maintenance: external_exports.object({
+    mode: external_exports.enum(["enforce", "warn"]).optional(),
+    pruneAfter: PositiveDurationSchema.optional(),
+    archiveDashboardAfter: external_exports.union([PositiveDurationSchema, external_exports.literal(false), external_exports.literal(0)]).optional(),
+    maxEntries: external_exports.number().int().positive().optional(),
+    preserveRecent: external_exports.union([PositiveDurationSchema, external_exports.literal(false)]).optional(),
+    resetArchiveRetention: external_exports.union([PositiveDurationSchema, external_exports.literal(false)]).optional(),
+    maxDiskBytes: external_exports.union([external_exports.string(), external_exports.number(), external_exports.literal(false)]).optional(),
+    highWaterBytes: external_exports.union([external_exports.string(), external_exports.number()]).optional()
+  }).strict().superRefine((val, ctx) => {
+    if (val.maxDiskBytes !== void 0 && val.maxDiskBytes !== false) {
+      try {
+        parseByteSize(normalizeStringifiedOptionalString(val.maxDiskBytes) ?? "", {
+          defaultUnit: "b"
+        });
+      } catch {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["maxDiskBytes"],
+          message: "invalid size (use b, kb, mb, gb, tb)"
+        });
+      }
+    }
+    if (val.highWaterBytes !== void 0) {
+      try {
+        parseByteSize(normalizeStringifiedOptionalString(val.highWaterBytes) ?? "", {
+          defaultUnit: "b"
+        });
+      } catch {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["highWaterBytes"],
+          message: "invalid size (use b, kb, mb, gb, tb)"
+        });
+      }
+    }
+  }).optional()
+}).strict().optional();
+var ResponseUsageModeSchema = external_exports.enum(["on", "off", "tokens", "full"]);
+var MessagesSchema = external_exports.object({
+  visibleReplies: VisibleRepliesSchema.optional(),
+  responsePrefix: external_exports.string().optional(),
+  usageTemplate: external_exports.union([external_exports.string(), external_exports.record(external_exports.string(), external_exports.unknown())]).optional(),
+  responseUsage: external_exports.union([ResponseUsageModeSchema, external_exports.record(external_exports.string(), ResponseUsageModeSchema)]).optional(),
+  groupChat: GroupChatSchema,
+  queue: QueueSchema,
+  inbound: InboundDebounceSchema,
+  ackReaction: external_exports.string().optional(),
+  ackReactionScope: external_exports.enum(["group-mentions", "group-all", "direct", "all", "off", "none"]).optional(),
+  statusReactions: external_exports.object({
+    enabled: external_exports.boolean().optional()
+  }).strict().optional(),
+  suppressToolErrors: external_exports.boolean().optional()
+}).strict().optional();
+var CommandsSchema = external_exports.object({
+  native: NativeCommandsSettingSchema.optional().default("auto"),
+  nativeSkills: NativeCommandsSettingSchema.optional().default("auto"),
+  text: external_exports.boolean().optional(),
+  bash: external_exports.boolean().optional(),
+  bashForegroundMs: external_exports.number().int().min(0).max(3e4).optional(),
+  config: external_exports.boolean().optional(),
+  mcp: external_exports.boolean().optional(),
+  plugins: external_exports.boolean().optional(),
+  debug: external_exports.boolean().optional(),
+  restart: external_exports.boolean().optional().default(true),
+  ownerAllowFrom: external_exports.array(external_exports.union([external_exports.string(), external_exports.number()])).optional(),
+  allowFrom: ElevatedAllowFromSchema.optional()
+}).strict().optional().default(
+  () => ({
+    native: "auto",
+    nativeSkills: "auto",
+    restart: true
+  })
+);
+
 // src/config/zod-schema.root-shape.ts
+var MetricNamePrefixSchema = external_exports.string().max(128).regex(/^(?:[A-Za-z][A-Za-z0-9_./-]*)?$/);
 var OpenClawSchemaShape = {
   $schema: external_exports.string().optional(),
   meta: external_exports.strictObject({
     lastTouchedVersion: external_exports.string().optional(),
-    // Accept any string unchanged (backwards-compatible) and coerce numeric Unix
-    // timestamps to ISO strings (agent file edits may write Date.now()).
-    lastTouchedAt: external_exports.union([
-      external_exports.string(),
-      external_exports.number().transform((n, ctx) => {
-        const d = new Date(n);
-        if (Number.isNaN(d.getTime())) {
-          ctx.addIssue({ code: external_exports.ZodIssueCode.custom, message: "Invalid timestamp" });
-          return external_exports.NEVER;
-        }
-        return d.toISOString();
-      }).pipe(external_exports.string())
-    ]).optional()
+    migrations: external_exports.strictObject({
+      modelPolicyAllowlist: external_exports.literal(true).optional()
+    }).optional()
   }).optional(),
   env: external_exports.object({
     shellEnv: external_exports.strictObject({
@@ -18323,7 +19697,7 @@ var OpenClawSchemaShape = {
       timeoutMs: external_exports.number().int().nonnegative().optional()
     }).optional(),
     vars: external_exports.record(external_exports.string(), external_exports.string()).optional()
-  }).catchall(external_exports.string()).optional(),
+  }).strict().optional(),
   wizard: external_exports.strictObject({
     accessMode: external_exports.union([external_exports.literal("full"), external_exports.literal("guarded")]).optional(),
     appRecommendations: external_exports.boolean().optional(),
@@ -18338,64 +19712,39 @@ var OpenClawSchemaShape = {
   diagnostics: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     flags: external_exports.array(external_exports.string()).optional(),
-    stuckSessionWarnMs: external_exports.number().int().positive().optional(),
-    stuckSessionAbortMs: external_exports.number().int().positive().optional(),
-    memoryPressureSnapshot: external_exports.boolean().optional(),
     otel: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
       endpoint: external_exports.string().optional(),
       tracesEndpoint: external_exports.string().optional(),
       metricsEndpoint: external_exports.string().optional(),
       logsEndpoint: external_exports.string().optional(),
-      protocol: external_exports.union([external_exports.literal("http/protobuf"), external_exports.literal("grpc")]).optional(),
+      protocol: external_exports.literal("http/protobuf").optional(),
       headers: external_exports.record(external_exports.string(), external_exports.string()).optional(),
       serviceName: external_exports.string().optional(),
+      metricNamePrefix: MetricNamePrefixSchema.optional(),
       traces: external_exports.boolean().optional(),
       metrics: external_exports.boolean().optional(),
       logs: external_exports.boolean().optional(),
       logsExporter: external_exports.union([external_exports.literal("otlp"), external_exports.literal("stdout"), external_exports.literal("both")]).optional(),
       sampleRate: external_exports.number().min(0).max(1).optional(),
       flushIntervalMs: external_exports.number().int().nonnegative().optional(),
-      captureContent: external_exports.union([
-        external_exports.boolean(),
-        external_exports.strictObject({
-          enabled: external_exports.boolean().optional(),
-          inputMessages: external_exports.boolean().optional(),
-          outputMessages: external_exports.boolean().optional(),
-          toolInputs: external_exports.boolean().optional(),
-          toolOutputs: external_exports.boolean().optional(),
-          systemPrompt: external_exports.boolean().optional(),
-          toolDefinitions: external_exports.boolean().optional()
-        })
-      ]).optional()
+      captureContent: external_exports.boolean().optional()
     }).optional(),
-    cacheTrace: external_exports.strictObject({
-      enabled: external_exports.boolean().optional(),
-      filePath: external_exports.string().optional(),
-      includeMessages: external_exports.boolean().optional(),
-      includePrompt: external_exports.boolean().optional(),
-      includeSystem: external_exports.boolean().optional()
-    }).optional()
-  }).optional(),
-  audit: external_exports.strictObject({
-    enabled: external_exports.boolean().optional(),
-    messages: external_exports.union([external_exports.literal("off"), external_exports.literal("direct"), external_exports.literal("all")]).optional()
+    cacheTrace: external_exports.strictObject({ enabled: external_exports.boolean().optional() }).optional()
   }).optional(),
   logging: external_exports.strictObject({
     level: LoggingLevelSchema.optional(),
     file: external_exports.string().optional(),
     maxFileBytes: external_exports.number().int().positive().optional(),
     consoleLevel: LoggingLevelSchema.optional(),
-    consoleStyle: external_exports.union([external_exports.literal("pretty"), external_exports.literal("compact"), external_exports.literal("json")]).optional(),
-    redactSensitive: external_exports.union([external_exports.literal("off"), external_exports.literal("tools")]).optional(),
-    redactPatterns: external_exports.array(external_exports.string()).optional()
-  }).optional(),
-  cli: external_exports.strictObject({
-    banner: external_exports.strictObject({
-      taglineMode: external_exports.union([external_exports.literal("random"), external_exports.literal("default"), external_exports.literal("off")]).optional()
+    consoleStyle: external_exports.union([external_exports.literal("pretty"), external_exports.literal("json")]).optional(),
+    redactPatterns: external_exports.array(external_exports.string()).optional(),
+    audit: external_exports.strictObject({
+      enabled: external_exports.boolean().optional(),
+      executionIdentity: external_exports.boolean().optional(),
+      messages: external_exports.union([external_exports.literal("off"), external_exports.literal("direct"), external_exports.literal("all")]).optional()
     }).optional()
   }).optional(),
-  systemAgent: SystemAgentSchema,
   update: external_exports.strictObject({
     channel: external_exports.union([
       external_exports.literal("stable"),
@@ -18405,10 +19754,7 @@ var OpenClawSchemaShape = {
     ]).optional(),
     checkOnStart: external_exports.boolean().optional(),
     auto: external_exports.strictObject({
-      enabled: external_exports.boolean().optional(),
-      stableDelayHours: external_exports.number().nonnegative().max(168).optional(),
-      stableJitterHours: external_exports.number().nonnegative().max(168).optional(),
-      betaCheckIntervalHours: external_exports.number().positive().max(24).optional()
+      enabled: external_exports.boolean().optional()
     }).optional()
   }).optional(),
   browser: external_exports.strictObject({
@@ -18416,24 +19762,13 @@ var OpenClawSchemaShape = {
     allowSystemProfileImport: external_exports.boolean().optional(),
     evaluateEnabled: external_exports.boolean().optional(),
     cdpUrl: external_exports.string().optional(),
-    remoteCdpTimeoutMs: external_exports.number().int().nonnegative().optional(),
-    remoteCdpHandshakeTimeoutMs: external_exports.number().int().nonnegative().optional(),
-    localLaunchTimeoutMs: external_exports.number().int().positive().max(12e4).optional(),
-    localCdpReadyTimeoutMs: external_exports.number().int().positive().max(12e4).optional(),
-    actionTimeoutMs: external_exports.number().int().positive().optional(),
-    color: external_exports.string().optional(),
     executablePath: external_exports.string().optional(),
     headless: external_exports.boolean().optional(),
     noSandbox: external_exports.boolean().optional(),
     attachOnly: external_exports.boolean().optional(),
-    cdpPortRangeStart: external_exports.number().int().min(1).max(65535).optional(),
     defaultProfile: external_exports.string().optional(),
     snapshotDefaults: BrowserSnapshotDefaultsSchema,
-    ssrfPolicy: external_exports.strictObject({
-      dangerouslyAllowPrivateNetwork: external_exports.boolean().optional(),
-      allowedHostnames: external_exports.array(external_exports.string()).optional(),
-      hostnameAllowlist: external_exports.array(external_exports.string()).optional()
-    }).optional(),
+    ssrfPolicy: SsrFPolicyConfigSchema.optional(),
     profiles: external_exports.record(
       external_exports.string().regex(/^[a-z0-9-]+$/, "Profile names must be alphanumeric with hyphens only"),
       external_exports.strictObject({
@@ -18450,8 +19785,7 @@ var OpenClawSchemaShape = {
         ]).optional(),
         headless: external_exports.boolean().optional(),
         executablePath: external_exports.string().optional(),
-        attachOnly: external_exports.boolean().optional(),
-        color: HexColorSchema
+        attachOnly: external_exports.boolean().optional()
       }).refine(
         (value) => value.driver === "existing-session" || value.driver === "extension" || value.cdpPort || value.cdpUrl,
         {
@@ -18465,10 +19799,10 @@ var OpenClawSchemaShape = {
     ).optional(),
     extraArgs: external_exports.array(external_exports.string()).optional(),
     tabCleanup: external_exports.strictObject({
-      enabled: external_exports.boolean().optional(),
-      idleMinutes: external_exports.number().int().nonnegative().optional(),
-      maxTabsPerSession: external_exports.number().int().nonnegative().optional(),
-      sweepMinutes: external_exports.number().int().positive().optional()
+      enabled: external_exports.boolean().optional()
+    }).optional(),
+    extensionRelay: external_exports.strictObject({
+      allowLegacyAuth: external_exports.boolean().optional()
     }).optional(),
     sessionState: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
@@ -18488,20 +19822,16 @@ var OpenClawSchemaShape = {
     prefs: external_exports.strictObject({
       theme: external_exports.union([external_exports.literal("claw"), external_exports.literal("knot"), external_exports.literal("dash"), external_exports.literal("custom")]).optional(),
       themeMode: external_exports.union([external_exports.literal("light"), external_exports.literal("dark"), external_exports.literal("system")]).optional(),
-      textScale: external_exports.union([external_exports.literal(90), external_exports.literal(100), external_exports.literal(110), external_exports.literal(125), external_exports.literal(140)]).optional(),
       locale: external_exports.string().max(20).optional(),
       chatShowThinking: external_exports.boolean().optional(),
       chatShowToolCalls: external_exports.boolean().optional(),
-      chatSendShortcut: external_exports.union([external_exports.literal("enter"), external_exports.literal("modifier-enter")]).optional()
-    }).optional()
-  }).optional(),
-  tui: external_exports.strictObject({
-    footer: external_exports.strictObject({
-      showRemoteHost: external_exports.boolean().optional()
+      chatPersistCommentary: external_exports.boolean().optional(),
+      chatSendShortcut: external_exports.union([external_exports.literal("enter"), external_exports.literal("modifier-enter")]).optional(),
+      chatFollowUpMode: external_exports.union([external_exports.literal("steer"), external_exports.literal("queue")]).optional(),
+      sidebarEntries: external_exports.array(external_exports.string()).optional()
     }).optional()
   }).optional(),
   secrets: SecretsConfigSchema,
-  marketplaces: MarketplacesSchema,
   auth: external_exports.strictObject({
     profiles: external_exports.record(
       external_exports.string(),
@@ -18517,18 +19847,7 @@ var OpenClawSchemaShape = {
         displayName: external_exports.string().optional()
       })
     ).optional(),
-    order: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional(),
-    cooldowns: external_exports.strictObject({
-      billingBackoffHours: external_exports.number().positive().optional(),
-      billingBackoffHoursByProvider: external_exports.record(external_exports.string(), external_exports.number().positive()).optional(),
-      billingMaxHours: external_exports.number().positive().optional(),
-      authPermanentBackoffMinutes: external_exports.number().positive().optional(),
-      authPermanentMaxMinutes: external_exports.number().positive().optional(),
-      failureWindowHours: external_exports.number().positive().optional(),
-      overloadedProfileRotations: external_exports.number().int().nonnegative().optional(),
-      overloadedBackoffMs: external_exports.number().int().nonnegative().optional(),
-      rateLimitedProfileRotations: external_exports.number().int().nonnegative().optional()
-    }).optional()
+    order: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional()
   }).optional(),
   accessGroups: AccessGroupsSchema,
   acp: external_exports.strictObject({
@@ -18540,24 +19859,12 @@ var OpenClawSchemaShape = {
     fallbacks: external_exports.array(external_exports.string()).optional(),
     defaultAgent: external_exports.string().optional(),
     allowedAgents: external_exports.array(external_exports.string()).optional(),
-    maxConcurrentSessions: external_exports.number().int().positive().optional(),
     stream: external_exports.strictObject({
-      coalesceIdleMs: external_exports.number().int().nonnegative().optional(),
-      maxChunkChars: external_exports.number().int().positive().optional(),
       repeatSuppression: external_exports.boolean().optional(),
       deliveryMode: external_exports.union([external_exports.literal("live"), external_exports.literal("final_only")]).optional(),
-      hiddenBoundarySeparator: external_exports.union([
-        external_exports.literal("none"),
-        external_exports.literal("space"),
-        external_exports.literal("newline"),
-        external_exports.literal("paragraph")
-      ]).optional(),
-      maxOutputChars: external_exports.number().int().positive().optional(),
-      maxSessionUpdateChars: external_exports.number().int().positive().optional(),
       tagVisibility: external_exports.record(external_exports.string(), external_exports.boolean()).optional()
     }).optional(),
     runtime: external_exports.strictObject({
-      ttlMinutes: external_exports.number().int().positive().optional(),
       installCommand: external_exports.string().optional()
     }).optional()
   }).optional(),
@@ -18568,29 +19875,21 @@ var OpenClawSchemaShape = {
   security: SecuritySchema,
   bindings: BindingsSchema,
   broadcast: BroadcastSchema,
-  media: external_exports.strictObject({
-    preserveFilenames: external_exports.boolean().optional(),
+  attachments: external_exports.strictObject({
     ttlHours: external_exports.number().int().min(1).max(24 * 7).optional()
   }).optional(),
   messages: MessagesSchema,
+  tts: TtsConfigSchema,
   commands: CommandsSchema,
   approvals: ApprovalsSchema,
   session: SessionSchema,
   cron: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
-    store: external_exports.string().optional(),
-    maxConcurrentRuns: external_exports.number().int().positive().optional(),
     triggers: external_exports.strictObject({
-      enabled: external_exports.boolean().optional(),
-      minIntervalMs: external_exports.number().int().positive().optional()
+      enabled: external_exports.boolean().optional()
     }).optional(),
-    retry: external_exports.strictObject({
-      maxAttempts: external_exports.number().int().min(0).max(10).optional(),
-      backoffMs: external_exports.array(external_exports.number().int().nonnegative()).min(1).max(10).optional(),
-      retryOn: external_exports.array(external_exports.enum(["rate_limit", "overloaded", "network", "timeout", "server_error"])).min(1).optional()
-    }).optional(),
-    webhook: HttpUrlSchema.optional(),
     webhookToken: SecretInputSchema.optional().register(sensitive),
+    webhookSsrfPolicy: SsrFPolicyConfigSchema.optional(),
     sessionRetention: external_exports.union([external_exports.string(), external_exports.literal(false)]).optional(),
     failureAlert: external_exports.strictObject({
       enabled: external_exports.boolean().optional(),
@@ -18598,13 +19897,9 @@ var OpenClawSchemaShape = {
       cooldownMs: external_exports.number().int().min(0).optional(),
       includeSkipped: external_exports.boolean().optional(),
       mode: external_exports.enum(["announce", "webhook"]).optional(),
-      accountId: external_exports.string().optional()
-    }).optional(),
-    failureDestination: external_exports.strictObject({
-      channel: external_exports.string().optional(),
-      to: external_exports.string().optional(),
       accountId: external_exports.string().optional(),
-      mode: external_exports.enum(["announce", "webhook"]).optional()
+      channel: external_exports.string().optional(),
+      to: external_exports.string().optional()
     }).optional()
   }).superRefine((val, ctx) => {
     if (val.sessionRetention !== void 0 && val.sessionRetention !== false) {
@@ -18621,15 +19916,8 @@ var OpenClawSchemaShape = {
       }
     }
   }).optional(),
-  worktrees: external_exports.strictObject({
-    cleanup: external_exports.strictObject({
-      maxCount: external_exports.number().int().min(0).optional(),
-      maxTotalSizeGb: external_exports.number().min(0).optional()
-    }).optional()
-  }).optional(),
   transcripts: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
-    maxUtterances: external_exports.number().int().min(1).max(1e4).optional(),
     autoStart: external_exports.array(
       external_exports.strictObject({
         providerId: external_exports.string().min(1),
@@ -18642,7 +19930,6 @@ var OpenClawSchemaShape = {
       })
     ).optional()
   }).optional(),
-  commitments: CommitmentsSchema,
   hooks: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     path: external_exports.string().optional(),
@@ -18651,33 +19938,29 @@ var OpenClawSchemaShape = {
     allowRequestSessionKey: external_exports.boolean().optional(),
     allowedSessionKeyPrefixes: external_exports.array(external_exports.string()).optional(),
     allowedAgentIds: external_exports.array(external_exports.string()).optional(),
-    maxBodyBytes: external_exports.number().int().positive().optional(),
     presets: external_exports.array(external_exports.string()).optional(),
     transformsDir: external_exports.string().optional(),
     mappings: external_exports.array(HookMappingSchema).optional(),
     gmail: HooksGmailSchema,
     internal: InternalHooksSchema
-  }).optional(),
-  web: external_exports.strictObject({
-    enabled: external_exports.boolean().optional(),
-    heartbeatSeconds: external_exports.number().int().positive().optional(),
-    reconnect: external_exports.strictObject({
-      initialMs: external_exports.number().positive().optional(),
-      maxMs: external_exports.number().positive().optional(),
-      factor: external_exports.number().positive().optional(),
-      jitter: external_exports.number().min(0).max(1).optional(),
-      maxAttempts: external_exports.number().int().min(0).optional()
-    }).optional(),
-    whatsapp: external_exports.strictObject({
-      keepAliveIntervalMs: external_exports.number().int().positive().optional(),
-      connectTimeoutMs: external_exports.number().int().positive().optional(),
-      defaultQueryTimeoutMs: external_exports.number().int().positive().optional()
-    }).optional()
+  }).superRefine((hooks, ctx) => {
+    const hasDefaultSessionKey = hooks.defaultSessionKey?.trim();
+    for (const [index, mapping] of (hooks.mappings ?? []).entries()) {
+      if (!mapping) {
+        continue;
+      }
+      if ((mapping.action ?? "agent") === "agent" && mapping.sessionMode === "persistent" && !mapping.sessionKey?.trim() && !hasDefaultSessionKey && !mapping.transform) {
+        ctx.addIssue({
+          code: external_exports.ZodIssueCode.custom,
+          path: ["mappings", index, "sessionKey"],
+          message: "persistent hook mappings require sessionKey, hooks.defaultSessionKey, or a transform"
+        });
+      }
+    }
   }).optional(),
   channels: ChannelsSchema,
   discovery: external_exports.strictObject({
     wideArea: external_exports.strictObject({
-      enabled: external_exports.boolean().optional(),
       domain: external_exports.string().optional()
     }).optional(),
     mdns: external_exports.strictObject({
@@ -18687,6 +19970,7 @@ var OpenClawSchemaShape = {
   talk: TalkSchema.optional(),
   gateway: GatewayConfigSchema,
   cloudWorkers: CloudWorkersConfigSchema,
+  desktop: DesktopConfigSchema,
   memory: MemorySchema,
   mcp: McpConfigSchema,
   skills: external_exports.strictObject({
@@ -18694,8 +19978,7 @@ var OpenClawSchemaShape = {
     load: external_exports.strictObject({
       extraDirs: external_exports.array(external_exports.string()).optional(),
       allowSymlinkTargets: external_exports.array(external_exports.string()).optional(),
-      watch: external_exports.boolean().optional(),
-      watchDebounceMs: external_exports.number().int().min(0).optional()
+      watch: external_exports.boolean().optional()
     }).optional(),
     install: external_exports.strictObject({
       preferBrew: external_exports.boolean().optional(),
@@ -18711,7 +19994,7 @@ var OpenClawSchemaShape = {
     }).optional(),
     workshop: external_exports.strictObject({
       autonomous: external_exports.strictObject({
-        enabled: external_exports.boolean().optional()
+        mode: external_exports.union([external_exports.literal("off"), external_exports.literal("propose"), external_exports.literal("auto")]).optional()
       }).optional(),
       approvalPolicy: external_exports.union([external_exports.literal("pending"), external_exports.literal("auto")]).optional(),
       allowSymlinkTargetWrites: external_exports.boolean().optional(),
@@ -18731,10 +20014,8 @@ var OpenClawSchemaShape = {
       memory: external_exports.string().optional(),
       contextEngine: external_exports.string().optional()
     }).optional(),
-    entries: external_exports.record(external_exports.string(), PluginEntrySchema).optional(),
-    bundledDiscovery: external_exports.enum(["compat", "allowlist"]).optional()
+    entries: external_exports.record(external_exports.string(), PluginEntrySchema).optional()
   }).optional(),
-  canvasHost: LegacyCanvasHostSchema,
   surfaces: external_exports.record(
     external_exports.string(),
     external_exports.strictObject({
@@ -18750,12 +20031,35 @@ function installZodDefaultLocale() {
 }
 installZodDefaultLocale();
 var OpenClawSchema = external_exports.strictObject(OpenClawSchemaShape).superRefine((cfg, ctx) => {
-  const agents = cfg.agents?.list ?? [];
+  const agents = listAgentEntries(cfg);
+  const agentIds = new Set(agents.map((agent) => agent.id));
+  const effectiveAgentIds = new Set(agents.map((agent) => normalizeAgentId(agent.id)));
+  if (agents.length === 0) {
+    effectiveAgentIds.add("main");
+  }
+  const explicitTargets = [
+    {
+      path: ["agents", "defaults", "heartbeat", "agentId"],
+      agentId: cfg.agents?.defaults?.heartbeat?.agentId
+    },
+    {
+      path: ["agents", "defaults", "systemAgent", "agentId"],
+      agentId: cfg.agents?.defaults?.systemAgent?.agentId
+    },
+    { path: ["talk", "agentId"], agentId: cfg.talk?.agentId }
+  ];
+  for (const target of explicitTargets) {
+    if (typeof target.agentId === "string" && !effectiveAgentIds.has(normalizeAgentId(target.agentId))) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        path: [...target.path],
+        message: `Unknown agent id "${target.agentId}" (not in agents.entries).`
+      });
+    }
+  }
   if (agents.length === 0) {
     return;
   }
-  const agentIds = new Set(agents.map((agent) => agent.id));
-  const effectiveAgentIds = new Set(agents.map((agent) => normalizeAgentId(agent.id)));
   const bindings = cfg.bindings;
   if (Array.isArray(bindings)) {
     for (let idx = 0; idx < bindings.length; idx += 1) {
@@ -18764,11 +20068,11 @@ var OpenClawSchema = external_exports.strictObject(OpenClawSchemaShape).superRef
         continue;
       }
       const agentId = binding.agentId;
-      if (typeof agentId === "string" && !effectiveAgentIds.has(normalizeAgentId(agentId))) {
+      if (typeof agentId === "string" && agentId !== DEFAULT_AGENT_ID2 && !effectiveAgentIds.has(normalizeAgentId(agentId))) {
         ctx.addIssue({
           code: external_exports.ZodIssueCode.custom,
           path: ["bindings", idx, "agentId"],
-          message: `Unknown agent id "${agentId}" (not in agents.list).`
+          message: `Unknown agent id "${agentId}" (not in agents.entries).`
         });
       }
     }
@@ -18789,7 +20093,7 @@ var OpenClawSchema = external_exports.strictObject(OpenClawSchemaShape).superRef
         ctx.addIssue({
           code: external_exports.ZodIssueCode.custom,
           path: ["broadcast", peerId, idx],
-          message: `Unknown agent id "${agentId}" (not in agents.list).`
+          message: `Unknown agent id "${agentId}" (not in agents.entries).`
         });
       }
     }

@@ -106,13 +106,64 @@ class TestSanitizeAgentEntryForSchema:
         # Input is not mutated (deep-copy semantics).
         assert "archetype" in entry
 
-    def test_all_schema_keys_pass_through(self):
+    def test_all_schema_keys_pass_through(self, monkeypatch):
+        """Pinned to the 7.2 side deliberately: ALLOWED_AGENT_ENTRY_KEYS is the
+        7.2 whitelist, so "everything on the whitelist survives" is only true
+        against a 7.2 image. On 8.1 the effective whitelist is narrower by
+        design -- see TestRemovedAtEightOne. Leaving this unpinned made it
+        depend on whichever tag openclaw-version.json happens to carry, which is
+        exactly how it broke when dev.tag was promoted to 8.1.
+        """
+        from core import openclaw_version
         from core.services.catalog_slice import (
             ALLOWED_AGENT_ENTRY_KEYS,
             sanitize_agent_entry_for_schema,
         )
 
+        monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: False)
         entry = {k: "x" for k in ALLOWED_AGENT_ENTRY_KEYS}
         sanitized, dropped = sanitize_agent_entry_for_schema(entry)
         assert dropped == []
         assert set(sanitized) == ALLOWED_AGENT_ENTRY_KEYS
+
+
+class TestRemovedAtEightOne:
+    """The whitelist is derived from the 7.2 AgentEntrySchema. A slice extracted
+    from a 7.2-era container -- a marketplace republish or a backup import --
+    carries entry keys 2026.8.1 retired, and apply_deploy_aux_mutations gates
+    untrusted slices with enforce_schema=True, so the whole deploy is rejected on
+    an 8.1 container. Narrow the whitelist to what the deployed image accepts.
+    """
+
+    ENTRY = {
+        "id": "agent_x",
+        "name": "X",
+        "skills": ["search"],
+        "models": {"openai/gpt-5.5": {}},
+        "runRetries": {"max": 8},
+        "memorySearch": {"enabled": True},
+        "contextTokens": 200_000,
+    }
+
+    def test_81_drops_only_the_three_retired_keys(self, monkeypatch):
+        from core import openclaw_version
+        from core.services import catalog_slice
+
+        monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: True)
+        sanitized, dropped = catalog_slice.sanitize_agent_entry_for_schema(dict(self.ENTRY))
+        assert set(dropped) == {"runRetries", "memorySearch", "contextTokens"}
+        # `models` is still valid on an entry at 8.1 (AgentModelRuntimeEntrySchema)
+        # -- verified against the vendored schema, not assumed. Dropping it would
+        # silently strip a seller's per-model overrides from every deploy.
+        assert sanitized["models"] == {"openai/gpt-5.5": {}}
+        assert sanitized["skills"] == ["search"]
+
+    def test_72_keeps_them(self, monkeypatch):
+        from core import openclaw_version
+        from core.services import catalog_slice
+
+        monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: False)
+        sanitized, dropped = catalog_slice.sanitize_agent_entry_for_schema(dict(self.ENTRY))
+        assert dropped == []
+        for key in ("runRetries", "memorySearch", "contextTokens", "models"):
+            assert key in sanitized, key

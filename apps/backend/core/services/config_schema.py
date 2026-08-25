@@ -37,6 +37,7 @@ it would be a worse outage than the one this guards against.
 import json
 import logging
 from functools import lru_cache
+import re
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,9 @@ _SCHEMA_PATH = Path(__file__).with_name("openclaw_config.schema.json")
 # Enough detail to diagnose from a log line without dumping a 300-error wall for
 # a config that is wrong in one structural way.
 _MAX_REPORTED_ERRORS = 5
+# Prune passes for `prune_schema_rejected`. Each pass removes >=1 key and a pass
+# that removes nothing exits, so this is a runaway backstop, not a tuning knob.
+_MAX_PRUNE_PASSES = 10
 
 
 class ConfigSchemaError(Exception):
@@ -79,6 +83,49 @@ def _validator() -> Any | None:
         return None
 
 
+# Mirrors OpenClaw's ``migratePersistedImplicitMainRoster`` (src/config/legacy.roster.ts),
+# which runs at validation-core.ts:423 BEFORE ``OpenClawSchema.safeParse``. Without
+# it this gate is stricter than OpenClaw itself: 2026.8.1's ``AgentsSchema`` is a
+# strict object accepting only {ownership, defaults, entries}, so a legacy
+# ``agents.list`` document fails ``agents: additionalProperties`` here even though
+# OpenClaw loads it fine after converting the list. Every container still carries
+# the list shape on EFS until boot ``doctor --fix`` rewrites it, so gating the RAW
+# document would block us from patching precisely those configs.
+#
+# Conservative on purpose: when any id is unusable we leave the document alone and
+# let it be validated as-is, which is exactly what the upstream migration does (it
+# returns the config unchanged rather than guessing).
+_AGENT_ID_RE = re.compile(r"^[a-z0-9_][a-z0-9_-]{0,63}$")
+
+
+def _normalized_for_validation(config: dict) -> dict:
+    agents = config.get("agents")
+    if not isinstance(agents, dict) or "entries" in agents:
+        return config
+    roster = agents.get("list")
+    if not isinstance(roster, list) or not roster:
+        return config
+    entries: dict[str, dict] = {}
+    for item in roster:
+        if not isinstance(item, dict):
+            return config
+        agent_id = item.get("id")
+        # normalizeAgentId is trim + lowercase + charset sanitise; the upstream
+        # migration bails unless the id is ALREADY its own normal form.
+        if (
+            not isinstance(agent_id, str)
+            or agent_id != agent_id.strip()
+            or agent_id != agent_id.lower()
+            or not _AGENT_ID_RE.match(agent_id)
+            or agent_id in entries
+        ):
+            return config
+        entries[agent_id] = {k: v for k, v in item.items() if k != "id"}
+    migrated_agents = {k: v for k, v in agents.items() if k != "list"}
+    migrated_agents["entries"] = entries
+    return {**config, "agents": migrated_agents}
+
+
 def schema_errors(config: dict) -> list[str] | None:
     """Validate ``config``. Returns None when the schema is unavailable,
     otherwise a (possibly empty) list of violations as ``path: rule``.
@@ -96,10 +143,89 @@ def schema_errors(config: dict) -> list[str] | None:
     validator = _validator()
     if validator is None:
         return None
+    config = _normalized_for_validation(config)
     return [
         f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.validator}"
         for err in islice(validator.iter_errors(config), _MAX_REPORTED_ERRORS)
     ]
+
+
+def prune_schema_rejected(base: dict, patch: dict) -> dict:
+    """Drop from ``patch`` every key the deployed schema rejects once ``patch``
+    is deep-merged onto ``base``. Returns a new patch; ``patch`` is untouched.
+
+    Exists for the config REGEN on an image roll. The regen renders a fresh,
+    version-correct config, then restores the runtime-appended state the
+    generator does not know about (``_runtime_only_delta``). That restore
+    preserves any key the regen did not emit — which is right for genuinely
+    runtime-only state (``identity``, ``bindings``) and WRONG across an
+    upstream bump, where "the regen no longer emits it" also describes every
+    key the new schema DELETED. Going 7.2 -> 8.1 the restore put back root
+    ``audit``/``web`` and, through the co-owned recursion,
+    ``skills.workshop.autonomous.enabled`` — resurrecting exactly the keys the
+    regen existed to remove, and crash-looping the container the roll was
+    meant to fix.
+
+    Schema-driven rather than a removal list: the 7.2 -> 8.1 delta alone is
+    170 removed subtree roots, 169 of them fatal, plus an open-map->strict
+    flip (``env.*``) and a type narrowing (``diagnostics.otel.captureContent``)
+    that no key-name blacklist can express. The schema already encodes all of
+    it, and is re-vendored on every bump.
+
+    Never logs or returns instance data — same reasoning as ``schema_errors``:
+    openclaw.json carries live secrets.
+    """
+    validator = _validator()
+    if validator is None or not patch:
+        return patch
+
+    pruned = json.loads(json.dumps(patch))  # deep copy; config is JSON by construction
+
+    # Bounded: each pass removes >=1 key, and a pass that removes nothing exits.
+    for _ in range(_MAX_PRUNE_PASSES):
+        merged = _deep_merge(base, pruned)
+        removed = False
+        for err in validator.iter_errors(_normalized_for_validation(merged)):
+            if err.validator != "additionalProperties" or not isinstance(err.instance, dict):
+                continue
+            allowed = set((err.schema or {}).get("properties") or {})
+            target = pruned
+            for step in err.absolute_path:
+                if not isinstance(target, dict) or step not in target:
+                    target = None
+                    break
+                target = target[step]
+            if not isinstance(target, dict):
+                continue
+            for key in [k for k in target if k not in allowed]:
+                del target[key]
+                removed = True
+        if not removed:
+            break
+
+    return _strip_empty(pruned)
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    out = dict(base)
+    for key, value in patch.items():
+        current = out.get(key)
+        out[key] = _deep_merge(current, value) if isinstance(value, dict) and isinstance(current, dict) else value
+    return out
+
+
+def _strip_empty(node: dict) -> dict:
+    """Drop dict branches left empty by pruning, so the restore patch does not
+    write bare ``{}`` sections the generator deliberately omitted."""
+    out = {}
+    for key, value in node.items():
+        if isinstance(value, dict):
+            nested = _strip_empty(value)
+            if nested:
+                out[key] = nested
+        else:
+            out[key] = value
+    return out
 
 
 def gate_config(config: dict, *, owner_id: str, context: str, enforce: bool = False) -> None:

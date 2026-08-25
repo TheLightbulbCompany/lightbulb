@@ -44,14 +44,28 @@ cat > "$TMP_ENTRY" <<EOF
 export { ${ENTRY_EXPORT} as ConfigSchema } from "./src/config/zod-schema.ts";
 export { z } from "zod";
 EOF
+# The banner is load-bearing: the 8.1 schema transitively pulls CJS deps
+# (hosted-git-info -> lru-cache) that call require() at module scope. Bundled as
+# ESM without a require shim they throw "Dynamic require of node:X is not
+# supported" at import time, which crashes gen_json_schema.mjs AFTER the shell
+# has already truncated $JSON_OUT -- leaving a 0-byte schema that
+# config_schema.py treats as "unavailable", silently disabling the write gate.
 ( cd "$FORK" && npx --yes esbuild "$TMP_ENTRY" --bundle --format=esm --platform=node \
+    --banner:js="import{createRequire as __vendorCreateRequire}from'node:module';const require=__vendorCreateRequire(import.meta.url);" \
     --outfile="$OLDPWD/$OUT/openclaw-config-schema.mjs" )
 rm -f "$TMP_ENTRY"
 
 # 3. Derive the JSON Schema the Python backend validates against at write time.
 #    Must stay in lockstep with the bundle — tests/chaos/test_schema_staleness.py
 #    regenerates and diffs, so a re-vendor without this step fails CI.
-node "$OUT/gen_json_schema.mjs" > "$JSON_OUT"
+JSON_TMP="$(mktemp)"
+node "$OUT/gen_json_schema.mjs" > "$JSON_TMP"
+if [ ! -s "$JSON_TMP" ] || ! node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$JSON_TMP"; then
+  rm -f "$JSON_TMP"
+  echo "ERROR: generated JSON Schema is empty or invalid; leaving $JSON_OUT unchanged" >&2
+  exit 1
+fi
+mv "$JSON_TMP" "$JSON_OUT"
 
 # 4. Record the tag this bundle was vendored from (staleness guard reads it).
 printf '%s\n' "$PINNED_TAG" > "$OUT/PINNED_TAG"

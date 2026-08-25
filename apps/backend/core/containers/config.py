@@ -534,6 +534,10 @@ def build_provider_block(
     Returns:
         ``(providers_config, default_model, plugin_entries)``.
     """
+    # Same shape gate as build_openclaw_config_dict: 2026.8.1 moved the
+    # effective-context bound from agents.defaults onto the per-model entries,
+    # so which side carries it depends on the image this environment runs.
+    _emit_81_shape = openclaw_version.deployed_upstream_at_least("2026.8.1")
     if provider_choice == "chatgpt_oauth":
         # ChatGPT OAuth resolves through OpenClaw's bundled `openai` provider
         # plugin, whose model catalog (gpt-5.5 / gpt-5.4-mini / …) is baked
@@ -643,6 +647,13 @@ def build_provider_block(
                     "input": ["text", "image"],
                     "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
                     "contextWindow": 1_000_000,
+                    # EFFECTIVE context budget. 2026.8.1 removed
+                    # agents.defaults.contextTokens; the per-model key is where the
+                    # bound lives now. Load-bearing for COST, not just fit: pruning
+                    # ratios and compaction measure against this, and only the
+                    # Bedrock catalog declares a 1M window (one full call is up to
+                    # ~$6.74 of input).
+                    **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if _emit_81_shape else {}),
                     "maxTokens": 8192,
                 }
             )
@@ -654,6 +665,7 @@ def build_provider_block(
                 "input": ["text", "image"],
                 "cost": {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6},
                 "contextWindow": 1_000_000,
+                **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if _emit_81_shape else {}),
                 "maxTokens": 8192,
             }
         )
@@ -670,6 +682,11 @@ def build_provider_block(
                     "input": ["text", "image"],
                     "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
                     "contextWindow": 200_000,
+                    # Equal to this model's window, so a no-op today -- set
+                    # explicitly anyway so the effective budget does not depend on
+                    # how upstream resolves contextWindow vs contextTokens, and so
+                    # every Bedrock entry carries the bound uniformly.
+                    **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if _emit_81_shape else {}),
                     "maxTokens": 8192,
                 }
             )
@@ -1233,6 +1250,29 @@ def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
     return acp_block, acpx_plugin_entry
 
 
+# Per-platform node-command allowlist shared by both roster shapes. 2026.8.1
+# renamed gateway.nodes.allowCommands to gateway.nodes.commands.allow; the list
+# itself is identical, so only the key moves.
+_NODE_ALLOW_COMMANDS = [
+    "system.run",
+    "system.run.prepare",
+    "system.which",
+    "system.notify",
+    "system.execApprovals.get",
+    "system.execApprovals.set",
+    "browser.proxy",
+    "device.info",
+    "device.status",
+    "device.health",
+    "device.permissions",
+    "file.fetch",
+    "file.write",
+    "dir.list",
+    "dir.fetch",
+    "screen.snapshot",
+]
+
+
 def build_openclaw_config_dict(
     *,
     user_id: str,
@@ -1286,6 +1326,9 @@ def build_openclaw_config_dict(
     # channel bot) burns credits with nobody watching.
     is_bedrock_trial = provider_choice == BEDROCK_TRIAL_CHOICE
 
+    # See the per-key comments below: this selects the config SHAPE for the image
+    # this environment is actually running, not the one we are building toward.
+    _emit_81_shape = openclaw_version.deployed_upstream_at_least("2026.8.1")
     providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,
         user_id=user_id,
@@ -1323,6 +1366,15 @@ def build_openclaw_config_dict(
         # Use the real upstream version so warnIfConfigFromFuture
         # (io.ts) parses it as semver and short-circuits cleanly.
         "meta": {"lastTouchedVersion": DEPLOYED_UPSTREAM_VERSION},
+        # 2026.8.1 made the root schema strict and retired a dozen keys we set.
+        # Emit the shape THIS environment's deployed image actually accepts:
+        # writing the 8.1 shape to a 7.2 container silently drops settings it
+        # still honours (the audit ledger comes back on, the hooks body cap
+        # falls back to 64KB, runRetries back to 160), and writing the 7.2 shape
+        # to an 8.1 container fails its strict parse at boot. The gate flips per
+        # environment as each tag is promoted -- same contract as the
+        # mcp.runtimeScope gate below.
+        **({} if _emit_81_shape else {"audit": {"enabled": False}}),
         # The audit ledger writes one IMMEDIATE SQLite transaction per agent/tool
         # event from a dedicated worker thread into the shared state DB. On EFS
         # (rollback journal, NFS lock latency) that worker is the dominant lock
@@ -1330,7 +1382,6 @@ def build_openclaw_config_dict(
         # gateway event loop. Nothing in Isol8 consumes the ledger (no audit.*
         # RPC callers); tool/run history is covered by transcripts, CloudWatch,
         # and Paperclip run records.
-        "audit": {"enabled": False},
         "gateway": {
             "mode": "local",
             "bind": "lan",
@@ -1374,39 +1425,37 @@ def build_openclaw_config_dict(
                 # file-transfer plugin's node-host TS code. The Rust impl
                 # enforces a user-managed allowlist client-side
                 # (file_access.rs); this list is just the Stage 2 gate.
-                "allowCommands": [
-                    "system.run",
-                    "system.run.prepare",
-                    "system.which",
-                    "system.notify",
-                    "system.execApprovals.get",
-                    "system.execApprovals.set",
-                    "browser.proxy",
-                    "device.info",
-                    "device.status",
-                    "device.health",
-                    "device.permissions",
-                    "file.fetch",
-                    "file.write",
-                    "dir.list",
-                    "dir.fetch",
-                    "screen.snapshot",
-                ],
+                **(
+                    {"commands": {"allow": _NODE_ALLOW_COMMANDS}}
+                    if _emit_81_shape
+                    else {"allowCommands": _NODE_ALLOW_COMMANDS}
+                ),
             },
         },
         "models": {
             "providers": providers_config,
+            **({} if _emit_81_shape else {"pricing": {"enabled": False}}),
             # Upstream defaults pricing.enabled=true: a background OpenRouter
             # + LiteLLM pricing-catalog fetch after every gateway boot. Our
             # catalogs are static with explicit cost blocks (Bedrock) or
             # flat-rate (OAuth/BYO), and billing truth lives in the
             # bedrock-gate/meter — the fetch is pure waste and an egress
             # surface. Configured cost values keep working with it off.
-            "pricing": {"enabled": False},
         },
         "agents": {
             "defaults": {
                 "model": default_model,
+                # All three left agents.defaults at 2026.8.1: runRetries has no
+                # replacement, memorySearch moved to root memory.search, and
+                # contextTokens moved onto the per-model Bedrock entries. A 7.2
+                # container still honours them and loses real bounds without.
+                **({} if _emit_81_shape else {"runRetries": {"max": AGENT_RUN_RETRIES_MAX}}),
+                **({} if _emit_81_shape else {"memorySearch": memory_search_entry(provider_choice, byo_provider)}),
+                **(
+                    {}
+                    if _emit_81_shape or provider_choice not in BEDROCK_PROVIDER_CHOICES
+                    else {"contextTokens": BEDROCK_CONTEXT_TOKENS}
+                ),
                 # Isol8 pre-seeds every agent workspace (IDENTITY/SOUL/USER via
                 # friday_identity) — skip OpenClaw's first-run bootstrap so an
                 # under-seeded workspace (Atlas-recruited agent, partial
@@ -1424,16 +1473,6 @@ def build_openclaw_config_dict(
                 "timeoutSeconds": AGENT_RUN_TIMEOUT_SECONDS,
                 # Each retry RE-ARMS the deadline above, so the upstream default
                 # of 160 would make timeoutSeconds meaningless.
-                "runRetries": {"max": AGENT_RUN_RETRIES_MAX},
-                # contextTokens is a first-class agents.defaults key (NOT inside
-                # `params`). It sets the EFFECTIVE context budget: both
-                # contextPruning's trigger ratios and compaction measure against
-                # it rather than the model's advertised window. Only the Bedrock
-                # catalog above declares a 1M window (one call ≈ up to $6.74 of
-                # input), so only the Bedrock modes bound it; other providers
-                # omit the key and inherit OpenClaw's per-model default (the
-                # ChatGPT/Codex path serves ~272k and must keep its own).
-                **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if provider_choice in BEDROCK_PROVIDER_CHOICES else {}),
                 # Global default provider params applied to all models before
                 # per-model/per-agent overrides (openclaw
                 # zod-schema.agent-defaults.ts is a free-form record). The
@@ -1577,7 +1616,6 @@ def build_openclaw_config_dict(
                 # backend is resolved per provider path — semantic where the
                 # owner's own credential pays, keyword-only (FTS) otherwise so
                 # Isol8 never pays for embeddings. See memory_search_entry().
-                "memorySearch": memory_search_entry(provider_choice, byo_provider),
                 # Do NOT add `agents.defaults.llm.idleTimeoutSeconds` here:
                 # OpenClaw v2026.5.7's AgentDefaultsSchema is strict() and
                 # rejects the unknown key, so the gateway exits with
@@ -1657,8 +1695,14 @@ def build_openclaw_config_dict(
         # memory work should use a non-EFS-backed plugin (memory-lancedb
         # with a non-EFS data dir, or Aurora pgvector).
         "memory": {
-            "backend": "builtin",
             "citations": "auto",
+            # 2026.8.1 retired the qmd backend and moved memorySearch here from
+            # agents.defaults; 7.2 wants the mirror image of both.
+            **(
+                {"search": memory_search_entry(provider_choice, byo_provider)}
+                if _emit_81_shape
+                else {"backend": "builtin"}
+            ),
         },
         "tools": {
             "profile": "full",
@@ -1785,7 +1829,7 @@ def build_openclaw_config_dict(
         # key: `cron.enabled` is a boolean on the pinned CronSchema. Paid
         # providers keep the service on, governed by tools.deny as before.
         "cron": {
-            "store": "/home/node/.openclaw/cron/jobs.json",
+            **({} if _emit_81_shape else {"store": "/home/node/.openclaw/cron/jobs.json"}),
             **({"enabled": False} if is_bedrock_trial else {}),
         },
         # Transcript/log redaction. Upstream already runs this — mode defaults
@@ -1820,7 +1864,11 @@ def build_openclaw_config_dict(
             # an extra model review over the turn, which a $3-cap trial
             # budget must not fund. Schema-verified key on the pinned 7.1
             # fork: skills.workshop.autonomous.enabled (zod-schema.ts).
-            **({} if is_bedrock_trial else {"workshop": {"autonomous": {"enabled": True}}}),
+            **(
+                {}
+                if is_bedrock_trial
+                else {"workshop": {"autonomous": ({"mode": "propose"} if _emit_81_shape else {"enabled": True})}}
+            ),
         },
         "hooks": {
             "internal": {
@@ -1848,7 +1896,9 @@ def build_openclaw_config_dict(
             # invoice payloads; GitHub PR webhooks can exceed 500 KB on
             # large diffs. 1 MB matches the documented upper bound for
             # both providers.
-            "maxBodyBytes": 1_048_576,
+            # Retired at 2026.8.1 (cap is built in at 256KB there); 7.2 still
+            # honours it and its default of 64KB is too small for real webhooks.
+            **({} if _emit_81_shape else {"maxBodyBytes": 1_048_576}),
             # OpenClaw v2026.5.7 (gateway/hooks.ts) requires
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
@@ -1964,9 +2014,7 @@ def build_openclaw_config_dict(
             # knowledge: a session resets only after 24h of silence.
             "reset": {"mode": "idle", "idleMinutes": 1440},
         },
-        "web": {
-            "enabled": True,
-        },
+        **({} if _emit_81_shape else {"web": {"enabled": True}}),
         "browser": {
             # Two profiles always defined; the `user` profile is
             # statically declared but only routable when a desktop node
@@ -1984,7 +2032,19 @@ def build_openclaw_config_dict(
             # Upstream tab defaults (8 tabs / 120m idle) are desktop-sized;
             # on a 1 vCPU / 4 GB Fargate task live Chromium tabs are still
             # a resource constraint, so close idle ones aggressively.
-            "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
+            # 2026.8.1 reduced tabCleanup to {enabled} and dropped both launch
+            # timeouts from the schema. On 7.2 we still want the raised values:
+            # 20s launch for a 1 vCPU box, 30s CDP-ready because the profile
+            # lives on EFS (upstream's own Linux doc says raise it on slow storage).
+            **(
+                {"tabCleanup": {"enabled": True}}
+                if _emit_81_shape
+                else {
+                    "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
+                    "localLaunchTimeoutMs": 20_000,
+                    "localCdpReadyTimeoutMs": 30_000,
+                }
+            ),
             # Cookies + per-origin localStorage snapshotted to ONE JSON on EFS
             # (60s timer + graceful shutdown) and restored on launch, so a
             # logged-in session survives the image rolls that replace /tmp.
@@ -2153,12 +2213,11 @@ def build_openclaw_config_dict(
             # browser/constants.ts) so the launcher's own error always wins the
             # race and stays visible. 20s = default plus headroom for a
             # 1 vCPU box. Schema caps both at 120_000.
-            "localLaunchTimeoutMs": 20_000,
-            "localCdpReadyTimeoutMs": 30_000,
             "profiles": {
                 "openclaw": {
                     "driver": "openclaw",
-                    "color": "#FF4500",
+                    # Dropped from the strict profile object at 2026.8.1.
+                    **({} if _emit_81_shape else {"color": "#FF4500"}),
                     # Required since OpenClaw v2026.5.7-0d10b38 — upstream
                     # zod-schema.ts now refines any non-`existing-session`
                     # profile to require cdpPort or cdpUrl, with the message
@@ -2175,13 +2234,13 @@ def build_openclaw_config_dict(
                 },
                 "user": {
                     "driver": "existing-session",
+                    **({} if _emit_81_shape else {"color": "#0066FF"}),
                     # Required since OpenClaw bumped its config schema —
                     # `browser.profiles.*.color` is now a required string.
                     # Surfaces in the OpenClaw UI as the profile chip.
                     # No cdpPort/cdpUrl needed — `existing-session` is
                     # the one driver upstream's schema exempts from the
                     # require-cdp check (zod-schema.ts).
-                    "color": "#0066FF",
                 },
             },
         },

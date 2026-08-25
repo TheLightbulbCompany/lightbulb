@@ -18469,6 +18469,11 @@ var OpenClawSchemaShape = {
       idleMinutes: external_exports.number().int().nonnegative().optional(),
       maxTabsPerSession: external_exports.number().int().nonnegative().optional(),
       sweepMinutes: external_exports.number().int().positive().optional()
+    }).optional(),
+    sessionState: external_exports.strictObject({
+      enabled: external_exports.boolean().optional(),
+      intervalSeconds: external_exports.number().int().positive().max(86400).optional(),
+      path: external_exports.string().optional()
     }).optional()
   }).optional(),
   ui: external_exports.strictObject({

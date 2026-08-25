@@ -79,3 +79,23 @@ def test_json_schema_artifact_matches_vendored_zod_schema():
         "> apps/backend/core/services/openclaw_config.schema.json\n"
         "(scripts/vendor_openclaw_schema.sh does this for you.)"
     )
+
+
+def test_vendored_schema_tag_matches_the_pinned_fork_base():
+    """The bundle must be vendored from the fork tag the fleet is pinned to.
+
+    Nothing else ties them together: the bundle sat at isol8.4 while the pin
+    moved to isol8.8 and nobody noticed until the first fork-only config key
+    emitted since (`browser.sessionState`) failed the invariant. The vendored
+    schema also feeds the backend's write-time gate, so drift is not just a
+    test problem. Bump the pin ⇒ re-run scripts/vendor_openclaw_schema.sh in
+    the same PR.
+    """
+    import json
+
+    pinned = (_SCHEMA_DIR / "PINNED_TAG").read_text().strip()
+    upstream = json.loads((_BACKEND_ROOT.parents[1] / "openclaw-version.json").read_text())["upstream"]
+    assert pinned == upstream, (
+        f"vendored schema is from {pinned} but openclaw-version.json#upstream is {upstream} — "
+        "re-run scripts/vendor_openclaw_schema.sh"
+    )

@@ -1246,6 +1246,7 @@ def build_openclaw_config_dict(
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool = False,
+    deployed_tag: str | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1984,6 +1985,32 @@ def build_openclaw_config_dict(
             # on a 1 vCPU / 4 GB Fargate task live Chromium tabs are still
             # a resource constraint, so close idle ones aggressively.
             "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
+            # Cookies + per-origin localStorage snapshotted to ONE JSON on EFS
+            # (60s timer + graceful shutdown) and restored on launch, so a
+            # logged-in session survives the image rolls that replace /tmp.
+            # The profile dir itself stays on /tmp on purpose — Chrome's
+            # LevelDB/SQLite fsync+lock traffic over NFS stalled the event
+            # loop when it lived on EFS (container-stack.ts Step B); one
+            # atomic JSON write has none of that. `~` is the container's
+            # $HOME, so the file lands under the EFS access point.
+            #
+            # The key exists only from fork patch 2026.7.2-isol8.7 (carried
+            # forward onto newer bases) and `browser` is a strictObject, so
+            # it is emitted only for an image that carries it: the owner's
+            # RUNNING image on a regen (live containers lag the pin), this
+            # environment's pin on a fresh provision, and nothing at all when
+            # the image can't be read.
+            **(
+                {
+                    "sessionState": {
+                        "enabled": True,
+                        "intervalSeconds": 60,
+                        "path": "~/.openclaw/browser-state/state.json",
+                    }
+                }
+                if openclaw_version.deployed_fork_at_least("2026.7.2", 7, tag=deployed_tag)
+                else {}
+            ),
             # Required because the gateway runs as root inside the
             # per-user ECS container (for oom-score-adj and EFS perms),
             # and Chromium refuses to start as root with the security
@@ -2292,6 +2319,7 @@ async def write_openclaw_config(
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool = True,
+    deployed_tag: str | None = None,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -2343,6 +2371,7 @@ async def write_openclaw_config(
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,
         acp_enabled=acp_enabled,
+        deployed_tag=deployed_tag,
     )
 
     # Full-file write — this path does NOT go through config_patcher._locked_rmw,

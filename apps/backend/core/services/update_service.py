@@ -300,9 +300,14 @@ def _co_owned_delta(existing: dict, fresh: dict) -> dict:
     return delta
 
 
-async def reapply_owner_config(owner_id: str) -> dict:
+async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None) -> dict:
     """Regenerate an owner's ``openclaw.json`` on EFS from the current config
     generator, preserving runtime-appended state.
+
+    ``deployed_tag`` is the tag of the image that will READ the regenerated
+    config, for fork-level-gated keys. An image roll passes the image it is
+    rolling TO; the admin Regenerate button and the ops script leave it
+    ``None`` so the owner's registered task definition is used.
 
     Existing containers keep their PROVISION-TIME config on EFS; a backend
     deploy that changes the generator does not touch it. This pushes the
@@ -364,6 +369,7 @@ async def reapply_owner_config(owner_id: str) -> dict:
         hook_token=hook_token,
         owner_type=owner_type,
         aip_arns=aip_arns,
+        deployed_tag=deployed_tag,
     )
 
     fresh = await container_config.read_openclaw_config_from_efs(owner_id)

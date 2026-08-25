@@ -433,3 +433,44 @@ class TestSessionBounds:
 
     def test_dm_scope_preserved(self):
         assert _cfg()["session"]["dmScope"] == "per-account-channel-peer"
+
+
+class TestBrowserSessionState:
+    """`browser.sessionState` persists cookies + localStorage across image rolls.
+
+    The key only exists from fork patch isol8.7 and `browser` is a strictObject
+    in every tag, so it must be written only against an image that carries it.
+    The gate takes the owner's RUNNING image (regen of a live container), the
+    environment pin when there is no container yet, and stays closed when the
+    image is unknown.
+    """
+
+    EXPECTED = {"enabled": True, "intervalSeconds": 60, "path": "~/.openclaw/browser-state/state.json"}
+
+    def test_present_for_an_image_that_carries_the_key(self):
+        assert _cfg(deployed_tag="2026.7.2-isol8.8-8f700f0")["browser"]["sessionState"] == self.EXPECTED
+
+    def test_absent_for_a_live_container_still_on_an_older_fork_level(self, monkeypatch):
+        # Prod pin already on isol8.8 — a regen of an isol8.6 box must not
+        # inherit the pin's keys (strict schema ⇒ crash-loop at boot).
+        monkeypatch.setenv("ENVIRONMENT", "prod")
+        monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.8-8f700f0")
+        assert "sessionState" not in _cfg(deployed_tag="2026.7.2-isol8.6-303527a")["browser"]
+
+    def test_absent_when_the_running_image_is_unknown(self):
+        assert "sessionState" not in _cfg(deployed_tag="")["browser"]
+
+    def test_fresh_provision_follows_the_environment_pin(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "prod")
+        monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.8-8f700f0")
+        assert _cfg()["browser"]["sessionState"] == self.EXPECTED
+        monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.6-303527a")
+        assert "sessionState" not in _cfg()["browser"]
+
+    def test_present_for_every_provider_choice_on_a_current_image(self):
+        for choice in ("bedrock_claude", "chatgpt_oauth", "byo_key"):
+            kwargs = {"byo_provider": "anthropic"} if choice == "byo_key" else {}
+            assert (
+                _cfg(choice, deployed_tag="2026.7.2-isol8.8-8f700f0", **kwargs)["browser"]["sessionState"]
+                == self.EXPECTED
+            )

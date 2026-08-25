@@ -530,6 +530,39 @@ class EcsManager:
             return None
         return str(cpu), str(memory)
 
+    async def _deployed_image_tag(self, owner_id: str) -> str | None:
+        """Tag of the image the owner's container is registered to run.
+
+        Feeds ``openclaw_version.deployed_isol8_patch_at_least`` so config keys
+        that exist only from a given fork patch level are written against the
+        image that will actually read them. Returns ``None`` when the owner has
+        no task definition yet (fresh provision — the env pin is what the new
+        task runs), and ``""`` when a task-def exists but its image can't be
+        read (unknown ⇒ the gate stays closed rather than risking a key the
+        running image's strict schema rejects at boot).
+        """
+        try:
+            container = await container_repo.get_by_owner_id(owner_id)
+            if not container or not container.get("task_definition_arn"):
+                return None
+            resp = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=container["task_definition_arn"],
+            )
+            defs = (resp.get("taskDefinition") or {}).get("containerDefinitions") or []
+            image = str((defs[0] if defs else {}).get("image") or "")
+        except Exception:
+            # A lookup failure must never fail the config write itself; it
+            # only withholds the fork-gated keys until the next write.
+            logger.warning("Could not read deployed image for owner %s; fork-gated config keys omitted", owner_id)
+            return ""
+        # ``<registry>/<repo>:<tag>``; a digest-pinned image (``@sha256:…``)
+        # carries no tag at all — unknown, so the gate stays closed.
+        if "@" in image:
+            return ""
+        _, sep, tag = image.rpartition(":")
+        return tag if sep and "/" not in tag else ""
+
     def _build_register_kwargs_from_base(
         self,
         access_point_id: str,
@@ -3853,6 +3886,9 @@ class EcsManager:
         # start at all (see Workspace.ensure_xdg_dirs).
         get_workspace().ensure_xdg_dirs(owner_id)
 
+        # The image this config will run on, for fork-level-gated keys.
+        deployed_tag = await self._deployed_image_tag(owner_id)
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -3866,6 +3902,7 @@ class EcsManager:
             integration_mcp_servers=integration_mcp_servers,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
+            deployed_tag=deployed_tag,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're

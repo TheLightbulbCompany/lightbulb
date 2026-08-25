@@ -5,9 +5,11 @@ plain tar of ``~/.openclaw``, or a bare agent workspace) into the owner's roster
        → presigned S3 PUT for imports/{owner}/{uuid}.tar.gz (browser uploads
          straight to the artifacts bucket; API Gateway caps bodies at 10 MB).
   POST /api/v1/marketplace/import {key}
-       → stream the object through the two-pass extractor into EFS
-         workspace-{import_id}/ (core/services/openclaw_backup_import.py),
-         dry-run staging export, delete the raw object → ImportPreviewResponse.
+       → names-only detection pass; a Claude Code context (~/.claude) streams
+         through the allowlist normalizer (core/services/claude_code_import.py),
+         anything else through the two-pass extractor + dry-run staging export
+         (core/services/openclaw_backup_import.py), both into EFS
+         workspace-{import_id}/; delete the raw object → ImportPreviewResponse.
   POST /api/v1/marketplace/import/{import_id}/confirm ImportConfirmRequest
        → Ultra gate (same predicate as the company-deploy branch) → for each
          selected agent: restage → staging export → register_staged_agent_under_claim
@@ -28,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import tarfile
 import time
 import uuid
 from pathlib import Path
@@ -44,6 +47,7 @@ from core.dynamodb import run_in_thread
 from core.openclaw_version import deployed_upstream_version
 from core.repositories import billing_repo, container_repo
 from core.services import agent_export
+from core.services import claude_code_import
 from core.services import openclaw_backup_import as backup_import
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.openclaw_backup_history import stage_history
@@ -158,20 +162,43 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     staging_dir = _staging_dir(owner_id, import_id)
 
-    # extract_archive calls open_stream() TWICE (two independent GETs) — pin
-    # both to the object head_object saw so a re-upload landing between pass
-    # 1 and pass 2 fails loud (412) instead of silently splicing two
-    # different archives together.
+    # Every pass over the upload is its own GET (r|gz streams can't seek) —
+    # the names-only detection pass, then the claude normalizer's single pass
+    # or the backup extractor's two. All are pinned to the ETag head_object
+    # saw so a re-upload landing between passes fails loud (412) instead of
+    # silently splicing two different archives together.
     def _get():
         kwargs = {"IfMatch": etag} if etag else {}
         return s3.get_object(Bucket=bucket, Key=key, **kwargs)["Body"]
 
+    def _delete_raw():
+        try:
+            s3.delete_object(Bucket=bucket, Key=key)
+        except ClientError:
+            logger.warning("import %s: could not delete raw upload %s (lifecycle will)", import_id, key)
+
+    names: list[str] = []
+    try:
+        with tarfile.open(fileobj=_get(), mode="r|gz") as tf:
+            for member in tf:
+                names.append(member.name)
+                if len(names) >= backup_import.MAX_MEMBERS:
+                    break  # whichever extractor runs raises on its own member cap
+    except tarfile.TarError as exc:
+        raise backup_import.BackupImportError("not a valid .tar.gz archive") from exc
+
+    if claude_code_import.detect_claude_root(names) is not None:
+        try:
+            normalized = claude_code_import.extract_claude_archive(_get, staging_dir)
+        except claude_code_import.ClaudeImportError:
+            _delete_raw()
+            raise
+        _delete_raw()
+        return normalized
+
     normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
     package = _export(owner_id, import_id, normalized)
-    try:
-        s3.delete_object(Bucket=bucket, Key=key)
-    except ClientError:
-        logger.warning("import %s: could not delete raw upload %s (lifecycle will)", import_id, key)
+    _delete_raw()
     return normalized, report, package
 
 
@@ -196,11 +223,11 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     import_id = f"import-{uuid.uuid4().hex[:12]}"
     staging_dir = _staging_dir(owner_id, import_id)
     try:
-        normalized, report, package = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
+        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
     except agent_export.ExportTooLargeError as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except _USER_ERRORS as exc:
+    except (*_USER_ERRORS, claude_code_import.ClaudeImportError) as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ClientError as exc:
@@ -212,6 +239,26 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
+    if isinstance(staged, claude_code_import.ClaudeNormalized):
+        return {
+            "import_id": import_id,
+            "kind": "claude",
+            "agent_id": "",
+            "name": "Claude Code context",
+            "claude": {
+                "collections": [{"id": c.id, "label": c.label, "file_count": c.file_count} for c in staged.collections],
+                "has_user_memory": staged.has_user_memory,
+                "skills": staged.skills,
+                "skipped": staged.skipped,
+                # snippet deliberately dropped — never echo a flagged source
+                # line back to the client.
+                "safety_flags": [
+                    {"pattern": f.pattern, "severity": f.severity, "file": f.file, "line": f.line}
+                    for f in staged.safety_flags
+                ],
+            },
+        }
+    normalized, report, package = staged
     if report.skipped_links:
         normalized.warnings.append(
             f"{report.skipped_links} linked archive member(s) (symbolic or hard links) were skipped — links "

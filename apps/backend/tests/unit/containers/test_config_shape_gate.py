@@ -67,6 +67,47 @@ def test_81_shape_drops_every_retired_key(monkeypatch):
     assert "contextTokens" not in defaults
 
 
+# Keys 2026.8.1 retired inside the `acp` block. Sourced from upstream's own
+# src/config/dead-config-keys.test.ts, not guessed.
+_DEAD_ACP = ("coalesceIdleMs", "maxChunkChars", "maxOutputChars", "ttlMinutes", "maxConcurrentSessions")
+
+
+def test_81_shape_drops_every_retired_acp_key(monkeypatch):
+    """The acp block is only emitted when acp_enabled=True, which the other
+    tests here do not pass -- so the schema test above walked straight past it
+    and the retired acp keys shipped to prod.
+
+    They are not cosmetic. 8.1's root schema is STRICT: one unrecognized key
+    fails the whole file, doctor restores last-known-good, and the container
+    silently keeps its PREVIOUS config. That is how the founder came up on 8.1
+    still carrying the pre-narrowing wide gateway.trustedProxies and 403ing
+    every gateway RPC -- a healthy-looking boot on a stale config.
+
+    Asserted by key name rather than by schema validation on purpose: the
+    vendored schema sets no additionalProperties on `acp`, so validation alone
+    would not have caught this and would give false assurance.
+    """
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", acp_enabled=True)
+    acp = cfg.get("acp")
+    assert acp, "acp block missing -- this test is no longer exercising the path it guards"
+
+    flat = {**acp, **acp.get("runtime", {}), **acp.get("stream", {})}
+    for key in _DEAD_ACP:
+        assert key not in flat, f"{key} is retired at 8.1 and fails the strict root schema"
+
+    # And the whole config must still validate with the block present.
+    assert config_schema.schema_errors(cfg) == []
+
+
+def test_72_shape_still_emits_the_acp_tuning_a_72_container_honours(monkeypatch):
+    """Mirror of the above: on 7.2 these keys are live and dropping them is a
+    real behaviour change, not a cleanup."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.7.2-isol8.8-8f700f0", acp_enabled=True)
+    acp = cfg["acp"]
+    assert acp["runtime"] == {"ttlMinutes": 120}
+    assert acp["stream"] == {"coalesceIdleMs": 300, "maxChunkChars": 1200}
+
+
 def test_72_shape_still_emits_what_a_72_container_honours(monkeypatch):
     """The rollout window: prod is still on 7.2 while dev is on 8.1. Losing
     these on prod is a real degradation, not a cosmetic diff."""

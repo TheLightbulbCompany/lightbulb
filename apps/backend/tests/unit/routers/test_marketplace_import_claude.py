@@ -142,6 +142,26 @@ def test_confirm_without_target_agent_400(client):
     assert "target_agent_id" in r.json()["detail"]
 
 
+def test_confirm_own_import_id_target_400_keeps_staging(client):
+    # Passing the import's own id would resolve to the staging dir itself —
+    # the apply would copy staging onto itself and then rmtree it, a
+    # misleading 200. Must 400 before resolving, staging intact for retry.
+    c, user_root, _ = client
+    import_id = _start(c)
+    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": import_id})
+    assert r.status_code == 400, r.text
+    assert "import id" in r.json()["detail"]
+    assert (user_root / f"workspace-{import_id}" / "claude").is_dir()
+
+
+def test_confirm_invalid_agent_id_400(client):
+    # "a" fails the agent-id regex (3-64 chars) — InvalidAgentIdError → 400.
+    c, _, _ = client
+    import_id = _start(c)
+    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": "a"})
+    assert r.status_code == 400, r.text
+
+
 def test_confirm_nonexistent_agent_404(client):
     # A regex-valid id that resolves to no workspace dir must 404 — the
     # resolver returns a clean miss unchanged, so the router's own is_dir

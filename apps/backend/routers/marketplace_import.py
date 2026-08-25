@@ -324,6 +324,11 @@ async def _confirm_claude(
     await _require_container(owner_id)
     if not payload.target_agent_id:
         raise HTTPException(status_code=400, detail="target_agent_id is required for a Claude Code import")
+    if backup_import.IMPORT_ID_RE.match(payload.target_agent_id):
+        # An import id resolves to a staging dir (workspace-import-*), so the
+        # "apply" would copy staging onto itself and then destroy it — a
+        # misleading 200 that applies nothing to any roster agent.
+        raise HTTPException(status_code=400, detail="target_agent_id must be a roster agent, not an import id")
     try:
         agent_id = await run_in_thread(agent_export.resolve_workspace_agent_id, owner_id, payload.target_agent_id)
     except agent_export.InvalidAgentIdError as exc:

@@ -168,6 +168,20 @@ A dispatch run deploys dev from that ref first — prod jobs still `needs:` the 
 stage, so a promotion cannot skip dev. The `isol8-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
+**⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
+sits at whatever was last promoted and drifts further behind with every merge, silently and
+by design. So: never infer prod's contents from `main`, and never tell an owner something is
+"live" because it merged. Check the running service — `aws ecs describe-task-definition` for
+the image, or the deploy run list for the last `workflow_dispatch` event. This is the same
+merged≠deployed trap that already burned this repo (see the version-pin promotes that were
+silently cancelled by supersede on 2026-08-23), except now it is the normal state rather
+than an accident.
+
+**Verified in production, not just in tests** (run on `8427911`, the first push after the
+gate landed): `completed/success`, **13 prod-named jobs `skipped`**, 52 non-prod `success`,
+plus `prod-DeployVercelProd` skipped — that one does not match a `prod`-name filter, so a
+naive grep undercounts. 14 gated jobs total.
+
 Set in `apps/infra/lib/app.ts` via `addStageWithGitHubOptions(prodStage, { jobSettings: { if: … } })`
 (the package's own public API) plus ONE `JsonPatch` for `prod-DeployVercelProd` — a
 `GitHubActionStep` has no `if` prop and stage `jobSettings` never reach it. Guarded by

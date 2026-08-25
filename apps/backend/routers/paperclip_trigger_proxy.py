@@ -123,7 +123,6 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.auth import is_org_owner_id
 from core.config import settings
-from core.webhook_delivery_capture import build_capture_record, log_capture_record
 from core.repositories import billing_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
@@ -409,16 +408,6 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
 
     # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
     body = await request.body()
-    log_capture_record(
-        build_capture_record(
-            body=body,
-            headers=request.headers,
-            source="paperclip_trigger_proxy",
-            owner_id=owner_id,
-            trigger_public_id=public_id,
-            route=str(request.url.path),
-        )
-    )
 
     # Gmail push OIDC (see module docstring): a Bearer-JWT-shaped
     # Authorization MUST verify as a Google-signed token whose audience is

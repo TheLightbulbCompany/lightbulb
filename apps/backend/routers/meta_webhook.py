@@ -50,7 +50,6 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
-from core.webhook_delivery_capture import build_capture_record, log_capture_record
 from core.repositories import billing_repo, integrations_repo
 from core.services.provision_gate import has_always_on_entitlement
 from routers.hooks_proxy import _check_rate_limit, _client_factory, _extract_caller_ip
@@ -218,14 +217,6 @@ async def receive_meta_event(request: Request) -> Response:
     # Raw bytes: the signature is over the exact body, and Paperclip receives
     # that same body verbatim.
     body = await request.body()
-    log_capture_record(
-        build_capture_record(
-            body=body,
-            headers=request.headers,
-            source="meta_webhook",
-            route=str(request.url.path),
-        )
-    )
     if not await _signature_valid(body, request.headers.get("X-Hub-Signature-256")):
         logger.warning("meta webhook rejected unsigned delivery from %s", _extract_caller_ip(request))
         raise HTTPException(status_code=401, detail="invalid_signature")

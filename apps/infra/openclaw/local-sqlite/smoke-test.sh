@@ -151,6 +151,20 @@ out=$(run_boot "$L" 2>&1) || fail "corrupt hand-off run exited nonzero: $out"
 echo "$out" | grep -q "failed integrity_check" || fail "no integrity-check failure log: $out"
 echo "PASS 2j corrupt hand-off db retained for diagnosis, sessions not installed"
 
+# ---- 2k. hand-off present but the agent ALREADY has a local database (a boot
+# AFTER the first one, where step 3 restored the agent's evolved DB): the
+# stale imported copy must NOT be re-applied over it, or every conversation
+# since the import is clobbered. The pre-existing local DB is left untouched.
+L="$WORK/t2k/local"
+mkdir -p "$L/import-state/agents/imp2/agent" "$L/agents/imp2/agent"
+sqlite3 "$L/import-state/agents/imp2/agent/openclaw-agent.sqlite" "CREATE TABLE handoff(x);"
+sqlite3 "$L/agents/imp2/agent/openclaw-agent.sqlite" "CREATE TABLE evolved(x);"
+out=$(run_boot "$L" 2>&1) || fail "already-has-db run exited nonzero: $out"
+sqlite3 "$L/agents/imp2/agent/openclaw-agent.sqlite" "SELECT name FROM sqlite_master WHERE type='table';" 2>/dev/null | grep -qx evolved \
+  || fail "local DB was clobbered by the stale hand-off: $out"
+echo "$out" | grep -q "already has a local database" || fail "no skip log for pre-existing local DB: $out"
+echo "PASS 2k hand-off not re-applied when the agent already has a local database"
+
 # ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
 # the marker, so a failure leaves the marker for the next boot to retry.
 L="$WORK/t2g/local"; mkdir -p "$L"

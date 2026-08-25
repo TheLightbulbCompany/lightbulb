@@ -219,28 +219,39 @@ if [ -d "$IMPORT_ROOT" ]; then
     _id=$(basename "$_src")
     case "$_id" in *[!A-Za-z0-9._-]*|"") log "import-state: ignoring bad agent dir name '$_id'"; continue ;; esac
     _dst="$STATE_ROOT/agents/$_id"
-    mkdir -p "$_dst"
-    if [ -f "$_src/agent/openclaw-agent.sqlite" ]; then
-      if sqlite3 "$_src/agent/openclaw-agent.sqlite" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
-        mkdir -p "$_dst/agent"
-        rm -f "$_dst/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite-wal" "$_dst/agent/openclaw-agent.sqlite-shm"
+    # Consume the hand-off ONLY on the first boot after the import — when the
+    # agent has no local database yet. On later boots step 3 restores the
+    # agent's own (evolved) database from litestream; re-installing the stale
+    # imported copy would clobber every conversation since the import. A
+    # lingering hand-off (its cleanup rm can fail, see below) is thus harmless.
+    if [ -f "$_dst/agent/openclaw-agent.sqlite" ]; then
+      log "import-state: agent $_id already has a local database — hand-off not re-applied"
+    elif [ -f "$_src/agent/openclaw-agent.sqlite" ] && \
+         ! sqlite3 "$_src/agent/openclaw-agent.sqlite" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
+      # Corrupt import: retain the whole hand-off for diagnosis, install nothing.
+      log "import-state: database for agent $_id failed integrity_check — leaving the hand-off in place for diagnosis"
+      continue
+    else
+      mkdir -p "$_dst/agent"
+      if [ -f "$_src/agent/openclaw-agent.sqlite" ]; then
         mv "$_src/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite"
         log "import-state: installed history database for agent $_id"
-      else
-        # Do NOT install sessions and do NOT rm -rf "$_src" — retain the
-        # whole hand-off so the next boot (or a human) can retry/diagnose it,
-        # instead of silently discarding a corrupt import.
-        log "import-state: database for agent $_id failed integrity_check — leaving the hand-off in place for diagnosis"
-        continue
       fi
+      if [ -d "$_src/sessions" ]; then
+        mkdir -p "$_dst/sessions"
+        cp -R "$_src/sessions/." "$_dst/sessions/"
+        log "import-state: installed legacy session files for agent $_id"
+      fi
+      chown -R 1000:1000 "$_dst" 2>/dev/null || true
     fi
-    if [ -d "$_src/sessions" ]; then
-      mkdir -p "$_dst/sessions"
-      cp -R "$_src/sessions/." "$_dst/sessions/"
-      log "import-state: installed legacy session files for agent $_id"
-    fi
-    chown -R 1000:1000 "$_dst" 2>/dev/null || true
-    rm -rf "$_src"
+    # Best-effort cleanup. The backend writes the hand-off through its
+    # NON-squashed root EFS mount; this container sees EFS through a
+    # uid-1000-SQUASHED access point, so it may be unable to unlink the
+    # backend-owned parent dir. A failed removal must NEVER abort the boot
+    # (set -e) — the install-gate above re-skips any lingering hand-off once the
+    # local DB exists. (The backend also chowns the parents to 1000 so this
+    # normally succeeds.)
+    rm -rf "$_src" 2>/dev/null || true
   done
   rmdir "$IMPORT_ROOT" 2>/dev/null || true
   rmdir "$STATE_ROOT/import-state" 2>/dev/null || true

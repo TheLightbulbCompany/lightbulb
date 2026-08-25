@@ -144,6 +144,19 @@ def stage_history(*, owner_id: str, source_agent_id: str, new_agent_id: str, his
         rewrite_legacy_sessions(history.sessions_dir, tmp / "sessions", old_id=source_agent_id, new_id=new_agent_id)
     _chown_tree(tmp)
     final.parent.mkdir(parents=True, exist_ok=True)
+    # The backend writes EFS through its NON-squashed root mount, so import-state/
+    # and import-state/agents/ are created root-owned. The container reads EFS
+    # through a uid-1000-SQUASHED access point: it can delete the 1000-owned
+    # <uuid> tree but NOT unlink it from a root-owned parent dir. Without chowning
+    # the parents, the boot script's cleanup `rm` of agents/<uuid> fails
+    # Permission denied and, under `set -e`, crash-loops the container. Chown the
+    # two parents to 1000 too so the cleanup can succeed. (The boot script also
+    # guards the rm, but this keeps the hand-off from lingering on EFS.)
+    for _parent in (import_state, final.parent):
+        try:
+            os.chown(_parent, 1000, 1000)
+        except OSError:
+            pass
     if final.exists():
         shutil.rmtree(final)
     os.replace(tmp, final)

@@ -138,6 +138,24 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(1);
   });
 
+  it("re-fetches for a different user — the shared key is per user, not global", async () => {
+    stubSessionsList([{ key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" }]);
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) => useAgentSessions("friday", userId),
+      {
+        initialProps: { userId: "user_1" },
+        wrapper: ({ children }: { children: React.ReactNode }) => (
+          <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+        ),
+      },
+    );
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    stubSessionsList([{ key: "agent:friday:user_2:0b477873-2222-4222-8222-222222222222", label: "G" }]);
+    rerender({ userId: "user_2" });
+    await waitFor(() => expect(result.current.sessions.map((s) => s.label)).toEqual(["G"]));
+    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(2);
+  });
+
   it("returns empty and does not query when agentId is null", async () => {
     stubSessionsList([]);
     const { result } = renderAgentSessions(null, "user-1");

@@ -112,9 +112,12 @@ export function useAgentSessions(
   // key made the sidebar plus each open chat panel each run its own full
   // scan of every agent's store — N concurrent transcript-reading scans on a
   // single vCPU, 13–26s apiece under load. The per-agent split happens in the
-  // useMemo below, client-side, on the shared result.
+  // useMemo below, client-side, on the shared result. Keyed by user, not
+  // constant: the app-wide SWR cache outlives a sign-out, and the proxy scopes
+  // rows to the caller, so one user's cached rows would filter to an empty
+  // sidebar for the next until revalidation.
   const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
-    agentId ? "sessions.list.all" : null,
+    agentId && userId ? ["sessions.list.all", userId] : null,
     async () => {
       const base = {
         includeGlobal: false,

@@ -624,7 +624,12 @@ export class ContainerStack extends cdk.Stack {
       // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
       "[ -e /home/node/.openclaw/browser ] && [ ! -L /home/node/.openclaw/browser ] && { mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-$(date +%s) || exit 1; }",
       // Step B — symlink chromium user-data to ephemeral task storage.
-      "mkdir -p /tmp/openclaw-browser || exit 1",
+      // `install -d -o 1000 -g 1000` rather than `mkdir -p`: this path is on
+      // the container's own writable layer, NOT the EFS mount, so no access
+      // point squashes it and a root `mkdir` would leave it root-owned and
+      // unwritable by the uid-1000 gateway (Step D). Create it correctly
+      // instead of creating it wrong and repairing it later.
+      "install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1",
       "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
       // Step C — make MCP package caches fast AND restart-safe by splitting
       // each package manager's PERSISTENT download cache from its per-run
@@ -657,7 +662,12 @@ export class ContainerStack extends cdk.Stack {
       // npm splits cleanly: keep the compressed download cache (`_cacache`,
       // immutable tarballs — cheap on NFS, read-mostly) on EFS so a restart
       // never re-downloads, but redirect ONLY the `_npx` extract tree to /tmp.
-      "mkdir -p /home/node/.openclaw/.cache/npm /home/node/.cache /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
+      // Split by filesystem: `.openclaw/.cache/npm` is on EFS, where the access
+      // point squashes every create to 1000:1000 already. The other three are
+      // on the container's writable layer and must be created as 1000 outright
+      // — see the note on /tmp/openclaw-browser above.
+      "mkdir -p /home/node/.openclaw/.cache/npm || exit 1",
+      "install -d -o 1000 -g 1000 /home/node/.cache /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
       "[ -e /home/node/.npm ] && [ ! -L /home/node/.npm ] && { mv /home/node/.npm /home/node/.npm.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.cache/npm /home/node/.npm || exit 1",
       "[ -e /home/node/.openclaw/.cache/npm/_npx ] && [ ! -L /home/node/.openclaw/.cache/npm/_npx ] && { mv /home/node/.openclaw/.cache/npm/_npx /home/node/.openclaw/.cache/npm/_npx.efs-archive-$(date +%s) || exit 1; }",
@@ -806,7 +816,60 @@ export class ContainerStack extends cdk.Stack {
       // accepts any tag, so a tag built before the local-sqlite chain existed
       // would otherwise die on a bare "not found". Diagnose it instead.
       "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
-      "exec /usr/local/bin/isol8-local-sqlite-boot.sh",
+      // Step D — hand the gateway over to uid 1000 (`node`, the image's own
+      // USER) instead of running it as root.
+      //
+      // Everything else in this stack already agrees on 1000: the extended
+      // image ends `USER node`, every per-user EFS access point squashes
+      // ownership to 1000:1000 (PosixUser + CreationInfo in ecs_manager.py),
+      // the boot script chowns restored agent dirs to 1000, and the backend
+      // chowns config to 1000 after every write. The running process was the
+      // one component that disagreed, and only by accident: `user: "0:0"`
+      // arrived in 2026-03 alongside a startup command that ran `apt-get
+      // install` and `pip install`. Those installs moved into the extended
+      // image Dockerfile long ago; the override outlived its reason.
+      //
+      // OpenClaw 2026.8.1 made that disagreement fatal. Its new
+      // ensurePrivateSqliteCoordinatorDirectory (src/infra/sqlite-coordinator.ts)
+      // creates a directory and then rejects it unless `stat().uid ===
+      // getuid()`. Under uid-squash the directory root itself just created
+      // stats back as 1000 while getuid() is 0, so the check can never pass —
+      // fresh state or old, no EFS cleanup fixes it, and there is no env or
+      // config escape hatch. Observed as a 4-task crash-loop on 2026-08-25:
+      // "device identity coordinator directory belongs to another user".
+      //
+      // Why not simply set `user: "1000:1000"` on the container: the two
+      // ephemeral volumes below are ECS-managed mount points the image never
+      // creates, so Docker materialises them **root:root** (verified against a
+      // live prod task: .openclaw is 1000:1000 while .openclaw/state and
+      // .openclaw/agents are 0:0). A task starting as 1000 could not write its
+      // own SQLite. Root must therefore create and chown them first — which is
+      // exactly what a privilege drop is for, and why the drop happens HERE,
+      // after Xvnc/warp/websockify have taken the ports they need as root,
+      // rather than at the container level.
+      //
+      // Only two classes of path need repairing here, because everything this
+      // command creates itself is now created as 1000 outright (Steps B/C use
+      // `install -d -o 1000`) and everything on EFS is squashed to 1000 by the
+      // access point:
+      //
+      //   1. The two ECS-managed ephemeral volumes. We do not create these —
+      //      the container runtime does, root:root, because the image has no
+      //      mountpoint at those paths for it to copy ownership from. They are
+      //      empty at task start, so this is two inodes, not a walk.
+      //   2. Root-owned dotfiles baked into the image layer (.local, .gitconfig,
+      //      .expo, and the symlinks Step C planted). `-h` retargets the link
+      //      itself rather than chasing it onto EFS. The right long-term home
+      //      for this is a `chown node:node` in the extended image Dockerfile;
+      //      doing it here keeps the fix to infra so we can roll onto the 8.1
+      //      tag already in ECR without a rebuild.
+      //
+      // Note this runs BEFORE the boot script, so litestream's restore writes
+      // into state/ and agents/ as 1000 and needs no chown of its own.
+      "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents || exit 1",
+      "find /home/node -maxdepth 1 -uid 0 -exec chown -h 1000:1000 {} + || exit 1",
+      'echo "[boot] init complete as root (warp/Xvnc/websockify started); exec gateway chain as uid=1000 via setpriv"',
+      "exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh",
     ].join("; ");
 
     // Image selection: use the extended ECR image once the per-env tag has been
@@ -823,6 +886,12 @@ export class ContainerStack extends cdk.Stack {
       image: containerImage,
       essential: true,
       command: ["sh", "-c", startupCommand],
+      // Root is the BOOT user, not the run user. The startup command needs it
+      // to chown the ECS-managed ephemeral volumes (which Docker materialises
+      // root:root) and to start Xvnc/warp/websockify, then hands the gateway
+      // to uid 1000 via setpriv — see Step D at the end of startupCommand.
+      // Do not "simplify" this to user: "1000:1000": the volume chown has to
+      // happen before the drop or the container cannot write its own SQLite.
       user: "0:0",
       workingDirectory: "/home/node",
       environment: {

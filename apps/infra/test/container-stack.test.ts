@@ -74,7 +74,7 @@ function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
             // `\\|` escapes the regex alternation so we match a literal `|`.
             "\\[ -x /usr/local/bin/isol8-local-sqlite-boot\\.sh \\] \\|\\| \\{ echo .*FATAL.*"
             + "exit 1; \\}; "
-            + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
+            + ".*exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
           ),
         ],
       }),
@@ -106,7 +106,7 @@ function expectDisplayGate(
   const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
   const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
   const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
-  const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+  const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
 
   // The guard must precede the launch it protects, and everything must precede
   // the exec that replaces this shell — nothing can be appended after that.
@@ -310,9 +310,9 @@ describe("ContainerStack — dev", () => {
     const recovery = command.indexOf("python3 -c");
     const migration = command.indexOf("[ -e /home/node/.openclaw/browser ]");
     const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
-    const mkdir = command.indexOf("mkdir -p /tmp/openclaw-browser || exit 1");
+    const mkdir = command.indexOf("install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1");
     const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
-    const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+    const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
 
     expect([recovery, migration, move, mkdir, symlink, boot].every((index) => index >= 0)).toBe(true);
     expect(recovery).toBeLessThan(migration);
@@ -557,8 +557,51 @@ describe("ContainerStack — dev", () => {
     expect(command).not.toContain("isol8-warp-boot.sh; exit 1");
     // Ordered before the exec that replaces this shell, or it never runs.
     expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(
-      command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh"),
+      command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh"),
     );
+  });
+
+  test("openclaw container chowns the ephemeral volumes before dropping to uid 1000", () => {
+    // The gateway runs as uid 1000 so OpenClaw 8.1's
+    // ensurePrivateSqliteCoordinatorDirectory sees state it owns: every EFS
+    // access point squashes to 1000, so a root process reads its own fresh
+    // directories back as "another user" and refuses to boot.
+    //
+    // But /home/node/.openclaw/{state,agents} are ECS ephemeral volumes, NOT
+    // EFS — no squash applies and Docker materialises them root:root, so they
+    // must be chowned while we are still root. If the drop ever moves ahead of
+    // the chown, the container cannot write its own SQLite and every boot dies
+    // on EACCES. That ordering is the whole point of this step; assert it.
+    const command = openclawStartupCommand(template, "dev");
+    const drop = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups");
+    const chown = command.indexOf(
+      "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents",
+    );
+
+    expect(chown).toBeGreaterThanOrEqual(0);
+    expect(drop).toBeGreaterThan(chown);
+
+    // Paths on the container's own writable layer must be created as 1000
+    // outright rather than created root-owned and repaired. If one of these
+    // regresses to `mkdir -p`, the gateway silently loses write access to it
+    // (Chrome's user-data-dir, the npx extract tree, the uv cache) — a failure
+    // that surfaces as a broken tool, not a failed boot.
+    for (const path of ["/tmp/openclaw-browser", "/tmp/openclaw-npx", "/tmp/openclaw-uv", "/home/node/.cache"]) {
+      expect(command).not.toContain(`mkdir -p ${path}`);
+      expect(command).toMatch(
+        new RegExp(`install -d -o 1000 -g 1000 [^;]*${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
+    }
+
+    // EFS paths keep plain mkdir — the access point squashes them to 1000, and
+    // `install -o` would be a no-op at best there.
+    expect(command).toContain("mkdir -p /home/node/.openclaw/.cache/npm");
+
+    // Everything root needs to do must precede the drop: setpriv execs, so
+    // nothing appended after it ever runs.
+    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(drop);
+    expect(command.indexOf("websockify")).toBeLessThan(drop);
+    expect(command.endsWith("/usr/local/bin/isol8-local-sqlite-boot.sh")).toBe(true);
   });
 
   test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {

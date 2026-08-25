@@ -107,11 +107,18 @@ async def provision_container(
         # entries, KMS-encrypted operator seed persisted to the DynamoDB
         # containers row).
         # provider_choice defaults to bedrock_claude for dev provisioning.
+        # bedrock_claude fails closed without the owner's per-owner AIP ARNs, so
+        # thread the ones already on the row. Read them rather than calling
+        # ensure_owner_aips: ensuring re-stamps the reverse-index plan to "paid",
+        # which would disarm a trial owner's daily-cap kill switch. A brand-new
+        # owner with no prior row has no AIPs to reuse — real provisioning mints
+        # them; this dev shortcut does not.
         await ecs_manager.write_user_configs(
             owner_id,
             gateway_token,
             provider_choice="bedrock_claude",
             owner_type=owner_type,
+            aip_arns=existing.get("bedrock_aip_arns") if existing else None,
         )
 
         # Step 3: Now start the container — configs are on EFS.
@@ -166,12 +173,18 @@ async def redeploy_container(
         # up with the env-var T2 injects on the per-user task def. Render
         # is the same either way (literal placeholder), but threading
         # keeps the rotate-flow plumbing uniform across provision paths.
+        # bedrock_claude needs the owner's AIP ARNs (see build_provider_block,
+        # which fails closed without them). Read them off the container row, the
+        # same way update_service.reapply_owner_config does — do NOT
+        # ensure_owner_aips here (see the POST route for why: it would re-stamp
+        # a trial owner's plan to "paid").
         await ecs_manager.write_user_configs(
             owner_id,
             container["gateway_token"],
             provider_choice="bedrock_claude",
             hook_token=container.get("hook_token"),
             owner_type=owner_type,
+            aip_arns=container.get("bedrock_aip_arns"),
         )
 
         # force: dev-only redeploy (403 in prod) — an operator action, not a

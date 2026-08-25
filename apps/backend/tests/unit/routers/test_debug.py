@@ -757,3 +757,81 @@ class TestDdbRows:
         finally:
             app.dependency_overrides.clear()
         assert res.status_code == 403
+
+
+class TestReprovisionThreadsBedrockAips:
+    """POST/PATCH /debug/provision must thread the owner's existing Bedrock AIP
+    ARNs into write_user_configs. build_provider_block fails closed for
+    bedrock_claude without them, so before the fix these routes 500'd for every
+    Bedrock/trial owner (#2028), breaking the documented dev re-provision lever.
+
+    They must READ the ARNs off the row, never call ensure_owner_aips — ensuring
+    re-stamps a trial owner's reverse-index plan to "paid", which disarms the
+    meter Lambda's daily-cap kill switch.
+    """
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.container_repo")
+    async def test_patch_reprovision_passes_container_aip_arns(self, mock_container_repo, mock_ecs_mgr, async_client):
+        aips = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"}
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "service_name": "openclaw-user_test_123-abc",
+                "gateway_token": "gw-tok",
+                "hook_token": "hook-tok",
+                "bedrock_aip_arns": aips,
+            }
+        )
+        ecs_mgr = MagicMock()
+        ecs_mgr.write_user_configs = AsyncMock()
+        ecs_mgr.start_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        res = await async_client.patch("/api/v1/debug/provision")
+
+        assert res.status_code == 200
+        ecs_mgr.write_user_configs.assert_awaited_once()
+        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] == aips
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.container_repo")
+    async def test_post_provision_reuses_existing_row_aip_arns(self, mock_container_repo, mock_ecs_mgr, async_client):
+        aips = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/y"}
+        # A prior (stopped) row still carries the owner's minted AIPs; status is
+        # not running/provisioning, so provisioning proceeds and reuses them.
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={"owner_id": "user_test_123", "status": "stopped", "bedrock_aip_arns": aips}
+        )
+        ecs_mgr = MagicMock()
+        ecs_mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-abc")
+        ecs_mgr.write_user_configs = AsyncMock()
+        ecs_mgr.start_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        res = await async_client.post("/api/v1/debug/provision")
+
+        assert res.status_code == 200
+        ecs_mgr.write_user_configs.assert_awaited_once()
+        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] == aips
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.container_repo")
+    async def test_post_provision_no_prior_row_passes_none(self, mock_container_repo, mock_ecs_mgr, async_client):
+        # Brand-new owner: no prior row, so no AIPs to reuse. The dev shortcut
+        # passes None (real provisioning mints them); this documents that we do
+        # NOT silently ensure_owner_aips here and re-stamp a plan.
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+        ecs_mgr = MagicMock()
+        ecs_mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-abc")
+        ecs_mgr.write_user_configs = AsyncMock()
+        ecs_mgr.start_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        res = await async_client.post("/api/v1/debug/provision")
+
+        assert res.status_code == 200
+        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] is None

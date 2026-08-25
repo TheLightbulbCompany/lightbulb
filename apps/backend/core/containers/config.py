@@ -1218,7 +1218,7 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
     return []
 
 
-def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
+def build_acp_config(harnesses: list[str], *, emit_81_shape: bool = False) -> tuple[dict, dict]:
     """Build the ``acp`` block + the ``plugins.entries.acpx`` entry for a
     container whose owner can spawn ``harnesses``.
 
@@ -1238,8 +1238,23 @@ def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
         "backend": "acpx",
         "allowedAgents": list(harnesses),
         "defaultAgent": harnesses[0],
-        "runtime": {"ttlMinutes": 120},
-        "stream": {"coalesceIdleMs": 300, "maxChunkChars": 1200},
+        # RETIRED AT 8.1. acp.runtime.ttlMinutes, acp.stream.coalesceIdleMs and
+        # acp.stream.maxChunkChars are all on 8.1's dead-config-keys list
+        # (src/config/dead-config-keys.test.ts), and 8.1's root schema is
+        # STRICT: an unrecognized key does not warn, it fails validation for
+        # the whole file. Doctor then restores last-known-good, so the
+        # container silently keeps its PREVIOUS config and every change in the
+        # regenerated one is lost — which is how the founder came up on 8.1
+        # still carrying the pre-#2032 wide gateway.trustedProxies and 403ing
+        # every gateway RPC. The boot looks healthy; the config is stale.
+        **(
+            {}
+            if emit_81_shape
+            else {
+                "runtime": {"ttlMinutes": 120},
+                "stream": {"coalesceIdleMs": 300, "maxChunkChars": 1200},
+            }
+        ),
     }
     acpx_plugin_entry = {
         "acpx": {
@@ -2409,7 +2424,7 @@ def build_openclaw_config_dict(
     if acp_enabled:
         harnesses = derive_enabled_harnesses(provider_choice, byo_provider)
         if harnesses:
-            acp_block, acpx_plugin_entry = build_acp_config(harnesses)
+            acp_block, acpx_plugin_entry = build_acp_config(harnesses, emit_81_shape=_emit_81_shape)
             config["acp"] = acp_block
             config["plugins"]["entries"].update(acpx_plugin_entry)
 

@@ -253,19 +253,33 @@ RUN npm i -g --ignore-scripts \
 # install above — with scripts skipped the `claude` wrapper is present but every
 # invocation dies with "claude native binary not installed", so the harness could
 # never launch. The smoke test fails the build if the binary didn't materialize.
-RUN npm i -g @anthropic-ai/claude-code && claude --version >/dev/null
+# 2026.8.1 BASE / npm allowScripts: the base image now runs
+# `npm install --global npm@latest`, and the newer npm BLOCKS install scripts by
+# default unless the package is named in --allow-scripts:
+#
+#   npm warn install-scripts 1 package had install scripts blocked because they
+#   are not covered by allowScripts: <pkg> (postinstall: ...)
+#
+# The three layers below deliberately skip the --ignore-scripts global install
+# above precisely because they need their postinstall to fetch a platform-native
+# binary. Without --allow-scripts the JS wrapper installs and every invocation
+# then dies ("claude native binary not installed", "xurl binary not found").
+# Each layer keeps its own smoke test, which is what fails the build if the
+# binary did not materialise -- this cannot regress silently.
+RUN npm i -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code \
+    && claude --version >/dev/null
 
 # xurl downloads its native Go binary in npm postinstall. Keep it outside the
 # --ignore-scripts global install above; otherwise the JS wrapper is present but
 # every `xurl` invocation fails with "xurl binary not found".
-RUN npm i -g @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
+RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
 # OpenCode: the ACP coding harness for chatgpt_oauth owners (registered via
 # the acpx agents map in openclaw.json — see backend build_acp_config). Its
 # platform binary arrives via optionalDependencies + postinstall, so like xurl
 # it stays outside the --ignore-scripts install above. Version-pinned; the
 # smoke test fails the build if the binary didn't materialize for this arch.
-RUN npm i -g opencode-ai@1.18.15 && opencode --version >/dev/null
+RUN npm i -g --allow-scripts=opencode-ai opencode-ai@1.18.15 && opencode --version >/dev/null
 
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral

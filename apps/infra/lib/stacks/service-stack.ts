@@ -1440,18 +1440,14 @@ export class ServiceStack extends cdk.Stack {
       // stop_reason stamping and chat-send server wake are live regardless.
       TRIAL_WAKE_GATE_ENABLED: "true",
       // Browser egress via the container's Cloudflare WARP local proxy.
-      // "0" = off: write_openclaw_config emits no proxy flag and Chrome keeps
-      // egressing on the AWS NAT IP, exactly as today. Set it to
-      // String(BROWSER_EGRESS_PROXY_PORT) to turn a whole environment on.
-      //
-      // OFF EVERYWHERE UNTIL THE ZERO TRUST ORG EXISTS. The container half
-      // (Dockerfile layer 9c + the Step C4b boot script) ships and rolls
-      // independently and is inert without the enrollment secret; this knob
-      // is the second, separately-revertible half. Order: set the
-      // cloudflare-warp-enrollment secret, roll dev's containers onto a tag
-      // carrying layer 9c, confirm "[warp] connected" in their logs, THEN
-      // flip dev here. Flipping first just points Chrome at a dead loopback
-      // port — harmless (the PAC falls back to DIRECT) but pointless.
+      // ON in both envs. "0" = off: write_openclaw_config emits no proxy flag
+      // and no browser.ssrfPolicy (the two travel together — see
+      // _browser_egress_args) and Chrome egresses on the AWS NAT IP. The
+      // container half (Dockerfile layer 9c + Step C4b boot script) is inert
+      // without the cloudflare-warp-enrollment secret, and with WARP down the
+      // PAC falls back to DIRECT, so flip order is harmless. Existing
+      // containers pick a change up only on reprovision / Regenerate config —
+      // or a PATCH .../config deep-merge.
       BROWSER_EGRESS_PROXY_PORT: String(BROWSER_EGRESS_PROXY_PORT),
       // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
       // env vars via core.config.settings; empty defaults keep the app

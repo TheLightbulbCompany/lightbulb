@@ -58,7 +58,10 @@ class TestOpenclawConfigShape:
         assert config["gateway"]["mode"] == "local"
         assert config["gateway"]["bind"] == "lan"
         assert config["gateway"]["auth"] == {"mode": "token", "token": "test-token-123"}
-        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8", "127.0.0.1", "::1"]
+        # Loopback ONLY. The VPC /8 that used to be here made 2026.8.1 treat the
+        # backend itself as a proxy and 403 every WS upgrade; see
+        # test_trusted_proxies_is_loopback_only for the invariant.
+        assert config["gateway"]["trustedProxies"] == ["127.0.0.1", "::1"]
 
     def test_control_ui_disabled(self):
         config = _cfg()

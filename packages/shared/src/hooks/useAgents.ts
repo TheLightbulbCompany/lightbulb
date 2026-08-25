@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { GatewayConnectionValue } from "../gateway/useGatewayConnection";
-import { useGatewayRpc, useGatewayRpcMutation, type GatewayRpcSource } from "./useGatewayRpc";
+import {
+  gatewayRpcKey,
+  pushRevalidate,
+  useGatewayRpc,
+  useGatewayRpcMutation,
+  type GatewayRpcSource,
+} from "./useGatewayRpc";
 import type { AgentsListResponse } from "./agents";
 
 /**
@@ -114,27 +120,31 @@ export function useAgents(gateway: AgentsGatewaySource, opts?: UseAgentsOptions)
   //     when runtime_phase/chat readiness flips on the composed contract.
   //  3. WS reconnect rising edge — a fresh socket means every
   //     settled-empty/errored-out key predates the current connection.
+  // All three go through useGatewayRpc's per-key push throttle: this hook is
+  // mounted once per sidebar row / chat panel / control panel, and a bare
+  // mutate() here is a forced RPC per instance per push.
   const mutateRef = useRef(mutate);
   mutateRef.current = mutate;
+  const rosterKey = gatewayRpcKey("agents.list");
 
   useEffect(() => {
     return onEvent((event, payload) => {
       if (event === "onboarding_status_changed") {
-        void mutateRef.current();
+        pushRevalidate(rosterKey, mutateRef.current);
         return;
       }
       if (event !== "status_change") return;
       if ((payload as { state?: string } | null)?.state !== "HEALTHY") return;
-      void mutateRef.current();
+      pushRevalidate(rosterKey, mutateRef.current);
     });
-  }, [onEvent]);
+  }, [onEvent, rosterKey]);
 
   const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
     const wasConnected = prevConnectedRef.current;
     prevConnectedRef.current = isConnected;
-    if (!wasConnected && isConnected) void mutateRef.current();
-  }, [isConnected]);
+    if (!wasConnected && isConnected) pushRevalidate(rosterKey, mutateRef.current);
+  }, [isConnected, rosterKey]);
 
   const createAgent = useCallback(
     // OpenClaw's agents.create requires a non-empty `workspace` string

@@ -2,7 +2,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 
-import { useGatewayRpc, type GatewayRpcSource } from "./useGatewayRpc";
+import {
+  __resetPushRevalidateThrottle,
+  useGatewayRpc,
+  type GatewayRpcSource,
+} from "./useGatewayRpc";
 
 /**
  * Two free event wins (REALTIME, spec PR-7):
@@ -33,6 +37,7 @@ function makeGateway(): GatewayRpcSource & { emit: (event: string, data?: unknow
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  __resetPushRevalidateThrottle();
 });
 
 describe("useGatewayRpc event-driven revalidation", () => {
@@ -106,5 +111,24 @@ describe("useGatewayRpc event-driven revalidation", () => {
 
     await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.data).toEqual({ ok: true }));
+  });
+
+  it("fans one push out to ONE rpc no matter how many mounts share the key", async () => {
+    const gw = makeGateway();
+    // Distinct method again — see the global-SWR-cache note above.
+    renderHook(() => {
+      useGatewayRpc(gw, "models.list");
+      useGatewayRpc(gw, "models.list");
+      useGatewayRpc(gw, "models.list");
+    });
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(1));
+
+    gw.emit("onboarding_status_changed", {});
+    await waitFor(() => expect(gw.sendReq).toHaveBeenCalledTimes(2));
+    // A second push inside the throttle window is dropped, and the three
+    // mounts never became three forced mutate()s (mutate bypasses dedupe).
+    gw.emit("onboarding_status_changed", {});
+    await new Promise((r) => setTimeout(r, 50));
+    expect(gw.sendReq).toHaveBeenCalledTimes(2);
   });
 });

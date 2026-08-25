@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import useSWR, { type SWRConfiguration } from "swr";
 
 import type { GatewayConnectionValue } from "../gateway/useGatewayConnection";
@@ -78,6 +78,34 @@ export interface RpcResult<T = unknown> {
  * shared behavior (SWR keying, fixed-cadence cold-start retry, event-driven
  * revalidation with throttling).
  */
+/** The SWR key a `useGatewayRpc(method, params)` mount reads from. */
+export function gatewayRpcKey(method: string, params?: Record<string, unknown>): string {
+  return `rpc|${method}|${params ? JSON.stringify(params) : ""}`;
+}
+
+// Push-driven revalidation is throttled PER KEY, module-wide — not per hook
+// instance. `mutate()` bypasses SWR's dedupingInterval, and a roster key is
+// mounted by every sidebar row, chat panel and control panel at once, so a
+// per-instance throttle still let one gateway push fan out into one forced
+// RPC per mounted instance. On a container whose backend socket was flapping
+// that was ~350 identical `agents.list` calls in 16 minutes from two
+// browsers — load that fed the very starvation causing the flaps.
+const PUSH_REVALIDATE_MIN_MS = 10_000;
+const lastPushRevalidateAt = new Map<string, number>();
+
+/** Revalidate `key` in response to a gateway push, at most once per 10s per key. */
+export function pushRevalidate(key: string, mutate: () => unknown): void {
+  const now = Date.now();
+  if (now - (lastPushRevalidateAt.get(key) ?? 0) < PUSH_REVALIDATE_MIN_MS) return;
+  lastPushRevalidateAt.set(key, now);
+  void mutate();
+}
+
+/** Test-only: forget every key's last push-revalidate time. */
+export function __resetPushRevalidateThrottle(): void {
+  lastPushRevalidateAt.clear();
+}
+
 export function useGatewayRpc<T = unknown>(
   gateway: GatewayRpcSource,
   method: string | null,
@@ -116,9 +144,7 @@ export function useGatewayRpc<T = unknown>(
   // and stops revalidation; unpark() flips isParked false and SWR resumes.
   // This never triggers a wake (RPCs don't touch /container/*), so park is
   // preserved.
-  const swrKey = method && !isParked
-    ? `rpc|${method}|${params ? JSON.stringify(params) : ""}`
-    : null;
+  const swrKey = method && !isParked ? gatewayRpcKey(method, params) : null;
 
   const { data, error, isLoading, mutate } = useSWR<T | undefined>(
     swrKey as string | null,
@@ -148,21 +174,14 @@ export function useGatewayRpc<T = unknown>(
     },
   );
 
-  // Auto-revalidate when gateway pushes a matching event (throttled to
-  // respect dedupingInterval — without this, high-frequency OpenClaw events
-  // bypass SWR deduping and flood the backend with RPCs).
-  const lastRevalidateRef = useRef(0);
+  // Auto-revalidate when gateway pushes a matching event, through the
+  // per-key throttle above (a parked mount has no key and stays frozen).
   useEffect(() => {
-    if (!method) return;
+    if (!method || !swrKey) return;
     return onEvent((event) => {
-      if (eventMatchesMethod(method, event)) {
-        const now = Date.now();
-        if (now - lastRevalidateRef.current < 10_000) return;
-        lastRevalidateRef.current = now;
-        mutate();
-      }
+      if (eventMatchesMethod(method, event)) pushRevalidate(swrKey, mutate);
     });
-  }, [method, onEvent, mutate]);
+  }, [method, swrKey, onEvent, mutate]);
 
   return {
     data,

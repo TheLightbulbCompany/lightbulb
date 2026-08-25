@@ -19240,7 +19240,7 @@ var McpConfigSchema = external_exports.strictObject({
   servers: createMcpServersSchema(McpServerNameSchema).optional(),
   // ISOL8 FORK KEY: see agent-bundle-mcp-runtime-shared.ts. Omitting this from
   // the strict object would crash-loop every MCP owner on boot.
-  runtimeScope: external_exports.union([external_exports.literal("session"), external_exports.literal("shared")]).optional(),
+  runtimeScope: external_exports.enum(["session", "shared"]).optional(),
   apps: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     sandboxOrigin: external_exports.string().url().refine(

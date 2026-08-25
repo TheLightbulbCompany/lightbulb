@@ -8868,15 +8868,10 @@
           }
         },
         "runtimeScope": {
-          "anyOf": [
-            {
-              "type": "string",
-              "const": "session"
-            },
-            {
-              "type": "string",
-              "const": "shared"
-            }
+          "type": "string",
+          "enum": [
+            "session",
+            "shared"
           ]
         },
         "apps": {

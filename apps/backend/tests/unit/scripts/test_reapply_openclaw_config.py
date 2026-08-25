@@ -506,3 +506,28 @@ async def test_dry_run_does_not_read_or_restore():
     assert rc == 0
     write_mock.assert_not_called()
     restore_patch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deployed_tag", ["2026.8.1-isol8.1-abc1234", None])
+async def test_reapply_owner_config_threads_the_target_image_to_the_writer(deployed_tag):
+    """An image roll regenerates config for the image it is rolling TO and
+    must say so; the Regenerate button / ops script pass nothing and the
+    writer falls back to the owner's registered task definition."""
+    from core.services import update_service
+
+    write_mock, cms = _patches(
+        container={"gateway_token": "gw", "hook_token": "hk", "owner_type": "org"},
+        existing_config={},
+        fresh_config={},
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        await update_service.reapply_owner_config("org_x", deployed_tag=deployed_tag)
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    write_mock.assert_awaited_once()
+    assert write_mock.call_args.kwargs["deployed_tag"] == deployed_tag

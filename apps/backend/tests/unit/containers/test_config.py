@@ -63,11 +63,17 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is False
 
-    def test_audit_ledger_disabled(self):
-        """The audit ledger's per-event transactions are the dominant SQLite
-        lock contender on EFS, and nothing in Isol8 consumes audit.* RPCs."""
+    def test_audit_ledger_not_emitted(self):
+        """OpenClaw 2026.8.1 removed the root ``audit`` key (the ledger moved
+        under ``logging.audit``) and the root schema is strict, so emitting it
+        is a boot-time validation failure. We only ever set enabled:False --
+        which is the default -- so the key is simply dropped rather than
+        relocated. The original reason still holds: the ledger's per-event
+        transactions were the dominant SQLite lock contender on EFS and nothing
+        in Isol8 consumes audit.* RPCs."""
         config = _cfg()
-        assert config["audit"] == {"enabled": False}
+        assert "audit" not in config
+        assert "audit" not in config.get("logging", {})
 
     def test_agents_defaults_workspace_routes_to_efs(self):
         config = _cfg()
@@ -90,7 +96,9 @@ class TestOpenclawConfigShape:
         # never pay for embeddings. Only byo_key+openai gets a vector provider
         # (see test_config_provider_routing).
         config = _cfg()
-        memory_search = config["agents"]["defaults"]["memorySearch"]
+        # 2026.8.1 moved agents.defaults.memorySearch to the root memory.search.
+        assert "memorySearch" not in config["agents"]["defaults"]
+        memory_search = config["memory"]["search"]
         assert memory_search["enabled"] is True
         assert memory_search["provider"] == "none"
         assert "model" not in memory_search
@@ -123,7 +131,11 @@ class TestOpenclawConfigShape:
         Builtin = flat MEMORY.md files in agent workspace, no sqlite."""
         config = _cfg()
         memory = config["memory"]
-        assert memory["backend"] == "builtin"
+        # 2026.8.1 retired the qmd backend entirely, so ``memory.backend`` is
+        # gone from the schema and builtin is the only shape there is. Dropping
+        # the key is what keeps the strict parse passing; the hazard it guarded
+        # against (qmd on EFS) can no longer be selected at all.
+        assert "backend" not in memory
         assert memory["citations"] == "auto"
         # qmd block must be entirely absent — leftover keys would resurrect
         # the old codepath if openclaw ever tolerates them.
@@ -274,7 +286,10 @@ class TestOpenclawConfigShape:
         assert browser["defaultProfile"] == "openclaw"
         # Container Chromium (bundled in the extended image).
         assert browser["profiles"]["openclaw"]["driver"] == "openclaw"
-        assert isinstance(browser["profiles"]["openclaw"]["color"], str)
+        # 2026.8.1 removed browser.profiles.*.color from the strict profile
+        # object (the built-in colour applies); emitting it fails the parse.
+        assert "color" not in browser["profiles"]["openclaw"]
+        assert "color" not in browser["profiles"]["user"]
         # cdpPort required by upstream schema since v2026.5.7-0d10b38:
         # zod-schema.ts refines any non-`existing-session` profile
         # to require cdpPort or cdpUrl. If this assertion ever fails
@@ -287,7 +302,6 @@ class TestOpenclawConfigShape:
         # `existing-session` is the one driver the schema exempts from
         # the cdpPort-or-cdpUrl check, so this profile correctly omits both.
         assert browser["profiles"]["user"]["driver"] == "existing-session"
-        assert isinstance(browser["profiles"]["user"]["color"], str)
         assert "cdpPort" not in browser["profiles"]["user"]
         assert "cdpUrl" not in browser["profiles"]["user"]
 
@@ -438,7 +452,6 @@ class TestWriteOpenclawConfigAsync:
         # Sanity-check one field from each major section.
         assert cfg["gateway"]["auth"]["token"] == "t-1"
         assert cfg["agents"]["defaults"]["verboseDefault"] == "full"
-        assert cfg["memory"]["backend"] == "builtin"
         assert cfg["tools"]["exec"]["mode"] == "full"
         assert cfg["channels"] == {}
         assert cfg["browser"]["defaultProfile"] == "openclaw"
@@ -726,13 +739,16 @@ class TestCronStorePin:
     and orphan every existing cron row. Byte-equal to the derived default =>
     a no-op on the EFS layout."""
 
-    def test_cron_store_pinned_for_paid_providers(self):
+    def test_cron_store_not_emitted_for_paid_providers(self):
+        """2026.8.1 retired ``cron.store``: job state moved into the state DB and
+        the key is no longer in the strict CronSchema. ``cron.enabled`` -- the
+        part that actually gates the service -- is unchanged."""
         for provider in ("bedrock_claude", "chatgpt_oauth"):
             cfg = _cfg(provider)
-            assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json", provider
+            assert "store" not in cfg["cron"], provider
             assert "enabled" not in cfg["cron"], provider
 
-    def test_trial_cron_disabled_and_still_pinned(self):
+    def test_trial_cron_disabled(self):
         cfg = _cfg("bedrock_trial", aip_arns={"sonnet": _AIPS["sonnet"]})
         assert cfg["cron"]["enabled"] is False
-        assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json"
+        assert "store" not in cfg["cron"]

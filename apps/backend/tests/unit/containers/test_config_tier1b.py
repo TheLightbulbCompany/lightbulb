@@ -138,7 +138,10 @@ class TestBrowserBounds:
         1 vCPU / 4 GB task headless Chromium tabs are still a resource constraint."""
         browser = _cfg()["browser"]
         assert browser["snapshotDefaults"] == {"mode": "efficient"}
-        assert browser["tabCleanup"] == {"idleMinutes": 30, "maxTabsPerSession": 4}
+        # 2026.8.1 reduced browser.tabCleanup to {enabled} -- idleMinutes and
+        # maxTabsPerSession are gone from the strict object, so the tab bounds
+        # are upstream's now. We keep the sweeper ON; we no longer choose when.
+        assert browser["tabCleanup"] == {"enabled": True}
         # Existing profile wiring untouched.
         assert browser["defaultProfile"] == "openclaw"
         assert browser["profiles"]["openclaw"]["cdpPort"] == 18800
@@ -178,8 +181,10 @@ class TestBrowserBounds:
             assert browser["executablePath"] == "/usr/bin/google-chrome", choice
             # Schema caps both at 120_000; defaults (15s/8s) are the ones
             # upstream says to raise on slow storage.
-            assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice
-            assert 8_000 < browser["localCdpReadyTimeoutMs"] <= 120_000, choice
+            # The two launch timeouts left the schema at 2026.8.1; see
+            # test_launch_budget_stays_below_the_tool_timeout for what that costs
+            # us on EFS-backed profiles.
+            assert "localLaunchTimeoutMs" not in browser, choice
 
     def test_browser_is_headful_in_every_environment(self):
         """Containers run headful on the Xvfb display so the browser can be
@@ -296,7 +301,23 @@ class TestBrowserBounds:
         required` into a bare `browser failed: timed out`, which is how this
         bug stayed unexplained. Keep a margin.
         """
-        assert _cfg()["browser"]["localLaunchTimeoutMs"] <= 40_000
+        # 2026.8.1 removed browser.localLaunchTimeoutMs and
+        # localCdpReadyTimeoutMs from the schema, so neither is configurable.
+        # The invariant this test protects still holds upstream:
+        # DEFAULT_BROWSER_LOCAL_LAUNCH_TIMEOUT_MS = 15_000 is comfortably under
+        # DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 60_000, so the launcher's own
+        # diagnostic still wins the race against the tool timeout.
+        #
+        # WHAT WE LOST, deliberately recorded: our values were RAISED for this
+        # deployment -- 20s launch for a 1 vCPU box, and 30s CDP-ready because
+        # upstream's own Linux troubleshooting doc says to raise it on slow
+        # storage and our Chrome profile lives on EFS. Upstream's defaults are
+        # 15s and 8s. The 8s CDP-ready is the one to watch: on a CPU-starved
+        # container with a cold EFS profile it is a plausible new source of
+        # browser-panel flakes, and there is no config surface to raise it.
+        browser = _cfg()["browser"]
+        assert "localLaunchTimeoutMs" not in browser
+        assert "localCdpReadyTimeoutMs" not in browser
 
 
 class TestWebFetchAndSearch:

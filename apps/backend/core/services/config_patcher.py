@@ -75,6 +75,57 @@ def _assert_safe_patch_values(value: Any) -> None:
             _assert_safe_patch_values(item)
 
 
+def _read_agent_roster(agents_obj: dict) -> tuple[str, list[dict]]:
+    """Read the agent roster from either shape, as a flat list of entries.
+
+    OpenClaw 2026.8.1 renamed ``agents.list`` (array) to ``agents.entries``
+    (record keyed by agent id, with ``id`` stripped from the value). Boot
+    ``doctor --fix`` rewrites the on-EFS file into the keyed shape, and from
+    then on upstream's reader returns ``entries`` and IGNORES ``list`` -- so
+    appending to ``list`` against a migrated config writes to a dead key and
+    the agent silently never appears in the roster (marketplace deploys,
+    Atlas-scaffolded specialists). Read whichever shape is present and write
+    back the same one.
+
+    Returns ``(shape, entries)`` where shape is ``"entries"`` or ``"list"``.
+    """
+    entries = agents_obj.get("entries")
+    if isinstance(entries, dict):
+        roster: list[dict] = []
+        for agent_id, value in entries.items():
+            if isinstance(value, dict):
+                roster.append({**value, "id": agent_id})
+        return "entries", roster
+    agents_list = agents_obj.get("list")
+    return "list", agents_list if isinstance(agents_list, list) else []
+
+
+def _write_agent_roster(agents_obj: dict, shape: str, roster: list[dict]) -> None:
+    """Write the roster back in the shape it was read in.
+
+    In the keyed shape the id is the KEY and is omitted from the value --
+    ``AgentEntrySchema.omit({ id: true })`` in upstream's
+    zod-schema.agents.ts, so leaving an ``id`` inside the value is a strict
+    schema rejection. ``default`` stays legal there (the entries wrapper
+    re-adds it) and is what marks the CEO on a multi-agent roster.
+    """
+    if shape != "entries":
+        agents_obj["list"] = roster
+        return
+    keyed: dict[str, dict] = {}
+    for entry in roster:
+        if not isinstance(entry, dict):
+            continue
+        agent_id = entry.get("id")
+        if not isinstance(agent_id, str) or not agent_id:
+            continue
+        keyed[agent_id] = {k: v for k, v in entry.items() if k != "id"}
+    agents_obj["entries"] = keyed
+    # Never leave both shapes populated: upstream prefers ``entries`` and
+    # ignores ``list``, so a stale ``list`` is a silent divergence trap.
+    agents_obj.pop("list", None)
+
+
 def _deep_merge(base: dict, patch: dict) -> dict:
     """Deep-merge patch into base. Dicts are merged recursively; non-dict values
     replace. The ENTIRE patch (including inserted subtrees) is key-validated up
@@ -668,9 +719,7 @@ async def apply_deploy_aux_mutations(
                 agents_obj = {"list": list(agents_obj)}
             elif not isinstance(agents_obj, dict):
                 agents_obj = {}
-            agents_list = agents_obj.get("list")
-            if not isinstance(agents_list, list):
-                agents_list = []
+            roster_shape, agents_list = _read_agent_roster(agents_obj)
             new_id = agent_entry.get("id")
             existing_idx = next(
                 (i for i, a in enumerate(agents_list) if isinstance(a, dict) and a.get("id") == new_id),
@@ -681,7 +730,7 @@ async def apply_deploy_aux_mutations(
                 agents_list[existing_idx] = entry_copy
             else:
                 agents_list.append(entry_copy)
-            agents_obj["list"] = agents_list
+            _write_agent_roster(agents_obj, roster_shape, agents_list)
             current["agents"] = agents_obj
 
         if plugins_patch:
@@ -784,9 +833,10 @@ async def apply_paperclip_meta(
             agents_list = list(agents_obj)
             agents_obj = {"list": agents_list}
             current["agents"] = agents_obj
+            roster_shape = "list"
         elif isinstance(agents_obj, dict):
-            agents_list = agents_obj.get("list")
-            if not isinstance(agents_list, list):
+            roster_shape, agents_list = _read_agent_roster(agents_obj)
+            if not agents_list:
                 return False
         else:
             return False
@@ -815,7 +865,7 @@ async def apply_paperclip_meta(
                     existing_pc.pop(k, None)
             params["paperclip"] = existing_pc
             agents_list[idx] = entry
-            agents_obj["list"] = agents_list
+            _write_agent_roster(agents_obj, roster_shape, agents_list)
             return True
 
         # agent_id not found — no-op write, return False so the

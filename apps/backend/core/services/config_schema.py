@@ -37,6 +37,7 @@ it would be a worse outage than the one this guards against.
 import json
 import logging
 from functools import lru_cache
+import re
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,49 @@ def _validator() -> Any | None:
         return None
 
 
+# Mirrors OpenClaw's ``migratePersistedImplicitMainRoster`` (src/config/legacy.roster.ts),
+# which runs at validation-core.ts:423 BEFORE ``OpenClawSchema.safeParse``. Without
+# it this gate is stricter than OpenClaw itself: 2026.8.1's ``AgentsSchema`` is a
+# strict object accepting only {ownership, defaults, entries}, so a legacy
+# ``agents.list`` document fails ``agents: additionalProperties`` here even though
+# OpenClaw loads it fine after converting the list. Every container still carries
+# the list shape on EFS until boot ``doctor --fix`` rewrites it, so gating the RAW
+# document would block us from patching precisely those configs.
+#
+# Conservative on purpose: when any id is unusable we leave the document alone and
+# let it be validated as-is, which is exactly what the upstream migration does (it
+# returns the config unchanged rather than guessing).
+_AGENT_ID_RE = re.compile(r"^[a-z0-9_][a-z0-9_-]{0,63}$")
+
+
+def _normalized_for_validation(config: dict) -> dict:
+    agents = config.get("agents")
+    if not isinstance(agents, dict) or "entries" in agents:
+        return config
+    roster = agents.get("list")
+    if not isinstance(roster, list) or not roster:
+        return config
+    entries: dict[str, dict] = {}
+    for item in roster:
+        if not isinstance(item, dict):
+            return config
+        agent_id = item.get("id")
+        # normalizeAgentId is trim + lowercase + charset sanitise; the upstream
+        # migration bails unless the id is ALREADY its own normal form.
+        if (
+            not isinstance(agent_id, str)
+            or agent_id != agent_id.strip()
+            or agent_id != agent_id.lower()
+            or not _AGENT_ID_RE.match(agent_id)
+            or agent_id in entries
+        ):
+            return config
+        entries[agent_id] = {k: v for k, v in item.items() if k != "id"}
+    migrated_agents = {k: v for k, v in agents.items() if k != "list"}
+    migrated_agents["entries"] = entries
+    return {**config, "agents": migrated_agents}
+
+
 def schema_errors(config: dict) -> list[str] | None:
     """Validate ``config``. Returns None when the schema is unavailable,
     otherwise a (possibly empty) list of violations as ``path: rule``.
@@ -96,6 +140,7 @@ def schema_errors(config: dict) -> list[str] | None:
     validator = _validator()
     if validator is None:
         return None
+    config = _normalized_for_validation(config)
     return [
         f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.validator}"
         for err in islice(validator.iter_errors(config), _MAX_REPORTED_ERRORS)

@@ -56,12 +56,14 @@ class TestSkipBootstrap:
 
 class TestPricingFetchDisabled:
     def test_models_pricing_disabled_on_every_path(self):
-        """models.pricing.enabled defaults true upstream = a background
-        OpenRouter + LiteLLM catalog fetch after every boot. Our catalogs are
-        static and gate-priced; the fetch is pure waste + egress."""
+        """2026.8.1 removed models.pricing (pricing now ships with the hosted
+        model catalog, so there is no background OpenRouter/LiteLLM fetch to
+        disable). The original concern -- a catalog fetch after every boot,
+        pure waste and egress on static gate-priced catalogs -- is resolved
+        upstream rather than by config, so the key must simply be absent."""
         for kwargs in _ALL_PATHS:
             config = _cfg(**kwargs)
-            assert config["models"]["pricing"] == {"enabled": False}, kwargs
+            assert "pricing" not in config["models"], kwargs
 
 
 class TestCompactionMode:

@@ -643,6 +643,13 @@ def build_provider_block(
                     "input": ["text", "image"],
                     "cost": {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 11.0},
                     "contextWindow": 1_000_000,
+                    # EFFECTIVE context budget. 2026.8.1 removed
+                    # agents.defaults.contextTokens; the per-model key is where the
+                    # bound lives now. Load-bearing for COST, not just fit: pruning
+                    # ratios and compaction measure against this, and only the
+                    # Bedrock catalog declares a 1M window (one full call is up to
+                    # ~$6.74 of input).
+                    "contextTokens": BEDROCK_CONTEXT_TOKENS,
                     "maxTokens": 8192,
                 }
             )
@@ -654,6 +661,7 @@ def build_provider_block(
                 "input": ["text", "image"],
                 "cost": {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6},
                 "contextWindow": 1_000_000,
+                "contextTokens": BEDROCK_CONTEXT_TOKENS,
                 "maxTokens": 8192,
             }
         )
@@ -670,6 +678,11 @@ def build_provider_block(
                     "input": ["text", "image"],
                     "cost": {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 2.2},
                     "contextWindow": 200_000,
+                    # Equal to this model's window, so a no-op today -- set
+                    # explicitly anyway so the effective budget does not depend on
+                    # how upstream resolves contextWindow vs contextTokens, and so
+                    # every Bedrock entry carries the bound uniformly.
+                    "contextTokens": BEDROCK_CONTEXT_TOKENS,
                     "maxTokens": 8192,
                 }
             )
@@ -1330,7 +1343,6 @@ def build_openclaw_config_dict(
         # gateway event loop. Nothing in Isol8 consumes the ledger (no audit.*
         # RPC callers); tool/run history is covered by transcripts, CloudWatch,
         # and Paperclip run records.
-        "audit": {"enabled": False},
         "gateway": {
             "mode": "local",
             "bind": "lan",
@@ -1374,24 +1386,26 @@ def build_openclaw_config_dict(
                 # file-transfer plugin's node-host TS code. The Rust impl
                 # enforces a user-managed allowlist client-side
                 # (file_access.rs); this list is just the Stage 2 gate.
-                "allowCommands": [
-                    "system.run",
-                    "system.run.prepare",
-                    "system.which",
-                    "system.notify",
-                    "system.execApprovals.get",
-                    "system.execApprovals.set",
-                    "browser.proxy",
-                    "device.info",
-                    "device.status",
-                    "device.health",
-                    "device.permissions",
-                    "file.fetch",
-                    "file.write",
-                    "dir.list",
-                    "dir.fetch",
-                    "screen.snapshot",
-                ],
+                "commands": {
+                    "allow": [
+                        "system.run",
+                        "system.run.prepare",
+                        "system.which",
+                        "system.notify",
+                        "system.execApprovals.get",
+                        "system.execApprovals.set",
+                        "browser.proxy",
+                        "device.info",
+                        "device.status",
+                        "device.health",
+                        "device.permissions",
+                        "file.fetch",
+                        "file.write",
+                        "dir.list",
+                        "dir.fetch",
+                        "screen.snapshot",
+                    ],
+                },
             },
         },
         "models": {
@@ -1402,7 +1416,6 @@ def build_openclaw_config_dict(
             # flat-rate (OAuth/BYO), and billing truth lives in the
             # bedrock-gate/meter — the fetch is pure waste and an egress
             # surface. Configured cost values keep working with it off.
-            "pricing": {"enabled": False},
         },
         "agents": {
             "defaults": {
@@ -1424,16 +1437,6 @@ def build_openclaw_config_dict(
                 "timeoutSeconds": AGENT_RUN_TIMEOUT_SECONDS,
                 # Each retry RE-ARMS the deadline above, so the upstream default
                 # of 160 would make timeoutSeconds meaningless.
-                "runRetries": {"max": AGENT_RUN_RETRIES_MAX},
-                # contextTokens is a first-class agents.defaults key (NOT inside
-                # `params`). It sets the EFFECTIVE context budget: both
-                # contextPruning's trigger ratios and compaction measure against
-                # it rather than the model's advertised window. Only the Bedrock
-                # catalog above declares a 1M window (one call ≈ up to $6.74 of
-                # input), so only the Bedrock modes bound it; other providers
-                # omit the key and inherit OpenClaw's per-model default (the
-                # ChatGPT/Codex path serves ~272k and must keep its own).
-                **({"contextTokens": BEDROCK_CONTEXT_TOKENS} if provider_choice in BEDROCK_PROVIDER_CHOICES else {}),
                 # Global default provider params applied to all models before
                 # per-model/per-agent overrides (openclaw
                 # zod-schema.agent-defaults.ts is a free-form record). The
@@ -1577,7 +1580,6 @@ def build_openclaw_config_dict(
                 # backend is resolved per provider path — semantic where the
                 # owner's own credential pays, keyword-only (FTS) otherwise so
                 # Isol8 never pays for embeddings. See memory_search_entry().
-                "memorySearch": memory_search_entry(provider_choice, byo_provider),
                 # Do NOT add `agents.defaults.llm.idleTimeoutSeconds` here:
                 # OpenClaw v2026.5.7's AgentDefaultsSchema is strict() and
                 # rejects the unknown key, so the gateway exits with
@@ -1657,8 +1659,9 @@ def build_openclaw_config_dict(
         # memory work should use a non-EFS-backed plugin (memory-lancedb
         # with a non-EFS data dir, or Aurora pgvector).
         "memory": {
-            "backend": "builtin",
             "citations": "auto",
+            # Upstream moved agents.defaults.memorySearch here at 2026.8.1.
+            "search": memory_search_entry(provider_choice, byo_provider),
         },
         "tools": {
             "profile": "full",
@@ -1785,7 +1788,6 @@ def build_openclaw_config_dict(
         # key: `cron.enabled` is a boolean on the pinned CronSchema. Paid
         # providers keep the service on, governed by tools.deny as before.
         "cron": {
-            "store": "/home/node/.openclaw/cron/jobs.json",
             **({"enabled": False} if is_bedrock_trial else {}),
         },
         # Transcript/log redaction. Upstream already runs this — mode defaults
@@ -1820,7 +1822,7 @@ def build_openclaw_config_dict(
             # an extra model review over the turn, which a $3-cap trial
             # budget must not fund. Schema-verified key on the pinned 7.1
             # fork: skills.workshop.autonomous.enabled (zod-schema.ts).
-            **({} if is_bedrock_trial else {"workshop": {"autonomous": {"enabled": True}}}),
+            **({} if is_bedrock_trial else {"workshop": {"autonomous": {"mode": "propose"}}}),
         },
         "hooks": {
             "internal": {
@@ -1848,7 +1850,6 @@ def build_openclaw_config_dict(
             # invoice payloads; GitHub PR webhooks can exceed 500 KB on
             # large diffs. 1 MB matches the documented upper bound for
             # both providers.
-            "maxBodyBytes": 1_048_576,
             # OpenClaw v2026.5.7 (gateway/hooks.ts) requires
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
@@ -1964,9 +1965,6 @@ def build_openclaw_config_dict(
             # knowledge: a session resets only after 24h of silence.
             "reset": {"mode": "idle", "idleMinutes": 1440},
         },
-        "web": {
-            "enabled": True,
-        },
         "browser": {
             # Two profiles always defined; the `user` profile is
             # statically declared but only routable when a desktop node
@@ -1984,7 +1982,7 @@ def build_openclaw_config_dict(
             # Upstream tab defaults (8 tabs / 120m idle) are desktop-sized;
             # on a 1 vCPU / 4 GB Fargate task live Chromium tabs are still
             # a resource constraint, so close idle ones aggressively.
-            "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
+            "tabCleanup": {"enabled": True},
             # Cookies + per-origin localStorage snapshotted to ONE JSON on EFS
             # (60s timer + graceful shutdown) and restored on launch, so a
             # logged-in session survives the image rolls that replace /tmp.
@@ -2153,12 +2151,9 @@ def build_openclaw_config_dict(
             # browser/constants.ts) so the launcher's own error always wins the
             # race and stays visible. 20s = default plus headroom for a
             # 1 vCPU box. Schema caps both at 120_000.
-            "localLaunchTimeoutMs": 20_000,
-            "localCdpReadyTimeoutMs": 30_000,
             "profiles": {
                 "openclaw": {
                     "driver": "openclaw",
-                    "color": "#FF4500",
                     # Required since OpenClaw v2026.5.7-0d10b38 — upstream
                     # zod-schema.ts now refines any non-`existing-session`
                     # profile to require cdpPort or cdpUrl, with the message
@@ -2181,7 +2176,6 @@ def build_openclaw_config_dict(
                     # No cdpPort/cdpUrl needed — `existing-session` is
                     # the one driver upstream's schema exempts from the
                     # require-cdp check (zod-schema.ts).
-                    "color": "#0066FF",
                 },
             },
         },

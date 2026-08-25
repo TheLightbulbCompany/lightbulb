@@ -2079,3 +2079,65 @@ async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
     # available while every backend replica learns the recovery guard.
     assert os.path.isfile(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
     assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock.isol8-guard"))
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_aux_mutations_appends_into_keyed_entries_shape(tmp_path, monkeypatch):
+    """OpenClaw 2026.8.1 renamed agents.list -> agents.entries (record keyed by
+    id, id stripped from the value), and boot ``doctor --fix`` rewrites the
+    on-EFS file into that shape. Upstream's reader then returns ``entries`` and
+    IGNORES ``list``, so appending to ``list`` against a migrated config writes
+    to a dead key: a marketplace deploy or an Atlas-scaffolded specialist would
+    silently never appear in the roster. Append into whichever shape is present.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_keyed"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"entries": {"agent_friday": {"name": "Friday", "default": true}}}}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_keyed",
+        plugins_patch={},
+        agent_entry={"id": "agent_new", "name": "Ray", "skills": ["mcp-resy"]},
+    )
+
+    written = json.loads(config_path.read_text())
+    entries = written["agents"]["entries"]
+    assert set(entries) == {"agent_friday", "agent_new"}
+    # id is the KEY and must not survive inside the value: upstream's
+    # AgentEntrySchema.omit({ id: true }) rejects it on a strict parse.
+    assert "id" not in entries["agent_new"]
+    assert entries["agent_new"]["skills"] == ["mcp-resy"]
+    # The CEO marker is what satisfies the multi-agent roster refinement.
+    assert entries["agent_friday"]["default"] is True
+    # Never leave both shapes populated -- upstream would ignore the stale one.
+    assert "list" not in written["agents"]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_aux_mutations_keeps_list_shape_when_not_migrated(tmp_path, monkeypatch):
+    """A config doctor has not migrated yet must stay on agents.list -- writing
+    ``entries`` early would strand the roster on a base that still reads a list.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "user_listy"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text('{"agents": {"list": [{"id": "agent_friday", "default": true}]}}')
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+
+    await config_patcher.apply_deploy_aux_mutations(
+        "user_listy",
+        plugins_patch={},
+        agent_entry={"id": "agent_new", "name": "Ray"},
+    )
+
+    written = json.loads(config_path.read_text())
+    assert "entries" not in written["agents"]
+    assert {a["id"] for a in written["agents"]["list"]} == {"agent_friday", "agent_new"}

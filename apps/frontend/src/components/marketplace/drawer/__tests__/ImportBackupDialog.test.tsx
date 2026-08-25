@@ -51,7 +51,10 @@ describe("ImportBackupDialog", () => {
     mockRead.mockReturnValue({ data: ROSTER, isLoading: false, error: undefined });
     global.fetch = vi.fn().mockResolvedValue({ ok: true }) as unknown as typeof fetch;
   });
-  afterEach(() => { global.fetch = realFetch; });
+  afterEach(() => {
+    global.fetch = realFetch;
+    delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
+  });
 
   it("presigns, PUTs to S3, previews, confirms the checklist", async () => {
     mockPost.mockImplementation(async (url: string) => {
@@ -179,6 +182,39 @@ describe("ImportBackupDialog", () => {
     expect(onImported).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /done/i }));
     expect(onImported).toHaveBeenCalledWith("agent1");
+  });
+
+  it("desktop: Import from this Mac rides the same presign→PUT→scan path as the file input", async () => {
+    const invoke = vi.fn().mockResolvedValue({ base64: btoa("gzip-bytes"), file_count: 3, total_bytes: 42 });
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    mockPost.mockImplementation(async (url: string) => {
+      if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
+      if (url === "/marketplace/import") return CLAUDE_PREVIEW;
+      throw new Error("unexpected " + url);
+    });
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /import from this mac/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/marketplace/import/presign", expect.objectContaining({ filename: "claude-code.tar.gz" })));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("https://s3/put", expect.objectContaining({ method: "PUT" })));
+    expect(invoke).toHaveBeenCalledWith("export_claude_context");
+    expect(await screen.findByText("Claude Code context")).toBeInTheDocument();
+  });
+
+  it("desktop: a rejected invoke renders the Rust error message verbatim", async () => {
+    const invoke = vi.fn().mockRejectedValue("No Claude Code data found at ~/.claude on this Mac.");
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /import from this mac/i }));
+    expect(await screen.findByText("No Claude Code data found at ~/.claude on this Mac.")).toBeInTheDocument();
+    expect(mockPost).not.toHaveBeenCalled();
+    // back on the pick phase — the fallback file input is usable again
+    expect(screen.getByLabelText(/choose a backup archive/i)).toBeEnabled();
+  });
+
+  it("browser: without the Tauri bridge the button does not render", () => {
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
+    expect(screen.getByLabelText(/choose a backup archive/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /import from this mac/i })).not.toBeInTheDocument();
   });
 
   it("renders safety flags in the preview", async () => {

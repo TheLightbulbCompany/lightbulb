@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,6 +20,17 @@ function errMessage(e: unknown): string {
 }
 
 function mb(bytes: number) { return `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
+
+// Same local bridge-detection pattern as components/desktop/DesktopFileAccess:
+// the Tauri webview injects window.__TAURI__; a regular browser never has it.
+type TauriInvoke = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+function getTauriInvoke(): TauriInvoke | null {
+  if (typeof window === "undefined") return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const invoke = (window as any).__TAURI__?.core?.invoke as TauriInvoke | undefined;
+  return invoke ?? null;
+}
 
 export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   open: boolean; onOpenChange: (open: boolean) => void; onImported: (agentId: string) => void;
@@ -43,6 +54,10 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [target, setTarget] = useState("");
   const [claudeCols, setClaudeCols] = useState<Set<string>>(new Set());
   const [claudeItems, setClaudeItems] = useState<NonNullable<ImportConfirmResult["claude_items"]> | null>(null);
+  // Set post-mount (SSR-safe, same as DesktopFileAccess) — non-null only in
+  // the Tauri webview, where the one-click "Import from this Mac" renders.
+  const [tauriInvoke, setTauriInvoke] = useState<TauriInvoke | null>(null);
+  useEffect(() => { setTauriInvoke(() => getTauriInvoke()); }, []);
 
   // Null key until a claude preview exists — SWR's canonical "skip the
   // request" signal, so backup imports never hit the Teams BFF.
@@ -76,6 +91,21 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
     } catch (e) {
       setError(errMessage(e)); setPhase("pick");
       if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  // Desktop one-click path: the Rust command packages the allowlisted
+  // ~/.claude slice; the result feeds the SAME handleFile flow the file
+  // input uses. Its Err strings are user-facing and render verbatim.
+  async function importFromThisMac() {
+    if (!tauriInvoke) return;
+    setError(null); setPhase("uploading");
+    try {
+      const exported = await tauriInvoke<{ base64: string; file_count: number; total_bytes: number }>("export_claude_context");
+      const bytes = Uint8Array.from(atob(exported.base64), (c) => c.charCodeAt(0));
+      await handleFile(new File([bytes], "claude-code.tar.gz", { type: "application/gzip" }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e)); setPhase("pick");
     }
   }
 
@@ -151,12 +181,18 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           <DialogDescription>
             Run <code className="font-mono text-[12px]">openclaw backup create</code> on your machine and upload the
             <code className="font-mono text-[12px]"> .tar.gz</code>. Pick what comes along; nothing is minted until you confirm.
-            Or import your Claude Code context: run{" "}
+            Or import your Claude Code context{tauriInvoke ? " with the button below — or, from a terminal:" : ": run"}{" "}
             <code className="font-mono text-[12px]">cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills</code>{" "}
             (include whichever exist) and upload it.
           </DialogDescription>
         </DialogHeader>
 
+        {(phase === "pick" || phase === "uploading" || phase === "scanning") && tauriInvoke && (
+          <button type="button" onClick={() => void importFromThisMac()} disabled={busy}
+            className="w-full rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+            Import from this Mac
+          </button>
+        )}
         {(phase === "pick" || phase === "uploading" || phase === "scanning") && (
           <label className="block rounded-2xl border border-dashed border-[var(--edge)] p-5 text-center text-[13px]">
             <input ref={inputRef} type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" aria-label="Choose a backup archive"

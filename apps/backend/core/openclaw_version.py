@@ -129,6 +129,18 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def version_at_least(version: str, target: str) -> bool:
+    """True when dotted ``version`` >= dotted ``target``.
+
+    Split out of :func:`deployed_upstream_at_least` so a caller that already
+    knows which image a config will run on can compare against THAT rather
+    than against this environment's pin. The pin is only correct for a fresh
+    provision; a live container can lag it, and during a promotion or a
+    rollback it lags it by a whole upstream version.
+    """
+    return _version_tuple(version) >= _version_tuple(target)
+
+
 def deployed_upstream_at_least(target: str) -> bool:
     """True when the extended image deployed to THIS environment is at least
     ``target`` (an upstream version such as ``2026.6.1``).
@@ -141,7 +153,7 @@ def deployed_upstream_at_least(target: str) -> bool:
     once this environment's deployed image actually supports it, and flips
     per-environment as each tag is promoted.
     """
-    return _version_tuple(deployed_upstream_version()) >= _version_tuple(target)
+    return version_at_least(deployed_upstream_version(), target)
 
 
 # Extended tags are ``<upstream>-isol8.<n>-<shortsha>`` (e.g.

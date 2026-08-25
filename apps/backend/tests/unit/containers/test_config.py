@@ -8,7 +8,6 @@ import pytest
 
 
 from core.containers.config import (
-    DEPLOYED_UPSTREAM_VERSION,
     build_openclaw_config_dict,
     write_openclaw_config,
 )
@@ -37,6 +36,13 @@ def _cfg(provider_choice: str = "bedrock_claude", **kwargs) -> dict:
     }
     defaults.update(kwargs)
     return build_openclaw_config_dict(**defaults)
+
+
+def _version_parses_as_semver(value: str) -> bool:
+    """Upstream compareOpenClawVersions needs dotted numerics; an arbitrary
+    string trips warnIfConfigFromFuture instead of comparing cleanly."""
+    parts = value.split(".")
+    return len(parts) >= 2 and all(p.isdigit() for p in parts)
 
 
 class TestOpenclawConfigShape:
@@ -83,9 +89,17 @@ class TestOpenclawConfigShape:
         """`meta.lastTouchedVersion` must be the real openclaw version
         (parses as semver in upstream's compareOpenClawVersions); arbitrary
         strings work for hasConfigMeta but trigger spurious "from future"
-        warnings in warnIfConfigFromFuture (io.ts)."""
+        warnings in warnIfConfigFromFuture (io.ts).
+
+        It tracks the TARGET image rather than this environment's pin. Stamping
+        the pin took the founder container down: a rollback to 7.2 wrote
+        lastTouchedVersion 2026.8.1 (the pin, mid-revert), and the 7.2 binary
+        refused to start -- "older than the config last written by OpenClaw
+        2026.8.1" -- before it ever parsed a key. The fallback-to-pin path a
+        fresh provision uses is covered in test_config_shape_gate.py."""
         config = _cfg()
-        assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
+        assert config["meta"]["lastTouchedVersion"] == "2026.8.1"  # forced by the directory fixture
+        assert _version_parses_as_semver(config["meta"]["lastTouchedVersion"])
 
     def test_agents_defaults_memory_search_enabled(self):
         # memorySearch is ON for every owner (memory-core registers

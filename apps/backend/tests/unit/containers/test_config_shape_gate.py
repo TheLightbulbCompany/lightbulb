@@ -17,9 +17,19 @@ one environment is on each side of it. These tests pin both.
 
 import pytest
 
-from core import openclaw_version
 from core.containers.config import build_openclaw_config_dict
 from core.services import config_schema
+
+
+@pytest.fixture(autouse=True)
+def _emit_81_config_shape():
+    """Override the directory-wide fixture, which pins every config to the 8.1
+    shape. This module's whole job is to exercise BOTH sides of the gate, and it
+    does so the way production does -- by passing the tag of the image the
+    config will run on -- so it must not have the gate forced open.
+    """
+    yield
+
 
 _COMMON = {"user_id": "u_1", "gateway_token": "t" * 32, "provider_choice": "chatgpt_oauth"}
 
@@ -28,8 +38,12 @@ _LEGACY_ROOT = ("audit", "web")
 
 
 def _cfg(monkeypatch, *, emit_81: bool) -> dict:
-    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: emit_81)
-    return build_openclaw_config_dict(**_COMMON)
+    # Drive the gate the way production does -- by the tag of the image the
+    # config will RUN on -- rather than by patching a version predicate. The
+    # predicate is no longer on the path: reading this environment's pin
+    # instead of the target image is the bug these tests now guard.
+    tag = "2026.8.1-isol8.1-1c67107" if emit_81 else "2026.7.2-isol8.8-8f700f0"
+    return build_openclaw_config_dict(**_COMMON, deployed_tag=tag)
 
 
 def test_81_shape_validates_against_the_81_schema(monkeypatch):
@@ -86,3 +100,45 @@ def test_node_command_allowlist_is_identical_across_shapes(monkeypatch, emit_81)
     assert "screen.snapshot" in allow
     assert "system.run" in allow
     assert len(allow) == 16
+
+
+# --- target-image derivation ------------------------------------------------
+#
+# Regression for a live founder-container outage. The rollback regen wrote
+# 8.1-only keys AND meta.lastTouchedVersion=2026.8.1 onto a 7.2 image, because
+# the shape gate and the meta stamp both read this ENVIRONMENT's pin (still 8.1
+# mid-rollback) rather than the image the config would actually run on. The 7.2
+# binary refused the stamp -- "older than the config last written by OpenClaw
+# 2026.8.1" -- before it ever reached the keys, and the container crash-looped.
+
+
+def _cfg_with_pin_ahead(monkeypatch, deployed_tag):
+    """Pin deliberately AHEAD of the target, i.e. mid-rollback."""
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.8.1-isol8.1-1c67107")
+    return build_openclaw_config_dict(**_COMMON, deployed_tag=deployed_tag)
+
+
+def test_rollback_target_gets_72_shape_and_stamp_despite_81_pin(monkeypatch):
+    cfg = _cfg_with_pin_ahead(monkeypatch, "2026.7.2-isol8.8-8f700f0")
+
+    assert cfg["meta"]["lastTouchedVersion"] == "2026.7.2"
+    assert "search" not in cfg.get("memory", {})
+    assert "commands" not in cfg.get("gateway", {}).get("nodes", {})
+    assert "mode" not in cfg.get("skills", {}).get("workshop", {}).get("autonomous", {})
+    assert cfg["memory"]["backend"] == "builtin"
+    assert "allowCommands" in cfg["gateway"]["nodes"]
+
+
+def test_forward_target_gets_81_shape_and_stamp(monkeypatch):
+    cfg = _cfg_with_pin_ahead(monkeypatch, "2026.8.1-isol8.1-1c67107")
+
+    assert cfg["meta"]["lastTouchedVersion"] == "2026.8.1"
+    assert "search" in cfg["memory"]
+    assert "backend" not in cfg["memory"]
+
+
+def test_absent_tag_falls_back_to_the_env_pin(monkeypatch):
+    """A fresh provision passes no tag; the pin IS correct for that case."""
+    cfg = _cfg_with_pin_ahead(monkeypatch, None)
+    assert cfg["meta"]["lastTouchedVersion"] == "2026.8.1"

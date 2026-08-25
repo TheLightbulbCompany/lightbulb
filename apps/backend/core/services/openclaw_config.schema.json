@@ -593,23 +593,6 @@
             }
           },
           "additionalProperties": false
-        },
-        "sessionState": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "intervalSeconds": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 86400
-            },
-            "path": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
         }
       },
       "additionalProperties": false

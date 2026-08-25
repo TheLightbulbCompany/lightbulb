@@ -545,19 +545,35 @@ class EcsManager:
             container = await container_repo.get_by_owner_id(owner_id)
             if not container or not container.get("task_definition_arn"):
                 return None
-            resp = await asyncio.to_thread(
-                self._ecs.describe_task_definition,
-                taskDefinition=container["task_definition_arn"],
-            )
-            defs = (resp.get("taskDefinition") or {}).get("containerDefinitions") or []
-            image = str((defs[0] if defs else {}).get("image") or "")
+            return await self._task_definition_image_tag(container["task_definition_arn"])
         except Exception:
             # A lookup failure must never fail the config write itself; it
             # only withholds the fork-gated keys until the next write.
             logger.warning("Could not read deployed image for owner %s; fork-gated config keys omitted", owner_id)
             return ""
-        # ``<registry>/<repo>:<tag>``; a digest-pinned image (``@sha256:…``)
-        # carries no tag at all — unknown, so the gate stays closed.
+
+    async def _base_image_tag(self) -> str:
+        """Tag of the image a REPLACEMENT task definition will run.
+
+        Provisioning clones the CDK-managed base family
+        (:meth:`_build_register_kwargs_from_base`), so on a fresh create or a
+        stopped-service scale-up the base family's image — not the owner's
+        previous task definition, and not the version pin (CDK may not have
+        deployed it yet) — is what reads the config being written. ``""`` when
+        it can't be read, which gates fork-level keys closed.
+        """
+        try:
+            return await self._task_definition_image_tag(self._base_task_def_family)
+        except Exception:
+            logger.warning("Could not read base task-definition image; fork-gated config keys omitted")
+            return ""
+
+    async def _task_definition_image_tag(self, task_definition: str) -> str:
+        """Image tag of a task definition's primary container; ``""`` when
+        it has none (a digest-pinned ``@sha256:…`` image carries no tag)."""
+        resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=task_definition)
+        defs = (resp.get("taskDefinition") or {}).get("containerDefinitions") or []
+        image = str((defs[0] if defs else {}).get("image") or "")
         if "@" in image:
             return ""
         _, sep, tag = image.rpartition(":")
@@ -3011,6 +3027,11 @@ class EcsManager:
                         hook_token=existing_hook_token,
                         owner_type=owner_type,
                         aip_arns=bedrock_aip_arns,
+                        # The replacement task-def registered below is cloned
+                        # from the base family — gate on THAT image, not the
+                        # stopped service's previous one (an image rollback
+                        # would otherwise carry a key the older schema rejects).
+                        deployed_tag=await self._base_image_tag(),
                     )
                 except ProvisionSuperseded:
                     raise
@@ -3306,6 +3327,7 @@ class EcsManager:
                 hook_token=hook_token,
                 owner_type=owner_type,
                 aip_arns=bedrock_aip_arns,
+                deployed_tag=await self._base_image_tag(),
             )
         except ProvisionSuperseded:
             raise
@@ -3721,8 +3743,14 @@ class EcsManager:
         hook_token: str | None = None,
         owner_type: str = "personal",
         aip_arns: dict[str, str] | None = None,
+        deployed_tag: str | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
+
+        ``deployed_tag`` is the tag of the image that will READ this config,
+        for fork-level-gated keys. Provisioning passes the base family's image
+        (the replacement task is cloned from it); a regen of a live container
+        leaves it ``None`` and the owner's registered task definition is used.
 
         Writes three files to the user's EFS workspace:
 
@@ -3887,7 +3915,8 @@ class EcsManager:
         get_workspace().ensure_xdg_dirs(owner_id)
 
         # The image this config will run on, for fork-level-gated keys.
-        deployed_tag = await self._deployed_image_tag(owner_id)
+        if deployed_tag is None:
+            deployed_tag = await self._deployed_image_tag(owner_id)
 
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(

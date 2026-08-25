@@ -219,38 +219,53 @@ if [ -d "$IMPORT_ROOT" ]; then
     _id=$(basename "$_src")
     case "$_id" in *[!A-Za-z0-9._-]*|"") log "import-state: ignoring bad agent dir name '$_id'"; continue ;; esac
     _dst="$STATE_ROOT/agents/$_id"
-    # Consume the hand-off ONLY on the first boot after the import — when the
-    # agent has no local database yet. On later boots step 3 restores the
-    # agent's own (evolved) database from litestream; re-installing the stale
-    # imported copy would clobber every conversation since the import. A
-    # lingering hand-off (its cleanup rm can fail, see below) is thus harmless.
-    if [ -f "$_dst/agent/openclaw-agent.sqlite" ]; then
-      log "import-state: agent $_id already has a local database — hand-off not re-applied"
-    elif [ -f "$_src/agent/openclaw-agent.sqlite" ] && \
-         ! sqlite3 "$_src/agent/openclaw-agent.sqlite" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
-      # Corrupt import: retain the whole hand-off for diagnosis, install nothing.
+    # Apply each hand-off EXACTLY once. The hand-off can linger on EFS after it
+    # is applied (its cleanup rm can fail — see below) AND it can co-exist with a
+    # local database that step 3 restored from litestream. That local database is
+    # ambiguous: on the FIRST boot after the import it is the empty stub the
+    # freshly-registered agent produced before the bounce — the agent is created
+    # LIVE against the running container, so litestream can replicate that stub to
+    # S3 within its debounce window, before the bounce — and the import must WIN
+    # over it; on a LATER boot it is the agent's own EVOLVED database and the
+    # import must NOT clobber it. File existence cannot tell the two apart, so we
+    # gate on a ".applied" marker written INSIDE the (uid-1000-owned, always
+    # writable) hand-off — which survives a failed cleanup rm — not on $_dst.
+    if [ -f "$_src/.applied" ]; then
+      log "import-state: hand-off for agent $_id already applied — not re-applying"
+      rm -rf "$_src" 2>/dev/null || true
+      continue
+    fi
+    if [ -f "$_src/agent/openclaw-agent.sqlite" ] && \
+       ! sqlite3 "$_src/agent/openclaw-agent.sqlite" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
+      # Corrupt import: retain the whole hand-off (unmarked) for diagnosis/retry,
+      # install nothing.
       log "import-state: database for agent $_id failed integrity_check — leaving the hand-off in place for diagnosis"
       continue
-    else
-      mkdir -p "$_dst/agent"
-      if [ -f "$_src/agent/openclaw-agent.sqlite" ]; then
-        mv "$_src/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite"
-        log "import-state: installed history database for agent $_id"
-      fi
-      if [ -d "$_src/sessions" ]; then
-        mkdir -p "$_dst/sessions"
-        cp -R "$_src/sessions/." "$_dst/sessions/"
-        log "import-state: installed legacy session files for agent $_id"
-      fi
-      chown -R 1000:1000 "$_dst" 2>/dev/null || true
     fi
+    mkdir -p "$_dst/agent"
+    if [ -f "$_src/agent/openclaw-agent.sqlite" ]; then
+      # Import wins: replace whatever litestream restored (a pre-bounce stub) and
+      # clear stale WAL/SHM sidecars so they can't be paired with the new db.
+      rm -f "$_dst/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite-wal" "$_dst/agent/openclaw-agent.sqlite-shm"
+      mv "$_src/agent/openclaw-agent.sqlite" "$_dst/agent/openclaw-agent.sqlite"
+      log "import-state: installed history database for agent $_id"
+    fi
+    if [ -d "$_src/sessions" ]; then
+      mkdir -p "$_dst/sessions"
+      cp -R "$_src/sessions/." "$_dst/sessions/"
+      log "import-state: installed legacy session files for agent $_id"
+    fi
+    chown -R 1000:1000 "$_dst" 2>/dev/null || true
+    # Mark applied INSIDE the hand-off (always writable by uid 1000) so a later
+    # boot never re-applies over the agent's evolved database, even when the
+    # cleanup rm below fails on the backend-owned parent dir.
+    : > "$_src/.applied" 2>/dev/null || true
     # Best-effort cleanup. The backend writes the hand-off through its
     # NON-squashed root EFS mount; this container sees EFS through a
     # uid-1000-SQUASHED access point, so it may be unable to unlink the
     # backend-owned parent dir. A failed removal must NEVER abort the boot
-    # (set -e) — the install-gate above re-skips any lingering hand-off once the
-    # local DB exists. (The backend also chowns the parents to 1000 so this
-    # normally succeeds.)
+    # (set -e) — the ".applied" marker above makes a lingering hand-off inert.
+    # (The backend also chowns the parents to 1000 so this normally succeeds.)
     rm -rf "$_src" 2>/dev/null || true
   done
   rmdir "$IMPORT_ROOT" 2>/dev/null || true

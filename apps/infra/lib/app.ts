@@ -174,8 +174,34 @@ pipeline.addStageWithGitHubOptions(devStage, {
 });
 
 // ---------------------------------------------------------------------------
-// Prod stage — deploy after manual approval
-// ---------------------------------------------------------------------------
+// Prod stage — deploy ONLY on a human `workflow_dispatch`
+//
+// Merging to main used to ship straight to production: dev deployed, then prod
+// deployed off the same run with nothing in between, so there was no
+// dev-validated state to sit on and every merge WAS a release.
+//
+// The package's documented manual-approval mechanism is `gitHubEnvironment` +
+// GitHub Environment protection rules, and that is unavailable on this plan.
+// Required reviewers and wait timers are public-repo-only on Free/Pro/Team;
+// this org is Team with a private repo, and the API says so:
+//
+//   PUT /repos/Isol8AI/isol8/environments/prod {"reviewers":[…]}
+//     422 Failed to create the environment protection rule. Please ensure the
+//         billing plan supports the required reviewers protection rule.
+//   PUT /repos/Isol8AI/isol8/environments/prod {"wait_timer":1}
+//     422 … supports the wait timer protection rule.
+//
+// (The `dev` and `prod` environments do exist, with `protection_rules: []` —
+// pointing jobs at them gates nothing.)
+//
+// So the gate is the workflow trigger instead: every prod stack Deploy job
+// carries `if: github.event_name == 'workflow_dispatch'`, via the stage-level
+// `jobSettings` the package exposes for exactly this. On `push` those jobs
+// skip; a human running the workflow from the Actions tab deploys them.
+// Nothing else changes — the job DAG, stack set, and ordering are identical,
+// and dev still deploys on every merge.
+const PROD_PROMOTE_IF = "github.event_name == 'workflow_dispatch'";
+
 const prodStage = new Isol8Stage(app, "prod", {
   env: awsEnv,
   environment: "prod",
@@ -186,6 +212,10 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     StackCapabilities.NAMED_IAM,
     StackCapabilities.AUTO_EXPAND,
   ],
+  // Reaches the 13 prod stack Deploy jobs only — `jobForGitHubActionStep`
+  // (pipeline.js:550) renders pipeline-level job settings, never the stage's,
+  // so DeployVercelProd is gated by an explicit patch further down.
+  jobSettings: { if: PROD_PROMOTE_IF },
   post: [
     // Deploy frontend to Vercel (production) and alias to isol8.co
     new GitHubActionStep("DeployVercelProd", {
@@ -268,6 +298,19 @@ pipeline.workflowFile.patch(
   // `deploy-workflow-retention.test.ts` asserts the setting is on the cdk.out
   // upload specifically.
   JsonPatch.add("/jobs/Build-Synth/steps/2/with/retention-days", 1),
+
+  // Gate the prod frontend release on the same `workflow_dispatch` condition
+  // the prod stack Deploy jobs get from `jobSettings` above.
+  //
+  // It would skip anyway — it `needs:` all 13 prod Deploy jobs, and a job whose
+  // dependencies all skip is itself skipped — but this job is the half users
+  // actually see (isol8.co, www, admin), so the fence is stated on the job
+  // rather than inferred from the shape of the DAG. `GitHubActionStep` has no
+  // `if` prop and stage `jobSettings` do not reach it, so a patch is the only
+  // route. Unlike the positional step patch above, the path is a job NAME, so
+  // it cannot land on the wrong job: rename the step and RFC 6902 fails to
+  // resolve the path and synth throws, rather than gating something else.
+  JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
 );
 
 

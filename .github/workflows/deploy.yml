@@ -1610,6 +1610,7 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
   prod-isol8-prod-auth-Deploy:
     name: Deploy prodisol8prodauthA33C6000
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1660,6 +1661,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-bedrock-gate-Deploy:
     name: Deploy prodisol8prodbedrockgateA724292D
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1710,6 +1712,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-bedrock-meter-Deploy:
     name: Deploy prodisol8prodbedrockmeter06FD23A6
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1761,6 +1764,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-dns-Deploy:
     name: Deploy prodisol8proddnsDD8021E9
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1809,6 +1813,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-agent-mail-outbound-Deploy:
     name: Deploy prodisol8prodagentmailoutboundCE2213B5
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1858,6 +1863,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-network-Deploy:
     name: Deploy prodisol8prodnetworkA1C1E8BB
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1908,6 +1914,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-ses-inbound-Deploy:
     name: Deploy prodisol8prodsesinbound4618E5F9
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -1962,6 +1969,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-container-Deploy:
     name: Deploy prodisol8prodcontainerCF1F02EA
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2013,6 +2021,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-database-Deploy:
     name: Deploy prodisol8proddatabaseC86ABE25
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2063,6 +2072,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-api-Deploy:
     name: Deploy prodisol8prodapiA563490F
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2120,6 +2130,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-paperclip-Deploy:
     name: Deploy prodisol8prodpaperclip2774FB95
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2172,6 +2183,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-service-Deploy:
     name: Deploy prodisol8prodservice6CABC6B4
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2230,6 +2242,7 @@ jobs:
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-isol8-prod-observability-Deploy:
     name: Deploy prodisol8prodobservability8583B78D
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -2375,6 +2388,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    if: github.event_name == 'workflow_dispatch'
 permissions:
   id-token: write
   contents: write

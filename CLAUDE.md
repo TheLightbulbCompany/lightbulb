@@ -159,6 +159,43 @@ gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 - **Frontend:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
 - **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
+
+**DEV DEPLOYS ON MERGE; PROD IS PROMOTED ON DEMAND.** Every prod job in `deploy.yml`
+carries `if: github.event_name == 'workflow_dispatch'`, so a push to `main` runs 52 of
+66 jobs (dev + assets) and **skips all 14 prod jobs**. To ship to prod, a human runs the
+workflow: Actions → deploy → Run workflow, or `gh workflow run deploy.yml --ref main`.
+A dispatch run deploys dev from that ref first — prod jobs still `needs:` the full dev
+stage, so a promotion cannot skip dev. The `isol8-deploy` concurrency group is unchanged,
+so a promotion queues behind an in-flight dev deploy.
+
+Set in `apps/infra/lib/app.ts` via `addStageWithGitHubOptions(prodStage, { jobSettings: { if: … } })`
+(the package's own public API) plus ONE `JsonPatch` for `prod-DeployVercelProd` — a
+`GitHubActionStep` has no `if` prop and stage `jobSettings` never reach it. Guarded by
+`apps/infra/test/deploy-prod-promotion.test.ts`, which fails by job name if any prod job
+loses its gate.
+
+⚠️ **Why not GitHub Environments** (the route `cdk-pipelines-github`'s README documents as
+its "Manual Approval Step"): required reviewers and wait timers are **Enterprise-only for
+private repos**. This org is on **Team**, and the API confirms it —
+`PUT /repos/Isol8AI/isol8/environments/prod` with `reviewers` or `wait_timer` returns
+**422 "Please ensure the billing plan supports…"**. The `dev`/`prod` environments exist
+with `protection_rules: []`; pointing jobs at them gates nothing. Do not re-attempt this
+without an Enterprise upgrade (isol8 #2016 tried it and was closed).
+
+⚠️ **`workflow_dispatch` only needs WRITE access, and `Isol8Admin` (the Forge agent's own
+GitHub identity) has repo ADMIN.** So the promotion gate stops accidents, not a determined
+agent — Forge can dispatch its own prod deploy. Treat this as a permissions decision, not a
+solved gate.
+
+⚠️ **`.github/workflows/deploy.yml` is GENERATED** from `apps/infra/lib/app.ts` by
+`cdk-pipelines-github`, and its own drift guard only throws when
+`process.env.GITHUB_WORKFLOW` matches the pipeline's workflow name — i.e. **inside the
+deploy run, post-merge**. Locally, `cdk synth` silently REWRITES the file instead of
+complaining. So any change touching `apps/infra/lib/` must run `cd apps/infra && npx cdk synth`
+and **commit the regenerated `deploy.yml` in the same PR**. `infra-ci.yml` now enforces this
+on the PR (isol8 #2004) after four separate incidents where drift blocked every dev+prod
+deploy job. `npx cdk synth` needs a running Docker daemon — this machine runs **OrbStack**
+(`open -a OrbStack`), not Docker Desktop.
 - **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.

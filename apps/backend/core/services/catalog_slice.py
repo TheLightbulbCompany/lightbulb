@@ -18,6 +18,8 @@ import enum
 from collections.abc import Iterable
 from typing import Any
 
+from core import openclaw_version
+
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 
 # Top-level agent-entry keys that upstream removed from the strict
@@ -82,6 +84,30 @@ ALLOWED_AGENT_ENTRY_KEYS = frozenset(
         "runtime",
     }
 )
+
+# Entry keys 2026.8.1 removed from AgentEntrySchema. The whitelist above is
+# derived from the 7.2 schema, so without this a slice extracted from a 7.2-era
+# container (a marketplace republish, or a backup import) carries them through
+# and apply_deploy_aux_mutations -- which gates untrusted slices with
+# enforce_schema=True -- rejects the whole deploy on an 8.1 container.
+#
+# Verified against the vendored 8.1 schema rather than assumed: `models` is
+# STILL VALID on an entry at 8.1 (AgentModelRuntimeEntrySchema) and must not be
+# dropped; only these three are rejected.
+_REMOVED_AT_2026_8_1 = frozenset({"runRetries", "memorySearch", "contextTokens"})
+
+
+def _allowed_agent_entry_keys() -> frozenset[str]:
+    """Whitelist narrowed to what the DEPLOYED image's schema still accepts.
+
+    Resolved per call, not at import: the gate flips per environment as each tag
+    is promoted, and a module-level constant would freeze whichever value the
+    process happened to start with.
+    """
+    if openclaw_version.deployed_upstream_at_least("2026.8.1"):
+        return ALLOWED_AGENT_ENTRY_KEYS - _REMOVED_AT_2026_8_1
+    return ALLOWED_AGENT_ENTRY_KEYS
+
 
 # Provider plugins are user-config (the buyer picked a provider at signup),
 # not agent-config. Shipping them in the slice would deep-merge over the
@@ -333,7 +359,7 @@ def sanitize_agent_entry_for_schema(agent_entry: dict[str, Any]) -> tuple[dict[s
     surface what was removed.
     """
     result = copy.deepcopy(agent_entry)
-    dropped = sorted(k for k in result if k not in ALLOWED_AGENT_ENTRY_KEYS)
+    dropped = sorted(k for k in result if k not in _allowed_agent_entry_keys())
     for key in dropped:
         result.pop(key, None)
     return result, dropped

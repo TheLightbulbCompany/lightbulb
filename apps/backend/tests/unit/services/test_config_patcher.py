@@ -2141,3 +2141,49 @@ async def test_apply_deploy_aux_mutations_keeps_list_shape_when_not_migrated(tmp
     written = json.loads(config_path.read_text())
     assert "entries" not in written["agents"]
     assert {a["id"] for a in written["agents"]["list"]} == {"agent_friday", "agent_new"}
+
+
+@pytest.mark.asyncio
+async def test_strip_removed_agent_keys_works_on_the_keyed_entries_shape(tmp_path, monkeypatch):
+    """This scrubber exists to clear keys a newer strict schema rejects BEFORE a
+    container is rolled onto that image. Reading only agents.list would make it a
+    silent no-op once boot doctor migrates the file to agents.entries -- and a
+    scrubber that quietly does nothing fails the very roll it was added to
+    protect, which is worse than not having it.
+    """
+    from core.services import config_patcher
+
+    config_dir = tmp_path / "owner_keyed"
+    config_dir.mkdir()
+    config_path = config_dir / "openclaw.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"model": {"primary": "openai/gpt-5.5"}, "embeddedHarness": {}},
+                    "entries": {
+                        "agent_friday": {
+                            "default": True,
+                            "skills": ["search"],
+                            "agentRuntime": {"maxTurns": 50},
+                        }
+                    },
+                }
+            }
+        )
+    )
+
+    monkeypatch.setattr(config_patcher, "_efs_mount_path", str(tmp_path))
+    await config_patcher.strip_removed_agent_keys(
+        "owner_keyed", defaults_keys=("embeddedHarness",), entry_keys=("agentRuntime",)
+    )
+
+    written = json.loads(config_path.read_text())
+    assert "embeddedHarness" not in written["agents"]["defaults"]
+    entry = written["agents"]["entries"]["agent_friday"]
+    assert "agentRuntime" not in entry
+    # Untouched fields survive, the shape is preserved, and id stays the key.
+    assert entry["skills"] == ["search"]
+    assert entry["default"] is True
+    assert "id" not in entry
+    assert "list" not in written["agents"]

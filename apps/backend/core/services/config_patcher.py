@@ -977,14 +977,21 @@ async def strip_removed_agent_keys(
                 if key in defaults:
                     del defaults[key]
                     changed = True
-        entries = agents.get("list")
-        if isinstance(entries, list):
-            for entry in entries:
-                if isinstance(entry, dict):
-                    for key in entry_set:
-                        if key in entry:
-                            del entry[key]
-                            changed = True
+        # Roster-shape aware: after boot doctor migrates the file to
+        # agents.entries, reading only agents.list makes this scrubber a SILENT
+        # NO-OP -- and this function's whole job is to clear keys a newer strict
+        # schema rejects before the container is rolled onto it. Failing quietly
+        # here means the roll it was meant to protect fails instead.
+        roster_shape, roster = _read_agent_roster(agents)
+        for entry in roster:
+            if not isinstance(entry, dict):
+                continue
+            for key in entry_set:
+                if key in entry:
+                    del entry[key]
+                    changed = True
+        if changed and roster:
+            _write_agent_roster(agents, roster_shape, roster)
         return changed
 
     await _locked_rmw(owner_id, _mutate, "strip removed agent keys")

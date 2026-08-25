@@ -253,7 +253,10 @@ class TestBrowserBounds:
         wide.
         """
         with patch.object(config_module.settings, "BROWSER_EGRESS_PROXY_PORT", 0):
-            assert not [a for a in _cfg()["browser"]["extraArgs"] if "proxy" in a]
+            browser = _cfg()["browser"]
+        assert not [a for a in browser["extraArgs"] if "proxy" in a]
+        # And upstream's SSRF fence stays at its fail-closed default.
+        assert "ssrfPolicy" not in browser
 
     def test_browser_egress_proxy_flag_when_enabled(self):
         """When on: exactly one flag, a data: PAC that routes through the WARP
@@ -267,8 +270,13 @@ class TestBrowserBounds:
         with no working browser at all.
         """
         with patch.object(config_module.settings, "BROWSER_EGRESS_PROXY_PORT", 40000):
-            flags = [a for a in _cfg()["browser"]["extraArgs"] if "proxy" in a]
+            browser = _cfg()["browser"]
+        flags = [a for a in browser["extraArgs"] if "proxy" in a]
         assert len(flags) == 1, flags
+        # A proxy-routed profile is refused EVERY navigation by OpenClaw's
+        # navigation guard unless this is set; the flag alone leaves the
+        # agent's browser tool unable to open any URL.
+        assert browser["ssrfPolicy"] == {"dangerouslyAllowPrivateNetwork": True}
         prefix = "--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,"
         assert flags[0].startswith(prefix)
         pac = base64.b64decode(flags[0][len(prefix) :]).decode()

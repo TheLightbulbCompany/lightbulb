@@ -2086,6 +2086,17 @@ def build_openclaw_config_dict(
                 # knob on. Appends at most one flag; see _browser_egress_args.
                 *_browser_egress_args(),
             ],
+            # The WARP PAC makes this a proxy-routed profile, and OpenClaw
+            # refuses EVERY navigation on one unless its Node-side private-
+            # network check is switched off (extensions/browser navigation-
+            # guard: "strict browser SSRF policy cannot be enforced while this
+            # browser profile is proxy-routed" — it can't see the connect
+            # target behind a proxy, so it fails closed; hostname allowlists
+            # don't bypass it). Off ONLY while the proxy is on. Nothing new is
+            # exposed: the agent's `exec: full` shell already reaches anything
+            # the browser could, and proxied traffic egresses from Cloudflare,
+            # not this VPC.
+            **({"ssrfPolicy": {"dangerouslyAllowPrivateNetwork": True}} if settings.BROWSER_EGRESS_PROXY_PORT else {}),
             # NO crash-reporter extraArgs. `--disable-breakpad` +
             # `--crash-dumps-dir` were added here (#1594) on the theory that
             # Chrome's `chrome_crashpad_handler: --database is required` abort

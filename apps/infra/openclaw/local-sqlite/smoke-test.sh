@@ -151,6 +151,34 @@ out=$(run_boot "$L" 2>&1) || fail "corrupt hand-off run exited nonzero: $out"
 echo "$out" | grep -q "failed integrity_check" || fail "no integrity-check failure log: $out"
 echo "PASS 2j corrupt hand-off db retained for diagnosis, sessions not installed"
 
+# ---- 2k. RACE, first boot: a local database already exists (the empty stub the
+# freshly-registered agent produced, which litestream replicated before the
+# bounce) but the hand-off is NOT yet applied (no .applied marker). The import
+# must WIN — overwrite the stub with the imported history.
+L="$WORK/t2k/local"
+mkdir -p "$L/import-state/agents/imp2/agent" "$L/agents/imp2/agent"
+sqlite3 "$L/import-state/agents/imp2/agent/openclaw-agent.sqlite" "CREATE TABLE handoff(x);"
+sqlite3 "$L/agents/imp2/agent/openclaw-agent.sqlite" "CREATE TABLE stub(x);"
+out=$(run_boot "$L" 2>&1) || fail "race-import-wins run exited nonzero: $out"
+sqlite3 "$L/agents/imp2/agent/openclaw-agent.sqlite" "SELECT name FROM sqlite_master WHERE type='table';" 2>/dev/null | grep -qx handoff \
+  || fail "import did not win over the pre-bounce stub: $out"
+echo "$out" | grep -q "installed history database for agent imp2" || fail "no install log: $out"
+echo "PASS 2k import wins over a pre-bounce stub on the first boot"
+
+# ---- 2l. ALREADY APPLIED: the hand-off carries a .applied marker (a later boot
+# where the cleanup rm failed and the hand-off lingered). The agent's own
+# evolved database must NOT be clobbered by the stale import.
+L="$WORK/t2l/local"
+mkdir -p "$L/import-state/agents/imp3/agent" "$L/agents/imp3/agent"
+sqlite3 "$L/import-state/agents/imp3/agent/openclaw-agent.sqlite" "CREATE TABLE handoff(x);"
+: > "$L/import-state/agents/imp3/.applied"
+sqlite3 "$L/agents/imp3/agent/openclaw-agent.sqlite" "CREATE TABLE evolved(x);"
+out=$(run_boot "$L" 2>&1) || fail "already-applied run exited nonzero: $out"
+sqlite3 "$L/agents/imp3/agent/openclaw-agent.sqlite" "SELECT name FROM sqlite_master WHERE type='table';" 2>/dev/null | grep -qx evolved \
+  || fail "evolved DB was clobbered by an already-applied hand-off: $out"
+echo "$out" | grep -q "already applied" || fail "no already-applied skip log: $out"
+echo "PASS 2l already-applied hand-off does not re-clobber the evolved database"
+
 # ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
 # the marker, so a failure leaves the marker for the next boot to retry.
 L="$WORK/t2g/local"; mkdir -p "$L"

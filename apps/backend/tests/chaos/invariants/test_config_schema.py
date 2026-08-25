@@ -22,6 +22,27 @@ from tests.chaos import strategies as ss
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "_schema"
 _VALIDATE = _SCHEMA_DIR / "validate.mjs"
 _BUNDLE = _SCHEMA_DIR / "openclaw-config-schema.mjs"
+_PINNED_TAG = _SCHEMA_DIR / "PINNED_TAG"
+
+
+def _vendored_tag() -> str | None:
+    """The extended tag the vendored zod bundle was generated FROM.
+
+    The config's shape is chosen by the image it will run on, so this test has
+    to generate for the image whose schema it validates against. That used to
+    be implicit -- it held only while openclaw-version.json's per-env pins and
+    the vendored bundle happened to be the same upstream version. They can
+    diverge for real: after the 8.1 rollback the pins went back to 7.2 while
+    `upstream` (and therefore the bundle) deliberately stayed on 8.1, so the
+    builder emitted the 7.2 shape and this test failed it against an 8.1
+    schema -- a mismatch in the HARNESS, not in the config.
+    """
+    if not _PINNED_TAG.exists():
+        return None
+    ref = _PINNED_TAG.read_text().strip()
+    return ref.rsplit(":", 1)[-1] or None
+
+
 _DUMMY_AIP = {
     "opus": "arn:aws:bedrock:us-east-1:0:inference-profile/opus",
     "sonnet": "arn:aws:bedrock:us-east-1:0:inference-profile/sonnet",
@@ -45,6 +66,7 @@ def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
         byo_provider=byo_provider if provider_choice == "byo_key" else None,
         owner_type=owner_type,
         aip_arns=_AIPS_BY_CHOICE.get(provider_choice),
+        deployed_tag=_vendored_tag(),
     )
 
 

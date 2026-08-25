@@ -39,6 +39,32 @@ logger = logging.getLogger(__name__)
 # promotion, and a provision in that window must not stamp a future version.
 DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 
+
+def _target_upstream(deployed_tag: str | None) -> str:
+    """Upstream version of the image this config will actually RUN on.
+
+    ``deployed_tag`` is the extended tag of that image (an image roll passes
+    the one it is rolling TO). Falls back to this environment's pin, which is
+    correct only for a fresh provision -- a live container can lag the pin by
+    several tags, and during a promotion or rollback it lags it by a whole
+    upstream version.
+
+    Everything version-shaped in the rendered config derives from THIS, not
+    from the pin. Reading the pin instead is what wrote 8.1-only keys and an
+    8.1 ``meta.lastTouchedVersion`` onto a 7.2 image during a founder
+    rollback: the 7.2 binary refused the stamp outright ("older than the
+    config last written by OpenClaw 2026.8.1") before it ever reached the
+    keys, and the container crash-looped.
+    """
+    prefix = (deployed_tag or "").split("-", 1)[0]
+    return prefix or openclaw_version.deployed_upstream_version()
+
+
+def _emits_81_shape(deployed_tag: str | None) -> bool:
+    """True when the TARGET image is 2026.8.1+ (see :func:`_target_upstream`)."""
+    return openclaw_version.version_at_least(_target_upstream(deployed_tag), "2026.8.1")
+
+
 # PAC served to the browser tool's Chrome when BROWSER_EGRESS_PROXY_PORT is set,
 # routing page loads through the container's Cloudflare WARP local proxy instead
 # of the AWS NAT IP. `%d` is that port.
@@ -515,6 +541,7 @@ def build_provider_block(
     user_id: str,
     byo_provider: str | None,
     aip_arns: dict[str, str] | None = None,
+    deployed_tag: str | None = None,
 ) -> tuple[dict, dict, dict]:
     """Build (models.providers, agents.defaults.model, plugins.entries) for the
     user's signup choice.
@@ -537,7 +564,7 @@ def build_provider_block(
     # Same shape gate as build_openclaw_config_dict: 2026.8.1 moved the
     # effective-context bound from agents.defaults onto the per-model entries,
     # so which side carries it depends on the image this environment runs.
-    _emit_81_shape = openclaw_version.deployed_upstream_at_least("2026.8.1")
+    _emit_81_shape = _emits_81_shape(deployed_tag)
     if provider_choice == "chatgpt_oauth":
         # ChatGPT OAuth resolves through OpenClaw's bundled `openai` provider
         # plugin, whose model catalog (gpt-5.5 / gpt-5.4-mini / …) is baked
@@ -1328,12 +1355,13 @@ def build_openclaw_config_dict(
 
     # See the per-key comments below: this selects the config SHAPE for the image
     # this environment is actually running, not the one we are building toward.
-    _emit_81_shape = openclaw_version.deployed_upstream_at_least("2026.8.1")
+    _emit_81_shape = _emits_81_shape(deployed_tag)
     providers_config, default_model, plugin_entries = build_provider_block(
         provider_choice=provider_choice,
         user_id=user_id,
         byo_provider=byo_provider,
         aip_arns=aip_arns,
+        deployed_tag=deployed_tag,
     )
     # The default agent runs on the cheaper standard tier (above); the CEO
     # (Friday) is pinned to the premium tier via a per-agent override below.
@@ -1365,7 +1393,7 @@ def build_openclaw_config_dict(
         # silently restoring from .bak and clobbering whatever we wrote.
         # Use the real upstream version so warnIfConfigFromFuture
         # (io.ts) parses it as semver and short-circuits cleanly.
-        "meta": {"lastTouchedVersion": DEPLOYED_UPSTREAM_VERSION},
+        "meta": {"lastTouchedVersion": _target_upstream(deployed_tag)},
         # 2026.8.1 made the root schema strict and retired a dozen keys we set.
         # Emit the shape THIS environment's deployed image actually accepts:
         # writing the 8.1 shape to a 7.2 container silently drops settings it

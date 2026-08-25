@@ -56,17 +56,23 @@ def _stub_bedrock_gate_tokens(monkeypatch, stub_gate_token):
 def _emit_81_config_shape(monkeypatch):
     """Emit the 2026.8.1 config shape in these tests.
 
-    ``build_openclaw_config_dict`` picks its shape from the image THIS
-    environment has deployed (``deployed_upstream_at_least``), because writing
-    the 8.1 shape to a container still on 7.2 silently drops settings it honours
-    and writing the 7.2 shape to an 8.1 container fails its strict parse. While
-    ``openclaw-version.json`` still pins dev/prod to 2026.7.2 the real default is
-    the 7.2 shape, so these assertions would otherwise test the branch we are
-    migrating away from.
+    ``build_openclaw_config_dict`` picks its shape from the image the config
+    will RUN on, because writing the 8.1 shape to a container still on 7.2
+    fails its strict parse and writing the 7.2 shape to an 8.1 container drops
+    settings it honours. While ``openclaw-version.json`` pins dev/prod to
+    2026.7.2 the real default is the 7.2 shape, so these assertions would
+    otherwise test the branch we are migrating away from.
 
-    The 7.2 branch is not left uncovered: ``test_config_shape_gate.py`` exercises
-    both sides of the gate explicitly.
+    Patches the TARGET-tag derivation rather than the old
+    ``deployed_upstream_at_least`` predicate, which is no longer on the path.
+    That matters: after the gate moved to the target tag, this fixture kept
+    patching a function nobody called, so 28 tests silently fell back to the
+    7.2 shape while still claiming to cover 8.1.
+
+    The 7.2 branch is not left uncovered: ``test_config_shape_gate.py`` drives
+    both sides by passing a real ``deployed_tag``.
     """
-    from core import openclaw_version
+    from core.containers import config as config_mod
 
-    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: True)
+    monkeypatch.setattr(config_mod, "_emits_81_shape", lambda deployed_tag: True)
+    monkeypatch.setattr(config_mod, "_target_upstream", lambda deployed_tag: "2026.8.1")

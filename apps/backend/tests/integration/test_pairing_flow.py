@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from core.containers.config import write_openclaw_config
+from core.services.agent_roster import roster_entries
 
 # Per-owner AIP ARNs (Plan 2). The config builder fails closed on the
 # bedrock_claude branch unless these are threaded through, so every bedrock
@@ -26,7 +27,7 @@ _AIPS = {
 @pytest.mark.asyncio
 async def test_provision_writes_paperclip_agents_into_config():
     """End-to-end: write_user_configs (via write_openclaw_config) emits
-    openclaw.json with agents.list keyed by Paperclip UUIDs."""
+    openclaw.json with the agent roster keyed by Paperclip UUIDs."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     paperclip_agents = [{"id": pc_uuid, "name": "Friday", "role": "ceo"}]
 
@@ -41,7 +42,9 @@ async def test_provision_writes_paperclip_agents_into_config():
             aip_arns=_AIPS,
         )
         cfg = json.loads(path.read_text())
-        agents = cfg["agents"]["list"]
+        # Shape-agnostic: 8.1 keys the roster under agents.entries, 7.2 uses
+        # the agents.list array (core/services/agent_roster.py).
+        agents = roster_entries(cfg)
         assert agents[0]["id"] == pc_uuid
         assert agents[0]["default"] is True
         assert agents[0]["workspace"] == f"/home/node/.openclaw/workspace-{pc_uuid}"
@@ -71,7 +74,7 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
             aip_arns=_AIPS,
         )
         cfg1 = json.loads(path.read_text())
-        assert [a["id"] for a in cfg1["agents"]["list"]] == [main_uuid]
+        assert [a["id"] for a in roster_entries(cfg1)] == [main_uuid]
 
         # Phase 2: simulating that the second agent was created via
         # /chat and registered in the container via agents.create RPC.
@@ -88,9 +91,9 @@ async def test_provision_then_chat_create_yields_single_uuid_per_agent():
             aip_arns=_AIPS,
         )
         cfg2 = json.loads(path.read_text())
-        assert sorted(a["id"] for a in cfg2["agents"]["list"]) == sorted([main_uuid, second_uuid])
+        assert sorted(a["id"] for a in roster_entries(cfg2)) == sorted([main_uuid, second_uuid])
         # Default still on the CEO.
-        defaults = [a for a in cfg2["agents"]["list"] if a.get("default")]
+        defaults = [a for a in roster_entries(cfg2) if a.get("default")]
         assert len(defaults) == 1
         assert defaults[0]["id"] == main_uuid
 

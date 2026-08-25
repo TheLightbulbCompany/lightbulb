@@ -63,6 +63,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
+from core.services.agent_roster import roster_entries
 from core.services.catalog_slice import (
     _scrub_plugins_block,
     _scrub_secret_fields,
@@ -564,11 +565,10 @@ def _history_for(source: BackupSource, agent_id: str) -> HistoryInfo | None:
 def list_agents(source: BackupSource) -> list[AgentCandidate]:
     agents_block = source.config.get("agents") if isinstance(source.config.get("agents"), dict) else {}
     defaults = agents_block.get("defaults") if isinstance(agents_block.get("defaults"), dict) else {}
-    entries = [
-        e
-        for e in (agents_block.get("list") or [])
-        if isinstance(e, dict) and isinstance(e.get("id"), str) and AGENT_ID_RE.match(e["id"])
-    ]
+    # Either roster shape: a backup taken from an OpenClaw 2026.8.1+ machine
+    # carries agents.entries, not agents.list, and reading only the latter
+    # silently collapses the whole import to a single synthetic "main" agent.
+    entries = [e for e in roster_entries(source.config) if isinstance(e.get("id"), str) and AGENT_ID_RE.match(e["id"])]
     if not entries:
         entries = [{"id": "main"}]
     out: list[AgentCandidate] = []

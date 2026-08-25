@@ -44,6 +44,7 @@ from typing import Any, Awaitable, Callable
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.services import agent_export
+from core.services.agent_roster import roster_entries
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
 from core.services.paperclip_credential_rule import (
@@ -996,9 +997,7 @@ class CatalogService:
             return None
 
         config = self._workspace.read_openclaw_config(owner_id) or {}
-        registered = {
-            agent.get("id") for agent in ((config.get("agents") or {}).get("list") or []) if isinstance(agent, dict)
-        }
+        registered = {agent.get("id") for agent in roster_entries(config)}
         if agent_id not in registered:
             return None
 

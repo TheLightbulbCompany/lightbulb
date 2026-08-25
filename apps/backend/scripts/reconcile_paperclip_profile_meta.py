@@ -56,6 +56,7 @@ import os
 from typing import Any
 
 from core.containers.config import read_openclaw_config_from_efs
+from core.services.agent_roster import roster_entries
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -223,7 +224,7 @@ async def _reconcile_company(
         # without it we have no opinion.
         return 0, 0
 
-    agents_list = ((config.get("agents") or {}).get("list")) or []
+    agents_list = roster_entries(config)
     openclaw_meta_by_id: dict[str, PaperclipMeta] = {}
     for entry in agents_list:
         if not isinstance(entry, dict):

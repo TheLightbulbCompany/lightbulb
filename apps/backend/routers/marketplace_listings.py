@@ -41,6 +41,7 @@ from core.services import (
     seller_profile,
 )
 from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
+from core.services.agent_roster import roster_entries
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
@@ -721,7 +722,7 @@ def _live_install_of(
     if not sidecars:
         return None
     config = get_workspace().read_openclaw_config(owner_id) or {}
-    registered = {a.get("id") for a in ((config.get("agents") or {}).get("list") or []) if isinstance(a, dict)}
+    registered = {a.get("id") for a in roster_entries(config)}
     return next((d for d in sidecars if d.get("agent_id") in registered), None)
 
 

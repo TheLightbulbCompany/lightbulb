@@ -1,5 +1,6 @@
 """Import an existing OpenClaw setup (an ``openclaw backup create`` archive, a
-plain tar of ``~/.openclaw``, or a bare agent workspace) into the owner's roster.
+plain tar of ``~/.openclaw``, or a bare agent workspace) or a Claude Code
+context (a tar of ``~/.claude``) into the owner's roster.
 
   POST /api/v1/marketplace/import/presign {filename, size_bytes}
        → presigned S3 PUT for imports/{owner}/{uuid}.tar.gz (browser uploads
@@ -11,11 +12,17 @@ plain tar of ``~/.openclaw``, or a bare agent workspace) into the owner's roster
          (core/services/openclaw_backup_import.py), both into EFS
          workspace-{import_id}/; delete the raw object → ImportPreviewResponse.
   POST /api/v1/marketplace/import/{import_id}/confirm ImportConfirmRequest
-       → Ultra gate (same predicate as the company-deploy branch) → for each
-         selected agent: restage → staging export → register_staged_agent_under_claim
-         (the Atlas mint → deploy_from_artifact → pair → rollback envelope) →
-         plugins (Task 7) → history hand-off (Task 8) → one container bounce if
-         either ran → staging removed only when every agent succeeded.
+       → claude staging (import-manifest.json kind == "claude"): apply the
+         selected collections/skills + user memory into target_agent_id's
+         workspace (claude_code_import.apply_to_workspace) → container bounce
+         if memory/skills landed → staging removed. No Ultra gate — nothing
+         here mints an agent.
+       → anything else: Ultra gate (same predicate as the company-deploy
+         branch) → for each selected agent: restage → staging export →
+         register_staged_agent_under_claim (the Atlas mint →
+         deploy_from_artifact → pair → rollback envelope) → plugins (Task 7)
+         → history hand-off (Task 8) → one container bounce if either ran →
+         staging removed only when every agent succeeded.
   DELETE /api/v1/marketplace/import/{import_id}
 
 Clerk-authed (owner = resolve_owner_id), unlike the hook-token Atlas bridge.
@@ -27,6 +34,7 @@ them. Abandoned staging dirs older than 24h are swept on the next import.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -298,14 +306,85 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     }
 
 
+def _claude_manifest(staging_dir: Path) -> dict | None:
+    """The staging's claude ``import-manifest.json``, or None when this staging
+    is not a claude one (backup stagings carry ``raw/`` instead)."""
+    try:
+        data = json.loads((staging_dir / "import-manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) and data.get("kind") == "claude" else None
+
+
+async def _confirm_claude(
+    owner_id: str, import_id: str, staging_dir: Path, payload: schemas.ImportConfirmRequest, manifest: dict
+):
+    """Apply a staged claude import to one existing roster agent's workspace.
+    No Ultra gate — nothing here mints an agent."""
+    await _require_container(owner_id)
+    if not payload.target_agent_id:
+        raise HTTPException(status_code=400, detail="target_agent_id is required for a Claude Code import")
+    try:
+        agent_id = await run_in_thread(agent_export.resolve_workspace_agent_id, owner_id, payload.target_agent_id)
+    except agent_export.InvalidAgentIdError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except agent_export.AgentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    workspace_dir = get_workspace().agent_workspace_path(owner_id, agent_id)
+    if not workspace_dir.is_dir():
+        # resolve_workspace_agent_id returns a clean miss unchanged rather
+        # than raising; without this check a bogus id would mint a ghost
+        # workspace dir on EFS.
+        raise HTTPException(status_code=404, detail=f"no workspace for agent {payload.target_agent_id!r}")
+
+    known_collections = {c.get("id") for c in manifest.get("collections") or []}
+    known_skills = set(manifest.get("skills") or [])
+    unknown = [c for c in payload.claude_collections or [] if c not in known_collections]
+    unknown += [s for s in payload.claude_skills or [] if s not in known_skills]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"not in this import: {', '.join(unknown)}")
+
+    items = await run_in_thread(
+        claude_code_import.apply_to_workspace,
+        staging_dir,
+        workspace_dir,
+        payload.claude_collections,
+        payload.claude_skills,
+    )
+
+    warnings: list[str] = []
+    restarting = False
+    # New memory collections and skills are only indexed/discovered at boot,
+    # so a bounce is needed for them to take effect; the USER.md block is read
+    # from disk per session and needs none.
+    if any(i["status"] == "applied" and i["item"] != "user-memory" for i in items):
+        try:
+            await get_ecs_manager().force_redeploy_user_service(owner_id)
+            restarting = True
+        except Exception:
+            # Best-effort, same as the backup branch: everything is already on
+            # EFS and the container picks it up on its next restart regardless.
+            logger.exception("import %s: could not start a workspace restart", import_id)
+            warnings.append(
+                "workspace restart could not be started — imported memory/skills will apply on its next restart"
+            )
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    return {"claude_items": items, "restarting": restarting, "warnings": warnings}
+
+
 @router.post("/{import_id}/confirm", response_model=schemas.ImportConfirmResponse)
 async def confirm_import(
     import_id: str, payload: schemas.ImportConfirmRequest, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
     owner_id = resolve_owner_id(auth)
     _check_import_id(import_id)
-    container = await _require_container(owner_id)
     staging_dir = _staging_dir(owner_id, import_id)
+    # The claude branch dispatches BEFORE the raw/ guard below — a claude
+    # staging has no raw/ and would otherwise 404 here.
+    manifest = await run_in_thread(_claude_manifest, staging_dir)
+    if manifest is not None:
+        return await _confirm_claude(owner_id, import_id, staging_dir, payload, manifest)
+    container = await _require_container(owner_id)
     if not (staging_dir / "raw").is_dir():
         raise HTTPException(status_code=404, detail="import not found — it may already be applied or discarded")
 

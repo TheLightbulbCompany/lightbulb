@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tarfile
@@ -262,3 +263,106 @@ def extract_claude_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> Cl
         skipped=skipped,
         safety_flags=safety_flags,
     )
+
+
+# ---------------------------------------------------------------------------
+# Apply half — confirm moves the staged content into one agent's workspace.
+
+USER_MEMORY_BEGIN = "<!-- claude-code-import:begin -->"
+USER_MEMORY_END = "<!-- claude-code-import:end -->"
+
+
+def _chown_1000(path: Path) -> None:
+    """Best-effort 1000:1000 — OpenClaw runs as node inside the container."""
+    try:
+        os.chown(path, 1000, 1000)
+    except OSError:
+        pass
+
+
+def _copy_tree(src: Path, dst: Path) -> None:
+    shutil.copytree(src, dst)
+    _chown_1000(dst)
+    for root, dirs, files in os.walk(dst):
+        for n in (*dirs, *files):
+            _chown_1000(Path(root, n))
+
+
+def _merge_user_memory(content: str, user_md: Path) -> None:
+    """Replace-or-append the marker-fenced block in ``USER.md``.
+
+    USER.md is a platform-managed persona file (seeded write-if-missing by
+    friday_identity); heal migrations anchor to specific seed lines, so a
+    marker-fenced block survives reprovision. Keep the markers exactly as-is.
+    """
+    if content and not content.endswith("\n"):
+        content += "\n"
+    block = f"{USER_MEMORY_BEGIN}\n{content}{USER_MEMORY_END}\n"
+    existing = user_md.read_text() if user_md.is_file() else ""
+    begin = existing.find(USER_MEMORY_BEGIN)
+    end = existing.find(USER_MEMORY_END)
+    if begin != -1 and end > begin:
+        new = existing[:begin] + block + existing[end + len(USER_MEMORY_END) :].removeprefix("\n")
+    elif existing:
+        new = f"{existing}\n\n{block}"
+    else:
+        new = block
+    user_md.write_text(new, encoding="utf-8")
+    _chown_1000(user_md)
+
+
+def apply_to_workspace(
+    staging_dir: Path,
+    workspace_dir: Path,
+    collections: list[str] | None,
+    skills: list[str] | None,
+) -> list[dict]:
+    """Apply a staged claude import to one agent's workspace. ``collections``/
+    ``skills`` filter by id/name; ``None`` means all; user memory always
+    applies when staged. Returns ``[{"item", "status"}]`` rows.
+
+    Memory lands under ``memory/imports/claude-code/<cid>/`` — upstream's own
+    ``openclaw migrate claude`` namespace, so a user who ran the local
+    migration AND this import gets ONE tree, not two. Cids are hash-stable, so
+    a re-import replaces each selected collection in place (rmtree + copy — a
+    clean refresh, never an orphaned copy). Skills never overwrite: an
+    existing ``skills/<name>/`` is reported ``skipped_exists`` and left alone.
+    """
+    src = staging_dir / "claude"
+    results: list[dict] = []
+
+    wanted_collections = None if collections is None else set(collections)
+    memory_src = src / "memory"
+    memory_dirs = sorted(p for p in memory_src.iterdir() if p.is_dir()) if memory_src.is_dir() else []
+    for cid_dir in memory_dirs:
+        if wanted_collections is not None and cid_dir.name not in wanted_collections:
+            continue
+        target = workspace_dir / "memory" / "imports" / "claude-code" / cid_dir.name
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for parent in (target.parent, target.parent.parent, target.parent.parent.parent):
+            _chown_1000(parent)
+        _copy_tree(cid_dir, target)
+        results.append({"item": f"memory:{cid_dir.name}", "status": "applied"})
+
+    if (src / "CLAUDE.md").is_file():
+        _merge_user_memory((src / "CLAUDE.md").read_text(), workspace_dir / "USER.md")
+        results.append({"item": "user-memory", "status": "applied"})
+
+    wanted_skills = None if skills is None else set(skills)
+    skills_src = src / "skills"
+    skill_dirs = sorted(p for p in skills_src.iterdir() if p.is_dir()) if skills_src.is_dir() else []
+    for skill_dir in skill_dirs:
+        if wanted_skills is not None and skill_dir.name not in wanted_skills:
+            continue
+        target = workspace_dir / "skills" / skill_dir.name
+        if target.exists():
+            results.append({"item": f"skill:{skill_dir.name}", "status": "skipped_exists"})
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _chown_1000(target.parent)
+        _copy_tree(skill_dir, target)
+        results.append({"item": f"skill:{skill_dir.name}", "status": "applied"})
+
+    return results

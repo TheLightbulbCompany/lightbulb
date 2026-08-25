@@ -4,7 +4,7 @@ normalizer itself is covered in tests/unit/services/test_claude_code_import.py."
 
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -16,7 +16,7 @@ from core.auth import get_current_user  # noqa: E402
 from core.containers import workspace as workspace_module  # noqa: E402
 from routers import marketplace_import  # noqa: E402
 from tests.unit.routers.test_marketplace_import import KEY, OWNER, FakeS3, _auth  # noqa: E402
-from tests.unit.services.test_claude_code_import import CLAUDE_HOME, SLUG, _tar  # noqa: E402
+from tests.unit.services.test_claude_code_import import CID, CLAUDE_HOME, SLUG, _tar  # noqa: E402
 
 
 @pytest.fixture
@@ -82,3 +82,118 @@ def test_import_claude_traversal_400_cleans_up(client):
     assert "escapes the extraction directory" in r.json()["detail"]
     assert s3.deleted == [KEY]  # raw upload consumed even on failure
     assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
+
+
+def test_import_corrupt_archive_400_cleans_up(client):
+    # Non-gzip bytes die in the names-only detection pass, before either
+    # extractor runs; the router must still 400 and leave no staging behind.
+    c, user_root, s3 = client
+    s3.objects[KEY] = b"this is not a gzip stream"
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 400, r.text
+    assert "not a valid .tar.gz" in r.json()["detail"]
+    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
+
+
+AGENT = "agent1"
+
+
+def _start(c) -> str:
+    return c.post("/api/v1/marketplace/import", json={"key": KEY}).json()["import_id"]
+
+
+def _mock_ecs() -> MagicMock:
+    ecs = MagicMock()
+    ecs.force_redeploy_user_service = AsyncMock()
+    return ecs
+
+
+def test_confirm_applies_to_target_agent_and_bounces(client):
+    c, user_root, _ = client
+    ws = user_root / f"workspace-{AGENT}"
+    ws.mkdir(parents=True)
+    import_id = _start(c)
+    ecs = _mock_ecs()
+    with patch("routers.marketplace_import.get_ecs_manager", return_value=ecs):
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["agents"] == [] and body["plugins_installed"] == []
+    assert {i["item"]: i["status"] for i in body["claude_items"]} == {
+        f"memory:{CID}": "applied",
+        "user-memory": "applied",
+        "skill:graphify": "applied",
+    }
+    assert body["restarting"] is True
+    # Memory lands in upstream's own migrate-claude namespace.
+    assert (ws / f"memory/imports/claude-code/{CID}/fact.md").read_text() == "a fact\n"
+    assert (ws / "skills/graphify/SKILL.md").exists()
+    user_md = (ws / "USER.md").read_text()
+    assert "claude-code-import:begin" in user_md and "# me" in user_md
+    assert not (user_root / f"workspace-{import_id}").exists()
+    ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+
+def test_confirm_without_target_agent_400(client):
+    c, _, _ = client
+    import_id = _start(c)
+    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 400
+    assert "target_agent_id" in r.json()["detail"]
+
+
+def test_confirm_nonexistent_agent_404(client):
+    # A regex-valid id that resolves to no workspace dir must 404 — the
+    # resolver returns a clean miss unchanged, so the router's own is_dir
+    # check is what stops a ghost workspace dir being minted on EFS.
+    c, user_root, _ = client
+    import_id = _start(c)
+    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": "agent-nope"})
+    assert r.status_code == 404, r.text
+    assert not (user_root / "workspace-agent-nope").exists()
+
+
+def test_confirm_unknown_collection_400_keeps_staging(client):
+    c, user_root, _ = client
+    (user_root / f"workspace-{AGENT}").mkdir(parents=True)
+    import_id = _start(c)
+    r = c.post(
+        f"/api/v1/marketplace/import/{import_id}/confirm",
+        json={"target_agent_id": AGENT, "claude_collections": ["nope-0000000000"]},
+    )
+    assert r.status_code == 400, r.text
+    assert "nope-0000000000" in r.json()["detail"]
+    # staging kept so a corrected selection can retry
+    assert (user_root / f"workspace-{import_id}" / "claude").is_dir()
+
+
+def test_confirm_selection_skips_bounce_when_only_user_memory_applies(client):
+    c, user_root, _ = client
+    ws = user_root / f"workspace-{AGENT}"
+    ws.mkdir(parents=True)
+    import_id = _start(c)
+    ecs = _mock_ecs()
+    with patch("routers.marketplace_import.get_ecs_manager", return_value=ecs):
+        r = c.post(
+            f"/api/v1/marketplace/import/{import_id}/confirm",
+            json={"target_agent_id": AGENT, "claude_collections": [], "claude_skills": []},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [i["item"] for i in body["claude_items"]] == ["user-memory"]
+    assert body["restarting"] is False
+    assert not (ws / "memory").exists() and not (ws / "skills").exists()
+    ecs.force_redeploy_user_service.assert_not_awaited()
+
+
+def test_confirm_second_confirm_404(client):
+    c, user_root, _ = client
+    (user_root / f"workspace-{AGENT}").mkdir(parents=True)
+    import_id = _start(c)
+    with patch("routers.marketplace_import.get_ecs_manager", return_value=_mock_ecs()):
+        assert (
+            c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT}).status_code
+            == 200
+        )
+    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT})
+    assert r.status_code == 404

@@ -123,3 +123,65 @@ def test_extract_memory_cap(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cci, "CLAUDE_MEMORY_MAX_FILES", 1)
     with pytest.raises(cci.ClaudeImportError):
         cci.extract_claude_archive(lambda: io.BytesIO(_tar(CLAUDE_HOME)), tmp_path)
+
+
+def _staged(tmp_path: Path) -> Path:
+    staging = tmp_path / "workspace-import-abc"
+    (staging / "claude/memory/projA-1234567890").mkdir(parents=True)
+    (staging / "claude/memory/projA-1234567890/fact.md").write_text("fact\n")
+    (staging / "claude/skills/graphify").mkdir(parents=True)
+    (staging / "claude/skills/graphify/SKILL.md").write_text("skill\n")
+    (staging / "claude/CLAUDE.md").write_text("global memory\n")
+    return staging
+
+
+def test_apply_copies_and_appends(tmp_path: Path):
+    ws = tmp_path / "workspace-agent1"
+    ws.mkdir()
+    results = cci.apply_to_workspace(_staged(tmp_path), ws, None, None)
+    assert (ws / "memory/imports/claude-code/projA-1234567890/fact.md").read_text() == "fact\n"
+    assert (ws / "skills/graphify/SKILL.md").exists()
+    user = (ws / "USER.md").read_text()
+    assert "claude-code-import:begin" in user and "global memory" in user
+    assert {r["status"] for r in results} == {"applied"}
+
+
+def test_apply_user_memory_idempotent(tmp_path: Path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "USER.md").write_text("existing prefs\n")
+    staging = _staged(tmp_path)
+    cci.apply_to_workspace(staging, ws, [], [])  # user memory always applies when staged
+    cci.apply_to_workspace(staging, ws, [], [])
+    user = (ws / "USER.md").read_text()
+    assert user.startswith("existing prefs")
+    assert user.count("claude-code-import:begin") == 1
+
+
+def test_apply_memory_reimport_overwrites(tmp_path: Path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    staging = _staged(tmp_path)
+    cci.apply_to_workspace(staging, ws, None, None)
+    (staging / "claude/memory/projA-1234567890/fact.md").write_text("fresher\n")
+    cci.apply_to_workspace(staging, ws, None, None)
+    assert (ws / "memory/imports/claude-code/projA-1234567890/fact.md").read_text() == "fresher\n"
+
+
+def test_apply_skill_conflict_skipped(tmp_path: Path):
+    ws = tmp_path / "ws"
+    (ws / "skills/graphify").mkdir(parents=True)
+    (ws / "skills/graphify/SKILL.md").write_text("mine\n")
+    results = cci.apply_to_workspace(_staged(tmp_path), ws, None, None)
+    skill = next(r for r in results if r["item"] == "skill:graphify")
+    assert skill["status"] == "skipped_exists"
+    assert (ws / "skills/graphify/SKILL.md").read_text() == "mine\n"
+
+
+def test_apply_selection_filters(tmp_path: Path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    results = cci.apply_to_workspace(_staged(tmp_path), ws, [], [])
+    assert not (ws / "memory").exists()
+    assert not (ws / "skills").exists()
+    assert any(r["item"] == "user-memory" for r in results)

@@ -477,6 +477,16 @@ class ImportConfirmRequest(BaseModel):
     plugins: list[str] | None = None  # plugin ids to install; None = all non-bundled
     include_history: bool = False
     reports_to: str | None = None
+    # Claude imports only (kind == "claude"): which roster agent receives the
+    # staged content, and which staged pieces to apply.
+    target_agent_id: str | None = None
+    claude_collections: list[str] | None = None  # collection ids; None = all
+    claude_skills: list[str] | None = None  # None = all
+
+
+class ClaudeImportItemResult(BaseModel):
+    item: str  # "memory:<cid>", "user-memory", "skill:<name>"
+    status: Literal["applied", "skipped_exists"]
 
 
 class ImportAgentResult(BaseModel):
@@ -494,3 +504,6 @@ class ImportConfirmResponse(BaseModel):
     history_staged: list[str] = Field(default_factory=list)
     restarting: bool = False
     warnings: list[str] = Field(default_factory=list)
+    # Populated only when the staging was a claude import; the backup-specific
+    # fields above stay at their defaults on that path.
+    claude_items: list[ClaudeImportItemResult] | None = None

@@ -427,9 +427,25 @@ class ImportPluginCandidate(BaseModel):
     has_dependencies: bool = False
 
 
+class ClaudeImportCollection(BaseModel):
+    id: str
+    label: str
+    file_count: int
+
+
+class ClaudeImportPreview(BaseModel):
+    collections: list[ClaudeImportCollection]
+    has_user_memory: bool
+    skills: list[str]
+    skipped: dict[str, int]
+    # SafetyFlag.snippet stays at its "" default here — the claude preview
+    # never echoes a flagged source line back to the client.
+    safety_flags: list[SafetyFlag] = Field(default_factory=list)
+
+
 class ImportPreviewResponse(BaseModel):
     import_id: str
-    kind: Literal["backup", "state-dir", "workspace"]
+    kind: Literal["backup", "state-dir", "workspace", "claude"]
     agent_id: str
     name: str
     description: str = ""
@@ -447,6 +463,9 @@ class ImportPreviewResponse(BaseModel):
     existing_agents: int = 0
     standard_max_agents: int = 10
     plan: str | None = None
+    # Populated only when kind == "claude"; the backup-specific fields above
+    # stay at their defaults on that path.
+    claude: ClaudeImportPreview | None = None
 
 
 class ImportConfirmRequest(BaseModel):
@@ -458,6 +477,16 @@ class ImportConfirmRequest(BaseModel):
     plugins: list[str] | None = None  # plugin ids to install; None = all non-bundled
     include_history: bool = False
     reports_to: str | None = None
+    # Claude imports only (kind == "claude"): which roster agent receives the
+    # staged content, and which staged pieces to apply.
+    target_agent_id: str | None = None
+    claude_collections: list[str] | None = None  # collection ids; None = all
+    claude_skills: list[str] | None = None  # None = all
+
+
+class ClaudeImportItemResult(BaseModel):
+    item: str  # "memory:<cid>", "user-memory", "skill:<name>"
+    status: Literal["applied", "skipped_exists"]
 
 
 class ImportAgentResult(BaseModel):
@@ -475,3 +504,6 @@ class ImportConfirmResponse(BaseModel):
     history_staged: list[str] = Field(default_factory=list)
     restarting: bool = False
     warnings: list[str] = Field(default_factory=list)
+    # Populated only when the staging was a claude import; the backup-specific
+    # fields above stay at their defaults on that path.
+    claude_items: list[ClaudeImportItemResult] | None = None

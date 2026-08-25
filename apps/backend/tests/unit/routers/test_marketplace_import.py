@@ -140,11 +140,12 @@ def test_import_streams_from_s3_and_returns_preview(client):
 
 
 def test_import_412_etag_mismatch_returns_409(client):
-    """extract_archive calls open_stream() twice (pass 1, pass 2). If the
-    object changes between those two GETs, the second must fail on the
-    IfMatch precondition rather than silently splicing two different
-    archives together — the router maps that 412 to a 409 telling the user
-    to re-upload."""
+    """Every pass over the upload is its own GET: the names-only detection
+    pass, then extract_archive's pass 1 and pass 2. If the object changes
+    after the first GET, the next one must fail on the IfMatch precondition
+    rather than silently splicing two different archives together — the
+    router maps that 412 to a 409 telling the user to re-upload. Here the
+    mismatch lands on GET 2, the extractor's first pass."""
     c, user_root, s3, _ = client
     real_get = s3.get_object
     calls = {"n": 0}
@@ -160,6 +161,9 @@ def test_import_412_etag_mismatch_returns_409(client):
     assert r.status_code == 409, r.text
     assert "upload it again" in r.json()["detail"]
     assert calls["n"] == 2
+    # The raw object must survive: this flow tells the client to re-upload
+    # and retry against the same key.
+    assert s3.deleted == []
     assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 

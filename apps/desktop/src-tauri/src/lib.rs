@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
 pub mod keychain;
@@ -1166,6 +1167,7 @@ end tell"#,
             file_access_add_path,
             file_access_remove_path,
             file_access_default_path,
+            claude_export::export_claude_context,
         ])
         .setup(|app| {
             log("[setup] Isol8 desktop app starting");

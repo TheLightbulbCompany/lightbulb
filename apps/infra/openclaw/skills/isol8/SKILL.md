@@ -29,7 +29,7 @@ description: >
                               extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Integrations wiring ..... apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)
-  - Marketplace flows ....... apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service}.py
+  - Marketplace flows ....... apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service,claude_code_import}.py
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
   - Plans / providers ....... apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Channels ................ apps/backend/routers/channels.py
@@ -495,6 +495,14 @@ change them.
   More than 10 agents in total needs Ultra Pro. Channels, credentials, the
   browser profile and global state never import. Plugins with dependencies need
   `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
+- **"Can I bring my local Claude Code context?"** → Yes: run
+  `cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills`
+  (include whichever exist) and upload it through the same import
+  wizard — it detects the shape and applies onto ONE
+  existing agent the owner picks: auto-memory lands under `memory/imports/claude-code/`,
+  the global CLAUDE.md becomes a marker-fenced block in that agent's USER.md, and
+  skills copy in (an existing skill is never overwritten). Credentials, transcripts,
+  settings, and commands are never imported.
 - **"What plan am I on?" / "Which model are you?"** → Read
   `~/.openclaw/isol8-facts.json`, answer from it.
 - **"Why can't you do X?"** → Check the boundaries table above before

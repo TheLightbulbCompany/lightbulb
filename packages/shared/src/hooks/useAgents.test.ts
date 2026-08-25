@@ -30,6 +30,8 @@ vi.mock("./useGatewayRpc", () => ({
     return { data: rpcData, error: undefined, isLoading: false, mutate };
   },
   useGatewayRpcMutation: () => vi.fn(),
+  gatewayRpcKey: (method: string) => method,
+  pushRevalidate: (_key: string, m: () => unknown) => void m(),
 }));
 
 import { useAgents, type AgentsGatewaySource } from "./useAgents";

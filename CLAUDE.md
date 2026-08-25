@@ -238,8 +238,10 @@ REST:      Client --> https://api-{env}.isol8.co (API Gateway HTTP API) --> VPC 
 Browser:   Client --> wss://bv-{env}.isol8.co (CloudFront VpcOrigin — raw WS the HTTP API can't carry)
              --> ALB browser-view listener (path-capped /api/v1/browser-view/*) --> routers/browser_view.py
                                                     |
-                                        EFS /mnt/efs/users/{user_id}/
-                                        agents/{agent_uuid}/, workspace-{agent_id}/
+                                        EFS /mnt/efs/users/{user_id}/  (openclaw.json, workspace-{agent_id}/, skills, media, logs)
+                                          +-- state/, agents/{agent_uuid}/  = task-local NVMe volumes nested in the EFS
+                                              mount; SQLite (sessions, transcripts, memory) restored from S3 at boot,
+                                              replicated by litestream. NOT on EFS -- see local-sqlite/ boot script.
 ```
 
 There is **no NLB and no VPC Link V1** — that architecture was replaced; see "WebSocket Architecture".

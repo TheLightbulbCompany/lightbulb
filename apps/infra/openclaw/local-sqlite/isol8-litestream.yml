@@ -30,6 +30,14 @@ addr: "127.0.0.1:9090"
 # never initialises, each burning a 30s timeout, on every container, forever.
 # If quarantine state ever needs to survive task replacement it needs a
 # different transport -- not this one.
+#
+# sync-interval is 10s, not litestream's 1s default. At 1s a 7-agent owner
+# ran ~1 WAL sync/second/DB and ~47 S3 PUTs/minute around the clock — 7,500
+# of 8,500 container log lines in one 16-minute window were litestream — on
+# the same single vCPU the gateway needs. 10s is a 10s RPO for a store that
+# is also on the task's own disk; nothing user-facing reads the replica.
+# Replica-level key (there is no per-db form — see the litestream config
+# reference); the parser is non-strict, so keep it under `replica:`.
 dbs:
   - path: $ISOL8_STATE_ROOT/state/openclaw.sqlite
     replica:
@@ -37,6 +45,7 @@ dbs:
       bucket: $LITESTREAM_S3_BUCKET
       path: $OWNER_ID/state/openclaw.sqlite
       region: us-east-1
+      sync-interval: 10s
   - dir: $ISOL8_STATE_ROOT/agents
     pattern: "openclaw-agent.sqlite"
     recursive: true
@@ -46,3 +55,4 @@ dbs:
       bucket: $LITESTREAM_S3_BUCKET
       path: $OWNER_ID/agents
       region: us-east-1
+      sync-interval: 10s

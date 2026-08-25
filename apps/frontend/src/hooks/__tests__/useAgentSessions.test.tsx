@@ -116,6 +116,46 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(general?.fastMode).toBeUndefined();
   });
 
+  it("shares ONE sessions.list walk across agents (sidebar + every chat panel)", async () => {
+    stubSessionsList([
+      { key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" },
+      { key: "agent:atlas:user_1:0b477873-2222-4222-8222-222222222222", label: "A" },
+    ]);
+    const { result } = renderHook(
+      () => [useAgentSessions("friday", "user_1"), useAgentSessions("atlas", "user_1")] as const,
+      {
+        wrapper: ({ children }: { children: React.ReactNode }) => (
+          <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+        ),
+      },
+    );
+    await waitFor(() => expect(result.current[0].sessions).toHaveLength(1));
+    await waitFor(() => expect(result.current[1].sessions).toHaveLength(1));
+    expect(result.current[0].sessions[0].label).toBe("F");
+    expect(result.current[1].sessions[0].label).toBe("A");
+    // One walk, not one per agent — the RPC has no agent filter, so a
+    // per-agent key was N full store scans on the container for nothing.
+    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(1);
+  });
+
+  it("re-fetches for a different user — the shared key is per user, not global", async () => {
+    stubSessionsList([{ key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" }]);
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) => useAgentSessions("friday", userId),
+      {
+        initialProps: { userId: "user_1" },
+        wrapper: ({ children }: { children: React.ReactNode }) => (
+          <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+        ),
+      },
+    );
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    stubSessionsList([{ key: "agent:friday:user_2:0b477873-2222-4222-8222-222222222222", label: "G" }]);
+    rerender({ userId: "user_2" });
+    await waitFor(() => expect(result.current.sessions.map((s) => s.label)).toEqual(["G"]));
+    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(2);
+  });
+
   it("returns empty and does not query when agentId is null", async () => {
     stubSessionsList([]);
     const { result } = renderAgentSessions(null, "user-1");

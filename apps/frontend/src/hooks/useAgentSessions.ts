@@ -106,8 +106,18 @@ export function useAgentSessions(
   // disappear from the sidebar. Walk the offset/nextOffset/hasMore cursor
   // (mirrors chat.history's paging) until the container reports no more
   // rows, accumulating every page before the useMemo filter below runs.
+  //
+  // ONE key for every caller, not one per agent: the RPC has no agent filter
+  // (the container's `agentId` param requires `sessionKeys`), so a per-agent
+  // key made the sidebar plus each open chat panel each run its own full
+  // scan of every agent's store — N concurrent transcript-reading scans on a
+  // single vCPU, 13–26s apiece under load. The per-agent split happens in the
+  // useMemo below, client-side, on the shared result. Keyed by user, not
+  // constant: the app-wide SWR cache outlives a sign-out, and the proxy scopes
+  // rows to the caller, so one user's cached rows would filter to an empty
+  // sidebar for the next until revalidation.
   const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
-    agentId ? ["sessions.list.all", agentId] : null,
+    agentId && userId ? ["sessions.list.all", userId] : null,
     async () => {
       const base = {
         includeGlobal: false,
@@ -135,7 +145,13 @@ export function useAgentSessions(
       }
       return { sessions: rows };
     },
-    { dedupingInterval: 10_000 },
+    {
+      dedupingInterval: 30_000,
+      // A slow or failed revalidation must not blank the sidebar: without
+      // this, one timed-out page under gateway load rendered "no sessions"
+      // (only the New-session placeholder) until the next successful read.
+      keepPreviousData: true,
+    },
   );
 
   const sessions = useMemo<AgentSession[]>(() => {

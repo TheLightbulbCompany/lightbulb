@@ -188,8 +188,9 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
     try:
         names: list[str] = []
         declared = 0
+        body = _get()
         try:
-            with tarfile.open(fileobj=_get(), mode="r|gz") as tf:
+            with tarfile.open(fileobj=body, mode="r|gz") as tf:
                 for member in tf:
                     names.append(member.name)
                     # Bound the decompressed bytes this pass itself streams
@@ -203,6 +204,10 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
                         break  # whichever extractor runs raises on its own member cap
         except tarfile.TarError as exc:
             raise backup_import.BackupImportError("not a valid .tar.gz archive") from exc
+        finally:
+            # tarfile.close() does not close an externally supplied fileobj —
+            # drop the S3 connection here instead of holding it until GC.
+            body.close()
 
         if claude_code_import.detect_claude_root(names) is not None:
             normalized = claude_code_import.extract_claude_archive(_get, staging_dir)

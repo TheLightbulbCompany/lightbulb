@@ -365,7 +365,7 @@ async def test_apply_preserves_runtime_state_and_keeps_regen_values():
                 "match": {"channel": "slack", "accountId": "agent_friday"},
             }
         ],
-        "identity": {"runtimeOnly": "preserve-me"},
+        "wizard": {"lastRunAt": "2026-08-01T00:00:00Z"},
         # A scalar the generator owns, here at its STALE pre-regen value.
         "agents": {"defaults": {"model": {"primary": "stale-old-model"}}},
     }
@@ -405,8 +405,8 @@ async def test_apply_preserves_runtime_state_and_keeps_regen_values():
     assert "dmPolicy" not in restored["channels"]["slack"]
     # top-level bindings survived (regen omitted it).
     assert restored["bindings"] == existing["bindings"]
-    # top-level identity (runtime-only) survived.
-    assert restored["identity"] == {"runtimeOnly": "preserve-me"}
+    # top-level wizard state (runtime-only) survived.
+    assert restored["wizard"] == {"lastRunAt": "2026-08-01T00:00:00Z"}
     # The generator-owned model must NOT be in the restore patch — the regen
     # is authoritative for it; restoring would revert the new cheaper tier.
     assert "agents" not in restored
@@ -417,11 +417,11 @@ async def test_apply_on_trial_owner_does_not_restore_channels_or_bindings():
     """The trial generator DELIBERATELY omits carried-forward channel
     accounts and route bindings (trial containers must not re-arm channel
     bots). The restore must mirror that lockdown instead of undoing it —
-    while still restoring trial-safe runtime state like identity."""
+    while still restoring trial-safe runtime state like the wizard subtree."""
     existing = {
         "channels": {"slack": {"accounts": {"agent_friday": {"allowFrom": ["U123"]}}}},
         "bindings": [{"type": "route", "agentId": "agent_friday"}],
-        "identity": {"runtimeOnly": "preserve-me"},
+        "wizard": {"lastRunAt": "2026-08-01T00:00:00Z"},
     }
     fresh = {"channels": {}}
     restore_patch = AsyncMock()
@@ -447,7 +447,7 @@ async def test_apply_on_trial_owner_does_not_restore_channels_or_bindings():
     restored = p_args[1]
     assert "channels" not in restored
     assert "bindings" not in restored
-    assert restored["identity"] == {"runtimeOnly": "preserve-me"}
+    assert restored["wizard"] == {"lastRunAt": "2026-08-01T00:00:00Z"}
 
 
 @pytest.mark.asyncio

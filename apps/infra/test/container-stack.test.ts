@@ -310,7 +310,7 @@ describe("ContainerStack — dev", () => {
     const recovery = command.indexOf("python3 -c");
     const migration = command.indexOf("[ -e /home/node/.openclaw/browser ]");
     const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
-    const mkdir = command.indexOf("mkdir -p /tmp/openclaw-browser || exit 1");
+    const mkdir = command.indexOf("install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1");
     const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
     const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
 
@@ -574,24 +574,33 @@ describe("ContainerStack — dev", () => {
     // on EACCES. That ordering is the whole point of this step; assert it.
     const command = openclawStartupCommand(template, "dev");
     const drop = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups");
+    const chown = command.indexOf(
+      "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents",
+    );
 
-    expect(drop).toBeGreaterThanOrEqual(0);
-    for (const path of [
-      "/home/node/.openclaw/state",
-      "/home/node/.openclaw/agents",
-      "/tmp/openclaw-browser",
-      "/tmp/openclaw-npx",
-      "/tmp/openclaw-uv",
-    ]) {
-      const chown = command.indexOf(`chown -R 1000:1000 ${path}`) >= 0
-        ? command.indexOf(`chown -R 1000:1000 ${path}`)
-        : command.indexOf(path, command.indexOf("chown -R 1000:1000"));
-      expect(chown).toBeGreaterThanOrEqual(0);
-      expect(chown).toBeLessThan(drop);
+    expect(chown).toBeGreaterThanOrEqual(0);
+    expect(drop).toBeGreaterThan(chown);
+
+    // Paths on the container's own writable layer must be created as 1000
+    // outright rather than created root-owned and repaired. If one of these
+    // regresses to `mkdir -p`, the gateway silently loses write access to it
+    // (Chrome's user-data-dir, the npx extract tree, the uv cache) — a failure
+    // that surfaces as a broken tool, not a failed boot.
+    for (const path of ["/tmp/openclaw-browser", "/tmp/openclaw-npx", "/tmp/openclaw-uv", "/home/node/.cache"]) {
+      expect(command).not.toContain(`mkdir -p ${path}`);
+      expect(command).toMatch(
+        new RegExp(`install -d -o 1000 -g 1000 [^;]*${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
     }
 
-    // The drop must be the LAST thing in the command — setpriv execs the boot
-    // chain, so anything appended after it never runs.
+    // EFS paths keep plain mkdir — the access point squashes them to 1000, and
+    // `install -o` would be a no-op at best there.
+    expect(command).toContain("mkdir -p /home/node/.openclaw/.cache/npm");
+
+    // Everything root needs to do must precede the drop: setpriv execs, so
+    // nothing appended after it ever runs.
+    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(drop);
+    expect(command.indexOf("websockify")).toBeLessThan(drop);
     expect(command.endsWith("/usr/local/bin/isol8-local-sqlite-boot.sh")).toBe(true);
   });
 

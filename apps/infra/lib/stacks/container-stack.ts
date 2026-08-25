@@ -624,7 +624,12 @@ export class ContainerStack extends cdk.Stack {
       // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
       "[ -e /home/node/.openclaw/browser ] && [ ! -L /home/node/.openclaw/browser ] && { mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-$(date +%s) || exit 1; }",
       // Step B — symlink chromium user-data to ephemeral task storage.
-      "mkdir -p /tmp/openclaw-browser || exit 1",
+      // `install -d -o 1000 -g 1000` rather than `mkdir -p`: this path is on
+      // the container's own writable layer, NOT the EFS mount, so no access
+      // point squashes it and a root `mkdir` would leave it root-owned and
+      // unwritable by the uid-1000 gateway (Step D). Create it correctly
+      // instead of creating it wrong and repairing it later.
+      "install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1",
       "ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1",
       // Step C — make MCP package caches fast AND restart-safe by splitting
       // each package manager's PERSISTENT download cache from its per-run
@@ -657,7 +662,12 @@ export class ContainerStack extends cdk.Stack {
       // npm splits cleanly: keep the compressed download cache (`_cacache`,
       // immutable tarballs — cheap on NFS, read-mostly) on EFS so a restart
       // never re-downloads, but redirect ONLY the `_npx` extract tree to /tmp.
-      "mkdir -p /home/node/.openclaw/.cache/npm /home/node/.cache /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
+      // Split by filesystem: `.openclaw/.cache/npm` is on EFS, where the access
+      // point squashes every create to 1000:1000 already. The other three are
+      // on the container's writable layer and must be created as 1000 outright
+      // — see the note on /tmp/openclaw-browser above.
+      "mkdir -p /home/node/.openclaw/.cache/npm || exit 1",
+      "install -d -o 1000 -g 1000 /home/node/.cache /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
       "[ -e /home/node/.npm ] && [ ! -L /home/node/.npm ] && { mv /home/node/.npm /home/node/.npm.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.cache/npm /home/node/.npm || exit 1",
       "[ -e /home/node/.openclaw/.cache/npm/_npx ] && [ ! -L /home/node/.openclaw/.cache/npm/_npx ] && { mv /home/node/.openclaw/.cache/npm/_npx /home/node/.openclaw/.cache/npm/_npx.efs-archive-$(date +%s) || exit 1; }",
@@ -838,16 +848,27 @@ export class ContainerStack extends cdk.Stack {
       // after Xvnc/warp/websockify have taken the ports they need as root,
       // rather than at the container level.
       //
-      // The chowns are cheap: the volumes are empty at task start and the /tmp
-      // and image-layer paths are per-task, so this is a handful of inodes, not
-      // a recursive walk of EFS. The `find` catches root-owned dotfiles and the
-      // symlinks Step C planted (-h so the link is retargeted, not its EFS
-      // target). setpriv ships in the base image (util-linux) — verified
-      // present at /usr/bin/setpriv on a running task.
-      "chown -R 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents /tmp/openclaw-browser /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
-      "[ ! -d /home/node/.cache ] || chown -R 1000:1000 /home/node/.cache || exit 1",
-      "[ ! -d /home/node/.local ] || chown -R 1000:1000 /home/node/.local || exit 1",
+      // Only two classes of path need repairing here, because everything this
+      // command creates itself is now created as 1000 outright (Steps B/C use
+      // `install -d -o 1000`) and everything on EFS is squashed to 1000 by the
+      // access point:
+      //
+      //   1. The two ECS-managed ephemeral volumes. We do not create these —
+      //      the container runtime does, root:root, because the image has no
+      //      mountpoint at those paths for it to copy ownership from. They are
+      //      empty at task start, so this is two inodes, not a walk.
+      //   2. Root-owned dotfiles baked into the image layer (.local, .gitconfig,
+      //      .expo, and the symlinks Step C planted). `-h` retargets the link
+      //      itself rather than chasing it onto EFS. The right long-term home
+      //      for this is a `chown node:node` in the extended image Dockerfile;
+      //      doing it here keeps the fix to infra so we can roll onto the 8.1
+      //      tag already in ECR without a rebuild.
+      //
+      // Note this runs BEFORE the boot script, so litestream's restore writes
+      // into state/ and agents/ as 1000 and needs no chown of its own.
+      "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents || exit 1",
       "find /home/node -maxdepth 1 -uid 0 -exec chown -h 1000:1000 {} + || exit 1",
+      'echo "[boot] init complete as root (warp/Xvnc/websockify started); exec gateway chain as uid=1000 via setpriv"',
       "exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh",
     ].join("; ");
 

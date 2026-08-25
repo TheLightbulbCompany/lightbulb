@@ -122,14 +122,43 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 });
 
 // ---------------------------------------------------------------------------
+// Deployment environments.
+//
+// One name per stage drives three things — the CDK stage id, the per-env stack
+// naming inside Isol8Stage, and the GitHub environment its jobs deploy into —
+// so a rename cannot leave the pipeline pointing at a stale environment.
+//
+// The GitHub environment is what makes a human gate POSSIBLE, not what arms it.
+// `gitHubEnvironment` renders `environment: <name>` on every stack Deploy job
+// in the stage, and GitHub holds those jobs until the environment's protection
+// rules pass — but the rules are REPO SETTINGS, not code. `prod` gates nothing
+// until someone adds required reviewers under Settings > Environments > prod.
+// `dev` is declared for deployment history and is deliberately left with no
+// protection rules, so merges keep deploying dev unattended.
+//
+// Approval is per-environment-per-run — the REST review endpoint takes
+// `environment_ids`, not job ids — so ONE approval releases every prod job in
+// the run, not one per stack.
+//
+// Operational consequence: the pipeline serializes on a single `isol8-deploy`
+// concurrency group, so a run parked at the prod gate holds the deploy lane.
+// Merges to main queue behind it (queue depth 1 — a newer merge replaces the
+// waiting run) and dev deploys resume once the gate is approved OR rejected.
+// Rejecting is the one-click release valve.
+// ---------------------------------------------------------------------------
+const DEV_ENVIRONMENT = "dev";
+const PROD_ENVIRONMENT = "prod";
+
+// ---------------------------------------------------------------------------
 // Dev stage — auto-deploy infra + frontend on merge to main
 // ---------------------------------------------------------------------------
-const devStage = new Isol8Stage(app, "dev", {
+const devStage = new Isol8Stage(app, DEV_ENVIRONMENT, {
   env: awsEnv,
-  environment: "dev",
+  environment: DEV_ENVIRONMENT,
 });
 
 pipeline.addStageWithGitHubOptions(devStage, {
+  gitHubEnvironment: { name: DEV_ENVIRONMENT },
   stackCapabilities: [
     StackCapabilities.NAMED_IAM,
     StackCapabilities.AUTO_EXPAND,
@@ -137,6 +166,11 @@ pipeline.addStageWithGitHubOptions(devStage, {
   post: [
     // Deploy frontend to Vercel (preview) and alias to dev.isol8.co
     new GitHubActionStep("DeployVercelDev", {
+      // Stage-level `gitHubEnvironment` only reaches stack Deploy jobs;
+      // GitHubActionStep carries its own. Without this the job that actually
+      // aliases dev.isol8.co would be the one job in the stage with no
+      // deployment record.
+      githubEnvironment: DEV_ENVIRONMENT,
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
         { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
@@ -174,14 +208,20 @@ pipeline.addStageWithGitHubOptions(devStage, {
 });
 
 // ---------------------------------------------------------------------------
-// Prod stage — deploy after manual approval
+// Prod stage — gated on the `prod` GitHub environment.
+//
+// `needs:` on the dev jobs only ORDERS prod after dev; it does not gate it.
+// The environment is the gate. Until required reviewers are configured on it,
+// this stage still deploys automatically — the wiring is here, the arming is
+// in repo settings.
 // ---------------------------------------------------------------------------
-const prodStage = new Isol8Stage(app, "prod", {
+const prodStage = new Isol8Stage(app, PROD_ENVIRONMENT, {
   env: awsEnv,
-  environment: "prod",
+  environment: PROD_ENVIRONMENT,
 });
 
 pipeline.addStageWithGitHubOptions(prodStage, {
+  gitHubEnvironment: { name: PROD_ENVIRONMENT },
   stackCapabilities: [
     StackCapabilities.NAMED_IAM,
     StackCapabilities.AUTO_EXPAND,
@@ -189,6 +229,10 @@ pipeline.addStageWithGitHubOptions(prodStage, {
   post: [
     // Deploy frontend to Vercel (production) and alias to isol8.co
     new GitHubActionStep("DeployVercelProd", {
+      // Stage-level `gitHubEnvironment` only reaches stack Deploy jobs. This
+      // job aliases isol8.co, so it must carry the gate itself and not rely on
+      // its `needs:` edges to the gated stack jobs surviving a refactor.
+      githubEnvironment: PROD_ENVIRONMENT,
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
         { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },

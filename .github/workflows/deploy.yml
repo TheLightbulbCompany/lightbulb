@@ -1135,6 +1135,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset1
@@ -1174,6 +1175,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset4
@@ -1211,6 +1213,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset5
@@ -1249,6 +1252,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset6
@@ -1288,6 +1292,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset8
@@ -1329,6 +1334,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset11
@@ -1368,6 +1374,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset12
@@ -1414,6 +1421,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset17
@@ -1456,6 +1464,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset18
@@ -1504,6 +1513,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: dev
     needs:
       - Build-Synth
       - Assets-FileAsset22
@@ -1560,6 +1570,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - Build-Synth
     env: {}
+    environment: dev
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1613,6 +1624,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset23
@@ -1663,6 +1675,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset24
@@ -1713,6 +1726,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset26
@@ -1764,6 +1778,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset28
@@ -1812,6 +1827,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset29
@@ -1861,6 +1877,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset30
@@ -1911,6 +1928,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset31
@@ -1965,6 +1983,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset34
@@ -2016,6 +2035,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset35
@@ -2066,6 +2086,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset36
@@ -2123,6 +2144,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset37
@@ -2175,6 +2197,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset38
@@ -2233,6 +2256,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset39
@@ -2314,6 +2338,7 @@ jobs:
       - dev-isol8-dev-observability-Deploy
       - dev-DeployVercelDev
     env: {}
+    environment: prod
     steps:
       - name: Checkout
         uses: actions/checkout@v4

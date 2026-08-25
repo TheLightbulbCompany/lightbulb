@@ -806,7 +806,49 @@ export class ContainerStack extends cdk.Stack {
       // accepts any tag, so a tag built before the local-sqlite chain existed
       // would otherwise die on a bare "not found". Diagnose it instead.
       "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
-      "exec /usr/local/bin/isol8-local-sqlite-boot.sh",
+      // Step D — hand the gateway over to uid 1000 (`node`, the image's own
+      // USER) instead of running it as root.
+      //
+      // Everything else in this stack already agrees on 1000: the extended
+      // image ends `USER node`, every per-user EFS access point squashes
+      // ownership to 1000:1000 (PosixUser + CreationInfo in ecs_manager.py),
+      // the boot script chowns restored agent dirs to 1000, and the backend
+      // chowns config to 1000 after every write. The running process was the
+      // one component that disagreed, and only by accident: `user: "0:0"`
+      // arrived in 2026-03 alongside a startup command that ran `apt-get
+      // install` and `pip install`. Those installs moved into the extended
+      // image Dockerfile long ago; the override outlived its reason.
+      //
+      // OpenClaw 2026.8.1 made that disagreement fatal. Its new
+      // ensurePrivateSqliteCoordinatorDirectory (src/infra/sqlite-coordinator.ts)
+      // creates a directory and then rejects it unless `stat().uid ===
+      // getuid()`. Under uid-squash the directory root itself just created
+      // stats back as 1000 while getuid() is 0, so the check can never pass —
+      // fresh state or old, no EFS cleanup fixes it, and there is no env or
+      // config escape hatch. Observed as a 4-task crash-loop on 2026-08-25:
+      // "device identity coordinator directory belongs to another user".
+      //
+      // Why not simply set `user: "1000:1000"` on the container: the two
+      // ephemeral volumes below are ECS-managed mount points the image never
+      // creates, so Docker materialises them **root:root** (verified against a
+      // live prod task: .openclaw is 1000:1000 while .openclaw/state and
+      // .openclaw/agents are 0:0). A task starting as 1000 could not write its
+      // own SQLite. Root must therefore create and chown them first — which is
+      // exactly what a privilege drop is for, and why the drop happens HERE,
+      // after Xvnc/warp/websockify have taken the ports they need as root,
+      // rather than at the container level.
+      //
+      // The chowns are cheap: the volumes are empty at task start and the /tmp
+      // and image-layer paths are per-task, so this is a handful of inodes, not
+      // a recursive walk of EFS. The `find` catches root-owned dotfiles and the
+      // symlinks Step C planted (-h so the link is retargeted, not its EFS
+      // target). setpriv ships in the base image (util-linux) — verified
+      // present at /usr/bin/setpriv on a running task.
+      "chown -R 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents /tmp/openclaw-browser /tmp/openclaw-npx /tmp/openclaw-uv || exit 1",
+      "[ ! -d /home/node/.cache ] || chown -R 1000:1000 /home/node/.cache || exit 1",
+      "[ ! -d /home/node/.local ] || chown -R 1000:1000 /home/node/.local || exit 1",
+      "find /home/node -maxdepth 1 -uid 0 -exec chown -h 1000:1000 {} + || exit 1",
+      "exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh",
     ].join("; ");
 
     // Image selection: use the extended ECR image once the per-env tag has been
@@ -823,6 +865,12 @@ export class ContainerStack extends cdk.Stack {
       image: containerImage,
       essential: true,
       command: ["sh", "-c", startupCommand],
+      // Root is the BOOT user, not the run user. The startup command needs it
+      // to chown the ECS-managed ephemeral volumes (which Docker materialises
+      // root:root) and to start Xvnc/warp/websockify, then hands the gateway
+      // to uid 1000 via setpriv — see Step D at the end of startupCommand.
+      // Do not "simplify" this to user: "1000:1000": the volume chown has to
+      // happen before the drop or the container cannot write its own SQLite.
       user: "0:0",
       workingDirectory: "/home/node",
       environment: {

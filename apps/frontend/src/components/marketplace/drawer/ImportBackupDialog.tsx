@@ -4,6 +4,8 @@ import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { CompanyAgent } from "@/components/teams/shared/types";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import type { ImportConfirmResult, ImportPreview } from "@/lib/marketplace/types";
 
@@ -35,11 +37,24 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [memory, setMemory] = useState(true);
   const [cron, setCron] = useState(true);
   const [history, setHistory] = useState(false);
+  // Claude-context branch: which roster agent receives the staged content,
+  // which memory collections come along, and the per-item results after
+  // confirm. `skills` above is reused as the claude skill selection.
+  const [target, setTarget] = useState("");
+  const [claudeCols, setClaudeCols] = useState<Set<string>>(new Set());
+  const [claudeItems, setClaudeItems] = useState<NonNullable<ImportConfirmResult["claude_items"]> | null>(null);
+
+  // Null key until a claude preview exists — SWR's canonical "skip the
+  // request" signal, so backup imports never hit the Teams BFF.
+  const { read } = useTeamsApi();
+  const roster = read<{ agents: CompanyAgent[] }>(preview?.kind === "claude" ? "/agents" : null);
+  const rosterAgents = roster.data?.agents ?? [];
 
   function reset() {
     setPhase("pick"); setPreview(null); setError(null); setPartial(null);
     setAgents(new Set()); setSkills(new Set()); setMcps(new Set()); setPlugins(new Set());
     setMemory(true); setCron(true); setHistory(false);
+    setTarget(""); setClaudeCols(new Set()); setClaudeItems(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -54,7 +69,9 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
       const p = (await api.post("/marketplace/import", { key: presign.key })) as ImportPreview;
       setPreview(p);
       setAgents(new Set(p.agents.map((a) => a.id)));
-      setSkills(new Set(p.skills)); setMcps(new Set(p.mcp_servers)); setPlugins(new Set(p.plugins.map((x) => x.id)));
+      setSkills(new Set(p.kind === "claude" ? p.claude?.skills ?? [] : p.skills));
+      setMcps(new Set(p.mcp_servers)); setPlugins(new Set(p.plugins.map((x) => x.id)));
+      setClaudeCols(new Set(p.claude?.collections.map((c) => c.id) ?? []));
       setPhase("preview");
     } catch (e) {
       setError(errMessage(e)); setPhase("pick");
@@ -64,11 +81,28 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
   const needsUltra = useMemo(() => !!preview && preview.plan !== "ultra_pro" && preview.existing_agents + agents.size > preview.standard_max_agents, [preview, agents]);
   const anyHistory = !!preview && preview.agents.some((a) => agents.has(a.id) && a.has_history);
+  const claude = preview?.kind === "claude" ? (preview.claude ?? null) : null;
+  // The claude preview carries its flags under `claude.safety_flags` (the
+  // top-level list stays at its default); same shape, same renderer.
+  const safetyFlags = claude ? claude.safety_flags : preview?.safety_flags ?? [];
 
   async function confirm() {
     if (!preview) return;
     setError(null); setPartial(null); setPhase("confirming");
     try {
+      if (preview.kind === "claude") {
+        // No agents are minted here — content lands on an existing roster
+        // agent, so the backup path's "successful agents[] entry" contract
+        // doesn't apply. 2xx with claude_items IS success. onImported fires
+        // from the Done button (like continueWithPartial) — the parent closes
+        // the dialog inside onImported, which would hide these results.
+        const r = (await api.post(`/marketplace/import/${preview.import_id}/confirm`, {
+          target_agent_id: target, claude_collections: [...claudeCols], claude_skills: [...skills],
+        })) as ImportConfirmResult;
+        setClaudeItems(r.claude_items ?? []);
+        setPhase("preview");
+        return;
+      }
       const r = (await api.post(`/marketplace/import/${preview.import_id}/confirm`, {
         agent_ids: [...agents], skills: [...skills], mcp_servers: [...mcps], include_memory: memory, include_cron: cron,
         plugins: [...plugins], include_history: history && anyHistory,
@@ -117,6 +151,9 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           <DialogDescription>
             Run <code className="font-mono text-[12px]">openclaw backup create</code> on your machine and upload the
             <code className="font-mono text-[12px]"> .tar.gz</code>. Pick what comes along; nothing is minted until you confirm.
+            Or import your Claude Code context: run{" "}
+            <code className="font-mono text-[12px]">cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills</code>{" "}
+            (include whichever exist) and upload it.
           </DialogDescription>
         </DialogHeader>
 
@@ -134,9 +171,62 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
               <p className="text-[15px] font-medium text-[var(--ink)]">{preview.name}</p>
               {preview.description && <p className="text-[#5b5b5b]">{preview.description}</p>}
-              <p className="mt-1 text-[#5b5b5b]">{preview.file_count} files · {preview.cron_jobs} scheduled jobs</p>
+              {claude ? (
+                <p className="mt-1 text-[#5b5b5b]">
+                  {claude.collections.length} project memories · {claude.collections.reduce((n, c) => n + c.file_count, 0)} memory files · {claude.skills.length} skill{claude.skills.length === 1 ? "" : "s"}
+                </p>
+              ) : (
+                <p className="mt-1 text-[#5b5b5b]">{preview.file_count} files · {preview.cron_jobs} scheduled jobs</p>
+              )}
             </div>
 
+            {claude && (
+              <>
+                <label className="block">
+                  <span className="text-[12px] text-[#5b5b5b]">Apply to agent</span>
+                  <select aria-label="Target agent" value={target} disabled={busy || !!claudeItems}
+                    onChange={(e) => setTarget(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-white px-3 py-2 text-[13px] text-[var(--ink)] disabled:opacity-60">
+                    <option value="">Choose an agent…</option>
+                    {rosterAgents.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}{a.role === "ceo" ? " — CEO" : a.title ? ` — ${a.title}` : ""}</option>
+                    ))}
+                  </select>
+                </label>
+                {roster.error != null && <p className="text-[12px] text-[#8a3a2a]">Couldn&apos;t load your team — reopen the dialog to retry.</p>}
+                {claude.collections.length > 0 && (
+                  <fieldset><legend className="text-[12px] text-[#5b5b5b]">Project memories</legend>
+                    {claude.collections.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 py-0.5">
+                        <input type="checkbox" aria-label={c.label} checked={claudeCols.has(c.id)} disabled={busy || !!claudeItems} onChange={() => toggle(claudeCols, setClaudeCols, c.id)} />
+                        <span>{c.label} · <span className="text-[#5b5b5b]">{c.file_count} file{c.file_count === 1 ? "" : "s"}</span></span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+                {claude.skills.length > 0 && (
+                  <fieldset><legend className="text-[12px] text-[#5b5b5b]">Skills</legend>
+                    {claude.skills.map((s) => (<label key={s} className="mr-3 inline-flex items-center gap-1"><input type="checkbox" aria-label={s} checked={skills.has(s)} disabled={busy || !!claudeItems} onChange={() => toggle(skills, setSkills, s)} />{s}</label>))}
+                  </fieldset>
+                )}
+                {claude.has_user_memory && <p>Global CLAUDE.md → appended to the agent&apos;s USER.md</p>}
+                {Object.keys(claude.skipped).length > 0 && (
+                  <p className="text-[#5b5b5b]">Skipped: {Object.entries(claude.skipped).map(([k, v]) => `${v} ${k}`).join(" · ")}</p>
+                )}
+                {claudeItems && (
+                  <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
+                    <p className="font-medium text-[var(--ink)]">Imported</p>
+                    <ul className="mt-1 space-y-0.5">
+                      {claudeItems.map((i) => (
+                        <li key={i.item} className="font-mono text-[11.5px] text-[#5b5b5b]">{i.item} — {i.status === "applied" ? "applied" : "already exists, skipped"}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {!claude && (<>
             <fieldset>
               <legend className="text-[12px] text-[#5b5b5b]">Agents</legend>
               {preview.agents.map((a) => (
@@ -190,18 +280,19 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 <p className="mt-2">The staged import is kept — fix and retry, or continue.</p>
               </div>
             )}
+            </>)}
 
             {preview.warnings.length > 0 && (
               <ul className="list-disc space-y-1 rounded-2xl border border-amber-200 bg-amber-50 p-3 pl-7 text-amber-900">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
             )}
             {preview.skipped_big_files.length > 0 && <p className="text-[#5b5b5b]">Skipped {preview.skipped_big_files.length} file(s) over 512 MB.</p>}
-            {preview.safety_flags.length > 0 && (
+            {safetyFlags.length > 0 && (
               <fieldset>
                 <legend className="text-[12px] text-[#5b5b5b]">
                   Safety notes (don&apos;t block the import; you&apos;ll see them again if you publish)
                 </legend>
                 <ul className="space-y-1">
-                  {preview.safety_flags.map((f, i) => (
+                  {safetyFlags.map((f, i) => (
                     <li key={`${f.file}-${f.line ?? 0}-${i}`} className="rounded-lg border border-[var(--edge)] bg-[#f3eee5] px-2 py-1 font-mono text-[11.5px] text-[#5b5b5b]">
                       <span className="mr-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] uppercase text-[#5b5b5b]">{f.severity}</span>
                       {f.pattern} · {f.file}{f.line ? `:${f.line}` : ""}
@@ -223,12 +314,18 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
               Continue with {partial.okIds.length} imported
             </button>
           )}
-          {preview && (
-            <button type="button" onClick={() => void confirm()} disabled={busy || agents.size === 0 || needsUltra}
-              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
-              {phase === "confirming" ? "Adding…" : partial ? "Retry" : "Add to my team"}
+          {preview && (claudeItems ? (
+            <button type="button" onClick={() => { onImported(target); onOpenChange(false); reset(); }}
+              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white">
+              Done
             </button>
-          )}
+          ) : (
+            <button type="button" onClick={() => void confirm()}
+              disabled={busy || (claude ? !target : agents.size === 0 || needsUltra)}
+              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+              {phase === "confirming" ? "Adding…" : claude ? "Import context" : partial ? "Retry" : "Add to my team"}
+            </button>
+          ))}
         </DialogFooter>
       </DialogContent>
     </Dialog>

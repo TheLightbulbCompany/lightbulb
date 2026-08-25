@@ -7,6 +7,11 @@ const mockPost = vi.fn();
 const mockDel = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: mockPost, del: mockDel }) }));
 
+// The claude branch reads the Teams roster (same precedent as HireManagerDialog);
+// mocking the hook keeps real SWR + the api client out of these tests entirely.
+const mockRead = vi.fn();
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: mockRead }) }));
+
 const PREVIEW = {
   import_id: "import-abcdef123456", kind: "backup", agent_id: "main", name: "Quill", description: "dry, precise",
   agents: [{ id: "main", name: "Quill", has_history: true, history_bytes: 4096 }, { id: "work", name: "Work Bot", has_history: false, history_bytes: 0 }],
@@ -16,6 +21,24 @@ const PREVIEW = {
   skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
 };
 
+const CLAUDE_PREVIEW = {
+  import_id: "import-claude456789", kind: "claude", agent_id: "", name: "Claude Code context", description: "",
+  agents: [], plugins: [], file_count: 0, files: [], mcp_servers: [], skills: [], cron_jobs: 0,
+  safety_flags: [], warnings: [], skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
+  claude: {
+    collections: [
+      { id: "isol8-abc123", label: "isol8", file_count: 3 },
+      { id: "notes-def456", label: "notes", file_count: 1 },
+    ],
+    has_user_memory: true,
+    skills: ["graphify"],
+    skipped: { credentials: 2 },
+    safety_flags: [{ pattern: "aws-access-key", severity: "high", file: ".claude/projects/isol8/memory/leak.md", line: 1, snippet: "" }],
+  },
+};
+
+const ROSTER = { agents: [{ id: "agent1", name: "Friday", role: "ceo" }, { id: "agent2", name: "Scout", role: "general" }] };
+
 function pickFile(size = 1024) {
   const file = new File([new Uint8Array(size)], "backup.tar.gz", { type: "application/gzip" });
   fireEvent.change(screen.getByLabelText(/choose a backup archive/i), { target: { files: [file] } });
@@ -24,7 +47,8 @@ function pickFile(size = 1024) {
 describe("ImportBackupDialog", () => {
   const realFetch = global.fetch;
   beforeEach(() => {
-    mockPost.mockReset(); mockDel.mockReset();
+    mockPost.mockReset(); mockDel.mockReset(); mockRead.mockReset();
+    mockRead.mockReturnValue({ data: ROSTER, isLoading: false, error: undefined });
     global.fetch = vi.fn().mockResolvedValue({ ok: true }) as unknown as typeof fetch;
   });
   afterEach(() => { global.fetch = realFetch; });
@@ -41,6 +65,9 @@ describe("ImportBackupDialog", () => {
     pickFile();
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("https://s3/put", expect.objectContaining({ method: "PUT" })));
     expect(await screen.findByText("Quill")).toBeInTheDocument();
+    // backup header + agent-candidate list still render on kind: "backup"
+    expect(screen.getByText(/7 files · 1 scheduled jobs/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Work Bot")).toBeInTheDocument();
     expect(screen.getByText(/2026\.3\.11/)).toBeInTheDocument();
     // deselect "work", deselect skill "notes", opt into history
     fireEvent.click(screen.getByLabelText("Work Bot"));
@@ -108,6 +135,50 @@ describe("ImportBackupDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /continue with 1 imported/i }));
     expect(onImported).toHaveBeenCalledWith("uuid-ok");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("claude preview: agent picker gates confirm, collection toggles ride the POST body", async () => {
+    mockPost.mockImplementation(async (url: string) => {
+      if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
+      if (url === "/marketplace/import") return CLAUDE_PREVIEW;
+      if (url.endsWith("/confirm")) return {
+        agents: [], plugins_installed: [], history_staged: [], restarting: true, warnings: [],
+        claude_items: [
+          { item: "memory:isol8-abc123", status: "applied" },
+          { item: "user-memory", status: "applied" },
+          { item: "skill:graphify", status: "skipped_exists" },
+        ],
+      };
+      throw new Error("unexpected " + url);
+    });
+    const onImported = vi.fn();
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={onImported} />);
+    pickFile();
+    expect(await screen.findByText("Claude Code context")).toBeInTheDocument();
+    // the backup header line must NOT render on the claude branch
+    expect(screen.queryByText(/scheduled jobs/)).not.toBeInTheDocument();
+    // claude-specific summary + static lines
+    expect(screen.getByText(/2 project memories · 4 memory files · 1 skill/)).toBeInTheDocument();
+    expect(screen.getByText(/appended to the agent/)).toBeInTheDocument();
+    expect(screen.getByText(/aws-access-key/)).toBeInTheDocument();
+    // confirm is disabled until a target agent is chosen
+    const confirmBtn = screen.getByRole("button", { name: /import context/i });
+    expect(confirmBtn).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/target agent/i), { target: { value: "agent1" } });
+    expect(confirmBtn).toBeEnabled();
+    // unchecking a collection removes its id from the confirm body
+    fireEvent.click(screen.getByLabelText("notes"));
+    fireEvent.click(confirmBtn);
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/marketplace/import/import-claude456789/confirm", {
+      target_agent_id: "agent1", claude_collections: ["isol8-abc123"], claude_skills: ["graphify"],
+    }));
+    // per-item results rendered after confirm; the dialog stays open (the
+    // parent closes it inside onImported) until Done is clicked
+    expect(await screen.findByText(/skill:graphify — already exists/)).toBeInTheDocument();
+    expect(screen.getByText(/user-memory — applied/)).toBeInTheDocument();
+    expect(onImported).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /done/i }));
+    expect(onImported).toHaveBeenCalledWith("agent1");
   });
 
   it("renders safety flags in the preview", async () => {

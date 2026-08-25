@@ -143,7 +143,7 @@ export interface ListingDetailResponse {
 
 export interface ImportPreview {
   import_id: string;
-  kind: "backup" | "state-dir" | "workspace";
+  kind: "backup" | "state-dir" | "workspace" | "claude";
   agent_id: string;
   name: string;
   description: string;
@@ -160,6 +160,16 @@ export interface ImportPreview {
   existing_agents: number;
   standard_max_agents: number;
   plan: string | null;
+  /** Populated only when kind === "claude"; the backup-specific fields above
+   * stay at their defaults on that path. */
+  claude?: {
+    collections: { id: string; label: string; file_count: number }[];
+    has_user_memory: boolean;
+    skills: string[];
+    skipped: Record<string, number>;
+    /** Same shape as the top-level flags; snippet is always "". */
+    safety_flags: ImportPreview["safety_flags"];
+  } | null;
 }
 
 export interface ImportConfirmResult {
@@ -168,4 +178,6 @@ export interface ImportConfirmResult {
   history_staged: string[];
   restarting: boolean;
   warnings: string[];
+  /** Populated only on a claude import (agents stays empty on that path). */
+  claude_items?: { item: string; status: "applied" | "skipped_exists" }[] | null;
 }

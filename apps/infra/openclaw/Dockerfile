@@ -838,6 +838,27 @@ COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-ap
 COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml
 RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-app.sh
 
+# ---- /home/node ownership ----
+# The gateway runs as uid 1000: container-stack.ts boots as root (it has to —
+# the ECS ephemeral volumes materialise root:root) and then hands the gateway
+# over with `setpriv --reuid=1000`. So nothing in that user's HOME may ship
+# root-owned, or the gateway cannot write it.
+#
+# Build steps run as root, but with HOME=/root — which is why npm's cache
+# lands in /root/.npm and never here. What DOES land root-owned is anything a
+# COPY or a base-image step creates under /home/node (the `COPY sage/config.json`
+# above is exactly that, hence its own chown, and the base's Playwright branch
+# does the same to .cache whenever OPENCLAW_INSTALL_BROWSER is set). Fix those
+# in the layer rather than repairing them on every container boot: the boot has
+# no idea what the image baked, so the repair there was a blind sweep.
+#
+# maxdepth 1: the entries are dotfiles and directory inodes, so this is metadata
+# only — never a recursive copy-up of a large tree into a new layer.
+# .openclaw is excluded on purpose. In the image it is an empty node-owned
+# mountpoint, but at runtime it IS the per-user EFS mount, whose ownership comes
+# from the access point's uid squash. The image must never have an opinion there.
+RUN find /home/node -maxdepth 1 -uid 0 ! -name .openclaw -exec chown -h node:node {} +
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

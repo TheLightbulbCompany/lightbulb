@@ -848,26 +848,37 @@ export class ContainerStack extends cdk.Stack {
       // after Xvnc/warp/websockify have taken the ports they need as root,
       // rather than at the container level.
       //
-      // Only two classes of path need repairing here, because everything this
+      // Exactly ONE class of path needs repairing here, because everything this
       // command creates itself is now created as 1000 outright (Steps B/C use
       // `install -d -o 1000`) and everything on EFS is squashed to 1000 by the
-      // access point:
+      // access point: the two ECS-managed ephemeral volumes. We do not create
+      // those — the container runtime does, root:root, because the image has no
+      // mountpoint at those paths for it to copy ownership from. They are empty
+      // at task start, so this is two inodes, not a walk.
       //
-      //   1. The two ECS-managed ephemeral volumes. We do not create these —
-      //      the container runtime does, root:root, because the image has no
-      //      mountpoint at those paths for it to copy ownership from. They are
-      //      empty at task start, so this is two inodes, not a walk.
-      //   2. Root-owned dotfiles baked into the image layer (.local, .gitconfig,
-      //      .expo, and the symlinks Step C planted). `-h` retargets the link
-      //      itself rather than chasing it onto EFS. The right long-term home
-      //      for this is a `chown node:node` in the extended image Dockerfile;
-      //      doing it here keeps the fix to infra so we can roll onto the 8.1
-      //      tag already in ECR without a rebuild.
+      // There is deliberately NO second class here any more — no sweep of
+      // /home/node's dotfiles. That sweep assumed the image baked them
+      // root-owned; it does not. Verified entry by entry against the ECR
+      // layers of 2026.8.1-isol8.1-1c67107: the base creates .config and
+      // .openclaw with `install -d -o node`, the extended Dockerfile chowns
+      // the one thing a COPY lands root-owned (.sage), and every build step
+      // runs as root with HOME=/root — which is why npm's cache is /root/.npm
+      // and not ~node/.npm. Ownership is now the IMAGE's job and is kept there
+      // by a maxdepth-1 `chown node:node` at the end of
+      // apps/infra/openclaw/Dockerfile, so a base bump cannot quietly
+      // reintroduce one.
+      //
+      // The root-owned entries a live container shows at maxdepth 1
+      // (.npm, .mcporter, .xurl) are the symlinks Step C plants moments
+      // earlier, as root. Their ownership is inert: symlink resolution ignores
+      // it (the target's mode is what counts, and every target is either EFS
+      // squashed to 1000 or a /tmp dir created with `install -d -o 1000`), and
+      // replacing one needs write on /home/node — owned by node, not sticky —
+      // not on the link.
       //
       // Note this runs BEFORE the boot script, so litestream's restore writes
       // into state/ and agents/ as 1000 and needs no chown of its own.
       "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents || exit 1",
-      "find /home/node -maxdepth 1 -uid 0 -exec chown -h 1000:1000 {} + || exit 1",
       'echo "[boot] init complete as root (warp/Xvnc/websockify started); exec gateway chain as uid=1000 via setpriv"',
       "exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh",
     ].join("; ");

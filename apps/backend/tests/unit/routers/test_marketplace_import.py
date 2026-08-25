@@ -161,6 +161,9 @@ def test_import_412_etag_mismatch_returns_409(client):
     assert r.status_code == 409, r.text
     assert "upload it again" in r.json()["detail"]
     assert calls["n"] == 2
+    # The raw object must survive: this flow tells the client to re-upload
+    # and retry against the same key.
+    assert s3.deleted == []
     assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 

@@ -185,29 +185,41 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
         except ClientError:
             logger.warning("import %s: could not delete raw upload %s (lifecycle will)", import_id, key)
 
-    names: list[str] = []
     try:
-        with tarfile.open(fileobj=_get(), mode="r|gz") as tf:
-            for member in tf:
-                names.append(member.name)
-                if len(names) >= backup_import.MAX_MEMBERS:
-                    break  # whichever extractor runs raises on its own member cap
-    except tarfile.TarError as exc:
-        raise backup_import.BackupImportError("not a valid .tar.gz archive") from exc
-
-    if claude_code_import.detect_claude_root(names) is not None:
+        names: list[str] = []
+        declared = 0
         try:
-            normalized = claude_code_import.extract_claude_archive(_get, staging_dir)
-        except claude_code_import.ClaudeImportError:
-            _delete_raw()
-            raise
-        _delete_raw()
-        return normalized
+            with tarfile.open(fileobj=_get(), mode="r|gz") as tf:
+                for member in tf:
+                    names.append(member.name)
+                    # Bound the decompressed bytes this pass itself streams
+                    # through — MAX_MEMBERS caps header count, but one member
+                    # with a huge declared size would otherwise force an
+                    # unbounded decompress-and-discard.
+                    declared += member.size
+                    if declared > backup_import.MAX_EXTRACTED_BYTES:
+                        raise backup_import.BackupImportError("archive expands past the extraction cap")
+                    if len(names) >= backup_import.MAX_MEMBERS:
+                        break  # whichever extractor runs raises on its own member cap
+        except tarfile.TarError as exc:
+            raise backup_import.BackupImportError("not a valid .tar.gz archive") from exc
 
-    normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
-    package = _export(owner_id, import_id, normalized)
-    _delete_raw()
-    return normalized, report, package
+        if claude_code_import.detect_claude_root(names) is not None:
+            normalized = claude_code_import.extract_claude_archive(_get, staging_dir)
+            _delete_raw()
+            return normalized
+
+        normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
+        package = _export(owner_id, import_id, normalized)
+        _delete_raw()
+        return normalized, report, package
+    except (backup_import.BackupImportError, claude_code_import.ClaudeImportError):
+        # The archive itself is bad — no retry reuses this object, and it can
+        # hold credentials, so drop it now instead of waiting on the bucket
+        # lifecycle rule. The 412/ClientError path deliberately keeps it: that
+        # flow tells the client to re-upload and retry against the same key.
+        _delete_raw()
+        raise
 
 
 @router.post("", response_model=schemas.ImportPreviewResponse)

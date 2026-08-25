@@ -495,8 +495,10 @@ change them.
   More than 10 agents in total needs Ultra Pro. Channels, credentials, the
   browser profile and global state never import. Plugins with dependencies need
   `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
-- **"Can I bring my local Claude Code context?"** → Yes: tar `~/.claude` and upload
-  it through the same import wizard — it detects the shape and applies onto ONE
+- **"Can I bring my local Claude Code context?"** → Yes: run
+  `cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills`
+  (include whichever exist) and upload it through the same import
+  wizard — it detects the shape and applies onto ONE
   existing agent the owner picks: auto-memory lands under `memory/imports/claude-code/`,
   the global CLAUDE.md becomes a marker-fenced block in that agent's USER.md, and
   skills copy in (an existing skill is never overwritten). Credentials, transcripts,

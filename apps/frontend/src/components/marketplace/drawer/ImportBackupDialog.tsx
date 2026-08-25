@@ -54,6 +54,10 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [target, setTarget] = useState("");
   const [claudeCols, setClaudeCols] = useState<Set<string>>(new Set());
   const [claudeItems, setClaudeItems] = useState<NonNullable<ImportConfirmResult["claude_items"]> | null>(null);
+  const [claudeWarnings, setClaudeWarnings] = useState<string[]>([]);
+  // Bumped by reset(): a native export resolving after the dialog closed
+  // compares against this and drops its result instead of re-driving upload.
+  const generationRef = useRef(0);
   // Set post-mount (SSR-safe, same as DesktopFileAccess) — non-null only in
   // the Tauri webview, where the one-click "Import from this Mac" renders.
   const [tauriInvoke, setTauriInvoke] = useState<TauriInvoke | null>(null);
@@ -66,10 +70,11 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const rosterAgents = roster.data?.agents ?? [];
 
   function reset() {
+    generationRef.current += 1;
     setPhase("pick"); setPreview(null); setError(null); setPartial(null);
     setAgents(new Set()); setSkills(new Set()); setMcps(new Set()); setPlugins(new Set());
     setMemory(true); setCron(true); setHistory(false);
-    setTarget(""); setClaudeCols(new Set()); setClaudeItems(null);
+    setTarget(""); setClaudeCols(new Set()); setClaudeItems(null); setClaudeWarnings([]);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -100,11 +105,14 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   async function importFromThisMac() {
     if (!tauriInvoke) return;
     setError(null); setPhase("uploading");
+    const generation = generationRef.current;
     try {
       const exported = await tauriInvoke<{ base64: string; file_count: number; total_bytes: number }>("export_claude_context");
+      if (generation !== generationRef.current) return; // dialog closed while exporting — drop the result
       const bytes = Uint8Array.from(atob(exported.base64), (c) => c.charCodeAt(0));
       await handleFile(new File([bytes], "claude-code.tar.gz", { type: "application/gzip" }));
     } catch (e) {
+      if (generation !== generationRef.current) return;
       setError(e instanceof Error ? e.message : String(e)); setPhase("pick");
     }
   }
@@ -130,6 +138,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           target_agent_id: target, claude_collections: [...claudeCols], claude_skills: [...skills],
         })) as ImportConfirmResult;
         setClaudeItems(r.claude_items ?? []);
+        setClaudeWarnings(r.warnings ?? []);
         setPhase("preview");
         return;
       }
@@ -257,6 +266,11 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                         <li key={i.item} className="font-mono text-[11.5px] text-[#5b5b5b]">{i.item} — {i.status === "applied" ? "applied" : "already exists, skipped"}</li>
                       ))}
                     </ul>
+                    {claudeWarnings.length > 0 && (
+                      <ul className="mt-2 list-disc space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-2 pl-6 text-amber-900">
+                        {claudeWarnings.map((w) => <li key={w}>{w}</li>)}
+                      </ul>
+                    )}
                   </div>
                 )}
               </>
@@ -357,7 +371,12 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             </button>
           ) : (
             <button type="button" onClick={() => void confirm()}
-              disabled={busy || (claude ? !target : agents.size === 0 || needsUltra)}
+              disabled={busy || (claude
+                // No target, or nothing at all would land (no collections, no
+                // skills, no user memory) — an empty confirm would just delete
+                // the staging behind an empty success.
+                ? !target || (claudeCols.size === 0 && skills.size === 0 && !claude.has_user_memory)
+                : agents.size === 0 || needsUltra)}
               className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
               {phase === "confirming" ? "Adding…" : claude ? "Import context" : partial ? "Retry" : "Add to my team"}
             </button>

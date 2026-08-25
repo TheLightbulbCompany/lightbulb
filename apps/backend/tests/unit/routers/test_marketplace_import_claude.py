@@ -86,12 +86,27 @@ def test_import_claude_traversal_400_cleans_up(client):
 
 def test_import_corrupt_archive_400_cleans_up(client):
     # Non-gzip bytes die in the names-only detection pass, before either
-    # extractor runs; the router must still 400 and leave no staging behind.
+    # extractor runs; the router must still 400, leave no staging behind, and
+    # delete the raw object (it can hold credentials — nothing retries it).
     c, user_root, s3 = client
     s3.objects[KEY] = b"this is not a gzip stream"
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 400, r.text
     assert "not a valid .tar.gz" in r.json()["detail"]
+    assert s3.deleted == [KEY]
+    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
+
+
+def test_import_names_pass_bounds_declared_bytes(client, monkeypatch):
+    # The names-only pass must refuse an archive whose declared member sizes
+    # cross the extraction cap — MAX_MEMBERS bounds header count, not the
+    # decompressed bytes the stream forces through.
+    c, user_root, s3 = client
+    monkeypatch.setattr(marketplace_import.backup_import, "MAX_EXTRACTED_BYTES", 1)
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 400, r.text
+    assert "extraction cap" in r.json()["detail"]
+    assert s3.deleted == [KEY]
     assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 

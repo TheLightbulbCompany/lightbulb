@@ -170,25 +170,35 @@ def test_isol8_patch_level(tag, level):
     assert openclaw_version.isol8_patch_level(tag) == level
 
 
-def test_deployed_isol8_patch_at_least_explicit_tag_wins_over_pin(monkeypatch):
+def test_deployed_fork_at_least_explicit_tag_wins_over_pin(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.8-8f700f0")
-    # A live container still on isol8.6 must NOT pass a >=7 gate just because
+    # A live container still on isol8.6 must NOT pass the gate just because
     # the environment pin already moved on.
-    assert openclaw_version.deployed_isol8_patch_at_least(7, tag="2026.7.2-isol8.6-303527a") is False
-    assert openclaw_version.deployed_isol8_patch_at_least(7, tag="2026.7.2-isol8.8-8f700f0") is True
+    assert openclaw_version.deployed_fork_at_least("2026.7.2", 7, tag="2026.7.2-isol8.6-303527a") is False
+    assert openclaw_version.deployed_fork_at_least("2026.7.2", 7, tag="2026.7.2-isol8.8-8f700f0") is True
 
 
-def test_deployed_isol8_patch_at_least_unknown_tag_gates_false(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "prod")
-    monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.8-8f700f0")
-    assert openclaw_version.deployed_isol8_patch_at_least(7, tag="") is False
+@pytest.mark.parametrize(
+    "tag, expected",
+    [
+        ("2026.7.2-isol8.7-abc1234", True),  # the patch that introduced the feature
+        ("2026.7.2-isol8.6-303527a", False),  # same base, one patch too early
+        ("2026.8.1-isol8.1-abc1234", True),  # newer base: counter restarts, pick carried forward
+        ("2026.9.0", True),  # newer base with no fork segment at all
+        ("2026.7.1-isol8.9-abc1234", False),  # older base, however many patches
+        ("2026.5.12-0654e00", False),  # pre-fork tag
+        ("", False),  # unreadable image
+    ],
+)
+def test_deployed_fork_at_least_is_base_aware(tag, expected):
+    assert openclaw_version.deployed_fork_at_least("2026.7.2", 7, tag=tag) is expected
 
 
-def test_deployed_isol8_patch_at_least_uses_env_pin_when_no_tag(monkeypatch):
+def test_deployed_fork_at_least_uses_env_pin_when_no_tag(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv("OPENCLAW_PROD_TAG", "2026.7.2-isol8.8-8f700f0")
     monkeypatch.setenv("OPENCLAW_DEV_TAG", "2026.7.2-isol8.6-303527a")
-    assert openclaw_version.deployed_isol8_patch_at_least(7) is True
+    assert openclaw_version.deployed_fork_at_least("2026.7.2", 7) is True
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    assert openclaw_version.deployed_isol8_patch_at_least(7) is False
+    assert openclaw_version.deployed_fork_at_least("2026.7.2", 7) is False

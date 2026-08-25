@@ -1,5 +1,5 @@
 """EcsManager._deployed_image_tag — the image tag fork-gated config keys are
-written against (see openclaw_version.deployed_isol8_patch_at_least)."""
+written against (see openclaw_version.deployed_fork_at_least)."""
 
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch

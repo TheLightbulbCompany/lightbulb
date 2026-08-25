@@ -1994,11 +1994,12 @@ def build_openclaw_config_dict(
             # atomic JSON write has none of that. `~` is the container's
             # $HOME, so the file lands under the EFS access point.
             #
-            # The key exists only from fork patch isol8.7 and `browser` is a
-            # strictObject, so it is emitted only for an image that carries
-            # it: the owner's RUNNING image on a regen (live containers lag
-            # the pin), this environment's pin on a fresh provision, and
-            # nothing at all when the image can't be read.
+            # The key exists only from fork patch 2026.7.2-isol8.7 (carried
+            # forward onto newer bases) and `browser` is a strictObject, so
+            # it is emitted only for an image that carries it: the owner's
+            # RUNNING image on a regen (live containers lag the pin), this
+            # environment's pin on a fresh provision, and nothing at all when
+            # the image can't be read.
             **(
                 {
                     "sessionState": {
@@ -2007,7 +2008,7 @@ def build_openclaw_config_dict(
                         "path": "~/.openclaw/browser-state/state.json",
                     }
                 }
-                if openclaw_version.deployed_isol8_patch_at_least(7, tag=deployed_tag)
+                if openclaw_version.deployed_fork_at_least("2026.7.2", 7, tag=deployed_tag)
                 else {}
             ),
             # Required because the gateway runs as root inside the

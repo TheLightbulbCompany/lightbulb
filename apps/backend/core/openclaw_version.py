@@ -159,16 +159,31 @@ def isol8_patch_level(tag: str | None) -> int:
     return int(m.group(1)) if m else 0
 
 
-def deployed_isol8_patch_at_least(target: int, *, tag: str | None = None) -> bool:
-    """True when the image a config will run on carries fork patch level
-    ``>= target``.
+def deployed_fork_at_least(base: str, patch: int, *, tag: str | None = None) -> bool:
+    """True when the image a config will run on carries a fork patch that
+    first shipped as ``<base>-isol8.<patch>``.
 
-    ``tag`` is the owner's ACTUAL running image tag when the caller knows it
-    (a regen or roll of an existing container) — pass ``""`` when a container
-    exists but its image could not be read, which gates false. ``None`` means
-    no container exists yet, so the environment pin (:func:`deployed_tag`) is
-    what the new task will run. The distinction matters because live
-    containers lag the pin: gating a fork-only key on the pin alone would
-    write it onto an older image whose strict schema then refuses to boot.
+    The fork patch counter restarts on every new upstream base
+    (``2026.7.2-isol8.8`` → ``2026.8.1-isol8.1``) and picks are carried
+    forward, so the test is: newer base ⇒ yes; same base ⇒ patch level
+    ``>= patch``; older base ⇒ no.
+
+    ``tag`` is the tag of the image that will READ the config when the caller
+    knows it (a regen or roll of an existing container) — pass ``""`` when a
+    container exists but its image could not be read, which gates false.
+    ``None`` means no container exists yet, so the environment pin
+    (:func:`deployed_tag`) is what the new task will run. The distinction
+    matters because live containers lag the pin: gating a fork-only key on
+    the pin alone would write it onto an older image whose strict schema then
+    refuses to boot.
     """
-    return isol8_patch_level(deployed_tag() if tag is None else tag) >= target
+    t = deployed_tag() if tag is None else (tag or "")
+    if not t:
+        return False
+    upstream = _version_tuple(t.split("-", 1)[0])
+    wanted = _version_tuple(base)
+    if upstream > wanted:
+        return True
+    if upstream < wanted:
+        return False
+    return isol8_patch_level(t) >= patch

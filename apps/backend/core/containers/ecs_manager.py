@@ -533,7 +533,7 @@ class EcsManager:
     async def _deployed_image_tag(self, owner_id: str) -> str | None:
         """Tag of the image the owner's container is registered to run.
 
-        Feeds ``openclaw_version.deployed_isol8_patch_at_least`` so config keys
+        Feeds ``openclaw_version.deployed_fork_at_least`` so config keys
         that exist only from a given fork patch level are written against the
         image that will actually read them. Returns ``None`` when the owner has
         no task definition yet (fresh provision — the env pin is what the new

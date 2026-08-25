@@ -450,6 +450,12 @@ class TestBrowserSessionState:
     def test_present_for_an_image_that_carries_the_key(self):
         assert _cfg(deployed_tag="2026.7.2-isol8.8-8f700f0")["browser"]["sessionState"] == self.EXPECTED
 
+    def test_present_on_a_newer_base_whose_patch_counter_restarted(self):
+        # 2026.8.1-isol8.1 carries the 7.2-isol8.7 pick forward; "patch >= 7"
+        # alone would wrongly read it as too old and withhold the key on the
+        # very roll that is supposed to deliver it.
+        assert _cfg(deployed_tag="2026.8.1-isol8.1-abc1234")["browser"]["sessionState"] == self.EXPECTED
+
     def test_absent_for_a_live_container_still_on_an_older_fork_level(self, monkeypatch):
         # Prod pin already on isol8.8 — a regen of an isol8.6 box must not
         # inherit the pin's keys (strict schema ⇒ crash-loop at boot).

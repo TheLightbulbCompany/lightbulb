@@ -252,9 +252,7 @@ def test_prune_strips_branches_left_empty():
     the generator deliberately omitted it, and writing an empty section back
     reintroduces a key the regen meant to drop."""
     base = {"skills": {"workshop": {"autonomous": {"mode": "propose"}}}}
-    pruned = config_schema.prune_schema_rejected(
-        base, {"skills": {"workshop": {"autonomous": {"enabled": True}}}}
-    )
+    pruned = config_schema.prune_schema_rejected(base, {"skills": {"workshop": {"autonomous": {"enabled": True}}}})
     assert pruned == {}
 
 

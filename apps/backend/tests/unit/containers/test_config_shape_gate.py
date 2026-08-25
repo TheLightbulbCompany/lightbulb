@@ -142,3 +142,56 @@ def test_absent_tag_falls_back_to_the_env_pin(monkeypatch):
     """A fresh provision passes no tag; the pin IS correct for that case."""
     cfg = _cfg_with_pin_ahead(monkeypatch, None)
     assert cfg["meta"]["lastTouchedVersion"] == "2026.8.1"
+
+
+# --- gateway.trustedProxies -------------------------------------------------
+#
+# 2026.8.1 added ingress attribution: on the WebSocket upgrade, a peer INSIDE
+# trustedProxies is treated as a proxy and must forward headers naming the real
+# client. Our backend sends none -- it is the client, not a proxy -- so listing
+# any range that contains its VPC address makes every upgrade 403
+# ("unattributable-proxy", the only 403 on that path). The container boots
+# perfectly and is simply unreachable from the backend.
+#
+# Asserted as "no network range at all" rather than "not 10.0.0.0/8" on purpose.
+# The defect is not that one CIDR; it is any CIDR wide enough to contain the
+# backend. A literal-string test would pass while someone added 172.16/12 for a
+# future VPC peering and silently reintroduced the outage.
+
+_RFC1918_PREFIXES = (
+    "10.",
+    "172.16.",
+    "172.17.",
+    "172.18.",
+    "172.19.",
+    "172.20.",
+    "172.21.",
+    "172.22.",
+    "172.23.",
+    "172.24.",
+    "172.25.",
+    "172.26.",
+    "172.27.",
+    "172.28.",
+    "172.29.",
+    "172.30.",
+    "172.31.",
+    "192.168.",
+)
+
+
+def test_trusted_proxies_is_loopback_only(monkeypatch):
+    """trustedProxies must never contain a network range.
+
+    Loopback is legitimate (the node-host connects over it). Anything wider
+    catches the backend and 403s every gateway RPC on 2026.8.1+.
+    """
+    for tag in ("2026.7.2-isol8.8-8f700f0", "2026.8.1-isol8.1-1c67107"):
+        cfg = build_openclaw_config_dict(**_COMMON, deployed_tag=tag)
+        proxies = cfg["gateway"]["trustedProxies"]
+
+        assert proxies == ["127.0.0.1", "::1"], (tag, proxies)
+        # Belt and braces: no CIDR notation, no RFC1918 prefix, on either shape.
+        for entry in proxies:
+            assert "/" not in entry, (tag, entry)
+            assert not entry.startswith(_RFC1918_PREFIXES), (tag, entry)

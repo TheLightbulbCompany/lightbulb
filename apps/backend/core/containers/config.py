@@ -1414,7 +1414,31 @@ def build_openclaw_config_dict(
             "mode": "local",
             "bind": "lan",
             "auth": auth,
-            "trustedProxies": ["10.0.0.0/8", "127.0.0.1", "::1"],
+            # LOOPBACK ONLY. Never widen this to a network range, and in
+            # particular never re-add an RFC1918 CIDR -- the backend dials the
+            # gateway from a VPC address, so any range containing 10.x sweeps
+            # the BACKEND ITSELF into the proxy class.
+            #
+            # 2026.8.1 added ingress attribution (gateway/ingress-attribution.ts
+            # + server-http-upgrades.ts, neither present at 7.2). On the WS
+            # upgrade it resolves the peer: a remote INSIDE trustedProxies is
+            # treated as a proxy and must forward headers naming the real
+            # client; when it doesn't, the request is "unattributable-proxy"
+            # and the upgrade is refused 403 -- the only 403 on that path. Our
+            # backend sends no x-forwarded-* headers because it is not a proxy,
+            # it is the client, so a /8 here means every RPC fails: the
+            # container boots healthy and is simply unreachable.
+            #
+            # The /8 was correct once. ae2ca6086 (2026-03-24) set
+            # gateway.auth.mode = "trusted-proxy" and authenticated by
+            # asserting the user in x-forwarded-user, which made the backend a
+            # genuine proxy. That model is gone -- auth.mode is "token" and the
+            # pool does the 4.5 signed-device handshake (operator_rpc
+            # .perform_signed_connect); nothing in the repo emits
+            # x-forwarded-user any more. The entry outlived its mechanism by
+            # five months and sat inert until 8.1 became the first version to
+            # read it and draw a conclusion.
+            "trustedProxies": ["127.0.0.1", "::1"],
             "controlUi": {
                 "enabled": False,
             },

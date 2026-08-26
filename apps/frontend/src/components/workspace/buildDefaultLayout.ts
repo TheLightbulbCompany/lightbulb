@@ -1,8 +1,12 @@
 // Mission Control: sentinel CEO chat on the left, Browser and Inbox stacked
 // on the right. Browser, not Dashboard: the live view of the agent working
 // is the thing a non-technical owner understands at a glance; the metrics
-// dashboard overwhelmed them. Built by code (never persisted as a preset
-// blob) so the default evolves with releases; Reset re-applies it.
+// dashboard overwhelmed them. Deliberate cost: the panel's mount effect
+// starts the container's Chrome (one idempotent launch per container
+// lifetime), so every owner now carries a headful Chrome from first load
+// rather than from first browser-tool use. Built by code (never persisted
+// as a preset blob) so the default evolves with releases; Reset re-applies
+// it.
 import type { DockviewApi } from "dockview-react";
 import { chatPanelId, DEFAULT_AGENT_SENTINEL } from "./panelRegistry";
 

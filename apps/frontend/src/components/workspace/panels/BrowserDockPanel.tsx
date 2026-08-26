@@ -81,13 +81,15 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
       rfb = new RFB(mountRef.current, browserViewWsUrl(BACKEND_URL), {
         wsProtocols: ["binary", token],
       });
-      // resizeSession: the panel drives the ACTUAL container display size —
-      // noVNC sends SetDesktopSize, Xvnc resizes, matchbox re-fits Chrome —
-      // so the browser renders edge-to-edge at native resolution instead of
-      // being scaled like a video. scaleViewport stays on as the fallback for
-      // the moments before the first resize lands (and for any server that
-      // rejects the request), where it scales rather than cropping.
-      rfb.resizeSession = true;
+      // scaleViewport, NOT resizeSession: the container display stays at its
+      // boot geometry (Xvnc 1280x800) and is scaled into the panel. This panel
+      // is open by default in every owner's layout now, so letting it drive
+      // the real display (SetDesktopSize) would pin every agent's Chrome to
+      // whatever the dock happens to give the panel — ~648x340 on the default
+      // split, below every responsive breakpoint. The agent's viewport must
+      // not depend on how the owner arranged their dock. (A mid-session
+      // screen.* change is also a known automation tell.) Take-over still
+      // works — noVNC maps pointer coordinates through the scale.
       rfb.scaleViewport = true;
       rfb.background = "transparent";
       rfb.addEventListener("connect", () => {

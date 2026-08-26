@@ -38,9 +38,11 @@ describe("layoutStorage", () => {
     expect(readLayout("u1")).toEqual(layout);
   });
 
-  it("drops the orphaned v1 blob on read", () => {
+  it("drops the orphaned v1 blob on read, leaving the v2 blob intact", () => {
+    const layout = minimalLayout({ browser: { id: "browser", contentComponent: "browser", params: {} } });
+    writeLayout("u1", layout);
     window.localStorage.setItem("isol8.workspace.layout.v1:u1", "{}");
-    expect(readLayout("u1")).toBeNull();
+    expect(readLayout("u1")).toEqual(layout);
     expect(window.localStorage.getItem("isol8.workspace.layout.v1:u1")).toBeNull();
   });
 

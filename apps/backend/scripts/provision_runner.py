@@ -172,6 +172,14 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     (the runner has Clerk creds), the same fallback the helpers use for a JWT
     without an email claim; passing it in avoids a redundant second lookup
     inside the helper.
+
+    After the seed, ``arm_nightly_ceo`` arms the paid nightly-CEO routine on
+    the freshly seeded Friday. It is gated paid-only INSIDE, so a free-trial
+    run is a metered no-op; arming here — not on a UI poll — is what makes it
+    deterministic for trial→paid conversions and org first-provisions, both of
+    which reach this executor. Its failures classify exactly like the seed's.
+    ``trust_cache=False``: a retry of a run that died between the arm's claim
+    write and its routine create must not trust the claim cache.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
@@ -180,6 +188,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     from core.services.user_provision import (
         _ensure_paperclip_for_org,
         _ensure_paperclip_for_owner,
+        arm_nightly_ceo,
     )
 
     try:
@@ -217,6 +226,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
                 owner_email=owner_email,
                 org_id=None,
             )
+        await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
@@ -262,7 +272,7 @@ async def run(owner_id: str, claim_id: str) -> int:
                 await container_repo.release_provision_to_error(
                     owner_id,
                     claim_id,
-                    last_error="provision seed: owner paperclip company seed failed",
+                    last_error="provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
                     retryable=(seed_exit == EXIT_TRANSIENT),
                     attempt_token=attempt_token,
                 )

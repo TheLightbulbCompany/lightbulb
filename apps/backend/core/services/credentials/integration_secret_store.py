@@ -60,6 +60,15 @@ async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
             resp = sm.get_secret_value(SecretId=name)
         except sm.exceptions.ResourceNotFoundException:
             return None
+        except sm.exceptions.InvalidRequestException:
+            # The secret exists but is SCHEDULED FOR DELETION (the recovery
+            # window after a disconnect that did NOT force-delete, or a manual
+            # console deletion). GetSecretValue refuses to read it. Treat it as
+            # "not connected" — the same as absent — so the connections UI can
+            # re-stage a fresh connect instead of 500ing for the whole 7-30 day
+            # window. ``delete()`` force-deletes, so new disconnects never land
+            # here; this covers legacy/manually-scheduled deletions.
+            return None
         return json.loads(resp["SecretString"])
 
     return await run_in_thread(_get)

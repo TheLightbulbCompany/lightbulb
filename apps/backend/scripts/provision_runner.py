@@ -270,7 +270,7 @@ async def run(owner_id: str, claim_id: str) -> int:
                 await container_repo.release_provision_to_error(
                     owner_id,
                     claim_id,
-                    last_error="provision seed: owner paperclip company seed failed",
+                    last_error="provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
                     retryable=(seed_exit == EXIT_TRANSIENT),
                     attempt_token=attempt_token,
                 )

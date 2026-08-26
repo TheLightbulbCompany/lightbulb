@@ -341,3 +341,95 @@ async def test_handles_network_error(monkeypatch):
     assert result["events"] == []
     assert result["error"] is not None
     assert "dns boom" in result["error"]
+
+
+@asynccontextmanager
+async def _fake_post_client(response_or_exc):
+    client = MagicMock()
+    if isinstance(response_or_exc, BaseException):
+        client.post = AsyncMock(side_effect=response_or_exc)
+    else:
+        client.post = AsyncMock(return_value=response_or_exc)
+    yield client
+
+
+@pytest.mark.asyncio
+async def test_hogql_stubbed_without_key(monkeypatch):
+    _apply_posthog_settings(monkeypatch, api_key="")
+    from core.services import posthog_admin
+
+    out = await posthog_admin.hogql("select 1")
+    assert out == {"columns": [], "results": [], "stubbed": True, "error": None}
+
+
+@pytest.mark.asyncio
+async def test_hogql_posts_query_kind_and_parses(monkeypatch):
+    """Regression-proofed against a broken assertion path: a MagicMock's
+    ``.return_value`` set to a real ``@asynccontextmanager`` instance does
+    NOT make ``__aenter__`` itself a mock (it stays the real bound method),
+    so introspecting via ``fake.__aenter__.return_value`` raises
+    AttributeError. Capture the POST call args directly instead, matching
+    this file's existing ``capturing_client`` pattern.
+    """
+    _apply_posthog_settings(monkeypatch, host="https://us.posthog.com")
+    from core.services import posthog_admin
+
+    captured = {}
+    resp = _make_response(200, {"columns": ["week", "n"], "results": [["2026-08-17", 3]]})
+
+    @asynccontextmanager
+    async def capturing_client(*args, **kwargs):
+        client = MagicMock()
+
+        async def post(url, headers=None, json=None, **kw):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return resp
+
+        client.post = post
+        yield client
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+        out = await posthog_admin.hogql("select 1")
+    assert out == {"columns": ["week", "n"], "results": [["2026-08-17", 3]], "stubbed": False, "error": None}
+    assert captured["url"] == "https://us.posthog.com/api/projects/12345/query/"
+    assert captured["json"] == {"query": {"kind": "HogQLQuery", "query": "select 1"}}
+    assert captured["headers"]["Authorization"] == "Bearer phc_xyz"
+
+
+@pytest.mark.asyncio
+async def test_hogql_403_scope(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+    from core.services import posthog_admin
+
+    resp = _make_response(403, text_body='{"detail":"API key missing required scope"}')
+    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(resp)):
+        out = await posthog_admin.hogql("select 1")
+    assert out["error"] == "insufficient_scope" and out["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_hogql_timeout(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+    from core.services import posthog_admin
+
+    with patch(
+        "core.services.posthog_admin.httpx.AsyncClient",
+        return_value=_fake_post_client(httpx.TimeoutException("slow")),
+    ):
+        out = await posthog_admin.hogql("select 1")
+    assert out["error"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_hogql_invalid_json_response(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+    from core.services import posthog_admin
+
+    resp = _make_response(200, {})
+    resp.json = MagicMock(side_effect=ValueError("bad json"))
+    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(resp)):
+        out = await posthog_admin.hogql("select 1")
+    assert out["error"] == "invalid_response"
+    assert out["results"] == []

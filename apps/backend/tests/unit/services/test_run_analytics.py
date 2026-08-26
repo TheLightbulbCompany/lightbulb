@@ -441,3 +441,17 @@ async def test_is_internal_org_lookup_miss_is_false_and_not_cached():
 async def test_is_internal_lands_on_the_event():
     kwargs = await _emit({"agent_id": "a", "source": "webchat"}, is_internal=True)
     assert kwargs["properties"]["is_internal"] is True
+
+
+async def test_resolve_internal_owner_raises_while_is_internal_owner_swallows():
+    """ops/growth reads use the RAISING resolver directly (segmentation there
+    is load-bearing, so a Clerk failure must surface as unavailable); the
+    emit-path wrapper still swallows the same failure to False."""
+    with patch.object(
+        run_analytics.clerk_admin,
+        "get_primary_email",
+        AsyncMock(side_effect=RuntimeError("clerk down")),
+    ):
+        with pytest.raises(RuntimeError):
+            await run_analytics.resolve_internal_owner("user_a")
+        assert await run_analytics._is_internal_owner("user_a") is False

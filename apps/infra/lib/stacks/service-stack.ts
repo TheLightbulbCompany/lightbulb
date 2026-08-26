@@ -884,6 +884,18 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Admin growth read (routers/ops.py GET /growth): provision.gate.blocked
+    // counts by code come from CloudWatch — the gate persists nothing else.
+    // GetMetricData has no resource-level scoping, so "*" is the only shape.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AdminGrowthCloudWatchRead",
+        effect: iam.Effect.ALLOW,
+        actions: ["cloudwatch:GetMetricData"],
+        resources: ["*"],
+      }),
+    );
+
     // Cloud Map (service discovery) — constrained to namespace + service
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({

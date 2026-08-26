@@ -23,9 +23,7 @@ from __future__ import annotations
 
 import logging
 
-import boto3
-
-from core.config import settings
+from core.config import settings  # noqa: F401 -- kept for tests that patch mod.settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,37 +48,19 @@ logger = logging.getLogger(__name__)
 # a two-element allowlist.
 BOOTSTRAP_EMAILS: frozenset[str] = frozenset({"admin@isol8.co", "admin+paperclip@isol8.co"})
 
-# Same AWS account both envs share (see core.billing.bedrock_aip.OUR_ACCOUNT_ID
-# for the sibling constant on the Bedrock side).
-_ACCOUNT_ID = "877352799272"
-
 
 class BootstrapUserProtectedError(Exception):
     """Raised when a wipe targets a bootstrap Paperclip admin identity."""
 
 
-def _rds_data_client():
-    return boto3.client("rds-data", region_name=settings.AWS_REGION)
-
-
-def _secretsmanager_client():
-    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-
-
-def _cluster_arn(env: str) -> str:
-    return f"arn:aws:rds:{settings.AWS_REGION}:{_ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db"
-
-
-def _find_secret_arn(sm_client, env: str) -> str:
-    """Paginated lookup — mirrors recover_orphan_paperclip_member._secret_arn:
-    with enough secrets in the account, the target can be on a later page,
-    so a single (unpaginated) call would falsely report "not found"."""
-    needle = f"isol8-{env}-paperclip-db-credentials"
-    for page in sm_client.get_paginator("list_secrets").paginate():
-        for s in page.get("SecretList", []):
-            if needle in s["Name"]:
-                return s["ARN"]
-    raise RuntimeError(f"Could not find paperclip-db-credentials secret for env={env}")
+# Shared with core/services/ops/growth.py — the private names are kept so the
+# existing tests' patch targets keep working.
+from core.services.paperclip_sql import (  # noqa: E402
+    cluster_arn as _cluster_arn,
+    find_secret_arn as _find_secret_arn,
+    rds_data_client as _rds_data_client,
+    secretsmanager_client as _secretsmanager_client,
+)
 
 
 async def delete_paperclip_user(*, paperclip_user_id: str, email: str, env: str) -> None:

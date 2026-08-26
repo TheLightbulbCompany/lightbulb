@@ -409,10 +409,19 @@ async def _read_gate_blocked() -> list[dict]:
     return await gate_blocked.last_7d()
 
 
+# Clerk round-trip per owner (run_analytics caches 1h/owner); cap concurrency
+# so a cold compute() on a large fleet doesn't burst Clerk all at once.
+_INTERNAL_CHECK_CONCURRENCY = asyncio.Semaphore(8)
+
+
 async def _internal_set(owner_ids: list[str]) -> set[str]:
     from core.services.run_analytics import is_internal_owner
 
-    flags = await asyncio.gather(*(is_internal_owner(o) for o in owner_ids))
+    async def _check(o: str) -> bool:
+        async with _INTERNAL_CHECK_CONCURRENCY:
+            return await is_internal_owner(o)
+
+    flags = await asyncio.gather(*(_check(o) for o in owner_ids))
     return {o for o, f in zip(owner_ids, flags) if f}
 
 

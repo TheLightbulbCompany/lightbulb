@@ -350,6 +350,9 @@ async def test_compute_unavailable_when_ddb_fails():
 
     with (
         patch("core.repositories.billing_repo.scan_all", boom),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=[])),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=[])),
+        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=[])),
         patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
         patch(
             "core.services.posthog_admin.hogql",

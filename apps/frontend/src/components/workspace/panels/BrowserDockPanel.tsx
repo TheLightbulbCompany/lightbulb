@@ -84,9 +84,14 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
       // resizeSession: the panel drives the ACTUAL container display size —
       // noVNC sends SetDesktopSize, Xvnc resizes, matchbox re-fits Chrome —
       // so the browser renders edge-to-edge at native resolution instead of
-      // being scaled like a video. scaleViewport stays on as the fallback for
-      // the moments before the first resize lands (and for any server that
-      // rejects the request), where it scales rather than cropping.
+      // being scaled like a video. Known trade, chosen on purpose: this panel
+      // is open by default, so the agent's Chrome viewport follows whatever
+      // the dock gives the panel (the browser tool pins a viewport only under
+      // device emulation). A scaled 1280x800 in a half-height panel is an
+      // unreadable blur for the owner watching — legibility wins.
+      // scaleViewport stays on as the fallback for the moments before the
+      // first resize lands (and for any server that rejects the request),
+      // where it scales rather than cropping.
       rfb.resizeSession = true;
       rfb.scaleViewport = true;
       rfb.background = "transparent";

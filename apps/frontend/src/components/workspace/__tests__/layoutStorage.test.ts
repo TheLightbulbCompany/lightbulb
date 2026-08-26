@@ -27,7 +27,7 @@ function minimalLayout(panels: SerializedDockview["panels"]): SerializedDockview
 
 describe("layoutStorage", () => {
   it("scopes the key per owner", () => {
-    expect(layoutStorageKey("org_1")).toBe("isol8.workspace.layout.v1:org_1");
+    expect(layoutStorageKey("org_1")).toBe("isol8.workspace.layout.v2:org_1");
   });
 
   it("round-trips a valid layout", () => {
@@ -38,8 +38,16 @@ describe("layoutStorage", () => {
     expect(readLayout("u1")).toEqual(layout);
   });
 
+  it("drops the orphaned v1 blob on read, leaving the v2 blob intact", () => {
+    const layout = minimalLayout({ browser: { id: "browser", contentComponent: "browser", params: {} } });
+    writeLayout("u1", layout);
+    window.localStorage.setItem("isol8.workspace.layout.v1:u1", "{}");
+    expect(readLayout("u1")).toEqual(layout);
+    expect(window.localStorage.getItem("isol8.workspace.layout.v1:u1")).toBeNull();
+  });
+
   it("returns null on version mismatch or garbage", () => {
-    window.localStorage.setItem(layoutStorageKey("u1"), JSON.stringify({ version: 2, layout: {} }));
+    window.localStorage.setItem(layoutStorageKey("u1"), JSON.stringify({ version: 1, layout: {} }));
     expect(readLayout("u1")).toBeNull();
     window.localStorage.setItem(layoutStorageKey("u1"), "not-json{");
     expect(readLayout("u1")).toBeNull();

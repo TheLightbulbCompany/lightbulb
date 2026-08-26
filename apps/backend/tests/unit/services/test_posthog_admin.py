@@ -420,3 +420,16 @@ async def test_hogql_timeout(monkeypatch):
     ):
         out = await posthog_admin.hogql("select 1")
     assert out["error"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_hogql_invalid_json_response(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+    from core.services import posthog_admin
+
+    resp = _make_response(200, {})
+    resp.json = MagicMock(side_effect=ValueError("bad json"))
+    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(resp)):
+        out = await posthog_admin.hogql("select 1")
+    assert out["error"] == "invalid_response"
+    assert out["results"] == []

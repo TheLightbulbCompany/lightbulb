@@ -146,12 +146,16 @@ async def hogql(query: str, *, timeout_s: float = 15.0) -> dict:
         logger.warning("posthog_admin.hogql network error: %s", e)
         return {**empty, "stubbed": False, "error": str(e)}
 
-    if response.status_code == 403 and "scope" in response.text:
+    if response.status_code == 403 and "scope" in response.text.lower():
         return {**empty, "stubbed": False, "error": "insufficient_scope"}
     if response.status_code != 200:
         return {**empty, "stubbed": False, "error": f"http_{response.status_code}"}
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as e:
+        logger.warning("posthog_admin.hogql invalid JSON response: %s", e)
+        return {**empty, "stubbed": False, "error": "invalid_response"}
     return {
         "columns": list(data.get("columns") or []),
         "results": list(data.get("results") or []),

@@ -282,3 +282,7 @@ async def _is_internal_owner(owner_id: str) -> bool:
     while len(_internal_cache) > _INTERNAL_CACHE_CAP:
         del _internal_cache[next(iter(_internal_cache))]
     return result
+
+
+# Public name for readers outside the emit path (admin growth aggregates).
+is_internal_owner = _is_internal_owner

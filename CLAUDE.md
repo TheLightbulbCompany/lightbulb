@@ -342,7 +342,10 @@ you cannot guess from the filename:
   handshake (`routers/paperclip_proxy.py`). Pre-gate steps:
   `ensure_personal_trial_default` (auto `trial_local` row),
   `ensure_metronome_customer`, `evaluate_provision_gate`, and
-  `_maybe_arm_nightly_ceo`. On a FRESH provision the Paperclip seed runs
+  `_maybe_arm_nightly_ceo` (the poll-path self-heal only — the nightly CEO loop is
+  armed DETERMINISTICALLY by the provision executor's step 0 via `arm_nightly_ceo`,
+  paid-only inside, so a personal owner's healthy running-container poll never
+  needs to re-enter this function). On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
   single-flight under `try_claim_provision` — kills the duplicate-company
   race); `ensure_user_ready` seeds on the poll thread only as reconcile for
@@ -537,8 +540,11 @@ Clerk sign-up
                                  ├─ per-user EFS access point + ECS service
                                  └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
                                        └─ openclaw.json on EFS lists Friday/Atlas agent_ids in agents.list[]
-                  (on later polls of an already-running row, ensure_user_ready reconciles the
-                   Paperclip seed inline and arms Friday's nightly routine — _maybe_arm_nightly_ceo)
+                            0b. arm_nightly_ceo — seeds Friday's "Nightly CEO progress" routine when the
+                                owner is PAID (trial_local is a metered no-op); every path to
+                                paid + provider chosen runs this executor, so this is the one door
+                  (on later polls of an already-running ORG row, ensure_user_ready reconciles the
+                   Paperclip seed inline; _maybe_arm_nightly_ceo there is the self-heal wrapper)
 ```
 
 Key invariants:

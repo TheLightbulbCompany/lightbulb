@@ -597,6 +597,15 @@ describe("ContainerStack — dev", () => {
     // `install -o` would be a no-op at best there.
     expect(command).toContain("mkdir -p /home/node/.openclaw/.cache/npm");
 
+    // And no blind repair sweep of /home/node. The image owns its own home
+    // directory (a maxdepth-1 `chown node:node` ends
+    // apps/infra/openclaw/Dockerfile); the only entries this command leaves
+    // root-owned are the symlinks it plants itself, whose ownership never
+    // gates access — resolution reads the target's mode, and replacing a link
+    // needs write on node-owned /home/node. If this line comes back, the image
+    // fix stopped being trusted; fix the Dockerfile instead.
+    expect(command).not.toContain("-maxdepth 1 -uid 0");
+
     // Everything root needs to do must precede the drop: setpriv execs, so
     // nothing appended after it ever runs.
     expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(drop);

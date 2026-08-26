@@ -32,7 +32,9 @@ it("every post and doc on disk has the fields the pages render", () => {
     expect([p.title, p.description, p.author].every(nonEmptyString)).toBe(true);
     expect(p.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(Array.isArray(p.tags) && p.tags.every((t) => typeof t === "string")).toBe(true);
-    // The page renders its own <h1>; a body-level H1 would duplicate it.
+    // The page renders its own <h1> from `title`, so a body must not OPEN with
+    // its title as an H1 (the duplicate-heading bug this guards). Deliberately
+    // not scanning every line: `# comment` inside a fenced shell block is valid.
     expect(p.content).not.toMatch(/^(?:\r?\n)* {0,3}#(?:[ \t]|$)/);
   }
   const docs = getAllDocs();

@@ -1669,3 +1669,29 @@ async def test_get_org_company_id_skips_bare_seed_claim_rows(repo):
     # Claims alone (owner still seeding, no company yet) resolve to None.
     assert await repo.try_acquire_seed_claim("user_solo", org_id="org_beta", claim_id="c3")
     assert await repo.get_org_company_id("org_beta") is None
+
+
+async def test_seed_claim_reclaims_credential_less_failed_marker(repo):
+    """A failed marker with no paperclip_user_id (pre-sign-up failure) is
+    reclaimed atomically — its retry re-runs the sign-up, so concurrent
+    retries must be fenced exactly like a fresh row."""
+    assert await repo.put_failed_marker_if_absent(
+        user_id="user_m", org_id="org_alpha", reason="boom", company_id="co_1"
+    )
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
+    assert "paperclip_user_id" not in raw
+    # Now a bare live claim: a second claimant loses.
+    assert not await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2")
+
+
+async def test_seed_claim_leaves_failed_row_with_credentials_alone(repo):
+    """A failed row that carries paperclip_user_id is adopted (signed in), not
+    re-signed-up — no fence needed, and it must never be overwritten."""
+    row = _make_company(user_id="user_k", org_id="org_alpha", company_id="co_1")
+    row.status = "failed"
+    await repo.put(row)
+    assert not await repo.try_acquire_seed_claim("user_k", org_id="org_alpha", claim_id="c1")
+    after = await repo.get("user_k", consistent_read=True)
+    assert after.status == "failed" and after.paperclip_user_id == row.paperclip_user_id

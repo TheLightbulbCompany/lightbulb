@@ -1157,7 +1157,30 @@ class PaperclipRepo:
             except table.meta.client.exceptions.ConditionalCheckFailedException:
                 return False
 
-        if existing.get("status") != "seeding":
+        status = existing.get("status")
+        if status == "failed" and not existing.get("paperclip_user_id"):
+            # A credential-less ``failed`` marker: a claim that failed BEFORE
+            # its sign-up landed (or the put-if-absent marker). There is
+            # nothing to adopt, so the next attempt re-runs the sign-up — and
+            # two concurrent retries would each sign up, reopening the exact
+            # duplicate-account race this claim exists to close. Reclaim it
+            # atomically, fenced on it still being credential-less: a failed
+            # row that DOES carry ``paperclip_user_id`` is adopted (signed in
+            # with its stored password), never re-signed-up, so it needs no
+            # fence and is left alone.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression="#s = :failed AND attribute_not_exists(paperclip_user_id)",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={":failed": "failed"},
+                )
+                return True
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                return False
+
+        if status != "seeding":
             return False
 
         prev_claimed_at = existing.get("seeding_claimed_at", "")

@@ -127,6 +127,15 @@ _SEED_WAIT_ATTEMPTS = 6
 _SEED_WAIT_INTERVAL_S = 1.0
 
 
+def _is_credential_less_failed(existing: Optional[PaperclipCompany]) -> bool:
+    """A ``failed`` row with no ``paperclip_user_id`` — a claim that failed
+    before its sign-up, or the put-if-absent marker. Its retry re-runs the
+    sign-up, so it must go through the seed-claim fence like a fresh row;
+    a failed row WITH credentials is adopted instead and needs no fence
+    (``try_acquire_seed_claim`` reclaims exactly this shape)."""
+    return existing is not None and existing.status == "failed" and not existing.paperclip_user_id
+
+
 def _carry_forward_onboarding_fields(existing: Optional[PaperclipCompany]) -> dict:
     """Read-merge helper for every whole-item ``repo.put`` in this module.
 
@@ -367,12 +376,13 @@ class PaperclipProvisioning:
         #     is a live peer's (non-stale), we are the loser; if its holder
         #     crashed hard before any durable progress (stale, ~5 min), we
         #     steal it and run the full chain ourselves.
-        # Every OTHER existing state deliberately bypasses the fence and
-        # keeps today's semantics: an active row already short-circuited
-        # above, and the adopt (credential-bearing) / reconcile (company_id-
-        # bearing) / failed-marker retry paths operate on a row whose
-        # existence already blocks fresh claimants — their (rarer)
-        # concurrent-retry races are accepted as before.
+        # A credential-less ``failed`` marker goes through the fence too: its
+        # retry re-runs the sign-up, so concurrent retries would re-mint
+        # duplicate accounts. Every OTHER existing state deliberately
+        # bypasses the fence and keeps today's semantics: an active row
+        # already short-circuited above, and the adopt (credential-bearing) /
+        # reconcile (company_id-bearing) paths sign in rather than sign up,
+        # so a concurrent retry there cannot duplicate an account.
         #
         # Placed AFTER the admin-cookie fetch on purpose: everything from
         # here on runs inside the try below, whose failure path downgrades
@@ -382,7 +392,7 @@ class PaperclipProvisioning:
         # _mark_failed so its downgrade is fenced on OUR claim (a stale holder
         # must not flip a newer holder's stolen seeding row to failed).
         seed_claim_id: str | None = None
-        if existing is None or existing.status == "seeding":
+        if existing is None or existing.status == "seeding" or _is_credential_less_failed(existing):
             seed_claim_id = uuid4().hex
             claimed = await self._repo.try_acquire_seed_claim(
                 owner_user_id,
@@ -932,7 +942,7 @@ class PaperclipProvisioning:
         # below, whose failure path downgrades the claim row (seeding ->
         # failed) so the next poll retries promptly.
         member_claim_id: str | None = None
-        if existing is None or existing.status == "seeding":
+        if existing is None or existing.status == "seeding" or _is_credential_less_failed(existing):
             member_claim_id = uuid4().hex
             claimed = await self._repo.try_acquire_seed_claim(
                 user_id,

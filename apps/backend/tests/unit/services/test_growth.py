@@ -267,6 +267,34 @@ def test_activation_flags_are_order_independent_of_the_stage_ladder():
     assert ext["flags"]["automation_armed"] == 2
 
 
+def test_org_owner_kickoff_state_comes_from_the_owner_row_regardless_of_scan_order():
+    """A DynamoDB scan has no ordering guarantee: an org member's row (no
+    bootstrap_state) must never beat the owner's row (has bootstrap_state)
+    for that owner's kickoff outcome, no matter which row the scan yields first."""
+    owner_row = {
+        "user_id": "u_owner",
+        "org_id": "int_x",
+        "company_id": "c_x",
+        "seeded_agent_ids": ["f"],
+        "status": "active",
+        "bootstrap_state": "delivered",
+    }
+    member_row = {
+        "user_id": "u_member",
+        "org_id": "int_x",
+        "company_id": "c_x",
+        "seeded_agent_ids": ["f"],
+        "status": "active",
+    }
+    for org_rows in ([member_row, owner_row], [owner_row, member_row]):
+        fx = _fixture()
+        fx["paperclip"] = [r for r in fx["paperclip"] if r.get("org_id") != "int_x"] + org_rows
+        internal = growth.derive(**fx)["segments"]["internal"]["activation"]
+        by_owner = {o["owner_id"]: o for o in internal["owners"]}
+        assert by_owner["int_x"]["bootstrap_state"] == "delivered"
+        assert by_owner["int_x"]["stage"] == "first_autonomous_success"
+
+
 def test_north_star_excludes_nightly_and_headline_four_weeks():
     out = growth.derive(**_fixture())
     ext = out["segments"]["external"]

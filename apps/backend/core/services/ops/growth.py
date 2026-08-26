@@ -181,16 +181,21 @@ def derive(
         return company_name.get(owner_company.get(owner_id, ""), None) or owner_id
 
     container_by_owner = {c["owner_id"]: c for c in containers}
-    # Friday's kickoff outcome lives on the OWNER's paperclip-companies row
-    # (org rows: the one carrying seeded_agent_ids).
+    # Friday's kickoff outcome lives on the OWNER's paperclip-companies row.
+    # Org member rows also carry seeded_agent_ids but never bootstrap_state,
+    # so only a row that actually HAS bootstrap_state may set/override it —
+    # a member row can never clobber the owner row's real value.
     bootstrap_by_owner: dict[str, str] = {}
     for row in paperclip:
         uid = str(row.get("user_id") or "")
         if uid.startswith("__"):
             continue
         owner = row.get("org_id") or uid
-        if owner not in bootstrap_by_owner or row.get("seeded_agent_ids"):
-            bootstrap_by_owner[owner] = row.get("bootstrap_state") or "not_started"
+        state = row.get("bootstrap_state")
+        if state is not None:
+            bootstrap_by_owner[owner] = state
+        elif owner not in bootstrap_by_owner:
+            bootstrap_by_owner[owner] = "not_started"
     routines_by_company: dict[str, list[dict]] = defaultdict(list)
     for r in routines:
         routines_by_company[r["company_id"]].append(r)

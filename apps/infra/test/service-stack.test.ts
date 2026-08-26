@@ -137,6 +137,15 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(rendered).toContain("cloudwatch:DescribeAlarms");
   });
 
+  test("backend task role can read CloudWatch metric data for the admin growth read", () => {
+    const policies = {
+      ...template.findResources("AWS::IAM::Policy"),
+      ...template.findResources("AWS::IAM::ManagedPolicy"),
+    };
+    const rendered = JSON.stringify(policies);
+    expect(rendered).toContain("cloudwatch:GetMetricData");
+  });
+
   test("backend service uses rolling deploy that starts new before stopping old", () => {
     // At desiredCount=1, MinimumHealthyPercent=100 forces ECS to keep the old
     // task healthy until the new task is healthy (MaximumPercent=200 gives it

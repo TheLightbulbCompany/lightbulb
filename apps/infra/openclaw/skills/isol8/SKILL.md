@@ -97,6 +97,7 @@ exists.
 | Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | isol8.co/settings | Account, billing, connections |
 | Blog | isol8.co/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
+| Docs | isol8.co/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
 | Browser | isol8.co/chat (Browser panel; Chrome button in the workspace header) | A live view of the Chrome running INSIDE your own container — the one your browser tool drives. The owner watches it work and can click and type in it directly; resizing the panel resizes the real display. Open it when a browser task is worth showing, and when a page needs the owner's own hands (a login, a CAPTCHA, a consent screen) — you cannot enter their credentials, but they can, right there. Desktop-only surface; the mobile shell has no panel dock |
 | Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
 | Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |

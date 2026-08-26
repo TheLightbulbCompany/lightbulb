@@ -10,6 +10,8 @@ import { formatPostDate } from "@/content/blog/format";
 
 const SITE_URL = "https://isol8.co";
 
+export const dynamicParams = false;
+
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({ slug: post.slug }));
 }

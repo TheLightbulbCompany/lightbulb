@@ -1,15 +1,12 @@
-import type { BlogPost } from "../types";
+---
+title: "How to give an AI agent its own persistent workspace"
+description: "Most AI agents forget everything the moment a session ends. Here's what a persistent workspace actually is, why it changes what an agent can do, and how to give one to your own agent."
+date: "2026-07-15"
+author: "The isol8 team"
+tags: ["ai-agents","architecture","memory"]
+---
 
-export const persistentAiAgentWorkspace: BlogPost = {
-  slug: "persistent-ai-agent-workspace",
-  title: "How to give an AI agent its own persistent workspace",
-  description:
-    "Most AI agents forget everything the moment a session ends. Here's what a persistent workspace actually is, why it changes what an agent can do, and how to give one to your own agent.",
-  date: "2026-07-15",
-  author: "The isol8 team",
-  tags: ["ai-agents", "architecture", "memory"],
-  readingMinutes: 6,
-  content: `Ask most "AI agents" to do something across a week and you hit the same wall: they have no continuity. Each session starts from zero. The files they wrote last time are gone. The context you spent twenty minutes building up has evaporated. You are, effectively, re-onboarding a brand-new hire every single conversation.
+Ask most "AI agents" to do something across a week and you hit the same wall: they have no continuity. Each session starts from zero. The files they wrote last time are gone. The context you spent twenty minutes building up has evaporated. You are, effectively, re-onboarding a brand-new hire every single conversation.
 
 The fix is a **persistent workspace** — a real, durable place the agent lives, not a chat window it wakes up inside and forgets. This post is about what that means, why it matters more than a bigger context window, and how to set one up.
 
@@ -65,5 +62,3 @@ The fastest way to feel the difference between a stateless chatbot and an agent 
 ---
 
 *isol8 gives you a private, isolated AI pod with persistent memory and a team of agents — built on [OpenClaw](https://github.com/openclaw/openclaw).*
-`,
-};

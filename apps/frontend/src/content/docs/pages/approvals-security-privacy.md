@@ -1,0 +1,42 @@
+---
+title: "Approvals, security, and privacy"
+description: "What agents ask before doing, how your workspace is isolated, where keys live, and how spend is capped."
+order: 5
+---
+
+## Approvals
+
+Agents do the work. You keep the decisions that are hard to undo.
+
+- **Command approvals.** Before a governed shell command runs, the agent asks. The card shows the command; you approve or deny it in chat.
+- **Hire approvals.** Agents can recommend a marketplace hire but never deploy one. The roster changes only when you click Deploy or approve the hire in Teams.
+- **Board approvals.** For work a brief marks as governed — a merge, a deploy, spend, a refund, a customer-facing message — the agent files an approval card on its task in Teams. Approve or reject; the same agent continues after approval.
+- Agents can't change your plan, provider, or billing, connect or disconnect an integration, or publish an agent. Those are yours.
+
+## Isolation
+
+Your company runs in its own container — one per workspace, never shared. Files, memory, and the browser profile live on a persistent volume that belongs to that workspace alone, and no other customer's agents can reach it.
+
+## Keys and credentials
+
+- Bring-your-own API keys are stored in AWS Secrets Manager, scoped to your workspace, and never in the application database.
+- ChatGPT sign-in tokens are encrypted at rest.
+- Agents reach integration credentials only through the tool, CLI, or skill that needs them.
+
+## Inside the workspace
+
+A threat guard runs inside every container and blocks commands, file writes, and URL fetches it flags as dangerous. When it blocks something, the agent tells you what was blocked and why instead of retrying.
+
+## Spend
+
+- Free tier: $3 a day, checked before a request is sent, within a 3-day window.
+- Paid workspaces: credits are checked per request; set a monthly budget per agent in Teams and watch spend in **Usage**.
+- A coding harness running on your ChatGPT account shares that plan's usage window with the agent's own inference.
+
+## Publishing an agent
+
+When you publish an agent to the marketplace, the snapshot strips runtime state — sessions, transcripts, credentials — and is scanned for credentials and personal data before review. The agent's persona files ship with it, **including its MEMORY.md**. Read MEMORY.md before you publish. Friday can't be published.
+
+## Your data
+
+Delete your account in **Settings → Profile → Delete account**. It permanently removes the account, its agents, and its workspace. For an organization workspace, email [support@isol8.co](mailto:support@isol8.co). Policies: [Privacy](/privacy), [Terms](/terms), [Acceptable use](/acceptable-use).

@@ -1,15 +1,12 @@
-import type { BlogPost } from "../types";
+---
+title: "How to connect an AI agent to Slack, Discord, or Telegram"
+description: "An AI agent is far more useful when it lives where your team already talks. Here's how to give an agent its own channel presence on Slack, Discord, and Telegram — and what to watch out for."
+date: "2026-07-15"
+author: "The isol8 team"
+tags: ["ai-agents","channels","slack","discord","telegram"]
+---
 
-export const connectAiAgentChannels: BlogPost = {
-  slug: "connect-ai-agent-slack-discord-telegram",
-  title: "How to connect an AI agent to Slack, Discord, or Telegram",
-  description:
-    "An AI agent is far more useful when it lives where your team already talks. Here's how to give an agent its own channel presence on Slack, Discord, and Telegram — and what to watch out for.",
-  date: "2026-07-15",
-  author: "The isol8 team",
-  tags: ["ai-agents", "channels", "slack", "discord", "telegram"],
-  readingMinutes: 5,
-  content: `An agent that only exists in a dashboard tab is an agent you forget about. The ones that earn their keep are the ones that show up **where you already are** — the Slack channel your team lives in, a Discord server, a Telegram thread on your phone. You message it like a coworker; it messages you back when a job is done.
+An agent that only exists in a dashboard tab is an agent you forget about. The ones that earn their keep are the ones that show up **where you already are** — the Slack channel your team lives in, a Discord server, a Telegram thread on your phone. You message it like a coworker; it messages you back when a job is done.
 
 This post covers what it takes to give an agent a real channel presence, the pattern that works across platforms, and the sharp edges to avoid.
 
@@ -62,5 +59,3 @@ Start a private pod for **free, no credit card required** — you can chat with 
 ---
 
 *isol8 gives you a private, isolated AI pod with a team of agents that can live in your channels — built on [OpenClaw](https://github.com/openclaw/openclaw).*
-`,
-};

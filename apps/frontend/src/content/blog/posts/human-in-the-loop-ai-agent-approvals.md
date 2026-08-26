@@ -1,15 +1,10 @@
-import type { BlogPost } from "../types";
-
-export const humanInTheLoopAiAgentApprovals: BlogPost = {
-  slug: "human-in-the-loop-ai-agent-approvals",
-  title: "Human-in-the-loop approval gates for AI agents",
-  description:
-    "How approval gates let AI agents move fast while keeping humans in control of deploys, spend, refunds, legal terms, and sensitive communication.",
-  date: "2026-08-24",
-  author: "isol8",
-  tags: ["human in the loop", "ai governance", "agent approvals", "paperclip"],
-  readingMinutes: 6,
-  content: `# Human-in-the-loop approval gates for AI agents
+---
+title: "Human-in-the-loop approval gates for AI agents"
+description: "How approval gates let AI agents move fast while keeping humans in control of deploys, spend, refunds, legal terms, and sensitive communication."
+date: "2026-08-24"
+author: "isol8"
+tags: ["human in the loop","ai governance","agent approvals","paperclip"]
+---
 
 Autonomous agents are most useful when they can complete real work. They are also most dangerous when they can change production, spend money, issue refunds, alter legal or financial terms, or contact customers without review.
 
@@ -66,5 +61,3 @@ For serious business use, ask whether the platform can:
 That is the foundation for useful agent autonomy.
 
 [Learn how Isol8 handles Paperclip tasks and approvals →](/docs#paperclip)
-`,
-};

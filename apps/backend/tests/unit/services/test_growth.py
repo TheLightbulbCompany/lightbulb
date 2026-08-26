@@ -10,6 +10,9 @@ Fixture: 3 external owners + 1 internal.
 
 import os
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -307,3 +310,59 @@ def test_survival_handles_space_separated_zoneless_timestamp():
             r["created_at"] = "2026-06-01 00:00:00.000000"
     out = growth.derive(**fx)
     assert out["segments"]["external"]["retention"]["automation_survival"]["armed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compute_partial_when_aurora_fails(monkeypatch):
+    growth._cache = None
+    fx = _fixture()
+
+    async def boom(*a, **k):
+        raise RuntimeError("data api down")
+
+    with (
+        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
+        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
+        patch("core.services.paperclip_sql.select_rows", boom),
+        patch(
+            "core.services.posthog_admin.hogql",
+            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
+        ),  # all three queries
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.run_analytics.is_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
+    ):
+        data, state, errors = await growth.compute()
+
+    assert state == "partial"
+    assert [e["domain"] for e in errors] == ["aurora"]
+    assert data["segments"]["external"]["owners"]["total"] == 3
+    assert data["segments"]["external"]["activation"]["stages"]["automation_armed"] == 0  # no routine rows
+
+
+@pytest.mark.asyncio
+async def test_compute_unavailable_when_ddb_fails():
+    growth._cache = None
+
+    async def boom(*a, **k):
+        raise RuntimeError("ddb down")
+
+    with (
+        patch("core.repositories.billing_repo.scan_all", boom),
+        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
+        patch(
+            "core.services.posthog_admin.hogql",
+            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
+        ),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+    ):
+        data, state, errors = await growth.compute()
+    assert data is None and state == "unavailable" and errors[0]["domain"] == "ddb"
+
+
+@pytest.mark.asyncio
+async def test_compute_is_cached():
+    growth._cache = (float("inf"), {"cached": True}, "ok", [])
+    assert await growth.compute() == ({"cached": True}, "ok", [])
+    growth._cache = None

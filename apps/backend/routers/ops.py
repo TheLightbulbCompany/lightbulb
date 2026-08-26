@@ -32,3 +32,14 @@ async def get_deploys(_auth: AuthContext = Depends(require_platform_admin)):
 async def get_alarms(_auth: AuthContext = Depends(require_platform_admin)):
     data, state, errors = await env.read_source("cloudwatch", alarms.alarms_in_alarm)
     return env.envelope(data if data is not None else [], source_state=state, errors=errors)
+
+
+@router.get("/growth")
+async def get_growth(_auth: AuthContext = Depends(require_platform_admin)):
+    """Fleet GTM metrics (docs/growth §3), computed on read, 60s cache.
+    Partial sources surface in errors[] — the page must never render a
+    missing section as zero-and-green."""
+    from core.services.ops import growth
+
+    data, state, errors = await growth.compute()
+    return env.envelope(data, source_state=state, errors=errors)

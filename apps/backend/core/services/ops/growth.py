@@ -13,10 +13,13 @@ Everything is segmented internal/external BEFORE aggregation.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+from core.services.ops import envelope as env
 
 WINDOW_WEEKS = 8
 HEADLINE_BAR = 5  # "five external owners with armed automations firing for four consecutive weeks"
@@ -359,3 +362,100 @@ def derive(
             "signup_sources": [{"source": r[0], "owners": r[1]} for r in posthog_sources],
         },
     }
+
+
+_CACHE_TTL_S = 60
+_cache: tuple[float, dict | None, str, list[dict]] | None = None  # (expires_at, data, state, errors)
+
+
+async def _read_ddb() -> dict:
+    from core.repositories import billing_repo, container_repo, integrations_repo
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    billing, containers, paperclip, integrations = await asyncio.gather(
+        billing_repo.scan_all(),
+        container_repo.scan_all(),
+        PaperclipRepo(table_name="paperclip-companies").scan_all_items(),
+        integrations_repo.scan_all(),
+    )
+    return {"billing": billing, "containers": containers, "paperclip": paperclip, "integrations": integrations}
+
+
+async def _read_aurora() -> dict:
+    from core.services.paperclip_sql import select_rows
+
+    companies, routines, runs, first = await asyncio.gather(
+        select_rows(SQL_COMPANIES),
+        select_rows(SQL_ROUTINES),
+        select_rows(SQL_RUNS_BY_WEEK),
+        select_rows(SQL_FIRST_AUTONOMOUS),
+    )
+    return {"companies": companies, "routines": routines, "runs": runs, "first_autonomous": first}
+
+
+async def _read_posthog() -> dict:
+    from core.services.posthog_admin import hogql
+
+    runs, funnel, sources = await asyncio.gather(hogql(HOGQL_RUNS), hogql(HOGQL_FUNNEL), hogql(HOGQL_SIGNUP_SOURCES))
+    for name, res in (("runs", runs), ("funnel", funnel), ("sources", sources)):
+        if res["error"]:
+            raise RuntimeError(f"hogql {name}: {res['error']}")
+    return {"runs": runs["results"], "funnel": funnel["results"], "sources": sources["results"]}
+
+
+async def _read_gate_blocked() -> list[dict]:
+    from core.services.ops import gate_blocked
+
+    return await gate_blocked.last_7d()
+
+
+async def _internal_set(owner_ids: list[str]) -> set[str]:
+    from core.services.run_analytics import is_internal_owner
+
+    flags = await asyncio.gather(*(is_internal_owner(o) for o in owner_ids))
+    return {o for o, f in zip(owner_ids, flags) if f}
+
+
+async def compute() -> tuple[dict | None, str, list[dict]]:
+    """Read every source (each fail-safe via envelope.read_source), derive, cache 60s.
+
+    DDB is load-bearing (no owners → nothing to segment) → ``unavailable``.
+    Any other source failing → ``partial`` with the domain in errors, and that
+    section renders empty on the page rather than green.
+    """
+    global _cache
+    if _cache is not None and _cache[0] > time.monotonic():
+        return _cache[1], _cache[2], _cache[3]
+
+    (ddb, ddb_state, ddb_err), (aurora, _, aurora_err), (ph, _, ph_err), (gate, _, gate_err) = await asyncio.gather(
+        env.read_source("ddb", _read_ddb, timeout_s=10.0),
+        env.read_source("aurora", _read_aurora, timeout_s=15.0),
+        env.read_source("posthog", _read_posthog, timeout_s=20.0),
+        env.read_source("cloudwatch", _read_gate_blocked, timeout_s=8.0),
+    )
+    if ddb is None:
+        return None, env.UNAVAILABLE, ddb_err
+    errors = aurora_err + ph_err + gate_err
+    state = env.PARTIAL if errors else env.OK
+
+    aurora = aurora or {"companies": [], "routines": [], "runs": [], "first_autonomous": []}
+    ph = ph or {"runs": [], "funnel": [], "sources": []}
+    internal = await _internal_set([b["owner_id"] for b in ddb["billing"]])
+    data = derive(
+        **ddb,
+        **aurora,
+        gate_blocked=gate or [],
+        posthog_runs=ph["runs"],
+        posthog_funnel=ph["funnel"],
+        posthog_sources=ph["sources"],
+        internal=internal,
+        now=datetime.now(timezone.utc),
+    )
+    data["sources"] = {
+        "ddb": ddb_state,
+        "aurora": "ok" if not aurora_err else "unavailable",
+        "posthog": "ok" if not ph_err else "unavailable",
+        "cloudwatch": "ok" if not gate_err else "unavailable",
+    }
+    _cache = (time.monotonic() + _CACHE_TTL_S, data, state, errors)
+    return data, state, errors

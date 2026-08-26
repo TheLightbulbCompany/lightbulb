@@ -60,4 +60,4 @@ For serious business use, ask whether the platform can:
 
 That is the foundation for useful agent autonomy.
 
-[Learn how Isol8 handles Paperclip tasks and approvals →](/docs#paperclip)
+[Learn how Isol8 handles Paperclip tasks and approvals →](/docs/approvals-security-privacy)

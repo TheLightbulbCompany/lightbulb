@@ -52,4 +52,4 @@ Browser automation should be explicit:
 
 Browser automation is not a replacement for robust APIs. It is the bridge that lets agents help now, while native integrations and webhooks cover the workflows that need maximum reliability.
 
-[See the Isol8 docs for connectors and browser workflows →](/docs#connectors)
+[See the Isol8 docs for connectors and browser workflows →](/docs/browser-and-apps)

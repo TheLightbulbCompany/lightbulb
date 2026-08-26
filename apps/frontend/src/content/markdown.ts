@@ -14,7 +14,7 @@ export interface MarkdownDoc<M> {
   content: string;
 }
 
-const FRONTMATTER = /^---\n([\s\S]*?)\n---\n*/;
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n)*/;
 
 export function parseFrontmatter(raw: string): { meta: Record<string, unknown>; content: string } {
   const m = FRONTMATTER.exec(raw);

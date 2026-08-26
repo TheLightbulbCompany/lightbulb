@@ -1563,3 +1563,57 @@ async def test_provision_member_lost_claim_timeout_raises_409_without_signup(mon
     assert ei.value.status_code == 409
     admin.sign_up_user.assert_not_awaited()
     repo.put.assert_not_awaited()
+
+
+async def test_provision_member_signup_failure_right_after_claim_downgrades_claim(monkeypatch):
+    """Sign-up fails milliseconds after the claim landed. _mark_failed must
+    still SEE the bare seeding row (strongly consistent read) and downgrade it
+    to failed — with an eventually-consistent miss, put_failed_marker_if_absent
+    fails its condition and the row stays ``seeding`` until the 300 s stale
+    window, wedging the member on 409s meanwhile."""
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    import core.services.paperclip_provisioning as prov_mod
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup email", status_code=422, body="unprocessable"))
+    now = datetime.now(timezone.utc)
+    owner_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_xyz",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted=encrypt("svc-token"),
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+
+    class _LaggyRepo(_StatefulRepo):
+        """Eventually-consistent reads never see the member's fresh row; only
+        consistent reads do — replica lag right after the claim's put."""
+
+        async def get(self, user_id: str, *, consistent_read: bool = False):
+            if user_id == "user_member" and not consistent_read:
+                return None
+            return self._rows.get(user_id)
+
+    repo = _LaggyRepo(company_id="co_xyz")
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError):
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_member", email="member@example.com", owner_email="owner@example.com"
+        )
+
+    row = await repo.get("user_member", consistent_read=True)
+    assert row is not None and row.status == "failed", "claim must be downgraded, not left seeding"
+    assert row.company_id == "co_xyz"

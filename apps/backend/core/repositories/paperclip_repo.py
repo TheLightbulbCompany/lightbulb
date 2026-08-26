@@ -670,10 +670,14 @@ class PaperclipRepo:
         if any other user in the org already has a row, we reuse their
         company_id rather than creating a new Paperclip company.
 
-        Implementation: queries the ``by-org-id`` GSI (PK: ``org_id``).
-        Returns the first row's ``company_id``. All rows in the same
-        org are required (by the provisioner) to carry the same
-        ``company_id``, so picking any one is correct.
+        Implementation: queries the ``by-org-id`` GSI (PK: ``org_id``) and
+        returns the first row that CARRIES a ``company_id``. All real rows in
+        the same org are required (by the provisioner) to carry the same
+        ``company_id``, so any one of them is correct — but a bare seed-claim
+        row (``try_acquire_seed_claim``, owner or member) sits in this index
+        with no ``company_id`` at all, and must never shadow the real rows:
+        a member joining an org that already has a company would otherwise
+        be told it has none while a peer's claim is live (or stale).
 
         Why a GSI rather than a scan: while v1 traffic is small enough
         a scan would work, member-join can fire repeatedly during
@@ -685,23 +689,14 @@ class PaperclipRepo:
         are needed) — but for ``get_org_company_id`` we project
         ``company_id`` via ``ALL`` so a single GSI query suffices.
         """
-        kwargs = {
-            "IndexName": "by-org-id",
-            "KeyConditionExpression": Key("org_id").eq(org_id),
-            "Limit": 1,
-        }
-        resp = await run_in_thread(self._table().query, **kwargs)
-        items = resp.get("Items", [])
-        if not items:
-            return None
-        first = items[0]
-        # If the GSI projection only includes keys, fall back to a base
-        # get to retrieve company_id. With ProjectionType=ALL this
-        # branch is a no-op.
-        if "company_id" in first:
-            return first["company_id"]
-        base = await self.get(first["user_id"])
-        return base.company_id if base is not None else None
+        async for page in self._query_pages(
+            IndexName="by-org-id",
+            KeyConditionExpression=Key("org_id").eq(org_id),
+        ):
+            for item in page.get("Items", []):
+                if item.get("company_id"):
+                    return item["company_id"]
+        return None
 
     async def get_user_ids_for_company(self, company_id: str) -> list[str]:
         """Return the Clerk user_ids of every ACTIVE row in ``company_id``.

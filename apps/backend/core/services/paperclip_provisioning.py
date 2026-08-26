@@ -1699,7 +1699,12 @@ class PaperclipProvisioning:
         boundary, not the storage layer.
         """
         truncated = reason[:1000]
-        existing = await self._repo.get(user_id)
+        # Strongly consistent: this can run milliseconds after the seed
+        # claim's conditional put (a sign-up that fails immediately). A
+        # replica-lagged miss here would fall through to the put-if-absent
+        # marker, which then fails ITS condition against the claim row — and
+        # the row stays a bare ``seeding`` claim for the whole stale window.
+        existing = await self._repo.get(user_id, consistent_read=True)
         if existing is not None:
             # Never downgrade a row that a concurrent provision attempt has
             # already completed to ``active``. Two overlapping attempts for one

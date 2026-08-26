@@ -1655,3 +1655,17 @@ async def test_fail_pending_brief_on_a_deleted_item_is_a_noop(repo):
     await repo.fail_pending_brief("user_abc", reason="gave up")
 
     assert await repo.get_pending_brief("user_abc") is None
+
+
+async def test_get_org_company_id_skips_bare_seed_claim_rows(repo):
+    """A bare seed-claim row (try_acquire_seed_claim) sits in the by-org-id GSI
+    with NO company_id. A member joining an org that already has a company must
+    still resolve it — the claim must never shadow the real row, whatever
+    order the GSI hands them back in."""
+    assert await repo.try_acquire_seed_claim("user_member", org_id="org_alpha", claim_id="c1")
+    assert await repo.try_acquire_seed_claim("user_member_2", org_id="org_alpha", claim_id="c2")
+    await repo.put(_make_company(user_id="user_owner", org_id="org_alpha", company_id="co_shared"))
+    assert await repo.get_org_company_id("org_alpha") == "co_shared"
+    # Claims alone (owner still seeding, no company yet) resolve to None.
+    assert await repo.try_acquire_seed_claim("user_solo", org_id="org_beta", claim_id="c3")
+    assert await repo.get_org_company_id("org_beta") is None

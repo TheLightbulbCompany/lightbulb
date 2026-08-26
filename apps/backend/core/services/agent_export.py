@@ -146,6 +146,19 @@ _SKIP_DIR_NAMES = frozenset(
 _SKIP_FILE_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
 
 
+# Runtime-scratch directory name prefixes. Agents invent these in the workspace
+# root while working — run evidence, cached API responses — and they are not part
+# of the agent's portable definition, so they must never ship. The DURABLE
+# convention is a dot-prefixed scratch dir (``.run/``, already excluded at every
+# depth by the dotfile filter); this list is the BACKSTOP for workspaces dirtied
+# before that convention and for agents that don't follow it. Prefix- (not exact-)
+# matched because agents suffix a run id: ``run-evidence-1a2b/``, ``run-artifacts/``.
+# This is deliberately narrow — it only names scratch families actually observed
+# in the fleet. The general answer is the ``.run/`` convention (see the paperclip
+# + isol8 SKILLs), not chasing every possible scratch name here.
+_SCRATCH_DIR_PREFIXES = ("run-evidence", "run-artifacts", "run-scratch", "github-cache")
+
+
 def package_json_declares_openclaw_extensions(raw: bytes) -> bool:
     """True when *raw* is a package.json that would register a workspace
     plugin — an ``openclaw.extensions`` declaration, nested
@@ -551,6 +564,19 @@ def _build_tarball(agent_dir: Path, *, paths: list[str] | None = None) -> tuple[
                     continue
                 if p.startswith("."):
                     return None
+            # Runtime-scratch dirs (see ``_SCRATCH_DIR_PREFIXES``) — run
+            # evidence, cached API responses agents leave while working. Prune
+            # the whole subtree (returning None for a dir stops the walk into
+            # it). Prefix-matched so a run-id suffix (``run-evidence-1a2b``)
+            # still matches. Only on the default walk — an explicit ``paths``
+            # entry means the seller chose it.
+            if (
+                include is None
+                and tarinfo.isdir()
+                and any(seg.startswith(_SCRATCH_DIR_PREFIXES) for seg in parts if seg not in (".", ""))
+            ):
+                pruned.append("/".join(parts[1:]))
+                return None
             # A nested ``.git`` marks a repo the agent cloned to work on (the
             # company's codebase, a dependency) — not the agent. Prune the
             # whole subtree: ``.git`` itself is already skipped above, it's

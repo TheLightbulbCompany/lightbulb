@@ -1248,3 +1248,88 @@ async def test_observer_never_raises(monkeypatch):
 
     monkeypatch.setattr(containers_mod, "get_ecs_manager", _boom)
     await _run_nudge(_NudgeRepo(state="not_started"))  # must not raise
+
+
+# --- _resolve_default_agent_id: surviving 8.1's doctor -----------------------
+#
+# Regression for a live customer. The resolver matched ONLY
+# ``agents.list[].default is True``. 2026.8.1's doctor consumes that marker to
+# materialize per-surface ownership and then STRIPS it, so on any booted-8.1
+# container every entry reads ``default: None`` and the resolver returned None.
+#
+# The caller treats None as "nothing to do" and returns BEFORE claiming, so the
+# symptom is a SILENT no-op: bootstrap_state stays not_started, attempts stays
+# 0, and no bootstrap_error is ever written. A customer sat in exactly that
+# state — the kickoff was never tried, so nothing looked broken.
+
+
+async def _resolve_with_config(monkeypatch, config):
+    async def _fake_read(_owner_id):
+        return config
+
+    monkeypatch.setattr("core.containers.config.read_openclaw_config_from_efs", _fake_read, raising=False)
+    return await bootstrap_dispatcher._resolve_default_agent_id("owner_1")
+
+
+def _entry(agent_id, *, default=None, role=None):
+    entry = {"id": agent_id}
+    if default is not None:
+        entry["default"] = default
+    if role is not None:
+        entry["params"] = {"paperclip": {"role": role}}
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_resolves_ceo_when_doctor_stripped_the_default_marker(monkeypatch):
+    """The 8.1 shape: entries keyed by id, no default marker anywhere, role
+    intact. This is the exact config read off a booted-8.1 container."""
+    config = {
+        "agents": {
+            "ownership": "explicit",
+            "entries": {
+                "agent_ceo": {"params": {"paperclip": {"role": "ceo"}}},
+                "agent_other": {"params": {"paperclip": {"role": "general"}}},
+            },
+        },
+        "talk": {"agentId": "agent_ceo"},
+    }
+    assert await _resolve_with_config(monkeypatch, config) == "agent_ceo"
+
+
+@pytest.mark.asyncio
+async def test_default_marker_still_wins_on_the_72_shape(monkeypatch):
+    """Pre-8.1 containers still carry the marker; it must remain the first
+    identifier so nothing changes for them."""
+    config = {
+        "agents": {
+            "list": [
+                _entry("agent_a", role="general"),
+                _entry("agent_ceo", default=True, role="ceo"),
+            ]
+        }
+    }
+    assert await _resolve_with_config(monkeypatch, config) == "agent_ceo"
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_talk_agent_id_when_role_is_absent(monkeypatch):
+    """Doctor materializes talk.agentId FROM the marker, so on a migrated
+    config it names the agent the marker used to. Only trusted when it matches
+    a real roster entry."""
+    config = {
+        "agents": {"entries": {"agent_ceo": {}, "agent_other": {}}},
+        "talk": {"agentId": "agent_ceo"},
+    }
+    assert await _resolve_with_config(monkeypatch, config) == "agent_ceo"
+
+
+@pytest.mark.asyncio
+async def test_ignores_a_talk_agent_id_that_is_not_in_the_roster(monkeypatch):
+    """A dangling talk.agentId must not be dispatched to — better to resolve
+    nothing than to send the kickoff at an agent that does not exist."""
+    config = {
+        "agents": {"entries": {"agent_other": {}}},
+        "talk": {"agentId": "agent_gone"},
+    }
+    assert await _resolve_with_config(monkeypatch, config) is None

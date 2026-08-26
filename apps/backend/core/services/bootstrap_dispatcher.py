@@ -561,22 +561,64 @@ async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str,
 async def _resolve_default_agent_id(owner_id: str) -> str | None:
     """Friday's OpenClaw agent id, read straight off EFS's openclaw.json --
     no RPC round trip needed (and no live gateway connection required just
-    to answer this). ``_build_agents_list`` (core/containers/config.py)
-    marks exactly one ``agents.list[]`` entry ``"default": True`` -- the
-    Paperclip-role="ceo" agent, i.e. Friday -- at provision time. Returns
-    None if the config isn't staged yet or carries no default entry
-    (shouldn't happen for an owner whose funnel was even submittable, but a
-    dispatcher must degrade, never raise).
+    to answer this).
+
+    THREE identifiers, tried in order, because the one this used to rely on
+    does not survive an 8.1 boot:
+
+    1. ``default: True`` -- what ``_build_agents_list`` stamps on the
+       Paperclip-role="ceo" entry at provision time. Correct on 7.2 and on a
+       freshly-written config. **Gone after 8.1's doctor runs**: doctor
+       consumes the marker to materialize per-surface ownership and then
+       strips it (upstream ``legacy.default-agent-roles.ts``), so every entry
+       reads ``default: None`` on a booted-8.1 container.
+    2. ``params.paperclip.role == "ceo"`` -- the DURABLE identifier. It is
+       what the marker was derived from in the first place, and nothing in
+       8.1's migration touches it.
+    3. ``talk.agentId`` -- one of the per-surface fields doctor materializes
+       FROM the marker, so on a migrated config it points at exactly the
+       agent the marker used to name. Last resort, and only if it matches a
+       real roster entry.
+
+    This is not defensive layering for its own sake: (1) alone silently
+    returned None on every 8.1 container, and the caller treats None as
+    "nothing to do" and returns BEFORE claiming -- no attempt, no error, no
+    bootstrap_error row. A real customer sat with bootstrap_state=not_started
+    and attempts=0 while every poll no-opped, because the kickoff was never
+    reached rather than tried and failed. Silent no-ops are the failure mode
+    this function must not have.
+
+    Returns None only when the config genuinely names no CEO; a dispatcher
+    must degrade, never raise.
     """
     from core.containers.config import read_openclaw_config_from_efs
 
     config = await read_openclaw_config_from_efs(owner_id)
     if not config:
         return None
-    for entry in roster_entries(config):
-        if isinstance(entry, dict) and entry.get("default") is True:
-            agent_id = entry.get("id")
-            return agent_id if isinstance(agent_id, str) and agent_id else None
+
+    entries = [entry for entry in roster_entries(config) if isinstance(entry, dict)]
+
+    def _entry_id(entry: dict) -> str | None:
+        agent_id = entry.get("id")
+        return agent_id if isinstance(agent_id, str) and agent_id else None
+
+    for entry in entries:
+        if entry.get("default") is True:
+            if agent_id := _entry_id(entry):
+                return agent_id
+
+    for entry in entries:
+        paperclip = (entry.get("params") or {}).get("paperclip") or {}
+        if paperclip.get("role") == "ceo":
+            if agent_id := _entry_id(entry):
+                return agent_id
+
+    talk_agent_id = (config.get("talk") or {}).get("agentId")
+    if isinstance(talk_agent_id, str) and talk_agent_id:
+        if any(_entry_id(entry) == talk_agent_id for entry in entries):
+            return talk_agent_id
+
     return None
 
 

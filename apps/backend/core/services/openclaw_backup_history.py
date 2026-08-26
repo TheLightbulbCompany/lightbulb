@@ -1,10 +1,14 @@
 """Carry an imported agent's conversation history into its Isol8 container.
 
 Inputs (from the backup, see openclaw_backup_import._history_for):
-  agents/<old>/agent/openclaw-agent.sqlite   — sessions + transcripts at the
-      pinned tag (also auth profiles → ALWAYS deleted here)
-  agents/<old>/sessions/{sessions.json,*.jsonl} — legacy layout; the gateway
-      migrates these into SQLite on startup by itself.
+  agents/<old>/sessions/{sessions.json,*.jsonl} — the canonical append-only
+      transcript; PREFERRED. The gateway rebuilds a fresh pinned-schema DB from
+      it on startup (doctor JSON->SQLite migration), which avoids the
+      cross-version SQLite migration whose compact contends with litestream and
+      crash-loops the container (#2038).
+  agents/<old>/agent/openclaw-agent.sqlite   — a derived store; FALLBACK, used
+      only when the backup carries no JSON log (auth profiles → ALWAYS deleted
+      from it here).
 
 Output: ``<efs user root>/import-state/agents/<new-uuid>/{agent/,sessions/}``.
 The container's local-sqlite boot script (step 4b) moves that into its LOCAL
@@ -136,12 +140,23 @@ def stage_history(*, owner_id: str, source_agent_id: str, new_agent_id: str, his
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    if history.sqlite is not None:
+    # Prefer the legacy JSON session log over the raw agent SQLite. OpenClaw's
+    # sessions/*.jsonl is the canonical append-only transcript; the SQLite is a
+    # derived store the gateway rebuilds from it (the doctor JSON->SQLite
+    # migration). Handing off an older-version backup's raw SQLite makes the
+    # pinned gateway run a cross-version schema migration whose compact/checkpoint
+    # contends with the litestream supervisor ("SQLite checkpoint remained busy")
+    # and crash-loops the container (#2038). Handing off only the JSON log puts
+    # imported history on the same fresh-DB-under-litestream path every
+    # marketplace hire already uses. Lossless: a real 2026.3.11 backup's agent
+    # SQLite held zero session rows while its JSON log held the entire transcript.
+    # The raw-SQLite path stays as the fallback for a backup that has no JSON log.
+    if history.sessions_dir is not None:
+        rewrite_legacy_sessions(history.sessions_dir, tmp / "sessions", old_id=source_agent_id, new_id=new_agent_id)
+    elif history.sqlite is not None:
         sanitize_agent_db(
             history.sqlite, tmp / "agent" / "openclaw-agent.sqlite", old_id=source_agent_id, new_id=new_agent_id
         )
-    if history.sessions_dir is not None:
-        rewrite_legacy_sessions(history.sessions_dir, tmp / "sessions", old_id=source_agent_id, new_id=new_agent_id)
     _chown_tree(tmp)
     final.parent.mkdir(parents=True, exist_ok=True)
     # The backend writes EFS through its NON-squashed root mount, so import-state/

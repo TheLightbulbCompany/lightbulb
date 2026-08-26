@@ -60,6 +60,24 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def scan_all() -> list[dict]:
+    """Every billing row, paginated via LastEvaluatedKey.
+
+    Fleet aggregates only (admin growth read). Not for hot paths — a DDB
+    Scan is the whole table every call. Mirrors ``container_repo.scan_all``.
+    """
+    table = _get_table()
+    items: list[dict] = []
+    kwargs: dict = {}
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return items
+        kwargs["ExclusiveStartKey"] = last
+
+
 async def get_by_apple_original_transaction_id(original_transaction_id: str) -> dict | None:
     """Resolve the billing row an Apple auto-renewable subscription belongs to.
 

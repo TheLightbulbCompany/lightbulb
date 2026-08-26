@@ -2322,3 +2322,17 @@ class PaperclipRepo:
             last_evaluated_key = resp.get("LastEvaluatedKey")
             if not last_evaluated_key:
                 return out
+
+    async def scan_all_items(self) -> list[dict]:
+        """Every raw row, paginated — INCLUDING the ``__org_create_claim__:`` /
+        ``__pending_brief__:`` marker rows (their ``user_id`` starts with
+        ``__``); callers filter. Fleet aggregates only, never a hot path."""
+        items: list[dict] = []
+        kwargs: dict = {}
+        while True:
+            page = await run_in_thread(self._table().scan, **kwargs)
+            items.extend(page.get("Items", []))
+            last = page.get("LastEvaluatedKey")
+            if not last:
+                return items
+            kwargs["ExclusiveStartKey"] = last

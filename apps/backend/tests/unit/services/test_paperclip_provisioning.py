@@ -318,6 +318,7 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
 
     repo.get = AsyncMock(side_effect=_get)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
     repo.put = AsyncMock()
 
     # find_org_owner queries the by-org-id GSI directly via repo._table().query.
@@ -737,6 +738,7 @@ async def test_provision_member_replicates_seeded_agent_ids(monkeypatch):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -1025,6 +1027,7 @@ async def test_provision_member_skips_approve_when_accept_auto_approved(monkeypa
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)  # brand-new member
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -1069,6 +1072,7 @@ async def test_provision_member_approves_when_accept_left_pending(monkeypatch):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -1142,6 +1146,7 @@ class _StatefulRepo:
         not_if_status: str | None = None,
         require_seeding_claim_id: str | None = None,
         owner_id: str | None = None,
+        company_id: str | None = None,
     ):
         row = self._rows[user_id]
         if not_if_status is not None and row.status == not_if_status:
@@ -1153,6 +1158,8 @@ class _StatefulRepo:
                 return False
         row.status = status
         row.last_error = last_error
+        if company_id:
+            row.company_id = company_id
         return True
 
     async def get_org_company_id(self, _owner_id: str):
@@ -1424,3 +1431,135 @@ async def test_provision_org_does_NOT_allocate_a_slug_or_mint_an_address(monkeyp
 
     assert row.status == "active"
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# provision_member fresh-join fence (the try_acquire_seed_claim claim). Four
+# concurrent dispatches for one joining member (status poll + teams reconcile
+# on the first page load after an invite accept) used to each sign up the same
+# email with a different random password; the last DDB writer's password then
+# never matched the Better Auth account sign-in resolves by email.
+# ---------------------------------------------------------------------------
+
+
+def _member_fence_doubles(monkeypatch, *, claimed: bool, winner_row=None):
+    """provision_member doubles with the claim outcome pinned.
+
+    ``repo.get`` returns None for the joining member on the first (existence)
+    read and ``winner_row`` on every later strongly-consistent read — the
+    loser-side poll — so a lost claim can adopt a peer's active row.
+    """
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    import core.services.paperclip_provisioning as prov_mod
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    now = datetime.now(timezone.utc)
+    owner_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_xyz",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted=encrypt("svc-token"),
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+
+    async def _fake_find_owner(self, _org_id):
+        return owner_row
+
+    monkeypatch.setattr(prov_mod.PaperclipProvisioning, "find_org_owner", _fake_find_owner)
+    # Loser-side wait: don't actually sleep.
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_INTERVAL_S", 0.0)
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_ATTEMPTS", 2)
+
+    repo = MagicMock()
+    member_reads = {"n": 0}
+
+    async def _get(uid: str, *, consistent_read: bool = False):
+        if uid == "user_owner":
+            return owner_row
+        member_reads["n"] += 1
+        return None if member_reads["n"] == 1 else winner_row
+
+    repo.get = AsyncMock(side_effect=_get)
+    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.put = AsyncMock()
+    repo.try_acquire_seed_claim = AsyncMock(return_value=claimed)
+    return admin, repo
+
+
+async def test_provision_member_takes_seed_claim_before_signup(monkeypatch):
+    from core.services import service_token
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _member_fence_doubles(monkeypatch, claimed=True)
+    monkeypatch.setattr(service_token, "mint", MagicMock(return_value="svc.tok"))
+    order = MagicMock()
+    order.attach_mock(repo.try_acquire_seed_claim, "claim")
+    order.attach_mock(admin.sign_up_user, "signup")
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_member(
+        owner_id="org_xyz", user_id="user_member", email="member@example.com", owner_email="owner@example.com"
+    )
+
+    assert [c[0] for c in order.mock_calls][:2] == ["claim", "signup"], "claim must land before the sign-up"
+    repo.try_acquire_seed_claim.assert_awaited_once()
+    args, kwargs = repo.try_acquire_seed_claim.await_args
+    assert args == ("user_member",) and kwargs["org_id"] == "org_xyz" and kwargs["claim_id"]
+
+
+async def test_provision_member_lost_claim_adopts_winner_row_without_signup(monkeypatch):
+    from datetime import datetime, timezone
+
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    now = datetime.now(timezone.utc)
+    winner = PaperclipCompany(
+        user_id="user_member",
+        org_id="org_xyz",
+        company_id="co_xyz",
+        paperclip_user_id="pc_winner",
+        paperclip_password_encrypted="enc",
+        service_token_encrypted="enc",
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+    admin, repo = _member_fence_doubles(monkeypatch, claimed=False, winner_row=winner)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    result = await svc.provision_member(
+        owner_id="org_xyz", user_id="user_member", email="member@example.com", owner_email="owner@example.com"
+    )
+
+    assert result.paperclip_user_id == "pc_winner"
+    # The loser must not mint a second Better Auth account or overwrite the
+    # winner's credential — that overwrite is the INVALID_EMAIL_OR_PASSWORD bug.
+    admin.sign_up_user.assert_not_awaited()
+    admin.sign_in_user.assert_not_awaited()
+    repo.put.assert_not_awaited()
+
+
+async def test_provision_member_lost_claim_timeout_raises_409_without_signup(monkeypatch):
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _member_fence_doubles(monkeypatch, claimed=False, winner_row=None)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as ei:
+        await svc.provision_member(
+            owner_id="org_xyz", user_id="user_member", email="member@example.com", owner_email="owner@example.com"
+        )
+
+    # 409 is what _ensure_paperclip_for_member already treats as "join in
+    # flight, no-op" — the next poll adopts the winner's row.
+    assert ei.value.status_code == 409
+    admin.sign_up_user.assert_not_awaited()
+    repo.put.assert_not_awaited()

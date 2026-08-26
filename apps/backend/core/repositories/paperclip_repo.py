@@ -792,8 +792,18 @@ class PaperclipRepo:
         not_if_status: Optional[PaperclipCompanyStatus] = None,
         require_seeding_claim_id: Optional[str] = None,
         owner_id: Optional[str] = None,
+        company_id: Optional[str] = None,
     ) -> bool:
         """Update a row's status. Returns True iff the write landed.
+
+        ``company_id`` (when truthy) is stamped alongside the status. The one
+        caller is ``_mark_failed`` downgrading a bare seed-claim row: the
+        claim carries no company_id (none exists for an owner at claim time),
+        but a MEMBER's claim fails inside a known company, and the failed
+        marker must keep carrying it — same shape ``put_failed_marker_if_absent``
+        writes — because ``archive_member`` lists the company's members off
+        that field when the seat is later removed. Never written as "" (an
+        empty by-company-id GSI key is rejected outright).
 
         ``not_if_status`` guards the write with a ConditionExpression so the
         update is SKIPPED (returns False) when the row is currently in that
@@ -830,6 +840,9 @@ class PaperclipRepo:
         if scheduled_purge_at is not None:
             update_expr += ", scheduled_purge_at = :p"
             expr_values[":p"] = scheduled_purge_at.isoformat()
+        if company_id:
+            update_expr += ", company_id = :c"
+            expr_values[":c"] = company_id
 
         kwargs: dict = {
             "Key": {"user_id": user_id},

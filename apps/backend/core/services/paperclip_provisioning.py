@@ -915,6 +915,38 @@ class PaperclipProvisioning:
             raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
         owner_password = decrypt(owner_row.paperclip_password_encrypted)
 
+        # Fresh-join fence: the same PK put-if-absent claim ``provision_org``
+        # takes, on the member's own row. Without it, N concurrent dispatches
+        # for a joining member (the /container/status poll and the /teams
+        # reconcile fire together on the first page load after an invite
+        # accept) each read "no row", each sign up the SAME email with its
+        # OWN random password — Better Auth's ``user.email`` has no unique
+        # constraint, so every sign-up returns 200 and mints a duplicate
+        # account — and the last DDB writer stores a password that does not
+        # belong to the account sign-in resolves by email. Every later mint
+        # is then INVALID_EMAIL_OR_PASSWORD, and the retries trip Better
+        # Auth's 3-per-10s sign-in limit (429). Losers wait for the winner's
+        # active row and adopt it; on timeout they raise the 409 the caller
+        # already treats as "join in flight, no-op". Placed after the owner
+        # lookups on purpose: everything from here on runs inside the try
+        # below, whose failure path downgrades the claim row (seeding ->
+        # failed) so the next poll retries promptly.
+        member_claim_id: str | None = None
+        if existing is None or existing.status == "seeding":
+            member_claim_id = uuid4().hex
+            claimed = await self._repo.try_acquire_seed_claim(
+                user_id,
+                org_id=owner_id,
+                claim_id=member_claim_id,
+            )
+            if not claimed:
+                put_metric("paperclip.provision.member_claim_lost")
+                return await self._await_concurrent_seed(
+                    owner_id=owner_id,
+                    owner_user_id=user_id,
+                    what="provision_member",
+                )
+
         # Sign-up-or-ADOPT. A brand-new user signs up. A user who ALREADY has
         # a Paperclip account — e.g. a personal workspace row, which the
         # org-scoped idempotency check above intentionally let fall through,
@@ -1083,6 +1115,7 @@ class PaperclipProvisioning:
                     owner_id=owner_id,
                     reason=f"provision_member failed: {e}",
                     company_id=company_id,
+                    expected_seeding_claim_id=member_claim_id,
                 )
             # ``retryable`` is set on the exception itself (see provision_org
             # for the full rationale).
@@ -1390,9 +1423,11 @@ class PaperclipProvisioning:
         *,
         owner_id: str,
         owner_user_id: str,
+        what: str = "provision_org",
     ) -> PaperclipCompany:
         """Loser side of the ``try_acquire_seed_claim`` fence in
-        ``provision_org``: a peer on another backend instance is running the
+        ``provision_org`` (and, with ``what="provision_member"``, the member
+        join): a peer on another backend instance is running the
         seed chain RIGHT NOW. Wait briefly for its active row and ADOPT it —
         the exact same "already provisioned" semantics as the ``status ==
         "active"`` short-circuit — instead of running a second full seed.
@@ -1417,8 +1452,9 @@ class PaperclipProvisioning:
             row = await self._repo.get(owner_user_id, consistent_read=True)
             if row is not None and row.status == "active" and row.org_id == owner_id:
                 logger.info(
-                    "paperclip_provisioning.provision_org: adopted concurrent seed for "
-                    "owner_id %s (owner=%s) — a peer instance won the seed claim",
+                    "paperclip_provisioning.%s: adopted concurrent seed for "
+                    "owner_id %s (user=%s) — a peer instance won the seed claim",
+                    what,
                     owner_id,
                     owner_user_id,
                 )
@@ -1428,8 +1464,8 @@ class PaperclipProvisioning:
                 # ordinary retry path against the downgraded row.
                 break
         raise PaperclipApiError(
-            f"concurrent provision_org seed in flight for owner {owner_id} "
-            f"(owner_user_id={owner_user_id}) — lost the seed claim; retry on next poll",
+            f"concurrent {what} seed in flight for owner {owner_id} "
+            f"(user_id={owner_user_id}) — lost the seed claim; retry on next poll",
             status_code=409,
             body=None,
         )
@@ -1679,6 +1715,9 @@ class PaperclipProvisioning:
                 not_if_status="active",
                 require_seeding_claim_id=expected_seeding_claim_id,
                 owner_id=existing.org_id,
+                # A bare member seed-claim row has no company_id; keep the
+                # failed marker carrying the known one (see update_status).
+                company_id=company_id or None,
             )
             if not landed:
                 logger.info(

@@ -13,13 +13,10 @@ Everything is segmented internal/external BEFORE aggregation.
 
 from __future__ import annotations
 
-import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
-
-logger = logging.getLogger(__name__)
 
 WINDOW_WEEKS = 8
 HEADLINE_BAR = 5  # "five external owners with armed automations firing for four consecutive weeks"
@@ -27,7 +24,7 @@ HEADLINE_WEEKS = 4
 _PAID = frozenset({"active", "trialing"})  # = provision_gate.is_paid_subscription
 
 # --- SQL (Paperclip fork schema at the pinned tag; see paperclip_sql docstring) ---
-SQL_COMPANIES = "SELECT id, name, created_at FROM companies"
+SQL_COMPANIES = "SELECT id, name, created_at FROM companies LIMIT 5000"
 
 SQL_ROUTINES = """
 SELECT r.company_id, r.id, r.title, r.status,

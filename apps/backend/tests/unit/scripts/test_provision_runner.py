@@ -465,7 +465,7 @@ async def test_seed_helper_arms_nightly_ceo_after_personal_seed(monkeypatch, _st
     order.attach_mock(_stub_arm_nightly_ceo, "arm")
     assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_OK
     assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
-    _stub_arm_nightly_ceo.assert_awaited_once_with("user_p")
+    _stub_arm_nightly_ceo.assert_awaited_once_with("user_p", trust_cache=False)
 
 
 async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
@@ -485,7 +485,7 @@ async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_ar
     order.attach_mock(_stub_arm_nightly_ceo, "arm")
     assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
     assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
-    _stub_arm_nightly_ceo.assert_awaited_once_with("org_x")
+    _stub_arm_nightly_ceo.assert_awaited_once_with("org_x", trust_cache=False)
 
 
 async def test_seed_helper_arm_5xx_exits_11(monkeypatch, _stub_arm_nightly_ceo):

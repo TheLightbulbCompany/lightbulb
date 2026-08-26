@@ -1789,6 +1789,44 @@ async def test_arm_nightly_ceo_org_owner_uses_find_org_owner():
 
 
 @pytest.mark.asyncio
+async def test_arm_nightly_ceo_executor_ignores_claim_cache():
+    """trust_cache=False with the cache already naming this company: no
+    re-claim, straight to the title-idempotent create → "armed". This is the
+    crash window between the claim write and the create."""
+    provisioning = _arm_provisioning(_company_row())
+    cached = AsyncMock(return_value=_paid_account(nightly_ceo_armed_company="co1"))
+    mocks, patches = _arm_patches(provisioning, **{"billing_repo.get_by_owner_id": cached})
+    for p in patches:
+        p.start()
+    try:
+        assert await arm_nightly_ceo("user_p", trust_cache=False) == "armed"
+    finally:
+        for p in patches:
+            p.stop()
+    mocks["billing_repo.try_claim_nightly_arm"].assert_not_awaited()
+    mocks["create_enabled_schedule_routine"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_trusts_claim_cache_by_default():
+    """Same cache, default trust_cache=True → "already_armed", no claim, no
+    Paperclip call."""
+    provisioning = _arm_provisioning(_company_row())
+    cached = AsyncMock(return_value=_paid_account(nightly_ceo_armed_company="co1"))
+    mocks, patches = _arm_patches(provisioning, **{"billing_repo.get_by_owner_id": cached})
+    for p in patches:
+        p.start()
+    try:
+        assert await arm_nightly_ceo("user_p") == "already_armed"
+    finally:
+        for p in patches:
+            p.stop()
+    mocks["billing_repo.try_claim_nightly_arm"].assert_not_awaited()
+    mocks["get_admin_session_cookie"].assert_not_awaited()
+    mocks["create_enabled_schedule_routine"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_arm_nightly_ceo_seed_failure_releases_claim_and_raises():
     """After winning the claim, a seed failure releases it, meters status=error,
     and PROPAGATES — the executor classifies it, not this function."""

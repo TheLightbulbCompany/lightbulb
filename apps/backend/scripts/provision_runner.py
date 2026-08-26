@@ -178,6 +178,8 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     run is a metered no-op; arming here — not on a UI poll — is what makes it
     deterministic for trial→paid conversions and org first-provisions, both of
     which reach this executor. Its failures classify exactly like the seed's.
+    ``trust_cache=False``: a retry of a run that died between the arm's claim
+    write and its routine create must not trust the claim cache.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
@@ -224,7 +226,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
                 owner_email=owner_email,
                 org_id=None,
             )
-        await arm_nightly_ceo(owner_id)
+        await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)

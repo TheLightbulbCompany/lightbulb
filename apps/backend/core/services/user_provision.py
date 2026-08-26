@@ -366,7 +366,7 @@ def _arm_status(status: str) -> str:
     return status
 
 
-async def arm_nightly_ceo(owner_id: str) -> str:
+async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     """Idempotently arm the paid nightly CEO routine on Friday.
 
     THE deterministic caller is the provision executor's step 0
@@ -386,10 +386,17 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     decides — the executor classifies it into its retry ABI exactly like a
     seed failure; ``_maybe_arm_nightly_ceo`` logs and moves on.
 
+    ``trust_cache=False`` (the executor) never short-circuits on the
+    ``nightly_ceo_armed_company`` cache: the claim is written BEFORE the routine
+    is created, so a runner that dies between the two leaves a row that says
+    "armed" with no routine — trusted, that cache would return ``already_armed``
+    forever. The retry re-issues the create (title-skip makes it idempotent)
+    without re-claiming.
+
     Idempotency, three race classes closed:
-      - Normal re-run: the ``nightly_ceo_armed_company`` cache on the billing
-        row short-circuits before any Paperclip call once it equals the current
-        company.
+      - Normal re-run (poll path): the ``nightly_ceo_armed_company`` cache on
+        the billing row short-circuits before any Paperclip call once it equals
+        the current company.
       - Concurrency: ``try_claim_nightly_arm`` is a conditional write that
         elects exactly one winner to seed (plus ``create_enabled_schedule_routine``'s
         title-skip as a backstop).
@@ -417,13 +424,16 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             if row is None or row.status != "active":
                 return _arm_status("company_not_active")
             company_id = row.company_id
-            if account.get("nightly_ceo_armed_company") == company_id:
+            cached = account.get("nightly_ceo_armed_company") == company_id
+            if cached and trust_cache:
                 return _arm_status("already_armed")  # cheap cache hit
             # Friday is seeded FIRST (seed order == identity), so it's element 0.
             friday_id = (row.seeded_agent_ids or [None])[0]
             if not friday_id:
                 return _arm_status("friday_not_seeded")
-            if not await billing_repo.try_claim_nightly_arm(owner_id, company_id):
+            # A cache already naming this company means the claim is ours —
+            # skip re-claiming and go straight to the title-idempotent create.
+            if not cached and not await billing_repo.try_claim_nightly_arm(owner_id, company_id):
                 return _arm_status("claim_lost")  # a concurrent arm won
             try:
                 admin_cookie = await get_admin_session_cookie(provisioning._admin._http)
@@ -438,8 +448,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
                     timezone="UTC",
                 )
             except Exception:
-                # Seed failed after we won the claim — release it so the next
-                # run retries, then let the caller classify.
+                # Seed failed — release the claim (or the stale cache) so the
+                # next run retries, then let the caller classify.
                 await billing_repo.release_nightly_arm(owner_id, company_id)
                 raise
             # Leave the claim as the armed cache.

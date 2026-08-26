@@ -202,7 +202,13 @@ export interface GrowthSegment {
     trial_expired: number;
     signups_by_week: { week: string; n: number }[];
   };
-  activation: { stages: Record<GrowthOwnerStage["stage"], number>; owners: GrowthOwnerStage[] };
+  activation: {
+    stages: Record<GrowthOwnerStage["stage"], number>;
+    /** Order-independent per-flag counts — each true regardless of whether an
+     * earlier stage in the ladder above was reached. See growth.py's derive(). */
+    flags: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, number>;
+    owners: GrowthOwnerStage[];
+  };
   north_star: { weeks: GrowthWeekRow[] };
   headline: { bar: number; count: number; owners: string[]; weeks: string[] };
   retention: {
@@ -231,7 +237,7 @@ export interface GrowthData {
     funnel: { week: string; event: string; owners: number }[];
     signup_sources: { source: string; owners: number }[];
   };
-  sources: Record<"ddb" | "aurora" | "posthog" | "cloudwatch", string>;
+  sources: Record<"ddb" | "aurora" | "posthog" | "cloudwatch" | "clerk", string>;
 }
 
 export interface DeployRow {

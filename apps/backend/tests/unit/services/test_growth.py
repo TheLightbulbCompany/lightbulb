@@ -234,6 +234,37 @@ def test_activation_stages():
         "automation_armed": 1,
         "first_autonomous_success": 1,
     }
+    assert ext["flags"] == {
+        "subscribed": 2,
+        "container_ready": 2,
+        "friday_first_run_delivered": 1,
+        "automation_armed": 1,
+        "first_autonomous_success": 1,
+    }
+
+
+def test_activation_flags_are_order_independent_of_the_stage_ladder():
+    """ext_b's kickoff FAILED, so the ladder stops at container_ready — but if
+    ext_b's company later gets an armed routine anyway, the order-independent
+    flag must say so even though the ladder still stops short."""
+    fx = _fixture()
+    fx["routines"].append(
+        {
+            "company_id": "c_b",
+            "id": "r6",
+            "title": "Armed despite failed kickoff",
+            "status": "active",
+            "auto_paused": False,
+            "created_at": "2026-08-20T00:00:00Z",
+            "updated_at": "2026-08-20T00:00:00Z",
+            "has_enabled_trigger": True,
+            "trigger_kinds": "schedule",
+        }
+    )
+    fx["first_autonomous"].append({"company_id": "c_b", "first_ok": "2026-08-21T00:00:00Z"})
+    ext = growth.derive(**fx)["segments"]["external"]["activation"]
+    assert ext["stages"]["automation_armed"] == 1
+    assert ext["flags"]["automation_armed"] == 2
 
 
 def test_north_star_excludes_nightly_and_headline_four_weeks():
@@ -331,7 +362,7 @@ async def test_compute_partial_when_aurora_fails(monkeypatch):
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
         ),  # all three queries
         patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
-        patch("core.services.run_analytics.is_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
+        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
     ):
         data, state, errors = await growth.compute()
 
@@ -339,6 +370,36 @@ async def test_compute_partial_when_aurora_fails(monkeypatch):
     assert [e["domain"] for e in errors] == ["aurora"]
     assert data["segments"]["external"]["owners"]["total"] == 3
     assert data["segments"]["external"]["activation"]["stages"]["automation_armed"] == 0  # no routine rows
+
+
+@pytest.mark.asyncio
+async def test_compute_unavailable_when_clerk_fails():
+    """Segmentation is load-bearing (every aggregate assumes it ran before
+    aggregation) -- a Clerk failure must fail the whole read, never silently
+    classify every owner as external."""
+    growth._cache = None
+    fx = _fixture()
+
+    async def boom(*a, **k):
+        raise RuntimeError("clerk down")
+
+    with (
+        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
+        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
+        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
+        patch(
+            "core.services.posthog_admin.hogql",
+            AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
+        ),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=boom)),
+    ):
+        data, state, errors = await growth.compute()
+
+    assert data is None and state == "unavailable"
+    assert [e["domain"] for e in errors] == ["clerk"]
 
 
 @pytest.mark.asyncio

@@ -34,11 +34,17 @@ SELECT r.company_id, r.id, r.title, r.status,
        (r.auto_paused_at IS NOT NULL) AS auto_paused,
        r.created_at, r.updated_at,
        EXISTS (SELECT 1 FROM routine_triggers t WHERE t.routine_id = r.id AND t.enabled) AS has_enabled_trigger,
-       (SELECT string_agg(DISTINCT t.kind, ',') FROM routine_triggers t WHERE t.routine_id = r.id) AS trigger_kinds
+       (SELECT string_agg(DISTINCT t.kind, ',') FROM routine_triggers t WHERE t.routine_id = r.id AND t.enabled) AS trigger_kinds
 FROM routines r
 LIMIT 5000
 """
 
+# title is a code constant with no quote characters; keep it that way (it is
+# interpolated into SQL literals below).
+# ponytail: seq-scans heartbeat_runs (every fork index is company_id-leading;
+# no created_at index) on the tenant-facing 0-4 ACU Aurora, once per 60s while
+# an admin has the page open — fine at tens of tenants; when it isn't, add a
+# created_at index in the fork or drive SQL_FIRST_AUTONOMOUS from routine_runs.
 # heartbeat_runs has no routine_id: attribution is issue -> dispatching routine_run -> source.
 # ponytail: LEFT JOIN routine_runs on linked_issue_id can double-count an issue that
 # two routine_runs link (coalesced runs carry no linked issue today); revisit if seen.
@@ -58,6 +64,10 @@ WHERE hr.created_at > now() - interval '{WINDOW_WEEKS + 1} weeks'
 GROUP BY 1, 2, 3
 """
 
+# ponytail: seq-scans heartbeat_runs (every fork index is company_id-leading;
+# no created_at index) on the tenant-facing 0-4 ACU Aurora, once per 60s while
+# an admin has the page open — fine at tens of tenants; when it isn't, add a
+# created_at index in the fork or drive SQL_FIRST_AUTONOMOUS from routine_runs.
 SQL_FIRST_AUTONOMOUS = f"""
 SELECT hr.company_id, min(hr.created_at) AS first_ok
 FROM heartbeat_runs hr
@@ -89,11 +99,14 @@ where event in ('landing_viewed', 'signup_started', 'trial_started', 'first_run_
 group by week, event order by week, event limit 500
 """
 
-# Organic / referral share of signups (SEO plan §6). PostHog stamps first-touch
-# person properties itself ($initial_*), so no frontend change is needed.
+# Organic / referral share of signups (SEO plan §6). person_profiles is
+# identified_only and signup_started fires pre-identify, so
+# person.properties.$initial_* is empty here — read the EVENT's own
+# first-touch properties instead (stamped on every capture by the frontend's
+# attributionProperties(), src/lib/analytics.ts).
 HOGQL_SIGNUP_SOURCES = f"""
-select coalesce(nullIf(person.properties.$initial_utm_source, ''),
-                nullIf(person.properties.$initial_referring_domain, ''), 'direct') as source,
+select coalesce(nullIf(properties.first_touch_utm_source, ''),
+                nullIf(properties.first_touch_referring_domain, ''), 'direct') as source,
        uniq(distinct_id) as owners
 from events
 where event = 'signup_started' and timestamp > now() - interval {WINDOW_WEEKS + 1} week
@@ -214,7 +227,8 @@ def derive(
             "automation_armed",
             "first_autonomous_success",
         ]
-        owner_rows, stage_counts = [], Counter()
+        flag_names = stage_names[1:]  # every stage but "signed_up", which is always true
+        owner_rows, stage_counts, flag_counts = [], Counter(), Counter()
         for b in rows:
             oid = b["owner_id"]
             cid = owner_company.get(oid, "")
@@ -233,6 +247,14 @@ def derive(
                 reached = i
             for s in stage_names[: reached + 1]:
                 stage_counts[s] += 1
+            # Order-independent per-flag counts (F8): the DECIDED ladder above
+            # stops at the first false flag (e.g. a failed Friday kickoff), so
+            # a LATER flag — like automation armed — can be true without ever
+            # showing in stage_counts. Both must be visible so the two panels
+            # can never silently contradict each other.
+            for name, f in zip(flag_names, flags[1:]):
+                if f:
+                    flag_counts[name] += 1
             owner_rows.append(
                 {
                     "owner_id": oid,
@@ -245,7 +267,11 @@ def derive(
                 }
             )
         owner_rows.sort(key=lambda o: (-stage_names.index(o["stage"]), o["name"]))
-        activation = {"stages": {s: stage_counts.get(s, 0) for s in stage_names}, "owners": owner_rows}
+        activation = {
+            "stages": {s: stage_counts.get(s, 0) for s in stage_names},
+            "flags": {s: flag_counts.get(s, 0) for s in flag_names},
+            "owners": owner_rows,
+        }
 
         # North Star — per week, external successful runs by kind; nightly CEO reported, never counted.
         seg_runs = [r for r in runs if r["company_id"] in company_set]
@@ -415,11 +441,11 @@ _INTERNAL_CHECK_CONCURRENCY = asyncio.Semaphore(8)
 
 
 async def _internal_set(owner_ids: list[str]) -> set[str]:
-    from core.services.run_analytics import is_internal_owner
+    from core.services.run_analytics import resolve_internal_owner
 
     async def _check(o: str) -> bool:
         async with _INTERNAL_CHECK_CONCURRENCY:
-            return await is_internal_owner(o)
+            return await resolve_internal_owner(o)
 
     flags = await asyncio.gather(*(_check(o) for o in owner_ids))
     return {o for o, f in zip(owner_ids, flags) if f}
@@ -429,6 +455,9 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     """Read every source (each fail-safe via envelope.read_source), derive, cache 60s.
 
     DDB is load-bearing (no owners → nothing to segment) → ``unavailable``.
+    The internal/external split is ALSO load-bearing — every aggregate below
+    assumes it ran BEFORE aggregation — so a Clerk failure there is likewise
+    ``unavailable``, never a silent "everyone is external" misclassification.
     Any other source failing → ``partial`` with the domain in errors, and that
     section renders empty on the page rather than green.
     """
@@ -444,12 +473,17 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     )
     if ddb is None:
         return None, env.UNAVAILABLE, ddb_err
+
+    owner_ids = [b["owner_id"] for b in ddb["billing"]]
+    internal, _, clerk_err = await env.read_source("clerk", lambda: _internal_set(owner_ids), timeout_s=10.0)
+    if internal is None:
+        return None, env.UNAVAILABLE, ddb_err + clerk_err
+
     errors = aurora_err + ph_err + gate_err
     state = env.PARTIAL if errors else env.OK
 
     aurora = aurora or {"companies": [], "routines": [], "runs": [], "first_autonomous": []}
     ph = ph or {"runs": [], "funnel": [], "sources": []}
-    internal = await _internal_set([b["owner_id"] for b in ddb["billing"]])
     data = derive(
         **ddb,
         **aurora,
@@ -465,6 +499,7 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
         "aurora": "ok" if not aurora_err else "unavailable",
         "posthog": "ok" if not ph_err else "unavailable",
         "cloudwatch": "ok" if not gate_err else "unavailable",
+        "clerk": "ok",
     }
     _cache = (time.monotonic() + _CACHE_TTL_S, data, state, errors)
     return data, state, errors

@@ -250,33 +250,32 @@ def _match_dispatching_run(runs: list, issue_id: str) -> dict | None:
     return None
 
 
-async def _is_internal_owner(owner_id: str) -> bool:
+async def resolve_internal_owner(owner_id: str) -> bool:
     """Isol8-team tagging via the platform-admin email rule on the owner's
     Clerk PRIMARY email — Clerk is the email truth (the users table carries no
     email attribute). Org owners resolve through the org's ``created_by``
-    user. The Clerk round-trips are fine here: this runs in the fire-and-forget
-    emit task, never the reader loop, and real answers cache for an hour.
+    user. Real answers cache for an hour.
 
-    Any miss in the chain -> False (they are customers), UNCACHED:
-    ``get_primary_email`` raises the same RuntimeError for can't-reach-Clerk
-    and for a genuinely email-less user, so the safe side is to never let a
-    possibly-transient failure stick a wrong answer for an hour.
+    RAISES on any miss/failure in the Clerk chain (can't-reach-Clerk, a
+    genuinely email-less user, or an org with no resolvable ``created_by``) —
+    UNCACHED, so a possibly-transient failure never sticks a wrong answer for
+    an hour. This is the resolver ops/growth reads use directly: segmentation
+    there is load-bearing (every aggregate assumes it ran BEFORE aggregation),
+    so a Clerk failure must fail the whole read UNAVAILABLE, never silently
+    resolve to a wrong-but-green False. The emit path uses the swallowing
+    wrapper below instead — it may never raise into or slow the run path.
     """
     now = time.monotonic()
     cached = _internal_cache.get(owner_id)
     if cached is not None and (now - cached[1]) < _INTERNAL_TTL_S:
         return cached[0]
-    try:
-        user_id = owner_id
-        if is_org_owner_id(owner_id):
-            org = await clerk_admin.get_organization(owner_id)
-            user_id = (org or {}).get("created_by")
-            if not user_id:
-                return False
-        email = await clerk_admin.get_primary_email(user_id)
-    except Exception:
-        logger.warning("run_analytics: internal-owner lookup failed for %s", owner_id, exc_info=True)
-        return False
+    user_id = owner_id
+    if is_org_owner_id(owner_id):
+        org = await clerk_admin.get_organization(owner_id)
+        user_id = (org or {}).get("created_by")
+        if not user_id:
+            raise RuntimeError(f"run_analytics: org {owner_id} has no resolvable created_by")
+    email = await clerk_admin.get_primary_email(user_id)
     result = is_platform_admin_email(email)
     _internal_cache[owner_id] = (result, now)
     while len(_internal_cache) > _INTERNAL_CACHE_CAP:
@@ -284,5 +283,19 @@ async def _is_internal_owner(owner_id: str) -> bool:
     return result
 
 
-# Public name for readers outside the emit path (admin growth aggregates).
+async def _is_internal_owner(owner_id: str) -> bool:
+    """Swallowing wrapper around ``resolve_internal_owner`` for the emit path
+    (fire-and-forget task, never the reader loop): any miss in the Clerk
+    chain -> False (they are customers), same as before this was split out.
+    Ops/growth reads must NOT use this — see ``resolve_internal_owner``.
+    """
+    try:
+        return await resolve_internal_owner(owner_id)
+    except Exception:
+        logger.warning("run_analytics: internal-owner lookup failed for %s", owner_id, exc_info=True)
+        return False
+
+
+# Public swallowing-wrapper alias. Ops/growth reads use resolve_internal_owner
+# directly instead (segmentation there must fail loud, not swallow to False).
 is_internal_owner = _is_internal_owner

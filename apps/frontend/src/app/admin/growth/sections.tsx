@@ -13,6 +13,16 @@ const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
   first_autonomous_success: "activated",
 };
 
+// Labels for the order-independent flag row (F8) — distinct wording from
+// STAGE_LABEL's "activated" so the two panels don't just parrot each other.
+const FLAG_LABEL: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, string> = {
+  subscribed: "subscribed",
+  container_ready: "container ready",
+  friday_first_run_delivered: "Friday's first run delivered",
+  automation_armed: "automation armed",
+  first_autonomous_success: "first autonomous success",
+};
+
 function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
   if (rows.length === 0) return <div className="text-xs text-zinc-500">none</div>;
   return (
@@ -86,6 +96,12 @@ export function Activation({ seg }: { seg: GrowthSegment }) {
           <MetricStat key={s} label={STAGE_LABEL[s]} value={a.stages[s]} />
         ))}
       </div>
+      <div className="mt-2 text-xs text-zinc-500">
+        regardless of order:{" "}
+        {(Object.keys(FLAG_LABEL) as (keyof typeof FLAG_LABEL)[])
+          .map((s) => `${FLAG_LABEL[s]} ${a.flags[s]}`)
+          .join(" · ")}
+      </div>
       <div className="mt-4">
         <Table
           head={["owner", "stage", "status", "plan", "Friday kickoff", "first autonomous success"]}
@@ -107,7 +123,14 @@ export function NorthStar({ seg }: { seg: GrowthSegment }) {
   return (
     <Card title="North Star — successful runs per week (nightly CEO shown, never counted)">
       <Table
-        head={["week", "owners w/ autonomous run", "autonomous ok", "human ok", "autonomous share", "nightly CEO ok"]}
+        head={[
+          "week",
+          "owners w/ autonomous run",
+          "autonomous ok",
+          "human ok",
+          "share dispatched by schedule/webhook",
+          "nightly CEO ok",
+        ]}
         rows={seg.north_star.weeks.map((w) => [
           w.week,
           w.owners_active,
@@ -117,6 +140,10 @@ export function NorthStar({ seg }: { seg: GrowthSegment }) {
           w.nightly_ok,
         ])}
       />
+      <div className="mt-2 text-xs text-zinc-500">
+        human = every run not dispatched by a schedule or webhook — issue assignments, run-now, and the nightly
+        CEO&apos;s follow-on work included
+      </div>
     </Card>
   );
 }
@@ -186,7 +213,7 @@ function funnelByWeek(data: GrowthData) {
 export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
   const funnel = funnelByWeek(data);
   return (
-    <Card title="Acquisition — client funnel per week (PostHog, unique persons, unsegmented) · signups per week (billing rows)">
+    <Card title="Acquisition — client funnel per week (PostHog, unique persons, unsegmented — dev and prod share one PostHog project, so these count both environments) · signups per week (billing rows)">
       <div className="grid gap-6 md:grid-cols-[1fr_auto_auto]">
         <Table head={["week", ...FUNNEL_EVENTS]} rows={data.weeks.map((w) => [w, ...FUNNEL_EVENTS.map((e) => funnel.get(w)?.[e] ?? 0)])} />
         <Table head={["week", "signups"]} rows={seg.owners.signups_by_week.map((w) => [w.week, w.n])} />
@@ -207,7 +234,7 @@ export function PosthogCrosscheck({ data }: { data: GrowthData }) {
   const byWeek = new Map<string, Record<string, number>>();
   for (const r of data.posthog.runs) byWeek.set(r.week, { ...(byWeek.get(r.week) ?? {}), [r.kind]: r.n });
   return (
-    <Card title="PostHog cross-check — agent_run_completed by initiation (attribution there is lossy; the DB above is the ledger)">
+    <Card title="PostHog cross-check — agent_run_completed by initiation (attribution there is lossy; the DB above is the ledger) · counts both environments">
       <Table
         head={["week", "autonomous", "human", "unknown"]}
         rows={data.weeks.map((w) => [w, byWeek.get(w)?.autonomous ?? 0, byWeek.get(w)?.human ?? 0, byWeek.get(w)?.unknown ?? 0])}

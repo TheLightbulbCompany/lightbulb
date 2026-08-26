@@ -14,9 +14,9 @@ async def test_last_7d_queries_each_code_with_full_dimension_set(monkeypatch):
     cw = MagicMock()
     cw.get_metric_data.return_value = {
         "MetricDataResults": [
-            {"Id": "c_trial_expired", "Values": [4.0, 3.0]},
-            {"Id": "c_oauth_required", "Values": []},
-            {"Id": "c_subscription_required", "Values": [1.0]},
+            {"Id": "c_trial_expired", "Values": [4.0, 3.0], "StatusCode": "Complete"},
+            {"Id": "c_oauth_required", "Values": [], "StatusCode": "Complete"},
+            {"Id": "c_subscription_required", "Values": [1.0], "StatusCode": "Complete"},
         ]
     }
     with patch("core.services.ops.gate_blocked._client", return_value=cw):
@@ -35,4 +35,18 @@ async def test_last_7d_queries_each_code_with_full_dimension_set(monkeypatch):
             {"Name": "code", "Value": "trial_expired"},
         ],
     }
-    assert q["MetricStat"]["Stat"] == "Sum" and q["MetricStat"]["Period"] == 604800
+    assert q["MetricStat"]["Stat"] == "Sum" and q["MetricStat"]["Period"] == 86400
+
+
+@pytest.mark.asyncio
+async def test_last_7d_raises_when_a_result_status_is_not_complete():
+    """Forbidden/PartialData must never read as a silent zero."""
+    cw = MagicMock()
+    cw.get_metric_data.return_value = {
+        "MetricDataResults": [
+            {"Id": "c_trial_expired", "StatusCode": "Forbidden", "Messages": [{"Code": "Forbidden"}], "Values": []},
+        ]
+    }
+    with patch("core.services.ops.gate_blocked._client", return_value=cw):
+        with pytest.raises(RuntimeError, match="Forbidden"):
+            await gate_blocked.last_7d()

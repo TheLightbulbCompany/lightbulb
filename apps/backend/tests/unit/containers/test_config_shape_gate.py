@@ -236,3 +236,75 @@ def test_trusted_proxies_is_loopback_only(monkeypatch):
         for entry in proxies:
             assert "/" not in entry, (tag, entry)
             assert not entry.startswith(_RFC1918_PREFIXES), (tag, entry)
+
+
+# --- agents roster shape ----------------------------------------------------
+#
+# 2026.8.1 moved the roster from ``agents.list`` (array, each entry carrying its
+# own ``id``) to ``agents.entries`` (map keyed by agent id, ``id`` stripped from
+# the value). Upstream's own load-time migration is the authoritative
+# translation -- src/config/legacy.roster.ts at v2026.8.1-isol8.1:
+#
+#     const entries = Object.fromEntries(
+#       legacyList.map((value) => { const { id, ...config } = value; return [id, config]; }),
+#     );
+#     const { list: _list, ...rest } = agents;
+#     agents = { ...rest, entries };
+#
+# ``AgentsSchema`` is ``.strict()`` over {ownership, defaults, entries}, so at
+# 8.1 ``list`` is not a config key at all -- it is re-attached AFTER validation
+# as a NON-ENUMERABLE projection (src/config/agent-list-projection.ts), which is
+# why it never survives serialization either. Emitting it writes to a key the
+# gateway does not read: the roster goes to zero on every regenerate until the
+# container is bounced and boot doctor re-migrates the file. Observed live on
+# the founder container during the 8.1 rollout (isol8 #2036).
+
+_FRIDAY = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+_ATLAS = "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+_ROSTER = [
+    {"id": _FRIDAY, "name": "Friday", "role": "ceo"},
+    {"id": _ATLAS, "name": "Atlas", "role": "general"},
+]
+
+
+def test_81_shape_emits_keyed_agents_entries_and_no_list():
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=_ROSTER)
+    agents = cfg["agents"]
+
+    assert "list" not in agents, "agents.list is a dead key at 8.1 -- the roster reads entries"
+    entries = agents["entries"]
+    assert set(entries) == {_FRIDAY, _ATLAS}
+    # The id is the KEY. The entry value schema is additionalProperties:false
+    # (upstream: AgentEntrySchema.omit({ id: true })), so an ``id`` left inside
+    # the value fails the whole file.
+    assert all("id" not in entry for entry in entries.values()), entries
+    assert entries[_FRIDAY]["name"] == "Friday"
+    assert entries[_FRIDAY]["workspace"] == f"/home/node/.openclaw/workspace-{_FRIDAY}"
+    # Exactly one legacy default=true marker. 8.1 still accepts it explicitly
+    # ("one legacy default=true marker" -- zod-schema.agents.ts) and boot doctor
+    # consumes it to materialize per-surface ownership. A multi-agent roster with
+    # neither a marker nor agents.ownership="explicit" is REFUSED outright.
+    assert [k for k, v in entries.items() if v.get("default") is True] == [_FRIDAY]
+    assert config_schema.schema_errors(cfg) == []
+
+
+def test_81_shape_keys_the_unprovisioned_fallback_agent_too():
+    """No Paperclip roster yet -> the legacy single 'main' entry, still keyed."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107")
+    agents = cfg["agents"]
+
+    assert "list" not in agents
+    assert list(agents["entries"]) == ["main"]
+    assert "id" not in agents["entries"]["main"]
+    assert config_schema.schema_errors(cfg) == []
+
+
+def test_72_shape_still_emits_the_agents_list_array():
+    """Mirror: on 7.2 ``entries`` does not exist and ``list`` is the roster."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.7.2-isol8.8-8f700f0", paperclip_agents=_ROSTER)
+    agents = cfg["agents"]
+
+    assert "entries" not in agents, "entries is not a 7.2 key -- its strict schema refuses it"
+    ids = [entry["id"] for entry in agents["list"]]
+    assert ids == [_FRIDAY, _ATLAS]
+    assert agents["list"][0]["default"] is True

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from core.billing.bedrock_pricing import get_rate
+from core.services.agent_roster import roster_entries
 from core.containers.config import (
     build_openclaw_config_dict,
     build_provider_block,
@@ -222,7 +223,7 @@ async def test_ceo_agent_gets_premium_model(tmp_path, provider_choice, byo_provi
     await write_openclaw_config(**kwargs)
     cfg = json.loads(out.read_text())
 
-    entries = {a["id"]: a for a in cfg["agents"]["list"]}
+    entries = {a["id"]: a for a in roster_entries(cfg)}
     ceo = entries["agent_friday"]
     non_ceo = entries["agent_atlas"]
     assert ceo["default"] is True
@@ -248,7 +249,7 @@ async def test_chatgpt_oauth_ceo_inherits_default(tmp_path):
         ],
     )
     cfg = json.loads(out.read_text())
-    entries = {a["id"]: a for a in cfg["agents"]["list"]}
+    entries = {a["id"]: a for a in roster_entries(cfg)}
     assert entries["agent_friday"]["default"] is True
     assert "model" not in entries["agent_friday"]
     assert "model" not in entries["agent_atlas"]
@@ -754,7 +755,7 @@ def test_bedrock_trial_has_no_premium_or_cheap_ladder():
 def test_bedrock_trial_ceo_inherits_the_single_default_model():
     """No opus tier exists, so Friday must NOT carry a per-agent model override."""
     cfg = _trial_cfg(paperclip_agents=_PAPERCLIP_AGENTS)
-    friday = next(a for a in cfg["agents"]["list"] if a["id"] == "agent_friday")
+    friday = next(a for a in roster_entries(cfg) if a["id"] == "agent_friday")
     assert friday["default"] is True
     assert "model" not in friday
     assert cfg["agents"]["defaults"]["model"]["primary"] == _SONNET_REF
@@ -895,7 +896,7 @@ def test_paid_bedrock_three_tier_ladder_is_unchanged():
         "primary": _SONNET_REF,
         "fallbacks": [f"amazon-bedrock/{_AIPS['haiku']}"],
     }
-    friday = next(a for a in cfg["agents"]["list"] if a["id"] == "agent_friday")
+    friday = next(a for a in roster_entries(cfg) if a["id"] == "agent_friday")
     assert friday["model"] == f"amazon-bedrock/{_AIPS['opus']}"
     compaction = cfg["agents"]["defaults"]["compaction"]
     assert compaction["model"] == f"amazon-bedrock/{_AIPS['haiku']}"

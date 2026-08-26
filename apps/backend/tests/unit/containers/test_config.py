@@ -11,6 +11,7 @@ from core.containers.config import (
     build_openclaw_config_dict,
     write_openclaw_config,
 )
+from core.services.agent_roster import roster_entries
 from core.services.efs_file_lock import (
     OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL,
     OPENCLAW_CONFIG_PROTOCOL_SUFFIX,
@@ -138,7 +139,7 @@ class TestOpenclawConfigShape:
         """Path.resolve() returns absolute paths unchanged regardless of
         process cwd. Relative breaks because exec tools run with cwd=workspaceDir."""
         config = _cfg()
-        main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
+        main_entry = next(a for a in roster_entries(config) if a.get("id") == "main")
         assert main_entry["workspace"] == "/home/node/.openclaw/workspace-main"
         assert main_entry["default"] is True
         assert main_entry["reasoningDefault"] == "stream"

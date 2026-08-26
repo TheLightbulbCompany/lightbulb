@@ -58,6 +58,7 @@ import logging
 from datetime import datetime, timezone
 
 from core.containers.workspace import Workspace
+from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
@@ -1130,7 +1131,7 @@ def _resolve_ceo_agent_id(workspace: Workspace, owner_id: str) -> str | None:
     first provision half-failed. Healing against that id would leave Friday
     stale AND write CEO playbook text into Atlas's workspace.
 
-    ``openclaw.json``'s ``agents.list[]`` carries each agent's Paperclip role
+    ``openclaw.json``'s roster carries each agent's Paperclip role
     (``_build_agents_list`` → ``write_to_agent_entry``), so the CEO is
     identified by role rather than position, from a file this path already
     has in hand. Returns None when the config is missing/corrupt or lists no
@@ -1141,10 +1142,7 @@ def _resolve_ceo_agent_id(workspace: Workspace, owner_id: str) -> str | None:
     config = workspace.read_openclaw_config(owner_id)
     if not isinstance(config, dict):
         return None
-    agents = ((config.get("agents") or {}).get("list")) or []
-    if not isinstance(agents, list):
-        return None
-    for entry in agents:
+    for entry in roster_entries(config):
         if not isinstance(entry, dict):
             continue
         if read_from_agent_entry(entry).role == "ceo" and entry.get("id"):

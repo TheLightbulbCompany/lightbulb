@@ -215,6 +215,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from core.gateway.connection_pool import GatewayReconnectThrottled
+from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services.onboarding_brief import build_first_run_message
@@ -572,8 +573,7 @@ async def _resolve_default_agent_id(owner_id: str) -> str | None:
     config = await read_openclaw_config_from_efs(owner_id)
     if not config:
         return None
-    agents = (config.get("agents") or {}).get("list") or []
-    for entry in agents:
+    for entry in roster_entries(config):
         if isinstance(entry, dict) and entry.get("default") is True:
             agent_id = entry.get("id")
             return agent_id if isinstance(agent_id, str) and agent_id else None

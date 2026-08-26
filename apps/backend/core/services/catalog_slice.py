@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from core import openclaw_version
+from core.services.agent_roster import roster_entries
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 
@@ -366,23 +367,19 @@ def sanitize_agent_entry_for_schema(agent_entry: dict[str, Any]) -> tuple[dict[s
 
 
 def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
-    """Return the agent-entry array from an openclaw.json.
+    """Return the agent entries from an openclaw.json, in either roster shape.
 
-    OpenClaw's config schema (zod: ``openclaw/src/config/zod-schema.agents.ts``):
+    2026.8.1 keys the roster by agent id under ``agents.entries``; 7.2 (and
+    every container that has not booted 8.1 yet) uses the ``agents.list``
+    array. ``roster_entries`` reads both and re-injects the map key as ``id``,
+    plus tolerates the legacy flat-list shape (``agents`` as a bare array)
+    that hand-edited configs still carry — see
+    ``core/services/agent_roster.py``.
 
-        agents: { defaults: AgentDefaults, list: AgentEntry[] }
-
-    Accepts BOTH this shape and the legacy flat-list shape — admins
-    occasionally have a pre-existing flat-list config in their workspace
-    and we tolerate it on publish-read so they can still ship.
+    Reading only ``list`` here made every publish off an 8.1 container fail
+    with "agent not found in openclaw.json".
     """
-    agents = openclaw_json.get("agents")
-    if isinstance(agents, list):
-        return agents  # legacy flat shape — tolerated for read/publish
-    if not isinstance(agents, dict):
-        return []
-    lst = agents.get("list")
-    return lst if isinstance(lst, list) else []
+    return roster_entries(openclaw_json)
 
 
 def filter_cron_jobs_for_agent(

@@ -959,6 +959,35 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     return entries
 
 
+def _build_agents_roster(
+    paperclip_agents: list[dict],
+    ceo_model: str | None,
+    *,
+    emit_81_shape: bool,
+) -> dict:
+    """The roster under the key the TARGET image actually reads.
+
+    2026.8.1 renamed ``agents.list`` (array) to ``agents.entries`` (map keyed
+    by agent id, ``id`` stripped from the value) and made ``AgentsSchema``
+    strict over ``{ownership, defaults, entries}`` — see
+    ``core/services/agent_roster.py`` for the upstream evidence. Writing
+    ``list`` to an 8.1 container therefore addresses a key the gateway no
+    longer reads, and every config regenerate empties the owner's roster until
+    the container is restarted (boot ``doctor --fix`` re-migrates the file).
+
+    The ``default: true`` CEO marker is retired but still explicitly accepted
+    at 8.1 ("one legacy default=true marker" — zod-schema.agents.ts), and it
+    is what boot doctor consumes to materialize per-surface ownership
+    (``talk.agentId``, ``agents.defaults.systemAgent.agentId``, channel
+    bindings). Emitting ``agents.ownership: "explicit"`` instead would satisfy
+    the schema but leave every ambient surface unowned, so the marker stays.
+    """
+    roster = _build_agents_list(paperclip_agents, ceo_model=ceo_model)
+    if not emit_81_shape:
+        return {"list": roster}
+    return {"entries": {e["id"]: {k: v for k, v in e.items() if k != "id"} for e in roster}}
+
+
 def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
     """Bundled, provider-independent OpenClaw extensions enabled on every
     container.
@@ -1748,7 +1777,14 @@ def build_openclaw_config_dict(
             # Absolute workspace paths so path.resolve() returns them unchanged
             # regardless of process cwd (agent exec tools run with
             # cwd=workspaceDir, which breaks relative resolution).
-            "list": _build_agents_list(paperclip_agents or [], ceo_model=ceo_model),
+            # 2026.8.1 keys the roster by agent id under ``entries``; 7.2 wants
+            # the ``list`` array. Emitting the wrong one is silent — see
+            # _build_agents_roster.
+            **_build_agents_roster(
+                paperclip_agents or [],
+                ceo_model,
+                emit_81_shape=_emit_81_shape,
+            ),
         },
         # Memory backend: "builtin" = flat MEMORY.md files in the agent
         # workspace. Do NOT switch to the qmd backend: qmd's

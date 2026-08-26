@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.containers.config import build_openclaw_config_dict, write_openclaw_config
+from core.services.agent_roster import roster_entries
 
 _AIPS = {
     "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-opus",
@@ -25,7 +26,7 @@ def test_empty_paperclip_agents_falls_back_to_main():
         aip_arns=_AIPS,
         paperclip_agents=[],
     )
-    agents = cfg["agents"]["list"]
+    agents = roster_entries(cfg)
     assert len(agents) == 1
     assert agents[0]["id"] == "main"
     assert agents[0]["default"] is True
@@ -43,7 +44,7 @@ def test_single_paperclip_agent_replaces_main():
             {"id": pc_uuid, "name": "Friday", "role": "ceo"},
         ],
     )
-    agents = cfg["agents"]["list"]
+    agents = roster_entries(cfg)
     assert len(agents) == 1
     assert agents[0]["id"] == pc_uuid
     assert agents[0]["default"] is True
@@ -72,7 +73,7 @@ def test_paperclip_role_synced_into_params_paperclip():
             {"id": "u-weird", "name": "Weird", "role": "bogus-role"},
         ],
     )
-    by_name = {a["name"]: a for a in cfg["agents"]["list"]}
+    by_name = {a["name"]: a for a in roster_entries(cfg)}
     assert by_name["Friday"]["params"]["paperclip"]["role"] == "ceo"
     assert by_name["Friday"]["params"]["paperclip"]["title"] == "Chief"
     assert by_name["Friday"]["params"]["paperclip"]["capabilities"] == "Runs the show"
@@ -95,7 +96,7 @@ def test_paperclip_agent_without_name_omits_field():
             {"id": pc_uuid, "role": "ceo"},  # no name
         ],
     )
-    agents = cfg["agents"]["list"]
+    agents = roster_entries(cfg)
     assert agents[0]["id"] == pc_uuid
     assert "name" not in agents[0]
 
@@ -115,7 +116,7 @@ def test_multiple_paperclip_agents_ceo_is_default():
             {"id": ceo_uuid, "name": "Friday", "role": "ceo"},
         ],
     )
-    agents = cfg["agents"]["list"]
+    agents = roster_entries(cfg)
     assert len(agents) == 2
     by_id = {a["id"]: a for a in agents}
     assert by_id[ceo_uuid]["default"] is True
@@ -137,7 +138,7 @@ def test_multiple_agents_no_ceo_first_is_default():
             {"id": b_uuid, "name": "Second", "role": "engineer"},
         ],
     )
-    by_id = {a["id"]: a for a in cfg["agents"]["list"]}
+    by_id = {a["id"]: a for a in roster_entries(cfg)}
     assert by_id[a_uuid]["default"] is True
     assert "default" not in by_id[b_uuid] or by_id[b_uuid]["default"] is False
 
@@ -160,8 +161,8 @@ async def test_write_openclaw_config_persists_paperclip_agents():
             ],
         )
         cfg = json.loads(path.read_text())
-        assert cfg["agents"]["list"][0]["id"] == pc_uuid
-        assert cfg["agents"]["list"][0]["default"] is True
+        assert roster_entries(cfg)[0]["id"] == pc_uuid
+        assert roster_entries(cfg)[0]["default"] is True
 
 
 @pytest.mark.asyncio
@@ -179,4 +180,4 @@ async def test_write_openclaw_config_omitted_paperclip_agents_keeps_main():
             aip_arns=_AIPS,
         )
         cfg = json.loads(path.read_text())
-        assert cfg["agents"]["list"][0]["id"] == "main"
+        assert roster_entries(cfg)[0]["id"] == "main"

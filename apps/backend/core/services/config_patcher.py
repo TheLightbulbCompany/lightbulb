@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from core.config import settings
 from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.services.agent_roster import read_agent_roster, write_agent_roster
 from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
     chown_uid_1000_best_effort,
@@ -73,57 +74,6 @@ def _assert_safe_patch_values(value: Any) -> None:
     elif isinstance(value, list):
         for item in value:
             _assert_safe_patch_values(item)
-
-
-def _read_agent_roster(agents_obj: dict) -> tuple[str, list[dict]]:
-    """Read the agent roster from either shape, as a flat list of entries.
-
-    OpenClaw 2026.8.1 renamed ``agents.list`` (array) to ``agents.entries``
-    (record keyed by agent id, with ``id`` stripped from the value). Boot
-    ``doctor --fix`` rewrites the on-EFS file into the keyed shape, and from
-    then on upstream's reader returns ``entries`` and IGNORES ``list`` -- so
-    appending to ``list`` against a migrated config writes to a dead key and
-    the agent silently never appears in the roster (marketplace deploys,
-    Atlas-scaffolded specialists). Read whichever shape is present and write
-    back the same one.
-
-    Returns ``(shape, entries)`` where shape is ``"entries"`` or ``"list"``.
-    """
-    entries = agents_obj.get("entries")
-    if isinstance(entries, dict):
-        roster: list[dict] = []
-        for agent_id, value in entries.items():
-            if isinstance(value, dict):
-                roster.append({**value, "id": agent_id})
-        return "entries", roster
-    agents_list = agents_obj.get("list")
-    return "list", agents_list if isinstance(agents_list, list) else []
-
-
-def _write_agent_roster(agents_obj: dict, shape: str, roster: list[dict]) -> None:
-    """Write the roster back in the shape it was read in.
-
-    In the keyed shape the id is the KEY and is omitted from the value --
-    ``AgentEntrySchema.omit({ id: true })`` in upstream's
-    zod-schema.agents.ts, so leaving an ``id`` inside the value is a strict
-    schema rejection. ``default`` stays legal there (the entries wrapper
-    re-adds it) and is what marks the CEO on a multi-agent roster.
-    """
-    if shape != "entries":
-        agents_obj["list"] = roster
-        return
-    keyed: dict[str, dict] = {}
-    for entry in roster:
-        if not isinstance(entry, dict):
-            continue
-        agent_id = entry.get("id")
-        if not isinstance(agent_id, str) or not agent_id:
-            continue
-        keyed[agent_id] = {k: v for k, v in entry.items() if k != "id"}
-    agents_obj["entries"] = keyed
-    # Never leave both shapes populated: upstream prefers ``entries`` and
-    # ignores ``list``, so a stale ``list`` is a silent divergence trap.
-    agents_obj.pop("list", None)
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -500,22 +450,28 @@ async def replace_provider_block(
             tools.pop("toolSearch", None)
 
         # Keep the CEO (Friday) per-agent model override in sync with the new
-        # provider. The CEO is the agents.list entry with default: true. When
+        # provider. The CEO is the roster entry with default: true. When
         # ceo_model is set, pin it; when None (flat-rate provider with no
         # premium tier), drop any stale override so Friday inherits the new
         # default — otherwise a Bedrock -> ChatGPT switch leaves Friday pointing
         # at a provider no longer in models.providers.
-        agents_list = agents.get("list")
-        if isinstance(agents_list, list):
-            ceo_entry = next(
-                (e for e in agents_list if isinstance(e, dict) and e.get("default") is True),
-                None,
-            )
-            if ceo_entry is not None:
-                if ceo_model is not None:
-                    ceo_entry["model"] = ceo_model
-                else:
-                    ceo_entry.pop("model", None)
+        #
+        # Roster-shape aware (see core/services/agent_roster.py): reading only
+        # agents.list makes this a silent no-op on any 8.1 container, whose file
+        # boot doctor has already migrated to agents.entries. In the keyed shape
+        # read_agent_roster hands back COPIES, so the mutated roster has to be
+        # written back rather than mutated in place.
+        roster_shape, roster = read_agent_roster(agents)
+        ceo_entry = next(
+            (e for e in roster if isinstance(e, dict) and e.get("default") is True),
+            None,
+        )
+        if ceo_entry is not None:
+            if ceo_model is not None:
+                ceo_entry["model"] = ceo_model
+            else:
+                ceo_entry.pop("model", None)
+            write_agent_roster(agents, roster_shape, roster)
 
         plugins = current.get("plugins")
         if not isinstance(plugins, dict):
@@ -719,7 +675,7 @@ async def apply_deploy_aux_mutations(
                 agents_obj = {"list": list(agents_obj)}
             elif not isinstance(agents_obj, dict):
                 agents_obj = {}
-            roster_shape, agents_list = _read_agent_roster(agents_obj)
+            roster_shape, agents_list = read_agent_roster(agents_obj)
             new_id = agent_entry.get("id")
             existing_idx = next(
                 (i for i, a in enumerate(agents_list) if isinstance(a, dict) and a.get("id") == new_id),
@@ -730,7 +686,7 @@ async def apply_deploy_aux_mutations(
                 agents_list[existing_idx] = entry_copy
             else:
                 agents_list.append(entry_copy)
-            _write_agent_roster(agents_obj, roster_shape, agents_list)
+            write_agent_roster(agents_obj, roster_shape, agents_list)
             current["agents"] = agents_obj
 
         if plugins_patch:
@@ -835,7 +791,7 @@ async def apply_paperclip_meta(
             current["agents"] = agents_obj
             roster_shape = "list"
         elif isinstance(agents_obj, dict):
-            roster_shape, agents_list = _read_agent_roster(agents_obj)
+            roster_shape, agents_list = read_agent_roster(agents_obj)
             if not agents_list:
                 return False
         else:
@@ -865,7 +821,7 @@ async def apply_paperclip_meta(
                     existing_pc.pop(k, None)
             params["paperclip"] = existing_pc
             agents_list[idx] = entry
-            _write_agent_roster(agents_obj, roster_shape, agents_list)
+            write_agent_roster(agents_obj, roster_shape, agents_list)
             return True
 
         # agent_id not found — no-op write, return False so the
@@ -982,7 +938,7 @@ async def strip_removed_agent_keys(
         # NO-OP -- and this function's whole job is to clear keys a newer strict
         # schema rejects before the container is rolled onto it. Failing quietly
         # here means the roll it was meant to protect fails instead.
-        roster_shape, roster = _read_agent_roster(agents)
+        roster_shape, roster = read_agent_roster(agents)
         for entry in roster:
             if not isinstance(entry, dict):
                 continue
@@ -991,7 +947,7 @@ async def strip_removed_agent_keys(
                     del entry[key]
                     changed = True
         if changed and roster:
-            _write_agent_roster(agents, roster_shape, roster)
+            write_agent_roster(agents, roster_shape, roster)
         return changed
 
     await _locked_rmw(owner_id, _mutate, "strip removed agent keys")

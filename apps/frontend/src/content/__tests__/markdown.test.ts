@@ -9,6 +9,11 @@ describe("parseFrontmatter", () => {
     expect(meta).toEqual({ title: "A: b", tags: ["x", "y"], order: 2, author: "isol8" });
     expect(content).toBe("body\n");
   });
+  it("accepts CRLF line endings", () => {
+    const { meta, content } = parseFrontmatter('---\r\ntitle: "A"\r\norder: 1\r\n---\r\n\r\nbody\r\n');
+    expect(meta).toEqual({ title: "A", order: 1 });
+    expect(content).toBe("body\r\n");
+  });
   it("treats a file without frontmatter as all body", () => {
     expect(parseFrontmatter("# hi\n")).toEqual({ meta: {}, content: "# hi\n" });
   });
@@ -22,14 +27,15 @@ it("readingMinutes never drops below 1", () => {
 it("every post and doc on disk has the fields the pages render", () => {
   const posts = getAllPosts();
   expect(posts.length).toBeGreaterThan(0);
+  const nonEmptyString = (v: unknown) => typeof v === "string" && v.trim().length > 0;
   for (const p of posts) {
-    expect(p.title && p.description && p.author).toBeTruthy();
+    expect([p.title, p.description, p.author].every(nonEmptyString)).toBe(true);
     expect(p.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Array.isArray(p.tags)).toBe(true);
+    expect(Array.isArray(p.tags) && p.tags.every((t) => typeof t === "string")).toBe(true);
     // The page renders its own <h1>; a body-level H1 would duplicate it.
     expect(p.content).not.toMatch(/^(?:\r?\n)* {0,3}#(?:[ \t]|$)/);
   }
   const docs = getAllDocs();
   expect(docs.map((d) => d.order)).toEqual([1, 2, 3, 4, 5]);
-  for (const d of docs) expect(d.title && d.description).toBeTruthy();
+  for (const d of docs) expect([d.title, d.description].every(nonEmptyString)).toBe(true);
 });

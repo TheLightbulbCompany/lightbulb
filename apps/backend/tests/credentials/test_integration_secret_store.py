@@ -22,6 +22,15 @@ class _ResourceNotFound(Exception):
     pass
 
 
+class _InvalidRequest(Exception):
+    """Stand-in for botocore InvalidRequestException (secret pending deletion)."""
+
+
+# Sentinel store value marking a secret as SCHEDULED FOR DELETION: it still
+# 'exists' but GetSecretValue refuses it, exactly as real Secrets Manager does.
+_PENDING_DELETION = object()
+
+
 class _FakeSM:
     """In-memory Secrets Manager fake keyed by secret Name/SecretId."""
 
@@ -30,6 +39,7 @@ class _FakeSM:
     class exceptions:
         ResourceExistsException = _ResourceExists
         ResourceNotFoundException = _ResourceNotFound
+        InvalidRequestException = _InvalidRequest
 
     def __init__(self, store_dict):
         self._store = store_dict
@@ -47,6 +57,8 @@ class _FakeSM:
     def get_secret_value(self, SecretId):
         if SecretId not in self._store:
             raise _ResourceNotFound(f"{SecretId} not found")
+        if self._store[SecretId] is _PENDING_DELETION:
+            raise _InvalidRequest("You can't perform this operation on the secret because it was marked for deletion.")
         return {"SecretString": self._store[SecretId]}
 
     def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
@@ -140,3 +152,16 @@ async def test_delete_absent_is_noop(fake_sm):
     # No secret exists -> ResourceNotFoundException is swallowed, no raise.
     await store.delete("org_1", "never_existed")
     assert await store.get("org_1", "never_existed") is None
+
+
+@pytest.mark.asyncio
+async def test_get_pending_deletion_returns_none(fake_sm):
+    """A secret SCHEDULED FOR DELETION reads as not-connected (None), never 500.
+
+    GetSecretValue raises InvalidRequestException for a secret in the deletion
+    recovery window; get() must treat that like absence so the connections UI
+    re-stages a fresh connect instead of 500ing for the whole 7-30 day window.
+    """
+    name = store._secret_name("org_x", "aws")
+    fake_sm[name] = _PENDING_DELETION
+    assert await store.get("org_x", "aws") is None

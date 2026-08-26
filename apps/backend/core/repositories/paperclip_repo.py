@@ -670,10 +670,14 @@ class PaperclipRepo:
         if any other user in the org already has a row, we reuse their
         company_id rather than creating a new Paperclip company.
 
-        Implementation: queries the ``by-org-id`` GSI (PK: ``org_id``).
-        Returns the first row's ``company_id``. All rows in the same
-        org are required (by the provisioner) to carry the same
-        ``company_id``, so picking any one is correct.
+        Implementation: queries the ``by-org-id`` GSI (PK: ``org_id``) and
+        returns the first row that CARRIES a ``company_id``. All real rows in
+        the same org are required (by the provisioner) to carry the same
+        ``company_id``, so any one of them is correct — but a bare seed-claim
+        row (``try_acquire_seed_claim``, owner or member) sits in this index
+        with no ``company_id`` at all, and must never shadow the real rows:
+        a member joining an org that already has a company would otherwise
+        be told it has none while a peer's claim is live (or stale).
 
         Why a GSI rather than a scan: while v1 traffic is small enough
         a scan would work, member-join can fire repeatedly during
@@ -685,23 +689,14 @@ class PaperclipRepo:
         are needed) — but for ``get_org_company_id`` we project
         ``company_id`` via ``ALL`` so a single GSI query suffices.
         """
-        kwargs = {
-            "IndexName": "by-org-id",
-            "KeyConditionExpression": Key("org_id").eq(org_id),
-            "Limit": 1,
-        }
-        resp = await run_in_thread(self._table().query, **kwargs)
-        items = resp.get("Items", [])
-        if not items:
-            return None
-        first = items[0]
-        # If the GSI projection only includes keys, fall back to a base
-        # get to retrieve company_id. With ProjectionType=ALL this
-        # branch is a no-op.
-        if "company_id" in first:
-            return first["company_id"]
-        base = await self.get(first["user_id"])
-        return base.company_id if base is not None else None
+        async for page in self._query_pages(
+            IndexName="by-org-id",
+            KeyConditionExpression=Key("org_id").eq(org_id),
+        ):
+            for item in page.get("Items", []):
+                if item.get("company_id"):
+                    return item["company_id"]
+        return None
 
     async def get_user_ids_for_company(self, company_id: str) -> list[str]:
         """Return the Clerk user_ids of every ACTIVE row in ``company_id``.
@@ -792,8 +787,18 @@ class PaperclipRepo:
         not_if_status: Optional[PaperclipCompanyStatus] = None,
         require_seeding_claim_id: Optional[str] = None,
         owner_id: Optional[str] = None,
+        company_id: Optional[str] = None,
     ) -> bool:
         """Update a row's status. Returns True iff the write landed.
+
+        ``company_id`` (when truthy) is stamped alongside the status. The one
+        caller is ``_mark_failed`` downgrading a bare seed-claim row: the
+        claim carries no company_id (none exists for an owner at claim time),
+        but a MEMBER's claim fails inside a known company, and the failed
+        marker must keep carrying it — same shape ``put_failed_marker_if_absent``
+        writes — because ``archive_member`` lists the company's members off
+        that field when the seat is later removed. Never written as "" (an
+        empty by-company-id GSI key is rejected outright).
 
         ``not_if_status`` guards the write with a ConditionExpression so the
         update is SKIPPED (returns False) when the row is currently in that
@@ -830,6 +835,9 @@ class PaperclipRepo:
         if scheduled_purge_at is not None:
             update_expr += ", scheduled_purge_at = :p"
             expr_values[":p"] = scheduled_purge_at.isoformat()
+        if company_id:
+            update_expr += ", company_id = :c"
+            expr_values[":c"] = company_id
 
         kwargs: dict = {
             "Key": {"user_id": user_id},
@@ -1064,9 +1072,11 @@ class PaperclipRepo:
         org_id: str,
         claim_id: str,
         stale_after_seconds: int = 300,
+        company_id: str = "",
     ) -> bool:
         """Strongly-consistent "I am seeding this owner's company" claim on
-        the REAL row PK — the fresh-create fence for ``provision_org``.
+        the REAL row PK — the fresh-create fence for ``provision_org`` and,
+        via ``provision_member``, for a member joining an existing company.
 
         Returns True iff THIS caller now holds the claim — by winning a fresh
         put-if-absent, or by stealing a bare ``status="seeding"`` claim whose
@@ -1087,9 +1097,14 @@ class PaperclipRepo:
         and it lives on the real row so the loser can simply poll it.
 
         Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
-        ``seeding_claimed_at``, with NO ``company_id`` and deliberately NO
-        credential fields (``get()`` tolerates that, same as the failed
-        marker). A ``status="seeding"`` row is BY CONSTRUCTION always this
+        ``seeding_claimed_at`` and deliberately NO credential fields
+        (``get()`` tolerates that, same as the failed marker). An OWNER claim
+        carries no ``company_id`` (none exists yet); a MEMBER claim passes the
+        org's already-known ``company_id`` so that an
+        ``organizationMembership.deleted`` landing mid-claim (or after the
+        claimant crashed) lets ``archive_member`` list the company and retire
+        the row cleanly instead of erroring on an empty id and leaving the
+        claim stranded once the member no longer polls. A ``status="seeding"`` row is BY CONSTRUCTION always this
         bare claim: the winner's very next durable write (the post-sign-up
         credential put) replaces it wholesale with ``status="provisioning"``,
         and every failure path downgrades it to ``failed`` — nothing else
@@ -1106,9 +1121,6 @@ class PaperclipRepo:
         read so two concurrent stealers can't both win.
         """
         now = datetime.now(timezone.utc)
-        # No company_id: none exists yet, and writing "" would be rejected
-        # outright as an empty by-company-id GSI key. get() hydrates the
-        # absent attribute back to "".
         item = {
             "user_id": user_id,
             "org_id": org_id,
@@ -1118,6 +1130,11 @@ class PaperclipRepo:
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
+        # Owner claims omit company_id (none exists yet, and "" would be
+        # rejected outright as an empty by-company-id GSI key; get() hydrates
+        # the absent attribute back to ""). Member claims carry the known one.
+        if company_id:
+            item["company_id"] = company_id
         table = self._table()
 
         # 1. Fresh claim — wins iff no row exists yet.
@@ -1149,7 +1166,37 @@ class PaperclipRepo:
             except table.meta.client.exceptions.ConditionalCheckFailedException:
                 return False
 
-        if existing.get("status") != "seeding":
+        status = existing.get("status")
+        if status == "failed" and not existing.get("paperclip_user_id"):
+            # A credential-less ``failed`` marker: a claim that failed BEFORE
+            # its sign-up landed (or the put-if-absent marker). There is
+            # nothing to adopt, so the next attempt re-runs the sign-up — and
+            # two concurrent retries would each sign up, reopening the exact
+            # duplicate-account race this claim exists to close. Reclaim it
+            # atomically, fenced on it still being credential-less: a failed
+            # row that DOES carry ``paperclip_user_id`` is adopted (signed in
+            # with its stored password), never re-signed-up, so it needs no
+            # fence and is left alone. "Credential-less" must match the
+            # Python pre-check above (absent OR empty): older markers stored
+            # ``paperclip_user_id = ""`` explicitly, and ``attribute_not_exists``
+            # is FALSE for an attribute that exists as "" — without the OR, a
+            # legacy marker would pass the pre-check, fail this condition,
+            # and wedge every retry in the loser wait forever.
+            try:
+                await run_in_thread(
+                    table.put_item,
+                    Item=item,
+                    ConditionExpression=(
+                        "#s = :failed AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty)"
+                    ),
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={":failed": "failed", ":empty": ""},
+                )
+                return True
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                return False
+
+        if status != "seeding":
             return False
 
         prev_claimed_at = existing.get("seeding_claimed_at", "")

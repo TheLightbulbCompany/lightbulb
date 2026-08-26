@@ -1655,3 +1655,86 @@ async def test_fail_pending_brief_on_a_deleted_item_is_a_noop(repo):
     await repo.fail_pending_brief("user_abc", reason="gave up")
 
     assert await repo.get_pending_brief("user_abc") is None
+
+
+async def test_get_org_company_id_skips_bare_seed_claim_rows(repo):
+    """A bare seed-claim row (try_acquire_seed_claim) sits in the by-org-id GSI
+    with NO company_id. A member joining an org that already has a company must
+    still resolve it — the claim must never shadow the real row, whatever
+    order the GSI hands them back in."""
+    assert await repo.try_acquire_seed_claim("user_member", org_id="org_alpha", claim_id="c1")
+    assert await repo.try_acquire_seed_claim("user_member_2", org_id="org_alpha", claim_id="c2")
+    await repo.put(_make_company(user_id="user_owner", org_id="org_alpha", company_id="co_shared"))
+    assert await repo.get_org_company_id("org_alpha") == "co_shared"
+    # Claims alone (owner still seeding, no company yet) resolve to None.
+    assert await repo.try_acquire_seed_claim("user_solo", org_id="org_beta", claim_id="c3")
+    assert await repo.get_org_company_id("org_beta") is None
+
+
+async def test_seed_claim_reclaims_credential_less_failed_marker(repo):
+    """A failed marker with no paperclip_user_id (pre-sign-up failure) is
+    reclaimed atomically — its retry re-runs the sign-up, so concurrent
+    retries must be fenced exactly like a fresh row."""
+    assert await repo.put_failed_marker_if_absent(
+        user_id="user_m", org_id="org_alpha", reason="boom", company_id="co_1"
+    )
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
+    assert "paperclip_user_id" not in raw
+    # Now a bare live claim: a second claimant loses.
+    assert not await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2")
+
+
+async def test_seed_claim_leaves_failed_row_with_credentials_alone(repo):
+    """A failed row that carries paperclip_user_id is adopted (signed in), not
+    re-signed-up — no fence needed, and it must never be overwritten."""
+    row = _make_company(user_id="user_k", org_id="org_alpha", company_id="co_1")
+    row.status = "failed"
+    await repo.put(row)
+    assert not await repo.try_acquire_seed_claim("user_k", org_id="org_alpha", claim_id="c1")
+    after = await repo.get("user_k", consistent_read=True)
+    assert after.status == "failed" and after.paperclip_user_id == row.paperclip_user_id
+
+
+async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_user_id(repo):
+    """Older failed markers stored ``paperclip_user_id = ""`` explicitly.
+    ``attribute_not_exists`` is FALSE for an attribute that exists as "", so
+    the reclaim condition must accept "" too — otherwise the Python pre-check
+    calls the row credential-less, the conditional put fails, and every retry
+    is wedged in the loser wait."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    repo._table().put_item(
+        Item={
+            "user_id": "user_legacy",
+            "org_id": "org_alpha",
+            "status": "failed",
+            "paperclip_user_id": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    assert await repo.try_acquire_seed_claim("user_legacy", org_id="org_alpha", claim_id="c1")
+    raw = repo._table().get_item(Key={"user_id": "user_legacy"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
+
+
+async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim(repo):
+    """A member claim carries the org's known company_id (an owner claim has
+    none yet) so archive_member can list the company if the membership is
+    removed mid-claim. The failed-marker reclaim writes the same item, so the
+    id survives a failed → reclaimed cycle too."""
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1", company_id="co_1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["company_id"] == "co_1" and "paperclip_user_id" not in raw
+    assert (await repo.get("user_m", consistent_read=True)).company_id == "co_1"
+    # Downgrade to a credential-less failed marker, then reclaim: still carries co_1.
+    assert await repo.update_status("user_m", status="failed", last_error="boom", require_seeding_claim_id="c1")
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2", company_id="co_1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c2" and raw["company_id"] == "co_1"
+    # Owner-shaped claim: no company_id attribute at all (never "").
+    assert await repo.try_acquire_seed_claim("user_o", org_id="org_beta", claim_id="c3")
+    assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]

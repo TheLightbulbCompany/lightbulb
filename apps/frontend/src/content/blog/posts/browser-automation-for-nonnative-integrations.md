@@ -1,15 +1,10 @@
-import type { BlogPost } from "../types";
-
-export const browserAutomationForNonnativeIntegrations: BlogPost = {
-  slug: "browser-automation-for-nonnative-integrations",
-  title: "How AI agents can use browser automation when there is no native integration",
-  description:
-    "Native connectors are best, but browser automation lets AI agents operate UI-only tools, marketing platforms, and niche apps when APIs are missing.",
-  date: "2026-08-24",
-  author: "isol8",
-  tags: ["browser automation", "ai agent integrations", "connectors", "marketing automation"],
-  readingMinutes: 6,
-  content: `# How AI agents can use browser automation when there is no native integration
+---
+title: "How AI agents can use browser automation when there is no native integration"
+description: "Native connectors are best, but browser automation lets AI agents operate UI-only tools, marketing platforms, and niche apps when APIs are missing."
+date: "2026-08-24"
+author: "isol8"
+tags: ["browser automation","ai agent integrations","connectors","marketing automation"]
+---
 
 Every automation platform eventually hits the same wall: the tool you need is not native yet, the API is incomplete, or the useful workflow lives behind a web UI.
 
@@ -57,6 +52,4 @@ Browser automation should be explicit:
 
 Browser automation is not a replacement for robust APIs. It is the bridge that lets agents help now, while native integrations and webhooks cover the workflows that need maximum reliability.
 
-[See the Isol8 docs for connectors and browser workflows →](/docs#connectors)
-`,
-};
+[See the Isol8 docs for connectors and browser workflows →](/docs/browser-and-apps)

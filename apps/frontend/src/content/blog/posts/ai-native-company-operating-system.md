@@ -1,15 +1,10 @@
-import type { BlogPost } from "../types";
-
-export const aiNativeCompanyOperatingSystem: BlogPost = {
-  slug: "ai-native-company-operating-system",
-  title: "What is an AI-native company operating system?",
-  description:
-    "A practical guide to AI-native company software: agents, goals, tasks, company memory, connectors, approval gates, and automations in one workspace.",
-  date: "2026-08-24",
-  author: "isol8",
-  tags: ["ai-native company", "ai agents", "paperclip", "company brain", "human in the loop"],
-  readingMinutes: 7,
-  content: `# What is an AI-native company operating system?
+---
+title: "What is an AI-native company operating system?"
+description: "A practical guide to AI-native company software: agents, goals, tasks, company memory, connectors, approval gates, and automations in one workspace."
+date: "2026-08-24"
+author: "isol8"
+tags: ["ai-native company","ai agents","paperclip","company brain","human in the loop"]
+---
 
 An AI-native company operating system is not just a chatbot attached to a task list. It is a workspace where agents can understand goals, break work into projects and tasks, use company context, connect to tools, ask for human approval, and keep working after the approval arrives.
 
@@ -55,5 +50,3 @@ Pick one recurring business workflow:
 Then give the loop an owner, a trigger, connected tools, and a human approval gate for anything sensitive.
 
 [Read the product docs →](/docs)
-`,
-};

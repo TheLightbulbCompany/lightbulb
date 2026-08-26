@@ -1,30 +1,28 @@
-import type { BlogPost } from "./types";
-import { persistentAiAgentWorkspace } from "./posts/persistent-ai-agent-workspace";
-import { connectAiAgentChannels } from "./posts/connect-ai-agent-slack-discord-telegram";
-import { webhookEventReference } from "./posts/webhook-event-reference";
-import { aiNativeCompanyOperatingSystem } from "./posts/ai-native-company-operating-system";
-import { browserAutomationForNonnativeIntegrations } from "./posts/browser-automation-for-nonnative-integrations";
-import { humanInTheLoopAiAgentApprovals } from "./posts/human-in-the-loop-ai-agent-approvals";
+import { loadMarkdownDir, readingMinutes } from "../markdown";
 
-/**
- * Registry of all blog posts. Add new posts here.
- * `getAllPosts()` returns them newest-first.
- */
-const registry: BlogPost[] = [
-  aiNativeCompanyOperatingSystem,
-  browserAutomationForNonnativeIntegrations,
-  humanInTheLoopAiAgentApprovals,
-  webhookEventReference,
-  persistentAiAgentWorkspace,
-  connectAiAgentChannels,
-];
+/** A post is `src/content/blog/posts/<slug>.md`: JSON frontmatter + GFM body. */
+export interface BlogPost {
+  slug: string;
+  title: string;
+  description: string;
+  /** ISO `YYYY-MM-DD`. Drives sort order + sitemap lastmod. */
+  date: string;
+  author: string;
+  tags: string[];
+  readingMinutes: number;
+  /** Markdown body. Rendered via react-markdown + rehype-sanitize. */
+  content: string;
+}
 
+type Meta = Omit<BlogPost, "slug" | "readingMinutes" | "content">;
+
+/** All posts, newest first. */
 export function getAllPosts(): BlogPost[] {
-  return [...registry].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return loadMarkdownDir<Meta>("blog/posts")
+    .map(({ slug, meta, content }) => ({ slug, ...meta, readingMinutes: readingMinutes(content), content }))
+    .sort((a, b) => b.date.localeCompare(a.date));
 }
 
 export function getPostBySlug(slug: string): BlogPost | undefined {
-  return registry.find((p) => p.slug === slug);
+  return getAllPosts().find((p) => p.slug === slug);
 }
-
-export type { BlogPost };

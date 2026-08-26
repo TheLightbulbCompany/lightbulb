@@ -160,6 +160,33 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
+def test_export_prunes_runtime_scratch_dirs(fake_efs):
+    """Runtime scratch an agent leaves in the workspace root (run evidence,
+    cached API responses) must not ship — even with a run-id suffix — while a
+    legitimately-named seller dir survives. The durable convention is a
+    dot-prefixed ``.run/`` (already excluded by the dotfile filter); this
+    backstop covers the non-dot names agents invented before that convention.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    for scratch in ("run-evidence", "run-evidence-1a2b", "run-artifacts", "github-cache"):
+        (agent_dir / scratch).mkdir()
+        (agent_dir / scratch / "x.json").write_text("{}", encoding="utf-8")
+    # The sanctioned dot-prefixed scratch dir is excluded too.
+    (agent_dir / ".run").mkdir()
+    (agent_dir / ".run" / "note.md").write_text("scratch", encoding="utf-8")
+    # A legitimately-named seller subdir must still ship (arbitrary content).
+    (agent_dir / "sessions").mkdir()
+    (agent_dir / "sessions" / "kept.md").write_text("keep me", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+
+    for scratch in ("run-evidence", "run-evidence-1a2b", "run-artifacts", "github-cache"):
+        assert not any(scratch in n for n in names), f"{scratch!r} leaked: {names}"
+    assert not any(n.startswith("./.run/") or "/.run/" in n for n in names), names
+    assert any("sessions/kept.md" in n for n in names), names
+
+
 def test_export_skips_boot_and_workspace_plugin_files(fake_efs):
     """``BOOT.md`` triggers an autonomous LLM run on every gateway restart
     (internal hooks are enabled fleet-wide) and ``openclaw.plugin.json`` makes

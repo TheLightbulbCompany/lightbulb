@@ -169,6 +169,71 @@ export interface FleetData {
   grid: FleetGridItem[] | null;
 }
 
+export interface GrowthWeekRow {
+  week: string;
+  owners_active: number;
+  autonomous_ok: number;
+  human_ok: number;
+  nightly_ok: number;
+  autonomous_share: number | null;
+}
+export interface GrowthOwnerStage {
+  owner_id: string;
+  name: string;
+  stage:
+    | "signed_up"
+    | "subscribed"
+    | "container_ready"
+    | "friday_first_run_delivered"
+    | "automation_armed"
+    | "first_autonomous_success";
+  plan: string | null;
+  status: string | null;
+  bootstrap_state: string;
+  first_autonomous_at: string | null;
+}
+export interface GrowthSegment {
+  owners: {
+    total: number;
+    paid: number;
+    paid_by_plan: Record<string, number>;
+    paid_by_provider: Record<string, number>;
+    trial_active: number;
+    trial_expired: number;
+    signups_by_week: { week: string; n: number }[];
+  };
+  activation: { stages: Record<GrowthOwnerStage["stage"], number>; owners: GrowthOwnerStage[] };
+  north_star: { weeks: GrowthWeekRow[] };
+  headline: { bar: number; count: number; owners: string[]; weeks: string[] };
+  retention: {
+    weekly_active_owners: { week: string; n: number }[];
+    automation_survival: { armed: number; paused_manual: number; auto_paused: number; archived: number };
+  };
+  depth: {
+    armed_per_owner: { owner_id: string; name: string; armed: number; trigger_kinds: string[] }[];
+    providers_per_owner: { owner_id: string; name: string; providers: string[] }[];
+  };
+  counters: {
+    auto_paused: { owner_id: string; name: string; title: string; since: string | null }[];
+    archived_within_7d: { owner_id: string; name: string; title: string }[];
+  };
+  nightly_ceo: { armed: number; opted_out: number; never_armed: number };
+}
+export interface GrowthData {
+  generated_at: string;
+  window_weeks: number;
+  weeks: string[];
+  segments: { external: GrowthSegment; internal: GrowthSegment };
+  internal_owner_ids: string[];
+  gate_blocked_7d: { code: string; n: number }[];
+  posthog: {
+    runs: { week: string; kind: string; n: number }[];
+    funnel: { week: string; event: string; owners: number }[];
+    signup_sources: { source: string; owners: number }[];
+  };
+  sources: Record<"ddb" | "aurora" | "posthog" | "cloudwatch", string>;
+}
+
 export interface DeployRow {
   stack_name: string;
   status: string;
@@ -587,4 +652,8 @@ export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]
 
 export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> | null> {
   return adminFetch<OpsEnvelope<AlarmRow[]>>(token, "/ops/alarms");
+}
+
+export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> | null> {
+  return adminFetch<OpsEnvelope<GrowthData>>(token, "/ops/growth");
 }

@@ -1719,3 +1719,22 @@ async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_use
     assert await repo.try_acquire_seed_claim("user_legacy", org_id="org_alpha", claim_id="c1")
     raw = repo._table().get_item(Key={"user_id": "user_legacy"}, ConsistentRead=True)["Item"]
     assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
+
+
+async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim(repo):
+    """A member claim carries the org's known company_id (an owner claim has
+    none yet) so archive_member can list the company if the membership is
+    removed mid-claim. The failed-marker reclaim writes the same item, so the
+    id survives a failed → reclaimed cycle too."""
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1", company_id="co_1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["company_id"] == "co_1" and "paperclip_user_id" not in raw
+    assert (await repo.get("user_m", consistent_read=True)).company_id == "co_1"
+    # Downgrade to a credential-less failed marker, then reclaim: still carries co_1.
+    assert await repo.update_status("user_m", status="failed", last_error="boom", require_seeding_claim_id="c1")
+    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2", company_id="co_1")
+    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c2" and raw["company_id"] == "co_1"
+    # Owner-shaped claim: no company_id attribute at all (never "").
+    assert await repo.try_acquire_seed_claim("user_o", org_id="org_beta", claim_id="c3")
+    assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]

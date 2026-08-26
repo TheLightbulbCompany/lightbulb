@@ -1109,7 +1109,9 @@ class _StatefulRepo:
     async def put(self, row):
         self._rows[row.user_id] = row
 
-    async def try_acquire_seed_claim(self, user_id: str, *, org_id: str, claim_id: str, stale_after_seconds: int = 300):
+    async def try_acquire_seed_claim(
+        self, user_id: str, *, org_id: str, claim_id: str, stale_after_seconds: int = 300, company_id: str = ""
+    ):
         # Fresh put-if-absent only — enough for the winner-path scenarios this
         # double serves; loser/steal behavior is pinned by the moto suites.
         # Mirrors the real claim's bare seeding row (no credentials), which the
@@ -1124,7 +1126,7 @@ class _StatefulRepo:
         row = PaperclipCompany(
             user_id=user_id,
             org_id=org_id,
-            company_id="",
+            company_id=company_id,
             paperclip_user_id="",
             paperclip_password_encrypted="",
             service_token_encrypted="",

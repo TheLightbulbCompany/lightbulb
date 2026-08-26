@@ -1072,9 +1072,11 @@ class PaperclipRepo:
         org_id: str,
         claim_id: str,
         stale_after_seconds: int = 300,
+        company_id: str = "",
     ) -> bool:
         """Strongly-consistent "I am seeding this owner's company" claim on
-        the REAL row PK — the fresh-create fence for ``provision_org``.
+        the REAL row PK — the fresh-create fence for ``provision_org`` and,
+        via ``provision_member``, for a member joining an existing company.
 
         Returns True iff THIS caller now holds the claim — by winning a fresh
         put-if-absent, or by stealing a bare ``status="seeding"`` claim whose
@@ -1095,9 +1097,14 @@ class PaperclipRepo:
         and it lives on the real row so the loser can simply poll it.
 
         Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
-        ``seeding_claimed_at``, with NO ``company_id`` and deliberately NO
-        credential fields (``get()`` tolerates that, same as the failed
-        marker). A ``status="seeding"`` row is BY CONSTRUCTION always this
+        ``seeding_claimed_at`` and deliberately NO credential fields
+        (``get()`` tolerates that, same as the failed marker). An OWNER claim
+        carries no ``company_id`` (none exists yet); a MEMBER claim passes the
+        org's already-known ``company_id`` so that an
+        ``organizationMembership.deleted`` landing mid-claim (or after the
+        claimant crashed) lets ``archive_member`` list the company and retire
+        the row cleanly instead of erroring on an empty id and leaving the
+        claim stranded once the member no longer polls. A ``status="seeding"`` row is BY CONSTRUCTION always this
         bare claim: the winner's very next durable write (the post-sign-up
         credential put) replaces it wholesale with ``status="provisioning"``,
         and every failure path downgrades it to ``failed`` — nothing else
@@ -1114,9 +1121,6 @@ class PaperclipRepo:
         read so two concurrent stealers can't both win.
         """
         now = datetime.now(timezone.utc)
-        # No company_id: none exists yet, and writing "" would be rejected
-        # outright as an empty by-company-id GSI key. get() hydrates the
-        # absent attribute back to "".
         item = {
             "user_id": user_id,
             "org_id": org_id,
@@ -1126,6 +1130,11 @@ class PaperclipRepo:
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
+        # Owner claims omit company_id (none exists yet, and "" would be
+        # rejected outright as an empty by-company-id GSI key; get() hydrates
+        # the absent attribute back to ""). Member claims carry the known one.
+        if company_id:
+            item["company_id"] = company_id
         table = self._table()
 
         # 1. Fresh claim — wins iff no row exists yet.

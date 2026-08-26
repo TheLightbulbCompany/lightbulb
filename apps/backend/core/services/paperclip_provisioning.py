@@ -948,6 +948,9 @@ class PaperclipProvisioning:
                 user_id,
                 org_id=owner_id,
                 claim_id=member_claim_id,
+                # The org's company is already known here; a membership
+                # removal that lands mid-claim needs it to archive cleanly.
+                company_id=company_id,
             )
             if not claimed:
                 put_metric("paperclip.provision.member_claim_lost")

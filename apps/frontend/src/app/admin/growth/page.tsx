@@ -36,7 +36,7 @@ export default async function AdminGrowthPage() {
 
       {data ? (
         <>
-          <Headline seg={data.segments.external} />
+          <Headline seg={data.segments.external} audience="External owners" />
           <Owners seg={data.segments.external} />
           <Acquisition seg={data.segments.external} data={data} />
           <Activation seg={data.segments.external} />
@@ -46,7 +46,7 @@ export default async function AdminGrowthPage() {
           <PosthogCrosscheck data={data} />
           <Card title={`Internal accounts (${data.internal_owner_ids.length}) — excluded from everything above`}>
             <div className="space-y-6">
-              <Headline seg={data.segments.internal} />
+              <Headline seg={data.segments.internal} audience="Internal accounts" />
               <Activation seg={data.segments.internal} />
               <NorthStar seg={data.segments.internal} />
             </div>

@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Card } from "@/components/admin/Card";
 import { MetricStat } from "@/components/admin/MetricStat";
+import { planLabel } from "@/lib/planLabel";
 import type { GrowthData, GrowthSegment, GrowthOwnerStage } from "../_lib/api";
 
 const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
@@ -57,10 +58,10 @@ function owner(o: { owner_id: string; name: string }) {
   );
 }
 
-export function Headline({ seg }: { seg: GrowthSegment }) {
+export function Headline({ seg, audience }: { seg: GrowthSegment; audience: string }) {
   const h = seg.headline;
   return (
-    <Card title={`External owners with automations firing ${h.weeks.length} consecutive weeks`}>
+    <Card title={`${audience} with automations firing ${h.weeks.length} consecutive weeks`}>
       <div className="flex items-baseline gap-6">
         <MetricStat label={`of ${h.bar} (the PMF bar)`} value={h.count} tone={h.count === 0 ? "unknown" : "default"} />
         <div className="text-xs text-zinc-400">
@@ -108,7 +109,7 @@ export function Activation({ seg }: { seg: GrowthSegment }) {
           rows={a.owners.map((o) => [
             owner(o),
             STAGE_LABEL[o.stage],
-            o.status ?? "—",
+            o.status ? planLabel(o.status) : "—",
             o.plan ?? "—",
             o.bootstrap_state,
             o.first_autonomous_at ?? "—",

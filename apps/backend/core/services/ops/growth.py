@@ -14,12 +14,15 @@ Everything is segmented internal/external BEFORE aggregation.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 from core.services.ops import envelope as env
+
+logger = logging.getLogger(__name__)
 
 WINDOW_WEEKS = 8
 HEADLINE_BAR = 5  # "five external owners with armed automations firing for four consecutive weeks"
@@ -132,10 +135,13 @@ def _iso(v) -> str | None:
     return None if v is None else str(v)
 
 
-def _parse_ts(v) -> datetime:
+def _parse_ts(v) -> datetime | None:
     """Parse a DynamoDB ISO string (Z / +00:00) or a Data API 'YYYY-MM-DD HH:MM:SS[.ffffff]'
     (space-separated, no zone) into an aware UTC datetime, so comparisons against `cutoff`
-    never mix naive and aware values."""
+    never mix naive and aware values. None in -> None out; callers must skip a row whose
+    timestamp is missing rather than crash the whole endpoint on one malformed row."""
+    if v is None:
+        return None
     dt = datetime.fromisoformat(str(v).replace("Z", "+00:00").replace(" ", "T"))
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
@@ -306,7 +312,8 @@ def derive(
             for r in routines_by_company.get(cid, []):
                 if r["title"] == NIGHTLY_CEO_ROUTINE_TITLE:
                     continue
-                if _parse_ts(r["created_at"]) > cutoff:
+                created_at = _parse_ts(r["created_at"])
+                if created_at is None or created_at > cutoff:
                     continue
                 if r["status"] == "archived":
                     survival["archived"] += 1
@@ -349,7 +356,7 @@ def derive(
                 if r["status"] == "archived":
                     created = _parse_ts(r["created_at"])
                     updated = _parse_ts(r["updated_at"])
-                    if updated - created <= timedelta(days=7):
+                    if created is not None and updated is not None and updated - created <= timedelta(days=7):
                         archived_7d.append({"owner_id": oid, "name": name_of(oid), "title": r["title"]})
         counters = {"auto_paused": auto_paused, "archived_within_7d": archived_7d}
 
@@ -426,6 +433,8 @@ async def _read_posthog() -> dict:
     for name, res in (("runs", runs), ("funnel", funnel), ("sources", sources)):
         if res["error"]:
             raise RuntimeError(f"hogql {name}: {res['error']}")
+    if any(res["stubbed"] for res in (runs, funnel, sources)):
+        raise RuntimeError("hogql stubbed: POSTHOG_PROJECT_API_KEY/POSTHOG_PROJECT_ID unset")
     return {"runs": runs["results"], "funnel": funnel["results"], "sources": sources["results"]}
 
 
@@ -484,22 +493,26 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
 
     aurora = aurora or {"companies": [], "routines": [], "runs": [], "first_autonomous": []}
     ph = ph or {"runs": [], "funnel": [], "sources": []}
-    data = derive(
-        **ddb,
-        **aurora,
-        gate_blocked=gate or [],
-        posthog_runs=ph["runs"],
-        posthog_funnel=ph["funnel"],
-        posthog_sources=ph["sources"],
-        internal=internal,
-        now=datetime.now(timezone.utc),
-    )
-    data["sources"] = {
-        "ddb": ddb_state,
-        "aurora": "ok" if not aurora_err else "unavailable",
-        "posthog": "ok" if not ph_err else "unavailable",
-        "cloudwatch": "ok" if not gate_err else "unavailable",
-        "clerk": "ok",
-    }
+    try:
+        data = derive(
+            **ddb,
+            **aurora,
+            gate_blocked=gate or [],
+            posthog_runs=ph["runs"],
+            posthog_funnel=ph["funnel"],
+            posthog_sources=ph["sources"],
+            internal=internal,
+            now=datetime.now(timezone.utc),
+        )
+        data["sources"] = {
+            "ddb": ddb_state,
+            "aurora": "ok" if not aurora_err else "unavailable",
+            "posthog": "ok" if not ph_err else "unavailable",
+            "cloudwatch": "ok" if not gate_err else "unavailable",
+            "clerk": "ok",
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-safe by contract, same shape as the DDB-down path
+        logger.exception("growth derive failed")
+        return None, env.UNAVAILABLE, errors + [{"domain": "derive", "reason": str(exc)}]
     _cache = (time.monotonic() + _CACHE_TTL_S, data, state, errors)
     return data, state, errors

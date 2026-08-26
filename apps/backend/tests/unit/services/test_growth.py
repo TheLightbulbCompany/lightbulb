@@ -343,6 +343,29 @@ def test_survival_handles_space_separated_zoneless_timestamp():
     assert out["segments"]["external"]["retention"]["automation_survival"]["armed"] == 1
 
 
+def test_archived_routine_with_none_updated_at_is_skipped():
+    """A malformed/incomplete row (missing updated_at) must not crash the whole
+    computation -- it's simply invisible to the archived-within-7d counter."""
+    fx = _fixture()
+    fx["routines"].append(
+        {
+            "company_id": "c_a",
+            "id": "r7",
+            "title": "No updated_at",
+            "status": "archived",
+            "auto_paused": False,
+            "created_at": "2026-08-20T00:00:00Z",
+            "updated_at": None,
+            "has_enabled_trigger": False,
+            "trigger_kinds": None,
+        }
+    )
+    ext = growth.derive(**fx)["segments"]["external"]
+    titles = [r["title"] for r in ext["counters"]["archived_within_7d"]]
+    assert "No updated_at" not in titles
+    assert "Old one" in titles  # the existing archived row still counts
+
+
 @pytest.mark.asyncio
 async def test_compute_partial_when_aurora_fails(monkeypatch):
     growth._cache = None
@@ -367,9 +390,64 @@ async def test_compute_partial_when_aurora_fails(monkeypatch):
         data, state, errors = await growth.compute()
 
     assert state == "partial"
-    assert [e["domain"] for e in errors] == ["aurora"]
+    # stubbed hogql (posthog key/project id unset) fails alongside aurora — a
+    # stubbed read must never render as a green, zeroed cross-check.
+    assert [e["domain"] for e in errors] == ["aurora", "posthog"]
     assert data["segments"]["external"]["owners"]["total"] == 3
     assert data["segments"]["external"]["activation"]["stages"]["automation_armed"] == 0  # no routine rows
+
+
+@pytest.mark.asyncio
+async def test_compute_posthog_ok_when_not_stubbed():
+    """A real (non-stubbed) empty HogQL result is a legitimate zero, not a
+    misconfigured key/project id -- posthog must read as ok, not partial."""
+    growth._cache = None
+    fx = _fixture()
+
+    with (
+        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
+        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
+        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
+        patch(
+            "core.services.posthog_admin.hogql",
+            AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
+        ),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
+    ):
+        data, state, errors = await growth.compute()
+
+    assert state == "ok" and errors == []
+    assert data["sources"]["posthog"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_compute_unavailable_when_derive_raises():
+    """A malformed row that survives every source read but blows up inside
+    derive() must not 500 the endpoint -- same unavailable shape as a DDB-down read."""
+    growth._cache = None
+    fx = _fixture()
+
+    with (
+        patch("core.repositories.billing_repo.scan_all", AsyncMock(return_value=fx["billing"])),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=fx["containers"])),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.scan_all_items", AsyncMock(return_value=fx["paperclip"])),
+        patch("core.repositories.integrations_repo.scan_all", AsyncMock(return_value=fx["integrations"])),
+        patch("core.services.paperclip_sql.select_rows", AsyncMock(return_value=[])),
+        patch(
+            "core.services.posthog_admin.hogql",
+            AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
+        ),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
+        patch("core.services.ops.growth.derive", side_effect=RuntimeError("boom")),
+    ):
+        data, state, errors = await growth.compute()
+
+    assert data is None and state == "unavailable"
+    assert any(e["domain"] == "derive" for e in errors)
 
 
 @pytest.mark.asyncio

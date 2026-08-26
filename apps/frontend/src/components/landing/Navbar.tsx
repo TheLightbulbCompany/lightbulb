@@ -93,7 +93,7 @@ export function Navbar() {
   return (
     <nav className="landing-nav" aria-label="Main navigation">
       <div className="nav-brand">
-        <Logo size="md" withMark />
+        <Logo size="md" markOnly />
         <span className="nav-badge">Public Beta</span>
       </div>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>

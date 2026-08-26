@@ -1529,6 +1529,9 @@ button:focus-visible { border-radius: 999px; }
   margin-right: 0.42em;
   transform: translateY(0.04em);
 }
+.brand-logo .brand-mark:only-child {
+  margin-right: 0;
+}
 .brand-logo--sm { font-size: 15px; }
 .brand-logo--md { font-size: 18px; }
 .brand-logo--lg { font-size: 24px; }

@@ -11,6 +11,8 @@ type LogoProps = {
   ariaLabel?: string;
   /** Render the serif 8 mark before the wordmark. */
   withMark?: boolean;
+  /** Render only the serif 8 mark, without the ISOL8 wordmark. */
+  markOnly?: boolean;
 };
 
 /**
@@ -35,6 +37,7 @@ export function Logo({
   className,
   ariaLabel = "isol8 home",
   withMark = false,
+  markOnly = false,
 }: LogoProps) {
   const classes = ["brand-logo", `brand-logo--${tone}`, `brand-logo--${size}`, className]
     .filter(Boolean)
@@ -42,8 +45,8 @@ export function Logo({
 
   const content = (
     <span className={classes}>
-      {withMark && <LogoMark />}
-      ISOL8
+      {(withMark || markOnly) && <LogoMark />}
+      {!markOnly && "ISOL8"}
     </span>
   );
 

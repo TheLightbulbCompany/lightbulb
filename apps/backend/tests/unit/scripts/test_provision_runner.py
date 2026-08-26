@@ -439,6 +439,73 @@ async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypat
 # ---- _seed_owner_paperclip direct tests: org/email resolution + classification ----
 
 
+@pytest.fixture(autouse=True)
+def _stub_arm_nightly_ceo(monkeypatch):
+    """Step 0 arms the nightly CEO routine right after the seed; stub it so the
+    seed tests exercise only seed + classification."""
+    arm = AsyncMock(return_value="armed")
+    monkeypatch.setattr("core.services.user_provision.arm_nightly_ceo", arm)
+    return arm
+
+
+def _stub_personal_seed(monkeypatch):
+    seed = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_owner", seed)
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="p@example.com"),
+    )
+    return seed
+
+
+async def test_seed_helper_arms_nightly_ceo_after_personal_seed(monkeypatch, _stub_arm_nightly_ceo):
+    """The nightly CEO arm runs AFTER the personal seed, with the owner_id."""
+    order = MagicMock()
+    order.attach_mock(_stub_personal_seed(monkeypatch), "seed")
+    order.attach_mock(_stub_arm_nightly_ceo, "arm")
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_OK
+    assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
+    _stub_arm_nightly_ceo.assert_awaited_once_with("user_p")
+
+
+async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
+    """Same for an org owner: arm AFTER _ensure_paperclip_for_org, with the org_id."""
+    seed = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", seed)
+    monkeypatch.setattr(
+        "core.services.clerk_admin.get_organization",
+        AsyncMock(return_value={"created_by": "user_c"}),
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="c@example.com"),
+    )
+    order = MagicMock()
+    order.attach_mock(seed, "seed")
+    order.attach_mock(_stub_arm_nightly_ceo, "arm")
+    assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
+    assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
+    _stub_arm_nightly_ceo.assert_awaited_once_with("org_x")
+
+
+async def test_seed_helper_arm_5xx_exits_11(monkeypatch, _stub_arm_nightly_ceo):
+    """An arm failure classifies like a seed failure: 5xx → EXIT_TRANSIENT."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    _stub_personal_seed(monkeypatch)
+    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("boom", status_code=503, body={})
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT
+
+
+async def test_seed_helper_arm_4xx_exits_10(monkeypatch, _stub_arm_nightly_ceo):
+    """4xx → EXIT_DETERMINISTIC."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    _stub_personal_seed(monkeypatch)
+    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("bad", status_code=400, body={})
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
+
+
 async def test_seed_helper_personal_calls_ensure_paperclip_for_owner(monkeypatch):
     """Personal owner_id: owner_email resolved via lookup_owner_email, then
     _ensure_paperclip_for_owner with owner_id == owner_user_id, org_id=None."""

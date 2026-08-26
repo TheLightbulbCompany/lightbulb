@@ -22,7 +22,7 @@ import asyncio
 import logging
 from collections import defaultdict
 
-from core.auth import AuthContext
+from core.auth import AuthContext, is_org_owner_id
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
@@ -253,12 +253,13 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_context or auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop: arm the paid, ENABLED nightly routine on
-    # Friday for the container OWNER (personal owner or org admin) — never an
-    # org member, never a trial owner (gated on has_always_on_entitlement
-    # inside). Runs on EVERY owner poll, including the running-container one,
-    # so pre-existing paid owners and free→paid upgrades get armed on their
-    # next /container/status poll — not only brand-new provisions. Idempotent +
+    # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
+    # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
+    # the owner's Paperclip seed — every path to "paid + provider chosen" runs
+    # there. A personal owner's healthy running-container poll never
+    # re-dispatches ensure_user_ready, so this call is NOT a general catch-up:
+    # it is the org-context / failed-seed self-heal only (the states that do
+    # re-dispatch here). Never an org member; paid-only inside; idempotent;
     # best-effort (never raises).
     if not auth.is_org_context or auth.is_org_admin:
         await _maybe_arm_nightly_ceo(auth, owner_id)
@@ -360,17 +361,33 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     )
 
 
-async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
+def _arm_status(status: str) -> str:
+    put_metric("nightly_ceo.arm", dimensions={"status": status})
+    return status
+
+
+async def arm_nightly_ceo(owner_id: str) -> str:
     """Idempotently arm the paid nightly CEO routine on Friday.
+
+    THE deterministic caller is the provision executor's step 0
+    (``scripts.provision_runner._seed_owner_paperclip``), right after the
+    owner's Paperclip seed — every path to "paid + provider chosen" (org first
+    provision, trial→paid conversion via reprovision_for_user, admin
+    reprovision, image roll) runs there. Org-vs-personal comes from the
+    ``owner_id`` prefix (``is_org_owner_id``), the executor's own rule; a
+    personal owner_id IS the user_id.
 
     Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
     ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
-    on no account — a ``trial_local`` owner is NEVER armed. Best-effort: any
-    failure is logged and swallowed so ``ensure_user_ready`` keeps answering the
-    poll; the next poll retries.
+    on no account — a ``trial_local`` owner is NEVER armed. Returns the outcome
+    (``armed`` covers created OR title-skipped: the routine is present either
+    way) and emits it as the ``nightly_ceo.arm`` metric's ``status``. Does NOT
+    swallow: a failure emits ``status=error`` and re-raises, and the caller
+    decides — the executor classifies it into its retry ABI exactly like a
+    seed failure; ``_maybe_arm_nightly_ceo`` logs and moves on.
 
     Idempotency, three race classes closed:
-      - Normal re-poll: the ``nightly_ceo_armed_company`` cache on the billing
+      - Normal re-run: the ``nightly_ceo_armed_company`` cache on the billing
         row short-circuits before any Paperclip call once it equals the current
         company.
       - Concurrency: ``try_claim_nightly_arm`` is a conditional write that
@@ -383,9 +400,9 @@ async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
         if not has_always_on_entitlement(account):
-            return
+            return _arm_status("not_entitled")
         if account.get("nightly_ceo_opted_out"):
-            return
+            return _arm_status("opted_out")
 
         provisioning = await build_paperclip_provisioning()
         try:
@@ -394,20 +411,20 @@ async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
             # company provision_org actually finished (status="active").
             row = (
                 await provisioning.find_org_owner(owner_id)
-                if auth.is_org_context
-                else await provisioning.get_company_row(auth.user_id)
+                if is_org_owner_id(owner_id)
+                else await provisioning.get_company_row(owner_id)
             )
             if row is None or row.status != "active":
-                return
+                return _arm_status("company_not_active")
             company_id = row.company_id
             if account.get("nightly_ceo_armed_company") == company_id:
-                return  # cheap cache hit — already armed for this company
+                return _arm_status("already_armed")  # cheap cache hit
             # Friday is seeded FIRST (seed order == identity), so it's element 0.
             friday_id = (row.seeded_agent_ids or [None])[0]
             if not friday_id:
-                return  # Friday not seeded yet — retry on a later poll
+                return _arm_status("friday_not_seeded")
             if not await billing_repo.try_claim_nightly_arm(owner_id, company_id):
-                return  # a concurrent poll won the claim
+                return _arm_status("claim_lost")  # a concurrent arm won
             try:
                 admin_cookie = await get_admin_session_cookie(provisioning._admin._http)
                 await create_enabled_schedule_routine(
@@ -420,15 +437,26 @@ async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
                     cron=NIGHTLY_CEO_ROUTINE_CRON,
                     timezone="UTC",
                 )
-                # Success (created OR title-skip: the routine is present either
-                # way) — leave the claim as the armed cache.
             except Exception:
                 # Seed failed after we won the claim — release it so the next
-                # poll retries, then let the outer handler log.
+                # run retries, then let the caller classify.
                 await billing_repo.release_nightly_arm(owner_id, company_id)
                 raise
+            # Leave the claim as the armed cache.
+            return _arm_status("armed")
         finally:
             await close_paperclip_provisioning(provisioning)
+    except Exception:
+        put_metric("nightly_ceo.arm", dimensions={"status": "error"})
+        raise
+
+
+async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
+    """Poll-path wrapper: best-effort ``arm_nightly_ceo`` that never raises, so
+    ``ensure_user_ready`` keeps answering the poll. ``auth`` is unused — the arm
+    derives org-vs-personal from the owner_id."""
+    try:
+        await arm_nightly_ceo(owner_id)
     except Exception:
         logger.exception("nightly CEO arm failed (non-fatal) owner=%s", owner_id)
 

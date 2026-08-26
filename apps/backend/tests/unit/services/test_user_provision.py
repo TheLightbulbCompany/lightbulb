@@ -12,6 +12,7 @@ from core.services.user_provision import (
     _ensure_paperclip_for_org,
     _ensure_paperclip_for_owner,
     _maybe_arm_nightly_ceo,
+    arm_nightly_ceo,
     ensure_personal_trial_default,
     ensure_user_ready,
 )
@@ -1715,6 +1716,105 @@ async def test_arm_org_admin_uses_find_org_owner():
     provisioning.find_org_owner.assert_awaited_once_with("org_xyz")
     seed.assert_awaited_once()
     assert seed.await_args.kwargs["company_id"] == "co_org"
+
+
+# --- arm_nightly_ceo: the auth-free door the provision executor calls --------
+
+
+def _arm_patches(provisioning, **overrides):
+    """The full collaborator set for a paid personal owner, as (mocks, patchers)."""
+    mocks = {
+        "billing_repo.get_by_owner_id": AsyncMock(return_value=_paid_account()),
+        "build_paperclip_provisioning": AsyncMock(return_value=provisioning),
+        "close_paperclip_provisioning": AsyncMock(),
+        "get_admin_session_cookie": AsyncMock(return_value="admin-cookie"),
+        "billing_repo.try_claim_nightly_arm": AsyncMock(return_value=True),
+        "billing_repo.release_nightly_arm": AsyncMock(),
+        "create_enabled_schedule_routine": AsyncMock(return_value="rid-nightly"),
+        **overrides,
+    }
+    return mocks, [patch(f"core.services.user_provision.{k}", v) for k, v in mocks.items()]
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_returns_armed_and_seeds_for_personal_owner():
+    provisioning = _arm_provisioning(_company_row())
+    mocks, patches = _arm_patches(provisioning)
+    with patch("core.services.user_provision.put_metric") as metric:
+        for p in patches:
+            p.start()
+        try:
+            assert await arm_nightly_ceo("user_p") == "armed"
+        finally:
+            for p in patches:
+                p.stop()
+    provisioning.get_company_row.assert_awaited_once_with("user_p")
+    provisioning.find_org_owner.assert_not_awaited()
+    assert mocks["create_enabled_schedule_routine"].await_args.kwargs["agent_id"] == "friday1"
+    metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "armed"})
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_trial_local_is_not_entitled():
+    """trial_local is never entitled → no Paperclip client is even built."""
+    build = AsyncMock()
+    with (
+        patch(
+            "core.services.user_provision.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),
+        ),
+        patch("core.services.user_provision.build_paperclip_provisioning", build),
+        patch("core.services.user_provision.put_metric") as metric,
+    ):
+        assert await arm_nightly_ceo("user_p") == "not_entitled"
+    build.assert_not_awaited()
+    metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "not_entitled"})
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_org_owner_uses_find_org_owner():
+    """org_ prefix → find_org_owner(owner_id), never get_company_row."""
+    provisioning = _arm_provisioning(_company_row(company_id="co_org"))
+    org_account = AsyncMock(return_value={"owner_id": "org_xyz", "subscription_status": "active"})
+    _, patches = _arm_patches(provisioning, **{"billing_repo.get_by_owner_id": org_account})
+    for p in patches:
+        p.start()
+    try:
+        assert await arm_nightly_ceo("org_xyz") == "armed"
+    finally:
+        for p in patches:
+            p.stop()
+    provisioning.find_org_owner.assert_awaited_once_with("org_xyz")
+    provisioning.get_company_row.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_seed_failure_releases_claim_and_raises():
+    """After winning the claim, a seed failure releases it, meters status=error,
+    and PROPAGATES — the executor classifies it, not this function."""
+    provisioning = _arm_provisioning(_company_row())
+    mocks, patches = _arm_patches(
+        provisioning,
+        create_enabled_schedule_routine=AsyncMock(side_effect=RuntimeError("paperclip down")),
+    )
+    with patch("core.services.user_provision.put_metric") as metric:
+        for p in patches:
+            p.start()
+        try:
+            with pytest.raises(RuntimeError):
+                await arm_nightly_ceo("user_p")
+        finally:
+            for p in patches:
+                p.stop()
+    mocks["billing_repo.release_nightly_arm"].assert_awaited_once_with("user_p", "co1")
+    metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "error"})
+
+
+@pytest.mark.asyncio
+async def test_maybe_arm_wrapper_swallows():
+    """The poll-path wrapper never raises."""
+    with patch("core.services.user_provision.arm_nightly_ceo", AsyncMock(side_effect=RuntimeError("x"))):
+        assert await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p") is None
 
 
 # --- Invocation gating (uses the autouse _stub_arm_nightly mock) -------------

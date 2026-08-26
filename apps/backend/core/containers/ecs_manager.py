@@ -3582,6 +3582,49 @@ class EcsManager:
                     )
 
                     await expire_superseded_gate_tokens(user_id)
+
+                    # FRIDAY'S FIRST RUN. This is the only moment we KNOW the
+                    # gateway is reachable, and it is reached by every route a
+                    # container takes to ready (see the comment above), so it
+                    # is the one place a kickoff can be dispatched without a
+                    # browser being open.
+                    #
+                    # Until now `maybe_dispatch_bootstrap` was reachable only
+                    # from `container_status` and `submit_brief` -- both driven
+                    # by the owner's tab. An owner who signed up, watched
+                    # "Provisioning your container...", and closed the tab was
+                    # never greeted: no poll, no kickoff, no first run. And
+                    # because the first-contact EMAIL is Friday's own tool call
+                    # DURING that run (bootstrap_dispatcher NUDGE_MESSAGE only
+                    # reminds her if a run ends without it), the thing that
+                    # would have brought them back never sent either. Closed
+                    # loop, no exit: two prod owners sat in it, one for twenty
+                    # days.
+                    #
+                    # Deliberately NOT a sweeper. A scanner would have to WAKE
+                    # stopped containers to greet owners who are not there --
+                    # spending money, and on a trial owner burning the daily
+                    # cap -- and this codebase prefers events over long-running
+                    # workers. Hanging it here wakes nothing: it fires only on
+                    # a container that just became ready under its own steam.
+                    #
+                    # Best-effort by construction. maybe_dispatch_bootstrap is
+                    # idempotent, claim-fenced, and returns early for every
+                    # owner with nothing owed (no generation, funnel not
+                    # submitted, already sent/delivered), so the common case is
+                    # one cheap read. It never raises -- but this is the
+                    # terminal write of a provision, so a failure here must not
+                    # unwind a container that is genuinely up.
+                    try:
+                        from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
+
+                        await maybe_dispatch_bootstrap(user_id)
+                    except Exception:  # noqa: BLE001 — never fail a healthy provision
+                        logger.exception(
+                            "bootstrap kickoff dispatch failed for owner %s after ready transition "
+                            "(container is up; first run will retry on the owner's next poll)",
+                            user_id,
+                        )
                     return
                 if task_arn and ip and container.get("substatus") != "task_running":
                     # Task is RUNNING with an IP but the gateway port isn't

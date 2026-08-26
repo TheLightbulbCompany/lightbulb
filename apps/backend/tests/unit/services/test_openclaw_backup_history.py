@@ -110,7 +110,28 @@ def test_stage_history_writes_handoff_under_efs_root(tmp_path: Path):
         )
     import_state = tmp_path / "users" / "owner_1" / "import-state"
     handoff = import_state / "agents" / "new-uuid"
-    assert (handoff / "agent" / "openclaw-agent.sqlite").is_file()
+    # JSON log preferred over the raw SQLite when both exist (#2038): the JSON
+    # log is handed off and the old-schema SQLite is NOT, so the pinned gateway
+    # rebuilds a fresh DB from the log instead of migrating+compacting the old
+    # one under litestream (which crash-loops the container).
     assert (handoff / "sessions" / "sessions.json").is_file()
+    assert not (handoff / "agent" / "openclaw-agent.sqlite").exists()
     assert any("updated platform image" in w for w in warnings)
     assert not list(import_state.glob(".tmp-*"))  # atomic hand-off leaves no tmp dir behind
+
+
+def test_stage_history_falls_back_to_sqlite_when_no_json_log(tmp_path: Path):
+    """A backup with no legacy JSON log still hands off the raw SQLite."""
+    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
+    src_db = tmp_path / "in.sqlite"
+    _agent_db(src_db)
+    with patch.object(bh, "get_workspace", return_value=fake_ws), patch.object(bh, "_chown_tree"):
+        bh.stage_history(
+            owner_id="owner_1",
+            source_agent_id="main",
+            new_agent_id="new-uuid",
+            history=HistoryInfo(sqlite=src_db, sessions_dir=None, bytes=1),
+        )
+    handoff = tmp_path / "users" / "owner_1" / "import-state" / "agents" / "new-uuid"
+    assert (handoff / "agent" / "openclaw-agent.sqlite").is_file()
+    assert not (handoff / "sessions").exists()

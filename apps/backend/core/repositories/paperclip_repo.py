@@ -1167,14 +1167,21 @@ class PaperclipRepo:
             # atomically, fenced on it still being credential-less: a failed
             # row that DOES carry ``paperclip_user_id`` is adopted (signed in
             # with its stored password), never re-signed-up, so it needs no
-            # fence and is left alone.
+            # fence and is left alone. "Credential-less" must match the
+            # Python pre-check above (absent OR empty): older markers stored
+            # ``paperclip_user_id = ""`` explicitly, and ``attribute_not_exists``
+            # is FALSE for an attribute that exists as "" — without the OR, a
+            # legacy marker would pass the pre-check, fail this condition,
+            # and wedge every retry in the loser wait forever.
             try:
                 await run_in_thread(
                     table.put_item,
                     Item=item,
-                    ConditionExpression="#s = :failed AND attribute_not_exists(paperclip_user_id)",
+                    ConditionExpression=(
+                        "#s = :failed AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty)"
+                    ),
                     ExpressionAttributeNames={"#s": "status"},
-                    ExpressionAttributeValues={":failed": "failed"},
+                    ExpressionAttributeValues={":failed": "failed", ":empty": ""},
                 )
                 return True
             except table.meta.client.exceptions.ConditionalCheckFailedException:

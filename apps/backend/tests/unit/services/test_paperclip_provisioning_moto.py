@@ -1483,9 +1483,14 @@ async def test_paperclip_api_error_annotated_on_provision_member(repo):
 async def test_provision_member_concurrent_retries_after_pre_signup_failure_sign_up_once(repo, monkeypatch):
     """Sign-up fails once (transient 5xx) → credential-less failed marker.
     The next page load fires concurrent retries; exactly ONE may sign up —
-    the other must lose the reclaimed claim and adopt the winner's active row.
+    the other must LOSE the reclaimed claim while the winner is still mid
+    sign-up, then adopt the winner's active row without signing in itself.
     Without the failed-marker reclaim both retries sign up, re-minting the
-    duplicate accounts + mismatched password this fence exists to prevent."""
+    duplicate accounts + mismatched password this fence exists to prevent.
+
+    Deterministic: the winner's sign-up is paused on an Event so the second
+    retry provably contends for the claim (rather than reading an already
+    active row through the ordinary idempotency short-circuit)."""
     import asyncio
 
     import core.services.paperclip_provisioning as prov_mod
@@ -1502,14 +1507,41 @@ async def test_provision_member_concurrent_retries_after_pre_signup_failure_sign
     assert marker is not None and marker.status == "failed" and not marker.paperclip_user_id
 
     monkeypatch.setattr(prov_mod, "_SEED_WAIT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(prov_mod, "_SEED_WAIT_ATTEMPTS", 300)
+    sign_up_started = asyncio.Event()
+    release_sign_up = asyncio.Event()
+    claim_results: list[bool] = []
+    real_claim = repo.try_acquire_seed_claim
+
+    async def observed_claim(*args, **kwargs):
+        claimed = await real_claim(*args, **kwargs)
+        claim_results.append(claimed)
+        return claimed
+
+    monkeypatch.setattr(repo, "try_acquire_seed_claim", observed_claim)
+
+    async def paused_sign_up(**_kwargs):
+        sign_up_started.set()
+        await release_sign_up.wait()
+        return {"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"}
+
     retry = _make_admin_mock()
-    retry.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"})
+    retry.sign_up_user = AsyncMock(side_effect=paused_sign_up)
     retry.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session"})
     prov2 = PaperclipProvisioning(admin_client=retry, repo=repo, env_name="dev")
     kwargs = dict(owner_id="org_acme", user_id="user_member", email="member@acme.test", owner_email="owner@acme.test")
-    results = await asyncio.gather(prov2.provision_member(**kwargs), prov2.provision_member(**kwargs))
+
+    winner = asyncio.create_task(prov2.provision_member(**kwargs))
+    await asyncio.wait_for(sign_up_started.wait(), timeout=5)  # winner holds the reclaimed claim, mid sign-up
+    loser = asyncio.create_task(prov2.provision_member(**kwargs))
+    while len(claim_results) < 2:  # loser must contend for — and lose — the live claim
+        await asyncio.sleep(0.01)
+    assert claim_results == [True, False]
+    release_sign_up.set()
+    winner_row, loser_row = await asyncio.wait_for(asyncio.gather(winner, loser), timeout=10)
 
     assert retry.sign_up_user.await_count == 1, "concurrent retries must sign up exactly once"
-    assert all(r.status == "active" and r.paperclip_user_id == "pc_user_member" for r in results)
-    final = await repo.get("user_member", consistent_read=True)
-    assert final.status == "active" and final.paperclip_user_id == "pc_user_member"
+    # One owner sign-in (the winner's chain); the loser adopted and never signed in.
+    assert retry.sign_in_user.await_count == 1
+    assert winner_row.status == "active" and winner_row.paperclip_user_id == "pc_user_member"
+    assert loser_row.status == "active" and loser_row.paperclip_user_id == "pc_user_member"

@@ -1695,3 +1695,27 @@ async def test_seed_claim_leaves_failed_row_with_credentials_alone(repo):
     assert not await repo.try_acquire_seed_claim("user_k", org_id="org_alpha", claim_id="c1")
     after = await repo.get("user_k", consistent_read=True)
     assert after.status == "failed" and after.paperclip_user_id == row.paperclip_user_id
+
+
+async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_user_id(repo):
+    """Older failed markers stored ``paperclip_user_id = ""`` explicitly.
+    ``attribute_not_exists`` is FALSE for an attribute that exists as "", so
+    the reclaim condition must accept "" too — otherwise the Python pre-check
+    calls the row credential-less, the conditional put fails, and every retry
+    is wedged in the loser wait."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    repo._table().put_item(
+        Item={
+            "user_id": "user_legacy",
+            "org_id": "org_alpha",
+            "status": "failed",
+            "paperclip_user_id": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    assert await repo.try_acquire_seed_claim("user_legacy", org_id="org_alpha", claim_id="c1")
+    raw = repo._table().get_item(Key={"user_id": "user_legacy"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"

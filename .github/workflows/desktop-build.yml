@@ -68,8 +68,8 @@ jobs:
     - name: Patch tauri.conf.json for dev
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
-        jq --arg url "https://dev.isol8.co/chat" \
-           --arg updateUrl "https://dev.isol8.co/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
+        jq --arg url "https://dev.flickmeon.ai/chat" \
+           --arg updateUrl "https://dev.flickmeon.ai/api/desktop/update/{{target}}/{{current_version}}?x-vercel-protection-bypass=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}&x-vercel-set-bypass-cookie=true" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
           .bundle.targets = ["app"] |
@@ -171,12 +171,12 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        ISOL8_CALLBACK_URL: https://dev.isol8.co/auth/desktop-callback
+        ISOL8_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
         # Compile-time targets for the native node-host + pairing client.
         # These default to dev in lib.rs, but set them explicitly so the
         # dev/prod split is visible here and can't silently regress.
-        ISOL8_API_BASE: https://api-dev.isol8.co
-        ISOL8_WS_URL: wss://ws-dev.isol8.co
+        ISOL8_API_BASE: https://api-dev.flickmeon.ai
+        ISOL8_WS_URL: wss://ws-dev.flickmeon.ai
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail

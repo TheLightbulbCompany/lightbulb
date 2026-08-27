@@ -64,6 +64,15 @@ export interface SesInboundStackProps extends cdk.StackProps {
    * Defaults to ROOT_DOMAIN.
    */
   rootDomain?: string;
+
+  /**
+   * The DEV stage's product domain. Separate from `rootDomain` because this
+   * stack is PROD-ONLY: `rootDomain` is prod's, and deriving the dev ingest URL
+   * from it silently pointed dev inbound mail at prod's apex. Once dev and prod
+   * are on different domains mid-migration that stops being the same string and
+   * dev mail POSTs to a host that no longer serves it.
+   */
+  devRootDomain?: string;
   /**
    * Dev mail domain, e.g. "dev.isol8.co". When set, this stack also publishes
    * `*.{devMailDomain}` MX + SPF and the ingest Lambda routes recipients under
@@ -97,6 +106,7 @@ export class SesInboundStack extends cdk.Stack {
 
     const { envName, hostedZone, mailDomain, devMailDomain } = props;
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
+    const devRootDomain = props.devRootDomain ?? rootDomain;
 
     if (devMailDomain && !props.devSesIngestSecretName) {
       // Fail at synth, not at the first dev email. Routing dev mail to the dev
@@ -355,7 +365,7 @@ export class SesInboundStack extends cdk.Stack {
         ...(devMailDomain && devSesIngestSecret
           ? {
               DEV_MAIL_SUFFIX: devMailDomain,
-              DEV_BACKEND_INGEST_URL: `https://api-dev.${rootDomain}/api/v1/webhooks/ses-inbound`,
+              DEV_BACKEND_INGEST_URL: `https://api-dev.${devRootDomain}/api/v1/webhooks/ses-inbound`,
               DEV_SES_INBOUND_SECRET_ARN: devSesIngestSecret.secretArn,
             }
           : {}),

@@ -1,7 +1,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import * as route53 from "aws-cdk-lib/aws-route53";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "../lib/domains";
 import { Isol8Stage } from "../lib/isol8-stage";
 import { HOSTED_ZONE_CONTEXT } from "./helpers";
 import { SesInboundStack, SesInboundStackProps } from "../lib/stacks/ses-inbound-stack";
@@ -371,8 +371,12 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     expect(fns.length).toBe(1);
     const env = (fns[0] as any).Properties.Environment.Variables;
     expect(env.DEV_MAIL_SUFFIX).toBe(`dev.${PLATFORM_MAIL_DOMAIN}`);
+    // DEV_ROOT_DOMAIN, not ROOT_DOMAIN: this stack is PROD-ONLY, so `rootDomain`
+    // is prod's. Deriving the dev ingest URL from it pointed dev inbound mail at
+    // prod's apex - the same string until the two envs are on different domains,
+    // then a host that no longer serves it.
     expect(env.DEV_BACKEND_INGEST_URL).toBe(
-      `https://api-dev.${ROOT_DOMAIN}/api/v1/webhooks/ses-inbound`,
+      `https://api-dev.${DEV_ROOT_DOMAIN}/api/v1/webhooks/ses-inbound`,
     );
     // Each backend verifies the shared secret against its OWN copy, so the
     // Lambda must be able to present dev's rather than prod's.

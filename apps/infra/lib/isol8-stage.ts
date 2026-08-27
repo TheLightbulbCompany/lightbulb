@@ -1,6 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
@@ -78,6 +78,7 @@ export class Isol8Stage extends cdk.Stage {
         mailDomain: platformMailDomain,
         devMailDomain: `dev.${platformMailDomain}`,
         rootDomain,
+        devRootDomain: DEV_ROOT_DOMAIN,
         // Deterministic by-name reference to the DEV stage's secret. AuthStack
         // creates it unconditionally in every env; before dev routing existed,
         // only prod's was ever read.

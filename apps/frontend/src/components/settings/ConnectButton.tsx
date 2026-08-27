@@ -432,7 +432,12 @@ export function ConnectButton({
           spellCheck={false}
           value={token}
           disabled={busy || !canManage}
-          placeholder="Paste API key"
+          placeholder={
+            // A provider that packs two values into this one box (Shopify's shop
+            // domain + token) is undiscoverable without showing the shape — its
+            // own docs have never heard of our packing convention.
+            connection.token_paste_hint || "Paste API key"
+          }
           aria-invalid={err ? true : undefined}
           aria-describedby={err ? errorId : undefined}
           onChange={(e) => setToken(e.target.value)}

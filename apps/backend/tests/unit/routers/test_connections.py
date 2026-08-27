@@ -215,6 +215,55 @@ class TestValidateToken:
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
         assert await connections._validate_token(self._xoxp_provider(), "xoxp-good") is True
 
+    @pytest.mark.asyncio
+    async def test_host_pattern_paste_builds_the_per_account_url(self, monkeypatch):
+        # Shopify's admin API lives on the owner's own domain, so the one paste
+        # field carries "<host>|<token>". The host half must build the URL and
+        # the token half must be what lands in the auth header — sending the
+        # packed blob as the credential would 401 against the real store.
+        captured: dict = {}
+
+        async def fake_request(self, method, url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            return httpx.Response(200, json={"data": {"shop": {"name": "My Store"}}})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|shpat_abc")
+        assert ok is True
+        assert captured["url"] == "https://mystore.myshopify.com/admin/api/2026-07/graphql.json"
+        assert captured["headers"]["X-Shopify-Access-Token"] == "shpat_abc"
+
+    @pytest.mark.asyncio
+    async def test_host_pattern_refuses_a_foreign_host_without_http(self, monkeypatch):
+        # host_pattern is an SSRF fence, not a hint: this is the only validate URL
+        # a caller can influence, so a host that doesn't match — or a paste with
+        # no separator at all — must be refused BEFORE any request goes out.
+        async def fake_request(self, method, url, **kwargs):
+            raise AssertionError(f"validation must not fetch {url}")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        p = registry.get_provider("shopify")
+        assert await connections._validate_token(p, "169.254.169.254|shpat_abc") is False
+        assert await connections._validate_token(p, "evil.com|shpat_abc") is False
+        assert await connections._validate_token(p, "shpat_abc") is False
+
+    @pytest.mark.asyncio
+    async def test_host_pattern_prefix_check_applies_to_the_token_half(self, monkeypatch):
+        # token_prefix guards the credential, not the packed string. Shopify shows
+        # the custom app's API key next to its access token and owners paste the
+        # wrong one — that must fail pre-flight, as it does for every other
+        # prefixed provider.
+        async def fake_request(self, method, url, **kwargs):
+            raise AssertionError("HTTP must not run for a wrong-prefix token")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|not-a-token")
+        assert ok is False
+
 
 class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""

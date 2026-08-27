@@ -282,6 +282,9 @@ def _connection_row(
         # Where a paste_token provider's key is minted, so an API-key row isn't
         # just a blank box the owner has to go hunting for.
         "token_setup_url": v.token_setup_url,
+        # Placeholder for the paste box, when the provider packs two values into
+        # the one input (Shopify's "<shop>|<token>"). None = the generic hint.
+        "token_paste_hint": v.token_paste_hint,
         # can_trigger: this provider's inbound event labels (registry `inbound`,
         # T1) — the Integrations card's "Can trigger" line. Empty when the
         # provider isn't (yet) wired as an Automations trigger source.
@@ -340,6 +343,18 @@ def _connection_row(
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
+    url = p.validation.url
+    if p.validation.host_pattern:
+        # Two-value paste ("<host>|<token>", Shopify): the left half builds the
+        # per-store validate URL, the right half is the credential every check
+        # below then applies to. Both halves must be present and the host must
+        # full-match the provider's own domain pattern — this is the one validate
+        # URL a caller can influence, so an unmatched host is refused, never
+        # fetched.
+        host, separator, token = token.partition("|")
+        if not separator or not re.fullmatch(p.validation.host_pattern, host):
+            return False
+        url = url.format(host=host)
     # Reject a token shape the wired server cannot use, before spending an HTTP
     # call: some validate endpoints accept token types the env var doesn't (Slack
     # auth.test oks a bot `xoxb-` token, but the server gets the user-token slot).
@@ -355,7 +370,7 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
             kwargs: dict = {"headers": headers}
             if p.validation.body is not None:
                 kwargs["json"] = p.validation.body
-            resp = await client.request(p.validation.method, p.validation.url, **kwargs)
+            resp = await client.request(p.validation.method, url, **kwargs)
         if resp.status_code >= 400:
             return False
         # Providers that answer 200 even for a bad token (Slack auth.test,

@@ -188,6 +188,15 @@ class ValidateSpec(BaseModel):
     # says `ok` for a bot `xoxb-` token, but the server is given the user-token
     # slot, so only an `xoxp-` token actually works once spawned.
     token_prefix: str | None = None
+    # Per-account API host. A provider whose admin API lives on the OWNER'S OWN
+    # domain (Shopify: https://<shop>.myshopify.com/…) can have no static validate
+    # URL, but the paste rail carries exactly one string — so the owner pastes
+    # "<host>|<token>" and `url` interpolates the left half as {host}. This
+    # pattern is what declares that two-value format AND pins which hosts may be
+    # interpolated: an owner-supplied host in a request the backend itself issues
+    # is an SSRF primitive, so a host it doesn't full-match is refused outright
+    # rather than fetched. Unset (the norm) = the whole paste is the credential.
+    host_pattern: str | None = None
 
 
 class AwsStsSpec(BaseModel):
@@ -360,6 +369,13 @@ class Provider(BaseModel):
     # deliberately separate from byo_setup_url, which points at an OAuth-app
     # console and answers a different question.
     token_setup_url: str | None = None
+    # Placeholder for the paste field, for the provider whose one input is not a
+    # bare key. Only the two-value paste rail needs it (see
+    # ValidateSpec.host_pattern): the generic "Paste API key" is a lie when the
+    # box wants "<host>|<token>", and that format is otherwise undiscoverable —
+    # token_setup_url points at the provider's own docs, which have never heard
+    # of our packing convention.
+    token_paste_hint: str | None = None
     # Remote MCP endpoint published into mcp.servers.<key> by the mcp_oauth
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.

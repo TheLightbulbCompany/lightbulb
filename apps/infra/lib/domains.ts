@@ -16,7 +16,7 @@
 // =============================================================================
 
 /** Product domain — frontend, API, WS, browser-view, Clerk, company hosts. */
-export const ROOT_DOMAIN = "isol8.co";
+export const ROOT_DOMAIN = "flickmeon.ai";
 
 /**
  * Domain the platform sender + agent mail live on — deliberately NOT the
@@ -72,6 +72,8 @@ export const CLERK_DOMAIN = "isol8.co";
  * that move. The domain flip and the mail move are independent tracks.
  */
 export const DEV_ROOT_DOMAIN = "flickmeon.ai";
+// (Now identical to ROOT_DOMAIN — dev led, prod followed. The symbol stays so
+// the two can diverge again for a future migration without re-threading props.)
 
 /**
  * The domain being retired. `WildcardCert` in DnsStack stays pinned to this so

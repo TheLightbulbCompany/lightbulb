@@ -3,7 +3,12 @@ import { Template } from "aws-cdk-lib/assertions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
+import {
+  LEGACY_MAIL_DOMAIN,
+  LEGACY_ROOT_DOMAIN,
+  PLATFORM_MAIL_DOMAIN,
+  ROOT_DOMAIN,
+} from "../lib/domains";
 
 /**
  * Static CDK context so `HostedZone.fromLookup` resolves without an AWS API
@@ -11,9 +16,12 @@ import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
  * cache falls through to CDK's dummy zone and every Route53 assertion
  * silently compares against `example.com` instead of failing.
  *
- * Single copy on purpose: the only other place this value lives is
- * `cdk.context.json`, so changing ROOT_DOMAIN needs exactly one hand-added
- * cache entry there, not a sweep of the test suite.
+ * Carries an entry per distinct zone the stacks look up. The product domain,
+ * the mail domain and the legacy domain were the SAME string until the rebrand
+ * split them, so a single entry used to be enough; once they diverge, a stack
+ * looking up a zone with no entry falls through to CDK's dummy zone and every
+ * Route53 assertion silently compares against `example.com` rather than failing.
+ * Deduped, so while the values coincide this is still one entry.
  */
 export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
   "availability-zones:account=877352799272:region=us-east-1": [
@@ -24,18 +32,30 @@ export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
     "us-east-1e",
     "us-east-1f",
   ],
-  [`hosted-zone:account=877352799272:domainName=${ROOT_DOMAIN}:region=us-east-1`]:
-    {
-      Id: "/hostedzone/Z09248243AOUC775CDUI4",
-      Name: `${ROOT_DOMAIN}.`,
-    },
-  // Mail lives on its own domain and SesInboundStack looks its zone up by
-  // name, so a synth without this entry falls through to a dummy zone.
-  [`hosted-zone:account=877352799272:domainName=${PLATFORM_MAIL_DOMAIN}:region=us-east-1`]:
-    {
-      Id: "/hostedzone/Z09913772LJJ6H4X9JJX0",
-      Name: `${PLATFORM_MAIL_DOMAIN}.`,
-    },
+  // Every zone any stack may look up, by its REAL id. A two-way ternary here
+  // silently handed the mail domain the product domain's zone; an explicit map
+  // cannot. Domains are deduped because these constants overlap during the move.
+  ...Object.fromEntries(
+    [
+      ...new Set([
+        ROOT_DOMAIN,
+        PLATFORM_MAIL_DOMAIN,
+        LEGACY_ROOT_DOMAIN,
+        LEGACY_MAIL_DOMAIN,
+      ]),
+    ].map((domain) => [
+      `hosted-zone:account=877352799272:domainName=${domain}:region=us-east-1`,
+      {
+        Id:
+          {
+            "flickmeon.ai": "/hostedzone/Z03529981ZCUW1R3FM806",
+            "isol8.co": "/hostedzone/Z09248243AOUC775CDUI4",
+            "thelightbulb.company": "/hostedzone/Z09913772LJJ6H4X9JJX0",
+          }[domain] ?? "/hostedzone/Z09248243AOUC775CDUI4",
+        Name: `${domain}.`,
+      },
+    ]),
+  ),
 };
 
 /**

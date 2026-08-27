@@ -423,7 +423,9 @@ export function ConnectButton({
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-2">
         <label htmlFor={inputId} className="sr-only">
-          {display_name} API token
+          {connection.token_paste_hint
+            ? `${display_name} credentials, combined as ${connection.token_paste_hint}`
+            : `${display_name} API token`}
         </label>
         <Input
           id={inputId}
@@ -458,6 +460,15 @@ export function ConnectButton({
           {busy ? "Connecting…" : "Connect"}
         </Button>
       </div>
+      {/* The placeholder is gone on the first keystroke and the box is too
+          narrow to show the whole shape anyway, so a field wanting two values has
+          to state the format somewhere that stays put. */}
+      {connection.token_paste_hint && (
+        <p className="text-xs text-[var(--mute)]">
+          Paste both values as{" "}
+          <code className="font-mono">{connection.token_paste_hint}</code>
+        </p>
+      )}
       {/* An OAuth row needs no instructions — the provider's own consent screen
           is the flow. An API-key row is a blank box, so without this the owner
           has to go find the right settings page themselves. */}

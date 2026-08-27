@@ -562,9 +562,18 @@ _PENDING_MATERIALIZERS: set[str] = set()
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():
+    import re
+
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 
     for key, p in registry.all_providers().items():
+        # A host_pattern's match is interpolated into a URL the BACKEND fetches,
+        # so a loose one (`.*`) silently turns the paste box into an SSRF
+        # primitive. Every such pattern must at minimum refuse link-local and
+        # loopback, whatever else it allows.
+        if p.validation and p.validation.host_pattern:
+            for host in ("169.254.169.254", "localhost"):
+                assert not re.fullmatch(p.validation.host_pattern, host), (key, host)
         if p.acquisition == "direct_oauth":
             assert p.oauth, f"{key}: direct_oauth missing oauth spec"
             if key == "cloudflare":

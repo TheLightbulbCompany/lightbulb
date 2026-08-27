@@ -48,6 +48,28 @@ describe("ConnectButton", () => {
     expect(screen.getByRole("button", { name: /connect google workspace/i })).toBeInTheDocument();
   });
 
+  it("states the combined format for a two-value paste provider", () => {
+    // Shopify packs the store domain and the token into the one input. The
+    // format reaches the owner only through token_paste_hint, so a dropped DTO
+    // key would leave them with an unanswerable box and a generic 422.
+    renderButton({
+      connection: {
+        provider: "shopify",
+        display_name: "Shopify",
+        acquisition: "paste_token",
+        status: "disconnected",
+        token_paste_hint: "mystore.myshopify.com|shpat_…",
+      },
+    });
+
+    expect(screen.getByPlaceholderText("mystore.myshopify.com|shpat_…")).toBeInTheDocument();
+    // Persistent, because the placeholder is gone on the first keystroke.
+    expect(screen.getByText("mystore.myshopify.com|shpat_…")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Shopify credentials, combined as mystore\.myshopify\.com/i),
+    ).toBeInTheDocument();
+  });
+
   it("shows the admin-denial copy for a 403", async () => {
     const startOAuth = vi.fn().mockRejectedValue(new ApiError(403, { detail: "forbidden" }));
     renderButton({ startOAuth });

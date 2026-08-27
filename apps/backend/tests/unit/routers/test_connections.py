@@ -546,6 +546,19 @@ class TestConnectPaste:
     """POST /api/v1/connections/{provider} — paste-key connect."""
 
     @pytest.mark.asyncio
+    async def test_two_value_provider_names_the_shape_it_wants(self, async_client):
+        # Pasting only the token is right for every other integration, so it is
+        # the mistake a Shopify owner will make. Answering it with the generic
+        # "token failed validation" blames the token; this 422 names the shape.
+        response = await async_client.post("/api/v1/connections/shopify", json={"token": "shpat_abc"})
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "Shopify needs two values in one box" in detail
+        # The hint is the single source of the format — the copy quotes it rather
+        # than spelling out a second version that can drift.
+        assert registry.get_provider("shopify").token_paste_hint in detail
+
+    @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")

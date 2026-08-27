@@ -31,5 +31,5 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
     delivers: "generated-JS access to your Cloudflare account — DNS, Workers, R2 & Zero Trust — instead of a fixed tool list",
   },
   parallel: { delivers: "web search powered by Parallel's API in place of the default provider" },
-  shopify: { delivers: "Admin API access to your store — orders, products, inventory & customers" },
+  shopify: { delivers: "read-only Shopify access — orders, products, inventory & customers" },
 };

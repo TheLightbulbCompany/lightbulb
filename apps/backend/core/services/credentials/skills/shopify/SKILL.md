@@ -1,6 +1,6 @@
 ---
 name: shopify
-description: Read and manage the user's Shopify store through the GraphQL Admin API.
+description: Read the user's Shopify store — orders, products, inventory, customers — through the GraphQL Admin API.
 primaryEnv: SHOPIFY_ADMIN_CREDENTIAL
 ---
 
@@ -14,7 +14,7 @@ values packed as `<shop-domain>|<access-token>`. Split it first, every session:
 
 ```bash
 SHOP="${SHOPIFY_ADMIN_CREDENTIAL%%|*}"      # mystore.myshopify.com
-TOKEN="${SHOPIFY_ADMIN_CREDENTIAL##*|}"     # shpat_...
+TOKEN="${SHOPIFY_ADMIN_CREDENTIAL#*|}"      # shpat_... (first | only, as the backend splits it)
 API="https://$SHOP/admin/api/2026-07/graphql.json"
 ```
 
@@ -35,7 +35,16 @@ legacy and no longer gets new fields. Build on the endpoint above.
 
 ## Queries
 
-Pass variables in the same JSON body (`{"query": "...", "variables": {...}}`).
+GraphQL is multi-line but the body is JSON, so build the body with `jq` rather
+than hand-escaping the query — this is the shape every example below wants:
+
+```bash
+Q='query RecentOrders($n: Int!) { orders(first: $n) { nodes { name } } }'
+jq -n --arg q "$Q" '{query: $q, variables: {n: 10}}' \
+  | curl -sS "$API" -H "X-Shopify-Access-Token: $TOKEN" \
+      -H "Content-Type: application/json" -d @- | jq .
+```
+
 Dates in `query:` filters are the store's own search syntax, not GraphQL — quote
 them exactly as shown.
 
@@ -74,7 +83,7 @@ query PaidOrdersSince($cursor: String) {
 ```
 
 ```bash
-jq '[.data.orders.nodes[].currentTotalPriceSet.shopMoney.amount | tonumber] | add'
+jq '[.data.orders.nodes[].currentTotalPriceSet.shopMoney.amount | tonumber] | add // 0'
 ```
 
 Repeat with `cursor` set to `pageInfo.endCursor` while `hasNextPage` is true, and
@@ -139,8 +148,13 @@ So:
 - A `THROTTLED` error in `errors[]` comes back with HTTP **200**. Check
   `.errors` on every response; do not trust the status code alone.
 
-## What this token cannot do
+## Limits
 
+- **Read, unless the owner asked for a specific change.** Never run a GraphQL
+  `mutation` — cancelling an order, editing a product, adjusting inventory — off
+  your own initiative or as part of a report. The token may well carry write
+  scopes, because read and write are adjacent checkboxes when the custom app is
+  created; that is not permission, and these writes land on a live store.
 - **One store.** It is scoped to `$SHOP` and cannot reach any other store.
 - **Only the scopes the owner ticked** when they created the custom app. A
   missing scope is an `ACCESS_DENIED` error naming the scope — tell the owner

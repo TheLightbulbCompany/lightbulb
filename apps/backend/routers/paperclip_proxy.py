@@ -649,14 +649,17 @@ def _redact_agent_secrets_json(body: bytes) -> bytes:
     return json.dumps(strip_agent_secrets(data)).encode("utf-8")
 
 
-def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co") -> str:
+def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str | None = None) -> str:
     """Force the Domain attribute on a Set-Cookie header to ``target_domain``.
 
+    ``target_domain`` defaults to a dot-prefixed ``settings.root_domain`` — the
+    product apex derived from FRONTEND_URL (``.isol8.co``).
+
     Goal: the cookie should be sent by the browser on subsequent
-    requests to any ``*.isol8.co`` subdomain (chat.isol8.co,
-    company.isol8.co, etc.) so Paperclip's in-page AJAX that
-    addresses ``company.isol8.co`` directly carries the session
-    without going through our bearer-injection path.
+    requests to any subdomain of that apex (chat., company., etc.)
+    so Paperclip's in-page AJAX that addresses the company host
+    directly carries the session without going through our
+    bearer-injection path.
 
     Strategy:
       * If a ``Domain=`` attribute already exists, replace its value
@@ -675,6 +678,7 @@ def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co"
     values are restricted to host names per RFC 6265 §4.1.2.3, so
     the simple pattern is safe.
     """
+    target_domain = target_domain or f".{settings.root_domain}"
     if re.search(r"(?i)domain=", set_cookie):
         return re.sub(
             r"(?i)(Domain=)[^;]+",
@@ -1225,9 +1229,13 @@ def _strip_handoff_param(request: Request) -> str:
 
 def _frontend_url() -> str:
     """Public URL of the dev/prod Isol8 frontend. Used for redirects when
-    the user lands on company.isol8.co without prerequisite state.
+    the user lands on the company host without prerequisite state.
+
+    ``FRONTEND_URL`` carries its own non-empty default in ``core/config.py``
+    and is CDK-set in every deployed env, so there is no second fallback to
+    hard-code here.
     """
-    return (settings.FRONTEND_URL or "").rstrip("/") or "https://dev.isol8.co"
+    return (settings.FRONTEND_URL or "").rstrip("/")
 
 
 @router.api_route(

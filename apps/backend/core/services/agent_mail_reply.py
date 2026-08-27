@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _COLD_WAKE_FOOTER = (
     "\n\n———\n"
     "I was asleep when this arrived — on the free plan I sleep when idle, so "
-    "replies wait for me to wake. https://isol8.co/settings\n"
+    f"replies wait for me to wake. {settings.FRONTEND_URL.rstrip('/')}/settings\n"
 )
 
 

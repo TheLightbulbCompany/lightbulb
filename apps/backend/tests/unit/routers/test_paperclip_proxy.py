@@ -253,6 +253,17 @@ def test_rewrite_set_cookie_custom_target_domain():
     assert "foo" not in out
 
 
+def test_rewrite_set_cookie_default_scope_follows_the_frontend_apex(monkeypatch):
+    """Browser-visible: the cookie must stay scoped to the apex every product
+    host is a subdomain of, whichever domain that currently is."""
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.example.ai")
+    assert "; Domain=.example.ai" in _rewrite_set_cookie_domain("tok=v")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://isol8.co")
+    assert "; Domain=.isol8.co" in _rewrite_set_cookie_domain("tok=v")
+
+
 # ---------------------------------------------------------------
 # Request / response header filtering
 # ---------------------------------------------------------------

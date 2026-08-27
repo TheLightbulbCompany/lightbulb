@@ -45,7 +45,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from core.config import settings
+from core.config import apex_domain, settings, url_host
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
@@ -56,9 +56,25 @@ OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
 # from the desktop node-host client ids.
 PAPERCLIP_OPERATOR_CLIENT_ID: Final[str] = "paperclip-operator"
 
-# Matches: wss://ws.isol8.co (prod), wss://ws-{env}.isol8.co (dev/staging),
-# ws://localhost:{port} (local). Anchored. No path component allowed.
-_GATEWAY_URL_RE: Final[re.Pattern[str]] = re.compile(r"\A(?:wss://ws(?:-[a-z]+)?\.isol8\.co|ws://localhost:[0-9]+)\Z")
+
+def build_gateway_url_re(ws_gateway_url: str) -> re.Pattern[str]:
+    """Allowlist pattern for an openclaw_gateway adapter URL.
+
+    Matches: wss://ws.<apex> (prod), wss://ws-{env}.<apex> (dev/staging),
+    ws://localhost:{port} (local). Anchored. No path component allowed.
+
+    <apex> is the registrable domain of ``ws_gateway_url`` — the same value CDK
+    hands the WS gateway — so a domain move needs no code change here. The check
+    is fail-CLOSED (``validate_gateway_url`` RAISES, and every agent
+    create/update path calls it), so a ``ws_gateway_url`` with no host drops the
+    hosted branch entirely rather than degrading into a looser pattern.
+    """
+    apex = apex_domain(url_host(ws_gateway_url))
+    hosted = rf"wss://ws(?:-[a-z]+)?\.{re.escape(apex)}|" if apex else ""
+    return re.compile(rf"\A(?:{hosted}ws://localhost:[0-9]+)\Z")
+
+
+_GATEWAY_URL_RE: Final[re.Pattern[str]] = build_gateway_url_re(settings.WS_GATEWAY_URL)
 
 # Per-run agent timeout (seconds) + the gateway's wait for that run (ms). The
 # openclaw-gateway adapter defaults BOTH to 120s (build-config.ts —

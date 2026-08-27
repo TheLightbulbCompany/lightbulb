@@ -17,7 +17,7 @@ import anyio
 import boto3
 from botocore.exceptions import ClientError
 
-from core.config import settings
+from core.config import apex_domain, settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,15 @@ def tenant_name_for(owner_id: str) -> str:
 
 
 def _identity_domain() -> str:
-    """The SES domain identity every env sends under. ``dev.isol8.co`` is a
-    mail SUBDOMAIN of the one verified identity ``isol8.co`` (see
-    ses-inbound-stack.ts) — SES authorizes subdomain sends via the parent
-    identity, so the association target is always the apex."""
-    domain = (settings.AGENT_EMAIL_DOMAIN or "").strip().lower()
-    return "isol8.co" if domain.endswith("isol8.co") else domain
+    """The SES domain identity every env sends under.
+
+    A non-prod ``AGENT_EMAIL_DOMAIN`` is a mail SUBDOMAIN of the one verified
+    identity (``dev.isol8.co`` under ``isol8.co``, see ses-inbound-stack.ts) —
+    SES authorizes subdomain sends via the parent identity, so the association
+    target is always the APEX of the configured mail domain, computed rather
+    than string-matched against a brand literal.
+    """
+    return apex_domain(settings.AGENT_EMAIL_DOMAIN)
 
 
 def _ignore_exists(fn, **kwargs) -> None:

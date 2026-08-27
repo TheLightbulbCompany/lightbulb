@@ -49,10 +49,11 @@ logger = logging.getLogger(__name__)
 # Match on the stable suffix rather than the env-dependent prefix.
 _SESSION_TOKEN_SUFFIX = ".session_token"
 
-# Browser-facing scope: shared across every *.isol8.co surface (the app host,
-# the api host, and the company/board host are all same-site under isol8.co),
-# so one cookie serves both the native BFF and the proxy.
-_COOKIE_DOMAIN = ".isol8.co"
+# Browser-facing scope: shared across every subdomain of the product apex (the
+# app host, the api host, and the company/board host are all same-site under it),
+# so one cookie serves both the native BFF and the proxy. Derived from
+# FRONTEND_URL so a domain move never leaves a cookie scoped to the old apex.
+_COOKIE_DOMAIN = f".{settings.root_domain}"
 
 # Mirror Better Auth's 7-day session ceiling for the browser's retention; an
 # expired/rotated cookie is handled by the 401 re-mint path, not by TTL.

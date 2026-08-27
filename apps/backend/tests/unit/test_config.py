@@ -16,7 +16,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from unittest.mock import patch  # noqa: E402
 
-from core.config import Settings  # noqa: E402
+from core.config import Settings, apex_domain  # noqa: E402
 
 
 @patch.dict(os.environ, {"MARKETPLACE_LISTINGS_TABLE": "isol8-dev-marketplace-listings"})
@@ -70,3 +70,23 @@ def test_team_seat_settings_have_expected_defaults():
     assert s.STRIPE_TEAM_SEAT_PRICE_ID == ""
     # Per-seat display dollars — the single server-side source of the "$20".
     assert s.TEAM_SEAT_PRICE_USD == 20
+
+
+def test_apex_domain_collapses_subdomains():
+    """The cookie scope, the same-site return-URL allowlist and the SES parent
+    identity all key on the registrable apex, not on a brand literal."""
+    assert apex_domain("isol8.co") == "isol8.co"
+    assert apex_domain("dev.isol8.co") == "isol8.co"
+    assert apex_domain("company-dev.isol8.co") == "isol8.co"
+    assert apex_domain("A.B.Example.AI") == "example.ai"
+    assert apex_domain("  dev.isol8.co.  ") == "isol8.co"
+    assert apex_domain("") == ""
+    assert apex_domain("localhost") == "localhost"
+
+
+def test_root_domain_is_the_apex_of_frontend_url():
+    """Same apex in every env — dev serves from a subdomain of it, prod from it."""
+    dev = Settings(FRONTEND_URL="https://dev.isol8.co")
+    prod = Settings(FRONTEND_URL="https://isol8.co")
+    assert (dev.frontend_host, dev.root_domain) == ("dev.isol8.co", "isol8.co")
+    assert (prod.frontend_host, prod.root_domain) == ("isol8.co", "isol8.co")

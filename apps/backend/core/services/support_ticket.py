@@ -29,8 +29,10 @@ def _posthog_person_url(user_id: str) -> str | None:
 
 
 def _admin_user_url(user_id: str) -> str:
-    host = "admin.isol8.co" if settings.ENVIRONMENT == "prod" else f"admin.{settings.ENVIRONMENT or 'dev'}.isol8.co"
-    return f"https://{host}/admin/users/{user_id}"
+    # The admin surface is always `admin.` in front of the frontend host, so
+    # prod (`isol8.co`) gives `admin.isol8.co` and dev (`dev.isol8.co`) gives
+    # `admin.dev.isol8.co` — the allowlist in apps/frontend/src/middleware.ts.
+    return f"https://admin.{settings.frontend_host}/admin/users/{user_id}"
 
 
 async def _safe_fetch(repo_get, owner_id: str) -> dict | None:

@@ -137,3 +137,17 @@ async def test_undelivered_log_bounds_the_message(caplog):
     line = next(r.getMessage() for r in caplog.records if "UNDELIVERED" in r.getMessage())
     assert "A" * 2000 in line
     assert "A" * 2001 not in line
+
+
+@pytest.mark.parametrize(
+    "frontend_url, expected",
+    [
+        ("https://isol8.co", "https://admin.isol8.co/admin/users/user_123"),
+        ("https://dev.isol8.co", "https://admin.dev.isol8.co/admin/users/user_123"),
+    ],
+)
+def test_admin_user_url_tracks_the_frontend_host(monkeypatch, frontend_url, expected):
+    """The deep link in every ticket is `admin.` in front of the frontend host —
+    the same allowlist apps/frontend/src/middleware.ts gates /admin on."""
+    monkeypatch.setattr(settings, "FRONTEND_URL", frontend_url)
+    assert support_ticket._admin_user_url("user_123") == expected

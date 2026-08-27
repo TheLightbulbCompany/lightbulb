@@ -117,8 +117,16 @@ def test_no_internal_wiring_disclosure(client):
         assert forbidden not in raw, f"leaked internal wiring token: {forbidden!r}"
 
 
-def test_api_base_url_derivation():
-    """The container's ISOL8_API_URL comes from this single per-env builder."""
-    assert _api_base_url("dev") == "https://api-dev.isol8.co"
-    assert _api_base_url("prod") == "https://api.isol8.co"
-    assert _api_base_url("") == "https://api.isol8.co"
+@pytest.mark.parametrize(
+    "api_base, expected",
+    [
+        ("https://api-dev.isol8.co", "https://api-dev.isol8.co"),
+        ("https://api.isol8.co", "https://api.isol8.co"),
+        ("https://api.isol8.co/", "https://api.isol8.co"),
+    ],
+)
+def test_api_base_url_derivation(monkeypatch, api_base, expected):
+    """The container's ISOL8_API_URL comes from this single builder, which
+    reads PUBLIC_API_BASE — the per-env public origin CDK wires."""
+    monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", api_base)
+    assert _api_base_url() == expected

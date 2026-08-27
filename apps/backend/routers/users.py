@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from core.auth import get_current_user, resolve_owner_id, AuthContext
+from core.config import settings
 from core.repositories import admin_actions_repo, billing_repo, user_repo
 from core.services.admin_audit import extract_client_ip
 from schemas.user_schemas import SyncUserRequest, SyncUserResponse
@@ -148,7 +149,7 @@ async def delete_my_account(
     if auth.is_org_context:
         raise HTTPException(
             status_code=403,
-            detail="Workspace accounts can't be deleted in-app — contact support@isol8.co.",
+            detail=f"Workspace accounts can't be deleted in-app — contact {settings.EMAIL_SUPPORT_ADDRESS}.",
         )
     owner_id = auth.user_id
 

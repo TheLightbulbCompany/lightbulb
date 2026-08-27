@@ -35,10 +35,6 @@ class ChangeProviderError(Exception):
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL", settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
-)
-
 # Starter Claude credits bundled into the bedrock_claude subscription Checkout
 # as a one-time line item. The owner picks the amount; this is only the
 # preselected default when they don't. Deliberately constants and not env vars:
@@ -228,7 +224,7 @@ class BillingService:
         with timing("stripe.api.latency", {"op": "billing_portal.session.create"}):
             session = stripe.billing_portal.Session.create(
                 customer=billing_account["stripe_customer_id"],
-                return_url=f"{FRONTEND_URL}{path}",
+                return_url=f"{settings.FRONTEND_URL}{path}",
                 idempotency_key=f"portal:{owner_id}:{path}:{bucket}",
             )
         return session.url
@@ -368,11 +364,11 @@ async def create_flat_fee_checkout(
             # Stripe — the grant is still travelling through the webhook — so
             # the owner who just paid to avoid a second step was shown one.
             success_url=(
-                f"{FRONTEND_URL}/chat?checkout=success"
+                f"{settings.FRONTEND_URL}/chat?checkout=success"
                 + (f"&provider={provider_choice}" if provider_choice else "")
                 + ("&credits=bundled" if starter_cents is not None else "")
             ),
-            cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+            cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
             # Promotion codes are OFF once credits ride along. The standalone
             # top-up deliberately grants the REQUESTED amount under a coupon
             # ("us absorbing the cost") — safe there, because that session
@@ -660,8 +656,8 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
             # and falls through to the web page when the app is not installed.
             # The matching apple-app-site-association entry is what makes it
             # deep-link rather than merely load.
-            success_url=f"{FRONTEND_URL}/checkout_redirect/success",
-            cancel_url=f"{FRONTEND_URL}/checkout_redirect/cancel",
+            success_url=f"{settings.FRONTEND_URL}/checkout_redirect/success",
+            cancel_url=f"{settings.FRONTEND_URL}/checkout_redirect/cancel",
             # Off for the same reason the credits-bundled path turns it off: a
             # promo field on a phone keyboard is friction, and nothing here
             # quotes a code.
@@ -734,8 +730,8 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         # also writes it synchronously before this call so a poll returning
         # from Checkout never flashes provider_required.
         metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
-        success_url=f"{FRONTEND_URL}/chat?checkout=success",
-        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        success_url=f"{settings.FRONTEND_URL}/chat?checkout=success",
+        cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
         # Seat count rides in the key. Seats now move on INVITE — seconds
         # before the admin clicks Subscribe — so invite, open checkout,
         # abandon, invite again, Subscribe can all land inside one 5-minute
@@ -970,9 +966,10 @@ async def create_ultra_upgrade(
             line_items=[{"price": settings.STRIPE_ULTRA_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
-                f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+                f"{settings.FRONTEND_URL}/chat?checkout=success"
+                + (f"&provider={provider_choice}" if provider_choice else "")
             ),
-            cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+            cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
             idempotency_key=_checkout_idempotency_key("ultra_checkout", owner_id),
         )
     except Exception:
@@ -1090,7 +1087,7 @@ async def create_credit_top_up_checkout(
             # visible, which a moment genuinely can fix.
             raise BillingServiceError(
                 "We couldn't finish setting up billing for this account. "
-                "Please contact support@isol8.co — retrying won't clear this."
+                f"Please contact {settings.EMAIL_SUPPORT_ADDRESS} — retrying won't clear this."
             )
     if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
         raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
@@ -1124,8 +1121,8 @@ async def create_credit_top_up_checkout(
                     "quantity": 1,
                 }
             ],
-            success_url=f"{FRONTEND_URL}/chat?credits=success",
-            cancel_url=f"{FRONTEND_URL}/chat?credits=cancel",
+            success_url=f"{settings.FRONTEND_URL}/chat?credits=success",
+            cancel_url=f"{settings.FRONTEND_URL}/chat?credits=cancel",
             allow_promotion_codes=True,
             automatic_tax={"enabled": True},
             customer_update={"address": "auto"},

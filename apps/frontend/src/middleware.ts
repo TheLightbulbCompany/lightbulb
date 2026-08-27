@@ -1,19 +1,25 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse, type NextRequest } from "next/server";
 
+import {
+  DEFAULT_ADMIN_HOSTS,
+  PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
+} from "@/lib/domain";
+
 const isProtectedRoute = createRouteMatcher([
   "/chat(.*)",
   "/onboarding",
   "/settings(.*)",
 ]);
 
-const DEFAULT_ADMIN_HOSTS = "admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000";
-
+// NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived
+// default below is what actually runs everywhere — there is no hot-fix lever, a
+// wrong admin host needs a rebuild. (`.env.example` documents the same set;
+// keep the two in step.)
 function parseAdminHosts(raw: string | undefined): Set<string> {
-  const source = raw && raw.length > 0 ? raw : DEFAULT_ADMIN_HOSTS;
+  const source = raw && raw.length > 0 ? raw.split(",") : DEFAULT_ADMIN_HOSTS;
   return new Set(
     source
-      .split(",")
       .map((h) => h.trim().toLowerCase())
       .filter(Boolean),
   );
@@ -85,10 +91,7 @@ export function decideAdminHostRouting(
 // a 307 to clerk.accounts.dev/v1/client/handshake?...) regardless of
 // what our inner callback does. Wrapping clerkMiddleware from outside
 // is the only way to fully bypass it for these hosts.
-const PAPERCLIP_HOSTS = new Set([
-  "company.isol8.co",
-  "dev.company.isol8.co",
-]);
+const PAPERCLIP_HOSTS = new Set(PAPERCLIP_HOST_LIST);
 
 const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
   const host = (req.headers.get("host") ?? "").toLowerCase();

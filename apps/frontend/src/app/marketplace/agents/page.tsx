@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { browseListings } from "@/lib/marketplace/api";
 import { AgentsBrowse } from "./AgentsBrowse";
-import { JsonLd, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
+import { JsonLd, absoluteUrl, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
   title: "Browse AI Agents for Business Workflows | isol8",
@@ -21,7 +21,7 @@ export default async function Agents() {
 
   return (
     <main>
-      <JsonLd data={{ ...softwareApplicationJsonLd, name: "isol8 deployable AI agents", url: "https://isol8.co/marketplace/agents" }} />
+      <JsonLd data={{ ...softwareApplicationJsonLd, name: "isol8 deployable AI agents", url: absoluteUrl("/marketplace/agents") }} />
       <JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Marketplace", path: "/marketplace" }, { name: "Agents", path: "/marketplace/agents" }])} />
       <section className="border-b border-[var(--edge)] px-6 py-14">
         <div className="mx-auto max-w-6xl">

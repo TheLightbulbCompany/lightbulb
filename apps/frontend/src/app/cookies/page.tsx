@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 
 import { LegalDocument } from "@/components/legal/LegalDocument";
+import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Cookie Policy — isol8",
-  alternates: { canonical: "https://isol8.co/cookies" },
+  alternates: { canonical: absoluteUrl("/cookies") },
   description: "How isol8 uses cookies and similar tracking technologies.",
 };
 

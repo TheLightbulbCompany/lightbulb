@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { docsFaq, getAllDocs } from "@/content/docs";
-import { JsonLd, pageMetadata } from "@/lib/seo";
+import { JsonLd, absoluteUrl, pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
   title: "Isol8 Docs — Get started, use cases, automations, connectors, and approvals",
@@ -29,12 +29,12 @@ export default function DocsPage() {
     "@type": "CollectionPage",
     name: "Isol8 product documentation",
     description: metadata.description,
-    url: "https://isol8.co/docs",
+    url: absoluteUrl("/docs"),
     hasPart: docs.map((doc) => ({
       "@type": "WebPage",
       name: doc.title,
       description: doc.description,
-      url: `https://isol8.co/docs/${doc.slug}`,
+      url: absoluteUrl(`/docs/${doc.slug}`),
     })),
   };
 

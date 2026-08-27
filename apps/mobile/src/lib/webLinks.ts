@@ -2,7 +2,7 @@
  * Deep links from the mobile app out to the web workspace.
  *
  * These lived as a `MANAGE_URL` constant copy-pasted into five Teams screens,
- * all of them pointing at `https://isol8.co/teams`. That route tree was
+ * all of them pointing at `<web-origin>/teams`. That route tree was
  * removed when Teams became a panel inside the workspace, so every copy had
  * been opening a 404 for real users — and no single place existed to fix.
  * One module, one set of builders, tested.
@@ -19,7 +19,7 @@
  * matching list panel in that case rather than emitting a dead link.
  */
 
-const WEB_ORIGIN = "https://isol8.co";
+import { WEB_ORIGIN } from "../config/domain";
 
 /** The workspace, no particular panel. */
 export const workspaceUrl = (): string => `${WEB_ORIGIN}/chat`;

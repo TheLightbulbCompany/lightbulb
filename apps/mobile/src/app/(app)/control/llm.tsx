@@ -19,6 +19,7 @@ import {
 import { ApiError, createApiClient, useGatewayRpc } from "@isol8/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
+import { WEB_ORIGIN } from "../../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 import {
@@ -34,7 +35,7 @@ import { useGateway } from "../../../providers/gateway";
 // Provider/model/credit management is a multi-step, purchase-adjacent surface
 // (OAuth sign-in, BYO key entry, Stripe top-up). Per D1 the mobile app renders
 // current state read-only and deep-links out to the web for any change.
-const MANAGE_LLM_URL = "https://isol8.co/chat?panel=llm";
+const MANAGE_LLM_URL = `${WEB_ORIGIN}/chat?panel=llm`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §7 + w2-billing-contract §2)

@@ -19,13 +19,14 @@ import {
 import { ApiError, createApiClient } from "@isol8/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
+import { WEB_ORIGIN } from "../../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 
 // Adding / removing an MCP server is a HIGH-risk config mutation (arbitrary
 // command + env, gateway restart). v1 is read-only; management deep-links out
 // to the web control panel.
-const MANAGE_INTEGRATIONS_URL = "https://isol8.co/chat?panel=integrations";
+const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/chat?panel=integrations`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §8 Integrations — MCP servers)

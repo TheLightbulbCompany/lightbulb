@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 
-export const SITE_URL = "https://isol8.co";
+import { SITE_URL } from "./domain";
+
+export { SITE_URL };
 export const SITE_NAME = "isol8";
 export const OG_IMAGE = "/og-image.png";
 

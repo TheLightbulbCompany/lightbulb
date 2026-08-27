@@ -7,8 +7,10 @@
  */
 import { deriveWebSocketUrl } from "@isol8/shared";
 
+import { ROOT_DOMAIN, WEB_ORIGIN } from "./domain";
+
 export const API_URL =
-  process.env.EXPO_PUBLIC_API_URL ?? "https://api-dev.isol8.co/api/v1";
+  process.env.EXPO_PUBLIC_API_URL ?? `https://api-dev.${ROOT_DOMAIN}/api/v1`;
 
 export const WS_URL = deriveWebSocketUrl(
   API_URL,
@@ -20,4 +22,4 @@ export const WS_URL = deriveWebSocketUrl(
  * Billing, checkout, and OAuth never happen in-app (D1); always prod web,
  * regardless of which API this build points at.
  */
-export const WEB_BILLING_URL = "https://isol8.co/settings?panel=billing";
+export const WEB_BILLING_URL = `${WEB_ORIGIN}/settings?panel=billing`;

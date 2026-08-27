@@ -71,7 +71,10 @@ export class Isol8Stage extends cdk.Stage {
       sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
         stackName: `isol8-${env}-ses-inbound`,
         envName: env,
-        hostedZone: dns.hostedZone,
+        // MAIL lives on the legacy domain until the mail move lands, so this is
+        // explicitly the legacy zone - NOT dns.hostedZone, which follows the
+        // PRODUCT domain and diverges the moment an env flips.
+        hostedZone: dns.legacyHostedZone,
         // By-name import — same cross-stack-cycle-avoidance posture as every
         // other secret name threaded into ServiceStack below.
         sesIngestSecretName: auth.sesIngestSecret.secretName,

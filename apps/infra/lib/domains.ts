@@ -33,3 +33,10 @@ export const PLATFORM_MAIL_DOMAIN = ROOT_DOMAIN;
  * that move. The domain flip and the mail move are independent tracks.
  */
 export const DEV_ROOT_DOMAIN = "flickmeon.ai";
+
+/**
+ * The domain being retired. `WildcardCert` in DnsStack stays pinned to this so
+ * its cross-stack Export never changes while the network + api stacks import
+ * it — see the DnsStack docstring. Remove only once nothing imports that export.
+ */
+export const LEGACY_ROOT_DOMAIN = "isol8.co";

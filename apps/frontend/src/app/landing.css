@@ -589,7 +589,7 @@
   opacity: 0.5;
   background: radial-gradient(
     520px 300px at 88% -20%,
-    rgba(74, 158, 116, 0.4),
+    rgba(182, 130, 53, 0.4),
     transparent 60%
   );
 }
@@ -639,12 +639,12 @@
 .ld-iso-body p {
   font-size: 15px;
   line-height: 1.65;
-  color: #bcd6c8;
+  color: #ded5c2;
   max-width: 62ch;
 }
 
 .ld-iso-body p strong {
-  color: #eaf6ef;
+  color: #f6ead0;
   font-weight: 600;
 }
 
@@ -730,8 +730,8 @@
 }
 
 @keyframes ld-dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 116, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(74, 158, 116, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(182, 130, 53, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(182, 130, 53, 0); }
 }
 
 .ld-const {
@@ -1518,7 +1518,7 @@
 }
 
 .ld-price-card--hi li::before {
-  background-color: rgba(168, 230, 198, 0.18);
+  background-color: rgba(240, 195, 78, 0.18);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 10 10' fill='none' stroke='%23a8e6c6' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 5l2.5 2.5 4.5-4'/%3E%3C/svg%3E");
 }
 

@@ -87,7 +87,7 @@
 }
 .blog-card:hover {
   border-color: var(--edge-forest);
-  box-shadow: 0 12px 32px rgba(6, 64, 43, 0.06);
+  box-shadow: 0 12px 32px rgba(15, 26, 43, 0.06);
   transform: translateY(-2px);
 }
 .blog-card:hover::before {
@@ -290,7 +290,7 @@
 
 .blog-prose th,
 .blog-prose td {
-  border-bottom: 1px solid rgba(23, 61, 43, 0.14);
+  border-bottom: 1px solid rgba(15, 26, 43, 0.14);
   padding: 10px 14px 10px 0;
   text-align: left;
   vertical-align: top;
@@ -450,7 +450,7 @@
 }
 
 .docs-nav a[aria-current="page"] {
-  background: rgba(23, 61, 43, 0.1);
+  background: rgba(15, 26, 43, 0.1);
   font-weight: 700;
 }
 
@@ -469,10 +469,10 @@
 }
 
 .docs-faq {
-  border: 1px solid rgba(23, 61, 43, 0.16);
+  border: 1px solid rgba(15, 26, 43, 0.16);
   border-radius: 28px;
   background: rgba(255, 252, 241, 0.78);
-  box-shadow: 0 18px 60px rgba(23, 61, 43, 0.08);
+  box-shadow: 0 18px 60px rgba(15, 26, 43, 0.08);
   padding: 28px;
 }
 
@@ -501,7 +501,7 @@
 }
 
 .docs-faq details {
-  border: 1px solid rgba(23, 61, 43, 0.14);
+  border: 1px solid rgba(15, 26, 43, 0.14);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.38);
   padding: 16px 18px;
@@ -527,6 +527,6 @@
   }
 
   .docs-nav a {
-    border: 1px solid rgba(23, 61, 43, 0.18);
+    border: 1px solid rgba(15, 26, 43, 0.18);
   }
 }

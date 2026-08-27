@@ -23,6 +23,26 @@ export const ROOT_DOMAIN = "isol8.co";
 export const PLATFORM_MAIL_DOMAIN = ROOT_DOMAIN;
 
 /**
+ * Domain the Clerk frontend API hangs off (`clerk.{CLERK_DOMAIN}`).
+ *
+ * Its own parameter, NOT `= ROOT_DOMAIN`, because Clerk is a third independent
+ * track. Clerk's host does not move because we deploy — it moves when someone
+ * performs "Change domain" on the Clerk instance, which mints a new publishable
+ * key and needs new DNS records and certificates.
+ *
+ * Derived from ROOT_DOMAIN, flipping the product domain would point the
+ * WebSocket Lambda authorizer at `https://clerk.{new}/.well-known/jwks.json`
+ * before that host existed. The authorizer could not fetch JWKS, so every
+ * `$connect` would be rejected: chat down fleet-wide, from an infrastructure
+ * deploy that looks nothing to do with auth.
+ *
+ * Same value as ROOT_DOMAIN today, so this changes no synthesized output. It
+ * exists so the product domain and the auth domain can move independently, and
+ * is repointed in its own change once the Clerk domain has actually moved.
+ */
+export const CLERK_DOMAIN = "isol8.co";
+
+/**
  * DEV product domain — flipped to the new brand ahead of prod so the whole
  * surface (API, WS, browser-view, Clerk CORS, Paperclip origin, Vercel aliases)
  * can be exercised end-to-end before prod is promoted.

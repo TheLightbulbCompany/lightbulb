@@ -20,7 +20,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
-import { ROOT_DOMAIN } from "../domains";
+import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
@@ -355,10 +355,10 @@ export class ApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       environment: {
         CLERK_ISSUER: isProd
-          ? `https://clerk.${rootDomain}`
+          ? `https://clerk.${CLERK_DOMAIN}`
           : "https://up-moth-55.clerk.accounts.dev",
         CLERK_JWKS_URL: isProd
-          ? `https://clerk.${rootDomain}/.well-known/jwks.json`
+          ? `https://clerk.${CLERK_DOMAIN}/.well-known/jwks.json`
           : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
         // SEC-8 token-origin fence — same allowlist + mode as the backend
         // task (service-stack.ts). azp is the origin that MINTED the token;

@@ -61,7 +61,7 @@ export class Isol8Stage extends cdk.Stage {
     //
     // Agent email itself is live in BOTH envs. SES matches a recipient
     // condition against the domain and its SUBDOMAINS, so the single
-    // prod-owned catch-all rule already receives `{slug}.dev.isol8.co` mail;
+    // prod-owned catch-all rule already receives `{slug}.dev.{mailDomain}` mail;
     // this stack publishes the dev DNS and the ingest Lambda routes by
     // recipient suffix to the dev backend. That is why dev needs no stack of
     // its own — and why the dev wiring is configured here rather than in the
@@ -71,10 +71,6 @@ export class Isol8Stage extends cdk.Stage {
       sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
         stackName: `isol8-${env}-ses-inbound`,
         envName: env,
-        // MAIL lives on the legacy domain until the mail move lands, so this is
-        // explicitly the legacy zone - NOT dns.hostedZone, which follows the
-        // PRODUCT domain and diverges the moment an env flips.
-        hostedZone: dns.legacyHostedZone,
         // By-name import — same cross-stack-cycle-avoidance posture as every
         // other secret name threaded into ServiceStack below.
         sesIngestSecretName: auth.sesIngestSecret.secretName,
@@ -88,7 +84,9 @@ export class Isol8Stage extends cdk.Stage {
         devSesIngestSecretName: "isol8/dev/ses_ingest_secret",
       });
       sesInbound.addDependency(auth);
-      sesInbound.addDependency(dns);
+      // No DnsStack dependency: mail lives on its own domain now, and this
+      // stack looks that zone (and the legacy mail zone) up by name itself —
+      // DnsStack's zone follows `rootDomain`, which is a different domain.
     }
 
     // Outbound agent-mail plumbing exists wherever agent email is on (dev + prod).

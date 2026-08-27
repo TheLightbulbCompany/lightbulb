@@ -10,7 +10,7 @@ import * as ses from "aws-cdk-lib/aws-ses";
 import * as sesActions from "aws-cdk-lib/aws-ses-actions";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
-import { ROOT_DOMAIN } from "../domains";
+import { LEGACY_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
 // SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
@@ -24,17 +24,44 @@ import { ROOT_DOMAIN } from "../domains";
 //      in bedrock-meter-stack.ts) — a second instantiation in the same
 //      account/region would fight over which rule set is active, so this
 //      stack must be a SINGLETON, never one-per-env.
-//   2. The wildcard MX + SPF records and the domain identity are real DNS +
-//      mail-routing changes against the LIVE isol8.co zone — not something
-//      a routine dev-stage deploy should ever touch implicitly.
+//   2. The wildcard MX + SPF records and the domain identities are real DNS
+//      + mail-routing changes against LIVE mail zones — not something a
+//      routine dev-stage deploy should ever touch implicitly.
 //
 // Both env's `ses_ingest_secret` are created unconditionally by AuthStack
 // (cheap, inert, matches the wsInternalSecret shape), but only
 // the PROD secret is ever actually read here — the ingest Lambda posts to
 // the prod backend (BACKEND_INGEST_URL is a fixed prod hostname) because
 // AGENT_EMAIL_DOMAIN mail only ever resolves under the single production
-// isol8.co domain, regardless of which env's containers mint the addresses.
+// mail domain, regardless of which env's containers mint the addresses.
+//
+// TWO mail domains are published, not one. `mailDomain` is where new mail
+// lives (`thelightbulb.company`); `legacyMailDomain` is the domain being
+// retired (`isol8.co`). Every existing agent address in DynamoDB is still
+// `{agent}@{slug}.isol8.co` and this PR does not migrate them, so the legacy
+// records are published UNCHANGED alongside the new ones — repointing them
+// would delete the `*.isol8.co` MX (killing inbound for every existing
+// mailbox) and the apex TXT set (taking isol8.co's Google site-verification
+// token with it). The legacy block, the legacy recipients on the catch-all
+// rule, and the legacy identity ARN in service-stack.ts come out together in
+// the retirement PR, after the address backfill.
 // =============================================================================
+
+/**
+ * Google Workspace site-verification token, per mail domain.
+ *
+ * A Route53 TXT record is a SET keyed by (name, type) and the apex record
+ * below is published with `deleteExisting`, so a token missing from that
+ * values array is GONE from the zone — which un-verifies the domain in
+ * Workspace. Keyed by domain so each apex carries its OWN token and can never
+ * be handed the other domain's.
+ */
+const GOOGLE_SITE_VERIFICATION: Record<string, string> = {
+  "thelightbulb.company":
+    "google-site-verification=v-MtfFMuBP2VYDP5sIB3wVXTQU4SjimPoryr5oX6mQg",
+  "isol8.co":
+    "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",
+};
 
 export interface SesInboundStackProps extends cdk.StackProps {
   /**
@@ -45,8 +72,6 @@ export interface SesInboundStackProps extends cdk.StackProps {
    * import, exactly like `BedrockMeterStackProps.envName`.
    */
   envName: string;
-  /** The isol8.co Route53 hosted zone (from DnsStack) — DKIM + MX + SPF land here. */
-  hostedZone: route53.IHostedZone;
   /**
    * Name (NOT ISecret) of the shared secret the ingest Lambda presents to
    * POST /webhooks/ses-inbound, e.g. `isol8/prod/ses_ingest_secret`. Passed
@@ -55,8 +80,22 @@ export interface SesInboundStackProps extends cdk.StackProps {
    * Metronome key import).
    */
   sesIngestSecretName: string;
-  /** Base mail domain, e.g. "isol8.co". Verified for BOTH receiving and sending. */
+  /**
+   * Base mail domain, e.g. "thelightbulb.company". Verified for BOTH receiving
+   * and sending. Its Route53 zone is looked up BY NAME here rather than passed
+   * in: mail no longer lives on the product domain, so DnsStack's zone (which
+   * follows `rootDomain`) is the wrong one.
+   */
   mailDomain: string;
+  /**
+   * Mail domain being retired, e.g. "isol8.co". Its records, identity and
+   * receipt-rule recipients are published UNCHANGED so every pre-existing
+   * `{agent}@{slug}.isol8.co` address keeps receiving and sending while the
+   * DynamoDB address book still points at it. Set to "" (or to `mailDomain`)
+   * once the backfill has run — that is the retirement step. Defaults to
+   * LEGACY_MAIL_DOMAIN.
+   */
+  legacyMailDomain?: string;
   /**
    * Product root domain (see lib/domains.ts) — the ingest Lambda POSTs to
    * `api.{rootDomain}` / `api-dev.{rootDomain}`. Separate from `mailDomain`
@@ -104,9 +143,14 @@ export class SesInboundStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SesInboundStackProps) {
     super(scope, id, props);
 
-    const { envName, hostedZone, mailDomain, devMailDomain } = props;
+    const { envName, mailDomain, devMailDomain } = props;
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
     const devRootDomain = props.devRootDomain ?? rootDomain;
+    const legacyMailDomain = props.legacyMailDomain ?? LEGACY_MAIL_DOMAIN;
+    // Publishing the same records twice against one domain would collide on
+    // every record name. Empty / equal-to-`mailDomain` is how the retirement
+    // PR (and a unit-test synth) turns the legacy leg off.
+    const publishLegacy = Boolean(legacyMailDomain) && legacyMailDomain !== mailDomain;
 
     if (devMailDomain && !props.devSesIngestSecretName) {
       // Fail at synth, not at the first dev email. Routing dev mail to the dev
@@ -118,155 +162,207 @@ export class SesInboundStack extends cdk.Stack {
     }
 
     // -------------------------------------------------------------------------
-    // Domain identity — verifies `mailDomain` for BOTH receiving and sending.
-    // `Identity.publicHostedZone` auto-creates the 3 DKIM CNAME records in the
-    // zone (see DkimIdentity.easyDkim().bind() — no manual DNS work needed).
-    // No `mailFromDomain` override: outbound agent replies default to SES's
-    // own amazonses.com bounce domain, which is fine for our use case and
-    // avoids provisioning a second MX/SPF pair purely for bounces.
+    // Everything DNS + identity for ONE mail domain. Called once per domain
+    // (the live one, and the one being retired) — the two are identical in
+    // shape and differ only in zone, apex token and dev subdomain, so a second
+    // hand-written copy would just be a place for the two to drift apart.
+    //
+    // The `idPrefix` is load-bearing: the legacy leg passes "AgentMail", which
+    // reproduces the construct ids this stack has always used, so its records
+    // synthesize byte-identically and CloudFormation sees NO change to them.
     // -------------------------------------------------------------------------
-    new ses.EmailIdentity(this, "AgentMailDomainIdentity", {
-      identity: ses.Identity.publicHostedZone(hostedZone),
-    });
+    const publishMailDomain = (
+      idPrefix: string,
+      domain: string,
+      devDomain: string | undefined,
+    ) => {
+      // Looked up by NAME, not passed in from DnsStack: `thelightbulb.company`
+      // is not the product zone, and after the product-domain flip DnsStack's
+      // zone is not even `isol8.co`. Each mail domain owns its own lookup, so
+      // the DKIM CNAMEs below always land in the zone that actually serves the
+      // domain being verified.
+      const zone = route53.HostedZone.fromLookup(this, `${idPrefix}HostedZone`, {
+        domainName: domain,
+      });
 
-    // -------------------------------------------------------------------------
-    // Wildcard MX — routes `*.mailDomain` (every company subdomain,
-    // `{slug}.isol8.co`) to SES receiving. The apex `isol8.co` MX is
-    // deliberately untouched (unmanaged / Resend) — this record only ever
-    // matches subdomain mail.
-    // -------------------------------------------------------------------------
-    new route53.MxRecord(this, "AgentMailWildcardMx", {
-      zone: hostedZone,
-      recordName: `*.${mailDomain}`,
-      values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
-    });
+      // -----------------------------------------------------------------------
+      // Domain identity — verifies `domain` for BOTH receiving and sending.
+      // `Identity.publicHostedZone` auto-creates the 3 DKIM CNAME records in
+      // the zone (see DkimIdentity.easyDkim().bind() — no manual DNS work
+      // needed). ONE identity covers every company subdomain: SES authorizes a
+      // send from any address under a verified domain identity, including
+      // `{agent}@{slug}.{domain}` (see
+      // apps/backend/core/services/agent_mail_tenant.py:_identity_domain()).
+      // No `mailFromDomain` override: outbound agent replies default to SES's
+      // own amazonses.com bounce domain, which is fine for our use case and
+      // avoids provisioning a second MX/SPF pair purely for bounces.
+      // -----------------------------------------------------------------------
+      new ses.EmailIdentity(this, `${idPrefix}DomainIdentity`, {
+        identity: ses.Identity.publicHostedZone(zone),
+      });
 
-    // Wildcard SPF — authorizes SES to send mail "from" any subdomain
-    // address (friday@acme.isol8.co, etc).
-    new route53.TxtRecord(this, "AgentMailWildcardSpf", {
-      zone: hostedZone,
-      recordName: `*.${mailDomain}`,
-      values: ["v=spf1 include:amazonses.com ~all"],
-    });
-
-    // -------------------------------------------------------------------------
-    // APEX SPF. The apex had NO SPF record at all, so mail from `isol8.co`
-    // authenticated as `spf=none` — and because Google Workspace signs
-    // outbound DKIM as `<domain>.<date>.gappssmtp.com` until a domain key is
-    // published, DKIM was not ALIGNED with `header.from=isol8.co` either.
-    // DMARC needs one aligned pass and had neither, so every message from
-    // admin@isol8.co evaluated `dmarc=fail` — including the owner's own reply
-    // to their agent, which the inbound anti-spoof gate then correctly
-    // dropped. Only `p=none` kept this from bouncing everywhere.
-    //
-    // Note the wildcard above does NOT cover the apex (`*.isol8.co` matches
-    // `a.isol8.co`, never `isol8.co`), which is why this looked configured
-    // while being absent — the same trap documented for `_dmarc` below.
-    //
-    // Every apex sender must be listed here, because publishing a record
-    // moves unlisted senders from neutral to softfail:
-    //   * `_spf.google.com` — Workspace user mail (admin@, prasiddha@)
-    //   * `amazonses.com`   — SES directly, AND Resend, which sends over SES
-    //                         infrastructure (EMAIL_FROM_WELCOME hello@isol8.co,
-    //                         EMAIL_FROM_TICKETS tickets@isol8.co)
-    // ~all (softfail) not -all: a hard fail would bounce any apex sender this
-    // list has missed. Tighten only after the DMARC rua reports come back clean.
-    //
-    // SPF permits 10 DNS lookups; this costs ~5 (_spf.google.com ~4, SES 1).
-    //
-    // `deleteExisting` is REQUIRED, not optional tidiness. A TXT record set
-    // already existed at the apex (created outside CFN, holding the
-    // google-site-verification token), and CloudFormation's Route53 CREATE
-    // does NOT upsert — it fails outright:
-    //
-    //   Tried to create resource record set [name='isol8.co.', type='TXT']
-    //   but it already exists
-    //
-    // which rolled the whole stack back. `deleteExisting` removes the
-    // unmanaged set first so CFN can adopt the name.
-    //
-    // The google-site-verification string is therefore carried in this array
-    // DELIBERATELY: a TXT record is a SET keyed by (name, type), and the
-    // delete-then-create replaces it wholesale, so a value omitted here is
-    // GONE from the zone — losing that token can unverify the domain in
-    // Google Workspace. Any future apex TXT value must be appended to this
-    // array, never declared as a second TxtRecord on the same name.
-    // -------------------------------------------------------------------------
-    new route53.TxtRecord(this, "AgentMailApexSpf", {
-      zone: hostedZone,
-      recordName: mailDomain,
-      deleteExisting: true,
-      values: [
-        "v=spf1 include:_spf.google.com include:amazonses.com ~all",
-        "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",
-      ],
-    });
-
-    // -------------------------------------------------------------------------
-    // DEV mail domain — `{slug}.dev.isol8.co`.
-    //
-    // These records live in THIS (prod) stack on purpose. A second receipt
-    // rule set is impossible — SetActiveReceiptRuleSet is account+region
-    // scoped and this stack owns the active one — so dev cannot run its own
-    // SES-inbound stack. It does not need to: SES matches a recipient
-    // condition against the domain AND its subdomains, so the catch-all rule
-    // for `isol8.co` already catches `friday@acme.dev.isol8.co`. Only DNS and
-    // per-environment backend routing are missing, and both are here.
-    //
-    // A single-label wildcard does not nest: `*.isol8.co` matches
-    // `acme.isol8.co` but NOT `acme.dev.isol8.co`, hence the second pair.
-    // -------------------------------------------------------------------------
-    if (devMailDomain) {
-      new route53.MxRecord(this, "AgentMailDevWildcardMx", {
-        zone: hostedZone,
-        recordName: `*.${devMailDomain}`,
+      // -----------------------------------------------------------------------
+      // Wildcard MX — routes `*.{domain}` (every company subdomain,
+      // `{slug}.{domain}`) to SES receiving. The apex MX is deliberately
+      // untouched: it points at Google Workspace for the human mailboxes and
+      // `support@`, and a leftmost wildcard never matches the apex itself, so
+      // the two coexist without either being aware of the other.
+      // -----------------------------------------------------------------------
+      new route53.MxRecord(this, `${idPrefix}WildcardMx`, {
+        zone,
+        recordName: `*.${domain}`,
         values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
       });
 
-      new route53.TxtRecord(this, "AgentMailDevWildcardSpf", {
-        zone: hostedZone,
-        recordName: `*.${devMailDomain}`,
+      // Wildcard SPF — authorizes SES to send mail "from" any subdomain
+      // address (friday@acme.{domain}, etc).
+      new route53.TxtRecord(this, `${idPrefix}WildcardSpf`, {
+        zone,
+        recordName: `*.${domain}`,
         values: ["v=spf1 include:amazonses.com ~all"],
       });
+
+      // -----------------------------------------------------------------------
+      // APEX SPF. Without one, mail from the apex authenticates as `spf=none`
+      // — and because Google Workspace signs outbound DKIM as
+      // `<domain>.<date>.gappssmtp.com` until a domain key is published, DKIM
+      // is not ALIGNED with `header.from=<domain>` either. DMARC needs one
+      // aligned pass; with neither, every message from `admin@<domain>`
+      // evaluates `dmarc=fail` — including an owner's own reply to their
+      // agent, which the inbound anti-spoof gate then correctly drops. That
+      // exact outage happened on isol8.co, and only `p=none` kept it from
+      // bouncing everywhere.
+      //
+      // Note the wildcard above does NOT cover the apex (`*.example.com`
+      // matches `a.example.com`, never `example.com`), which is why this looks
+      // configured while being absent — the same trap documented for `_dmarc`
+      // below.
+      //
+      // Every apex sender must be listed here, because publishing a record
+      // moves unlisted senders from neutral to softfail:
+      //   * `_spf.google.com` — Workspace user mail (admin@, support@, humans)
+      //   * `amazonses.com`   — SES directly (EMAIL_FROM_WELCOME hello@,
+      //                         EMAIL_FROM_TICKETS tickets@ — both wired from
+      //                         service-stack.ts), and anything else sending
+      //                         over SES infrastructure.
+      // ~all (softfail) not -all: a hard fail would bounce any apex sender this
+      // list has missed. Tighten only after the DMARC rua reports come back clean.
+      //
+      // SPF permits 10 DNS lookups; this costs ~5 (_spf.google.com ~4, SES 1).
+      //
+      // `deleteExisting` is REQUIRED, not optional tidiness. A TXT record set
+      // already exists at the apex of BOTH domains (created outside CFN,
+      // holding the google-site-verification token), and CloudFormation's
+      // Route53 CREATE does NOT upsert — it fails outright:
+      //
+      //   Tried to create resource record set [name='isol8.co.', type='TXT']
+      //   but it already exists
+      //
+      // which rolled the whole stack back once already. `deleteExisting`
+      // removes the unmanaged set first so CFN can adopt the name.
+      //
+      // The google-site-verification string is therefore carried in this array
+      // DELIBERATELY: a TXT record is a SET keyed by (name, type), and the
+      // delete-then-create replaces it wholesale, so a value omitted here is
+      // GONE from the zone — losing that token can unverify the domain in
+      // Google Workspace. Any future apex TXT value must be appended to this
+      // array, never declared as a second TxtRecord on the same name.
+      // -----------------------------------------------------------------------
+      new route53.TxtRecord(this, `${idPrefix}ApexSpf`, {
+        zone,
+        recordName: domain,
+        deleteExisting: true,
+        values: [
+          "v=spf1 include:_spf.google.com include:amazonses.com ~all",
+          ...(GOOGLE_SITE_VERIFICATION[domain]
+            ? [GOOGLE_SITE_VERIFICATION[domain]]
+            : []),
+        ],
+      });
+
+      // -----------------------------------------------------------------------
+      // DEV mail domain — `{slug}.dev.{domain}`.
+      //
+      // These records live in THIS (prod) stack on purpose. A second receipt
+      // rule set is impossible — SetActiveReceiptRuleSet is account+region
+      // scoped and this stack owns the active one — so dev cannot run its own
+      // SES-inbound stack. It does not need to: SES matches a recipient
+      // condition against the domain AND its subdomains, so the catch-all rule
+      // for `{domain}` already catches `friday@acme.dev.{domain}`. Only DNS and
+      // per-environment backend routing are missing, and both are here.
+      //
+      // A single-label wildcard does not nest: `*.{domain}` matches
+      // `acme.{domain}` but NOT `acme.dev.{domain}`, hence the second pair.
+      // -----------------------------------------------------------------------
+      if (devDomain) {
+        new route53.MxRecord(this, `${idPrefix}DevWildcardMx`, {
+          zone,
+          recordName: `*.${devDomain}`,
+          values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
+        });
+
+        new route53.TxtRecord(this, `${idPrefix}DevWildcardSpf`, {
+          zone,
+          recordName: `*.${devDomain}`,
+          values: ["v=spf1 include:amazonses.com ~all"],
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // DMARC policy at the ORGANIZATIONAL domain.
+      //
+      // This record is NOT optional decoration — without it the zone actively
+      // LOOKS configured while having no policy at all. The wildcard SPF TXT
+      // above matches `_dmarc.{domain}` (`_dmarc` is just another label under
+      // the zone), so a receiver querying for DMARC gets back
+      // `"v=spf1 include:amazonses.com ~all"`. That is not a DMARC record — it
+      // does not start with `v=DMARC1` — so every receiver reads the domain as
+      // having NO published policy. An explicit record is the only fix, since
+      // an explicit name always beats a wildcard match.
+      //
+      // One record at the org domain covers every company subdomain too:
+      // `_dmarc.acme.{domain}` also resolves to the wildcard SPF junk, and
+      // RFC 7489 §6.6.3 says a query returning no VALID DMARC record falls
+      // through to the organizational domain — landing here. (A wildcard can't
+      // help anyway: DNS wildcards must be leftmost, and `_dmarc.*.{domain}`
+      // is not a legal wildcard name.)
+      //
+      // `p=none` is deliberate and load-bearing. This policy governs ALL mail
+      // on the domain — Google Workspace on the apex, Clerk, and SES — and
+      // only SES alignment has been verified. Monitor-only publishes the
+      // policy and turns on aggregate reporting without putting a single
+      // existing mail flow at risk of quarantine/reject. Tighten to
+      // quarantine/reject only after the rua reports show every sender aligned.
+      //
+      // Aggregate reports go to an address that ALREADY EXISTS on the apex
+      // (Google Workspace). A same-domain `rua` needs no authorization record
+      // at the receiving domain, and reusing a live mailbox means publishing
+      // DMARC costs no new Workspace seat, alias, or admin-console change.
+      // -----------------------------------------------------------------------
+      new route53.TxtRecord(this, `${idPrefix}Dmarc`, {
+        zone,
+        recordName: `_dmarc.${domain}`,
+        values: [`v=DMARC1; p=none; rua=mailto:admin@${domain}; fo=1`],
+      });
+    };
+
+    // The live mail domain. `idPrefix` "PlatformMail" — everything it creates
+    // is a pure CREATE against the new zone.
+    publishMailDomain("PlatformMail", mailDomain, devMailDomain);
+
+    // The domain being retired. "AgentMail" is the prefix this stack has
+    // always used, so these synthesize EXACTLY as already deployed and
+    // CloudFormation changes nothing about them — verified against the live
+    // `isol8-prod-ses-inbound` template: zero removed resources, zero changed
+    // record sets.
+    //
+    // The dev pair is gated on `devMailDomain` too, because it has always
+    // existed only when dev mail is configured at all.
+    const legacyDevMailDomain =
+      publishLegacy && devMailDomain ? `dev.${legacyMailDomain}` : undefined;
+    if (publishLegacy) {
+      publishMailDomain("AgentMail", legacyMailDomain, legacyDevMailDomain);
     }
-
-    // -------------------------------------------------------------------------
-    // DMARC policy at the ORGANIZATIONAL domain.
-    //
-    // This record is NOT optional decoration — without it the zone actively
-    // LOOKS configured while having no policy at all. The wildcard SPF TXT
-    // above matches `_dmarc.isol8.co` (`_dmarc` is just another label under
-    // the zone), so a receiver querying for DMARC gets back
-    // `"v=spf1 include:amazonses.com ~all"`. That is not a DMARC record — it
-    // does not start with `v=DMARC1` — so every receiver reads the domain as
-    // having NO published policy. An explicit record is the only fix, since
-    // an explicit name always beats a wildcard match.
-    //
-    // One record at the org domain covers every company subdomain too:
-    // `_dmarc.acme.isol8.co` also resolves to the wildcard SPF junk, and
-    // RFC 7489 §6.6.3 says a query returning no VALID DMARC record falls
-    // through to the organizational domain — landing here. (A wildcard can't
-    // help anyway: DNS wildcards must be leftmost, and `_dmarc.*.isol8.co`
-    // is not a legal wildcard name.)
-    //
-    // `p=none` is deliberate and load-bearing. This policy governs ALL
-    // isol8.co mail — Google Workspace on the apex, Resend, Clerk, and SES —
-    // and only SES alignment has been verified. Monitor-only publishes the
-    // policy and turns on aggregate reporting without putting a single
-    // existing mail flow at risk of quarantine/reject. Tighten to
-    // quarantine/reject only after the rua reports show every sender aligned.
-    // -------------------------------------------------------------------------
-    // Aggregate reports go to an address that ALREADY EXISTS on the apex
-    // (Google Workspace). A same-domain `rua` needs no authorization record
-    // at the receiving domain, and reusing a live mailbox means publishing
-    // DMARC costs no new Workspace seat, alias, or admin-console change.
-    const reportMailbox = `admin@${mailDomain}`;
-
-    new route53.TxtRecord(this, "AgentMailDmarc", {
-      zone: hostedZone,
-      recordName: `_dmarc.${mailDomain}`,
-      values: [`v=DMARC1; p=none; rua=mailto:${reportMailbox}; fo=1`],
-    });
 
     // Deterministic literal names (not read off the live construct — see
     // note below) so cross-stage consumers never receive a CDK Token.
@@ -362,9 +458,19 @@ export class SesInboundStack extends cdk.Stack {
         SES_INBOUND_SECRET_ARN: sesIngestSecret.secretArn,
         // Per-environment routing. Absent => every message goes to prod,
         // which is the behaviour before dev is enabled (see `_route_for`).
+        // Comma-separated: while the legacy domain is still published there
+        // are TWO dev suffixes (`dev.thelightbulb.company` and
+        // `dev.isol8.co`), and a message for either must reach the DEV
+        // backend. A single suffix would silently hand every legacy dev
+        // address to the PROD backend, which has never heard of it.
         ...(devMailDomain && devSesIngestSecret
           ? {
-              DEV_MAIL_SUFFIX: devMailDomain,
+              DEV_MAIL_SUFFIX: [devMailDomain, legacyDevMailDomain]
+                .filter(Boolean)
+                .join(","),
+              // devRootDomain, NOT rootDomain: dev's API host follows the DEV
+              // product domain, which has already flipped. Using rootDomain here
+              // routed every dev address at the PROD backend.
               DEV_BACKEND_INGEST_URL: `https://api-dev.${devRootDomain}/api/v1/webhooks/ses-inbound`,
               DEV_SES_INBOUND_SECRET_ARN: devSesIngestSecret.secretArn,
             }
@@ -402,16 +508,20 @@ export class SesInboundStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Receipt rule set + catch-all rule.
     //
-    // BOTH entries are required. In SES, a bare domain matches ONLY that exact
-    // domain; matching subdomains needs a LEADING DOT. Every agent mailbox
-    // lives on a subdomain (`friday@{slug}.isol8.co`), so `[mailDomain]` alone
-    // matched nothing an agent could ever be reached at — mail hit SES (the
-    // `*.isol8.co` MX resolves) and was dropped with no S3 object and no
+    // BOTH entries per domain are required. In SES, a bare domain matches ONLY
+    // that exact domain; matching subdomains needs a LEADING DOT. Every agent
+    // mailbox lives on a subdomain (`friday@{slug}.{domain}`), so `[domain]`
+    // alone matched nothing an agent could ever be reached at — mail hit SES
+    // (the `*.{domain}` MX resolves) and was dropped with no S3 object and no
     // Lambda invocation. Inbound agent mail had never once been delivered.
     //
     // An earlier comment here asserted that a bare domain also matches
     // subdomains. It does not, and the whole inbound design rested on that
-    // untested claim. `mailDomain` is kept so the apex keeps working.
+    // untested claim. The bare domain is kept so each apex keeps working.
+    //
+    // The legacy pair is what keeps every pre-existing
+    // `{agent}@{slug}.isol8.co` address deliverable; it comes out with the
+    // rest of the legacy leg in the retirement PR.
     //
     // No fixed `receiptRuleSetName` — CDK auto-generates one, avoiding the
     // CREATE-before-DELETE collision risk a fixed name would have on replace
@@ -429,7 +539,11 @@ export class SesInboundStack extends cdk.Stack {
     this.ruleSet = new ses.ReceiptRuleSet(this, "AgentMailRuleSet");
 
     const catchAllRule = this.ruleSet.addRule("AgentMailCatchAll", {
-      recipients: [mailDomain, `.${mailDomain}`],
+      recipients: [
+        mailDomain,
+        `.${mailDomain}`,
+        ...(publishLegacy ? [legacyMailDomain, `.${legacyMailDomain}`] : []),
+      ],
       scanEnabled: true,
       actions: [
         new sesActions.S3({ bucket: this.rawBucket, objectKeyPrefix: "inbound/" }),

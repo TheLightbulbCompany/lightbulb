@@ -22,5 +22,9 @@
   "hosted-zone:account=877352799272:domainName=flickmeon.ai:region=us-east-1": {
     "Id": "/hostedzone/Z03529981ZCUW1R3FM806",
     "Name": "flickmeon.ai."
+  },
+  "hosted-zone:account=877352799272:domainName=thelightbulb.company:region=us-east-1": {
+    "Id": "/hostedzone/Z09913772LJJ6H4X9JJX0",
+    "Name": "thelightbulb.company."
   }
 }

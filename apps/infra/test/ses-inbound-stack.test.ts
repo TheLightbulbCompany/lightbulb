@@ -1,7 +1,11 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
-import * as route53 from "aws-cdk-lib/aws-route53";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "../lib/domains";
+import {
+  DEV_ROOT_DOMAIN,
+  LEGACY_MAIL_DOMAIN,
+  PLATFORM_MAIL_DOMAIN,
+  ROOT_DOMAIN,
+} from "../lib/domains";
 import { Isol8Stage } from "../lib/isol8-stage";
 import { HOSTED_ZONE_CONTEXT } from "./helpers";
 import { SesInboundStack, SesInboundStackProps } from "../lib/stacks/ses-inbound-stack";
@@ -10,25 +14,17 @@ const ACCOUNT = "877352799272";
 const REGION = "us-east-1";
 
 /**
- * Builds a standalone SesInboundStack against a throwaway upstream stack that
- * owns the (imported) hosted zone — mirrors how helpers.ts's synthApiStack
- * builds real upstream dependencies rather than mocking them.
+ * Builds a standalone SesInboundStack. The stack looks BOTH mail zones up by
+ * name itself (mail no longer lives on the product domain), so the only
+ * upstream it needs is the cached hosted-zone context.
  */
 function synthSesInboundStack(
   overrides: Partial<SesInboundStackProps> = {},
 ): Template {
   const app = new App({ context: HOSTED_ZONE_CONTEXT });
-  const support = new Stack(app, "Support", {
-    env: { account: ACCOUNT, region: REGION },
-  });
-  const hostedZone = route53.HostedZone.fromLookup(support, "Zone", {
-    domainName: ROOT_DOMAIN,
-  });
-
   const stack = new SesInboundStack(app, "SesInboundTest", {
     env: { account: ACCOUNT, region: REGION },
     envName: "prod",
-    hostedZone,
     sesIngestSecretName: "isol8/prod/ses_ingest_secret",
     mailDomain: PLATFORM_MAIL_DOMAIN,
     ...overrides,
@@ -43,17 +39,26 @@ describe("SesInboundStack", () => {
     template = synthSesInboundStack();
   });
 
-  test("catch-all rule matches the apex AND every subdomain mailbox", () => {
+  test("catch-all rule matches the apex AND every subdomain mailbox, on BOTH mail domains", () => {
     // The leading-dot entry is the load-bearing one: agent mailboxes are
-    // ALWAYS `friday@{slug}.isol8.co`, and in SES a bare domain matches only
-    // the exact domain. With `["isol8.co"]` alone, every agent reply hit SES
+    // ALWAYS `friday@{slug}.{domain}`, and in SES a bare domain matches only
+    // the exact domain. With the bare domain alone, every agent reply hit SES
     // and was dropped — no S3 object, no Lambda invocation — so inbound had
     // never been delivered once in prod. This test previously asserted that
     // broken value, which is why nothing caught it.
+    //
+    // The legacy pair is equally load-bearing right now: every address already
+    // in the DynamoDB address book is `{agent}@{slug}.isol8.co`, and dropping
+    // it here would stop delivering to all of them.
     template.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
     template.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
-        Recipients: [PLATFORM_MAIL_DOMAIN, `.${PLATFORM_MAIL_DOMAIN}`],
+        Recipients: [
+          PLATFORM_MAIL_DOMAIN,
+          `.${PLATFORM_MAIL_DOMAIN}`,
+          LEGACY_MAIL_DOMAIN,
+          `.${LEGACY_MAIL_DOMAIN}`,
+        ],
         ScanEnabled: true,
         Enabled: true,
       }),
@@ -61,17 +66,32 @@ describe("SesInboundStack", () => {
   });
 
   test("apex SPF authorizes Google AND SES, and preserves the site-verification token", () => {
-    // The apex had no SPF at all, so Workspace mail from admin@isol8.co
-    // evaluated spf=none; with Google's default gappssmtp DKIM being
-    // unaligned to isol8.co, DMARC failed outright and the inbound
-    // anti-spoof gate dropped the owner's own replies to their agent.
+    // An apex with no SPF authenticates as spf=none; with Google's default
+    // gappssmtp DKIM being unaligned to the apex, DMARC then fails outright
+    // and the inbound anti-spoof gate drops the owner's own replies to their
+    // agent. That happened on isol8.co and is why this record exists.
     //
     // Both values are asserted because a Route53 TXT record is a SET, and
     // the `deleteExisting` below removes the pre-existing set before creating
     // this one — so a value dropped from this array is GONE from the zone.
-    // Losing the verification token can unverify the domain in Workspace.
+    // The thelightbulb.company apex already held a Google verification token
+    // (added by hand); losing it un-verifies the Workspace.
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Name: `${PLATFORM_MAIL_DOMAIN}.`,
+      Type: "TXT",
+      ResourceRecords: [
+        '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
+        '"google-site-verification=v-MtfFMuBP2VYDP5sIB3wVXTQU4SjimPoryr5oX6mQg"',
+      ],
+    });
+  });
+
+  test("the LEGACY apex keeps its own SPF + its own site-verification token", () => {
+    // Each apex carries its OWN token. Handing one domain the other's would
+    // un-verify both — the new domain because its token vanished from the set,
+    // the old one because the token it was handed does not belong to it.
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `${LEGACY_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: [
         '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
@@ -80,13 +100,50 @@ describe("SesInboundStack", () => {
     });
   });
 
-  test("apex SPF deletes the pre-existing unmanaged TXT set before creating", () => {
+  test("both apex SPF records delete the pre-existing unmanaged TXT set first", () => {
     // Without this, the deploy FAILS and rolls the stack back:
     //   Tried to create resource record set [name='isol8.co.', type='TXT']
     //   but it already exists
     // CloudFormation's Route53 CREATE does not upsert, and a TXT set already
-    // existed at the apex outside CFN. This cost one failed prod deploy.
-    template.resourceCountIs("Custom::DeleteExistingRecordSet", 1);
+    // existed at BOTH apexes outside CFN. This cost one failed prod deploy.
+    template.resourceCountIs("Custom::DeleteExistingRecordSet", 2);
+  });
+
+  test("the legacy mail domain is published UNCHANGED alongside the new one", () => {
+    // Every agent address already in DynamoDB is `{agent}@{slug}.isol8.co`
+    // and this stack does not migrate them. Repointing these records instead
+    // of adding new ones would replace them — deleting the `*.isol8.co` MX
+    // (inbound dies for every existing mailbox) and the isol8.co apex TXT set
+    // (taking its Workspace verification token with it).
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `*.${LEGACY_MAIL_DOMAIN}.`,
+      Type: "MX",
+      ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
+    });
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `_dmarc.${LEGACY_MAIL_DOMAIN}.`,
+      Type: "TXT",
+      ResourceRecords: [
+        `"v=DMARC1; p=none; rua=mailto:admin@${LEGACY_MAIL_DOMAIN}; fo=1"`,
+      ],
+    });
+    template.hasResourceProperties("AWS::SES::EmailIdentity", {
+      EmailIdentity: LEGACY_MAIL_DOMAIN,
+    });
+  });
+
+  test("turning the legacy leg off leaves exactly one mail domain", () => {
+    // This is the retirement step, and the only supported way to take the old
+    // domain out: one flag, not a hand-edit of every record.
+    const t = synthSesInboundStack({ legacyMailDomain: "" });
+    t.resourceCountIs("AWS::SES::EmailIdentity", 1);
+    t.hasResourceProperties("AWS::SES::ReceiptRule", {
+      Rule: Match.objectLike({
+        Recipients: [PLATFORM_MAIL_DOMAIN, `.${PLATFORM_MAIL_DOMAIN}`],
+      }),
+    });
+    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF + _dmarc + apex SPF.
+    t.resourceCountIs("AWS::Route53::RecordSet", 7);
   });
 
   test("catch-all rule wires both the S3 action and the Lambda action", () => {
@@ -172,13 +229,15 @@ describe("SesInboundStack", () => {
   });
 
   test("verifies the domain identity (DKIM via the hosted zone)", () => {
-    template.resourceCountIs("AWS::SES::EmailIdentity", 1);
+    // TWO identities while the move is in flight — the new one, and the one
+    // being retired, which must NOT be torn down before the address backfill.
+    template.resourceCountIs("AWS::SES::EmailIdentity", 2);
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
       EmailIdentity: PLATFORM_MAIL_DOMAIN,
     });
-    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT
-    // + apex SPF TXT.
-    template.resourceCountIs("AWS::Route53::RecordSet", 7);
+    // Per domain: 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit
+    // _dmarc TXT + apex SPF TXT = 7, twice.
+    template.resourceCountIs("AWS::Route53::RecordSet", 14);
   });
 
   test("creates the raw-mail and attachments S3 buckets, both private", () => {
@@ -274,7 +333,8 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
     const t = Template.fromStack(sesStack!);
     t.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
-    t.resourceCountIs("AWS::SES::EmailIdentity", 1);
+    // The live mail domain + the one being retired.
+    t.resourceCountIs("AWS::SES::EmailIdentity", 2);
     t.resourceCountIs("AWS::S3::Bucket", 2);
   });
 
@@ -370,7 +430,12 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     );
     expect(fns.length).toBe(1);
     const env = (fns[0] as any).Properties.Environment.Variables;
-    expect(env.DEV_MAIL_SUFFIX).toBe(`dev.${PLATFORM_MAIL_DOMAIN}`);
+    // BOTH dev suffixes: `dev.isol8.co` addresses already exist in the dev
+    // address book, and routing them to the PROD backend would silently drop
+    // every one of them.
+    expect(env.DEV_MAIL_SUFFIX).toBe(
+      `dev.${PLATFORM_MAIL_DOMAIN},dev.${LEGACY_MAIL_DOMAIN}`,
+    );
     // DEV_ROOT_DOMAIN, not ROOT_DOMAIN: this stack is PROD-ONLY, so `rootDomain`
     // is prod's. Deriving the dev ingest URL from it pointed dev inbound mail at
     // prod's apex - the same string until the two envs are on different domains,

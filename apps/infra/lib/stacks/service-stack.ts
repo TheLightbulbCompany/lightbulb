@@ -19,7 +19,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
 
 // openclaw-version.json is the single source of truth for the pinned OpenClaw
@@ -201,6 +201,16 @@ export class ServiceStack extends cdk.Stack {
     const env = props.environment;
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
     const platformMailDomain = props.platformMailDomain ?? PLATFORM_MAIL_DOMAIN;
+    // Every SES identity the backend may send under. Two while the mail-domain
+    // move is in flight: `resolve_from_address` (core/services/agent_email.py)
+    // returns whatever address the DynamoDB address book holds, and every
+    // address minted before the move is still `{agent}@{slug}.isol8.co` — so
+    // dropping the legacy identity here would AccessDeny every reply from an
+    // existing agent mailbox. Collapses to one entry in the retirement PR.
+    const sendIdentityArns = [
+      platformMailDomain,
+      ...(LEGACY_MAIL_DOMAIN === platformMailDomain ? [] : [LEGACY_MAIL_DOMAIN]),
+    ].map((d) => `arn:aws:ses:${this.region}:${this.account}:identity/${d}`);
 
     // -------------------------------------------------------------------------
     // Docker Image Asset (built & pushed by CDK Pipeline)
@@ -489,10 +499,11 @@ export class ServiceStack extends cdk.Stack {
 
     // Agent-email outbound send (SES). Standalone ManagedPolicy for the SAME
     // 10 KB inline-policy-ceiling reason as BackendOwnerBedrockManage above.
-    // Scoped to the single `isol8.co` domain identity — SES authorizes
-    // sending from ANY address under a verified domain identity (including
-    // every company's `{agent}@{slug}.isol8.co` subdomain address), so one
-    // identity ARN covers the whole fleet. Safe to grant unconditionally in
+    // Scoped to the platform mail domain identity (plus the legacy one, see
+    // sendIdentityArns above) — SES authorizes sending from ANY address under
+    // a verified domain identity, including every company's
+    // `{agent}@{slug}.{mailDomain}` subdomain address, so one identity ARN per
+    // domain covers the whole fleet. Safe to grant unconditionally in
     // every env (dev included): the identity itself only exists once the
     // prod-stage SesInboundStack is deployed (prod-only), and sends are
     // separately gated by AGENT_EMAIL_DOMAIN being set (core/services/ses_email.py).
@@ -503,9 +514,7 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "AgentMailSesSend",
           actions: ["ses:SendEmail", "ses:SendRawEmail"],
-          resources: [
-            `arn:aws:ses:${this.region}:${this.account}:identity/${platformMailDomain}`,
-          ],
+          resources: sendIdentityArns,
         }),
         // Per-owner SES tenants are created lazily by the backend at first
         // send (core/services/agent_mail_tenant.py) — dynamic per owner, so
@@ -533,7 +542,7 @@ export class ServiceStack extends cdk.Stack {
             `arn:aws:ses:${this.region}:${this.account}:tenant/owner-*`,
             `arn:aws:ses:${this.region}:aws:reputation-policy/standard`,
             `arn:aws:ses:${this.region}:${this.account}:configuration-set/isol8-${env}-agent-mail`,
-            `arn:aws:ses:${this.region}:${this.account}:identity/${platformMailDomain}`,
+            ...sendIdentityArns,
           ],
         }),
       ],
@@ -1534,8 +1543,8 @@ export class ServiceStack extends cdk.Stack {
       ...(props.alertPageTopicArn
         ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
         : {}),
-      // Agent-email base domain — "isol8.co" in prod (where the SES stack
-      // and verified domain exist), empty in every other env. The backend's
+      // Agent-email base domain — the platform mail domain in prod (where the
+      // SES stack and verified identity exist), empty in every other env. The backend's
       // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
       // dev/local/CI stay inert.
       AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
@@ -1552,6 +1561,16 @@ export class ServiceStack extends cdk.Stack {
       // wherever that stack isn't deployed — sends stay unstamped, a
       // harmless no-op.
       AGENT_MAIL_CONFIGURATION_SET: props.agentMailConfigurationSet ?? "",
+      // Platform sender identities, on the apex of the mail domain. Set here
+      // rather than left to core/config.py's defaults so the mail domain has a
+      // SINGLE source of truth (lib/domains.ts) and a move cannot leave the
+      // backend quietly sending as the old domain — which SES would refuse
+      // once the legacy identity is retired. All three are apex addresses, so
+      // the one apex domain identity authorizes them; `support@` is a Google
+      // Workspace mailbox (apex MX), not an SES one.
+      EMAIL_FROM_WELCOME: `Isol8 <hello@${platformMailDomain}>`,
+      EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
+      EMAIL_FROM_TICKETS: `Isol8 Support <tickets@${platformMailDomain}>`,
     };
 
     const backendContainerSecrets: Record<string, ecs.Secret> = {

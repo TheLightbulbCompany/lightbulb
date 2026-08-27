@@ -6,12 +6,18 @@ adapter config server-side and reject any client-supplied
 FastAPI boundary.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from fastapi.testclient import TestClient
 
+from core.config import apex_domain, settings as _settings, url_host
 from main import app
 from routers.teams.deps import TeamsContext
+
+# The adapter allowlist derives from settings.WS_GATEWAY_URL; derive the fixture
+# host from the same place so it cannot drift out of the allowlist.
+GW_APEX = apex_domain(url_host(_settings.WS_GATEWAY_URL))
 
 
 @pytest.fixture
@@ -134,7 +140,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     monkeypatch.setattr(
         agents_mod,
         "_gateway_url_for_env",
-        lambda: "wss://ws-dev.isol8.co",
+        lambda: f"wss://ws-dev.{GW_APEX}",
     )
 
     r = client.post(
@@ -152,7 +158,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     device_pem = adapter_cfg.pop("devicePrivateKeyPem")
     assert device_pem.startswith("-----BEGIN PRIVATE KEY-----")
     assert adapter_cfg == {
-        "url": "wss://ws-dev.isol8.co?token=freshly-minted-token&clientId=paperclip-operator",
+        "url": f"wss://ws-dev.{GW_APEX}?token=freshly-minted-token&clientId=paperclip-operator",
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
         "sessionKey": "paperclip:u1",
@@ -182,7 +188,7 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
             "name": "Helper",
             "adapterType": "openclaw_gateway",
             "adapterConfig": {
-                "url": "wss://ws-dev.isol8.co?token=t&clientId=paperclip-operator",
+                "url": f"wss://ws-dev.{GW_APEX}?token=t&clientId=paperclip-operator",
                 "authToken": "SECRET-GATEWAY-TOKEN",
                 "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nLEAKME\n-----END PRIVATE KEY-----\n",
                 "sessionKeyStrategy": "issue",
@@ -192,7 +198,7 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(agents_mod.service_token, "mint", MagicMock(return_value="tok"))
-    monkeypatch.setattr(agents_mod, "_gateway_url_for_env", lambda: "wss://ws-dev.isol8.co")
+    monkeypatch.setattr(agents_mod, "_gateway_url_for_env", lambda: f"wss://ws-dev.{GW_APEX}")
 
     r = client.post(
         "/api/v1/teams/agents",
@@ -240,7 +246,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
             "role": "engineer",
             "adapterType": "openclaw_gateway",
             "adapterConfig": {
-                "url": "wss://ws-dev.isol8.co",
+                "url": f"wss://ws-dev.{GW_APEX}",
                 "authToken": "SENSITIVE_USER_TOKEN",
                 "sessionKeyStrategy": "issue",
                 "sessionKey": "paperclip:u1",
@@ -288,7 +294,7 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     monkeypatch.setattr(
         agents_mod,
         "_gateway_url_for_env",
-        lambda: "wss://ws-dev.isol8.co",
+        lambda: f"wss://ws-dev.{GW_APEX}",
     )
 
     r = client.post(

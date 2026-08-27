@@ -2,6 +2,12 @@
 
 import os
 
+from core.config import apex_domain, settings, url_host
+
+# The return-URL allowlist derives from settings.FRONTEND_URL, so the fixtures
+# must derive too — literals matched only while the configured domain equalled them.
+RETURN_APEX = apex_domain(url_host(settings.FRONTEND_URL))
+
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
@@ -979,9 +985,9 @@ class TestValidateReturnUrl:
 
     def test_allows_isol8_origins(self):
         for url in (
-            "https://isol8.co/deploy-success?session_id={CHECKOUT_SESSION_ID}",
-            "https://dev.isol8.co/listing/l1",
-            "https://company.isol8.co/deploy-success",
+            f"https://{RETURN_APEX}/deploy-success?session_id={{CHECKOUT_SESSION_ID}}",
+            f"https://dev.{RETURN_APEX}/listing/l1",
+            f"https://company.{RETURN_APEX}/deploy-success",
             "http://localhost:3000/deploy-success",  # local dev
         ):
             ok, err = self._validate(url)

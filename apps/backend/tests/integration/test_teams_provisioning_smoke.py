@@ -25,6 +25,7 @@ transport mocked. Why it matters:
 
 from __future__ import annotations
 
+
 import json
 import os
 import re
@@ -46,15 +47,22 @@ os.environ.setdefault(
 )
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
+from core.config import apex_domain, settings as _settings, url_host  # noqa: E402
 from core.encryption import encrypt  # noqa: E402
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo  # noqa: E402
 from core.services.paperclip_admin_client import PaperclipAdminClient  # noqa: E402
+
+# The adapter allowlist derives from settings.WS_GATEWAY_URL; derive the fixture
+# host from the same place so it cannot drift out of the allowlist.
+GW_APEX = apex_domain(url_host(_settings.WS_GATEWAY_URL))
 
 PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
 
 # Allowlist regex from ``paperclip_adapter_config.py`` — must match the
 # url synthesized by the BFF or the test (correctly) fails.
-_GATEWAY_URL_RE = re.compile(r"\A(?:wss://ws(?:-[a-z]+)?\.isol8\.co|ws://localhost:[0-9]+)\Z")
+# Mirrors build_gateway_url_re(); derives the apex so it cannot drift from the
+# real allowlist when the product domain moves.
+_GATEWAY_URL_RE = re.compile(rf"\A(?:wss://ws(?:-[a-z]+)?\.{re.escape(GW_APEX)}|ws://localhost:[0-9]+)\Z")
 
 
 @pytest.fixture
@@ -146,7 +154,7 @@ def smoke_env(mocked_paperclip_transport):
     - patches ``core.services.paperclip_user_session.get_user_session_cookie``'s
       Clerk email resolver dependency by patching ``core.services.clerk_admin.get_user``.
     - sets ENVIRONMENT='dev' so ``_ws_gateway_url`` resolves
-      to ``wss://ws-dev.isol8.co`` (in the allowlist).
+      to ``wss://ws-dev.<configured apex>`` (in the allowlist).
     """
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
@@ -361,7 +369,7 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     # the gateway handshake with — minted at synth time as a PKCS8 PEM.
     assert adapter_config["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
 
-    # 3. URL matches the gateway allowlist (env=dev -> wss://ws-dev.isol8.co).
+    # 3. URL matches the gateway allowlist (env=dev -> wss://ws-dev.<configured apex>).
     # The URL now carries the auth token in the query string (so the WS API
     # Gateway authorizer, which reads ?token=, accepts the connection).
     url = adapter_config["url"]

@@ -11,20 +11,44 @@ import { decideAdminHostRouting } from '@/middleware';
 const ADMIN_HOSTS = new Set([
   'admin.isol8.co',
   'admin.dev.isol8.co',
+  'admin.flickmeon.ai',
+  'admin.dev.flickmeon.ai',
   'admin.localhost:3000',
 ]);
 
-// The host sets are DERIVED from ROOT_DOMAIN rather than spelled out, and none
-// of the env vars that could override them is set in any deployed environment.
-// These assertions are the guard that the derivation still produces exactly the
-// hosts DNS actually serves — `admin.dev.<root>`, not `admin-dev.<root>`.
+// The host sets are DERIVED, and none of the env vars that could override them
+// is set in any deployed environment.
+//
+// The previous version of this block asserted the derivation equalled the
+// isol8.co hosts exactly. It passed while `admin.dev.flickmeon.ai/admin`
+// returned 404 in dev, because it was checking that the code agreed with
+// itself, not that it agreed with DNS. `SITE_URL` is one literal shared by both
+// deployments, so the moment dev and prod are on different domains, any list
+// derived from it alone is wrong in exactly one of them.
+//
+// So: assert COVERAGE of every host DNS actually serves, not equality with one
+// domain's worth. Drop the isol8.co entries when isol8.co stops serving.
 describe('domain config', () => {
   it('derives the shipped values', () => {
     expect(SITE_URL).toBe('https://isol8.co');
     expect(ROOT_DOMAIN).toBe('isol8.co');
     expect(DEEP_LINK_SCHEME).toBe('isol8');
-    expect(DEFAULT_ADMIN_HOSTS).toEqual([...ADMIN_HOSTS]);
-    expect(PAPERCLIP_HOSTS).toEqual(['company.isol8.co', 'dev.company.isol8.co']);
+  });
+
+  it('admits the admin host of EVERY product domain currently served', () => {
+    for (const h of ADMIN_HOSTS) expect(DEFAULT_ADMIN_HOSTS).toContain(h);
+  });
+
+  it('admits the company host of EVERY product domain currently served', () => {
+    for (const d of ['isol8.co', 'flickmeon.ai']) {
+      expect(PAPERCLIP_HOSTS).toContain(`company.${d}`);
+      expect(PAPERCLIP_HOSTS).toContain(`dev.company.${d}`);
+    }
+  });
+
+  it('admits no duplicates', () => {
+    expect(new Set(DEFAULT_ADMIN_HOSTS).size).toBe(DEFAULT_ADMIN_HOSTS.length);
+    expect(new Set(PAPERCLIP_HOSTS).size).toBe(PAPERCLIP_HOSTS.length);
   });
 });
 

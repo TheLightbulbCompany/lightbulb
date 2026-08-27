@@ -39,14 +39,32 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
 export const DEEP_LINK_SCHEME = "isol8";
 
 /** `admin.<root>` etc. — hosts allowed to serve the /admin route group. */
+/**
+ * Product domains this build answers on, during the isol8.co -> flickmeon.ai
+ * move. BOTH are listed on purpose.
+ *
+ * `SITE_URL` is a single literal and `NEXT_PUBLIC_APP_URL` is set in no Vercel
+ * environment, so `ROOT_DOMAIN` is the SAME value in dev and prod. But dev is
+ * already served from flickmeon.ai while prod is still isol8.co, so any host
+ * list derived from `ROOT_DOMAIN` alone is wrong in exactly one environment.
+ *
+ * That is not hypothetical: it made `admin.dev.flickmeon.ai/admin` return 404,
+ * because the admin allowlist held only `admin.dev.isol8.co`. The same applies
+ * to the Paperclip company hosts below.
+ *
+ * Drop the retired entry once isol8.co no longer serves.
+ */
+const PRODUCT_DOMAINS = Array.from(
+  new Set([ROOT_DOMAIN, "flickmeon.ai", "isol8.co"]),
+);
+
 export const DEFAULT_ADMIN_HOSTS = [
-  `admin.${ROOT_DOMAIN}`,
-  `admin.dev.${ROOT_DOMAIN}`,
+  ...PRODUCT_DOMAINS.flatMap((d) => [`admin.${d}`, `admin.dev.${d}`]),
   "admin.localhost:3000",
 ];
 
 /** Hosts proxied wholesale to the per-tenant Paperclip BFF. */
-export const PAPERCLIP_HOSTS = [
-  `company.${ROOT_DOMAIN}`,
-  `dev.company.${ROOT_DOMAIN}`,
-];
+export const PAPERCLIP_HOSTS = PRODUCT_DOMAINS.flatMap((d) => [
+  `company.${d}`,
+  `dev.company.${d}`,
+]);

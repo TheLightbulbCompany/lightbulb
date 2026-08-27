@@ -140,8 +140,11 @@
  * Deliberately still the stock shadcn dark values rather than an editorial
  * dark palette: /admin has never used cream/forest, and retheming it is a
  * separate decision from the :root pass above. Only the tokens with real
- * call sites are kept — --card-foreground, --chart-* and --sidebar-* are
- * dropped here for the same zero-usage reason they were dropped from :root.
+ * call sites are kept — --card-foreground and --sidebar-* are dropped here
+ * for the same zero-usage reason they were dropped from :root. --chart-* IS
+ * kept: the /admin/growth charts are its call site, and since /admin is the
+ * only charted surface and always renders inside `.dark`, defining it here
+ * (and not in :root) is the whole of the need.
  */
 .dark {
   --background: oklch(0 0 0);
@@ -162,6 +165,15 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  /* Growth-dashboard series colors. Semantic, not decorative: 1 = autonomous /
+     healthy, 2 = human-initiated, 3 = nightly CEO (shown, never counted),
+     4 = secondary series, 5 = alert. Stock shadcn dark values — chosen for
+     contrast against oklch(0 0 0), not to match the editorial :root palette. */
+  --chart-1: oklch(0.696 0.17 162.48);
+  --chart-2: oklch(0.588 0.158 241.966);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
 }
 
 @layer base {

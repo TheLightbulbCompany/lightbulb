@@ -36,7 +36,7 @@ Each block below is one Claude Code session. **Prepend the shared preamble** to 
 ## SHARED PREAMBLE (prepend to every prompt)
 
 ```
-You are implementing one PR of the isol8 onboarding rebuild (GitHub #1406). Before writing code, read in full:
+You are implementing one PR of the Lightbulb AI onboarding rebuild (GitHub #1406). Before writing code, read in full:
 - docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md (the architecture)
 - docs/superpowers/research/2026-07-24-onboarding-current-state.md (why; file:line current-state)
 Rules: NO feature flags — your code is active on merge; validate in dev; rollback is git revert. Red-first/TDD for behavior changes. Small, reviewable PR scoped to ONLY the task below. Match surrounding code style. Keep exactly one owner per fact — do not add a second store or a client-side reconciliation for durable truth. When you touch a compensation layer the spec marks for deletion, delete it in this PR (don't leave it dark). Commit signed, push to a feature branch, open a PR that references #1406 and states what it deletes. Uphold the spec's invariants (INV-1..INV-12); if your change would violate one, stop and flag it.
@@ -57,10 +57,10 @@ This PR changes no behavior and deletes nothing. It unblocks ONBOARD-TABLE and S
 
 ### Session `FORK1` — Paperclip: honor Idempotency-Key (fork repo)
 ```
-REPO: Isol8AI/paperclip (the fork; NOT the isol8 monorepo). Work on the isol8/2026.7-circuit-breaker line; ship via its own CI/tag, then bump paperclip-version.json's pin in isol8 (dev then prod) in a follow-up.
+REPO: Isol8AI/paperclip (the fork; NOT this monorepo). Work on the isol8/2026.7-circuit-breaker line; ship via its own CI/tag, then bump paperclip-version.json's pin in this repo (dev then prod) in a follow-up.
 TASK (spec PR-1 / FORK-1): Make company-create and agent-create honor Idempotency-Key: store key→response for a bounded TTL and replay the stored response on a repeat, instead of minting a duplicate. Today the key is read exactly once server-wide (an unrelated webhook route) — verified against 2fdafe83.
 - Tests: two create calls with the same Idempotency-Key return the SAME company/agent (replay), not two rows.
-This unblocks deleting isol8's reconcile-adopt / Atlas-skip / 409-as-success family (later, in FORK-ADOPT). Do NOT touch isol8 compensations here.
+This unblocks deleting this repo's reconcile-adopt / Atlas-skip / 409-as-success family (later, in FORK-ADOPT). Do NOT touch this repo's compensations here.
 ```
 
 ### Session `FORK2` — Paperclip: hard user-delete/reset (fork repo)
@@ -68,7 +68,7 @@ This unblocks deleting isol8's reconcile-adopt / Atlas-skip / 409-as-success fam
 REPO: Isol8AI/paperclip (the fork). Same ship-via-CI-then-pin flow as FORK1.
 TASK (spec PR-2 / FORK-2): Add a hard user-delete/reset endpoint (Better-Auth admin delete/reset) so an owner's account can be truly removed. No such API exists today (verified by exhaustive route grep @ 2fdafe83).
 - Tests: delete-then-re-signup with the same email SUCCEEDS (no 422 duplicate-email dead-end).
-This unblocks killing isol8's adopt-via-signin, 422-terminal classification, recover_orphan_paperclip_member.py, and the raw Aurora DELETE FROM "user" (later, in FORK-ADOPT).
+This unblocks killing this repo's adopt-via-signin, 422-terminal classification, recover_orphan_paperclip_member.py, and the raw Aurora DELETE FROM "user" (later, in FORK-ADOPT).
 ```
 
 ### Session `TRIGGER-L3` — One trigger family + L3 org guard
@@ -191,7 +191,7 @@ Depends on FORK1+FORK2 (promoted) + ONBOARD-TABLE.
 ```
 TASK (spec PR-14, adjusted): 
 - DELETE _purge_builtin_agents entirely (obsolete — the fork skip-builtin-agents gate covers company-create + startup reconcile, confirmed against pinned source). Replace the safety net: add a CDK test asserting PAPERCLIP_SKIP_BUILTIN_AGENTS is set on the Paperclip container, and a roster_drift metric (list_agents vs seeded_agent_ids post-provision) so a fork-gate regression is detected.
-- Add the workspace-state.json round-trip CI check: assert isol8's seeded JSON (js_iso_now format) round-trips through the pinned OpenClaw fork's parseSetup validator — guards the PR #1394 failure class (a bad timestamp makes every agent turn throw).
+- Add the workspace-state.json round-trip CI check: assert this repo's seeded JSON (js_iso_now format) round-trips through the pinned OpenClaw fork's parseSetup validator — guards the PR #1394 failure class (a bad timestamp makes every agent turn throw).
 - Formally close the PR #1388 branch; delete its plan/spec docs (git history + PR-close comment are the durable record per CLAUDE.md).
 - Delete THIS prompt-pack and the two superpowers docs' now-shipped status once the sequence is fully merged.
 Depends on FORK-ADOPT (purge) + SFN (close #1388).

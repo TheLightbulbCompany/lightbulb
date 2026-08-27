@@ -22,7 +22,7 @@ founders' org container `org_3DBS8G83oPrMm49yN2b70EjoFpN` (image
 
 OpenAI rotates the OAuth refresh token on **every** use. That rotation happens
 **inside the container**, in its per-agent SQLite auth store
-(`agents/main/agent/openclaw-agent.sqlite`), on OpenClaw's schedule. The Isol8
+(`agents/main/agent/openclaw-agent.sqlite`), on OpenClaw's schedule. The Lightbulb AI
 backend is not in that loop, so the rotated token is never written back to DDB.
 
 The DDB `oauth-tokens` row is therefore a **frozen snapshot** from the last

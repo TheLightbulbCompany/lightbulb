@@ -6,7 +6,7 @@
 **Current-state companion:** `docs/superpowers/research/2026-07-24-onboarding-current-state.md`
 **Method:** 3 independent design candidates (different stances) → 3-lens Opus judge panel → Opus synthesis. Judges split C > B > A (correctness lens), A > C > B (simplicity lens), C > B > A (robustness lens).
 
-> **Hard constraints (owner-set, non-negotiable):** (1) **No users** → no migration/backfill machinery; target the end-state directly, wipe-and-reprovision is the "migration." (2) **No feature flags / dark-ship gating** → merged code is active on merge; validation is test-and-iterate in dev; rollback is `git revert`. (3) **We own both forks** (`Isol8AI/paperclip`, `Isol8AI/agent`) → prefer fixing a root in the fork over compensating in isol8.
+> **Hard constraints (owner-set, non-negotiable):** (1) **No users** → no migration/backfill machinery; target the end-state directly, wipe-and-reprovision is the "migration." (2) **No feature flags / dark-ship gating** → merged code is active on merge; validation is test-and-iterate in dev; rollback is `git revert`. (3) **We own both forks** (`Isol8AI/paperclip`, `Isol8AI/agent`) → prefer fixing a root in the fork over compensating in this repo.
 
 ---
 
@@ -28,7 +28,7 @@ C won 2 of 3 judge lenses because it is the only candidate that answers the actu
 
 ## 2. State model
 
-**Two generation ids, each minted at exactly one code point; onboarding facts folded onto the `paperclip-companies` owner row (which isol8 owns in DynamoDB — no new table); Clerk demoted to a write-only presentation cache.**
+**Two generation ids, each minted at exactly one code point; onboarding facts folded onto the `paperclip-companies` owner row (which this repo owns in DynamoDB — no new table); Clerk demoted to a write-only presentation cache.**
 
 > **Decision (2026-07-24, owner):** onboarding state lives on the existing `paperclip-companies` owner row, not a dedicated table. Two benefits: `compute_status` already reads that row (for `teams_state`), so this adds **zero** extra reads; and atomic-wipe gets simpler (onboarding dies with the company row). The cost — and the load-bearing requirement of the ONBOARD PR — is that the row's existing **whole-item `put` writers** (`provision_org`'s `repo.put`) must be converted to field-scoped / onboarding-preserving writes, or the co-located onboarding fields would be clobbered on reconcile (the very clobber a dedicated table would have dodged). This is mandatory, not optional.
 
@@ -36,7 +36,7 @@ C won 2 of 3 judge lenses because it is the only candidate that answers the actu
 The **container-incarnation fence**. Minted exactly once, inside `create_user_service`'s row-creating write (event **G1**, single mint point). **Preserved** by scale-from-zero, force-redeploy, restart, provider hot-swap, Bedrock revoke/restore, and Stripe conversion — those are the same runtime waking up. Threaded through the PROVISION executor as `--generation`; every provisioning DDB write is conditioned on it. Owns runtime/execution facts (status, substatus, lease) and **never** onboarding facts. **`onboarded_at` is retired** — this deletes S2 and the entire L1 restamp special-case.
 
 ### `paperclip-companies` owner row (PK `owner_id`) — add the onboarding fields
-The **company-incarnation fence** lives on the row isol8 already owns. New attributes: `onboarding_generation` (ULID), `funnel_state` (`not_started|submitted|complete`), `funnel_submitted_at`, `funnel_completed_at`, `onboarding_goal_id`, `onboarding_project_id`, `bootstrap_state` (`not_started|dispatched|delivered|failed`), `bootstrap_dispatch_id` (fencing token), `bootstrap_dispatched_at`, `bootstrap_delivered_at`, `bootstrap_attempts`, `bootstrap_last_error`. (`company_id` and `friday_agent_id` already exist on this row.) DynamoDB is schemaless, so this is just new attributes — no CDK table to create.
+The **company-incarnation fence** lives on the row this repo already owns. New attributes: `onboarding_generation` (ULID), `funnel_state` (`not_started|submitted|complete`), `funnel_submitted_at`, `funnel_completed_at`, `onboarding_goal_id`, `onboarding_project_id`, `bootstrap_state` (`not_started|dispatched|delivered|failed`), `bootstrap_dispatch_id` (fencing token), `bootstrap_dispatched_at`, `bootstrap_delivered_at`, `bootstrap_attempts`, `bootstrap_last_error`. (`company_id` and `friday_agent_id` already exist on this row.) DynamoDB is schemaless, so this is just new attributes — no CDK table to create.
 
 `onboarding_generation` is minted **exactly once**, in `provision_org`'s fresh-create branch *after a genuinely-new Paperclip company is confirmed* (event **G2**) — **NOT** on reconcile-adopt of an existing `company_id`, and **NOT** on `provision_member` (an org seat). The mint atomically sets the new generation and resets `funnel_state=not_started` / `bootstrap_state=not_started` on the same write that records the fresh company. A container-only recreation (G1) never touches this row, so `funnel=complete` / `bootstrap=delivered` survive by construction.
 
@@ -133,7 +133,7 @@ flowchart TD
 | INV-9 | Every backend async op that can outlive a request is claim/generation-fenced and recovered by exactly one sweep worker | `reconciliation_worker.py` | integration test: kill mid-provision and mid-bootstrap; next worker tick resolves both |
 | INV-10 | A full wipe deletes container row + Paperclip company (Aurora) + the `paperclip-companies` owner row (onboarding rides with it) atomically; partial recreation refused | atomic-wipe endpoint | integration test: no orphan remains |
 | INV-11 | Exactly one autoprovision trigger family, all keyed on `owner_id` | `ensure_user_ready` | integration test: proxy path routes through the canonical trigger |
-| INV-12 | A Paperclip behavior isol8 depends on lives in fork source where cheaper than compensating; a compensation stays only while its fork gap is open | fork + #1409 | FORK-1/FORK-2 gate the compensation-deletion PRs |
+| INV-12 | A Paperclip behavior this repo depends on lives in fork source where cheaper than compensating; a compensation stays only while its fork gap is open | fork + #1409 | FORK-1/FORK-2 gate the compensation-deletion PRs |
 
 ---
 

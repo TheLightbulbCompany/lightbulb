@@ -13,7 +13,7 @@ The stale brief's wrapper-shim (`isol8-tool`) is **not required**. OpenClaw alre
 1. `mcp.servers[].env` accepts string values, passed explicitly to the child at spawn — full parent-env-inheritance is NOT needed.
 2. Config-load env substitution (`${VAR}`) is a **documented first-class feature**, not "accidental." The discovery doc undersells this.
 3. **OpenClaw watches `openclaw.json` and triggers `dispose-mcp-runtimes` on any `mcp.*` change** (verified: `src/gateway/config-reload-plan.ts:102`). Hot-reload disposes MCP runtimes; next call re-spawns with fresh env. Token rotation is essentially free.
-4. Isol8 already has `config_patcher.py` — a file-locked, atomic deep-merge primitive for openclaw.json on EFS. The exact tool needed to write tokens into MCP env at runtime.
+4. Lightbulb AI already has `config_patcher.py` — a file-locked, atomic deep-merge primitive for openclaw.json on EFS. The exact tool needed to write tokens into MCP env at runtime.
 
 **Recommended design:** write fetched tokens directly into `mcp.servers[].env` (and equivalents for skills/channels) via `config_patcher`. Let OpenClaw's existing reload pipeline handle propagation. No new wrapper binary, no init container, no env-file machinery to maintain.
 
@@ -102,7 +102,7 @@ Same rubric as discovery doc §10.3, but now informed by §1 above. Designs rank
 **Mechanism:** backend cron task fetches current tokens from Nango (or whatever broker we pick), calls `config_patcher.patch_user_config(owner_id, {mcp: {servers: {greenhouse: {env: {GREENHOUSE_API_KEY: "<token>"}}}}})` with the appropriate paths. `config_patcher` does the file-locked atomic deep-merge. OpenClaw's chokidar watcher fires, dispose-mcp-runtimes runs, next agent call re-spawns the MCP with the fresh env.
 
 **Pros:**
-- Uses existing Isol8 infra (`config_patcher` is already production-tested, handles EFS-specific lockf/atomic-rename/chown).
+- Uses existing Lightbulb AI infra (`config_patcher` is already production-tested, handles EFS-specific lockf/atomic-rename/chown).
 - Refresh is automatic via OpenClaw's hot-reload — zero additional refresh machinery.
 - No new in-container processes. Backend pushes; container pulls via its existing reload pipeline.
 - Works identically for MCP env, skills `apiKey`, channel plugin tokens — all are openclaw.json paths.
@@ -160,7 +160,7 @@ Same rubric as discovery doc §10.3, but now informed by §1 above. Designs rank
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Isol8 backend (FastAPI)                          │
+│                        Lightbulb AI backend (FastAPI)                          │
 │                                                                         │
 │   ┌───────────────────┐   ┌──────────────────┐   ┌─────────────────┐   │
 │   │ /connections UI   │──▶│ POST /connect/   │──▶│ Nango self-host │   │
@@ -278,7 +278,7 @@ Design C against the 19 criteria in discovery doc §7:
 | 7.1 — End customer | | | |
 | 1 | One-click connect per provider | ✅ | Same as stale brief — Nango Connect UI |
 | 2 | Never sees a token | ✅ | UI shows green checkmark only |
-| 3 | Never leaves Isol8 | ✅ | Same |
+| 3 | Never leaves Lightbulb AI | ✅ | Same |
 | 4 | One place to see status | ✅ | `/settings/connections` page |
 | 5 | Connection breakage visible | ✅ | Nango webhook → backend → UI badge |
 | 6 | Disconnection works | ✅ | UI calls Nango revoke; next refresh removes from openclaw.json |

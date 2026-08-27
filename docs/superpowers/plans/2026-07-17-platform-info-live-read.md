@@ -1,7 +1,7 @@
 # Implementation Plan — LIVE platform-info read (issue #1274)
 
-Give the isol8 agent a runtime read of the connectable **INTEGRATIONS** and **CHANNELS**
-catalog — replacing the stale hardcoded list baked into the isol8 skill. The agent's own
+Give the fleet agent a runtime read of the connectable **INTEGRATIONS** and **CHANNELS**
+catalog — replacing the stale hardcoded list baked into the `lightbulb` skill. The agent's own
 already-connected state is covered by the tools it already sees (see "Connected-state" below);
 a per-owner connected-state endpoint is deliberately **deferred** to a focused follow-up.
 
@@ -25,10 +25,10 @@ killed it for three converging reasons, all of which point the same way:
    *connectable*, which the public catalog fully supplies.
 2. **A baked skill has no owner_id at runtime.** `SKILL.md` is baked into the Docker image
    (`Dockerfile:418`), byte-identical for every owner, so it cannot carry `owner_id`. No
-   `OWNER_ID`/`ISOL8_OWNER_ID` env var is injected in `ecs_manager`, and the facts file
+   `OWNER_ID`/`LIGHTBULB_OWNER_ID` env var is injected in `ecs_manager`, and the facts file
    `isol8-facts.json` carries plan/provider/owner_kind but **no owner_id** (`owner_facts.py:83-90`).
    `atlas_seed` only gets an owner-scoped URL because it is **templated per-owner at stage time**
-   (`{{ISOL8_BRIDGE_URL}}` substituted in `atlas_seed/__init__.py:112`) — the baked isol8 skill
+   (`{{LIGHTBULB_BRIDGE_URL}}` substituted in `atlas_seed/__init__.py:112`) — the baked `lightbulb` skill
    has no such substitution. Building `GET /platform-info/u/<owner_id>` from a baked skill is not
    possible without new per-owner wiring the mandate warns against.
 3. **Only connected-CHANNEL state was ever novel, and it carries a credential-leak hazard.**
@@ -96,8 +96,8 @@ in this plan.**
 
 ## Container env wiring — the base URL
 
-The container holds **no** isol8-backend base URL today (grep of `core/containers/` for
-`api-dev`/`ISOL8_API`/`BACKEND_URL` is empty; `PAPERCLIP_API_URL` is Paperclip's, not reusable).
+The container holds **no** platform-backend base URL today (grep of `core/containers/` for
+`api-dev`/`LIGHTBULB_API`/`BACKEND_URL` is empty; `PAPERCLIP_API_URL` is Paperclip's, not reusable).
 The agent needs a base URL to curl the public catalog, so inject one task-def env var — the
 cheapest mechanism, and no auth since the route is public.
 
@@ -105,23 +105,23 @@ cheapest mechanism, and no auth since the route is public.
   (starts ~`:1811`), unconditionally append:
   ```python
   environment_for_task.append(
-      {"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url(settings.ENVIRONMENT)}
+      {"name": "LIGHTBULB_API_URL", "value": atlas_seed._api_base_url(settings.ENVIRONMENT)}
   )
   ```
 - **Reuse `atlas_seed._api_base_url` directly** (import it) — do not write a second string
-  builder. It already encodes the per-env convention: `prod`/empty → `https://api.isol8.co`;
-  else `https://api-{env}.isol8.co` (dev → `api-dev.isol8.co`). The router, the ecs_manager
-  append, and the test all reference this same symbol — one name, no `_isol8_api_base_url` alias.
+  builder. It already encodes the per-env convention: `prod`/empty → `https://api.flickmeon.ai`;
+  else `https://api-{env}.flickmeon.ai` (dev → `api-dev.flickmeon.ai`). The router, the ecs_manager
+  append, and the test all reference this same symbol — one name, no `_lightbulb_api_base_url` alias.
 - **Reachability is already proven:** the Atlas `register-built-agent` flow is a
-  container→`https://api-{env}.isol8.co` HTTPS curl over the same NAT egress path today
-  (`atlas_seed/files/TOOLS.md:21-30`). `api.isol8.co` is the public ALB host. No new egress rule.
+  container→`https://api-{env}.flickmeon.ai` HTTPS curl over the same NAT egress path today
+  (`atlas_seed/files/TOOLS.md:21-30`). `api.flickmeon.ai` is the public ALB host. No new egress rule.
 
-The agent constructs the catalog URL as `$ISOL8_API_URL/api/v1/platform-info`. No owner_id, no
+The agent constructs the catalog URL as `$LIGHTBULB_API_URL/api/v1/platform-info`. No owner_id, no
 bearer token.
 
 ---
 
-## SKILL.md edits — `apps/infra/openclaw/skills/isol8/SKILL.md`
+## SKILL.md edits — `apps/infra/openclaw/skills/lightbulb/SKILL.md`
 
 Three changes. Keep the timeless behavioral rules already present (lines 61-72, 166-176); replace
 the drift-prone hardcoded lists with a live-read instruction that matches the existing
@@ -147,23 +147,23 @@ BEFORE (lines 55-59):
 ```
 ## Integrations (connecting external services)
 
-The **Integrations tab** (Control Panel, isol8.co/chat) is where the owner
-connects external services — each connection is an MCP server that Isol8
+The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
+connects external services — each connection is an MCP server that Lightbulb AI
 wires into this container's config automatically.
 ```
 AFTER:
 ```
 ## Integrations and channels (connecting external services)
 
-The **Integrations tab** (Control Panel, isol8.co/chat) is where the owner
-connects external services — each connection is an MCP server that Isol8
+The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
+connects external services — each connection is an MCP server that Lightbulb AI
 wires into this container's config automatically. **Channels** (chat surfaces
 like Telegram/Discord/Slack) connect the same way, in the Channels tab.
 
 **Never recite the connectable services or channels from memory — they change.**
 Read the current catalog live:
 
-- Connectable catalog (public, no auth): `GET $ISOL8_API_URL/api/v1/platform-info`
+- Connectable catalog (public, no auth): `GET $LIGHTBULB_API_URL/api/v1/platform-info`
   — returns the current integrations and channels you can offer to connect.
 - What YOU already have connected: look at your own toolset. Connected
   integrations surface directly as tools; if a service's tools are present,
@@ -173,14 +173,14 @@ Read the current catalog live:
 external capability, first check the platform-info catalog: if the integration
 is offered but its tools aren't in your toolset yet, tell the owner exactly
 what to connect and where ("connect <service> in the Integrations tab, Control
-Panel at isol8.co/chat"), then do the real work once its tools appear. Do NOT
+Panel at flickmeon.ai/chat"), then do the real work once its tools appear. Do NOT
 silently produce copy (e.g. "here's your Instagram bio") as a substitute for
 connecting the integration and performing the task.
 
 **Honest fallback — name what you can't do.** If a needed capability is NOT in
 the platform-info catalog (no integration or channel offers it), say so
 plainly: name the capability that's missing, then offer a manual/draft
-fallback ("Isol8 has no <X> integration today, so I can't post it directly —
+fallback ("Lightbulb AI has no <X> integration today, so I can't post it directly —
 here's the draft for you to publish yourself"). Never imply you did something
 the platform can't do.
 ```
@@ -193,13 +193,13 @@ already state that connected services surface as tools.
 BEFORE:
 ```
 - **"How do I connect <service>?"** → Integrations tab, Control Panel,
-  isol8.co/chat. Its tools appear to you automatically once connected.
+  flickmeon.ai/chat. Its tools appear to you automatically once connected.
 ```
 AFTER:
 ```
 - **"How do I connect <service>?"** → Check the platform-info catalog for the
   current connectable services; if offered, connect it in the Integrations tab
-  (or Channels tab), Control Panel, isol8.co/chat. Its tools appear to you
+  (or Channels tab), Control Panel, flickmeon.ai/chat. Its tools appear to you
   automatically once connected.
 ```
 
@@ -212,10 +212,10 @@ scope for this issue.
 
 - **Endpoint** (`routers/platform_info.py` + registration): ships on a **normal backend deploy**
   (`backend.yml` → ECR → ECS). The **endpoint itself** is reachable immediately fleet-wide.
-- **`ISOL8_API_URL` env var** (task-def) and **SKILL.md** (baked into the image at
+- **`LIGHTBULB_API_URL` env var** (task-def) and **SKILL.md** (baked into the image at
   `apps/infra/openclaw/Dockerfile:418`): land on **REPROVISION**. The feature is **inert on the
   existing fleet until each container is reprovisioned** — existing containers lack both the
-  `ISOL8_API_URL` env (task-def, lands on reprovision) and the baked SKILL instruction telling
+  `LIGHTBULB_API_URL` env (task-def, lands on reprovision) and the baked SKILL instruction telling
   them platform-info exists (image-baked, lands on reprovision), so they keep reciting the stale
   list until then. There is no backfill for a baked skill. New provisions get everything
   immediately.
@@ -237,8 +237,8 @@ scope for this issue.
    the "delete the hardcoded map" fix.
 4. **No wiring disclosure** — assert the response body contains none of `command`, `env`,
    `materializer`, `token_url`, `package`, `policy_arn` (proves projection, not `model_dump()`).
-5. **Env-URL derivation** — unit-assert `atlas_seed._api_base_url("dev") == "https://api-dev.isol8.co"`
-   and `atlas_seed._api_base_url("prod") == "https://api.isol8.co"` (mirror the existing
+5. **Env-URL derivation** — unit-assert `atlas_seed._api_base_url("dev") == "https://api-dev.flickmeon.ai"`
+   and `atlas_seed._api_base_url("prod") == "https://api.flickmeon.ai"` (mirror the existing
    `atlas_seed` test if one exists).
 
 Run targeted first (`uv run pytest tests/ -k platform_info`), full suite at the end.
@@ -254,9 +254,9 @@ Run targeted first (`uv run pytest tests/ -k platform_info`), full suite at the 
 2. `apps/backend/main.py` — `from routers import platform_info` (line 33 group) +
    `app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["platform-info"])`.
 3. `apps/backend/core/containers/ecs_manager.py` — in `environment_for_task` block (~:1811),
-   append `ISOL8_API_URL` derived via `atlas_seed._api_base_url(settings.ENVIRONMENT)` (import
+   append `LIGHTBULB_API_URL` derived via `atlas_seed._api_base_url(settings.ENVIRONMENT)` (import
    the symbol).
-4. `apps/infra/openclaw/skills/isol8/SKILL.md` — the three edits above.
+4. `apps/infra/openclaw/skills/lightbulb/SKILL.md` — the three edits above.
 5. `apps/backend/tests/…/test_platform_info.py` — the five tests above.
 
 No change to `registry.py` and no change to `providers.yaml` (description cut).
@@ -271,8 +271,8 @@ Explicitly parked, not silently dropped. If connected-**channel** state proves l
 
 - **Wire owner_id first.** Inject the full owner-scoped URL as a per-container task-def env var
   in `ecs_manager` (which knows `user_id == owner_id`), e.g.
-  `ISOL8_PLATFORM_INFO_URL = https://api-{env}.isol8.co/api/v1/platform-info/u/{owner_id}`, and
-  reference `$ISOL8_PLATFORM_INFO_URL` in the baked skill. The baked skill cannot construct an
+  `LIGHTBULB_PLATFORM_INFO_URL = https://api-{env}.flickmeon.ai/api/v1/platform-info/u/{owner_id}`, and
+  reference `$LIGHTBULB_PLATFORM_INFO_URL` in the baked skill. The baked skill cannot construct an
   owner-scoped path on its own.
 - **Integrations connected:** `integrations_repo.list_for_owner(owner_id)`, marking connected on
   `row.get("status") == "connected"` (mirror `connections.py:259`), **not** mere row presence — a
@@ -293,5 +293,5 @@ Explicitly parked, not silently dropped. If connected-**channel** state proves l
 
 - Control-Panel-tabs and plans/pricing in platform-info (YAGNI; the response shape is extensible
   so they *could* join later, but not now). Leave SKILL.md line 45 as-is.
-- The dead `company.isol8.co` Paperclip URL (#1276) and the whitespace bug (#1275).
+- The dead `company.flickmeon.ai` Paperclip URL (#1276) and the whitespace bug (#1275).
 - Any new auth mechanism, new secret, or new egress rule — none required for v1.

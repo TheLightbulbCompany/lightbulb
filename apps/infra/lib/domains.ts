@@ -21,3 +21,15 @@ export const ROOT_DOMAIN = "isol8.co";
 
 /** Domain the platform sender + agent mail live on. Same as ROOT_DOMAIN today. */
 export const PLATFORM_MAIL_DOMAIN = ROOT_DOMAIN;
+
+/**
+ * DEV product domain — flipped to the new brand ahead of prod so the whole
+ * surface (API, WS, browser-view, Clerk CORS, Paperclip origin, Vercel aliases)
+ * can be exercised end-to-end before prod is promoted.
+ *
+ * Mail is deliberately NOT flipped with it: agent mail and the platform sender
+ * move to `thelightbulb.company` on their own schedule, and the SES receipt rule
+ * set is an account-wide singleton, so dev mail stays on `dev.isol8.co` until
+ * that move. The domain flip and the mail move are independent tracks.
+ */
+export const DEV_ROOT_DOMAIN = "flickmeon.ai";

@@ -11,7 +11,7 @@ import {
   Runner,
   StackCapabilities,
 } from "cdk-pipelines-github";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
 import { Isol8Stage } from "./isol8-stage";
 
 const app = new cdk.App();
@@ -128,7 +128,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 const devStage = new Isol8Stage(app, "dev", {
   env: awsEnv,
   environment: "dev",
-  rootDomain: ROOT_DOMAIN,
+  rootDomain: DEV_ROOT_DOMAIN,
   platformMailDomain: PLATFORM_MAIL_DOMAIN,
 });
 
@@ -162,13 +162,13 @@ pipeline.addStageWithGitHubOptions(devStage, {
           env: vercelEnv,
         },
         {
-          name: `Alias to dev.${ROOT_DOMAIN}`,
-          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
+          name: `Alias to dev.${DEV_ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${DEV_ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
         {
-          name: `Alias to admin.dev.${ROOT_DOMAIN}`,
-          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
+          name: `Alias to admin.dev.${DEV_ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.${DEV_ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
       ],

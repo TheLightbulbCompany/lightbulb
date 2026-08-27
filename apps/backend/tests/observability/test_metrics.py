@@ -36,7 +36,7 @@ def test_put_metric_auto_injects_env_and_service(capsys):
         put_metric("test.metric")
     data = json.loads(capsys.readouterr().out.strip())
     assert data["env"] == "dev"
-    assert data["service"] == "isol8-backend"
+    assert data["service"] == "lightbulb-backend"
     assert "env" in data["_aws"]["CloudWatchMetrics"][0]["Dimensions"][0]
     assert "service" in data["_aws"]["CloudWatchMetrics"][0]["Dimensions"][0]
 

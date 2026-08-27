@@ -57,11 +57,11 @@ async def last_7d() -> dict:
             "Id": f"c_{code}",
             "MetricStat": {
                 "Metric": {
-                    "Namespace": "Isol8",
+                    "Namespace": "LightbulbAI",
                     "MetricName": "provision.gate.blocked",
                     "Dimensions": [
                         {"Name": "env", "Value": env_name},
-                        {"Name": "service", "Value": "isol8-backend"},
+                        {"Name": "service", "Value": "lightbulb-backend"},
                         {"Name": "code", "Value": code},
                     ],
                 },

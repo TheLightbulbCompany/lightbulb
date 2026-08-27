@@ -13,7 +13,7 @@ console check. Reuses the reconciler's pure dollar machinery
 boto3.
 
 On drift beyond ``--threshold-pct`` it emits a PER-ENVIRONMENT CloudWatch
-metric (``Isol8/Billing`` / ``BedrockLedgerDriftPct``) and exits non-zero.
+metric (``LightbulbAI/Billing`` / ``BedrockLedgerDriftPct``) and exits non-zero.
 It deliberately does NOT create an AWS Cost Anomaly Detection monitor or any
 other account-global resource — such a resource collides across the per-env
 dev/prod stacks (the per-env-resource lesson; every Bedrock cost alarm in
@@ -55,7 +55,7 @@ def _emit_drift_metric(env: str, divergence_pct: float) -> None:
 
     cw = boto3.client("cloudwatch", region_name=getattr(settings, "AWS_REGION", "us-east-1"))
     cw.put_metric_data(
-        Namespace="Isol8/Billing",
+        Namespace="LightbulbAI/Billing",
         MetricData=[
             {
                 "MetricName": "BedrockLedgerDriftPct",

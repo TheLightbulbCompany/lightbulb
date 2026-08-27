@@ -192,3 +192,48 @@ old one keeps receiving mail, so nothing gets lost.*
 Do not send the trial paragraph to the 4 owners in S3 with no slug and no agent
 address without trimming the email line — they have no agent address, and
 telling them one moved invites a support thread about a thing that does not exist.
+
+---
+
+## DCR OAuth clients — self-healing, and the one exception is an orphan
+
+Added 2026-08-27. This store is **Secrets Manager**, not the `integrations` table, so no row
+above covers it.
+
+Dynamic Client Registration **pins `redirect_uris` at registration time**, so a domain move
+would normally invalidate every DCR-registered client: the provider rejects the new callback and
+nothing in the OAuth response distinguishes that from any other failure.
+
+**The code already handles it.** `oauth_dance.start()` compares the stored `redirect_uri` against
+the one it is about to use and **re-registers the client** when they differ
+(`oauth_dance.py:181-186`). DCR integrations therefore heal themselves on the next connect.
+
+**No owner action is required for DCR. Verified, not assumed.** The entire prod population is
+**one** record:
+
+| owner | provider | stored `redirect_uri` | live account? |
+|---|---|---|---|
+| `user_3ForZYBrDpmRb7usKnVVTsFGfsd` | `notion` | missing (pre-dates the field) | **No** — zero rows in `containers`, `billing-accounts`, `users`, `company-slugs` |
+
+That record would *not* self-heal, because records written before the `redirect_uri` field read
+as UNKNOWN and the code deliberately declines to re-register on a guess
+(`_registered_redirect_uris` returns `[]` → treated as no-drift). But it belongs to a **deleted
+account**, so it is an orphaned secret rather than an integration anyone will try to use.
+
+Two consequences:
+
+- **Do not send a "reconnect your DCR integrations" message.** It would be wrong for every live
+  owner (they self-heal) and pointless for the only non-healing record (nobody owns it).
+- The orphan is a cleanup candidate for the account-wipe sweep — an OAuth client record that
+  outlived its owner.
+
+**Re-check before the flip**, since new DCR clients can register at any time:
+
+```bash
+aws secretsmanager list-secrets --region us-east-1 --max-results 100 \
+  --query "SecretList[?contains(Name,'isol8/prod/integrations/') && contains(Name,'oauth-app')].Name" \
+  --output text
+```
+
+For any record whose JSON lacks a `redirect_uri` key, confirm the owner still exists before
+treating it as an owner action.

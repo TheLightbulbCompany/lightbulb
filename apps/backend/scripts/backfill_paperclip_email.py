@@ -24,6 +24,22 @@ Which means this has a ONE-WAY DOOR: run it while Clerk and Aurora still agree,
 i.e. BEFORE anybody's Clerk primary email changes. Afterwards, recovery is a
 manual per-owner ``SELECT email FROM "user" WHERE id = '<paperclip_user_id>'``.
 
+ORDERING — get this wrong and the backfill is silently undone:
+
+    1. MERGE + DEPLOY the backend that knows about ``paperclip_email``.
+    2. WAIT for the ECS rollover to finish (no old tasks left).
+    3. Run this script.
+    4. Verify (exit code 0).
+    5. ONLY THEN move anybody's Clerk primary email.
+
+Step 2 is not optional. ``PaperclipRepo.put`` is a raw ``PutItem`` and the
+PRE-DEPLOY version of it has no ``paperclip_email`` key, so any task still on
+old code that runs ``provision_org`` / ``provision_member`` (a member join, a
+reconcile-adopt, a failed-row retry) SILENTLY BLANKS a backfilled row. Deploys
+run at ``maxHealthyPercent: 200``, so there is always a window with one old task
+serving traffic. For the same reason: DO NOT ROLL THE BACKEND BACK after
+backfilling without re-running this script.
+
 Usage::
 
     cd apps/backend
@@ -43,6 +59,13 @@ Every run — dry or not — ends with the verification count the rollout gate
 wants: how many ``status=active`` rows carry a non-empty value, and which ones
 do not. Exit code 0 means every active row is covered; anything else means NOT
 READY, so nobody should touch a mailbox yet.
+
+ORPHANS pin the exit code to non-zero on purpose. A row whose Better Auth user
+no longer exists in Aurora (logged ``NO AURORA ROW``) cannot be backfilled —
+this script refuses to guess an address, because a wrong guess cements the very
+401 it exists to prevent. There is no ``--force``: resolve each orphan by hand
+(reprovision the owner, or archive the dead row) and re-run. An orphan is a real
+"not ready" signal, not a nuisance to be flagged past.
 
 DELETE THIS SCRIPT once it has run against dev + prod — per CLAUDE.md, a
 one-shot backfill whose data is produced at creation time afterwards is git
@@ -68,7 +91,11 @@ async def _scan_company_rows() -> list[dict]:
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
-        kwargs: dict[str, Any] = {}
+        # ConsistentRead: this scan produces the rollout GATE number, and the
+        # verification pass runs immediately after a write burst. An eventually
+        # consistent read there reports rows as STILL MISSING that were in fact
+        # written, exits 1, and tells the operator the fleet is not ready when it is.
+        kwargs: dict[str, Any] = {"ConsistentRead": True}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         resp = await run_in_thread(table.scan, **kwargs)
@@ -110,7 +137,15 @@ async def _write_email(user_id: str, email: str) -> bool:
             table.update_item,
             Key={"user_id": user_id},
             UpdateExpression="SET paperclip_email = :e",
-            ConditionExpression="attribute_not_exists(paperclip_email) OR paperclip_email = :empty",
+            # attribute_exists(user_id) is load-bearing: UpdateItem is an UPSERT, so a row
+            # deleted between the scan and this write (account wipe, purge sweep) would be
+            # RESURRECTED carrying only {user_id, paperclip_email} — no status, no created_at.
+            # _item_to_company then KeyErrors on every get() (hard 500 on /teams, the proxy and
+            # /container/status) and try_acquire_seed_claim's attribute_not_exists(user_id) can
+            # never succeed again. Same guard update_status uses, for the same reason.
+            ConditionExpression=(
+                "attribute_exists(user_id) AND (attribute_not_exists(paperclip_email) OR paperclip_email = :empty)"
+            ),
             ExpressionAttributeValues={":e": email, ":empty": ""},
         )
         return True

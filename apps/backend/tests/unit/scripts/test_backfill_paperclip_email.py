@@ -104,3 +104,52 @@ class TestTableResolution:
             rc = main()
         assert rc == 0
         run_mock.assert_called_once()
+
+
+class TestWriteGuard:
+    """``_write_email`` uses UpdateItem, which is an UPSERT.
+
+    Without ``attribute_exists(user_id)`` a row deleted between the scan and the
+    write (account wipe, purge sweep) is RESURRECTED holding only
+    ``{user_id, paperclip_email}``. ``_item_to_company`` then KeyErrors on
+    ``status``/``created_at`` for every ``get()`` — a hard 500 on /teams, the
+    proxy and /container/status — and ``try_acquire_seed_claim``'s
+    ``attribute_not_exists(user_id)`` can never succeed again, wedging the owner
+    in the loser-wait 409 path permanently.
+    """
+
+    def _captured_kwargs(self) -> dict:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from scripts import backfill_paperclip_email as mod
+
+        table = MagicMock()
+        captured: dict = {}
+
+        def _update_item(**kwargs):
+            captured.update(kwargs)
+
+        table.update_item = _update_item
+
+        async def _run_in_thread(fn, *a, **kw):
+            return fn(*a, **kw)
+
+        # _write_email imports get_table/run_in_thread INSIDE the function
+        # (deliberately — every core.* import in this script is function-local),
+        # so the patch target is core.dynamodb, not the script module.
+        with (
+            patch("core.dynamodb.get_table", MagicMock(return_value=table)),
+            patch("core.dynamodb.run_in_thread", _run_in_thread),
+        ):
+            asyncio.run(mod._write_email("user_x", "alice@isol8.co"))
+        return captured
+
+    def test_the_write_refuses_to_resurrect_a_deleted_row(self):
+        cond = self._captured_kwargs().get("ConditionExpression", "")
+        assert "attribute_exists(user_id)" in cond
+
+    def test_the_write_still_refuses_to_clobber_a_stored_address(self):
+        cond = self._captured_kwargs().get("ConditionExpression", "")
+        assert "attribute_not_exists(paperclip_email)" in cond
+        assert "paperclip_email = :empty" in cond

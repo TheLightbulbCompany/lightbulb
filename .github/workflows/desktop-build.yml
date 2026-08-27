@@ -256,15 +256,26 @@ jobs:
     - name: Patch tauri.conf.json for prod
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
+        # TWO updater endpoints, tried in order. The shipped app used to carry a
+        # single one on isol8.co -- the domain the product is moving off. Once
+        # that host stops serving, an installed app has NO reachable updater and
+        # can never receive the build that would point it at the new domain;
+        # manual reinstall is the only recovery. Adding the future host now means
+        # any app that takes ONE more update while isol8.co still serves is
+        # already able to update after the move.
+        #
+        # Order matters: the current host first, so nothing changes for today's
+        # installs. Drop the isol8.co entry only once it no longer serves.
         jq --arg url "https://isol8.co/chat" \
            --arg updateUrl "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}" \
+           --arg nextUpdateUrl "https://flickmeon.ai/api/desktop/update/{{target}}/{{current_version}}" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
           .bundle.targets = ["app"] |
           .build.devUrl = $url |
           .build.frontendDist = $url |
           .app.windows[0].url = $url |
-          .plugins.updater.endpoints = [$updateUrl]
+          .plugins.updater.endpoints = [$updateUrl, $nextUpdateUrl]
         ' "$TAURI_CFG" > "$TAURI_CFG.new"
         mv "$TAURI_CFG.new" "$TAURI_CFG"
         echo "Patched tauri.conf.json:"

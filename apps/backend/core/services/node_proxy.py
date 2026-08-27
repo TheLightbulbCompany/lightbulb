@@ -109,6 +109,30 @@ def clear_patched_sessions_for_user(user_id: str) -> list[str]:
     return cleared
 
 
+DESKTOP_SUFFIX = " | Lightbulb AI Desktop"
+
+# The pre-rebrand suffix, still present on every node registered before the
+# rename. Listed ALONGSIDE the current one, never instead of it: a reconnect
+# re-sends the stored name, so dropping the legacy entry would leave it
+# unstripped and compound "Alice | Isol8 Desktop | Lightbulb AI Desktop"
+# forever. Remove only once no registered node still carries it.
+_LEGACY_DESKTOP_SUFFIXES = (DESKTOP_SUFFIX, " | Isol8 Desktop")
+
+
+def node_display_name(incoming: str) -> str:
+    """Suffix a desktop node name idempotently.
+
+    Strips a suffix this function itself produced -- current or pre-rebrand --
+    before re-appending, so reconnects replace rather than compound. Only a
+    trailing occurrence counts: "My Isol8 Desktop rig" is a name, not a suffix.
+    """
+    for suffix in _LEGACY_DESKTOP_SUFFIXES:
+        if incoming.endswith(suffix):
+            incoming = incoming[: -len(suffix)]
+            break
+    return f"{incoming}{DESKTOP_SUFFIX}"
+
+
 async def handle_node_connect(
     owner_id: str,
     user_id: str,
@@ -133,15 +157,7 @@ async def handle_node_connect(
     incoming = (client_params.get("displayName") or "").strip()
     if not incoming:
         incoming = display_name.strip() or "Desktop"
-    # Strip any pre-existing suffix so reconnects don't compound
-    # "Alice | Lightbulb AI Desktop | Lightbulb AI Desktop". The pre-rebrand
-    # " | Lightbulb AI Desktop" is still on names already registered, so both are
-    # stripped — dropping the legacy one would let it compound forever.
-    for legacy in (" | Lightbulb AI Desktop", " | Lightbulb AI Desktop"):
-        if incoming.endswith(legacy):
-            incoming = incoming[: -len(legacy)]
-            break
-    client_params["displayName"] = f"{incoming} | Lightbulb AI Desktop"
+    client_params["displayName"] = node_display_name(incoming)
     connect_params["client"] = client_params
 
     # user_id (member) vs owner_id (org/container) -- scope the device

@@ -2960,7 +2960,7 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
+                            '${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".lightbulb-protocol" || exit 1',
                         ],
                         "environment": [
                             {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
@@ -3027,7 +3027,7 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
+                            '${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".lightbulb-protocol" || exit 1',
                         ],
                         "environment": [
                             {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
@@ -3074,7 +3074,7 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
+                            '${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".lightbulb-protocol" || exit 1',
                         ],
                     }
                 ]

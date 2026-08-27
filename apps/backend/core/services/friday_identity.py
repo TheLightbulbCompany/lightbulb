@@ -213,7 +213,7 @@ _SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
 # so the heal migration below must match BOTH: guarding on the new heading
 # alone would append a second grounding section under the old one, on every
 # owner, permanently.
-_LEGACY_SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
+_LEGACY_SELF_GROUNDING_HEADING = "## You are made of Isol8"
 
 # Leading blank line so both composition sites (mid-template substitution and
 # the append migration) get a clean separator without extra bookkeeping.

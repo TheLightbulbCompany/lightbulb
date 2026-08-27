@@ -1799,7 +1799,11 @@ class EcsManager:
         base_command = " ".join((base_openclaw or {}).get("command") or [])
         required_fragments = (
             "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-}",
-            'protocol_path = lock_path + ".isol8-protocol"',
+            # The PRIMARY sentinel path the recovery script writes. It also
+            # keeps `legacy_protocol_path = ... ".isol8-protocol"` for files
+            # left by a pre-rename boot -- assert on the primary, or this
+            # fail-fast check passes on an image that only knows the old one.
+            'protocol_path = lock_path + ".lightbulb-protocol"',
             "|| exit 1",
         )
         if not all(fragment in base_command for fragment in required_fragments):

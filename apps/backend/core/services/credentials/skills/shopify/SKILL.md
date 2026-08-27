@@ -36,6 +36,7 @@ gql() {
   resp=$(jq -n --arg q "$1" --argjson v "$vars" '{query: $q, variables: $v}' \
     | curl -sS --fail-with-body --connect-timeout 10 --max-time 120 "$API" \
         -H "X-Shopify-Access-Token: $TOKEN" \
+        -H "Shopify-Search-Query-Debug: 1" \
         -H "Content-Type: application/json" -d @-) \
     || { echo "shopify: request failed — $resp" >&2; return 1; }
   jq -e 'has("errors") | not' >/dev/null <<<"$resp" \
@@ -44,8 +45,16 @@ gql() {
   # IGNORED with a warning rather than rejected, which silently widens the
   # result set — a filter that evaporates returns everything. Surface warnings;
   # do not fail on them.
-  jq -r '(.extensions.warnings // .warnings // [])[] | "shopify warning: \(.message? // .)"' \
-    <<<"$resp" >&2
+  #
+  # Shopify puts these in extensions.search[].warnings as {field, message}, one
+  # entry per searched connection — NOT extensions.warnings, which is what makes
+  # a guard reading that path quietly inert. The other two paths are kept as
+  # fallbacks because an unexamined shape is precisely what got past us. The
+  # debug header above is what guarantees the block is returned rather than
+  # omitted on a query Shopify decides not to annotate.
+  jq -r '[.extensions.search[]?.warnings[]?, .extensions.warnings[]?, .warnings[]?][]
+          | if type == "object" then "\(.field // "-"): \(.message // tojson)" else tostring end
+          | "shopify warning: \(.)"' <<<"$resp" >&2
   printf '%s' "$resp"
 }
 ```
@@ -122,7 +131,8 @@ CURSOR=null          # JSON null on the first page. --argjson, never --arg: the
 SUMS=()              # string "null" is a cursor value, and Shopify 400s on it.
 while :; do
   VARS=$(jq -n --argjson cursor "$CURSOR" --arg since "$SINCE" \
-    '{cursor: $cursor, filter: ("created_at:>=\"" + $since + "\" AND financial_status:paid")}')
+    '{cursor: $cursor, filter: ("created_at:>=\"" + $since
+       + "\" AND (financial_status:paid OR financial_status:partially_refunded OR financial_status:refunded)")}')
   PAGE=$(gql "$Q_SALES" "$VARS") || exit 1
   SUMS+=("$(jq '[.data.orders.nodes[].currentTotalPriceSet.shopMoney.amount | tonumber] | add // 0' <<<"$PAGE")")
   jq -e '.data.orders.pageInfo.hasNextPage' >/dev/null <<<"$PAGE" || break
@@ -142,7 +152,23 @@ the right field for "sales in this period" and it is what the loop above sums.
 `originalTotalPriceSet` is the total at the moment the order was placed, before
 any of that; use it only when you specifically mean gross bookings, and label it
 as such. Reporting one under the other's name is how a refunded month reads as a
-flat one. Cancelled orders are included unless you add `AND -status:cancelled`.
+flat one.
+
+The status filter has to agree with that choice. Refunding an order does not keep
+it `paid` — its `financial_status` becomes `refunded` or `partially_refunded`, so
+filtering on `paid` alone would drop refunded orders out of the result entirely
+rather than netting them down, giving a number that is neither gross nor net. All
+three statuses are therefore in the filter, and `currentTotalPriceSet` does the
+netting: a fully refunded order contributes 0, a partially refunded one
+contributes what was kept.
+
+**So, in the store's own terms:** this figure is orders *created* in the window
+whose payment reached the till — paid, partially refunded or refunded — summed at
+their current value, i.e. **net sales after refunds and edits**. It excludes
+`pending`, `authorized`, `partially_paid`, `voided` and `expired` orders, because
+that money was never collected, and it counts orders by creation date, not by when
+payment or refund settled. Cancelled orders are included unless you add
+`AND -status:cancelled`.
 
 **Low-stock products.** Page to the end — a store with more than one page of low
 stock is precisely the store the alert is for, and a first-page answer would call

@@ -104,6 +104,8 @@ logger = logging.getLogger(__name__)
 # admin@isol8.co email — safe there only because no dev user has ever
 # signed up as admin@isol8.co. Don't replicate the dev value in new
 # environments.
+# DO NOT RENAME: must stay byte-identical to the live Better Auth row and to
+# paperclip_user_delete.BOOTSTRAP_EMAILS, which refuses to delete it.
 ADMIN_EMAIL = "admin+paperclip@isol8.co"
 SECRET_NAME_TEMPLATE = "isol8/{env}/paperclip_admin_credentials"
 

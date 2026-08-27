@@ -265,14 +265,24 @@ async def get_optional_user(
         return None
 
 
-# Email domain that identifies Isol8 team members. Any authenticated user whose
-# Clerk JWT carries an email ending with this suffix is a platform admin. No
-# env var, no Secrets Manager entry, no Clerk user IDs in git — Clerk itself
-# holds the list of who can sign in with an @isol8.co email, and this gate
-# just trusts the JWT claim.
-_PLATFORM_ADMIN_EMAIL_DOMAIN = "@isol8.co"
+# Email domains that identify Isol8 team members. Any authenticated user whose
+# Clerk JWT carries an email ending with one of these suffixes is a platform
+# admin. No env var, no Secrets Manager entry, no Clerk user IDs in git — Clerk
+# itself holds the list of who can sign in on these domains, and this gate just
+# trusts the JWT claim.
+#
+# A TUPLE, not a single suffix, because a Clerk primary-email change takes
+# effect on the next token mint (minutes) while a code change needs a deploy —
+# a one-domain gate turns any team mailbox move into an admin lockout for the
+# length of that gap. ``str.endswith`` accepts a tuple natively, so accepting
+# both the old and the new domain across a move costs nothing. Retire a domain
+# only once nobody signs in on it.
+_PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = (
+    "@isol8.co",
+    "@thelightbulbcompanies.com",
+)
 
-# Hardcoded extra-admin allowlist for individuals without an ``@isol8.co``
+# Hardcoded extra-admin allowlist for individuals without a team-domain
 # mailbox (e.g. team members using personal email while Workspace is being
 # set up). Listed in code so changes are auditable in git history. Applies
 # to every environment — adding an entry here grants prod admin too, so
@@ -285,12 +295,12 @@ _PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(
 
 
 def is_platform_admin_email(email: str | None) -> bool:
-    """True when *email* identifies an Isol8 team member: ends with
-    ``@isol8.co`` or is in ``_PLATFORM_ADMIN_EXTRA_EMAILS``. The single
-    definition of "internal" — shared by the admin route gate and the
+    """True when *email* identifies an Isol8 team member: ends with one of
+    ``_PLATFORM_ADMIN_EMAIL_DOMAINS`` or is in ``_PLATFORM_ADMIN_EXTRA_EMAILS``.
+    The single definition of "internal" — shared by the admin route gate and the
     internal-owner tagging in run analytics."""
     normalized = (email or "").lower()
-    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN) or normalized in _PLATFORM_ADMIN_EXTRA_EMAILS
+    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAINS) or normalized in _PLATFORM_ADMIN_EXTRA_EMAILS
 
 
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
@@ -300,7 +310,7 @@ def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> Aut
     Gate: the Clerk JWT's ``email`` claim must pass ``is_platform_admin_email``.
     Clerk populates the claim from the user's primary verified email. Removing
     someone from the team = deleting their Clerk user (or removing their
-    address from the extra list / Clerk's @isol8.co email).
+    address from the extra list / their team-domain Clerk email).
     """
     if not is_platform_admin_email(auth.email):
         raise HTTPException(status_code=403, detail="Platform admin access required")

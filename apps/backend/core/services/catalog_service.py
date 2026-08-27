@@ -346,6 +346,8 @@ def _remap_cron_jobs_for_deploy(
         if not isinstance(job, dict):
             continue
         new_job = copy.deepcopy(job)
+        # DO NOT RENAME the "isol8:" seed: the uuid5 it derives is persisted in
+        # deployed buyers' openclaw.json cron jobs; changing it re-ids every job.
         new_job["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"isol8:cron:v1:{new_agent_id}:{index}"))
         new_job["agentId"] = new_agent_id
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"

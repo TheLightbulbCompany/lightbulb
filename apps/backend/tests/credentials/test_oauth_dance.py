@@ -192,12 +192,23 @@ def fake_app_store(monkeypatch):
     async def _get(owner_id, provider):
         return store.get((owner_id, provider))
 
-    async def _put(owner_id, provider, *, client_id, client_secret, client_information=None, scope=None):
+    async def _put(
+        owner_id,
+        provider,
+        *,
+        client_id,
+        client_secret,
+        client_information=None,
+        scope=None,
+        redirect_uri=None,
+    ):
         rec = {"client_id": client_id, "client_secret": client_secret}
         if client_information is not None:
             rec["client_information"] = client_information
         if scope is not None:
             rec["scope"] = scope
+        if redirect_uri is not None:
+            rec["redirect_uri"] = redirect_uri
         store[(owner_id, provider)] = rec
         return "arn:secret"
 
@@ -251,6 +262,8 @@ async def test_start_registers_dcr_client_when_absent(monkeypatch, fake_app_stor
     assert cached["client_information"]["token_endpoint_auth_method"] == "none"
     # The requested scope is stored so start() can detect a later scope change.
     assert cached["scope"] == "openid offline_access mcp"
+    # ...and so is the redirect uri, for the same reason (DCR pins redirect_uris).
+    assert cached["redirect_uri"] == REDIRECT
 
     # The authorize URL uses the freshly registered client_id.
     q = parse_qs(urlsplit(url).query)
@@ -331,6 +344,112 @@ async def test_start_reregisters_dcr_client_when_scope_changed(monkeypatch, fake
     assert cached["scope"] == "openid offline_access mcp"
     q = parse_qs(urlsplit(url).query)
     assert q["client_id"] == ["fresh_cid"]
+
+
+@pytest.mark.asyncio
+async def test_start_reregisters_dcr_client_when_redirect_uri_changed(monkeypatch, fake_app_store):
+    """DCR PINS ``redirect_uris`` at registration, so after a callback-domain
+    move every cached client rejects the new uri — and comparing scope alone
+    means no amount of "the owner reconnects" ever heals it."""
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "old_domain_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "old_domain_cid"},
+        "scope": "openid offline_access mcp",  # unchanged — only the uri moved
+        "redirect_uri": "https://api.old-domain.example/api/v1/connections/callback",
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    posts = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"client_id": "new_domain_cid", "redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"}
+
+    async def _fake_post(self, url, json=None, data=None, **kwargs):
+        posts.append((url, json))
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+
+    assert len(posts) == 1
+    assert posts[0][1]["redirect_uris"] == [REDIRECT]
+    cached = fake_app_store[("org_1", "attio")]
+    assert cached["client_id"] == "new_domain_cid"
+    assert cached["redirect_uri"] == REDIRECT
+    assert parse_qs(urlsplit(url).query)["client_id"] == ["new_domain_cid"]
+
+
+@pytest.mark.asyncio
+async def test_start_reregisters_on_redirect_drift_seen_only_in_the_echoed_response(monkeypatch, fake_app_store):
+    """Records predate the stored ``redirect_uri`` field, so the registration
+    response's own echo of ``redirect_uris`` is the fallback evidence."""
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "echoed_cid",
+        "client_secret": "",
+        "client_information": {
+            "client_id": "echoed_cid",
+            "redirect_uris": ["https://api.old-domain.example/api/v1/connections/callback"],
+        },
+        "scope": "openid offline_access mcp",
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    posts = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"client_id": "fresh_cid", "redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"}
+
+    async def _fake_post(self, url, json=None, data=None, **kwargs):
+        posts.append(url)
+        return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+    assert len(posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_churn_a_client_whose_redirect_uri_is_unknown(monkeypatch, fake_app_store):
+    """No stored uri and no echo means UNKNOWN, not mismatched — re-registering
+    on a guess would mint a new client_id for every legacy owner on connect."""
+    fake_app_store[("org_1", "attio")] = {
+        "client_id": "unknown_cid",
+        "client_secret": "",
+        "client_information": {"client_id": "unknown_cid"},
+        "scope": "openid offline_access mcp",
+    }
+
+    async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
+        pass
+
+    monkeypatch.setattr(oauth_dance.oauth_state_repo, "put", _fake_put_state)
+
+    async def _fake_post(self, url, **kwargs):
+        raise AssertionError("must not re-register when the registered uri is unknown")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
+
+    url = await oauth_dance.start("org_1", "attio", redirect_uri=REDIRECT)
+    assert parse_qs(urlsplit(url).query)["client_id"] == ["unknown_cid"]
 
 
 @pytest.mark.asyncio

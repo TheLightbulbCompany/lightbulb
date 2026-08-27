@@ -56,7 +56,11 @@ async def get_user_session_cookie(
     if company.status != "active":
         raise UserSessionError(f"team workspace not active for user {user_id} (status={company.status})")
 
-    email = await clerk_email_resolver(user_id)
+    # Better Auth's ``user.email`` is written once at provision time and never
+    # updated, so the row's recorded address — not the live Clerk one — is the
+    # sign-in truth. Fall back to Clerk only for rows written before
+    # ``paperclip_email`` existed (or not yet backfilled).
+    email = company.paperclip_email or await clerk_email_resolver(user_id)
     password = decrypt(company.paperclip_password_encrypted)
 
     resp = await admin_client.sign_in_user(email=email, password=password)

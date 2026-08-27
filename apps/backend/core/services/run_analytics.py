@@ -48,6 +48,8 @@ EVENT_NAME = "agent_run_completed"
 
 # Namespace for the deterministic capture uuid — uuid5(namespace, owner:runId)
 # is stable across restarts, so PostHog ingestion can drop exact re-emits.
+# DO NOT RENAME the "isol8:" seed: it fixes the capture uuid PostHog dedupes on;
+# changing it re-emits every already-ingested run as a new event.
 _CAPTURE_UUID_NS = uuid.uuid5(uuid.NAMESPACE_URL, "isol8:agent_run_completed")
 
 # North Star numerator sources. Everything else classified is human-initiated;

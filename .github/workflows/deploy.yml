@@ -2360,29 +2360,30 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to isol8.co
-        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co
-          --token=$VERCEL_TOKEN
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Register www.isol8.co project domain
-        run: vercel domains add www.isol8.co frontend --force --token="$VERCEL_TOKEN"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to www.isol8.co
+      - name: Alias to flickmeon.ai
         run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
-          www.isol8.co --token=$VERCEL_TOKEN
+          flickmeon.ai --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to admin.isol8.co
+      - name: Register www.flickmeon.ai project domain
+        run: vercel domains add www.flickmeon.ai frontend --force
+          --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to www.flickmeon.ai
         run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
-          admin.isol8.co --token=$VERCEL_TOKEN
+          www.flickmeon.ai --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to admin.flickmeon.ai
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          admin.flickmeon.ai --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

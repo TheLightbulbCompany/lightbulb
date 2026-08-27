@@ -60,7 +60,7 @@ jobs:
     # PROD apps at the wrong API / Clerk instance. Both are safe-public (the
     # Clerk publishable key is base64 of the instance domain), so no secret.
     env:
-      EXPO_PUBLIC_API_URL: https://api.isol8.co/api/v1
+      EXPO_PUBLIC_API_URL: https://api.flickmeon.ai/api/v1
       EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuaXNvbDguY28k
       # Absent, APPLE_SUBSCRIPTION_SKU is "" and APPLE_IAP_AVAILABLE is false,
       # so the paywall renders no StoreKit purchase at all — the exact condition
@@ -103,7 +103,7 @@ jobs:
           FAIL=0
           grep -aq "$EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY" "$HBC" \
             || { echo '::error::Clerk publishable key NOT inlined in OTA bundle'; FAIL=1; }
-          grep -aq 'https://api.isol8.co' "$HBC" \
+          grep -aq 'https://api.flickmeon.ai' "$HBC" \
             || { echo '::error::prod API URL NOT inlined in OTA bundle'; FAIL=1; }
           grep -aq "$EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID" "$HBC" \
             || { echo '::error::Apple IAP product id NOT inlined — the paywall would ship with no in-app purchase'; FAIL=1; }

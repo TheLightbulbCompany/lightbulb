@@ -139,7 +139,7 @@ mod tests {
             owner_id: "org_1".into(),
             device_id_mac: "mac-id".into(),
             device_id_cli: "cli-id".into(),
-            gateway_url: "wss://ws-dev.isol8.co".into(),
+            gateway_url: "wss://ws-dev.flickmeon.ai".into(),
             gateway_token: "gw-tok".into(),
             display_name: "Test Mac".into(),
         }

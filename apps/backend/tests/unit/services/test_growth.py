@@ -175,9 +175,17 @@ def _fixture():
         {"company_id": "c_a", "first_ok": "2026-07-10T00:00:00Z"},
         {"company_id": "c_x", "first_ok": "2026-07-01T00:00:00Z"},
     ]
-    gate_blocked = [{"code": "trial_expired", "n": 7}]
+    runs_daily = [
+        {"company_id": "c_a", "day": "2026-08-25", "kind": "autonomous", "ok": 2, "total": 3},
+        {"company_id": "c_a", "day": "2026-08-24", "kind": "autonomous", "ok": 1, "total": 1},
+    ]
+    gate_blocked = {
+        "totals": [{"code": "trial_expired", "n": 7}],
+        "daily": [{"day": "2026-08-25", "code": "trial_expired", "n": 7}],
+    }
     posthog_runs = [[_week(1), "autonomous", 2], [_week(1), "human", 10]]
     posthog_funnel = [[_week(1), "trial_started", 4]]
+    posthog_funnel_daily = [["2026-08-25", "trial_started", 1]]
     posthog_sources = [["reddit.com", 3], ["direct", 2]]
     return dict(
         billing=billing,
@@ -192,6 +200,8 @@ def _fixture():
         posthog_runs=posthog_runs,
         posthog_funnel=posthog_funnel,
         posthog_sources=posthog_sources,
+        runs_daily=runs_daily,
+        posthog_funnel_daily=posthog_funnel_daily,
         internal={"int_x"},
         now=NOW,
     )
@@ -340,16 +350,69 @@ def test_counters_and_nightly():
 def test_top_level_crosschecks_pass_through():
     out = growth.derive(**_fixture())
     assert out["gate_blocked_7d"] == [{"code": "trial_expired", "n": 7}]
+    assert out["gate_blocked_daily"] == [{"day": "2026-08-25", "code": "trial_expired", "n": 7}]
     assert out["posthog"]["runs"] == [
         {"week": _week(1), "kind": "autonomous", "n": 2},
         {"week": _week(1), "kind": "human", "n": 10},
     ]
     assert out["posthog"]["funnel"] == [{"week": _week(1), "event": "trial_started", "owners": 4}]
+    assert out["posthog"]["funnel_daily"] == [{"day": "2026-08-25", "event": "trial_started", "owners": 1}]
     assert out["posthog"]["signup_sources"] == [
         {"source": "reddit.com", "owners": 3},
         {"source": "direct", "owners": 2},
     ]
     assert out["window_weeks"] == 8 and out["generated_at"].startswith("2026-08-26")
+
+
+def test_gate_blocked_daily_passes_through():
+    fx = _fixture()
+    out = growth.derive(**fx)
+    assert out["gate_blocked_7d"] == fx["gate_blocked"]["totals"]
+    assert out["gate_blocked_daily"] == fx["gate_blocked"]["daily"]
+
+
+def test_funnel_daily_excludes_days_outside_the_axis_window():
+    """HOGQL_FUNNEL_DAILY's query window (WINDOW_WEEKS+1 weeks) is wider than the
+    WINDOW_DAYS axis -- a row outside `days` must be dropped, not leaked through."""
+    fx = _fixture()
+    out_of_window_day = (NOW.date() - timedelta(days=growth.WINDOW_DAYS + 3)).isoformat()
+    fx["posthog_funnel_daily"].append([out_of_window_day, "trial_started", 5])
+    out = growth.derive(**fx)
+    days = {r["day"] for r in out["posthog"]["funnel_daily"]}
+    assert out_of_window_day not in days
+    assert "2026-08-25" in days
+
+
+def test_daily_runs_series_is_continuous_and_segmented():
+    fx = _fixture()
+    fx["runs_daily"].append({"company_id": "c_x", "day": "2026-08-25", "kind": "autonomous", "ok": 9, "total": 9})
+    out = growth.derive(**fx)
+    ext_daily = out["segments"]["external"]["daily"]["runs"]
+    assert len(ext_daily) == growth.WINDOW_DAYS
+    assert [r["day"] for r in ext_daily] == sorted(r["day"] for r in ext_daily)
+    by_day = {r["day"]: r for r in ext_daily}
+    assert by_day["2026-08-25"]["autonomous_ok"] == 2  # c_x's 9 (internal) must not leak in
+    assert by_day["2026-08-24"]["autonomous_ok"] == 1
+    other_days = [r for d, r in by_day.items() if d not in ("2026-08-25", "2026-08-24")]
+    assert all(r == {"day": r["day"], "autonomous_ok": 0, "human_ok": 0, "nightly_ok": 0} for r in other_days)
+    int_by_day = {r["day"]: r for r in out["segments"]["internal"]["daily"]["runs"]}
+    assert int_by_day["2026-08-25"]["autonomous_ok"] == 9
+
+
+def test_daily_signups_bucket_by_day():
+    fx = _fixture()
+    fx["billing"] = [
+        {
+            "owner_id": "ext_d",
+            "subscription_status": "trial_local",
+            "trial_end": 0,
+            "created_at": "2026-08-10T00:00:00Z",
+        }
+    ]
+    out = growth.derive(**fx)
+    by_day = {r["day"]: r["n"] for r in out["segments"]["external"]["daily"]["signups"]}
+    assert by_day["2026-08-10"] == 1
+    assert all(n == 0 for d, n in by_day.items() if d != "2026-08-10")
 
 
 def test_never_armed_counts_paid_owners_with_no_nightly_marker():
@@ -412,7 +475,7 @@ async def test_compute_partial_when_aurora_fails(monkeypatch):
             "core.services.posthog_admin.hogql",
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
         ),  # all three queries
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
         patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
     ):
         data, state, errors = await growth.compute()
@@ -442,7 +505,7 @@ async def test_compute_posthog_ok_when_not_stubbed():
             "core.services.posthog_admin.hogql",
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
         ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
         patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
     ):
         data, state, errors = await growth.compute()
@@ -468,7 +531,7 @@ async def test_compute_unavailable_when_derive_raises():
             "core.services.posthog_admin.hogql",
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": False, "error": None}),
         ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
         patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=lambda o: o == "int_x")),
         patch("core.services.ops.growth.derive", side_effect=RuntimeError("boom")),
     ):
@@ -499,7 +562,7 @@ async def test_compute_unavailable_when_clerk_fails():
             "core.services.posthog_admin.hogql",
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
         ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
         patch("core.services.run_analytics.resolve_internal_owner", AsyncMock(side_effect=boom)),
     ):
         data, state, errors = await growth.compute()
@@ -525,7 +588,7 @@ async def test_compute_unavailable_when_ddb_fails():
             "core.services.posthog_admin.hogql",
             AsyncMock(return_value={"columns": [], "results": [], "stubbed": True, "error": None}),
         ),
-        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value=[])),
+        patch("core.services.ops.gate_blocked.last_7d", AsyncMock(return_value={})),
     ):
         data, state, errors = await growth.compute()
     assert data is None and state == "unavailable" and errors[0]["domain"] == "ddb"

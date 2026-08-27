@@ -224,18 +224,29 @@ export interface GrowthSegment {
     archived_within_7d: { owner_id: string; name: string; title: string }[];
   };
   nightly_ceo: { armed: number; opted_out: number; never_armed: number };
+  /** Daily-resolution runs/signups for the charts — 56 rows each, zeros included. */
+  daily: {
+    runs: { day: string; autonomous_ok: number; human_ok: number; nightly_ok: number }[];
+    signups: { day: string; n: number }[];
+  };
 }
 export interface GrowthData {
   generated_at: string;
   window_weeks: number;
   weeks: string[];
+  /** 56 ISO dates, oldest first. */
+  days: string[];
   segments: { external: GrowthSegment; internal: GrowthSegment };
   internal_owner_ids: string[];
   gate_blocked_7d: { code: string; n: number }[];
+  /** Sparse — one row per (day, code) that occurred. */
+  gate_blocked_daily: { day: string; code: string; n: number }[];
   posthog: {
     runs: { week: string; kind: string; n: number }[];
     funnel: { week: string; event: string; owners: number }[];
     signup_sources: { source: string; owners: number }[];
+    /** Sparse — one row per (day, event) that occurred. */
+    funnel_daily: { day: string; event: string; owners: number }[];
   };
   sources: Record<"ddb" | "aurora" | "posthog" | "cloudwatch" | "clerk", string>;
 }

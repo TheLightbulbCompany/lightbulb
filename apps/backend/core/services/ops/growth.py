@@ -454,6 +454,8 @@ def derive(
 
     ext_rows = [b for b in billing if b["owner_id"] not in internal]
     int_rows = [b for b in billing if b["owner_id"] in internal]
+    # HOGQL_FUNNEL_DAILY's query window is deliberately wider than the days axis -- the axis is what the payload promises.
+    day_set = set(day_list)
     return {
         "generated_at": now.isoformat(),
         "window_weeks": weeks,
@@ -467,7 +469,11 @@ def derive(
             "runs": [{"week": str(r[0])[:10], "kind": r[1], "n": r[2]} for r in posthog_runs],
             "funnel": [{"week": str(r[0])[:10], "event": r[1], "owners": r[2]} for r in posthog_funnel],
             "signup_sources": [{"source": r[0], "owners": r[1]} for r in posthog_sources],
-            "funnel_daily": [{"day": str(r[0])[:10], "event": r[1], "owners": r[2]} for r in posthog_funnel_daily],
+            "funnel_daily": [
+                {"day": str(r[0])[:10], "event": r[1], "owners": r[2]}
+                for r in posthog_funnel_daily
+                if str(r[0])[:10] in day_set
+            ],
         },
     }
 

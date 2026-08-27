@@ -371,6 +371,18 @@ def test_gate_blocked_daily_passes_through():
     assert out["gate_blocked_daily"] == fx["gate_blocked"]["daily"]
 
 
+def test_funnel_daily_excludes_days_outside_the_axis_window():
+    """HOGQL_FUNNEL_DAILY's query window (WINDOW_WEEKS+1 weeks) is wider than the
+    WINDOW_DAYS axis -- a row outside `days` must be dropped, not leaked through."""
+    fx = _fixture()
+    out_of_window_day = (NOW.date() - timedelta(days=growth.WINDOW_DAYS + 3)).isoformat()
+    fx["posthog_funnel_daily"].append([out_of_window_day, "trial_started", 5])
+    out = growth.derive(**fx)
+    days = {r["day"] for r in out["posthog"]["funnel_daily"]}
+    assert out_of_window_day not in days
+    assert "2026-08-25" in days
+
+
 def test_daily_runs_series_is_continuous_and_segmented():
     fx = _fixture()
     fx["runs_daily"].append({"company_id": "c_x", "day": "2026-08-25", "kind": "autonomous", "ok": 9, "total": 9})

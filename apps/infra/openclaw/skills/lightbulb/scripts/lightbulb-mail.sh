@@ -22,6 +22,9 @@ die() { printf '%s\n' "$1" >&2; exit 1; }
 cmd="$1"; shift
 command -v jq >/dev/null || die 'Missing jq'; command -v curl >/dev/null || die 'Missing curl'
 [[ -n "${OPENCLAW_HOOK_TOKEN:-}" ]] || die 'Missing OPENCLAW_HOOK_TOKEN.'
+# Accept the legacy names too; drop once every container has rolled.
+LIGHTBULB_API_URL="${LIGHTBULB_API_URL:-${ISOL8_API_URL:-}}"
+LIGHTBULB_OWNER_ID="${LIGHTBULB_OWNER_ID:-${ISOL8_OWNER_ID:-}}"
 [[ -n "${LIGHTBULB_API_URL:-}" ]] || die 'Missing LIGHTBULB_API_URL.'
 [[ -n "${LIGHTBULB_OWNER_ID:-}" ]] || die 'Missing LIGHTBULB_OWNER_ID.'
 

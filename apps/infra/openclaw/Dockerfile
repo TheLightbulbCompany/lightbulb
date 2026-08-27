@@ -748,6 +748,13 @@ COPY skills/paperclip /app/skills/paperclip
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.
 COPY skills/lightbulb /app/skills/lightbulb
+# Same skill, still reachable under its old name. Every owner provisioned before
+# the rename has `skill isol8` baked into their SOUL.md / AGENTS.md on EFS, and
+# those are seeded write_file_if_missing -- they are NEVER rewritten. Rolling
+# such an owner onto this image without this copy silently breaks the skill call
+# their whole persona is built around. Delete once no live workspace says
+# `skill isol8` (grep EFS, do not assume).
+COPY skills/lightbulb /app/skills/isol8
 
 # Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
 # Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still

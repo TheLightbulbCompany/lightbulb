@@ -167,7 +167,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 
         # Auth BEFORE any parsing/dedup work — an unauthenticated caller must
         # not be able to churn the dedup table or trigger downstream reads.
-        presented = request.headers.get("X-Lightbulb-SES-Secret", "")
+        presented = _ses_secret_header(request)
         if not presented or not hmac.compare_digest(
             presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")
         ):
@@ -355,12 +355,22 @@ _PAUSED_BODY = (
 )
 
 
+def _ses_secret_header(request: Request) -> str:
+    """The shared secret the SES Lambda presents.
+
+    Accepts the legacy header name too: the Lambda updates atomically on
+    deploy while ECS rolls gradually, so for a few minutes the two sides
+    disagree about the name. Drop the legacy read once prod has rolled.
+    """
+    return request.headers.get("X-Lightbulb-SES-Secret") or request.headers.get("X-Isol8-SES-Secret", "")
+
+
 @router.post("/ses-events", include_in_schema=False)
 async def handle_ses_events(request: Request):
     """SES complaint events (configuration-set → EventBridge → API destination)."""
     if not settings.SES_INBOUND_SECRET or not settings.AGENT_EMAIL_DOMAIN.strip():
         return {"status": "disabled"}
-    presented = request.headers.get("X-Lightbulb-SES-Secret", "")
+    presented = _ses_secret_header(request)
     if not presented or not hmac.compare_digest(presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")):
         return JSONResponse(status_code=401, content={"status": "bad_secret"})
     try:

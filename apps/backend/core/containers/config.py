@@ -2076,6 +2076,11 @@ def build_openclaw_config_dict(
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
                 "lightbulb-marketplace": {"enabled": True},
+                # The pre-rename image bakes this plugin under its old id, and a
+                # container keeps that image until it is individually rolled. An
+                # entry for an id the image does not ship is inert, so enabling
+                # both is safe. Drop once every container has rolled.
+                "isol8-marketplace": {"enabled": True},
             },
         },
         # Channels: ship EMPTY until the user configures one. A provider block

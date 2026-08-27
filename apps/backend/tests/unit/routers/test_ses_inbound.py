@@ -939,3 +939,36 @@ def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     assert second.json()["status"] == "disabled" and second.json()["notified"] is False
     # Disabling is NOT suppressed -- only the email is.
     assert upd.await_count == 2
+
+
+def test_ses_events_accepts_the_legacy_secret_header(client, monkeypatch):
+    """The SES Lambda flips to the new header name the instant its deploy
+    lands, but ECS rolls gradually -- so for a few minutes a task that already
+    speaks the new name still receives requests carrying the old one. Both must
+    authenticate, or inbound agent mail 401s for the whole rollover window.
+
+    Delete this test together with the legacy read in _ses_secret_header, once
+    prod has rolled.
+    """
+    _enable(monkeypatch)
+    # A Delivery event clears auth and then short-circuits, so this asserts the
+    # auth boundary alone -- no AWS, nothing downstream to mock.
+    r = client.post(
+        "/api/v1/webhooks/ses-events",
+        json=_complaint(event_type="Delivery"),
+        headers={"X-Isol8-SES-Secret": SECRET},
+    )
+    assert r.status_code == 200 and r.json()["status"] == "ignored"
+
+
+def test_ses_events_legacy_header_still_rejects_a_wrong_secret(client, monkeypatch):
+    """Accepting a second header NAME must not weaken the secret check itself."""
+    _enable(monkeypatch)
+    assert (
+        client.post(
+            "/api/v1/webhooks/ses-events",
+            json=_complaint(),
+            headers={"X-Isol8-SES-Secret": "nope"},
+        ).status_code
+        == 401
+    )

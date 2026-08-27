@@ -27,8 +27,12 @@ export type RawEnv = Record<string, string | undefined>;
  * another owner does not grant access to them.
  */
 export function resolveEnv(env: RawEnv): LightbulbEnv {
-  const base = (env.LIGHTBULB_API_URL ?? "").trim().replace(/\/+$/, "");
-  const ownerId = (env.LIGHTBULB_OWNER_ID ?? "").trim();
+  // Accept the legacy names too: this image can run on a container whose task
+  // definition predates the rename. Drop once every container has rolled.
+  const base = (env.LIGHTBULB_API_URL ?? env.ISOL8_API_URL ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  const ownerId = (env.LIGHTBULB_OWNER_ID ?? env.ISOL8_OWNER_ID ?? "").trim();
   const token = (env.OPENCLAW_HOOK_TOKEN ?? "").trim();
   if (!base) throw new Error("LIGHTBULB_API_URL is not set on this container");
   if (!ownerId) throw new Error("LIGHTBULB_OWNER_ID is not set on this container");

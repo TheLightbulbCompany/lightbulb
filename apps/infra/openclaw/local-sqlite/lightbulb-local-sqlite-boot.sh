@@ -52,11 +52,16 @@ for _bin in sqlite3 jq aws litestream; do
 done
 
 # --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
-OWNER_ID="${LIGHTBULB_OWNER_ID:-}"
-if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/lightbulb-facts.json" ]; then
-  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/lightbulb-facts.json" 2>/dev/null || true)
-fi
-[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no LIGHTBULB_OWNER_ID env, no lightbulb-facts.json)"; exit 1; }
+# Accept the legacy name too: this image can boot on a container whose task
+# definition predates the rename (the backend emits both, but only from the
+# revision registered after its own deploy). Drop once every container has rolled.
+OWNER_ID="${LIGHTBULB_OWNER_ID:-${ISOL8_OWNER_ID:-}}"
+for _facts in lightbulb-facts.json isol8-facts.json; do
+  [ -n "$OWNER_ID" ] && break
+  [ -f "$STATE_ROOT/$_facts" ] || continue
+  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/$_facts" 2>/dev/null || true)
+done
+[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no LIGHTBULB_OWNER_ID/ISOL8_OWNER_ID env, no facts file)"; exit 1; }
 export OWNER_ID
 # The baked litestream config references $LIGHTBULB_STATE_ROOT so it always replicates
 # the SAME databases this script restored into.

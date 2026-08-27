@@ -360,6 +360,7 @@ def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGE
 
 def require_ws_internal_caller(
     x_lightbulb_ws_internal: Optional[str] = Header(None, alias="x-lightbulb-ws-internal"),
+    x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
 ) -> None:
     """Authenticate the CALLER of the /ws/* endpoints — the trusted WebSocket
     Lambdas — not the user identity in x-user-id (which the caller chooses, so
@@ -387,7 +388,12 @@ def require_ws_internal_caller(
             "rejecting /ws/* calls until the secret is configured"
         )
         raise HTTPException(status_code=503, detail="WebSocket gateway not configured")
-    if not x_lightbulb_ws_internal or not hmac.compare_digest(x_lightbulb_ws_internal, secret):
+    # Two accepted names for one rollover: the WS Lambdas flip to the new
+    # header the moment the deploy lands, but ECS rolls at maxHealthyPercent
+    # 200, so old tasks still serve. Reading only the new name would 403 every
+    # chat message for that window. Drop the legacy name once prod has rolled.
+    presented = x_lightbulb_ws_internal or x_isol8_ws_internal
+    if not presented or not hmac.compare_digest(presented, secret):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 

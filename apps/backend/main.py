@@ -166,9 +166,14 @@ class HostDispatcherMiddleware:
         # Walk the raw header list (case-insensitive bytes keys) rather
         # than building a dict — duplicate header collapse via dict()
         # would silently drop the second value of any repeated header.
+        # Two accepted names for one rollover. API Gateway's parameter mapping
+        # flips to the new header the instant the CDK deploy lands, but ECS
+        # rolls at maxHealthyPercent 200 -- old tasks keep serving for minutes
+        # after. Reading only the new name would 404 every Paperclip host
+        # dispatch for that window. Drop the legacy name once prod has rolled.
         xph_raw: bytes | None = None
         for name, value in scope.get("headers", ()):
-            if name == b"x-lightbulb-public-host":
+            if name in (b"x-lightbulb-public-host", b"x-isol8-public-host"):
                 xph_raw = value
                 break
         if xph_raw is None:

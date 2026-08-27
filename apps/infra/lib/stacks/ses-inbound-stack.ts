@@ -10,6 +10,7 @@ import * as ses from "aws-cdk-lib/aws-ses";
 import * as sesActions from "aws-cdk-lib/aws-ses-actions";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
+import { ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
 // SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
@@ -57,6 +58,13 @@ export interface SesInboundStackProps extends cdk.StackProps {
   /** Base mail domain, e.g. "isol8.co". Verified for BOTH receiving and sending. */
   mailDomain: string;
   /**
+   * Product root domain (see lib/domains.ts) — the ingest Lambda POSTs to
+   * `api.{rootDomain}` / `api-dev.{rootDomain}`. Separate from `mailDomain`
+   * because the backend does not have to live under the mail domain.
+   * Defaults to ROOT_DOMAIN.
+   */
+  rootDomain?: string;
+  /**
    * Dev mail domain, e.g. "dev.isol8.co". When set, this stack also publishes
    * `*.{devMailDomain}` MX + SPF and the ingest Lambda routes recipients under
    * that suffix to the DEV backend instead of prod (see `_route_for`).
@@ -88,6 +96,7 @@ export class SesInboundStack extends cdk.Stack {
     super(scope, id, props);
 
     const { envName, hostedZone, mailDomain, devMailDomain } = props;
+    const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
 
     if (devMailDomain && !props.devSesIngestSecretName) {
       // Fail at synth, not at the first dev email. Routing dev mail to the dev
@@ -339,14 +348,14 @@ export class SesInboundStack extends cdk.Stack {
         RAW_MAIL_BUCKET: this.rawBucket.bucketName,
         RAW_MAIL_PREFIX: "inbound/",
         ATTACHMENTS_BUCKET: this.attachmentsBucket.bucketName,
-        BACKEND_INGEST_URL: `https://api.${mailDomain}/api/v1/webhooks/ses-inbound`,
+        BACKEND_INGEST_URL: `https://api.${rootDomain}/api/v1/webhooks/ses-inbound`,
         SES_INBOUND_SECRET_ARN: sesIngestSecret.secretArn,
         // Per-environment routing. Absent => every message goes to prod,
         // which is the behaviour before dev is enabled (see `_route_for`).
         ...(devMailDomain && devSesIngestSecret
           ? {
               DEV_MAIL_SUFFIX: devMailDomain,
-              DEV_BACKEND_INGEST_URL: `https://api-dev.${mailDomain}/api/v1/webhooks/ses-inbound`,
+              DEV_BACKEND_INGEST_URL: `https://api-dev.${rootDomain}/api/v1/webhooks/ses-inbound`,
               DEV_SES_INBOUND_SECRET_ARN: devSesIngestSecret.secretArn,
             }
           : {}),

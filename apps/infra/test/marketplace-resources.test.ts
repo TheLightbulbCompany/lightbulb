@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { ContainerStack } from "../lib/stacks/container-stack";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
@@ -229,7 +230,13 @@ describe("ServiceStack — marketplace S3 bucket", () => {
           CorsRules: Match.arrayWith([
             Match.objectLike({
               AllowedMethods: ["PUT"],
-              AllowedOrigins: env === "prod" ? ["https://isol8.co"] : Match.arrayWith(["https://dev.isol8.co", "http://localhost:3000"]),
+              AllowedOrigins:
+                env === "prod"
+                  ? [`https://${ROOT_DOMAIN}`]
+                  : Match.arrayWith([
+                      `https://dev.${ROOT_DOMAIN}`,
+                      "http://localhost:3000",
+                    ]),
             }),
           ]),
         },

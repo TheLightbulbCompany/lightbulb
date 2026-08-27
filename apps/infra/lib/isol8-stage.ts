@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
@@ -16,6 +17,19 @@ import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
   environment: string;
+  /**
+   * Product root domain — every frontend, API, WebSocket, browser-view, Clerk
+   * and Paperclip-company hostname in the stage derives from it. Per-stage so
+   * one environment can move independently of the other. Defaults to
+   * ROOT_DOMAIN (see lib/domains.ts).
+   */
+  rootDomain?: string;
+  /**
+   * Domain the platform sender + agent mail live on. Defaults to `rootDomain`,
+   * which is where mail lives today; it is a separate parameter so mail can be
+   * moved to its own domain without touching the product hostnames.
+   */
+  platformMailDomain?: string;
 }
 
 export class Isol8Stage extends cdk.Stage {
@@ -23,6 +37,9 @@ export class Isol8Stage extends cdk.Stage {
     super(scope, id, props);
 
     const env = props.environment;
+    const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
+    const platformMailDomain =
+      props.platformMailDomain ?? props.rootDomain ?? PLATFORM_MAIL_DOMAIN;
 
     const auth = new AuthStack(this, `isol8-${env}-auth`, {
       stackName: `isol8-${env}-auth`,
@@ -32,6 +49,7 @@ export class Isol8Stage extends cdk.Stage {
     const dns = new DnsStack(this, `isol8-${env}-dns`, {
       stackName: `isol8-${env}-dns`,
       environment: env,
+      rootDomain,
     });
 
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
@@ -57,8 +75,9 @@ export class Isol8Stage extends cdk.Stage {
         // By-name import — same cross-stack-cycle-avoidance posture as every
         // other secret name threaded into ServiceStack below.
         sesIngestSecretName: auth.sesIngestSecret.secretName,
-        mailDomain: "isol8.co",
-        devMailDomain: "dev.isol8.co",
+        mailDomain: platformMailDomain,
+        devMailDomain: `dev.${platformMailDomain}`,
+        rootDomain,
         // Deterministic by-name reference to the DEV stage's secret. AuthStack
         // creates it unconditionally in every env; before dev routing existed,
         // only prod's was ever read.
@@ -69,13 +88,19 @@ export class Isol8Stage extends cdk.Stage {
     }
 
     // Outbound agent-mail plumbing exists wherever agent email is on (dev + prod).
-    const agentEmailDomain = env === "prod" ? "isol8.co" : env === "dev" ? "dev.isol8.co" : "";
+    const agentEmailDomain =
+      env === "prod"
+        ? platformMailDomain
+        : env === "dev"
+          ? `dev.${platformMailDomain}`
+          : "";
     let agentMailOutbound: AgentMailOutboundStack | undefined;
     if (agentEmailDomain) {
       agentMailOutbound = new AgentMailOutboundStack(this, `isol8-${env}-agent-mail-outbound`, {
         stackName: `isol8-${env}-agent-mail-outbound`,
         envName: env,
-        apiDomain: env === "prod" ? "api.isol8.co" : `api-${env}.isol8.co`,
+        apiDomain:
+          env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
         sesIngestSecretName: `isol8/${env}/ses_ingest_secret`,
       });
       agentMailOutbound.addDependency(auth);
@@ -111,6 +136,7 @@ export class Isol8Stage extends cdk.Stage {
     const api = new ApiStack(this, `isol8-${env}-api`, {
       stackName: `isol8-${env}-api`,
       environment: env,
+      rootDomain,
       vpc: network.vpc,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
@@ -133,6 +159,8 @@ export class Isol8Stage extends cdk.Stage {
     const service = new ServiceStack(this, `isol8-${env}-service`, {
       stackName: `isol8-${env}-service`,
       environment: env,
+      rootDomain,
+      platformMailDomain,
       vpc: network.vpc,
       targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
@@ -226,6 +254,7 @@ export class Isol8Stage extends cdk.Stage {
     const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
       stackName: `isol8-${env}-paperclip`,
       environment: env,
+      rootDomain,
       vpc: network.vpc,
       cluster: container.cluster,
       cloudMapNamespace: container.cloudMapNamespace,
@@ -250,6 +279,8 @@ export class Isol8Stage extends cdk.Stage {
       {
         stackName: `isol8-${env}-observability`,
         envName: env,
+        rootDomain,
+        platformMailDomain,
         backendService: service.service,
         backendLogGroupName: `/ecs/isol8-${env}`,
         alb: network.alb,

@@ -20,6 +20,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
+import { ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
@@ -30,6 +31,8 @@ import { Construct } from "constructs";
 
 export interface ApiStackProps extends cdk.StackProps {
   environment: string;
+  /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
+  rootDomain?: string;
   vpc: ec2.IVpc;
   certificate?: acm.ICertificate;
   hostedZone?: route53.IHostedZone;
@@ -91,13 +94,14 @@ export class ApiStack extends cdk.Stack {
 
     const env = props.environment;
     const isProd = env === "prod";
+    const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
     const throttle = THROTTLE_CONFIG[env] ?? THROTTLE_CONFIG.dev;
 
     // =========================================================================
     // HTTP API Gateway
     // =========================================================================
 
-    const httpApiDomain = isProd ? "api.isol8.co" : `api-${env}.isol8.co`;
+    const httpApiDomain = isProd ? `api.${rootDomain}` : `api-${env}.${rootDomain}`;
     // Paperclip ("Teams") used to have its own API Gateway custom-domain
     // mapping here (companyApiDomain → CompanyHttpDomain). It now lives
     // on Vercel — the frontend project has a host-conditional rewrite
@@ -105,8 +109,8 @@ export class ApiStack extends cdk.Stack {
     // on this same API Gateway. No second custom domain, no per-host
     // dispatch in the backend; the proxy is reached at its normal path.
     const frontendUrl = isProd
-      ? "https://isol8.co"
-      : `https://${env}.isol8.co`;
+      ? `https://${rootDomain}`
+      : `https://${env}.${rootDomain}`;
 
     // --- HTTP API ---
     const httpApi = new apigatewayv2.CfnApi(this, "HttpApi", {
@@ -122,7 +126,7 @@ export class ApiStack extends cdk.Stack {
       // FastAPI's middleware was correct, but AWS API Gateway returned its
       // own preflight response with PATCH missing from allow_methods.
       corsConfiguration: {
-        allowOrigins: isProd ? [frontendUrl, "https://www.isol8.co"] : [frontendUrl],
+        allowOrigins: isProd ? [frontendUrl, `https://www.${rootDomain}`] : [frontendUrl],
         allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowHeaders: [
           "Content-Type",
@@ -351,18 +355,18 @@ export class ApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       environment: {
         CLERK_ISSUER: isProd
-          ? "https://clerk.isol8.co"
+          ? `https://clerk.${rootDomain}`
           : "https://up-moth-55.clerk.accounts.dev",
         CLERK_JWKS_URL: isProd
-          ? "https://clerk.isol8.co/.well-known/jwks.json"
+          ? `https://clerk.${rootDomain}/.well-known/jwks.json`
           : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
         // SEC-8 token-origin fence — same allowlist + mode as the backend
         // task (service-stack.ts). azp is the origin that MINTED the token;
         // native (mobile/desktop-node) tokens carry no azp and always pass.
         // Ships in audit mode; flip to "enforce" once AzpMismatch is clean.
         CLERK_AUTHORIZED_PARTIES: isProd
-          ? "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"
-          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+          ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},https://company.${rootDomain}`
+          : `https://dev.${rootDomain},https://admin.dev.${rootDomain},https://dev.company.${rootDomain},http://localhost:3000`,
         CLERK_AZP_MODE: "audit",
         // Owner row holding paired_devices[deviceId].publicKey for device-key
         // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
@@ -511,7 +515,7 @@ export class ApiStack extends cdk.Stack {
     // WebSocket API Gateway (L2)
     // =========================================================================
 
-    const wsDomain = isProd ? "ws.isol8.co" : `ws-${env}.isol8.co`;
+    const wsDomain = isProd ? `ws.${rootDomain}` : `ws-${env}.${rootDomain}`;
 
     const wsAuthorizer = new WebSocketLambdaAuthorizer("ClerkAuthorizer", authorizerFn, {
       identitySource: ["route.request.querystring.token"],
@@ -711,7 +715,7 @@ export class ApiStack extends cdk.Stack {
     // synth, unknown envs) → no distribution.
     // =========================================================================
     if (props.certificate && props.hostedZone) {
-      const browserViewDomain = isProd ? "bv.isol8.co" : `bv-${env}.isol8.co`;
+      const browserViewDomain = isProd ? `bv.${rootDomain}` : `bv-${env}.${rootDomain}`;
       const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
         comment: `isol8 ${env} container-browser live view relay`,
         domainNames: [browserViewDomain],

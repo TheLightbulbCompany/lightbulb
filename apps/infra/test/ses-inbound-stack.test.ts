@@ -1,28 +1,13 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { Isol8Stage } from "../lib/isol8-stage";
+import { HOSTED_ZONE_CONTEXT } from "./helpers";
 import { SesInboundStack, SesInboundStackProps } from "../lib/stacks/ses-inbound-stack";
 
 const ACCOUNT = "877352799272";
 const REGION = "us-east-1";
-
-// Same static hosted-zone lookup cache as ascii-descriptions.test.ts, so
-// DnsStack's HostedZone.fromLookup resolves without an AWS API call.
-const HOSTED_ZONE_CONTEXT = {
-  "availability-zones:account=877352799272:region=us-east-1": [
-    "us-east-1a",
-    "us-east-1b",
-    "us-east-1c",
-    "us-east-1d",
-    "us-east-1e",
-    "us-east-1f",
-  ],
-  "hosted-zone:account=877352799272:domainName=isol8.co:region=us-east-1": {
-    Id: "/hostedzone/Z09248243AOUC775CDUI4",
-    Name: "isol8.co.",
-  },
-};
 
 /**
  * Builds a standalone SesInboundStack against a throwaway upstream stack that
@@ -37,7 +22,7 @@ function synthSesInboundStack(
     env: { account: ACCOUNT, region: REGION },
   });
   const hostedZone = route53.HostedZone.fromLookup(support, "Zone", {
-    domainName: "isol8.co",
+    domainName: ROOT_DOMAIN,
   });
 
   const stack = new SesInboundStack(app, "SesInboundTest", {
@@ -45,7 +30,7 @@ function synthSesInboundStack(
     envName: "prod",
     hostedZone,
     sesIngestSecretName: "isol8/prod/ses_ingest_secret",
-    mailDomain: "isol8.co",
+    mailDomain: PLATFORM_MAIL_DOMAIN,
     ...overrides,
   });
   return Template.fromStack(stack);
@@ -68,7 +53,7 @@ describe("SesInboundStack", () => {
     template.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
     template.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
-        Recipients: ["isol8.co", ".isol8.co"],
+        Recipients: [PLATFORM_MAIL_DOMAIN, `.${PLATFORM_MAIL_DOMAIN}`],
         ScanEnabled: true,
         Enabled: true,
       }),
@@ -86,7 +71,7 @@ describe("SesInboundStack", () => {
     // this one — so a value dropped from this array is GONE from the zone.
     // Losing the verification token can unverify the domain in Workspace.
     template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "isol8.co.",
+      Name: `${PLATFORM_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: [
         '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
@@ -143,7 +128,7 @@ describe("SesInboundStack", () => {
 
   test("wildcard MX record routes every company subdomain to SES", () => {
     template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "*.isol8.co.",
+      Name: `*.${PLATFORM_MAIL_DOMAIN}.`,
       Type: "MX",
       ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
     });
@@ -151,7 +136,7 @@ describe("SesInboundStack", () => {
 
   test("wildcard SPF TXT record authorizes SES sending", () => {
     template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "*.isol8.co.",
+      Name: `*.${PLATFORM_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: ['"v=spf1 include:amazonses.com ~all"'],
     });
@@ -162,9 +147,11 @@ describe("SesInboundStack", () => {
     // SPF string where a DMARC record belongs and leave the domain with no
     // policy. Only an explicit record outranks the wildcard.
     template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "_dmarc.isol8.co.",
+      Name: `_dmarc.${PLATFORM_MAIL_DOMAIN}.`,
       Type: "TXT",
-      ResourceRecords: ['"v=DMARC1; p=none; rua=mailto:admin@isol8.co; fo=1"'],
+      ResourceRecords: [
+        `"v=DMARC1; p=none; rua=mailto:admin@${PLATFORM_MAIL_DOMAIN}; fo=1"`,
+      ],
     });
   });
 
@@ -173,7 +160,9 @@ describe("SesInboundStack", () => {
     // domain at risk, not just SES. Tightening is a deliberate later step.
     const dmarc = Object.values(
       template.findResources("AWS::Route53::RecordSet"),
-    ).find((r: any) => r.Properties?.Name === "_dmarc.isol8.co.") as any;
+    ).find(
+      (r: any) => r.Properties?.Name === `_dmarc.${PLATFORM_MAIL_DOMAIN}.`,
+    ) as any;
     expect(dmarc).toBeDefined();
     const value = dmarc.Properties.ResourceRecords[0] as string;
     expect(value).toContain("v=DMARC1");
@@ -185,7 +174,7 @@ describe("SesInboundStack", () => {
   test("verifies the domain identity (DKIM via the hosted zone)", () => {
     template.resourceCountIs("AWS::SES::EmailIdentity", 1);
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
-      EmailIdentity: "isol8.co",
+      EmailIdentity: PLATFORM_MAIL_DOMAIN,
     });
     // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT
     // + apex SPF TXT.
@@ -257,7 +246,7 @@ describe("SesInboundStack", () => {
     expect(fn.Properties.Environment.Variables).toEqual(
       expect.objectContaining({
         RAW_MAIL_PREFIX: "inbound/",
-        BACKEND_INGEST_URL: "https://api.isol8.co/api/v1/webhooks/ses-inbound",
+        BACKEND_INGEST_URL: `https://api.${ROOT_DOMAIN}/api/v1/webhooks/ses-inbound`,
       }),
     );
   });
@@ -318,7 +307,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            { Name: "AGENT_EMAIL_DOMAIN", Value: "isol8.co" },
+            { Name: "AGENT_EMAIL_DOMAIN", Value: PLATFORM_MAIL_DOMAIN },
             {
               Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET",
               Value: "isol8-prod-agent-mail-attachments",
@@ -343,7 +332,10 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            { Name: "AGENT_EMAIL_DOMAIN", Value: "dev.isol8.co" },
+            {
+              Name: "AGENT_EMAIL_DOMAIN",
+              Value: `dev.${PLATFORM_MAIL_DOMAIN}`,
+            },
           ]),
         }),
       ]),
@@ -358,12 +350,12 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     expect(ses).toBeDefined();
     const t = Template.fromStack(ses!);
     t.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "*.dev.isol8.co.",
+      Name: `*.dev.${PLATFORM_MAIL_DOMAIN}.`,
       Type: "MX",
       ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
     });
     t.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: "*.dev.isol8.co.",
+      Name: `*.dev.${PLATFORM_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: ['"v=spf1 include:amazonses.com ~all"'],
     });
@@ -378,9 +370,9 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     );
     expect(fns.length).toBe(1);
     const env = (fns[0] as any).Properties.Environment.Variables;
-    expect(env.DEV_MAIL_SUFFIX).toBe("dev.isol8.co");
+    expect(env.DEV_MAIL_SUFFIX).toBe(`dev.${PLATFORM_MAIL_DOMAIN}`);
     expect(env.DEV_BACKEND_INGEST_URL).toBe(
-      "https://api-dev.isol8.co/api/v1/webhooks/ses-inbound",
+      `https://api-dev.${ROOT_DOMAIN}/api/v1/webhooks/ses-inbound`,
     );
     // Each backend verifies the shared secret against its OWN copy, so the
     // Lambda must be able to present dev's rather than prod's.
@@ -392,7 +384,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     // and the only symptom would be silently undelivered mail. Fail at synth.
     expect(() =>
       synthSesInboundStack({
-        devMailDomain: "dev.isol8.co",
+        devMailDomain: `dev.${PLATFORM_MAIL_DOMAIN}`,
         devSesIngestSecretName: undefined,
       }),
     ).toThrow(/devSesIngestSecretName is required/);

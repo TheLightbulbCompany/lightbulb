@@ -1,6 +1,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { Isol8Stage } from "../lib/isol8-stage";
+import { HOSTED_ZONE_CONTEXT } from "./helpers";
 
 /**
  * EC2 rejects non-ASCII in SG GroupDescription + SG Ingress/Egress
@@ -64,22 +65,7 @@ function assertAscii(template: Template, resourceType: string, descKey: string) 
  * the prod CREATE_FAILED root cause — a dev-only guard never covered it.
  */
 function synthStageTemplates(environment: "dev" | "prod"): Template[] {
-  const app = new App({
-    context: {
-      "availability-zones:account=877352799272:region=us-east-1": [
-        "us-east-1a",
-        "us-east-1b",
-        "us-east-1c",
-        "us-east-1d",
-        "us-east-1e",
-        "us-east-1f",
-      ],
-      "hosted-zone:account=877352799272:domainName=isol8.co:region=us-east-1": {
-        Id: "/hostedzone/Z09248243AOUC775CDUI4",
-        Name: "isol8.co.",
-      },
-    },
-  });
+  const app = new App({ context: HOSTED_ZONE_CONTEXT });
   const stage = new Isol8Stage(app, environment, {
     environment,
     env: { account: "877352799272", region: "us-east-1" },

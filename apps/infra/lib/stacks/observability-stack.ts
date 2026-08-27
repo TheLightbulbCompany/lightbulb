@@ -17,6 +17,7 @@ import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds
@@ -36,6 +37,13 @@ const BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD = 10_000_000;
 
 export interface ObservabilityStackProps extends cdk.StackProps {
   envName: string;
+  /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
+  rootDomain?: string;
+  /**
+   * Domain the platform sender + agent mail live on (see lib/domains.ts).
+   * Defaults to PLATFORM_MAIL_DOMAIN. The alert mailbox lives here.
+   */
+  platformMailDomain?: string;
   // Service stack references
   backendService: ecs.IBaseService;
   backendLogGroupName: string;
@@ -103,10 +111,19 @@ export class ObservabilityStack extends cdk.Stack {
   public readonly pageTopic: sns.Topic;
   public readonly warnTopic: sns.Topic;
   private readonly envName: string;
+  private readonly rootDomain: string;
+  /**
+   * Alert mailbox. Baked into the SNS EmailSubscription CONSTRUCT ID, so a
+   * value change replaces both subscriptions and needs a fresh confirmation
+   * click — see the note at the assignment site below.
+   */
+  private readonly alertEmail: string;
 
   constructor(scope: Construct, id: string, props: ObservabilityStackProps) {
     super(scope, id, props);
     this.envName = props.envName;
+    this.rootDomain = props.rootDomain ?? ROOT_DOMAIN;
+    this.alertEmail = `admin@${props.platformMailDomain ?? PLATFORM_MAIL_DOMAIN}`;
 
     // -----------------------------------------------------------------------
     // SNS Topics
@@ -148,7 +165,7 @@ export class ObservabilityStack extends cdk.Stack {
     //
     // A subscription is only real when that command shows a SubscriptionArn
     // that is not the literal string "PendingConfirmation".
-    const alertEmail = "admin@isol8.co";
+    const alertEmail = this.alertEmail;
 
     this.pageTopic.addSubscription(new subs.EmailSubscription(alertEmail));
     this.warnTopic.addSubscription(new subs.EmailSubscription(alertEmail));
@@ -2027,7 +2044,7 @@ def handler(event, _ctx):
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "admin@isol8.co",
+              address: this.alertEmail,
             },
           ],
         },
@@ -2042,7 +2059,7 @@ def handler(event, _ctx):
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "admin@isol8.co",
+              address: this.alertEmail,
             },
           ],
         },
@@ -2155,10 +2172,11 @@ def handler(event, _ctx):
   private createUptimeChecks(): void {
     const isProd = this.envName === "prod";
 
-    // Mirrors api-stack (`api.isol8.co` / `api-{env}.isol8.co`) and
-    // isol8-stage (`isol8.co` / `dev.isol8.co`).
-    const appHost = isProd ? "isol8.co" : `${this.envName}.isol8.co`;
-    const apiHost = isProd ? "api.isol8.co" : `api-${this.envName}.isol8.co`;
+    // Mirrors api-stack (`api.{root}` / `api-{env}.{root}`) and isol8-stage
+    // (`{root}` / `dev.{root}`).
+    const root = this.rootDomain;
+    const appHost = isProd ? root : `${this.envName}.${root}`;
+    const apiHost = isProd ? `api.${root}` : `api-${this.envName}.${root}`;
 
     const targets = [
       {

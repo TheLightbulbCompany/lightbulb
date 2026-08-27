@@ -160,9 +160,9 @@
 }
 
 .ld-btn:hover {
-  background: #0a5138;
+  background: #16223a;
   transform: translateY(-2px);
-  box-shadow: 0 14px 34px rgba(6, 64, 43, 0.22);
+  box-shadow: 0 14px 34px rgba(15, 26, 43, 0.22);
 }
 
 .ld-btn .ld-btn-arrow {
@@ -320,7 +320,7 @@
 }
 
 .ld-hero-fine a:hover {
-  color: #0a5138;
+  color: #16223a;
 }
 
 /* bottom strip: scroll cue + ticker */
@@ -440,7 +440,7 @@
 }
 
 .ld-feat-row:hover {
-  background: linear-gradient(to right, transparent, rgba(6, 64, 43, 0.025), transparent);
+  background: linear-gradient(to right, transparent, rgba(15, 26, 43, 0.025), transparent);
 }
 
 .ld-feat-num {
@@ -618,7 +618,7 @@
   font-size: 10px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: #9fe6c2;
+  color: #F0C34E;
   margin-bottom: 12px;
 }
 
@@ -633,7 +633,7 @@
 
 .ld-iso-body h3 em {
   font-style: italic;
-  color: #9fe6c2; /* mint — AA contrast on the forest band */
+  color: #F0C34E; /* mint — AA contrast on the forest band */
 }
 
 .ld-iso-body p {
@@ -656,7 +656,7 @@
   font-size: 10px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #cfe9da;
+  color: var(--brass);
   border: 1px solid rgba(245, 239, 226, 0.22);
   padding: 11px 16px;
   border-radius: 999px;
@@ -681,7 +681,7 @@
   border: 1px solid var(--edge);
   border-radius: 22px;
   background:
-    radial-gradient(ellipse at 50% 40%, rgba(6, 64, 43, 0.04), transparent 70%),
+    radial-gradient(ellipse at 50% 40%, rgba(15, 26, 43, 0.04), transparent 70%),
     var(--cream);
   padding: 64px 48px 56px;
   overflow: hidden;
@@ -787,8 +787,8 @@
 .ld-const-node--agent.is-active .ld-puck {
   outline: 2px solid var(--forest-soft);
   outline-offset: 4px;
-  border-color: rgba(6, 64, 43, 0.35);
-  box-shadow: 0 16px 38px rgba(6, 64, 43, 0.18);
+  border-color: rgba(15, 26, 43, 0.35);
+  box-shadow: 0 16px 38px rgba(15, 26, 43, 0.18);
 }
 
 .ld-const-node.is-dimmed {
@@ -824,7 +824,7 @@
   background: var(--forest);
   border-color: var(--forest);
   color: var(--cream);
-  box-shadow: 0 18px 44px rgba(6, 64, 43, 0.3);
+  box-shadow: 0 18px 44px rgba(15, 26, 43, 0.3);
 }
 
 .ld-puck--lead span {
@@ -865,9 +865,9 @@
   z-index: 5;
   width: min(280px, calc(100% - 28px));
   padding: 18px 18px 16px;
-  border: 1px solid rgba(6, 64, 43, 0.16);
+  border: 1px solid rgba(15, 26, 43, 0.16);
   border-radius: 16px;
-  background: rgba(245, 239, 226, 0.96);
+  background: color-mix(in srgb, var(--cream) 96%, transparent);
   box-shadow: 0 24px 68px rgba(26, 26, 26, 0.14);
   color: var(--ink);
   pointer-events: auto;
@@ -998,9 +998,9 @@
 }
 
 .ld-ib-item.is-active {
-  border-color: rgba(6, 64, 43, 0.35);
+  border-color: rgba(15, 26, 43, 0.35);
   background: var(--cream);
-  box-shadow: 0 10px 28px rgba(6, 64, 43, 0.07);
+  box-shadow: 0 10px 28px rgba(15, 26, 43, 0.07);
 }
 
 .ld-ib-id {
@@ -1056,7 +1056,7 @@
 
 .ld-ib-avatar--you {
   background: var(--forest-tint);
-  border-color: rgba(6, 64, 43, 0.2);
+  border-color: rgba(15, 26, 43, 0.2);
   color: var(--forest);
   font-size: 8px;
   letter-spacing: 0.04em;
@@ -1277,7 +1277,7 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--forest);
-  border-bottom: 1px solid rgba(6, 64, 43, 0.3);
+  border-bottom: 1px solid rgba(15, 26, 43, 0.3);
   padding-bottom: 4px;
   transition: border-color 0.25s ease, color 0.25s ease;
 }
@@ -1338,7 +1338,7 @@
   letter-spacing: 0.1em;
   padding: 4px 10px;
   border-radius: 99px;
-  border: 1px solid rgba(6, 64, 43, 0.3);
+  border: 1px solid rgba(15, 26, 43, 0.3);
   color: var(--forest);
 }
 
@@ -1446,7 +1446,7 @@
 }
 
 .ld-price-card--hi:hover {
-  box-shadow: 0 26px 64px rgba(6, 64, 43, 0.32);
+  box-shadow: 0 26px 64px rgba(15, 26, 43, 0.32);
 }
 
 .ld-price-card .ld-pc-tag {
@@ -1459,7 +1459,7 @@
 }
 
 .ld-price-card--hi .ld-pc-tag {
-  color: #a8e6c6;
+  color: #F0C34E;
 }
 
 .ld-price-card h3 {
@@ -1549,7 +1549,7 @@
 }
 
 .ld-price-card--hi .ld-pc-trial {
-  color: #a8e6c6;
+  color: #F0C34E;
 }
 
 .ld-teams-strip {
@@ -1719,7 +1719,7 @@
 
 .ld-footer-cta h2 em {
   font-style: italic;
-  color: #a8e6c6;
+  color: #F0C34E;
 }
 
 .ld-footer-cta .ld-btn {
@@ -2516,6 +2516,11 @@
 .ld-lamp-glass:focus-visible {
   outline: 2px solid var(--brass);
   outline-offset: 4px;
+  /* Safari does not reliably paint `outline` on a focused SVG path, so the
+     ring cannot be the only affordance — thicken and brighten the glass too,
+     which every engine renders. */
+  stroke: var(--brass);
+  stroke-width: 7;
 }
 
 /* ---- the room, switched off ---- */
@@ -2552,11 +2557,15 @@
 
 .ld-page { transition: background 0.5s cubic-bezier(0.22, 1, 0.36, 1), color 0.5s ease; }
 
+/* The pendulum writes `transform: rotate(...)` inline on every frame, so
+   nothing else may use `transform` on .ld-lamp — an inline write replaces
+   the whole property. Size is expressed with the standalone `scale`, which
+   composes with it instead of being clobbered by it. */
 @media (prefers-reduced-motion: reduce) {
   .ld-lamp { transform: none !important; }
   .ld-page, .ld-funnel-fan { transition: none; }
 }
 
 @media (max-width: 720px) {
-  .ld-lamp { transform: scale(0.7); transform-origin: 50% 0; }
+  .ld-lamp { scale: 0.7; }
 }

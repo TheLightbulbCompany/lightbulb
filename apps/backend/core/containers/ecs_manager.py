@@ -2772,7 +2772,7 @@ class EcsManager:
         # exactly one definition. Public route -> no auth, no owner_id.
         from core.services import atlas_seed
 
-        environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url(settings.ENVIRONMENT)})
+        environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url()})
         # Owner id for the BAKED marketplace plugin. Unlike Atlas's per-owner
         # seed files (which substitute {{ISOL8_BRIDGE_URL}} at stage time), a
         # baked plugin is byte-identical in every container and cannot carry

@@ -3,6 +3,7 @@ import pytest
 from core.config import settings
 from core.crypto.operator_device import device_identity_from_pem
 from core.services.paperclip_adapter_config import (
+    build_gateway_url_re,
     synthesize_openclaw_adapter,
     validate_gateway_url,
     AdapterConfigError,
@@ -49,6 +50,26 @@ def test_validate_gateway_url_accepts_known_formats(url):
 def test_validate_gateway_url_rejects_unknown_formats(url):
     with pytest.raises(AdapterConfigError):
         validate_gateway_url(url)
+
+
+def test_gateway_allowlist_follows_the_configured_gateway_host():
+    """The allowlist tracks WS_GATEWAY_URL's apex, so moving the product domain
+    is a config change, not a code change. It is fail-CLOSED: an unconfigured
+    gateway allows localhost only, never a looser hosted pattern."""
+    live = build_gateway_url_re("wss://ws-dev.isol8.co")
+    assert live.pattern == r"\A(?:wss://ws(?:-[a-z]+)?\.isol8\.co|ws://localhost:[0-9]+)\Z"
+
+    moved = build_gateway_url_re("wss://ws.example.ai")
+    assert moved.match("wss://ws.example.ai")
+    assert moved.match("wss://ws-dev.example.ai")
+    assert moved.match("ws://localhost:8000")
+    assert not moved.match("wss://ws.isol8.co")
+    assert not moved.match("wss://ws.example.ai.evil")
+
+    unset = build_gateway_url_re("")
+    assert unset.match("ws://localhost:8000")
+    assert not unset.match("wss://ws.isol8.co")
+    assert not unset.match("wss://ws.")
 
 
 def test_synthesize_returns_canonical_shape(monkeypatch):

@@ -223,16 +223,16 @@ def _ws_gateway_url(env_name: str) -> str:
     """Pick the right WS gateway URL for the seeded Main Agent's
     openclaw-gateway adapter.
 
-    Mirrors the env-name convention used by ``CLAUDE.md`` and the
-    frontend's ``NEXT_PUBLIC_API_URL`` (``api-{env}.isol8.co``).
-    Production drops the ``-prod`` suffix.
+    In a deployed env this is ``settings.WS_GATEWAY_URL`` — the value CDK
+    wires from the API-stack WebSocket stage (``wss://ws.<apex>`` in prod,
+    ``wss://ws-{env}.<apex>`` elsewhere), i.e. exactly the host this used to
+    rebuild from ``env_name``. ``env_name`` now only distinguishes "deployed"
+    from "local", where no WS custom domain exists.
     """
-    if env_name in ("prod", "production"):
-        return "wss://ws.isol8.co"
-    if env_name:
-        return f"wss://ws-{env_name}.isol8.co"
-    # Empty env (local dev) — fall back to local WS endpoint.
-    return "ws://localhost:8000"
+    if not env_name:
+        # Empty env (local dev) — fall back to local WS endpoint.
+        return "ws://localhost:8000"
+    return settings.WS_GATEWAY_URL
 
 
 class OrgNotProvisionedError(RuntimeError):

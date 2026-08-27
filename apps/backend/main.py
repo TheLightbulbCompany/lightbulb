@@ -550,16 +550,14 @@ app = FastAPI(
     openapi_url=None if settings.ENVIRONMENT == "prod" else f"{settings.API_V1_STR}/openapi.json",
     docs_url=None if settings.ENVIRONMENT == "prod" else "/docs",
     redoc_url=None if settings.ENVIRONMENT == "prod" else "/redoc",
-    servers=(
-        [{"url": "https://api-dev.isol8.co", "description": "Development"}]
-        if settings.ENVIRONMENT == "dev"
-        else [{"url": "https://api.isol8.co", "description": "Production"}]
-        if settings.ENVIRONMENT == "prod"
-        else [
-            {"url": "http://localhost:8000", "description": "Local development"},
-            {"url": "https://api-dev.isol8.co", "description": "Development"},
-        ]
-    ),
+    # PUBLIC_API_BASE is the public origin of THIS API, wired per env by CDK
+    # (https://api-dev.<apex> / https://api.<apex>, localhost otherwise).
+    servers=[
+        {
+            "url": settings.PUBLIC_API_BASE,
+            "description": {"dev": "Development", "prod": "Production"}.get(settings.ENVIRONMENT, "Local development"),
+        }
+    ],
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )

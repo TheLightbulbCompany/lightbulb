@@ -289,20 +289,20 @@ def _bridge_files_dir(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "env, expected_host",
+    "api_base, expected_host",
     [
-        ("dev", "https://api-dev.isol8.co"),
-        ("staging", "https://api-staging.isol8.co"),
-        ("prod", "https://api.isol8.co"),
-        ("production", "https://api.isol8.co"),  # "production" alias → prod host
-        ("", "https://api.isol8.co"),  # empty env resolves to the prod host
+        ("https://api-dev.isol8.co", "https://api-dev.isol8.co"),
+        ("https://api.isol8.co", "https://api.isol8.co"),
+        ("http://localhost:8000", "http://localhost:8000"),
+        ("https://api.isol8.co/", "https://api.isol8.co"),  # trailing slash trimmed
     ],
 )
-async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, monkeypatch, env, expected_host):
+async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, monkeypatch, api_base, expected_host):
     """pre_stage rewrites build.lobster's {{ISOL8_BRIDGE_URL}} placeholder to the
-    concrete per-env, per-owner agent-builder bridge URL, leaving none behind."""
+    concrete per-env, per-owner agent-builder bridge URL, leaving none behind.
+    The host is PUBLIC_API_BASE — this API's own public origin, wired by CDK."""
     _bridge_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ENVIRONMENT", env)
+    monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", api_base)
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
 
     await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=captured_ws)
@@ -404,7 +404,7 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
     """Under force, the URL-substituted build.lobster from the pre-write must
     survive — the generic loop must NOT overwrite it with the placeholder copy."""
     _bridge_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ENVIRONMENT", "dev")
+    monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "https://api-dev.isol8.co")
     # Capture the last-written content per path (write_file overwrites) while
     # still recording the path in overwrote (the fixture's default behavior).
     written: dict[str, str] = {}

@@ -103,21 +103,14 @@ _FILES_DIR = Path(__file__).parent / "files"
 _BRIDGE_URL_PLACEHOLDER = "{{ISOL8_BRIDGE_URL}}"
 
 
-def _api_base_url(env_name: str) -> str:
-    """REST API base URL for the agent-builder bridge, per environment.
+def _api_base_url() -> str:
+    """REST API base URL for the agent-builder bridge.
 
-    Mirrors the env-name convention in
-    ``paperclip_provisioning._ws_gateway_url`` and the frontend's
-    ``NEXT_PUBLIC_API_URL`` (``api-{env}.isol8.co``): ``prod``/``production``
-    and an empty env resolve to the bare ``api.isol8.co`` host (production drops
-    the ``-prod`` suffix). Any other (non-empty) env name maps to
-    ``api-{env}.isol8.co`` — e.g. ``dev`` → ``api-dev.isol8.co``.
+    ``settings.PUBLIC_API_BASE`` is the public origin of THIS API, wired by CDK
+    per environment (``https://api.<apex>`` in prod, ``https://api-{env}.<apex>``
+    elsewhere) — the same hosts this used to rebuild from the env name.
     """
-    # `not env_name` also catches a None ENVIRONMENT (the annotation says str,
-    # but guard defensively so a None never yields api-None.isol8.co).
-    if not env_name or env_name in ("prod", "production"):
-        return "https://api.isol8.co"
-    return f"https://api-{env_name}.isol8.co"
+    return settings.PUBLIC_API_BASE.rstrip("/")
 
 
 def _bridge_url(owner_id: str) -> str:
@@ -126,7 +119,7 @@ def _bridge_url(owner_id: str) -> str:
     Mounted at ``/api/v1/agent-builder`` (main.py) with the route
     ``/u/{owner_id}/register-built-agent`` (routers/agent_builder.py).
     """
-    return f"{_api_base_url(settings.ENVIRONMENT)}/api/v1/agent-builder/u/{owner_id}/register-built-agent"
+    return f"{_api_base_url()}/api/v1/agent-builder/u/{owner_id}/register-built-agent"
 
 
 # Junk that must never be seeded into a user's workspace, even if it sneaks

@@ -149,14 +149,14 @@ def _make_admin_mock() -> MagicMock:
 # ----------------------------------------------------------------------
 
 
-def test_ws_gateway_url_prod_drops_suffix():
-    assert _ws_gateway_url("prod") == "wss://ws.isol8.co"
-    assert _ws_gateway_url("production") == "wss://ws.isol8.co"
-
-
-def test_ws_gateway_url_dev_uses_env_suffix():
-    assert _ws_gateway_url("dev") == "wss://ws-dev.isol8.co"
-    assert _ws_gateway_url("staging") == "wss://ws-staging.isol8.co"
+@pytest.mark.parametrize("env", ["prod", "production", "dev", "staging"])
+def test_ws_gateway_url_uses_the_configured_gateway(monkeypatch, env):
+    """Any deployed env returns WS_GATEWAY_URL verbatim — the host CDK wired
+    from the API-stack WebSocket stage, not a locally rebuilt one."""
+    monkeypatch.setattr("core.config.settings.WS_GATEWAY_URL", "wss://ws-dev.isol8.co")
+    assert _ws_gateway_url(env) == "wss://ws-dev.isol8.co"
+    monkeypatch.setattr("core.config.settings.WS_GATEWAY_URL", "wss://ws.isol8.co")
+    assert _ws_gateway_url(env) == "wss://ws.isol8.co"
 
 
 def test_ws_gateway_url_empty_falls_back_to_localhost():

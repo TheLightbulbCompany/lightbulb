@@ -1,5 +1,6 @@
 import logging
 import os
+from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -9,6 +10,23 @@ from pydantic_settings import BaseSettings
 # security fences configured — see _validate_deployed_security below.
 _DEPLOYED_ENVIRONMENTS = frozenset({"dev", "staging", "prod"})
 _KNOWN_ENVIRONMENTS = _DEPLOYED_ENVIRONMENTS | frozenset({"local", "test"})
+
+
+def apex_domain(host: str) -> str:
+    """Registrable apex of ``host`` — its last two labels.
+
+    ``dev.isol8.co`` -> ``isol8.co``; ``isol8.co`` -> ``isol8.co``; ``""`` -> ``""``.
+    Every product surface is a subdomain of ONE apex, so this is what a cookie
+    scope, a same-site allowlist or a SES parent identity must key on.
+    """
+    # ponytail: two labels. A multi-label public suffix (``example.co.uk``)
+    # would need the real PSL — no product domain has ever been one.
+    return ".".join((host or "").strip().lower().strip(".").split(".")[-2:])
+
+
+def url_host(url: str) -> str:
+    """Hostname of ``url``, lowercased; ``""`` when it has none."""
+    return (urlparse(url or "").hostname or "").lower()
 
 
 class Settings(BaseSettings):
@@ -68,6 +86,21 @@ class Settings(BaseSettings):
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
+
+    @property
+    def frontend_host(self) -> str:
+        """Hostname FRONTEND_URL is served from (e.g. ``dev.isol8.co``)."""
+        return url_host(self.FRONTEND_URL)
+
+    @property
+    def root_domain(self) -> str:
+        """Product apex domain (e.g. ``isol8.co``) — derived from FRONTEND_URL.
+
+        The cookie scope, the same-site return-URL allowlist and the admin host
+        all hang off this, so a domain move is a FRONTEND_URL change, not a
+        code change.
+        """
+        return apex_domain(self.frontend_host)
 
     @property
     def cors_origins_list(self) -> list[str]:

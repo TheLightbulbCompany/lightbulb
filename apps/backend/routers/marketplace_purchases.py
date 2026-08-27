@@ -34,13 +34,16 @@ def _validate_return_url(url: str, field: str) -> str:
     """
     from urllib.parse import urlparse
 
+    apex = settings.root_domain  # product apex, derived from FRONTEND_URL
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
-    if parsed.scheme == "https" and (host == "isol8.co" or host.endswith(".isol8.co")):
+    # `apex` is our own config, never attacker-controlled, and the suffix check
+    # keeps the leading dot so `evil-isol8.co` cannot pass as a subdomain.
+    if apex and parsed.scheme == "https" and (host == apex or host.endswith(f".{apex}")):
         return url
     if parsed.scheme == "http" and host in ("localhost", "127.0.0.1"):
         return url  # local dev
-    raise HTTPException(status_code=400, detail=f"{field} must be an isol8.co URL")
+    raise HTTPException(status_code=400, detail=f"{field} must be an https URL on {apex}")
 
 
 @router.post("/checkout")

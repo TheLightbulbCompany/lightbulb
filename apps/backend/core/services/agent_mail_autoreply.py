@@ -34,7 +34,7 @@ from core.services.trial_cap import DAILY_CAP, TRIAL_EXPIRED
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_URL = "https://isol8.co/settings"
+SETTINGS_URL = f"{settings.FRONTEND_URL.rstrip('/')}/settings"
 
 # DAILY_CAP resets at 00:00 UTC, so waiting is a real answer and is offered
 # FIRST. Upgrading appears only as an alternative. Telling this owner they

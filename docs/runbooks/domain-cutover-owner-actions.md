@@ -237,3 +237,50 @@ aws secretsmanager list-secrets --region us-east-1 --max-results 100 \
 
 For any record whose JSON lacks a `redirect_uri` key, confirm the owner still exists before
 treating it as an owner action.
+
+---
+
+## Rollback — measured, not assumed (2026-08-27)
+
+The product-domain flip is **reversible in roughly the time it takes to apply**, and this was the
+missing fact that made it feel scarier than it is.
+
+**How:** revert the flip commit, dispatch the prod deploy. Verified by synthesizing current
+`main`: it produces `api.isol8.co`, `isol8.co` and `ws.isol8.co` custom domains, so CloudFormation
+recreates exactly what the flip removed. Nothing about the change is one-way.
+
+**How fast**, from the live prod zone (`Z09248243AOUC775CDUI4`):
+
+| record | type | TTL |
+|---|---|---|
+| `api.isol8.co` | A | **ALIAS** — no client-cached TTL |
+| `ws.isol8.co` | A | **ALIAS** — no client-cached TTL |
+| `isol8.co` | A | 300s |
+| `admin.isol8.co` | A | 300s |
+| `www.isol8.co` | CNAME | 300s |
+
+So worst-case DNS convergence on rollback is **five minutes**, and the two hosts that carry API
+and WebSocket traffic are aliases that resolve at the target with no client caching of their own.
+Add the CDK deploy itself and a rollback lands in roughly 10–20 minutes.
+
+### The 48-hour figure does NOT apply here
+
+Clerk documents "up to 48h" propagation — that is for **Clerk's own** new-domain verification and
+certificate issuance during a `change_domain`. It has nothing to do with our Route53 records, and
+conflating the two makes the product flip look far more committing than it is.
+
+Which separates the flag day cleanly into two operations of very different risk:
+
+| | reversible in | needs a human watching? |
+|---|---|---|
+| **Product-domain flip** (CDK + Vercel + the `NEXT_PUBLIC_API_URL_PROD` secret) | ~10–20 min | Yes, but it is a short, bounded, undoable window |
+| **Clerk `change_domain`** | Clerk-side; up to 48h propagation, cert issuance can stall on CAA | Yes — this is the genuinely committing half |
+
+They are independent: `CLERK_DOMAIN` is pinned, so the product flip leaves auth on
+`clerk.isol8.co` and working. **Do them as two sittings, not one.**
+
+### The unavoidable window in the forward direction
+
+The flip deletes `api.isol8.co`, and the prod frontend is built with that host inlined from
+`NEXT_PUBLIC_API_URL_PROD`. So update the secret **before** dispatching, and both land inside the
+same pipeline run — the exposure is that one run, not an open-ended state.

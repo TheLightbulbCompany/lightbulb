@@ -6,7 +6,7 @@ on:
       base_url:
         description: 'BASE_URL to test against'
         required: false
-        default: 'https://dev.isol8.co'
+        default: 'https://dev.flickmeon.ai'
 
 jobs:
   e2e:

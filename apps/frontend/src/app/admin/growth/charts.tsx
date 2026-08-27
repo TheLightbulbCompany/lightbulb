@@ -116,10 +116,13 @@ function cumulativeOffsetToTotal(signups: readonly { day: string; n: number }[],
 
 function Sparkline({ values, color }: { values: number[]; color: string }) {
   const data = values.map((v, i) => ({ i, v }));
+  // A flat series (min === max) would otherwise fill the whole tile as a
+  // solid block — line only, no fill, when there's no variation to shade.
+  const flat = values.length > 0 && Math.min(...values) === Math.max(...values);
   return (
     <ChartContainer config={{}} className="aspect-auto h-10 w-full">
       <AreaChart data={data} margin={{ top: 2, right: 0, bottom: 2, left: 0 }}>
-        <Area dataKey="v" type="monotone" stroke={color} strokeOpacity={0.6} fill={color} fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+        <Area dataKey="v" type="monotone" stroke={color} strokeOpacity={0.6} fill={color} fillOpacity={flat ? 0 : 0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
       </AreaChart>
     </ChartContainer>
   );
@@ -135,12 +138,8 @@ function KpiTile({ label, value, tone, sparkline }: { label: string; value: Reac
   );
 }
 
-function NoSparkline({ color }: { color: string }) {
-  return (
-    <div className="flex h-10 w-full items-center justify-center text-lg" style={{ color }}>
-      —
-    </div>
-  );
+function NoSparkline() {
+  return <div className="h-10 w-full" />;
 }
 
 export function KpiStrip({ seg }: { seg: GrowthSegment }) {
@@ -154,19 +153,19 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
     <Card>
       <div className="grid grid-cols-2 gap-6 md:grid-cols-3 xl:grid-cols-6">
         <KpiTile label="Owners" value={seg.owners.total} sparkline={<Sparkline values={cumulativeOwners} color={CHART_4} />} />
-        <KpiTile label="Paying" value={seg.owners.paid} sparkline={<NoSparkline color={CHART_1} />} />
+        <KpiTile label="Paying" value={seg.owners.paid} sparkline={<NoSparkline />} />
         <KpiTile
           label="Active owners this week"
           value={activeOwnersByWeek[activeOwnersByWeek.length - 1] ?? 0}
           sparkline={<Sparkline values={activeOwnersByWeek} color={CHART_1} />}
         />
         <KpiTile label="Autonomous runs (7d)" value={autonomous7d} sparkline={<Sparkline values={autonomousByDay} color={CHART_1} />} />
-        <KpiTile label="Armed automations" value={armedAutomations} sparkline={<NoSparkline color={CHART_2} />} />
+        <KpiTile label="Armed automations" value={armedAutomations} sparkline={<NoSparkline />} />
         <KpiTile
           label="Nightly loops never armed"
           value={seg.nightly_ceo.never_armed}
           tone={seg.nightly_ceo.never_armed > 0 ? "alert" : undefined}
-          sparkline={<NoSparkline color={CHART_5} />}
+          sparkline={<NoSparkline />}
         />
       </div>
     </Card>
@@ -347,26 +346,31 @@ export function AutomationSurvivalChart({ seg }: { seg: GrowthSegment }) {
 
 const GATE_BLOCKED_CYCLE = [CHART_5, CHART_3, CHART_4, CHART_2, CHART_1];
 
-/** 7. provision.gate.blocked per day — one stacked series per code present. */
+const GATE_BLOCKED_TITLE = "provision.gate.blocked per day (CloudWatch, all owners) — last 7 days";
+
+/** 7. provision.gate.blocked per day — one stacked series per code present.
+ * CloudWatch only supplies the last 7 days, so this chart (unlike the other
+ * daily ones) plots `days.slice(-7)`, not the full 56-day window. */
 export function GateBlockedDailyChart({ data }: { data: GrowthData }) {
   const codes = distinctSeries(data.gate_blocked_daily, "code");
   if (codes.length === 0) {
     return (
-      <Card title="provision.gate.blocked per day (CloudWatch, all owners)">
+      <Card title={GATE_BLOCKED_TITLE}>
         <div className="flex h-[220px] items-center justify-center text-xs text-zinc-500">none</div>
       </Card>
     );
   }
-  const rows = pivot(data.days, data.gate_blocked_daily, "day", "code", "n", codes);
+  const last7Days = data.days.slice(-7);
+  const rows = pivot(last7Days, data.gate_blocked_daily, "day", "code", "n", codes);
   const config: ChartConfig = Object.fromEntries(
     codes.map((code, i) => [code, { label: code, color: GATE_BLOCKED_CYCLE[i % GATE_BLOCKED_CYCLE.length] }]),
   );
   return (
-    <Card title="provision.gate.blocked per day (CloudWatch, all owners)">
+    <Card title={GATE_BLOCKED_TITLE}>
       <ChartContainer config={config} className="h-[220px] w-full">
         <BarChart data={rows} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
-          <XAxis dataKey="bucket" tickFormatter={tickDayMonth} interval={6} tickMargin={8} {...AXIS_TICK_PROPS} />
+          <XAxis dataKey="bucket" tickFormatter={tickDayMonth} tickMargin={8} {...AXIS_TICK_PROPS} />
           <YAxis {...NUMERIC_Y_PROPS} />
           <ChartTooltip content={<ChartTooltipContent labelFormatter={tooltipDayLabel} />} />
           {codes.length > 1 ? <ChartLegend content={<ChartLegendContent />} /> : null}

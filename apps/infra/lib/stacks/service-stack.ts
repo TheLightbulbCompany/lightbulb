@@ -19,6 +19,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
 
 // openclaw-version.json is the single source of truth for the pinned OpenClaw
@@ -106,6 +107,14 @@ export interface SecretNames {
 
 export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
+  /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
+  rootDomain?: string;
+  /**
+   * Domain the platform sender + agent mail live on (see lib/domains.ts).
+   * Defaults to PLATFORM_MAIL_DOMAIN. This is the SES domain identity the
+   * backend send policy is scoped to — not the product domain.
+   */
+  platformMailDomain?: string;
   vpc: ec2.IVpc;
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
@@ -190,6 +199,8 @@ export class ServiceStack extends cdk.Stack {
     super(scope, id, props);
 
     const env = props.environment;
+    const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
+    const platformMailDomain = props.platformMailDomain ?? PLATFORM_MAIL_DOMAIN;
 
     // -------------------------------------------------------------------------
     // Docker Image Asset (built & pushed by CDK Pipeline)
@@ -492,7 +503,9 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "AgentMailSesSend",
           actions: ["ses:SendEmail", "ses:SendRawEmail"],
-          resources: [`arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`],
+          resources: [
+            `arn:aws:ses:${this.region}:${this.account}:identity/${platformMailDomain}`,
+          ],
         }),
         // Per-owner SES tenants are created lazily by the backend at first
         // send (core/services/agent_mail_tenant.py) — dynamic per owner, so
@@ -520,7 +533,7 @@ export class ServiceStack extends cdk.Stack {
             `arn:aws:ses:${this.region}:${this.account}:tenant/owner-*`,
             `arn:aws:ses:${this.region}:aws:reputation-policy/standard`,
             `arn:aws:ses:${this.region}:${this.account}:configuration-set/isol8-${env}-agent-mail`,
-            `arn:aws:ses:${this.region}:${this.account}:identity/isol8.co`,
+            `arn:aws:ses:${this.region}:${this.account}:identity/${platformMailDomain}`,
           ],
         }),
       ],
@@ -1101,8 +1114,12 @@ export class ServiceStack extends cdk.Stack {
           allowedMethods: [s3.HttpMethods.PUT],
           allowedOrigins:
             env === "prod"
-              ? ["https://isol8.co"]
-              : ["https://dev.isol8.co", "http://localhost:3000", "https://*.vercel.app"],
+              ? [`https://${rootDomain}`]
+              : [
+                  `https://dev.${rootDomain}`,
+                  "http://localhost:3000",
+                  "https://*.vercel.app",
+                ],
           allowedHeaders: ["content-type"],
           maxAge: 3600,
         },
@@ -1263,7 +1280,10 @@ export class ServiceStack extends cdk.Stack {
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
-      CORS_ORIGINS: env === "prod" ? "https://isol8.co,https://www.isol8.co" : "https://dev.isol8.co",
+      CORS_ORIGINS:
+        env === "prod"
+          ? `https://${rootDomain},https://www.${rootDomain}`
+          : `https://dev.${rootDomain}`,
       // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
       // backend validates the `azp` (authorized party) claim against this
       // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
@@ -1277,8 +1297,8 @@ export class ServiceStack extends cdk.Stack {
       // auth.azp.mismatch metric shows zero legitimate mismatches.
       CLERK_AUTHORIZED_PARTIES:
         env === "prod"
-          ? "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"
-          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+          ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},https://company.${rootDomain}`
+          : `https://dev.${rootDomain},https://admin.dev.${rootDomain},https://dev.company.${rootDomain},http://localhost:3000`,
       CLERK_AZP_MODE: "audit",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
       // encrypt operator device seeds + gateway tokens at rest. Reuses the
@@ -1317,13 +1337,15 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      FRONTEND_URL: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+      FRONTEND_URL:
+        env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API. Used by /hooks/credentials
       // (and any future endpoint that surfaces an absolute URL back to
       // the browser) to build the webhook URL the Settings panel
       // displays to the user. Per-env API hostname, matches the DNS
       // records provisioned by dns-stack.ts.
-      PUBLIC_API_BASE: env === "prod" ? "https://api.isol8.co" : `https://api-${env}.isol8.co`,
+      PUBLIC_API_BASE:
+        env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
       // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
       // (apps/backend/main.py) builds an empty dispatch host set, so requests
       // to `company-{env}.isol8.co` fall through to the default Isol8 API
@@ -1338,8 +1360,8 @@ export class ServiceStack extends cdk.Stack {
       // to the http in-VPC host (PR #1073) broke Better Auth sign-in (403).
       PAPERCLIP_PUBLIC_URL:
         env === "prod"
-          ? "https://company.isol8.co"
-          : `https://${env}.company.isol8.co`,
+          ? `https://company.${rootDomain}`
+          : `https://${env}.company.${rootDomain}`,
       // Cloud Map A record published by PaperclipStack at:
       //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
       // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
@@ -1486,12 +1508,12 @@ export class ServiceStack extends cdk.Stack {
       // bounces sellers back here on refresh + completion.
       STRIPE_CONNECT_REFRESH_URL:
         env === "prod"
-          ? "https://isol8.co/marketplace/payouts/refresh"
-          : "https://dev.isol8.co/marketplace/payouts/refresh",
+          ? `https://${rootDomain}/marketplace/payouts/refresh`
+          : `https://dev.${rootDomain}/marketplace/payouts/refresh`,
       STRIPE_CONNECT_RETURN_URL:
         env === "prod"
-          ? "https://isol8.co/marketplace/payouts/return"
-          : "https://dev.isol8.co/marketplace/payouts/return",
+          ? `https://${rootDomain}/marketplace/payouts/return`
+          : `https://dev.${rootDomain}/marketplace/payouts/return`,
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

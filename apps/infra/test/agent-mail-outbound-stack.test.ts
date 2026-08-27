@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { AgentMailOutboundStack } from "../lib/stacks/agent-mail-outbound-stack";
 
 function buildStack(environment: "dev" | "prod" = "dev"): Template {
@@ -8,7 +9,10 @@ function buildStack(environment: "dev" | "prod" = "dev"): Template {
   const stack = new AgentMailOutboundStack(app, `AgentMailOutbound-${environment}`, {
     env,
     envName: environment,
-    apiDomain: environment === "prod" ? "api.isol8.co" : `api-${environment}.isol8.co`,
+    apiDomain:
+      environment === "prod"
+        ? `api.${ROOT_DOMAIN}`
+        : `api-${environment}.${ROOT_DOMAIN}`,
     sesIngestSecretName: `isol8/${environment}/ses_ingest_secret`,
   });
   return Template.fromStack(stack);
@@ -40,7 +44,7 @@ describe("AgentMailOutboundStack", () => {
   test("creates the API destination pointed at this env's ses-events webhook", () => {
     template.resourceCountIs("AWS::Events::ApiDestination", 1);
     template.hasResourceProperties("AWS::Events::ApiDestination", {
-      InvocationEndpoint: "https://api-dev.isol8.co/api/v1/webhooks/ses-events",
+      InvocationEndpoint: `https://api-dev.${ROOT_DOMAIN}/api/v1/webhooks/ses-events`,
       HttpMethod: "POST",
     });
   });
@@ -113,7 +117,7 @@ describe("AgentMailOutboundStack", () => {
       Name: "isol8-prod-agent-mail",
     });
     prodTemplate.hasResourceProperties("AWS::Events::ApiDestination", {
-      InvocationEndpoint: "https://api.isol8.co/api/v1/webhooks/ses-events",
+      InvocationEndpoint: `https://api.${ROOT_DOMAIN}/api/v1/webhooks/ses-events`,
     });
   });
 });

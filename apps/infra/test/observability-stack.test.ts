@@ -5,6 +5,7 @@ import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as rds from "aws-cdk-lib/aws-rds";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import {
   ObservabilityStack,
@@ -287,7 +288,7 @@ describe("ObservabilityStack", () => {
     expect(new Set(byTopic.map((s) => s.topic)).size).toBe(2); // page + warn, not two on one
     for (const s of byTopic) {
       expect(s.protocol).toBe("email");
-      expect(s.endpoint).toBe("admin@isol8.co");
+      expect(s.endpoint).toBe(`admin@${PLATFORM_MAIL_DOMAIN}`);
     }
   });
 
@@ -298,7 +299,7 @@ describe("ObservabilityStack", () => {
     const hosts = Object.values(checks).map(
       (c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName,
     );
-    expect(hosts.sort()).toEqual(["api-dev.isol8.co", "dev.isol8.co"]);
+    expect(hosts.sort()).toEqual([`api-dev.${ROOT_DOMAIN}`, `dev.${ROOT_DOMAIN}`]);
 
     for (const c of Object.values(checks) as any[]) {
       expect(c.Properties.HealthCheckConfig.Type).toBe("HTTPS");
@@ -583,6 +584,6 @@ describe("ObservabilityStack — prod-only paths", () => {
   test("prod health checks target the real public hostnames", () => {
     const hosts = Object.values(template.findResources("AWS::Route53::HealthCheck"))
       .map((c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName);
-    expect(hosts.sort()).toEqual(["api.isol8.co", "isol8.co"]);
+    expect(hosts.sort()).toEqual([`api.${ROOT_DOMAIN}`, ROOT_DOMAIN]);
   });
 });

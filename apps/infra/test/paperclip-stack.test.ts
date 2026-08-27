@@ -7,6 +7,7 @@ import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { PaperclipStack } from "../lib/stacks/paperclip-stack";
 
 // Read the version file the stack reads, and derive the expected task-def image
@@ -182,8 +183,8 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PAPERCLIP_BIND).toBe("lan");
     // PAPERCLIP_PUBLIC_URL is Better Auth's https origin identity (not the agent's
     // API URL — that's the adapterConfig.paperclipApiUrl override). Dev shape is
-    // `<env>.company.isol8.co`.
-    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://dev.company.isol8.co");
+    // `<env>.company.<root domain>`.
+    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe(`https://dev.company.${ROOT_DOMAIN}`);
   });
 
   test("container has DATABASE_URL-building shim with URL-encoded password and bypasses gosu", () => {
@@ -404,7 +405,7 @@ describe("PaperclipStack — prod public URL", () => {
       Value: string;
     }>;
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
-    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company.isol8.co");
+    expect(envMap.PAPERCLIP_PUBLIC_URL).toBe(`https://company.${ROOT_DOMAIN}`);
   });
 
   test("prod keeps public sign-up enabled (no out-of-band admin path upstream)", () => {

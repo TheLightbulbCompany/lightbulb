@@ -11,6 +11,7 @@ import {
   Runner,
   StackCapabilities,
 } from "cdk-pipelines-github";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
 import { Isol8Stage } from "./isol8-stage";
 
 const app = new cdk.App();
@@ -127,6 +128,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 const devStage = new Isol8Stage(app, "dev", {
   env: awsEnv,
   environment: "dev",
+  rootDomain: ROOT_DOMAIN,
+  platformMailDomain: PLATFORM_MAIL_DOMAIN,
 });
 
 pipeline.addStageWithGitHubOptions(devStage, {
@@ -135,7 +138,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
     StackCapabilities.AUTO_EXPAND,
   ],
   post: [
-    // Deploy frontend to Vercel (preview) and alias to dev.isol8.co
+    // Deploy frontend to Vercel (preview) and alias to dev.{rootDomain}
     new GitHubActionStep("DeployVercelDev", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
@@ -159,13 +162,13 @@ pipeline.addStageWithGitHubOptions(devStage, {
           env: vercelEnv,
         },
         {
-          name: "Alias to dev.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.isol8.co --token=$VERCEL_TOKEN",
+          name: `Alias to dev.${ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
         {
-          name: "Alias to admin.dev.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.isol8.co --token=$VERCEL_TOKEN",
+          name: `Alias to admin.dev.${ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} admin.dev.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
       ],
@@ -205,6 +208,8 @@ const PROD_PROMOTE_IF = "github.event_name == 'workflow_dispatch'";
 const prodStage = new Isol8Stage(app, "prod", {
   env: awsEnv,
   environment: "prod",
+  rootDomain: ROOT_DOMAIN,
+  platformMailDomain: PLATFORM_MAIL_DOMAIN,
 });
 
 pipeline.addStageWithGitHubOptions(prodStage, {
@@ -217,7 +222,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
   // so DeployVercelProd is gated by an explicit patch further down.
   jobSettings: { if: PROD_PROMOTE_IF },
   post: [
-    // Deploy frontend to Vercel (production) and alias to isol8.co
+    // Deploy frontend to Vercel (production) and alias to {rootDomain}
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
@@ -241,23 +246,23 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           env: vercelEnv,
         },
         {
-          name: "Alias to isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co --token=$VERCEL_TOKEN",
+          name: `Alias to ${ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} ${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
         {
-          name: "Register www.isol8.co project domain",
-          run: 'vercel domains add www.isol8.co frontend --force --token="$VERCEL_TOKEN"',
+          name: `Register www.${ROOT_DOMAIN} project domain`,
+          run: `vercel domains add www.${ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
           env: vercelEnv,
         },
         {
-          name: "Alias to www.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} www.isol8.co --token=$VERCEL_TOKEN",
+          name: `Alias to www.${ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} www.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
         {
-          name: "Alias to admin.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.isol8.co --token=$VERCEL_TOKEN",
+          name: `Alias to admin.${ROOT_DOMAIN}`,
+          run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} admin.${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
       ],
@@ -304,7 +309,7 @@ pipeline.workflowFile.patch(
   //
   // It would skip anyway — it `needs:` all 13 prod Deploy jobs, and a job whose
   // dependencies all skip is itself skipped — but this job is the half users
-  // actually see (isol8.co, www, admin), so the fence is stated on the job
+  // actually see (the root domain, www, admin), so the fence is stated on the job
   // rather than inferred from the shape of the DAG. `GitHubActionStep` has no
   // `if` prop and stage `jobSettings` do not reach it, so a patch is the only
   // route. Unlike the positional step patch above, the path is a job NAME, so

@@ -3,6 +3,33 @@ import { Template } from "aws-cdk-lib/assertions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
+import { ROOT_DOMAIN } from "../lib/domains";
+
+/**
+ * Static CDK context so `HostedZone.fromLookup` resolves without an AWS API
+ * call. Mirrors the cached entry in `cdk.context.json` — a synth test with no
+ * cache falls through to CDK's dummy zone and every Route53 assertion
+ * silently compares against `example.com` instead of failing.
+ *
+ * Single copy on purpose: the only other place this value lives is
+ * `cdk.context.json`, so changing ROOT_DOMAIN needs exactly one hand-added
+ * cache entry there, not a sweep of the test suite.
+ */
+export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
+  "availability-zones:account=877352799272:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c",
+    "us-east-1d",
+    "us-east-1e",
+    "us-east-1f",
+  ],
+  [`hosted-zone:account=877352799272:domainName=${ROOT_DOMAIN}:region=us-east-1`]:
+    {
+      Id: "/hostedzone/Z09248243AOUC775CDUI4",
+      Name: `${ROOT_DOMAIN}.`,
+    },
+};
 
 /**
  * Builds a real ApiStack wired to a real upstream NetworkStack. Mirrors the

@@ -5,6 +5,7 @@ import {
   BROWSER_EGRESS_PROXY_PORT,
   ContainerStack,
 } from "../lib/stacks/container-stack";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
@@ -695,8 +696,14 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
   // off), and a premature "enforce" would reject before audit validated the
   // list in the wild.
   test.each([
-    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
-    ["prod", "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+    [
+      "dev",
+      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},https://dev.company.${ROOT_DOMAIN},http://localhost:3000`,
+    ],
+    [
+      "prod",
+      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN},https://company.${ROOT_DOMAIN}`,
+    ],
   ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
@@ -720,7 +727,10 @@ describe("ServiceStack — production HTTP CORS origins", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({ Name: "CORS_ORIGINS", Value: "https://isol8.co,https://www.isol8.co" }),
+            Match.objectLike({
+              Name: "CORS_ORIGINS",
+              Value: `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN}`,
+            }),
           ]),
         }),
       ]),

@@ -11,6 +11,7 @@ import * as ecr from "aws-cdk-lib/aws-ecr";
 import { Construct } from "constructs";
 import * as fs from "fs";
 import * as path from "path";
+import { ROOT_DOMAIN } from "../domains";
 
 // Single source of truth for the pinned (extended) Paperclip image. Bump
 // paperclip-version.json at the repo root; the overlay it patches lives at
@@ -69,6 +70,8 @@ const GOVERNED_AGENT_CREATION_ENVIRONMENTS = new Set<string>(["dev"]);
  */
 export interface PaperclipStackProps extends cdk.StackProps {
   environment: string;
+  /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
+  rootDomain?: string;
   vpc: ec2.IVpc;
   cluster: ecs.ICluster;
   /** Cloud Map private DNS namespace owned by ContainerStack. */
@@ -142,6 +145,7 @@ export class PaperclipStack extends cdk.Stack {
     super(scope, id, props);
 
     const env = props.environment;
+    const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
 
     // Extended Paperclip image (mirrors openclaw-extended): use the patched ECR
     // image once the per-env tag is promoted past "bootstrap"; until then fall
@@ -371,8 +375,8 @@ export class PaperclipStack extends cdk.Stack {
     // this value. That decoupling is what lets PUBLIC_URL stay the auth origin.
     const paperclipPublicUrl =
       env === "prod"
-        ? "https://company.isol8.co"
-        : `https://${env}.company.isol8.co`;
+        ? `https://company.${rootDomain}`
+        : `https://${env}.company.${rootDomain}`;
 
     // In-VPC Cloud Map host. Since upstream's PAPERCLIP_API_URL-first precedence
     // change (adapter-utils buildPaperclipEnv), this env WINS over
@@ -387,8 +391,8 @@ export class PaperclipStack extends cdk.Stack {
     // reserved IPs, so an in-VPC hostname can never work here.
     const notifyReceiverUrl =
       env === "prod"
-        ? "https://api.isol8.co/api/v1/webhooks/paperclip-events"
-        : `https://api-${env}.isol8.co/api/v1/webhooks/paperclip-events`;
+        ? `https://api.${rootDomain}/api/v1/webhooks/paperclip-events`
+        : `https://api-${env}.${rootDomain}/api/v1/webhooks/paperclip-events`;
 
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub

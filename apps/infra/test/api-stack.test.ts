@@ -5,6 +5,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { synthApiStack } from "./helpers";
 
 // Hoist a single ApiStack synthesis and reuse across tests.
@@ -38,8 +39,14 @@ describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
   // the azp check silently no-ops (empty allowlist = off). Mode pins the
   // audit rollout default.
   test.each([
-    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
-    ["prod", "https://isol8.co,https://www.isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+    [
+      "dev",
+      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},https://dev.company.${ROOT_DOMAIN},http://localhost:3000`,
+    ],
+    [
+      "prod",
+      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN},https://company.${ROOT_DOMAIN}`,
+    ],
   ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
     template.hasResourceProperties("AWS::Lambda::Function", {
@@ -60,7 +67,7 @@ describe("ApiStack — production browser CORS origins", () => {
     const prod = synthApiStack("prod");
     prod.hasResourceProperties("AWS::ApiGatewayV2::Api", {
       CorsConfiguration: Match.objectLike({
-        AllowOrigins: ["https://isol8.co", "https://www.isol8.co"],
+        AllowOrigins: [`https://${ROOT_DOMAIN}`, `https://www.${ROOT_DOMAIN}`],
       }),
     });
   });
@@ -130,7 +137,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
       ),
       hostedZone: route53.HostedZone.fromHostedZoneAttributes(support, "Zone", {
         hostedZoneId: "Z0TEST",
-        zoneName: "isol8.co",
+        zoneName: ROOT_DOMAIN,
       }),
       paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
       paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
@@ -153,7 +160,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
     });
     template.hasResourceProperties("AWS::CloudFront::Distribution", {
       DistributionConfig: Match.objectLike({
-        Aliases: ["bv-dev.isol8.co"],
+        Aliases: [`bv-dev.${ROOT_DOMAIN}`],
         DefaultCacheBehavior: Match.objectLike({
           // CachingDisabled + AllViewer managed policy ids — a cached or
           // header-stripped relay is a broken relay.
@@ -165,9 +172,9 @@ describe("ApiStack — browser-view CloudFront door", () => {
     });
   });
 
-  test("prod alias is bv.isol8.co", () => {
+  test("prod alias is bv.<root domain>", () => {
     synthWithDomain("prod").hasResourceProperties("AWS::CloudFront::Distribution", {
-      DistributionConfig: Match.objectLike({ Aliases: ["bv.isol8.co"] }),
+      DistributionConfig: Match.objectLike({ Aliases: [`bv.${ROOT_DOMAIN}`] }),
     });
   });
 

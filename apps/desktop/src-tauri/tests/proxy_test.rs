@@ -15,7 +15,7 @@
 //!   3. Frames from the subprocess get forwarded upstream verbatim.
 
 use futures_util::{SinkExt, StreamExt};
-use isol8_desktop::proxy::start_proxy;
+use lightbulb_desktop::proxy::start_proxy;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;

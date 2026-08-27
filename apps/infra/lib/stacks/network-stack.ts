@@ -58,7 +58,7 @@ export class NetworkStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     this.albSecurityGroup = new ec2.SecurityGroup(this, "AlbSecurityGroup", {
       vpc: this.vpc,
-      description: `Isol8 ${env} internal ALB security group`,
+      description: `Lightbulb AI ${env} internal ALB security group`,
       allowAllOutbound: true,
     });
 

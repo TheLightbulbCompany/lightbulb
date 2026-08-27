@@ -1,6 +1,6 @@
 """Platform-owned OAuth app clients (client_id/client_secret) in Secrets Manager.
 
-Unlike ``oauth_app_store`` (per-owner BYO/DCR clients), these are ISOL8-owned
+Unlike ``oauth_app_store`` (per-owner BYO/DCR clients), these are Lightbulb AI-owned
 clients shared by every owner — e.g. the reviewed Meta app that Instagram
 connects run through. Stored at::
 

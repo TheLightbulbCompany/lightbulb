@@ -15,7 +15,7 @@ import { PaperclipStack } from "./stacks/paperclip-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
-export interface Isol8StageProps extends cdk.StageProps {
+export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
    * Product root domain — every frontend, API, WebSocket, browser-view, Clerk
@@ -32,8 +32,8 @@ export interface Isol8StageProps extends cdk.StageProps {
   platformMailDomain?: string;
 }
 
-export class Isol8Stage extends cdk.Stage {
-  constructor(scope: Construct, id: string, props: Isol8StageProps) {
+export class LightbulbStage extends cdk.Stage {
+  constructor(scope: Construct, id: string, props: LightbulbStageProps) {
     super(scope, id, props);
 
     const env = props.environment;
@@ -338,7 +338,7 @@ export class Isol8Stage extends cdk.Stage {
     }
 
     // --- Tags ---
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", env);
   }
 }

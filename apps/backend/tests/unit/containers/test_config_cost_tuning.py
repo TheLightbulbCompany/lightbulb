@@ -46,7 +46,7 @@ _ALL_PATHS = (
 
 class TestSkipBootstrap:
     def test_skip_bootstrap_true_on_every_path(self):
-        """Isol8 pre-seeds IDENTITY/SOUL/USER (friday_identity); without
+        """Lightbulb AI pre-seeds IDENTITY/SOUL/USER (friday_identity); without
         skipBootstrap any under-seeded workspace autonomously runs the
         BOOTSTRAP.md identity ritual — token spend + bizarre headless UX."""
         for kwargs in _ALL_PATHS:

@@ -15,7 +15,7 @@
 # monorepo is installed + built. So we build the fork once, THEN esbuild-bundle
 # the schema against the resolved workspace.
 #
-# Run from the isol8 repo root. Requires the fork checkout (default ~/Desktop/agent)
+# Run from the Lightbulb AI repo root. Requires the fork checkout (default ~/Desktop/agent)
 # and a working pnpm + node toolchain.
 set -euo pipefail
 

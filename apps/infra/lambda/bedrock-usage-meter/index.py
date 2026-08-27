@@ -254,7 +254,7 @@ def _emit_metric(name, **properties):
     """Emit a CloudWatch metric via EMF (one JSON log line).
 
     Mirrors the backend's core/observability/metrics.put_metric EMF shape so the
-    meter Lambda's failure metrics land in the same Isol8 namespace. The
+    meter Lambda's failure metrics land in the same Lightbulb AI namespace. The
     dimension set is always exactly {service, env}: both function instances
     share the namespace + service name, so the env dimension is what keeps dev
     noise from tripping the prod alarms (each alarm scopes to its env). Extra
@@ -273,7 +273,7 @@ def _emit_metric(name, **properties):
                 "Timestamp": int(time.time() * 1000),
                 "CloudWatchMetrics": [
                     {
-                        "Namespace": "Isol8",
+                        "Namespace": "LightbulbAI",
                         "Dimensions": [list(dims.keys())],
                         "Metrics": [{"Name": name, "Unit": "Count"}],
                     }

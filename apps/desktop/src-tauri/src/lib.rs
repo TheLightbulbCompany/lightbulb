@@ -22,11 +22,11 @@ use crate::pair_client::DesktopPermissions;
 
 /// Keychain service name for the desktop process. Matches the bundle ID so
 /// macOS surfaces Keychain entries as belonging to this app.
-const KEYCHAIN_SERVICE: &str = "co.isol8.desktop";
+const KEYCHAIN_SERVICE: &str = "co.lightbulb.desktop";
 
 /// HTTPS API base for the backend. Overridden at build time when a non-dev
 /// build is produced.
-const ISOL8_API_BASE: &str = match option_env!("ISOL8_API_BASE") {
+const LIGHTBULB_API_BASE: &str = match option_env!("LIGHTBULB_API_BASE") {
     Some(v) => v,
     None => "https://api-dev.flickmeon.ai",
 };
@@ -79,7 +79,7 @@ pub struct NodeState {
 /// File-based logger for macOS GUI apps (stdout not visible).
 pub fn log(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/isol8-desktop.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/lightbulb-desktop.log") {
         let _ = writeln!(f, "{}", msg);
     }
     println!("{}", msg);
@@ -202,7 +202,7 @@ fn send_auth_token(
         *current = token.clone();
     }
 
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
     // is `wss://host?token=…` (no slash), the resulting request line is
@@ -331,7 +331,7 @@ async fn run_bootstrap(
 
     // The Tauri path resolver lives behind `Manager::path()` in Tauri 2.
     // `app_data_dir` is the per-app data dir (macOS:
-    // ~/Library/Application Support/co.isol8.desktop); `resource_dir` is
+    // ~/Library/Application Support/co.lightbulb.desktop); `resource_dir` is
     // the bundle's Resources/ directory in release builds.
     let app_data = app
         .path()
@@ -343,11 +343,11 @@ async fn run_bootstrap(
 
     log(&format!(
         "[bootstrap] api_base={} state_dir={:?} binary={:?}",
-        ISOL8_API_BASE, state_dir, binary
+        LIGHTBULB_API_BASE, state_dir, binary
     ));
 
     let handles: DesktopNodeHostHandles = bootstrap_desktop_node_host(
-        ISOL8_API_BASE,
+        LIGHTBULB_API_BASE,
         &jwt_snapshot,
         KEYCHAIN_SERVICE,
         "node-host".to_string(),
@@ -382,25 +382,25 @@ async fn run_bootstrap(
     Ok(())
 }
 
-/// Resolve the launcher shim registered as `bin/isol8-browser-service` in
+/// Resolve the launcher shim registered as `bin/lightbulb-browser-service` in
 /// `tauri.conf.json` (externalBin). Tauri's bundler finds
-/// `bin/isol8-browser-service-<target-triple>` at build time, strips the
+/// `bin/lightbulb-browser-service-<target-triple>` at build time, strips the
 /// triple, and places the file in the `.app` at
-/// `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
+/// `Contents/MacOS/lightbulb-browser-service` — alongside the main Tauri
 /// executable. Dev builds replicate the layout next to
 /// `target/debug/<exe>`. So we resolve via current_exe().parent().
 ///
-/// `isol8-browser-service` reads `ISOL8_PROXY_PORT` and dials loopback
+/// `lightbulb-browser-service` reads `LIGHTBULB_PROXY_PORT` and dials loopback
 /// plaintext WS — what `spawn_subprocess` is designed to talk to.
 fn resolve_node_host_binary() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let parent = exe
         .parent()
         .ok_or_else(|| "current_exe has no parent".to_string())?;
-    let binary = parent.join("isol8-browser-service");
+    let binary = parent.join("lightbulb-browser-service");
     if !binary.exists() {
         return Err(format!(
-            "isol8-browser-service shim not found at {}",
+            "lightbulb-browser-service shim not found at {}",
             binary.display()
         ));
     }
@@ -531,7 +531,7 @@ async fn start_from_persisted_state(
     // on this path ever depends on a webview JWT. Publishing also flips
     // send_auth_token into its rotate-only branch, so a later webview JWT
     // just refreshes the URL cell instead of re-bootstrapping.
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     let shared_url = Arc::new(RwLock::new(format!(
         "{}/?clientId=openclaw-macos",
         ws_url
@@ -966,9 +966,9 @@ async fn serve_manifest_once(body: String) -> Result<String, String> {
 /// Previously this URL embedded a Vercel protection-bypass query param so the
 /// callback loaded on preview-protected dev.isol8.co. That secret shipped in
 /// the binary (and git history) and has been rotated out. If dev.isol8.co
-/// preview-protection is re-enabled, pass `ISOL8_CALLBACK_URL` at build time
+/// preview-protection is re-enabled, pass `LIGHTBULB_CALLBACK_URL` at build time
 /// with the appropriate bypass param instead of hard-coding the secret.
-const DESKTOP_CALLBACK_URL: &str = match option_env!("ISOL8_CALLBACK_URL") {
+const DESKTOP_CALLBACK_URL: &str = match option_env!("LIGHTBULB_CALLBACK_URL") {
     Some(url) => url,
     None => "https://dev.flickmeon.ai/auth/desktop-callback",
 };
@@ -1003,7 +1003,7 @@ fn is_oauth_url(url: &Url) -> bool {
 /// so the frontend's useDesktopAuth hook can complete the sign-in.
 /// Produce a log-safe representation of a URL by dropping the query
 /// string and fragment. Applied everywhere we log URLs because
-/// /tmp/isol8-desktop.log is world-readable — Clerk sign-in tickets,
+/// /tmp/lightbulb-desktop.log is world-readable — Clerk sign-in tickets,
 /// OAuth `code`/`state`, and similar short-lived credentials must not
 /// land there.
 fn redact_url(url_str: &str) -> String {
@@ -1015,7 +1015,7 @@ fn redact_url(url_str: &str) -> String {
 
 fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
     log(&format!("[deep-link] received: {}", redact_url(url_str)));
-    if url_str.starts_with("isol8://auth") {
+    if url_str.starts_with("lightbulb://auth") {
         if let Ok(parsed) = url::Url::parse(url_str) {
             if let Some(ticket) = parsed
                 .query_pairs()
@@ -1077,14 +1077,14 @@ pub fn run() {
         })
         // MUST be registered before any other plugin so it can hijack
         // launches from a deep-link click: macOS spawns a new process for
-        // `isol8://...` URLs, and without single_instance the new process
+        // `lightbulb://...` URLs, and without single_instance the new process
         // starts Tauri fresh — a second window, a fresh webview with no
         // Clerk session, and the ticket never reaches the original app.
         // With single_instance, the second launch's argv gets forwarded
         // to this callback on the ORIGINAL process and we can wake it up.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Redact each argv entry before logging. Protocol-handler
-            // launches include isol8://auth?...&ticket=... in argv, which
+            // launches include lightbulb://auth?...&ticket=... in argv, which
             // would leak the Clerk one-time sign-in ticket otherwise.
             let redacted: Vec<String> = argv.iter().map(|a| redact_url(a)).collect();
             log(&format!(
@@ -1093,7 +1093,7 @@ pub fn run() {
             ));
             // The deep-link URL appears as one of the argv entries.
             for arg in argv {
-                if arg.starts_with("isol8://") {
+                if arg.starts_with("lightbulb://") {
                     handle_deep_link_url(app, &arg);
                 }
             }
@@ -1170,9 +1170,9 @@ end tell"#,
             claude_export::export_claude_context,
         ])
         .setup(|app| {
-            log("[setup] Isol8 desktop app starting");
+            log("[setup] Lightbulb AI desktop app starting");
 
-            // Seed the file-access allowlist (creates ~/Isol8/ and adds
+            // Seed the file-access allowlist (creates ~/Lightbulb AI/ and adds
             // it on first launch). Non-fatal on failure — file ops will
             // just be denied with a clear error until the user fixes it
             // via the Settings UI.
@@ -1180,17 +1180,17 @@ end tell"#,
                 log(&format!("[setup] file_access::init failed: {}", e));
             }
 
-            // Force-register isol8:// with this running binary's path so
+            // Force-register lightbulb:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without
             // this, a stale bundle from an earlier build (or a prior
             // worktree) can still be registered as the handler, and
-            // Safari clicks on isol8://auth?... will launch THAT ghost
+            // Safari clicks on lightbulb://auth?... will launch THAT ghost
             // bundle instead of hitting our on_open_url handler.
             #[cfg(debug_assertions)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 match app.deep_link().register_all() {
-                    Ok(()) => log("[setup] registered isol8:// URL schemes"),
+                    Ok(()) => log("[setup] registered lightbulb:// URL schemes"),
                     Err(e) => log(&format!("[setup] register_all failed: {}", e)),
                 }
             }
@@ -1216,7 +1216,7 @@ end tell"#,
                 }
             });
 
-            // Handle deep links (isol8:// protocol). This fires when the app
+            // Handle deep links (lightbulb:// protocol). This fires when the app
             // is already running and a cross-process deep link is delivered
             // by the OS directly (no second process spawn). The parallel
             // single_instance callback above handles the cold-launch case.

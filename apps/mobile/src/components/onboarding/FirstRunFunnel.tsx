@@ -30,7 +30,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ApiError, createApiClient } from "@isol8/shared";
+import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";

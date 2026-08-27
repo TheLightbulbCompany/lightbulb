@@ -19,13 +19,13 @@ jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ post: mockPost }),
 }));
 
 import { Linking } from "react-native";
-import { ApiError } from "@isol8/shared";
+import { ApiError } from "@lightbulb/shared";
 
 import { FirstRunFunnel } from "../FirstRunFunnel";
 

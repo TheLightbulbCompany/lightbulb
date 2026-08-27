@@ -10,7 +10,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const SUGGESTION = {
-  kind: "isol8.hire_suggestion",
+  kind: "lightbulb.hire_suggestion",
   reason: "Nobody on the team does content.",
   listings: [
     {
@@ -59,12 +59,12 @@ describe("parseHireSuggestion", () => {
     expect(parseHireSuggestion(undefined)).toBeNull();
     expect(parseHireSuggestion("a string")).toBeNull();
     expect(parseHireSuggestion(42)).toBeNull();
-    expect(parseHireSuggestion({ kind: "isol8.hire_suggestion" })).toBeNull();
+    expect(parseHireSuggestion({ kind: "lightbulb.hire_suggestion" })).toBeNull();
   });
 
   it("rejects a suggestion whose listings are all malformed", () => {
     expect(
-      parseHireSuggestion({ kind: "isol8.hire_suggestion", listings: [{ no: "slug" }] }),
+      parseHireSuggestion({ kind: "lightbulb.hire_suggestion", listings: [{ no: "slug" }] }),
     ).toBeNull();
   });
 
@@ -74,7 +74,7 @@ describe("parseHireSuggestion", () => {
     // button 404s.
     expect(
       parseHireSuggestion({
-        kind: "isol8.hire_suggestion",
+        kind: "lightbulb.hire_suggestion",
         listings: [{ slug: "pulse", name: "Pulse" }],
       }),
     ).toBeNull();
@@ -155,7 +155,7 @@ describe("HireCard — multiple listings", () => {
   it("shows one recommendation and hides the rest behind a drawer", async () => {
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     expect(screen.getAllByRole("article")).toHaveLength(1);
@@ -166,7 +166,7 @@ describe("HireCard — multiple listings", () => {
   it("only the primary card carries a Deploy button — collapsing five gates to one is deliberate", async () => {
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     expect(screen.getAllByRole("button", { name: /deploy/i })).toHaveLength(1);
@@ -179,7 +179,7 @@ describe("HireCard — multiple listings", () => {
     render(
       <HireCard
         suggestion={{
-          kind: "isol8.hire_suggestion",
+          kind: "lightbulb.hire_suggestion",
           reason: "r",
           listings: FIVE_LISTINGS.slice(0, 2),
         }}
@@ -191,7 +191,7 @@ describe("HireCard — multiple listings", () => {
   it("promotes an alternative to primary WITHOUT deploying anything", async () => {
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: /4 alternatives/i }));
@@ -215,7 +215,7 @@ describe("HireCard — multiple listings", () => {
     // un-deployable.
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: /deploy/i }));
@@ -235,7 +235,7 @@ describe("HireCard — multiple listings", () => {
   it("folds the old primary back into the alternatives after a promotion", async () => {
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: /4 alternatives/i }));
@@ -256,7 +256,7 @@ describe("HireCard — multiple listings", () => {
     // need to fit one screen, so the drawer never starts open.
     render(
       <HireCard
-        suggestion={{ kind: "isol8.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
+        suggestion={{ kind: "lightbulb.hire_suggestion", reason: "r", listings: FIVE_LISTINGS }}
       />,
     );
     expect(screen.getByRole("button", { name: /4 alternatives/i })).toHaveAttribute(

@@ -59,7 +59,7 @@ export interface ApiStackProps extends cdk.StackProps {
   /**
    * Secrets Manager name (NOT ISecret) of the WS internal shared secret. The
    * three WebSocket Lambdas fetch it at cold-start and attach it as the
-   * `x-isol8-ws-internal` header so the backend `/ws/*` endpoints can tell them
+   * `x-lightbulb-ws-internal` header so the backend `/ws/*` endpoints can tell them
    * apart from forged callers arriving via the public HTTP API Gateway. Passed
    * as a plain string for the same cross-stack reason as the service-token key;
    * encrypted under the same CMK (`paperclipKmsKeyArn`).
@@ -154,17 +154,17 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
-    // We set X-Isol8-Public-Host = $context.domainName so the FastAPI backend
+    // We set X-Lightbulb-Public-Host = $context.domainName so the FastAPI backend
     // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
     // API Gateway rewrites the upstream Host to the ALB DNS, so the original
     // requesting host is otherwise lost.
     //
-    // NOTE: We deliberately use a custom header name (`X-Isol8-Public-Host`)
+    // NOTE: We deliberately use a custom header name (`X-Lightbulb-Public-Host`)
     // rather than `X-Forwarded-Host` — API Gateway HTTP API blocks parameter
     // mapping on `x-forwarded-*` headers (they're managed by the gateway
     // itself; AWS rejects with "Operations on header x-forwarded-host are
     // restricted"). The backend's HostDispatcherMiddleware reads this custom
-    // header. The same integration (and so the same X-Isol8-Public-Host)
+    // header. The same integration (and so the same X-Lightbulb-Public-Host)
     // serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
@@ -179,7 +179,7 @@ export class ApiStack extends cdk.Stack {
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
         requestParameters: {
-          "overwrite:header.X-Isol8-Public-Host": "$context.domainName",
+          "overwrite:header.X-Lightbulb-Public-Host": "$context.domainName",
         },
       },
     );
@@ -487,7 +487,7 @@ export class ApiStack extends cdk.Stack {
     // and are reachable both via these trusted Lambdas AND via the public HTTP
     // API Gateway $default route (which has no authorizer). Each Lambda fetches
     // this secret at cold-start (via boto3, mirroring the authorizer's
-    // service-token handling) and attaches it as the `x-isol8-ws-internal`
+    // service-token handling) and attaches it as the `x-lightbulb-ws-internal`
     // header that the public route cannot supply; the backend's
     // require_ws_internal_caller dependency rejects callers that lack it. ARN
     // (not value) goes in the env so the secret never lands in CFN/deploy logs.
@@ -717,7 +717,7 @@ export class ApiStack extends cdk.Stack {
     if (props.certificate && props.hostedZone) {
       const browserViewDomain = isProd ? `bv.${rootDomain}` : `bv-${env}.${rootDomain}`;
       const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
-        comment: `isol8 ${env} container-browser live view relay`,
+        comment: `Lightbulb AI ${env} container-browser live view relay`,
         domainNames: [browserViewDomain],
         // The wildcard *.isol8.co cert works here because the deploy region IS
         // us-east-1 (CloudFront only accepts us-east-1 ACM certs).

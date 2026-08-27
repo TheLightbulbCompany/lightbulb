@@ -28,12 +28,25 @@ import os
 import stat
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Iterator
 
 
-OPENCLAW_CONFIG_GUARD_SUFFIX = ".isol8-guard"
-OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".isol8-protocol"
+OPENCLAW_CONFIG_GUARD_SUFFIX = ".lightbulb-guard"
+OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".lightbulb-protocol"
+# Pre-rebrand sentinel names. Every container provisioned before the rename has
+# these on EFS and a peer still running the old code knows ONLY these, so:
+#   * the protocol marker is read new-first, legacy-second (a container that
+#     already transitioned under the old name keeps the ephemeral protocol
+#     instead of silently falling back to the legacy fcntl sidecar, which
+#     pinned OpenClaw would then fail closed on);
+#   * BOTH guards are taken, legacy first and always in that order, so mutual
+#     exclusion against an old-code peer survives the roll and the fixed order
+#     makes the pair deadlock-free.
+# Writes go to the new names only; the legacy files are left in place rather
+# than unlinked, because removing one would strand an old-code peer.
+OPENCLAW_CONFIG_LEGACY_GUARD_SUFFIX = ".isol8-guard"
+OPENCLAW_CONFIG_LEGACY_PROTOCOL_SUFFIX = ".isol8-protocol"
 OPENCLAW_CONFIG_PROTOCOL_MIGRATING = b"migrating-v1\n"
 OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL = b"ephemeral-v1\n"
 OPENCLAW_CONFIG_LOCK_TIMEOUT_S = 30.0
@@ -150,21 +163,23 @@ def _uses_ephemeral_openclaw_protocol(lock_path: str) -> bool:
     the next boot resumes recovery; they never recreate or wait on its inode.
     """
 
-    protocol_path = f"{lock_path}{OPENCLAW_CONFIG_PROTOCOL_SUFFIX}"
-    try:
-        protocol_fd = _open_regular_fd(protocol_path, create=False)
-    except FileNotFoundError:
-        return False
-    try:
-        if not _path_names_open_fd(protocol_path, protocol_fd):
-            raise SidecarLockIdentityError(f"OpenClaw config protocol marker changed identity: {protocol_path}")
-        value = os.read(protocol_fd, 64)
-    finally:
-        os.close(protocol_fd)
+    for suffix in (OPENCLAW_CONFIG_PROTOCOL_SUFFIX, OPENCLAW_CONFIG_LEGACY_PROTOCOL_SUFFIX):
+        protocol_path = f"{lock_path}{suffix}"
+        try:
+            protocol_fd = _open_regular_fd(protocol_path, create=False)
+        except FileNotFoundError:
+            continue
+        try:
+            if not _path_names_open_fd(protocol_path, protocol_fd):
+                raise SidecarLockIdentityError(f"OpenClaw config protocol marker changed identity: {protocol_path}")
+            value = os.read(protocol_fd, 64)
+        finally:
+            os.close(protocol_fd)
 
-    if value not in (OPENCLAW_CONFIG_PROTOCOL_MIGRATING, OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL):
-        raise SidecarLockIdentityError(f"invalid OpenClaw config protocol marker: {protocol_path}")
-    return True
+        if value not in (OPENCLAW_CONFIG_PROTOCOL_MIGRATING, OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL):
+            raise SidecarLockIdentityError(f"invalid OpenClaw config protocol marker: {protocol_path}")
+        return True
+    return False
 
 
 @contextmanager
@@ -235,23 +250,20 @@ def _ephemeral_openclaw_config_lock(
 
 
 @contextmanager
-def openclaw_config_recovery_guard(
-    lock_dir: str,
+def _hold_one_guard(
     lock_path: str,
+    suffix: str,
     *,
-    timeout_s: float = OPENCLAW_CONFIG_LOCK_TIMEOUT_S,
-    poll_interval_s: float = 0.05,
+    deadline: float,
+    poll_interval_s: float,
 ) -> Iterator[None]:
-    """Exclude backend config writers from boot-time sidecar recovery."""
+    """Hold one guard sidecar for the duration of the body."""
 
-    os.makedirs(lock_dir, exist_ok=True)
-    chown_uid_1000_best_effort(lock_dir)
-    guard_path = f"{lock_path}{OPENCLAW_CONFIG_GUARD_SUFFIX}"
+    guard_path = f"{lock_path}{suffix}"
     guard_fd = _open_regular_fd(guard_path, create=True)
     acquired = False
     try:
         chown_uid_1000_best_effort(guard_path)
-        deadline = time.monotonic() + max(0.0, timeout_s)
         _acquire_fcntl_until(
             guard_fd,
             deadline=deadline,
@@ -270,6 +282,38 @@ def openclaw_config_recovery_guard(
                 fcntl.lockf(guard_fd, fcntl.LOCK_UN)
         finally:
             os.close(guard_fd)
+
+
+@contextmanager
+def openclaw_config_recovery_guard(
+    lock_dir: str,
+    lock_path: str,
+    *,
+    timeout_s: float = OPENCLAW_CONFIG_LOCK_TIMEOUT_S,
+    poll_interval_s: float = 0.05,
+) -> Iterator[None]:
+    """Exclude backend config writers from boot-time sidecar recovery.
+
+    Both the pre-rebrand and the current guard pathname are held, legacy
+    first. The order is fixed on every writer (backend and the boot-recovery
+    script), so the pair cannot deadlock, and an old-code peer that knows only
+    the legacy name is still excluded.
+    """
+
+    os.makedirs(lock_dir, exist_ok=True)
+    chown_uid_1000_best_effort(lock_dir)
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    with ExitStack() as stack:
+        for suffix in (OPENCLAW_CONFIG_LEGACY_GUARD_SUFFIX, OPENCLAW_CONFIG_GUARD_SUFFIX):
+            stack.enter_context(
+                _hold_one_guard(
+                    lock_path,
+                    suffix,
+                    deadline=deadline,
+                    poll_interval_s=poll_interval_s,
+                )
+            )
+        yield
 
 
 @contextmanager

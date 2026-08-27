@@ -1,6 +1,6 @@
 // Self-contained annotation-anchor helpers (A3), adapted from upstream
 // Paperclip `ui/src/lib/document-annotation-selection.ts` but WITHOUT the
-// `@paperclipai/shared` markdown-projection dependency (Isol8 does not vendor
+// `@paperclipai/shared` markdown-projection dependency (Lightbulb AI does not vendor
 // that package). The anchor a thread carries is a text-quote selector
 // (exact + surrounding context) plus a character-position selector; the server
 // tolerates approximate positions and re-anchors primarily by quote, so we

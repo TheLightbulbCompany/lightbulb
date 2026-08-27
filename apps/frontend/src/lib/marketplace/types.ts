@@ -1,5 +1,5 @@
 // Storefront-local types. Previously lived in packages/marketplace-shared
-// but with the Isol8-internal scope cut there's only one consumer (this
+// but with the Lightbulb AI-internal scope cut there's only one consumer (this
 // app), so inlining is simpler than carrying a workspace package.
 //
 // `format` keeps openclaw + skillmd for now — the field is on the

@@ -9,7 +9,7 @@ Three entry points (all async, all idempotent on user_id / owner_id):
   ``create_company``.
 
 * ``provision_member`` — for ``organizationMembership.created``. Adds a
-  new Isol8 member to the org's existing Paperclip company via the
+  new Lightbulb AI member to the org's existing Paperclip company via the
   full Better Auth + invite-flow chain:
 
       member_signUp ->
@@ -644,7 +644,7 @@ class PaperclipProvisioning:
             svc_token = service_token.mint(owner_id)
 
             # IDs of the agents we seed below. Persisted on the company
-            # row (step 8) as the STABLE marker of "Isol8-seeded, must not
+            # row (step 8) as the STABLE marker of "Lightbulb AI-seeded, must not
             # be deleted" — see PaperclipCompany.seeded_agent_ids and
             # paperclip_openclaw_pairing.is_seeded_agent. Each seed is
             # best-effort, so a failed seed simply contributes no id.
@@ -887,7 +887,7 @@ class PaperclipProvisioning:
         email: str,
         owner_email: str,
     ) -> PaperclipCompany:
-        """Add a new Isol8 member to the org's existing Paperclip company.
+        """Add a new Lightbulb AI member to the org's existing Paperclip company.
 
         ``owner_id`` is the container's owner — Clerk's org_id for orgs
         and Clerk's user_id for personal owners. Since this entry point
@@ -1061,7 +1061,7 @@ class PaperclipProvisioning:
             #    it, Paperclip defaults humanRole to ``"operator"`` and
             #    the new member can't create agents in their own
             #    company (agents:create not granted). v1 single-tenant
-            #    assumption: every Isol8 org member needs full access.
+            #    assumption: every Lightbulb AI org member needs full access.
             invite = await self._admin.create_invite(
                 session_cookie=owner_session_cookie,
                 company_id=company_id,
@@ -1563,19 +1563,19 @@ class PaperclipProvisioning:
         session_cookie: str,
         seeded_agent_ids: list[str],
     ) -> None:
-        """Delete every agent in the company that Isol8 did not seed.
+        """Delete every agent in the company that Lightbulb AI did not seed.
 
         WHY this exists: Paperclip's company-bootstrap creates its OWN starter
         agents ("Reflection Coach", "Summarizer") server-side the instant a
         company is created — verified via DB timestamps, they land 1-5s BEFORE
         our Friday/Atlas seeds, produced by upstream company-create and NOT by
-        any Isol8 code. The product requires a freshly provisioned company to
-        contain EXACTLY the two Isol8-seeded agents (Friday + Atlas). We can't
+        any Lightbulb AI code. The product requires a freshly provisioned company to
+        contain EXACTLY the two Lightbulb AI-seeded agents (Friday + Atlas). We can't
         patch Paperclip on our timeline (fork release cycle), so provision_org
         deletes the leftovers here.
 
-        Keyed on ``seeded_agent_ids`` (the stable Isol8-seeded marker persisted
-        on the company row), NOT on agent names: the rule is "only Isol8-seeded
+        Keyed on ``seeded_agent_ids`` (the stable Lightbulb AI-seeded marker persisted
+        on the company row), NOT on agent names: the rule is "only Lightbulb AI-seeded
         agents survive", so it keeps holding even if upstream renames a starter
         or adds new ones.
 

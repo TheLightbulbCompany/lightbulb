@@ -18,7 +18,9 @@ import { useCallback, useSyncExternalStore } from "react";
 const _activeByAgent = new Map<string, string | null>();
 const _listeners = new Set<() => void>();
 
-const STORAGE_PREFIX = "isol8:activeSession:";
+// Renamed from `isol8:activeSession:` at the Lightbulb AI rebrand — each
+// agent reopens on its default session once.
+const STORAGE_PREFIX = "lightbulb:activeSession:";
 
 function storageKey(agentId: string): string {
   return `${STORAGE_PREFIX}${agentId}`;

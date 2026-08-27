@@ -2,7 +2,7 @@
 //
 // The OpenClaw semantics this used to hand-port — the wire shapes, the 5-rule
 // visibility filter, the block/tool-id resolvers — now come from
-// @isol8/shared (packages/shared/src/chat/history.ts), which web reads too.
+// @lightbulb/shared (packages/shared/src/chat/history.ts), which web reads too.
 // What stays here is the part that is genuinely mobile's: flattening a
 // filtered transcript into this screen's ChatItem list model.
 
@@ -18,7 +18,7 @@ import {
   shouldHideHistoryMessage,
   type ContentBlock,
   type HistoryMessage,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import type { ChatItem } from "../components/chat/chatItems";
 

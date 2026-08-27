@@ -18,8 +18,8 @@ describe("dockview-react import surface", () => {
     expect(DockviewReact).toBeDefined();
     expect(themeLight.name).toBeTypeOf("string");
     expect(themeLight.className).toBeTypeOf("string");
-    const _t: DockviewTheme = { ...themeLight, name: "isol8" };
-    expect(_t.name).toBe("isol8");
+    const _t: DockviewTheme = { ...themeLight, name: "lightbulb" };
+    expect(_t.name).toBe("lightbulb");
     // Type-only names — reference them so tsc checks they exist:
     const _u:
       | DockviewReadyEvent

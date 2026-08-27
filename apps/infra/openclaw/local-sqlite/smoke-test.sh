@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke harness for isol8-local-sqlite-boot.sh — stubs litestream/aws, drives the four
+# Smoke harness for lightbulb-local-sqlite-boot.sh — stubs litestream/aws, drives the four
 # boot scenarios against scratch dirs. Fails loudly on any wrong behavior.
 set -eu
 BOOT="$1"
@@ -58,9 +58,9 @@ export PATH="$STUBS:$PATH"
 #      the nested ephemeral mounts, modelled here as ordinary empty dirs)
 run_boot() {
   env ROOT_DIR="$1" sh -c '
-    export ISOL8_STATE_ROOT="$ROOT_DIR" \
-      LITESTREAM_S3_BUCKET=test-bucket ISOL8_OWNER_ID=org_smoke \
-      ISOL8_LITESTREAM_CONFIG=/dev/null ISOL8_APP_CMD=/bin/true LS_LOG="$ROOT_DIR/../ls.log"
+    export LIGHTBULB_STATE_ROOT="$ROOT_DIR" \
+      LITESTREAM_S3_BUCKET=test-bucket LIGHTBULB_OWNER_ID=org_smoke \
+      LIGHTBULB_LITESTREAM_CONFIG=/dev/null LIGHTBULB_APP_CMD=/bin/true LS_LOG="$ROOT_DIR/../ls.log"
     exec sh "$0"
   ' "$BOOT"
 }

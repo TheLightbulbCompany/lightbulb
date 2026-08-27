@@ -393,7 +393,7 @@ describe("BedrockMeterStack", () => {
   test("alarms per instance: DLQ depth + 10 skip/failure metrics + fn errors, env-scoped dimensions", () => {
     // (1 DLQ + 10 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 24.
     // Each metric alarm scopes to its instance via the env dimension so dev
-    // noise never pages prod (both Lambdas share namespace Isol8 + the
+    // noise never pages prod (both Lambdas share namespace Lightbulb AI + the
     // service name).
     //
     // The kill_* alarms are the most important ones in the stack: they mean
@@ -417,7 +417,7 @@ describe("BedrockMeterStack", () => {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
           AlarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
           MetricName: metricName,
-          Namespace: "Isol8",
+          Namespace: "LightbulbAI",
           Dimensions: Match.arrayWith([
             Match.objectLike({ Name: "env", Value: meterEnv }),
             Match.objectLike({ Name: "service", Value: "isol8-bedrock-meter" }),

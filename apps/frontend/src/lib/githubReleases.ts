@@ -20,7 +20,7 @@
  * are filtered explicitly since the token sees them.
  */
 
-export const ISOL8_REPO = "Isol8AI/isol8";
+export const LIGHTBULB_REPO = "Isol8AI/isol8";
 
 const PROD_TAG_PREFIX = "desktop-v";
 const DEV_TAG_PREFIX = "desktop-dev-v";
@@ -108,7 +108,7 @@ export async function pickLatestRelease(
   prefix: string,
 ): Promise<{ release: GhRelease | null; githubStatus: number }> {
   const res = await fetch(
-    `https://api.github.com/repos/${ISOL8_REPO}/releases?per_page=30`,
+    `https://api.github.com/repos/${LIGHTBULB_REPO}/releases?per_page=30`,
     {
       headers: githubHeaders(),
       next: { revalidate: 300 },

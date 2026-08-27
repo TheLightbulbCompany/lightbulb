@@ -1,7 +1,7 @@
 """Admin dashboard router — /api/v1/admin/*
 
 Every endpoint is gated by Depends(require_platform_admin). The surface is for
-human Isol8 operators authenticated by Clerk; customer agents do not receive a
+human Lightbulb AI operators authenticated by Clerk; customer agents do not receive a
 parallel credential path into platform administration.
 Mutation endpoints are wrapped with @audit_admin_action so a row lands
 in DDB synchronously (fail-closed). Container + billing actions also

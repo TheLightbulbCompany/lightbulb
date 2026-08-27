@@ -28,7 +28,7 @@ _GEN = (
 _DRIVER = r"""
 const os=require("os"),fs=require("fs"),path=require("path");
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-test-"));
-process.env.ISOL8_AGENTS_DIR=tmp;
+process.env.LIGHTBULB_AGENTS_DIR=tmp;
 const g=require(process.env.GEN_PATH);
 const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1", archetype:"general"},
   user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
@@ -153,7 +153,7 @@ def test_skeleton_generator_draft_write_verify(tmp_path):
 
 
 _TOKEN_DRIVER = r"""
-process.env.ISOL8_AGENTS_DIR="/home/node/.openclaw";
+process.env.LIGHTBULB_AGENTS_DIR="/home/node/.openclaw";
 const g=require(process.env.GEN_PATH);
 const r=require(process.env.REG_PATH);
 process.stdout.write(JSON.stringify({
@@ -208,7 +208,7 @@ def test_staging_token_is_always_a_legal_staging_agent_id(tmp_path):
 _TRIGGER_CONFINE_DRIVER = r"""
 const os=require("os"),fs=require("fs"),path=require("path");
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-trig-test-"));
-process.env.ISOL8_AGENTS_DIR=tmp;
+process.env.LIGHTBULB_AGENTS_DIR=tmp;
 const r=require(process.env.REG_PATH);
 const ws=path.join(tmp,"workspace-atlas-staging-b1","workspace");
 fs.mkdirSync(ws,{recursive:true});
@@ -268,7 +268,7 @@ def test_trigger_pipelines_are_confined_to_the_build_workspace(tmp_path):
 _SCHEMA_DRIVER = r"""
 const os=require("os"),fs=require("fs"),path=require("path");
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-schema-test-"));
-process.env.ISOL8_AGENTS_DIR=tmp;
+process.env.LIGHTBULB_AGENTS_DIR=tmp;
 const g=require(process.env.GEN_PATH);
 const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
   user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
@@ -358,7 +358,7 @@ def test_build_lobster_stages_under_the_efs_user_root():
     recursively deletes on every boot, so the staging root must not go back there.
     """
     text = _BUILD_LOBSTER.read_text(encoding="utf-8")
-    roots = re.findall(r"ISOL8_AGENTS_DIR:\s*(\S+)", text)
+    roots = re.findall(r"LIGHTBULB_AGENTS_DIR:\s*(\S+)", text)
     assert roots, "build.lobster must pin the staging root explicitly"
     assert set(roots) == {_EFS_USER_ROOT}, roots
     # The bridge call takes the staging TOKEN verify-write reports, not a name.
@@ -396,7 +396,7 @@ def test_generated_staging_dir_is_what_the_bridge_reads(tmp_path):
         ["node", "-e", driver],
         capture_output=True,
         text=True,
-        env={"GEN_PATH": str(_GEN), "PATH": str(bin_dir), "ISOL8_AGENTS_DIR": str(user_root)},
+        env={"GEN_PATH": str(_GEN), "PATH": str(bin_dir), "LIGHTBULB_AGENTS_DIR": str(user_root)},
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
@@ -507,7 +507,7 @@ def test_verify_fail_notification_carries_schema_issues():
 _PROMOTE_GATE_DRIVER = r"""
 const os=require("os"),fs=require("fs"),path=require("path");
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-gate-test-"));
-process.env.ISOL8_AGENTS_DIR=tmp;
+process.env.LIGHTBULB_AGENTS_DIR=tmp;
 const g=require(process.env.GEN_PATH);
 const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
   user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
@@ -571,7 +571,7 @@ def test_write_disk_refuses_promote_on_schema_violation(tmp_path):
 _ID_GATE_DRIVER = r"""
 const os=require("os"),fs=require("fs"),path=require("path");
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-id-test-"));
-process.env.ISOL8_AGENTS_DIR=tmp;
+process.env.LIGHTBULB_AGENTS_DIR=tmp;
 const g=require(process.env.GEN_PATH);
 const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
   user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],

@@ -202,7 +202,7 @@ class UpsertFeedbackVoteBody(_Strict):
     being forwarded for upstream to reject opaquely.
 
     ``allow_sharing`` defaults to omitted (local-only): sharing the voted
-    output with Paperclip Labs is opt-in, and the Isol8 UI casts votes
+    output with Paperclip Labs is opt-in, and the Lightbulb AI UI casts votes
     local-only. ``target_type`` aliases to ``targetType`` etc. via ``_Strict``.
     """
 

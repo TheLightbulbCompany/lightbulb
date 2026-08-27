@@ -5,7 +5,7 @@
  * State model mirrors upstream OpenClaw control-ui's flat-message + parallel
  * arrays shape (chatMessages + chatStream + chatStreamSegments +
  * chatToolMessages + toolStreamById). Live thinking is preserved as an
- * Isol8-specific addition.
+ * Lightbulb AI-specific addition.
  *
  * Message protocol (unchanged):
  * - Send: { type: "agent_chat", agent_id: string, message: string }
@@ -36,7 +36,7 @@ import type {
   ChatRenderItem,
   RenderGroup,
 } from "./internal/types";
-import { accumulateStreamText, GatewayRpcError } from "@isol8/shared";
+import { accumulateStreamText, GatewayRpcError } from "@lightbulb/shared";
 import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
 import { buildChatItems } from "./internal/buildChatItems";
 import { groupBySide } from "./internal/groupBySide";
@@ -485,7 +485,7 @@ export function useAgentChat(
     _setChatStreamRaw(value);
   }, []);
 
-  // Live thinking — Isol8 addition.
+  // Live thinking — Lightbulb AI addition.
   const [chatStreamThinking, _setChatStreamThinkingRaw] = useState<string | null>(null);
   const chatStreamThinkingRef = useRef<string | null>(null);
   const chatStreamThinkingRunIdRef = useRef<string | null>(null);
@@ -1374,7 +1374,7 @@ export function useAgentChat(
       // stream and a side `done`/`error` would fold+clear the still-running
       // primary turn. Upstream solves this by gating apply on the active run
       // (controllers/chat.ts handleChatEvent activeRunMatches) and routing btw
-      // output to a separate side-result card; Isol8 has no side-result surface
+      // output to a separate side-result card; Lightbulb AI has no side-result surface
       // yet, so we drop side events here (the primary run is unaffected). This
       // MUST run before the resume-adoption transfer below so a side runId is
       // never mistaken for the primary run's post-approval continuation.

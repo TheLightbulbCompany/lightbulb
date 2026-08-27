@@ -193,7 +193,7 @@ export function PaywallScreen({
   }, [api]);
 
   // Return leg of the web checkout. Stripe's success_url is a universal link
-  // back into the app, and the fallback page offers the isol8:// scheme when
+  // back into the app, and the fallback page offers the lightbulbai:// scheme when
   // iOS declines to open it — both land here.
   //
   // A returning URL is only a HINT to go re-read entitlement, never a grant.

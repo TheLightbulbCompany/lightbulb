@@ -166,8 +166,8 @@ def test_deployed_upstream_at_least_equal_boundary(monkeypatch):
         (None, 0),
     ],
 )
-def test_isol8_patch_level(tag, level):
-    assert openclaw_version.isol8_patch_level(tag) == level
+def test_fork_patch_level(tag, level):
+    assert openclaw_version.fork_patch_level(tag) == level
 
 
 def test_deployed_fork_at_least_explicit_tag_wins_over_pin(monkeypatch):

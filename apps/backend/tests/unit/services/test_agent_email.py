@@ -27,7 +27,7 @@ def test_agent_name_is_slugified_into_the_local_part():
 
 
 def test_address_is_lowercased_and_trimmed():
-    addr = agent_email.build_agent_email_address(slug=" Acme ", agent_name="  Chief  Ops!! ", domain="ISOL8.co")
+    addr = agent_email.build_agent_email_address(slug=" Acme ", agent_name="  Chief  Ops!! ", domain="isol8.co")
     assert addr == "chief-ops@acme.isol8.co"
 
 

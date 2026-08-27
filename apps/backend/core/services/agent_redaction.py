@@ -15,9 +15,9 @@ surface after it's locked down on another.
 
 from __future__ import annotations
 
-# Secret / Isol8-managed fields stripped from any agent record before it reaches
+# Secret / Lightbulb AI-managed fields stripped from any agent record before it reaches
 # a client. ``adapterConfig`` holds the device signing key + the gateway token;
-# ``adapterType`` is the Isol8-managed adapter mechanism we don't surface.
+# ``adapterType`` is the Lightbulb AI-managed adapter mechanism we don't surface.
 AGENT_SECRET_FIELDS = frozenset({"adapterConfig", "adapterType"})
 
 

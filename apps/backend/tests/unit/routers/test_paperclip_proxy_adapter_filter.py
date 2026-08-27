@@ -64,7 +64,7 @@ def test_agent_hire_with_non_gateway_adapter_is_blocked():
 
 
 def test_direct_create_agent_with_gateway_adapter_is_blocked():
-    """Creation is Isol8-owned even when the adapter itself is safe."""
+    """Creation is Lightbulb AI-owned even when the adapter itself is safe."""
     body = json.dumps({"name": "x", "adapterType": "openclaw_gateway"}).encode()
     assert _blocked("POST", "api/companies/c1/agents", body)
 
@@ -253,7 +253,7 @@ def test_config_revision_rollback_is_blocked():
 
 def test_join_request_approve_is_blocked():
     # Creates an agent from the stored join-request adapterType (null -> process
-    # for pre-fence rows); Isol8 doesn't use the external-agent-join flow.
+    # for pre-fence rows); Lightbulb AI doesn't use the external-agent-join flow.
     assert _blocked("POST", "api/companies/c1/join-requests/jr1/approve")
 
 

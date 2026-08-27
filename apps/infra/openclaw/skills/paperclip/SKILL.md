@@ -11,7 +11,7 @@ description: >
 ---
 
 <!--
-  ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
+  LIGHTBULB-LOCAL EDITS (deliberate; re-apply on re-vendor).
   This skill is vendored from the Paperclip skills-catalog, but carries
   Lightbulb AI-local changes that upstream does not have. If you re-vendor, re-apply
   each of these rather than letting them silently revert:

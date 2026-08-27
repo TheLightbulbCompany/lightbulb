@@ -1,4 +1,4 @@
-"""Tests for browser_state — isol8-side browser session persistence.
+"""Tests for browser_state — Lightbulb AI-side browser session persistence.
 
 Snapshot (on a container roll) reads cookies + active-tab localStorage from the
 running container over the ``browser.request`` gateway RPC and writes a small

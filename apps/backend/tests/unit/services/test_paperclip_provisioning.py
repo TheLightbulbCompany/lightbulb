@@ -408,7 +408,7 @@ async def test_provision_org_reconcile_does_not_reseed_atlas(monkeypatch):
     seeded it.
 
     The explicit skip preserves the stored seed id and remains compatible with
-    a staged deployment where Isol8 can briefly run against an older Paperclip
+    a staged deployment where Lightbulb AI can briefly run against an older Paperclip
     pin that does not yet support native agent-create idempotency.
 
     Failed-row invariant this fix leans on: seeded_agent_ids on a
@@ -701,7 +701,7 @@ async def test_provision_org_reconcile_purge_is_idempotent(monkeypatch):
     )
 
     # Purge ran (Friday landed) against the adopted company but deleted nothing —
-    # everything listed is Isol8-seeded.
+    # everything listed is Lightbulb AI-seeded.
     assert row.status == "active"
     admin.list_agents.assert_awaited_once()
     assert admin.list_agents.await_args.kwargs["company_id"] == "co_first"

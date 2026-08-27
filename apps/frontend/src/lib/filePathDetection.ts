@@ -2,7 +2,7 @@
  * Detects file paths in agent message content and wraps them
  * in a custom markdown link format that the chat UI can intercept.
  *
- * Uses the custom scheme `isol8-file://` so the link renderer
+ * Uses the custom scheme `lightbulb-file://` so the link renderer
  * can distinguish workspace file links from regular URLs.
  */
 
@@ -22,11 +22,11 @@ const FILE_EXTENSIONS = new Set([
 
 /**
  * Pre-processes message content to convert detected file paths
- * into clickable markdown links with the isol8-file:// scheme.
+ * into clickable markdown links with the lightbulb-file:// scheme.
  *
  * Example:
- *   "Plan written to isol8_agents/plan.md"
- *   → "Plan written to [isol8_agents/plan.md](isol8-file://isol8_agents/plan.md)"
+ *   "Plan written to lightbulb_agents/plan.md"
+ *   → "Plan written to [lightbulb_agents/plan.md](lightbulb-file://lightbulb_agents/plan.md)"
  */
 export function linkifyFilePaths(content: string): string {
   return content.replace(FILE_PATH_REGEX, (match) => {
@@ -35,20 +35,20 @@ export function linkifyFilePaths(content: string): string {
       return match;
     }
     // Don't double-wrap if already inside a markdown link
-    return `[${match}](isol8-file://${match})`;
+    return `[${match}](lightbulb-file://${match})`;
   });
 }
 
 /**
- * Checks if a URL uses the isol8-file:// scheme.
+ * Checks if a URL uses the lightbulb-file:// scheme.
  */
 export function isWorkspaceFileLink(href: string): boolean {
-  return href.startsWith("isol8-file://");
+  return href.startsWith("lightbulb-file://");
 }
 
 /**
- * Extracts the file path from an isol8-file:// URL.
+ * Extracts the file path from an lightbulb-file:// URL.
  */
 export function extractFilePath(href: string): string {
-  return href.replace("isol8-file://", "");
+  return href.replace("lightbulb-file://", "");
 }

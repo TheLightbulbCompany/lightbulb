@@ -16,7 +16,7 @@ class CatalogPackage:
 
     `format`: "openclaw" (full agent bundle from EFS) or — historically —
               "skillmd" (a SKILL.md adapter package). The skillmd adapter
-              was removed in the Isol8-internal v0 reduction; the type
+              was removed in the Lightbulb AI-internal v0 reduction; the type
               still exists for forward compatibility.
     `manifest`: dict written as manifest.json alongside the tarball.
     `openclaw_slice`: openclaw.json patch (agent + plugins entries) the

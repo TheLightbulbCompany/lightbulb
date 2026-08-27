@@ -1,5 +1,5 @@
 /**
- * Wire types for the Isol8 gateway WebSocket protocol — the frames the
+ * Wire types for the Lightbulb AI gateway WebSocket protocol — the frames the
  * backend's connection pool forwards from a user's OpenClaw container.
  * Extracted from the web frontend's useGateway.tsx (Phase 1); both clients
  * must speak exactly this protocol, so changes here are protocol changes.

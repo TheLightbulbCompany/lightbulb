@@ -88,7 +88,7 @@ async def test_record_usage_strips_provider_prefix(dynamodb_tables):
 async def test_record_usage_unknown_model_records_volume_with_zero_spend(dynamodb_tables):
     """Non-Bedrock models (OpenAI/Codex) have no Bedrock pricing entry. We still
     record token + request VOLUME (with spend 0) so usage is never invisible —
-    spend 0 is correct for Isol8's books (byo_key is user-paid, Codex is
+    spend 0 is correct for Lightbulb AI's books (byo_key is user-paid, Codex is
     flat-rate)."""
     from core.repositories import usage_repo
     from core.services.usage_service import _current_period, record_usage
@@ -280,7 +280,7 @@ async def test_record_usage_raw_cost_override_records_when_tokens_zero(dynamodb_
 async def test_record_usage_raw_cost_override_used_for_bedrock_model(dynamodb_tables):
     """A Bedrock model carrying ``raw_cost_microcents`` records the override
     verbatim as spend. The override is the cache-inclusive cost from OpenClaw;
-    gating it to Bedrock keeps this (the priced/Isol8-billed path) intact."""
+    gating it to Bedrock keeps this (the priced/Lightbulb AI-billed path) intact."""
     from core.repositories import usage_repo
     from core.services.usage_service import _current_period, record_usage
 
@@ -307,7 +307,7 @@ async def test_record_usage_raw_cost_override_used_for_bedrock_model(dynamodb_ta
 async def test_record_usage_raw_cost_override_ignored_for_non_bedrock_model(dynamodb_tables):
     """A non-Bedrock model (ChatGPT OAuth / OpenAI / BYO) that carries a
     ``raw_cost_microcents`` (from OpenClaw's ``estimatedCostUsd``) must NOT
-    record it as Isol8 spend. Non-Bedrock = user-paid / flat-rate, so Isol8's
+    record it as Lightbulb AI spend. Non-Bedrock = user-paid / flat-rate, so Lightbulb AI's
     books read spend 0. The override is gated to Bedrock; a non-Bedrock model
     falls through to the token path → UnknownModelError → spend 0, even with
     the override present. Token volume is still recorded."""

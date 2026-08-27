@@ -17,7 +17,7 @@ _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
 Actor = Literal["cli", "mcp", "skill", "nango_proxy"]
-RefreshOwner = Literal["none", "actor", "isol8_rematerialize", "nango_proxy"]
+RefreshOwner = Literal["none", "actor", "lightbulb_rematerialize", "nango_proxy"]
 
 
 class OpenclawPath(BaseModel):
@@ -143,7 +143,7 @@ class OAuthSpec(BaseModel):
     # stored, the dance registers a fresh public OAuth client at this URL (RFC 7591)
     # and caches it, so a headless owner never needs to pre-create an OAuth app.
     registration_url: str | None = None
-    # Platform-hosted OAuth app: the name of the Isol8-owned client stored at
+    # Platform-hosted OAuth app: the name of the Lightbulb AI-owned client stored at
     # ``isol8/<env>/integrations/platform-oauth/<name>`` in Secrets Manager. Every
     # owner OAuths against this ONE reviewed app (the Buffer/Hootsuite model —
     # Meta app review approves the app once, each user grants access to their own
@@ -201,7 +201,7 @@ class ValidateSpec(BaseModel):
 
 class AwsStsSpec(BaseModel):
     """AWS access via STS AssumeRole. The owner runs a CloudFormation stack
-    that creates a connector role Isol8's backend can assume (trust = our
+    that creates a connector role Lightbulb AI's backend can assume (trust = our
     account root + per-connection ExternalId), capped at the tier the owner
     picked from the three AWS-managed policy ARNs below. The aws_cli
     materializer delivers a credential_process bundle; the container's CLI
@@ -222,7 +222,7 @@ class Requires(BaseModel):
 class InboundEvent(BaseModel):
     id: str
     label: str
-    # Provider-side event names to subscribe when Isol8 auto-registers the
+    # Provider-side event names to subscribe when Lightbulb AI auto-registers the
     # webhook (auto_github: the GitHub hook's `events` array; auto_vercel:
     # the Vercel webhook's `events`). One trigger may carry several events, in
     # which case the UNION of their names is what gets registered on the one
@@ -352,7 +352,7 @@ class Provider(BaseModel):
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
-    # BYO-required: this provider has no Isol8-managed OAuth app, so the owner
+    # BYO-required: this provider has no Lightbulb AI-managed OAuth app, so the owner
     # MUST connect with their own OAuth app (client_id/secret). It is visible to
     # every owner and gated only by "have you stored your app yet". Today only
     # google: its scopes are Google *restricted* scopes that an unverified shared
@@ -408,7 +408,7 @@ class Provider(BaseModel):
     #   we can actually grant by hand — i.e. a Meta integration where an operator
     #   adds the owner as a provider tester and to `owner_allowlist`.
     #
-    # Flip this AFTER the extended image carrying the matching isol8 SKILL.md is
+    # Flip this AFTER the extended image carrying the matching Lightbulb AI SKILL.md is
     # promoted for the env (openclaw-version.json). Containers bake the skill, so
     # a backend-first flip leaves live agents on copy that has never heard of
     # `requestable` and still says "connect it in the Integrations tab".

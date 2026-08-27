@@ -33,7 +33,9 @@ export function useUserSyncOnce(enabled: boolean): void {
     // Once per browser session: sync is an idempotent Clerk→DDB upsert and
     // ChatLayout remounts on every view switch / page load — re-firing it
     // each time is pure backend load.
-    const syncedKey = "isol8:user-synced";
+    // Renamed from `isol8:user-synced` at the Lightbulb AI rebrand — costs one
+// extra /users/sync per open tab, nothing else.
+    const syncedKey = "lightbulb:user-synced";
     try {
       if (sessionStorage.getItem(syncedKey)) return;
     } catch {

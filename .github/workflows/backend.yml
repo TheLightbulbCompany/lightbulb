@@ -71,7 +71,7 @@ jobs:
         env:
           CLERK_ISSUER: https://test.clerk.accounts.dev
           HUGGINGFACE_TOKEN: test_token
-          DYNAMODB_TABLE_PREFIX: isol8-test-
+          DYNAMODB_TABLE_PREFIX: lightbulb-test-
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing

@@ -135,9 +135,9 @@ async def handle_node_connect(
         incoming = display_name.strip() or "Desktop"
     # Strip any pre-existing suffix so reconnects don't compound
     # "Alice | Lightbulb AI Desktop | Lightbulb AI Desktop". The pre-rebrand
-    # " | Isol8 Desktop" is still on names already registered, so both are
+    # " | Lightbulb AI Desktop" is still on names already registered, so both are
     # stripped — dropping the legacy one would let it compound forever.
-    for legacy in (" | Lightbulb AI Desktop", " | Isol8 Desktop"):
+    for legacy in (" | Lightbulb AI Desktop", " | Lightbulb AI Desktop"):
         if incoming.endswith(legacy):
             incoming = incoming[: -len(legacy)]
             break

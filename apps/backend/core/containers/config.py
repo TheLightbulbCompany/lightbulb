@@ -171,7 +171,7 @@ OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
 # ---------------------------------------------------------------------------
 
 # agents.defaults.timeoutSeconds — the big one. Upstream defaults to 172800
-# (48 HOURS) and Isol8 has never set it. 30 minutes sits far above any real turn
+# (48 HOURS) and Lightbulb AI has never set it. 30 minutes sits far above any real turn
 # (the Paperclip adapter already runs with a 600s cap in production) while turning
 # a ~$2,600 runaway into a ~$27 one.
 AGENT_RUN_TIMEOUT_SECONDS = 1800
@@ -1143,14 +1143,14 @@ def memory_search_entry(provider_choice: str, byo_provider: str | None) -> dict:
     owner. What varies is the embedding backend, under one rule: use semantic
     (vector) embeddings ONLY where the owner's OWN credential foots the bill;
     fall back to keyword-only (SQLite FTS, ``provider: "none"``) everywhere else
-    so Isol8 never pays an embedding bill.
+    so Lightbulb AI never pays an embedding bill.
 
     - ``byo_key`` + ``openai`` -> the owner's staged ``OPENAI_API_KEY`` runs
       ``text-embedding-3-small`` (their account, ~pennies). memory-core's
       ``openai`` embedding provider reads the key from that env var, so no extra
       wiring is needed. This is the ONE path with real semantic recall.
     - Every other path -> ``provider: "none"`` (FTS keyword recall), because
-      none of them can embed without Isol8 paying:
+      none of them can embed without Lightbulb AI paying:
         * ``chatgpt_oauth`` — ChatGPT-subscription OAuth tokens authenticate the
           chat/Codex endpoint, NOT ``api.openai.com/v1/embeddings``; there is no
           embeddings access to use.
@@ -1158,7 +1158,7 @@ def memory_search_entry(provider_choice: str, byo_provider: str | None) -> dict:
         * ``bedrock_claude`` — Titan embeddings run on the container task role
           (our AWS account, and NOT drawn from the owner's Bedrock credits — the
           per-owner AIP only wraps Claude), so semantic recall here would cost
-          Isol8. Metering fractions-of-a-cent back to the owner isn't worth
+          Lightbulb AI. Metering fractions-of-a-cent back to the owner isn't worth
           building, so Bedrock owners get keyword recall too.
 
     ``provider: "none"`` still builds a working FTS index (meta row written, the
@@ -1451,7 +1451,7 @@ def build_openclaw_config_dict(
         # event from a dedicated worker thread into the shared state DB. On EFS
         # (rollback journal, NFS lock latency) that worker is the dominant lock
         # contender — steady lock-wait failures that drop writes and stall the
-        # gateway event loop. Nothing in Isol8 consumes the ledger (no audit.*
+        # gateway event loop. Nothing in Lightbulb AI consumes the ledger (no audit.*
         # RPC callers); tool/run history is covered by transcripts, CloudWatch,
         # and Paperclip run records.
         "gateway": {
@@ -1552,7 +1552,7 @@ def build_openclaw_config_dict(
                     if _emit_81_shape or provider_choice not in BEDROCK_PROVIDER_CHOICES
                     else {"contextTokens": BEDROCK_CONTEXT_TOKENS}
                 ),
-                # Isol8 pre-seeds every agent workspace (IDENTITY/SOUL/USER via
+                # Lightbulb AI pre-seeds every agent workspace (IDENTITY/SOUL/USER via
                 # friday_identity) — skip OpenClaw's first-run bootstrap so an
                 # under-seeded workspace (Atlas-recruited agent, partial
                 # marketplace deploy) never autonomously runs the BOOTSTRAP.md
@@ -1711,7 +1711,7 @@ def build_openclaw_config_dict(
                 # section only renders while those tools exist). The embedding
                 # backend is resolved per provider path — semantic where the
                 # owner's own credential pays, keyword-only (FTS) otherwise so
-                # Isol8 never pays for embeddings. See memory_search_entry().
+                # Lightbulb AI never pays for embeddings. See memory_search_entry().
                 # Do NOT add `agents.defaults.llm.idleTimeoutSeconds` here:
                 # OpenClaw v2026.5.7's AgentDefaultsSchema is strict() and
                 # rejects the unknown key, so the gateway exits with
@@ -2006,9 +2006,12 @@ def build_openclaw_config_dict(
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
             # throw at boot — every newly-provisioned container would
-            # refuse to start. DO NOT REMOVE. "isol8-" is for our own
-            # session-key conventions used by internal callers.
-            "allowedSessionKeyPrefixes": ["isol8-", "hook:"],
+            # refuse to start. DO NOT REMOVE. "lightbulb-" is for our own
+            # session-key conventions used by internal callers; the
+            # pre-rebrand "isol8-" prefix stays alongside it so agent-mail
+            # threads already keyed `isol8-email:<sha256>` keep resolving to
+            # the same session instead of cold-starting.
+            "allowedSessionKeyPrefixes": ["lightbulb-", "isol8-", "hook:"],
             # Inbound agent email needs a STABLE per-thread session key so a
             # reply continues the same conversation instead of cold-starting a
             # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
@@ -2019,15 +2022,16 @@ def build_openclaw_config_dict(
             # What still bounds a leaked/replayed hook token, now that it can
             # name a session rather than only create one:
             #   * allowedSessionKeyPrefixes below — it can only reach
-            #     `isol8-*` / `hook:*` keys, and `isol8-email:<sha256>` is the
-            #     only isol8- OpenClaw session key we mint (the `isol8-` in
-            #     routers/connections.py is an STS RoleSessionName, not this).
+            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and
+            #     `lightbulb-email:<sha256>` is the only OpenClaw session key
+            #     we mint (the `lightbulb-` in routers/connections.py is an
+            #     STS RoleSessionName, not this).
             #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
             # The delta accepted deliberately: previously such a token could
             # only start fresh sessions; it can now target an existing one and
             # read its prior context. Tightening the prefix to
-            # `isol8-email:` would shrink that further and is the obvious next
-            # step if anything else ever mints an isol8- session key.
+            # `lightbulb-email:` would shrink that further and is the obvious next
+            # step if anything else ever mints a lightbulb- session key.
             "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in
@@ -2062,16 +2066,16 @@ def build_openclaw_config_dict(
                 # Enables the keyless parallel-free provider that
                 # tools.web.search.provider selects above.
                 "parallel": {"enabled": True},
-                # First-party Isol8 marketplace tools (marketplace_search,
+                # First-party Lightbulb AI marketplace tools (marketplace_search,
                 # recommend_agents), baked root-owned at
-                # /app/dist/extensions/isol8-marketplace. READ-ONLY: neither
+                # /app/dist/extensions/lightbulb-marketplace. READ-ONLY: neither
                 # tool mutates the roster — hiring always ends at a human
                 # click (the hire card in chat, or a Paperclip hire_agent
                 # approval in Teams). Enabled on EVERY provider path: an
                 # agent that cannot see the catalog recommends nothing, which
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
-                "isol8-marketplace": {"enabled": True},
+                "lightbulb-marketplace": {"enabled": True},
             },
         },
         # Channels: ship EMPTY until the user configures one. A provider block

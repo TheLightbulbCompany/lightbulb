@@ -24,7 +24,9 @@ import { DRAFT_STORAGE_KEY } from "@/components/onboarding/FirstRunFunnel";
 import type { ProvisioningPhase } from "@/hooks/useProvisioningState";
 
 /** Written by the landing hero funnel; shape {path, input, detail}. */
-export const LANDING_BRIEF_STORAGE_KEY = "isol8_landing_brief_v1";
+// Renamed from `lightbulb_landing_brief_v1` at the Lightbulb AI rebrand — a brief
+// captured on the landing page before the rename is not replayed.
+export const LANDING_BRIEF_STORAGE_KEY = "lightbulb_landing_brief_v1";
 
 interface LandingBrief {
   path: "new" | "grow";

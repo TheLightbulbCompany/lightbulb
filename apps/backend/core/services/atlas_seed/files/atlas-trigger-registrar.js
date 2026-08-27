@@ -110,7 +110,7 @@ function _workspaceHasFile(buildId, relPath) {
   if (typeof relPath !== 'string' || !relPath.endsWith('.lobster') || path.isAbsolute(relPath)) {
     return false;
   }
-  // resolve() both sides: ISOL8_AGENTS_DIR may be relative, and comparing a
+  // resolve() both sides: LIGHTBULB_AGENTS_DIR may be relative, and comparing a
   // resolved path against an unresolved root never matches.
   const root = path.resolve(_stagingWorkspaceDir(buildId), 'workspace');
   const full = path.resolve(root, relPath);

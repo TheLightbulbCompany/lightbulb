@@ -10,7 +10,7 @@ wall of instantly-dead runs (12 in ~3 minutes, #1426) instead of one clear
 The fix calls the SAME ``pool.gate_chat`` the human chat path calls. **The
 provider matrix below is the point of this file** — reusing gate_chat rather
 than inventing a trial-only predicate is what keeps ChatGPT-OAuth and BYOK
-owners (who consume no Isol8 budget) from ever being blocked on one. Those
+owners (who consume no Lightbulb AI budget) from ever being blocked on one. Those
 cases run against the REAL ``gate_chat``, not a stub, so a regression in the
 predicate itself fails here.
 """
@@ -106,7 +106,7 @@ async def test_expired_trial_owner_is_blocked():
 @pytest.mark.asyncio
 async def test_chatgpt_oauth_owner_with_zero_credits_is_ALLOWED():
     """OAuth spend lands on the user's own OpenAI account — it draws NOTHING
-    from Isol8 credits, so an empty credit balance must never park their
+    from Lightbulb AI credits, so an empty credit balance must never park their
     automations. This is the case a trial-only/credit-only predicate would
     have broken."""
     with (
@@ -126,7 +126,7 @@ async def test_chatgpt_oauth_owner_with_zero_credits_is_ALLOWED():
 @pytest.mark.asyncio
 async def test_byok_owner_with_zero_credits_is_ALLOWED():
     """Same reasoning as OAuth: a BYO-key owner burns their own Anthropic /
-    OpenAI key, so Isol8 budget is not theirs to be blocked on."""
+    OpenAI key, so Lightbulb AI budget is not theirs to be blocked on."""
     with (
         _real_pool(),
         _billing({"subscription_status": "active", "provider_choice": "byo_key"}),

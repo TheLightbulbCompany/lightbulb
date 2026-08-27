@@ -128,7 +128,7 @@ async def test_html_only_body_is_a_single_text_html_part(monkeypatch):
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
     result = await ses_email.send_ses_email(
-        from_addr="Isol8 <hello@isol8.co>",
+        from_addr="Lightbulb AI <hello@isol8.co>",
         to="alice@x.com",
         subject="Welcome",
         body_html="<p>hi</p>",
@@ -151,7 +151,7 @@ async def test_list_recipients_are_joined(monkeypatch):
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
     await ses_email.send_ses_email(
-        from_addr="Isol8 <hello@isol8.co>",
+        from_addr="Lightbulb AI <hello@isol8.co>",
         to=["a@x.com", "b@x.com"],
         subject="hi",
         body_html="<p>hi</p>",
@@ -180,7 +180,7 @@ async def test_stalled_send_respects_timeout(monkeypatch):
 
     start = time.monotonic()
     result = await ses_email.send_ses_email(
-        from_addr="Isol8 <hello@isol8.co>",
+        from_addr="Lightbulb AI <hello@isol8.co>",
         to="a@x.com",
         subject="hi",
         body_html="<p>hi</p>",

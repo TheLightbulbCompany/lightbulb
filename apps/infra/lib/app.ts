@@ -12,7 +12,7 @@ import {
   StackCapabilities,
 } from "cdk-pipelines-github";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
-import { Isol8Stage } from "./isol8-stage";
+import { LightbulbStage } from "./lightbulb-stage";
 
 const app = new cdk.App();
 const awsEnv = { account: "877352799272", region: "us-east-1" };
@@ -51,7 +51,7 @@ const CDKOUT_OIDC_STEP = {
   },
 };
 
-const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
+const pipeline = new GitHubWorkflow(app, "lightbulb-pipeline", {
   // postBuildSteps is injected immediately before the cdk.out upload
   // (cdk-pipelines-github pipeline.js:458), so the credentials the S3 upload
   // needs are added through the supported API rather than a positional patch.
@@ -105,7 +105,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // Pipeline runner is driven by the `DEPLOY_RUNNER` repo Actions variable so
   // hosted <-> self-hosted flips from the GitHub UI (or
   // scripts/switch-ci-runner.sh) with no code change or re-synth — set it to
-  // `isol8-wsl` (self-hosted WSL; free Linux minutes) or `ubuntu-latest`
+  // `lightbulb-wsl` (self-hosted WSL; free Linux minutes) or `ubuntu-latest`
   // (GitHub-hosted). See expressionRunner() for why this can't be a plain
   // Runner. Desktop DMG builds are NOT part of this pipeline — they live in
   // the standalone .github/workflows/desktop-build.yml on a self-hosted macOS
@@ -117,7 +117,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // racing on the same stack produce "UPDATE_IN_PROGRESS ... can not be
   // updated" failures).
   concurrency: {
-    group: "isol8-deploy",
+    group: "lightbulb-deploy",
     cancelInProgress: false,
   },
 });
@@ -125,7 +125,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 // ---------------------------------------------------------------------------
 // Dev stage — auto-deploy infra + frontend on merge to main
 // ---------------------------------------------------------------------------
-const devStage = new Isol8Stage(app, "dev", {
+const devStage = new LightbulbStage(app, "dev", {
   env: awsEnv,
   environment: "dev",
   rootDomain: DEV_ROOT_DOMAIN,
@@ -205,7 +205,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
 // and dev still deploys on every merge.
 const PROD_PROMOTE_IF = "github.event_name == 'workflow_dispatch'";
 
-const prodStage = new Isol8Stage(app, "prod", {
+const prodStage = new LightbulbStage(app, "prod", {
   env: awsEnv,
   environment: "prod",
   rootDomain: ROOT_DOMAIN,

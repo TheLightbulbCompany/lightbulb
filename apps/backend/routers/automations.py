@@ -18,7 +18,7 @@ Dashboard, Stripe hands them a signing secret and the frontend posts it here.
 It ARMS the trigger by rotating its Paperclip secret to that exact value
 (``rotate_routine_trigger_secret(secret=...)`` -> the fork's caller-supplied
 secret support), so Paperclip verifies the provider's native signature
-against it. Verification is NATIVE — there is no Isol8-side secret store,
+against it. Verification is NATIVE — there is no Lightbulb AI-side secret store,
 cache, or edge verification anymore (see ``routers/paperclip_trigger_proxy.py``).
 
 Ownership: the ``public_id`` must resolve to a webhook trigger in the

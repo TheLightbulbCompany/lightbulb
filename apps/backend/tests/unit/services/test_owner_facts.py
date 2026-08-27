@@ -63,11 +63,13 @@ def test_build_owner_facts_no_account():
 async def test_write_owner_facts_writes_json(monkeypatch):
     written = {}
 
+    paths = []
+
     class FakeWs:
         def write_file(self, user_id, path, content):
             written["user_id"] = user_id
-            written["path"] = path
             written["content"] = content
+            paths.append(path)
 
     async def fake_get(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
@@ -78,7 +80,9 @@ async def test_write_owner_facts_writes_json(monkeypatch):
     await owner_facts.write_owner_facts("user_abc")
 
     assert written["user_id"] == "user_abc"
-    assert written["path"] == "isol8-facts.json"
+    # Current name first; the pre-rebrand name is written alongside it so an
+    # image built before the rename keeps reading fresh facts.
+    assert paths == ["lightbulb-facts.json", "isol8-facts.json"]
     facts = json.loads(written["content"])
     assert facts["provider_choice"] == "bedrock_claude"
     assert facts["plan"] == "Starter ($50/mo flat fee)"

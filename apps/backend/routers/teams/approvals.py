@@ -43,7 +43,7 @@ async def approve(
     For a MARKETPLACE hire this is also where the agent's workspace gets
     installed. Paperclip's approve flips the pre-created agent from
     ``pending_approval`` to ``idle``; the EFS workspace, the ``openclaw.json``
-    merge, and the operator-device pairing are Isol8's half and it knows
+    merge, and the operator-device pairing are Lightbulb AI's half and it knows
     nothing about them. Running it here keeps the whole thing on the approving
     user's own authenticated request — no privileged write path, no event
     plumbing, and the user learns immediately if the install failed.

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Isol8 agent-mail CLI — your address, your inbox, and the one way to send.
+# Lightbulb AI agent-mail CLI — your address, your inbox, and the one way to send.
 # All policy (who you may email) is decided by the backend; this only relays.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 Usage:
-  isol8-mail.sh address
-  isol8-mail.sh inbox [--since ISO8601] [--limit N]
-  isol8-mail.sh send --owner --subject "S"            (body on stdin)
-  isol8-mail.sh send --to someone@example.com --subject "S"
-  isol8-mail.sh send --reply <Reply-Key>               (body on stdin)
+  lightbulb-mail.sh address
+  lightbulb-mail.sh inbox [--since ISO8601] [--limit N]
+  lightbulb-mail.sh send --owner --subject "S"            (body on stdin)
+  lightbulb-mail.sh send --to someone@example.com --subject "S"
+  lightbulb-mail.sh send --reply <Reply-Key>               (body on stdin)
 Options:
   --as <agent_id>   act as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
-Env (already set): OPENCLAW_HOOK_TOKEN, ISOL8_API_URL, ISOL8_OWNER_ID
+Env (already set): OPENCLAW_HOOK_TOKEN, LIGHTBULB_API_URL, LIGHTBULB_OWNER_ID
 EOF
 }
 die() { printf '%s\n' "$1" >&2; exit 1; }
@@ -22,8 +22,8 @@ die() { printf '%s\n' "$1" >&2; exit 1; }
 cmd="$1"; shift
 command -v jq >/dev/null || die 'Missing jq'; command -v curl >/dev/null || die 'Missing curl'
 [[ -n "${OPENCLAW_HOOK_TOKEN:-}" ]] || die 'Missing OPENCLAW_HOOK_TOKEN.'
-[[ -n "${ISOL8_API_URL:-}" ]] || die 'Missing ISOL8_API_URL.'
-[[ -n "${ISOL8_OWNER_ID:-}" ]] || die 'Missing ISOL8_OWNER_ID.'
+[[ -n "${LIGHTBULB_API_URL:-}" ]] || die 'Missing LIGHTBULB_API_URL.'
+[[ -n "${LIGHTBULB_OWNER_ID:-}" ]] || die 'Missing LIGHTBULB_OWNER_ID.'
 
 need_val() { [[ $# -ge 2 && -n "${2:-}" ]] || die "Option $1 needs a value."; }
 
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$agent_id" ]] || die 'Cannot tell which agent you are: pass --as <agent_id>.'
 
-base="${ISOL8_API_URL%/}/api/v1/agent-mail/u/${ISOL8_OWNER_ID}"
+base="${LIGHTBULB_API_URL%/}/api/v1/agent-mail/u/${LIGHTBULB_OWNER_ID}"
 auth=(-H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" -H 'Content-Type: application/json')
 
 call() { # method path [json]
@@ -82,7 +82,7 @@ case "$cmd" in
       forbidden_recipient) die 'Not sent: your owner has not allowed you to email people other than them (this includes replying to senders who are not on your wake list). Ask them to enable it in Control → Agents → Email.' ;;
       outbound_disabled) die 'Not sent: outbound email is paused for this account (a recipient reported spam). Your owner can re-enable it in Control → Agents → Email.' ;;
       rate_limited) die 'Not sent: daily email limit reached. Try tomorrow.' ;;
-      no_address) die 'Not sent: you have no address yet — name your company, then run: isol8-mail.sh address' ;;
+      no_address) die 'Not sent: you have no address yet — name your company, then run: lightbulb-mail.sh address' ;;
       bad_reply_key) die 'Not sent: that Reply-Key is not one of your messages.' ;;
       *) die "Not sent (status: $status)." ;;
     esac ;;

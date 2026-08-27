@@ -3,7 +3,7 @@
  *
  * App Store guideline 3.1.3(f) exempts a free companion app to a paid
  * web-based tool ONLY while there is "no purchasing inside the app, or calls
- * to action for purchase outside of the app". Isol8 sells hosted compute, so
+ * to action for purchase outside of the app". Lightbulb AI sells hosted compute, so
  * the exemption fits — but the build Apple rejected on 2026-08-12 carried five
  * "Upgrade on isol8.co" CTAs, which fails that condition on its face.
  *

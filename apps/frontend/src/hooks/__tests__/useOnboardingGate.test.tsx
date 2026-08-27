@@ -73,7 +73,7 @@ describe("useOnboardingGate", () => {
     userUpdateMock.mockReset().mockResolvedValue(undefined);
     searchString = "";
     // Clear any signup-intent cookie a prior test set (jsdom persists it).
-    document.cookie = "isol8_signup_intent=; max-age=0; path=/";
+    document.cookie = "lightbulb_signup_intent=; max-age=0; path=/";
     // Reset to a known baseline: signed-in, fully loaded, personal user
     // who completed onboarding, no orgs, no invitations.
     setClerk({
@@ -212,7 +212,7 @@ describe("useOnboardingGate", () => {
   it("routes on the intent COOKIE alone", async () => {
     // The cookie — not the query — is the signal that survives Clerk's
     // multi-step signup, so this is the path a real team signup takes.
-    document.cookie = "isol8_signup_intent=team; path=/";
+    document.cookie = "lightbulb_signup_intent=team; path=/";
     searchString = "";
     setClerk({
       user: { unsafeMetadata: {} },
@@ -237,7 +237,7 @@ describe("useOnboardingGate", () => {
     // clears it once `mode === "org"` — i.e. once the browser has actually
     // stopped rendering /chat. This test pins that this hook stays a
     // non-consumer so that regression can't creep back in silently.
-    document.cookie = "isol8_signup_intent=team; path=/";
+    document.cookie = "lightbulb_signup_intent=team; path=/";
     searchString = "";
     setClerk({
       user: { unsafeMetadata: {} },
@@ -249,14 +249,14 @@ describe("useOnboardingGate", () => {
     await waitFor(() =>
       expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
     );
-    expect(document.cookie).toContain("isol8_signup_intent=team");
+    expect(document.cookie).toContain("lightbulb_signup_intent=team");
   });
 
   it("does not treat an undecodable intent cookie as team intent", async () => {
     // Fail-open: `decodeURIComponent("%")` throws, and this read happens
     // during render. The predicate swallows it, so the gate falls back to its
     // pre-cookie behaviour (personal) instead of crashing the chat shell.
-    document.cookie = "isol8_signup_intent=%; path=/";
+    document.cookie = "lightbulb_signup_intent=%; path=/";
     searchString = "";
     setClerk({ user: { unsafeMetadata: {} }, memberships: [], invitations: [] });
     const { result } = renderHook(() => useOnboardingGate());

@@ -10,7 +10,7 @@ Treat them as a stable contract — renaming requires coordinated frontend
 """
 
 # Gate A — invite-creation refused because invitee already has an active
-# personal Isol8 subscription. Returned by POST /api/v1/orgs/{id}/invitations.
+# personal Lightbulb AI subscription. Returned by POST /api/v1/orgs/{id}/invitations.
 PERSONAL_USER_EXISTS = "personal_user_exists"
 
 # Gate B — personal trial-checkout refused because caller has a pending

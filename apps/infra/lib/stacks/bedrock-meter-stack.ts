@@ -255,7 +255,7 @@ export class BedrockMeterStack extends cdk.Stack {
           // "instances differ ONLY in env vars" rule intact.
           ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
           // The env dimension on the Lambda's EMF metrics — both instances
-          // share namespace Isol8 + service=isol8-bedrock-meter, so this is
+          // share namespace Lightbulb AI + service=isol8-bedrock-meter, so this is
           // what keeps dev noise out of the prod alarms. ALSO the env segment
           // of the per-owner IAM role name the kill deletes its policy from.
           METER_ENV: meterEnv,
@@ -424,10 +424,10 @@ export class BedrockMeterStack extends cdk.Stack {
       );
 
       // Env-split subscription filter. identity.arn carries the signing role
-      // name, and TWO roles now sign Isol8 Bedrock traffic: the per-owner role
+      // name, and TWO roles now sign Lightbulb AI Bedrock traffic: the per-owner role
       // (isol8-{env}-owner-bedrock-{owner}, direct invoke) and the gateway role
       // (isol8-{env}-bedrock-gate, cut-over owners). Both markers carry the env
-      // segment, so an OR of the two role names both scopes to Isol8 traffic
+      // segment, so an OR of the two role names both scopes to Lightbulb AI traffic
       // (unrelated invocations like GooseTown carry neither role → dropped at
       // the source, so the old "application-inference-profile" required term is
       // redundant) AND keeps the dev/prod split exact (a dev gateway record
@@ -528,7 +528,7 @@ export class BedrockMeterStack extends cdk.Stack {
       errorsAlarm.addAlarmAction(alarmAction);
 
       // One alarm per skip/failure metric the Lambda emits. Both instances
-      // emit into namespace Isol8 with service=isol8-bedrock-meter, so each
+      // emit into namespace Lightbulb AI with service=isol8-bedrock-meter, so each
       // alarm scopes to ITS instance via the env dimension — otherwise dev
       // noise would page prod.
       //
@@ -562,7 +562,7 @@ export class BedrockMeterStack extends cdk.Stack {
           alarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock meter (${meterEnv}) emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
           metric: new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName,
             dimensionsMap: {
               service: "isol8-bedrock-meter",
@@ -596,7 +596,7 @@ export class BedrockMeterStack extends cdk.Stack {
     this.meterFnDev = fns["dev"];
     this.meterFnProd = fns["prod"];
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", props.envName);
   }
 }

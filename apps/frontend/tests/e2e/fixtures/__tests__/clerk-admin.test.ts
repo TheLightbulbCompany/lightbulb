@@ -20,7 +20,7 @@ describe('clerk-admin', () => {
 
       const id = await createUser({
         secretKey: FAKE_KEY,
-        email: 'isol8-e2e-aaaaaa@mailsac.com',
+        email: 'lightbulb-e2e-aaaaaa@mailsac.com',
         password: 'pw',
         runId: '1776572400000-aaaaaa',
       });
@@ -36,7 +36,7 @@ describe('clerk-admin', () => {
         }),
       );
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.email_address).toEqual(['isol8-e2e-aaaaaa@mailsac.com']);
+      expect(body.email_address).toEqual(['lightbulb-e2e-aaaaaa@mailsac.com']);
       expect(body.password).toBe('pw');
       expect(body.unsafe_metadata.e2e_run_id).toBe('1776572400000-aaaaaa');
       expect(body.unsafe_metadata.onboarded).toBe(false);
@@ -66,14 +66,14 @@ describe('clerk-admin', () => {
           },
           {
             id: 'user_target',
-            email_addresses: [{ email_address: 'isol8-e2e-target@mailsac.com' }],
+            email_addresses: [{ email_address: 'lightbulb-e2e-target@mailsac.com' }],
           },
         ],
       });
 
       const result = await findUserByEmail({
         secretKey: FAKE_KEY,
-        email: 'isol8-e2e-target@mailsac.com',
+        email: 'lightbulb-e2e-target@mailsac.com',
       });
       expect(result?.id).toBe('user_target');
     });
@@ -108,14 +108,14 @@ describe('clerk-admin', () => {
           json: async () => [
             {
               id: 'user_target',
-              email_addresses: [{ email_address: 'isol8-e2e-target@mailsac.com' }],
+              email_addresses: [{ email_address: 'lightbulb-e2e-target@mailsac.com' }],
             },
           ],
         });
 
       const result = await findUserByEmail({
         secretKey: FAKE_KEY,
-        email: 'isol8-e2e-target@mailsac.com',
+        email: 'lightbulb-e2e-target@mailsac.com',
       });
       expect(result?.id).toBe('user_target');
       expect(fetchMock).toHaveBeenCalledTimes(2);

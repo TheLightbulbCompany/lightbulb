@@ -160,7 +160,7 @@ def private_key_pem(identity: OperatorDeviceIdentity) -> str:
     The Paperclip ``openclaw_gateway`` adapter reads its signing key from
     ``adapterConfig.devicePrivateKeyPem`` (a PKCS8 PEM) and derives its deviceId
     as the hex SHA-256 of the raw public key — identical to ``device_id`` here.
-    We mint the keypair Isol8-side so the deviceId is stable and can be
+    We mint the keypair Lightbulb AI-side so the deviceId is stable and can be
     pre-registered in the container's ``devices/paired.json`` before the agent's
     first connect (a remote operator device that isn't pre-paired is rejected
     NOT_PAIRED). The PEM is the half the adapter needs to sign; only the public
@@ -269,7 +269,7 @@ def build_paired_operator_entry(
     *,
     gateway_token: str,
     scopes: Iterable[str] = BACKEND_OPERATOR_SCOPES,
-    display_name: str = "isol8-backend",
+    display_name: str = "lightbulb-backend",
     client_id: str = BACKEND_CLIENT_ID,
     client_mode: str = BACKEND_CLIENT_MODE,
 ) -> dict:

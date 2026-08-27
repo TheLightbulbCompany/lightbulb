@@ -10,7 +10,7 @@ Accepted archive shapes (detected by marker, in this order):
                (``payload/posix/<abs path>``).
   state-dir  — a plain tar of ``~/.openclaw`` (``openclaw.json`` beside
                ``agents/`` / ``workspace/``), at the root or one level down.
-               Also matches an Isol8 artifact re-upload (``./openclaw.json``
+               Also matches an Lightbulb AI artifact re-upload (``./openclaw.json``
                next to persona files) — then the dir IS the workspace.
   workspace  — a bare agent workspace (``AGENTS.md`` / ``SOUL.md`` /
                ``IDENTITY.md``), at the root or one level down. No config.
@@ -26,7 +26,7 @@ A candidate prefix found via a bare ``openclaw.json`` marker (state-dir shape)
 only counts as a STATE dir — and gets the runtime skip rules applied under
 it — when pass 1 also saw a sibling entry there named ``agents``, ``state``,
 ``credentials``, ``browser``, or ``workspace``. A prefix with only
-``openclaw.json`` + persona files (an Isol8 artifact re-upload) is
+``openclaw.json`` + persona files (an Lightbulb AI artifact re-upload) is
 workspace-shaped: no state-relative skips apply, so e.g. its own ``memory/``
 directory is agent content, not runtime junk, and survives. Manifest-declared
 ``state`` assets (the backup shape) always count — that comes from the
@@ -47,7 +47,7 @@ sidecars out of the artifact. ``workspace/openclaw.json`` DOES ship (not in
 the same scrub helpers ``extract_agent_slice`` uses.
 
 Deliberately NOT folded in: ``agents.defaults`` (container-level bounds such
-as ``subagents`` / ``runRetries`` are Isol8's to set) and ``channels``
+as ``subagents`` / ``runRetries`` are Lightbulb AI's to set) and ``channels``
 (per-user credentials; ``_STRIPPED_KEYS`` drops them anyway).
 """
 
@@ -685,10 +685,10 @@ class ImportNormalized:
 
 
 # State-relative top-level dirs treated as runtime (not content) when the
-# agent's workspace_dir IS the state dir itself (an Isol8 artifact re-upload
+# agent's workspace_dir IS the state dir itself (an Lightbulb AI artifact re-upload
 # — see the module docstring's "candidate prefix" note). "memory" and "tools"
 # are deliberately NOT here (R2): both are legitimate workspace content in
-# that shape — an Isol8 artifact re-upload keeps persona files + memory/ at
+# that shape — an Lightbulb AI artifact re-upload keeps persona files + memory/ at
 # the same level as openclaw.json — and true state-dir memory/*.sqlite is
 # already dropped by the streaming extraction's skip rules (_STATE_SKIP_DIRS).
 _STATE_RUNTIME_DIRS = (

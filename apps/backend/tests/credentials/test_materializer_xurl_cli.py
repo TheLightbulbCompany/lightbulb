@@ -20,7 +20,7 @@ def _credential(**overrides):
         "access_token": "x-access",
         "refresh_token": "x-refresh",
         "expires_in": 3600,
-        "username": "isol8",
+        "username": "lightbulb",
         "redirect_uri": "https://api.isol8.example/api/v1/oauth/x/callback",
     }
     cred.update(overrides)
@@ -33,18 +33,18 @@ def test_write_produces_xurl_yaml(monkeypatch, tmp_path):
 
     identity = xurl_cli.write("org_1", "x", _credential())
 
-    assert identity == "isol8"
+    assert identity == "lightbulb"
     path = _xurl_path(tmp_path)
     assert path.exists()
     assert oct(path.stat().st_mode)[-3:] == "600"
     data = yaml.safe_load(path.read_text())
-    assert data["default_app"] == "isol8-x"
-    app = data["apps"]["isol8-x"]
+    assert data["default_app"] == "lightbulb-x"
+    app = data["apps"]["lightbulb-x"]
     assert app["client_id"] == "x-client"
     assert app["client_secret"] == "x-secret"
     assert app["redirect_uri"] == "https://api.isol8.example/api/v1/oauth/x/callback"
-    assert app["default_user"] == "isol8"
-    token = app["oauth2_tokens"]["isol8"]
+    assert app["default_user"] == "lightbulb"
+    token = app["oauth2_tokens"]["lightbulb"]
     assert token["type"] == "oauth2"
     assert token["oauth2"] == {
         "access_token": "x-access",
@@ -82,7 +82,7 @@ def test_write_derives_redirect_uri_when_credential_omits_it(monkeypatch, tmp_pa
 
     xurl_cli.write("org_1", "x", cred)
 
-    app = yaml.safe_load(_xurl_path(tmp_path).read_text())["apps"]["isol8-x"]
+    app = yaml.safe_load(_xurl_path(tmp_path).read_text())["apps"]["lightbulb-x"]
     assert app["redirect_uri"] == "https://api-dev.isol8.co/api/v1/oauth/x/callback"
 
 
@@ -103,7 +103,7 @@ def test_write_preserves_unknown_top_level_keys(monkeypatch, tmp_path):
 
     data = yaml.safe_load(path.read_text())
     assert data["some_future_xurl_key"] == {"keep": True}
-    assert data["apps"]["isol8-x"]["client_id"] == "x-client"
+    assert data["apps"]["lightbulb-x"]["client_id"] == "x-client"
 
 
 def test_write_preserves_unrelated_apps_and_replaces_owned_app(monkeypatch, tmp_path):
@@ -115,7 +115,7 @@ def test_write_preserves_unrelated_apps_and_replaces_owned_app(monkeypatch, tmp_
             {
                 "apps": {
                     "personal": {"client_id": "keep", "oauth2_tokens": {}},
-                    "isol8-x": {"client_id": "old", "oauth2_tokens": {}},
+                    "lightbulb-x": {"client_id": "old", "oauth2_tokens": {}},
                 },
                 "default_app": "personal",
             },
@@ -127,9 +127,9 @@ def test_write_preserves_unrelated_apps_and_replaces_owned_app(monkeypatch, tmp_
 
     data = yaml.safe_load(path.read_text())
     assert data["apps"]["personal"]["client_id"] == "keep"
-    assert data["apps"]["isol8-x"]["client_id"] == "x-client"
-    assert list(data["apps"]["isol8-x"]["oauth2_tokens"]) == ["newuser"]
-    assert data["default_app"] == "isol8-x"
+    assert data["apps"]["lightbulb-x"]["client_id"] == "x-client"
+    assert list(data["apps"]["lightbulb-x"]["oauth2_tokens"]) == ["newuser"]
+    assert data["default_app"] == "lightbulb-x"
 
 
 def test_write_fetches_username_when_not_supplied(monkeypatch, tmp_path):
@@ -162,7 +162,7 @@ def test_write_fetches_username_when_not_supplied(monkeypatch, tmp_path):
     ]
 
 
-def test_remove_deletes_only_isol8_app(monkeypatch, tmp_path):
+def test_remove_deletes_only_lightbulb_app(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
     path = _xurl_path(tmp_path)
     path.parent.mkdir(parents=True)
@@ -171,9 +171,9 @@ def test_remove_deletes_only_isol8_app(monkeypatch, tmp_path):
             {
                 "apps": {
                     "personal": {"client_id": "keep", "oauth2_tokens": {}},
-                    "isol8-x": {"client_id": "remove", "oauth2_tokens": {}},
+                    "lightbulb-x": {"client_id": "remove", "oauth2_tokens": {}},
                 },
-                "default_app": "isol8-x",
+                "default_app": "lightbulb-x",
             },
             sort_keys=False,
         )

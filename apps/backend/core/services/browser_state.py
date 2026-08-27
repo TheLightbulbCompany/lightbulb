@@ -6,7 +6,7 @@ the SQLite-on-EFS/NFS "database is locked" corruption hazard), so the profile is
 wiped on every container roll. We persist just the *state* (cookies + the active
 tab's localStorage) to EFS and restore it, sidestepping NFS.
 
-Entirely isol8-side, ZERO OpenClaw-fork changes: OpenClaw already exposes the
+Entirely Lightbulb AI-side, ZERO OpenClaw-fork changes: OpenClaw already exposes the
 read/apply primitives as browser HTTP routes, reachable from the backend via the
 ``operator.admin`` ``browser.request`` gateway RPC (the persistent pool
 connection already signs the operator-device handshake, so it carries that

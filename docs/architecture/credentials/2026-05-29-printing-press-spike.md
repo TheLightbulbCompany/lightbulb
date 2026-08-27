@@ -44,7 +44,7 @@ The verbatim convention appears in every config.go:
 
 ## Implications for the Integration Registry design
 
-1. **Actor A is the default** for CLI integrations — seed the `0600` TOML file (access + refresh + expiry + client) and the CLI self-refreshes forever. No `isol8_rematerialize` loop, no Nango refresh.
+1. **Actor A is the default** for CLI integrations — seed the `0600` TOML file (access + refresh + expiry + client) and the CLI self-refreshes forever. No `lightbulb_rematerialize` loop, no Nango refresh.
 2. **Actor B is a free per-integration toggle** on the same binary — set `<PROVIDER>_TOKEN` instead of materializing the file.
 3. **Actor A requires seeding the OAuth client** (`SaveTokens(clientID, clientSecret, …)`); device-code providers are public-client (clientID only).
 4. **Nango's continuous refresh is largely redundant for CLI actors.** This reopens the `direct_oauth + Actor A` (no Nango vault) vs `nango + Actor B` (Nango owns refresh, token off-disk) choice — now a per-integration policy decision. See the Part 2 design's Printing Press section.

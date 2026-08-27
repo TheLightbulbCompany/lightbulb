@@ -46,8 +46,8 @@ jest.mock("../../../../providers/gateway", () => ({
 // createApiClient override intercepts the upload rail (attachments.ts builds
 // a one-shot client per upload); everything else stays real.
 const mockUpload = jest.fn();
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
   createApiClient: () => ({ upload: mockUpload }),
 }));

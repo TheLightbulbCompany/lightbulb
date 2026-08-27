@@ -337,7 +337,7 @@ describe("BedrockGateStack", () => {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
           AlarmName: `isol8-${gateEnv}-${metricName.replace(/\./g, "-")}`,
           MetricName: metricName,
-          Namespace: "Isol8/BedrockGate",
+          Namespace: "LightbulbAI/BedrockGate",
           Dimensions: Match.arrayWith([
             Match.objectLike({ Name: "env", Value: gateEnv }),
           ]),

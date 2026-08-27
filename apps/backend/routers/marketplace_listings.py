@@ -2,7 +2,7 @@
 
 Browse + search are served by an in-process search service backed by a
 60s-TTL DDB scan over published listings (see marketplace_search.py).
-At v0 scale (Isol8-internal only) the listing count is small enough that
+At v0 scale (Lightbulb AI-internal only) the listing count is small enough that
 we don't need an external SaaS index.
 """
 
@@ -1538,7 +1538,7 @@ async def my_agent_artifact_preview(
 
 # ---------------------------------------------------------------------------
 # Artifact upload — Path B (snapshot from EFS); Path A (zip upload) is
-# explicitly out of v0 scope per the Isol8-internal reduction.
+# explicitly out of v0 scope per the Lightbulb AI-internal reduction.
 # ---------------------------------------------------------------------------
 
 

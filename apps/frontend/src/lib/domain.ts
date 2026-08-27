@@ -28,15 +28,15 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
 );
 
 /**
- * Custom URL scheme the desktop app registers for deep links (`isol8://auth`,
- * `isol8://checkout_redirect/...`). Mirrored by the mobile app's own config and
+ * Custom URL scheme the desktop app registers for deep links (`lightbulbai://auth`,
+ * `lightbulbai://checkout_redirect/...`). Mirrored by the mobile app's own config and
  * by `apps/desktop/src-tauri/tauri.conf.json`; those are separate registries,
  * so a change here is not a change there.
  *
- * NOT the internal `isol8-file://` asset scheme, and NOT the `isol8:*`
+ * NOT the internal `lightbulb-file://` asset scheme, and NOT the `lightbulb:*`
  * localStorage prefixes — neither is a domain.
  */
-export const DEEP_LINK_SCHEME = "isol8";
+export const DEEP_LINK_SCHEME = "lightbulbai";
 
 /** `admin.<root>` etc. — hosts allowed to serve the /admin route group. */
 export const DEFAULT_ADMIN_HOSTS = [

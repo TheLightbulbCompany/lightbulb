@@ -36,7 +36,7 @@ font-family: var(--font-lora-serif), Georgia, serif;
 
 Lora loads, so **Georgia is a fallback that never fires**. If the standalone `8`
 mark is Georgia, nothing on the page matches it today. Measuring the real vector
-in `isol8-8-cutout/` against installed faces: Georgia Bold matches its
+in `lightbulb-8-cutout/` against installed faces: Georgia Bold matches its
 proportion almost exactly (0.788 vs 0.779 width/height) while a geometric sans
 matches the drawn shape better (0.88 vs 0.79 overlap). Not conclusive — worth
 confirming against whatever file the mark was originally set in.

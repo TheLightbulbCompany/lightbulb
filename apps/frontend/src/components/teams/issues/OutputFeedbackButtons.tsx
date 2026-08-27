@@ -3,8 +3,8 @@
 // Ported + adapted from upstream Paperclip's
 // ui/src/components/OutputFeedbackButtons.tsx (MIT, (c) 2025 Paperclip AI).
 // Thumbs up/down on an agent output — the reinforcement signal fed back into
-// agents. Adapted to the isol8 editorial kit (EditorialButton + Textarea +
-// lucide icons). Isol8 casts votes LOCAL-ONLY: there is no Paperclip-Labs
+// agents. Adapted to the Lightbulb AI editorial kit (EditorialButton + Textarea +
+// lucide icons). Lightbulb AI casts votes LOCAL-ONLY: there is no Paperclip-Labs
 // data-sharing surface here, so the upstream sharing-preference Dialog and the
 // allowSharing prompt are dropped. Keeps the up/down buttons + the inline
 // downvote-reason note (the "what could have been better?" collector).

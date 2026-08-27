@@ -55,7 +55,7 @@ export async function createE2EUser(
 
   const runId = makeRunId();
   const rand = crypto.randomBytes(6).toString('hex');
-  const email = `isol8-e2e-${rand}@mailsac.com`;
+  const email = `lightbulb-e2e-${rand}@mailsac.com`;
   const password = crypto.randomBytes(24).toString('base64url');
 
   const clerkUserId = await createUser({ secretKey, email, password, runId });

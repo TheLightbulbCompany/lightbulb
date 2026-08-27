@@ -75,7 +75,7 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # The base (paperclip-version.json#upstream) is now the Isol8 Paperclip
+      # The base (paperclip-version.json#upstream) is now the Lightbulb AI Paperclip
       # fork on GHCR — a private package this repo must be granted read access to
       # (org Packages -> paperclip -> Manage Actions access -> add Isol8AI/isol8).
       # The build below pulls it via FROM, so authenticate to GHCR first.

@@ -1,5 +1,5 @@
 # This plugin's dist/ is the artifact the image bakes (the Dockerfile does a
-# plain `COPY plugins/isol8-marketplace` — no npm install, no build step in the
+# plain `COPY plugins/lightbulb-marketplace` — no npm install, no build step in the
 # image, same as plugins/aws-exec-profile). Override the repo-root `dist/`
 # ignore so it is tracked.
 #

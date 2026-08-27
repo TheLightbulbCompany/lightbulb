@@ -385,7 +385,7 @@ RUN curl -fsSL -o /tmp/google-chrome.deb \
 # bedrock-gate, Litestream/S3, EFS and every MCP server are untouched. The one
 # pointer is Chrome's --proxy-pac-url, emitted by the backend config generator.
 #
-# INERT until the enrollment secret is set: isol8-warp-boot.sh skips entirely
+# INERT until the enrollment secret is set: lightbulb-warp-boot.sh skips entirely
 # (exit 0) when CLOUDFLARE_WARP_ENROLLMENT is absent or is still the CDK
 # placeholder, so this layer ships and rolls ahead of any Zero Trust org
 # existing — same image-first decoupling as layers 9b and 10 above.
@@ -405,8 +405,8 @@ RUN . /etc/os-release && \
     apt-get update -qq && apt-get install -y -qq --no-install-recommends cloudflare-warp && \
     rm -rf /var/lib/apt/lists/* && \
     warp-cli --version
-COPY warp/isol8-warp-boot.sh /usr/local/bin/isol8-warp-boot.sh
-RUN chmod 0755 /usr/local/bin/isol8-warp-boot.sh
+COPY warp/lightbulb-warp-boot.sh /usr/local/bin/lightbulb-warp-boot.sh
+RUN chmod 0755 /usr/local/bin/lightbulb-warp-boot.sh
 
 # ---- Layer 10: externalized channel plugins (Slack, Discord) ----
 # Upstream OpenClaw externalized these channel plugins out of the core image
@@ -537,10 +537,10 @@ RUN set -eux; \
     rm -rf /opt/stage-firecrawl; \
     chown -R root:root /app/dist/extensions/firecrawl
 
-# ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
+# ---- Layer 12d: first-party Lightbulb AI marketplace tool plugin ----
 # Read-only agent tools (marketplace_search, recommend_agents) so an agent can
 # name real marketplace listings instead of waving at a URL. Enabled fleet-wide
-# via plugins.entries["isol8-marketplace"] in core/containers/config.py.
+# via plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
 #
 # Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
 # (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
@@ -558,9 +558,9 @@ RUN set -eux; \
 #
 # Root-owned like every other baked plugin — the loader rejects any plugin dir
 # not owned by uid 0. Enabled fleet-wide via
-# plugins.entries["isol8-marketplace"] in core/containers/config.py.
-COPY plugins/isol8-marketplace /app/dist/extensions/isol8-marketplace
-RUN chown -R root:root /app/dist/extensions/isol8-marketplace
+# plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
+COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
+RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
@@ -721,7 +721,7 @@ RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
 # Vendored from the Paperclip skills-catalog at the 2026.6 (June) line, kept in
 # step with the deployed Paperclip backend in paperclip-version.json (NOT with
 # the @paperclipai/mcp-server bin baked above, which is unwired and pinned
-# separately). NOTE: this vendored copy carries a deliberate Isol8 write-path
+# separately). NOTE: this vendored copy carries a deliberate Lightbulb AI write-path
 # customization — every API write goes through skills/paperclip/scripts/paperclip-api.sh
 # (jq-built, string-safe bodies) instead of hand-written jq/inline JSON, because
 # a model-emitted malformed body (e.g. `{body:}`) once silently failed a write
@@ -735,19 +735,19 @@ RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
 # AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
-# ---- Layer 16: bundled Isol8 platform skill ----
-# The `isol8` skill is every agent's authoritative reference for the
+# ---- Layer 16: bundled Lightbulb AI platform skill ----
+# The `lightbulb` skill is every agent's authoritative reference for the
 # platform itself — UI surfaces (incl. the Integrations tab), marketplace
 # mechanics, plans/providers, the Paperclip org model, and hard boundaries.
 # Baked (not seeded) so the WHOLE fleet — Friday, Atlas, scaffolded
 # specialists, marketplace hires — gets identical, current platform
 # knowledge on every image promotion, with no per-agent seeding and no
 # reprovision. Dynamic per-owner state deliberately lives OUTSIDE the image
-# in ~/.openclaw/isol8-facts.json (written by the backend — see
+# in ~/.openclaw/lightbulb-facts.json (written by the backend — see
 # core/services/owner_facts.py); the skill points agents at it.
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.
-COPY skills/isol8 /app/skills/isol8
+COPY skills/lightbulb /app/skills/lightbulb
 
 # Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
 # Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still
@@ -756,9 +756,9 @@ COPY skills/isol8 /app/skills/isol8
 # policy, no server. popups-to-tabs folds every new window (window.open OAuth popups)
 # into the main window as a tab, so the kiosk WM never hides one window behind another
 # in the live view. The JSON filename IS the extension id (derived from the packing key).
-COPY chrome-extensions/popups-to-tabs.crx /opt/isol8/chrome-extensions/popups-to-tabs.crx
+COPY chrome-extensions/popups-to-tabs.crx /opt/lightbulb/chrome-extensions/popups-to-tabs.crx
 COPY chrome-extensions/popups-to-tabs.external.json /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
-RUN chmod 0644 /opt/isol8/chrome-extensions/popups-to-tabs.crx \
+RUN chmod 0644 /opt/lightbulb/chrome-extensions/popups-to-tabs.crx \
       /usr/share/google-chrome/extensions/fdojippeikcjnafolmkpdgfcjlbnalpo.json
 
 
@@ -833,10 +833,10 @@ RUN set -eux; \
     tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
     rm /tmp/litestream.tgz; \
     litestream version
-COPY local-sqlite/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-boot.sh
-COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-app.sh
-COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml
-RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-app.sh
+COPY local-sqlite/lightbulb-local-sqlite-boot.sh /usr/local/bin/lightbulb-local-sqlite-boot.sh
+COPY local-sqlite/lightbulb-local-sqlite-app.sh /usr/local/bin/lightbulb-local-sqlite-app.sh
+COPY local-sqlite/lightbulb-litestream.yml /etc/lightbulb-litestream.yml
+RUN chmod 0755 /usr/local/bin/lightbulb-local-sqlite-boot.sh /usr/local/bin/lightbulb-local-sqlite-app.sh
 
 # ---- /home/node ownership ----
 # The gateway runs as uid 1000: container-stack.ts boots as root (it has to —

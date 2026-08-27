@@ -59,7 +59,7 @@ export interface ContainerStackProps extends cdk.StackProps {
  * Loopback port the container's WARP local proxy listens on, and the port the
  * backend points Chrome's PAC at. ONE constant so the two halves cannot drift:
  * service-stack imports it for the backend's BROWSER_EGRESS_PROXY_PORT env,
- * and the task definition below passes it to isol8-warp-boot.sh, which writes
+ * and the task definition below passes it to lightbulb-warp-boot.sh, which writes
  * it into mdm.xml as `proxy_port`. A plain module import, not a CDK
  * cross-stack ref, so it creates no CFN export.
  */
@@ -135,7 +135,7 @@ export class ContainerStack extends cdk.Stack {
       {
         name: `isol8-${props.environment}.local`,
         vpc: props.vpc,
-        description: `Isol8 ${props.environment} service discovery namespace`,
+        description: `Lightbulb AI ${props.environment} service discovery namespace`,
       },
     );
 
@@ -145,14 +145,14 @@ export class ContainerStack extends cdk.Stack {
       {
         dnsRecordType: servicediscovery.DnsRecordType.A,
         dnsTtl: cdk.Duration.seconds(10),
-        description: `Isol8 ${props.environment} container service discovery`,
+        description: `Lightbulb AI ${props.environment} container service discovery`,
       },
     );
 
     // EFS security group
     this.efsSecurityGroup = new ec2.SecurityGroup(this, "EfsSecurityGroup", {
       vpc: props.vpc,
-      description: `Isol8 ${props.environment} EFS security group`,
+      description: `Lightbulb AI ${props.environment} EFS security group`,
       allowAllOutbound: false,
     });
 
@@ -175,7 +175,7 @@ export class ContainerStack extends cdk.Stack {
       "ContainerSecurityGroup",
       {
         vpc: props.vpc,
-        description: `Isol8 ${props.environment} Fargate container security group`,
+        description: `Lightbulb AI ${props.environment} Fargate container security group`,
         allowAllOutbound: true,
       },
     );
@@ -190,7 +190,7 @@ export class ContainerStack extends cdk.Stack {
     // ECS task execution role (used by ECS agent)
     this.taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${props.environment} ECS task execution role`,
+      description: `Lightbulb AI ${props.environment} ECS task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -232,7 +232,7 @@ export class ContainerStack extends cdk.Stack {
     // ECS task role (used by the container itself)
     this.taskRole = new iam.Role(this, "TaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${props.environment} ECS task role`,
+      description: `Lightbulb AI ${props.environment} ECS task role`,
     });
 
     // EFS client access — required for IAM-authenticated EFS mounts
@@ -782,7 +782,13 @@ export class ContainerStack extends cdk.Stack {
       // because a container without it silently loses owner data; this one
       // costs a CAPTCHA-avoidance nicety, so an older pinned tag without the
       // script must keep booting normally.
-      "[ ! -x /usr/local/bin/isol8-warp-boot.sh ] || { /usr/local/bin/isol8-warp-boot.sh & }",
+      //
+      // The script was renamed lightbulb-* at the rebrand. This task
+      // definition deploys with the CDK pipeline while the image is promoted
+      // by hand (openclaw-version.json), so an image pinned before the rename
+      // still ships the isol8-* name — resolve the new one, fall back to it.
+      'WARP_BOOT=/usr/local/bin/lightbulb-warp-boot.sh; [ -x "$WARP_BOOT" ] || WARP_BOOT=/usr/local/bin/isol8-warp-boot.sh',
+      '[ ! -x "$WARP_BOOT" ] || { "$WARP_BOOT" & }',
       // The CDP-screencast bridge (socat 18801 -> loopback DevTools 18800) was
       // removed with the screencast live-view; the Browser panel is VNC-only.
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
@@ -794,7 +800,7 @@ export class ContainerStack extends cdk.Stack {
       // --yes --non-interactive < /dev/null`, bounded by `timeout
       // --kill-after` inside the startPeriod-300 health-check budget, made
       // non-fatal by `|| echo`) live in
-      // apps/infra/openclaw/local-sqlite/isol8-local-sqlite-app.sh — 2026.7.x
+      // apps/infra/openclaw/local-sqlite/lightbulb-local-sqlite-app.sh — 2026.7.x
       // fail-closes agent runs on un-migrated legacy per-workspace setup
       // state, and doctor's confirm prompts HANG on a closed stdin.
       //
@@ -815,7 +821,10 @@ export class ContainerStack extends cdk.Stack {
       // silently-wrong container: synth cannot inspect image contents and
       // accepts any tag, so a tag built before the local-sqlite chain existed
       // would otherwise die on a bare "not found". Diagnose it instead.
-      "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
+      // Same rename fallback as WARP_BOOT above: prefer lightbulb-*, accept
+      // the pre-rebrand isol8-* name so an older pinned tag still boots.
+      'SQLITE_BOOT=/usr/local/bin/lightbulb-local-sqlite-boot.sh; [ -x "$SQLITE_BOOT" ] || SQLITE_BOOT=/usr/local/bin/isol8-local-sqlite-boot.sh',
+      `[ -x "$SQLITE_BOOT" ] || { echo '[boot] FATAL: this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }`,
       // Step D — hand the gateway over to uid 1000 (`node`, the image's own
       // USER) instead of running it as root.
       //
@@ -880,7 +889,7 @@ export class ContainerStack extends cdk.Stack {
       // into state/ and agents/ as 1000 and needs no chown of its own.
       "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents || exit 1",
       'echo "[boot] init complete as root (warp/Xvnc/websockify started); exec gateway chain as uid=1000 via setpriv"',
-      "exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh",
+      'exec setpriv --reuid=1000 --regid=1000 --init-groups "$SQLITE_BOOT"',
     ].join("; ");
 
     // Image selection: use the extended ECR image once the per-env tag has been
@@ -969,7 +978,7 @@ export class ContainerStack extends cdk.Stack {
         // config_patcher, chokidar) is unchanged. The boot script
         // reverse-symlinks the durable stateDir subdirs (credentials/,
         // identity/, devices/, extensions/, skills/, npm/, git/, tools/)
-        // back onto EFS. LITESTREAM_S3_BUCKET + per-user ISOL8_OWNER_ID (from
+        // back onto EFS. LITESTREAM_S3_BUCKET + per-user LIGHTBULB_OWNER_ID (from
         // the backend) parameterize replication: s3://bucket/{owner}/<db>.
         // local-sqlite layout: the state dir does NOT move. Two config-less
         // ECS volumes are mounted NESTED inside the EFS mount at
@@ -1005,7 +1014,7 @@ export class ContainerStack extends cdk.Stack {
         // Cloudflare Zero Trust service token for the WARP browser egress.
         // Same import-by-name / no-KMS-auto-grant reasoning as the gog secret
         // above. Until a human sets the real JSON, this carries CDK's random
-        // placeholder and isol8-warp-boot.sh skips — so it is safe to inject
+        // placeholder and lightbulb-warp-boot.sh skips — so it is safe to inject
         // in every environment from the first deploy.
         CLOUDFLARE_WARP_ENROLLMENT: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(

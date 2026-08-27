@@ -6,7 +6,7 @@ import { purchaseGateCopy } from "../../lib/purchaseCta";
 /**
  * Chat error card (spec §4 frame), code-aware for the free-tier gate codes.
  *
- * The backend stamps `code` on error frames — Isol8-side gate codes
+ * The backend stamps `code` on error frames — Lightbulb AI-side gate codes
  * (`trial_daily_cap` / `trial_expired` from gate_chat, see
  * core/gateway/connection_pool.py) plus OpenClaw errorKinds. The two
  * free-tier codes get tailored copy; any other (or no) code keeps the plain

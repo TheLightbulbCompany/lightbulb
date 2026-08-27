@@ -28,11 +28,11 @@ async def test_last_7d_queries_each_code_with_full_dimension_set(monkeypatch):
     assert len(queries) == len(gate_blocked.GATE_CODES)
     q = next(q for q in queries if q["Id"] == "c_trial_expired")
     assert q["MetricStat"]["Metric"] == {
-        "Namespace": "Isol8",
+        "Namespace": "LightbulbAI",
         "MetricName": "provision.gate.blocked",
         "Dimensions": [
             {"Name": "env", "Value": "prod"},
-            {"Name": "service", "Value": "isol8-backend"},
+            {"Name": "service", "Value": "lightbulb-backend"},
             {"Name": "code", "Value": "trial_expired"},
         ],
     }

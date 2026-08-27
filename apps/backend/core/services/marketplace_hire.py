@@ -14,11 +14,11 @@ would break signup seeding, where no human is awake to approve Friday and Atlas.
 
 The shape, and why each step is there:
 
-1. **Isol8 creates the agent** (``create_paperclip_for_marketplace``) so it
-   carries the ed25519 operator device keypair Isol8 mints and owns. Paperclip
+1. **Lightbulb AI creates the agent** (``create_paperclip_for_marketplace``) so it
+   carries the ed25519 operator device keypair Lightbulb AI mints and owns. Paperclip
    cannot mint that, and without it the agent is rejected NOT_PAIRED on its
    first relayed connect.
-2. **Isol8 PATCHes it to ``pending_approval``** — inert: Paperclip lists that
+2. **Lightbulb AI PATCHes it to ``pending_approval``** — inert: Paperclip lists that
    status in both ``NON_ASSIGNABLE`` and ``NON_INVOKABLE``, so it cannot be
    given work or woken while the owner decides.
 3. **The approval carries ``payload.agentId``.** Load-bearing: the approve
@@ -29,7 +29,7 @@ The shape, and why each step is there:
    ``terminate``.
 4. **Approve installs the workspace** (``deploy_for_approval``, called from
    ``routers/teams/approvals.py``). Paperclip owns the roster entry; the EFS
-   workspace + ``openclaw.json`` merge is Isol8's half, and it runs on the
+   workspace + ``openclaw.json`` merge is Lightbulb AI's half, and it runs on the
    approving user's own authenticated request — no privileged write path, no
    event plumbing.
 
@@ -49,9 +49,14 @@ logger = logging.getLogger(__name__)
 # (rather than an agent someone hand-created in Teams). Their presence is what
 # arms the post-approve install, so every other approval type flows through the
 # approve handler untouched.
-LISTING_SLUG_KEY = "isol8_listing_slug"
+LISTING_SLUG_KEY = "lightbulb_listing_slug"
 # The canonical identity — slugs are non-unique, so the install resolves by this.
-LISTING_ID_KEY = "isol8_listing_id"
+LISTING_ID_KEY = "lightbulb_listing_id"
+# Pre-rebrand key names. Approvals filed before the rename are still sitting
+# in Paperclip with these, and approving one must still install the agent —
+# so the readers below accept either spelling. Writers only emit the new one.
+_LEGACY_LISTING_SLUG_KEY = "isol8_listing_slug"
+_LEGACY_LISTING_ID_KEY = "isol8_listing_id"
 
 PENDING_APPROVAL_STATUS = "pending_approval"
 
@@ -63,7 +68,7 @@ def build_hire_approval_payload(*, listing: dict, agent_id: str) -> dict:
 
     ``agentId`` is the whole point. With it set, approve calls
     ``activatePendingApproval(agentId)`` and reject calls ``terminate(agentId)``
-    — both addressing an agent Isol8 already created and therefore already knows
+    — both addressing an agent Lightbulb AI already created and therefore already knows
     the id of. Without it, approve would CREATE an agent and return only the
     approval row, leaving the install step unable to say which agent to give a
     workspace to.
@@ -97,13 +102,15 @@ def listing_id_of(payload: dict | None) -> str | None:
     Returning None for everything else is what keeps the post-approve install
     invisible to every other approval type.
     """
-    return ((payload or {}).get("metadata") or {}).get(LISTING_ID_KEY) or None
+    meta = (payload or {}).get("metadata") or {}
+    return meta.get(LISTING_ID_KEY) or meta.get(_LEGACY_LISTING_ID_KEY) or None
 
 
 def listing_slug_of(payload: dict | None) -> str | None:
     """The marketplace slug on an approval payload — display/logging only. The
     install resolves by :func:`listing_id_of`, since slugs are non-unique."""
-    return ((payload or {}).get("metadata") or {}).get(LISTING_SLUG_KEY) or None
+    meta = (payload or {}).get("metadata") or {}
+    return meta.get(LISTING_SLUG_KEY) or meta.get(_LEGACY_LISTING_SLUG_KEY) or None
 
 
 def hired_agent_id_of(payload: dict | None) -> str | None:

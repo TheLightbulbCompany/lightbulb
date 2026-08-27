@@ -1,4 +1,4 @@
-# Ruff configuration for Isol8 backend
+# Ruff configuration for Lightbulb AI backend
 line-length = 120
 
 # Exclude git submodules (external code) and vendored Atlas seed resources.

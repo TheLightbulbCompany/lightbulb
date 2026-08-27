@@ -6,13 +6,13 @@ Three files under ``{EFS_MOUNT_PATH}/{owner}/.aws/`` (in-container:
 ``/users/{owner}`` at ``/home/node/.openclaw``, and the task env
 ``AWS_CONFIG_FILE`` already points at ``config`` there):
 
-* ``config`` — ``[profile isol8-connector]`` whose ``credential_process`` runs
+* ``config`` — ``[profile lightbulb-connector]`` whose ``credential_process`` runs
   the helper below. The profile is **named**, never ``[default]``: a default
   profile would be picked up by the in-process Bedrock SDK's default chain.
   It carries NO ``role_arn``/``credential_source``/``external_id`` — a profile
   mixing ``role_arn`` with other credential sources flips botocore into
   assume-role mode, and the ExternalId must never touch EFS.
-* ``isol8-creds.mjs`` — zero-dependency node ESM helper the CLI executes once
+* ``lightbulb-creds.mjs`` — zero-dependency node ESM helper the CLI executes once
   per invocation: serves the cached credential while >10 min validity remains,
   else fetches from the backend credentials endpoint with the bearer token and
   rewrites the cache. ``/usr/bin/env node`` keeps the command PATH-robust.
@@ -32,8 +32,8 @@ import json
 from core.config import settings
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
-AWS_CONNECTOR_PROFILE = "isol8-connector"
-HELPER_FILENAME = "isol8-creds.mjs"
+AWS_CONNECTOR_PROFILE = "lightbulb-connector"
+HELPER_FILENAME = "lightbulb-creds.mjs"
 TOKEN_FILENAME = "token"
 CACHE_FILENAME = "cache.json"
 
@@ -41,7 +41,7 @@ CACHE_FILENAME = "cache.json"
 _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
 
 _HELPER_TEMPLATE = r"""#!/usr/bin/env node
-// Isol8 AWS credential_process helper — materialized by the Isol8 backend.
+// Lightbulb AI AWS credential_process helper — materialized by the Lightbulb AI backend.
 // Prints credential_process JSON: cache while fresh, else fetch from the
 // backend with the sibling bearer token. The token is the security boundary.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -75,7 +75,7 @@ if (msLeft(cached) > REFRESH_MARGIN_MS) {
 
 const tok = readJson(join(DIR, "token"));
 if (!tok || !tok.token) {
-  console.error("isol8: AWS connection token missing — reconnect AWS in Lightbulb AI settings");
+  console.error("lightbulb: AWS connection token missing — reconnect AWS in Lightbulb AI settings");
   process.exit(1);
 }
 
@@ -95,13 +95,13 @@ try {
     if (parsed && parsed.Version === 1 && parsed.AccessKeyId) {
       creds = parsed;
     } else {
-      console.error("isol8: credential service returned a malformed credential payload");
+      console.error("lightbulb: credential service returned a malformed credential payload");
     }
   } else {
-    console.error(`isol8: credential service returned ${resp.status}`);
+    console.error(`lightbulb: credential service returned ${resp.status}`);
   }
 } catch (err) {
-  console.error(`isol8: credential service unreachable (${(err && err.name) || err})`);
+  console.error(`lightbulb: credential service unreachable (${(err && err.name) || err})`);
 }
 
 if (!creds) {
@@ -109,7 +109,7 @@ if (!creds) {
     emit(cached); // stale-but-valid cache beats failing the CLI call
     process.exit(0);
   }
-  console.error("isol8: no valid AWS credentials — Lightbulb AI credential service unavailable");
+  console.error("lightbulb: no valid AWS credentials — Lightbulb AI credential service unavailable");
   process.exit(1);
 }
 

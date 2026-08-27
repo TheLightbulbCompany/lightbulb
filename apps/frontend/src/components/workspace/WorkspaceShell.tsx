@@ -53,7 +53,7 @@ import {
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
 
-const ISOL8_THEME: DockviewTheme = { ...themeLight, name: "isol8", gap: 4 };
+const LIGHTBULB_THEME: DockviewTheme = { ...themeLight, name: "lightbulb", gap: 4 };
 
 // Only a teams DETAIL panel may swap itself for its list via leaveToList —
 // same id grammar as panelRegistry.durableParamsFor.
@@ -383,7 +383,7 @@ export function WorkspaceShell(): React.ReactElement {
       <DockUnmountSentinel onUnmount={teardownDock} />
       <DockviewReact
         components={PANEL_COMPONENTS}
-        theme={ISOL8_THEME}
+        theme={LIGHTBULB_THEME}
         onReady={onReady}
         disableFloatingGroups
       />

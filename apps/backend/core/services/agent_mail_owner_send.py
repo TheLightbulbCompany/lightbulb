@@ -172,7 +172,7 @@ async def send_to_owner(
             return await _fail(reason, result)
 
         # Facts must reflect the address before the agent reads them again: a
-        # stale null makes the isol8 skill tell her she has no address, and she
+        # stale null makes the lightbulb skill tell her she has no address, and she
         # correctly declines to send. Best-effort — the address row is the
         # source of truth, so a facts failure must not block a good send.
         try:

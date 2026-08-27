@@ -108,7 +108,7 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     )
 
     # Six files written under the right path: 5 markdown templates + the
-    # .openclaw/isol8-setup-seed.json sentinel that prevents OpenClaw's
+    # .openclaw/lightbulb-setup-seed.json sentinel that prevents OpenClaw's
     # boot-time reconcile from treating the customized persona files as a
     # stale, uncompleted setup wizard.
     assert workspace.write_file_if_missing.call_count == 6
@@ -120,7 +120,7 @@ async def test_personal_owner_writes_four_files(monkeypatch):
         "MEMORY.md",
         "SOUL.md",
         "USER.md",
-        "isol8-setup-seed.json",
+        "lightbulb-setup-seed.json",
     ]
 
     # Content interpolation works.
@@ -264,7 +264,7 @@ async def test_skipped_existing_when_files_already_present(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_state_file_written_first_with_setup_completed(monkeypatch):
-    """The native setup-state sentinel (.openclaw/isol8-setup-seed.json):
+    """The native setup-state sentinel (.openclaw/lightbulb-setup-seed.json):
     - is the FIRST write (so a partial template-write failure still leaves
       OpenClaw in setup-completed state)
     - lives under .openclaw/ at the right path
@@ -298,7 +298,7 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
     # First write is the state file (defensive ordering).
     first_path = calls[0].args[1]
     first_content = calls[0].args[2]
-    assert first_path == "workspace-uuid-1/.openclaw/isol8-setup-seed.json"
+    assert first_path == "workspace-uuid-1/.openclaw/lightbulb-setup-seed.json"
 
     state = _json.loads(first_content)
     assert "version" not in state
@@ -414,7 +414,7 @@ def real_workspace(tmp_path, monkeypatch):
 
 
 def test_seed_workspace_state_seeds_only_a_fresh_workspace(real_workspace, tmp_path):
-    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "lightbulb-setup-seed.json"
     legacy = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
 
     # Fresh workspace: seeded, with the JS-canonical timestamp contract.
@@ -442,7 +442,7 @@ def test_seed_workspace_state_never_rewrites_after_migration(real_workspace, tmp
     re-write it — the re-seeded copy's sha no longer matches the migration
     receipt, doctor refuses cleanup forever, and the presence-only runtime
     gate bricks every agent run."""
-    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "lightbulb-setup-seed.json"
     assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
 
     # Boot #1: the fork's hook converts + deletes the sentinel (and the shared
@@ -480,7 +480,7 @@ def test_seed_workspace_state_keeps_an_unmigrated_seed(real_workspace, tmp_path)
     """No shared state DB == the container never booted since seeding: the
     file is the original un-migrated seed and must be left for boot #1's
     doctor to import (deleting it would only lose the setup-completed marker)."""
-    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+    state = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "lightbulb-setup-seed.json"
     assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
 
     assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
@@ -637,7 +637,7 @@ async def test_resolve_org_owner_falls_back_when_clerk_returns_no_org(monkeypatc
 @pytest.mark.asyncio
 async def test_paperclip_identities_writes_per_agent_file():
     """Each agent with a minted key gets its own claimed-key file in its own
-    workspace with the exact Isol8-defined shape."""
+    workspace with the exact Lightbulb AI-defined shape."""
     import json as _json
 
     workspace = MagicMock()
@@ -759,7 +759,7 @@ async def test_paperclip_identities_per_file_failure_does_not_block_rest():
 @pytest.mark.asyncio
 async def test_stage_single_agent_writes_identity_file():
     """The single-agent seeder writes one claimed-key file with the exact
-    Isol8-defined shape into the agent's own workspace."""
+    Lightbulb AI-defined shape into the agent's own workspace."""
     import json as _json
 
     workspace = MagicMock()
@@ -843,8 +843,8 @@ _LEGACY_USER_MD = """\
 - **Name:** Sam Rivers
 - **What to call them:** Sam
 - **Email:** sam@example.com
-- **Isol8 plan:** Starter ($50/mo flat-fee)
-- **Provider:** Bedrock (Claude, Isol8-managed credits)
+- **Lightbulb AI plan:** Starter ($50/mo flat-fee)
+- **Provider:** Bedrock (Claude, Lightbulb AI-managed credits)
 
 ## Context
 
@@ -877,7 +877,7 @@ def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
     path, content = ws.written
     assert path == "workspace-uuid-f/USER.md"
     assert "isol8-facts.json" in content
-    assert "Isol8 plan" not in content
+    assert "Lightbulb AI plan" not in content
     assert "- **Provider:**" not in content
     # Friday's evolved content survives untouched.
     assert "health-tech startup" in content
@@ -897,7 +897,7 @@ def test_migrate_legacy_user_md_noop_when_missing():
 
 def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
     edited = _LEGACY_USER_MD.replace(
-        "- **Provider:** Bedrock (Claude, Isol8-managed credits)",
+        "- **Provider:** Bedrock (Claude, Lightbulb AI-managed credits)",
         "- **Provider:** my own custom note about providers",
     )
     ws = _MigrationWs(edited)
@@ -910,7 +910,7 @@ def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
 
 def test_migrate_legacy_user_md_noop_when_plan_line_is_substring_only():
     """The legacy line quoted mid-prose must not trigger a spurious write."""
-    ws = _MigrationWs("# USER.md\nSam once wrote: the seed said - **Isol8 plan:** Starter ($50/mo flat-fee) here.\n")
+    ws = _MigrationWs("# USER.md\nSam once wrote: the seed said - **Lightbulb AI plan:** Starter ($50/mo flat-fee) here.\n")
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
     assert ws.written is None
 
@@ -920,8 +920,8 @@ def test_migrate_legacy_user_md_provider_line_needs_plan_anchor():
     standalone line) must not be dropped — no anchor, no migration."""
     ws = _MigrationWs(
         "# USER.md\n"
-        "Note: seed used to say - **Isol8 plan:** Starter ($50/mo flat-fee) inline.\n"
-        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+        "Note: seed used to say - **Lightbulb AI plan:** Starter ($50/mo flat-fee) inline.\n"
+        "- **Provider:** Bedrock (Claude, Lightbulb AI-managed credits)\n"
     )
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
     assert ws.written is None
@@ -934,7 +934,7 @@ def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
     content = _LEGACY_USER_MD + (
         "\n## Notes\n"
         "Config history:\n"
-        "- **Provider:** Bedrock (Claude, Isol8-managed credits)\n"
+        "- **Provider:** Bedrock (Claude, Lightbulb AI-managed credits)\n"
         "was what we started with.\n"
     )
     ws = _MigrationWs(content)
@@ -942,9 +942,9 @@ def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
     _, migrated = ws.written
     # The adjacent seed pair migrated...
     assert "isol8-facts.json" in migrated
-    assert "Isol8 plan" not in migrated
+    assert "Lightbulb AI plan" not in migrated
     # ...but the lookalike in the Notes section survives.
-    assert migrated.count("- **Provider:** Bedrock (Claude, Isol8-managed credits)") == 1
+    assert migrated.count("- **Provider:** Bedrock (Claude, Lightbulb AI-managed credits)") == 1
     assert "Config history:" in migrated
 
 
@@ -1265,7 +1265,7 @@ def test_migrate_add_soul_grounding_rebrands_legacy_heading_in_place():
 
     Every already-provisioned Friday's SOUL.md carries the old heading. If the
     migration only recognised the new one it would append a second grounding
-    section, leaving the stale Isol8-branded one above it forever.
+    section, leaving the stale Lightbulb AI-branded one above it forever.
     """
     rel = "workspace-friday-uuid/SOUL.md"
     store = {
@@ -1281,7 +1281,7 @@ def test_migrate_add_soul_grounding_rebrands_legacy_heading_in_place():
     # Rewritten in place: exactly one grounding section, and none of it stale.
     assert migrated.count(friday_identity._SELF_GROUNDING_HEADING) == 1
     assert friday_identity._LEGACY_SELF_GROUNDING_HEADING not in migrated
-    assert "made of Isol8" not in migrated
+    assert "made of Lightbulb AI" not in migrated
     # Friday's own prose survives, and nothing was appended.
     assert "Friday's own evolved soul." in migrated
     assert migrated.count("## You are made of") == 1

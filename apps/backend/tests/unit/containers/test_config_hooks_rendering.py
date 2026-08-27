@@ -79,6 +79,9 @@ def test_hooks_session_key_safety_settings():
     # CREATE sessions; it can now target an existing one and read its context.
     assert cfg["hooks"]["allowRequestSessionKey"] is True
     prefixes = cfg["hooks"]["allowedSessionKeyPrefixes"]
+    assert "lightbulb-" in prefixes
+    # The pre-rebrand prefix must stay allowlisted: agent-mail threads keyed
+    # `isol8-email:<sha256>` before the rename are still live sessions.
     assert "isol8-" in prefixes
     # OpenClaw v2026.5.7 (gateway/hooks.ts) crashes at boot when
     # defaultSessionKey is unset and "hook:" is not in the allowed list.

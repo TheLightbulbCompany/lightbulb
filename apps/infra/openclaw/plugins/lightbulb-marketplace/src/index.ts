@@ -1,5 +1,5 @@
 /**
- * Isol8 marketplace tools — READ-ONLY.
+ * Lightbulb AI marketplace tools — READ-ONLY.
  *
  * Neither tool mutates the roster, EFS, or openclaw.json. That is structural,
  * not a convention: `tools.exec.mode` is "full" fleet-wide (approvals are off,
@@ -89,7 +89,7 @@ export default defineToolPlugin({
       }),
       outputSchema: Type.Object(
         {
-          kind: Type.Literal("isol8.hire_suggestion"),
+          kind: Type.Literal("lightbulb.hire_suggestion"),
           reason: Type.String(),
           listings: Type.Array(LISTING),
           approval_id: Type.Union([Type.String(), Type.Null()]),
@@ -104,7 +104,7 @@ export default defineToolPlugin({
           context.signal,
         );
         return {
-          kind: "isol8.hire_suggestion" as const,
+          kind: "lightbulb.hire_suggestion" as const,
           reason,
           listings: data.listings ?? [],
           approval_id: data.approval_id ?? null,

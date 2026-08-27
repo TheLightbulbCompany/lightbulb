@@ -394,7 +394,7 @@ def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch
 
     app = _build_http_app()
     client = TestClient(app)
-    response = client.get("/api/companies/company/agents", cookies={"isol8_paperclip": cookie})
+    response = client.get("/api/companies/company/agents", cookies={"lightbulb_paperclip": cookie})
 
     assert response.status_code == 200
     assert response.headers.get("content-encoding") is None
@@ -485,7 +485,7 @@ def test_ws_rejects_missing_email_claim(monkeypatch):
 
     This guards the same constraint the HTTP path enforces: Better
     Auth needs an email + password to sign the user in, and the
-    Isol8 ``users`` row has no email column to fall back on. If
+    Lightbulb AI ``users`` row has no email column to fall back on. If
     Clerk's JWT template ever drops the claim we fail fast at the
     proxy edge instead of producing a confusing upstream auth error.
     """
@@ -563,7 +563,7 @@ def test_http_redirects_to_chat_for_browser_nav_no_auth(monkeypatch):
     """Browser nav (Accept: text/html) with no auth → 302 to dev.isol8.co/chat.
 
     The proxy is no longer an entry point of its own; users start from
-    /chat on the Isol8 frontend (Teams button there appends ?__t=jwt).
+    /chat on the Lightbulb AI frontend (Teams button there appends ?__t=jwt).
     Direct navigation to company.isol8.co with no token is a sign of
     a bookmarked URL or stale tab; redirecting them home is friendlier
     than a JSON 401.
@@ -615,7 +615,7 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
 
     resp = client.get(
         "/some/path",
-        cookies={"isol8_paperclip": cookie},
+        cookies={"lightbulb_paperclip": cookie},
         follow_redirects=False,
     )
     # Past auth (no 401), missing row → 503 setting-up stub with auto-refresh.
@@ -660,7 +660,7 @@ def test_http_disabled_company_redirects_to_chat(monkeypatch):
 
     resp = client.get(
         "/some/path",
-        cookies={"isol8_paperclip": cookie},
+        cookies={"lightbulb_paperclip": cookie},
         follow_redirects=False,
     )
     assert resp.status_code == 302
@@ -899,13 +899,13 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
     )
     assert resp.status_code == 204
     set_cookie = resp.headers.get("set-cookie", "")
-    assert "isol8_paperclip=" in set_cookie
+    assert "lightbulb_paperclip=" in set_cookie
     assert "HttpOnly" in set_cookie
     assert "Secure" in set_cookie
     assert "SameSite=lax" in set_cookie or "SameSite=Lax" in set_cookie
 
     # The cookie should round-trip through verify and yield the same sub.
-    cookie_val = set_cookie.split("isol8_paperclip=", 1)[1].split(";", 1)[0]
+    cookie_val = set_cookie.split("lightbulb_paperclip=", 1)[1].split(";", 1)[0]
     claims = proxy_mod._verify_paperclip_session(cookie_val)
     assert claims["sub"] == "user_handshake"
     assert claims["email"] == "h@example.com"
@@ -953,7 +953,7 @@ def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch)
 
     # ...and the minted cookie carries that same org context.
     set_cookie = resp.headers.get("set-cookie", "")
-    cookie_val = set_cookie.split("isol8_paperclip=", 1)[1].split(";", 1)[0]
+    cookie_val = set_cookie.split("lightbulb_paperclip=", 1)[1].split(";", 1)[0]
     claims = proxy_mod._verify_paperclip_session(cookie_val)
     assert claims["org_id"] == "org_acme"
 
@@ -1053,7 +1053,7 @@ def test_handshake_rejects_invalid_clerk_jwt(monkeypatch):
 
 
 def test_ws_accepts_paperclip_session_cookie(monkeypatch):
-    """WS upgrade with isol8_paperclip cookie → past auth gate (closes
+    """WS upgrade with lightbulb_paperclip cookie → past auth gate (closes
     later with 4503 because no PaperclipCompany row, not 4401).
 
     Mirrors the HTTP path: after the bootstrap establishes the proxy
@@ -1082,7 +1082,7 @@ def test_ws_accepts_paperclip_session_cookie(monkeypatch):
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             "/some/live-events/path",
-            cookies={"isol8_paperclip": cookie},
+            cookies={"lightbulb_paperclip": cookie},
         ):
             pass  # pragma: no cover
 
@@ -1141,13 +1141,13 @@ def test_http_handoff_token_via_query_param(monkeypatch):
     assert "other=keep" in resp.headers["location"]
     # Session cookie set on the redirect.
     set_cookie = resp.headers.get("set-cookie", "")
-    assert "isol8_paperclip=" in set_cookie
+    assert "lightbulb_paperclip=" in set_cookie
     assert "HttpOnly" in set_cookie
     assert "Secure" in set_cookie
 
 
 def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
-    """Initial handshake: user signed in but has no Isol8 container yet.
+    """Initial handshake: user signed in but has no Lightbulb AI container yet.
     Redirect to /chat with need=container hint instead of provisioning a
     Paperclip workspace that would point at a nonexistent OpenClaw.
     """
@@ -1179,7 +1179,7 @@ def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
     assert "from=teams" in resp.headers["location"]
     assert "need=container" in resp.headers["location"]
     # No session cookie should be set.
-    assert "isol8_paperclip=" not in resp.headers.get("set-cookie", "")
+    assert "lightbulb_paperclip=" not in resp.headers.get("set-cookie", "")
 
 
 def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch):
@@ -1396,7 +1396,7 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
 
     resp = client.get(
         "/some/path?__t=valid.clerk.jwt",
-        cookies={"isol8_paperclip": stale_cookie},
+        cookies={"lightbulb_paperclip": stale_cookie},
         follow_redirects=False,
     )
     assert resp.status_code == 302
@@ -1412,7 +1412,7 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     # owner (see the org-scoped stub tests below).
     import re as _re
 
-    cookie_match = _re.search(r"isol8_paperclip=([^;]+)", resp.headers.get("set-cookie", ""))
+    cookie_match = _re.search(r"lightbulb_paperclip=([^;]+)", resp.headers.get("set-cookie", ""))
     assert cookie_match
     claims = proxy_mod._verify_paperclip_session(cookie_match.group(1))
     assert claims["org_id"] == "org_acme"
@@ -1458,7 +1458,7 @@ def test_established_session_stubs_on_org_mismatched_active_row(monkeypatch):
 
     app = _build_http_app()
     client = TestClient(app)
-    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
+    resp = client.get("/some/path", cookies={"lightbulb_paperclip": cookie})
 
     assert "Setting up your workspace" in resp.text
 
@@ -1475,7 +1475,7 @@ def test_established_session_stubs_on_org_mismatched_terminal_row(monkeypatch, r
 
     app = _build_http_app()
     client = TestClient(app)
-    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+    resp = client.get("/some/path", cookies={"lightbulb_paperclip": cookie}, follow_redirects=False)
 
     assert resp.status_code != 302
     assert "Setting up your workspace" in resp.text
@@ -1491,7 +1491,7 @@ def test_established_session_redirects_on_own_terminal_row(monkeypatch):
 
     app = _build_http_app()
     client = TestClient(app)
-    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+    resp = client.get("/some/path", cookies={"lightbulb_paperclip": cookie}, follow_redirects=False)
 
     assert resp.status_code == 302
     assert "need=reprovision" in resp.headers["location"]
@@ -1526,7 +1526,7 @@ def test_established_session_orgless_cookie_over_org_row_redirects_for_rehandsha
 
     app = _build_http_app()
     client = TestClient(app)
-    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie}, follow_redirects=False)
+    resp = client.get("/some/path", cookies={"lightbulb_paperclip": cookie}, follow_redirects=False)
 
     assert resp.status_code == 302
     assert "/chat?from=teams" in resp.headers["location"]
@@ -1548,7 +1548,7 @@ def test_established_session_forwards_on_org_matched_active_row(monkeypatch):
     app = _build_http_app()
     client = TestClient(app)
     with pytest.raises(RuntimeError, match="forward-path-reached"):
-        client.get("/some/path", cookies={"isol8_paperclip": cookie})
+        client.get("/some/path", cookies={"lightbulb_paperclip": cookie})
 
 
 # ---------------------------------------------------------------------------

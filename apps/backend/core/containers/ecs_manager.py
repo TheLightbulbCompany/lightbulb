@@ -180,7 +180,7 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
         return {}
 
 
-_CONFIG_LOCK_PROTOCOL_ENV = "ISOL8_CONFIG_LOCK_PROTOCOL"
+_CONFIG_LOCK_PROTOCOL_ENV = "LIGHTBULB_CONFIG_LOCK_PROTOCOL"
 _CONFIG_LOCK_PROTOCOL_VERSION = "guard-v1"
 
 
@@ -215,7 +215,7 @@ def _build_bedrock_acp_harness_env(
     Claude Code — spawned by acpx for ``sessions_spawn({runtime:"acp"})`` — reads
     these to route its own Bedrock calls. ``ANTHROPIC_MODEL`` /
     ``ANTHROPIC_SMALL_FAST_MODEL`` MUST be the owner's AIP ARNs, never base model
-    ids: Isol8 attributes Bedrock billing by AIP (the bedrock-usage-meter Lambda
+    ids: Lightbulb AI attributes Bedrock billing by AIP (the bedrock-usage-meter Lambda
     keys on the ``bedrock-aip-owners`` table), and the per-user task role grants
     Bedrock only on ``application-inference-profile/*`` — so a base-model call is
     BOTH unbilled (the meter's log filter misses it) AND IAM-denied. Pointing the
@@ -379,7 +379,7 @@ class EcsManager:
                     {"Key": "Name", "Value": f"isol8-{user_id}"},
                     {"Key": "owner_id", "Value": user_id},
                     {"Key": "owner_type", "Value": owner_type},
-                    {"Key": "ManagedBy", "Value": "isol8-backend"},
+                    {"Key": "ManagedBy", "Value": "lightbulb-backend"},
                 ],
             )
             access_point_id = resp["AccessPointId"]
@@ -1798,7 +1798,7 @@ class EcsManager:
         base_openclaw = next((definition for definition in base_defs if definition.get("name") == "openclaw"), None)
         base_command = " ".join((base_openclaw or {}).get("command") or [])
         required_fragments = (
-            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-}",
             'protocol_path = lock_path + ".isol8-protocol"',
             "|| exit 1",
         )
@@ -1849,7 +1849,7 @@ class EcsManager:
             raise ValueError("timeout_s and poll_interval_s must be positive")
 
         required_fragments = (
-            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-}",
             'protocol_path = lock_path + ".isol8-protocol"',
             "|| exit 1",
         )
@@ -2384,7 +2384,7 @@ class EcsManager:
             # for the service. Either the task is still pulling the image
             # (provisioning) or it died and is being replaced (running →
             # zombie row). Logged so we can correlate against the
-            # /isol8/<env>/ecs-task-events log group to see whether the
+            # /lightbulb/<env>/ecs-task-events log group to see whether the
             # task was stopped, by whom, and why.
             logger.warning(
                 "resolve_running_container ip=None user=%s service=%s ddb_status=%s ddb_substatus=%s last_handshake=%s",
@@ -2766,7 +2766,7 @@ class EcsManager:
         secrets_for_task: list[dict] = []
         environment_for_task: list[dict] = []
         # Give the container a base URL to curl the public platform-info catalog
-        # ($ISOL8_API_URL/api/v1/platform-info). The isol8 skill reads the live
+        # ($ISOL8_API_URL/api/v1/platform-info). The lightbulb skill reads the live
         # connectable integrations/channels from there instead of a stale baked
         # list. Reuse atlas_seed._api_base_url so the per-env host convention has
         # exactly one definition. Public route -> no auth, no owner_id.
@@ -2774,7 +2774,7 @@ class EcsManager:
 
         environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url()})
         # Owner id for the BAKED marketplace plugin. Unlike Atlas's per-owner
-        # seed files (which substitute {{ISOL8_BRIDGE_URL}} at stage time), a
+        # seed files (which substitute {{LIGHTBULB_BRIDGE_URL}} at stage time), a
         # baked plugin is byte-identical in every container and cannot carry
         # owner identity in its source — it must read it from the environment.
         # This is an IDENTIFIER, not a credential: the recommend route compares
@@ -2812,7 +2812,7 @@ class EcsManager:
         existing = await container_repo.get_by_owner_id(user_id)
 
         # Every owner — regardless of provider_choice — runs under a UNIQUE
-        # per-owner ECS task role (isol8-<env>-owner-bedrock-<owner_id>), minted
+        # per-owner ECS task role (lightbulb-<env>-owner-bedrock-<owner_id>), minted
         # SYNCHRONOUSLY here before the service starts. The role NAME keeps the
         # historical "owner-bedrock" prefix because the CDK
         # PassRole/PutRolePolicy/permissions-boundary grants are scoped to it
@@ -4076,7 +4076,7 @@ class EcsManager:
         # re-seed; an unassigned agent needs nothing.
 
         # Refresh the owner-facts file (plan/provider snapshot the bundled
-        # isol8 skill points agents at). The provider this config was JUST
+        # lightbulb skill points agents at). The provider this config was JUST
         # rendered with rides along as an override: on the provider-switch
         # cold path this write can land right after the billing-row commit,
         # and an eventually-consistent row re-read could otherwise roll the

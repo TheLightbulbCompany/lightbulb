@@ -69,9 +69,9 @@ async def record_usage(
     ``estimatedCostUsd`` (cache-inclusive), which is the authoritative cost:
     ``sessions.list`` omits cache token counts, and cache tokens are ~99.99%
     of volume, so the token-based path captures only ~3% of real cost. The
-    override is gated to Bedrock because it is the only Isol8-billed,
+    override is gated to Bedrock because it is the only Lightbulb AI-billed,
     metered path; non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO) are
-    user-paid / flat-rate, so recording their ``estimatedCostUsd`` as Isol8
+    user-paid / flat-rate, so recording their ``estimatedCostUsd`` as Lightbulb AI
     spend would contradict the books — they record spend 0 even when the
     override is present. Token counts are still recorded for analytics in
     all cases. ``None`` (the default — no ``estimatedCostUsd`` on the row)
@@ -79,10 +79,10 @@ async def record_usage(
     """
     bare_model = _strip_provider_prefix(model)
     # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)
-    # is only authoritative Isol8 spend on the Isol8-billed path: Bedrock.
+    # is only authoritative Lightbulb AI spend on the Lightbulb AI-billed path: Bedrock.
     # Non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO) can carry
     # ``estimatedCostUsd`` too, but those are user-paid / flat-rate, so
-    # recording that cost as Isol8 spend would contradict the books. Gate the
+    # recording that cost as Lightbulb AI spend would contradict the books. Gate the
     # override to Bedrock; anything else falls through to the token path →
     # UnknownModelError → spend 0, even when the override is present.
     use_raw_cost = raw_cost_microcents is not None and raw_cost_microcents > 0 and _is_bedrock_model(model)
@@ -101,8 +101,8 @@ async def record_usage(
             # Non-Bedrock models (OpenAI/Codex/BYO Anthropic) have no Bedrock
             # pricing entry. We still record token + request VOLUME (with spend 0)
             # so usage is never invisible — a runaway loop on the Codex path must
-            # remain visible. spend 0 is correct for Isol8's books: byo_key is
-            # user-paid, Codex is flat-rate, so Isol8's per-token $ cost there is ~0.
+            # remain visible. spend 0 is correct for Lightbulb AI's books: byo_key is
+            # user-paid, Codex is flat-rate, so Lightbulb AI's per-token $ cost there is ~0.
             #
             # The page-tier metric fires ONLY for Bedrock refs, where a pricing
             # miss is a genuine gap (a Bedrock model we forgot to price). Pricing

@@ -75,9 +75,9 @@ async def test_reclassifies_paid_bedrock_owner_out_of_credits(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_oauth_owner_is_never_reclassified(monkeypatch):
-    """THE load-bearing negative case. An OAuth owner consumes no Isol8 budget,
+    """THE load-bearing negative case. An OAuth owner consumes no Lightbulb AI budget,
     so their 429 is a genuine OpenAI throttle. Relabelling it would send them to
-    an Isol8 billing page to fix someone else's quota.
+    an Lightbulb AI billing page to fix someone else's quota.
 
     ``is_owner_blocked`` is patched to return True (not left real) so this test
     actually discriminates on the `provider_choice != "bedrock_claude"` guard:

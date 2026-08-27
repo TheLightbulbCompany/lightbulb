@@ -45,7 +45,9 @@ const SKEW_RETRIES = 2;
 // shared browser must not hand one account's draft to the next.
 // Exported for useLandingBriefReplay, which pre-fills an org workspace's
 // funnel from a landing-page stash by writing this same owner-scoped key.
-export const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
+// Renamed from `lightbulb_first_run_draft_v1` at the Lightbulb AI rebrand — an
+// unfinished first-run draft starts over once.
+export const DRAFT_STORAGE_KEY = "lightbulb_first_run_draft_v1";
 
 interface Draft {
   path: Path | null;

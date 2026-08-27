@@ -518,7 +518,7 @@ async def listing_preview(
 class AdminTakedownBody(BaseModel):
     """Admin-initiated takedown body.
 
-    Under the Isol8-internal scope there's no public DMCA filing form, so
+    Under the Lightbulb AI-internal scope there's no public DMCA filing form, so
     the takedown is created and granted in a single admin action: the admin
     types the reason on the listing detail page and submits.
     """
@@ -570,7 +570,7 @@ async def list_takedowns(
     """Recent takedowns, newest first.
 
     Audit-log view (no `?status=pending` queue — the queue is structurally
-    empty under the Isol8-internal scope). v0 volume is very low (< a few
+    empty under the Lightbulb AI-internal scope). v0 volume is very low (< a few
     hundred rows expected for the foreseeable future), so we page through
     the full scan, sort in Python, and slice the top 50. We deliberately do
     NOT cap the scan with `Limit=N` — DDB scans return items in

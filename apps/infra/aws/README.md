@@ -1,7 +1,7 @@
-# Isol8 AWS connector
+# Lightbulb AI AWS connector
 
 `aws-connector.yaml` is the CloudFormation template an owner launches
-in **their own** AWS account to create a scoped role that Isol8's backend can
+in **their own** AWS account to create a scoped role that Lightbulb AI's backend can
 assume on their behalf.
 
 - It is launched via the CloudFormation console **quick-create link** that the
@@ -15,9 +15,9 @@ assume on their behalf.
 - The template is hosted at the public URL configured via `CFN_TEMPLATE_URL`
   (falling back to `aws_sts.cfn_template_url` in
   `apps/backend/core/services/credentials/providers.yaml`).
-- **Trust:** the role trusts Isol8's platform principal — our account root
+- **Trust:** the role trusts Lightbulb AI's platform principal — our account root
   (`arn:aws:iam::877352799272:root`) — **and** requires the per-connection
-  `sts:ExternalId` on every AssumeRole call. Isol8's backend performs the
+  `sts:ExternalId` on every AssumeRole call. Lightbulb AI's backend performs the
   assume and vends the short-lived credentials to the owner's container via
   its `credential_process` endpoint; the container itself holds no AWS
   identity.
@@ -25,4 +25,4 @@ assume on their behalf.
   requires acknowledging **CAPABILITY_NAMED_IAM**.
 
 After the stack is created, the owner copies the `RoleArn` stack output back
-into Isol8 (`aws-complete`) to finish the connection.
+into Lightbulb AI (`aws-complete`) to finish the connection.

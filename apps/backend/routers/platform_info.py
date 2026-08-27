@@ -1,9 +1,9 @@
 """Public platform-info catalog for container-side agents.
 
 Serves the LIVE list of connectable **integrations** and **channels** so the
-baked ``isol8`` skill never has to hardcode (and drift on) a catalog-shaped
+baked ``lightbulb`` skill never has to hardcode (and drift on) a catalog-shaped
 list. An agent inside a per-owner container curls
-``$ISOL8_API_URL/api/v1/platform-info`` and gets the current connectable
+``$LIGHTBULB_API_URL/api/v1/platform-info`` and gets the current connectable
 services straight from the same registry that drives the Integrations tab.
 
 Auth: **none**. The connectable catalog is non-sensitive — it is the same set

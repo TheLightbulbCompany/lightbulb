@@ -4,7 +4,7 @@
 // MIT © 2025 Paperclip AI). Renders text with server-provided match ranges
 // wrapped in <mark>. Ranges are clamped to the text bounds and merged so
 // overlapping/adjacent highlights don't produce nested marks. Styling adapted
-// to Isol8's editorial tokens.
+// to Lightbulb AI's editorial tokens.
 
 import { cn } from "@/lib/utils";
 import type { CompanySearchHighlight } from "@/components/teams/shared/types";

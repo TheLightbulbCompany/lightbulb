@@ -1,7 +1,7 @@
 """
 Operator connection relay — Paperclip adapter → per-user OpenClaw container.
 
-A Paperclip agent's ``openclaw_gateway`` adapter connects to the Isol8 WS API
+A Paperclip agent's ``openclaw_gateway`` adapter connects to the Lightbulb AI WS API
 Gateway with ``clientId=paperclip-operator``. Unlike a browser / control-UI
 operator (which only needs a cosmetic ``hello-ok`` because it talks to the
 backend's RPC proxy, not the container directly), the adapter runs a REAL

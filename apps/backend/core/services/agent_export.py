@@ -1,6 +1,6 @@
 """Snapshot a seller's OpenClaw agent from EFS into a marketplace artifact.
 
-Path B for the marketplace publish flow: an Isol8 paid user picks one of
+Path B for the marketplace publish flow: an Lightbulb AI paid user picks one of
 their existing agents and we tar the agent's EFS directory directly into a
 CatalogPackage with format="openclaw". No container interaction — we read
 the agents/ tree even when the container is scaled to zero.
@@ -155,7 +155,7 @@ _SKIP_FILE_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
 # matched because agents suffix a run id: ``run-evidence-1a2b/``, ``run-artifacts/``.
 # This is deliberately narrow — it only names scratch families actually observed
 # in the fleet. The general answer is the ``.run/`` convention (see the paperclip
-# + isol8 SKILLs), not chasing every possible scratch name here.
+# + Lightbulb AI SKILLs), not chasing every possible scratch name here.
 _SCRATCH_DIR_PREFIXES = ("run-evidence", "run-artifacts", "run-scratch", "github-cache")
 
 
@@ -780,7 +780,7 @@ def export_agent_from_efs(
         enable_acp: Seller's declaration that the agent delegates to ACP
             coding harnesses. Recorded as ``manifest["requires_acp"]``; the
             deploy side uses it to enable the buyer container's ACP runtime.
-        requires_desktop: Seller's declaration that the agent needs the Isol8
+        requires_desktop: Seller's declaration that the agent needs the Lightbulb AI
             desktop app (its local node-host — browser automation, local exec
             via the operator relay). We can't scan for this — it's a runtime
             capability, not a tool name — so the publisher sets it. Recorded as

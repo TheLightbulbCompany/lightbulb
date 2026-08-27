@@ -191,7 +191,7 @@ steps:
   #            every requirement classified `deterministic` has triggers AND each
   #            trigger's pipeline exists in the staging workspace. It reports
   #            pass/fail on stdout and NEVER halts (see header) so the failure
-  #            notice below can run. ISOL8_AGENTS_DIR resolves the staging dir the
+  #            notice below can run. LIGHTBULB_AGENTS_DIR resolves the staging dir the
   #            same way build.lobster does.
   - id: determinism-audit
     condition: $architecture-signoff.approved
@@ -199,7 +199,7 @@ steps:
     env:
       MATRIX: $matrix-of-build.stdout
       DECISIONS: $decisions-of-build.stdout
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 5.9 — Surface determinism-audit failures so the user knows what to fix.

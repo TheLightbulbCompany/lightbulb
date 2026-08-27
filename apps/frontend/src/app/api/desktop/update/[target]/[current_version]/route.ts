@@ -32,7 +32,7 @@ const KNOWN_UPDATE_HOSTS = new Set([
 // installs.
 
 // "darwin-aarch64" → "aarch64"; "darwin-x86_64" → "x64".
-// Tauri's bundler emits `Isol8_<ver>_<aarch64|x64>.app.tar.gz` so we map
+// Tauri's bundler emits `Lightbulb AI_<ver>_<aarch64|x64>.app.tar.gz` so we map
 // the updater target's full triple back to the bundle's arch suffix.
 function archFromTarget(target: string): "aarch64" | "x64" | null {
   if (target === "darwin-aarch64" || target === "aarch64-apple-darwin") {

@@ -136,7 +136,7 @@ describe("useLandingBriefReplay", () => {
     expect(result.current.replaying).toBe(false);
     expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBeNull();
     expect(
-      JSON.parse(window.sessionStorage.getItem("isol8_first_run_draft_v1:org_1")!),
+      JSON.parse(window.sessionStorage.getItem("lightbulb_first_run_draft_v1:org_1")!),
     ).toEqual({ path: "grow", input: "acme.com", detail: "" });
   });
 
@@ -223,7 +223,7 @@ describe("useLandingBriefReplay", () => {
 
   it("never replaces an existing org draft with a stale landing stash", async () => {
     organization = { id: "org_9" };
-    const draftKey = "isol8_first_run_draft_v1:org_9";
+    const draftKey = "lightbulb_first_run_draft_v1:org_9";
     const deliberate = JSON.stringify({ path: "new", input: "the real company brief", detail: "" });
     window.sessionStorage.setItem(draftKey, deliberate);
     stash({ path: "grow", input: "stale.example.com", detail: "" });

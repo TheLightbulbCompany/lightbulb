@@ -1,6 +1,6 @@
 """Backend-authored agent origin metadata.
 
-Paperclip owns the agent row, while Isol8 owns how that agent entered the
+Paperclip owns the agent row, while Lightbulb AI owns how that agent entered the
 company.  Keep that provenance outside seller-controlled agent fields and
 derive it only from persisted seed IDs or the marketplace deployment sidecar.
 """
@@ -56,7 +56,7 @@ def stamp_agent_provenance(
     seeded_ids: Collection[str],
     sidecar: dict[str, Any] | None = None,
 ) -> Any:
-    """Stamp one Paperclip agent with the authoritative Isol8 origin."""
+    """Stamp one Paperclip agent with the authoritative Lightbulb AI origin."""
 
     if not isinstance(agent, dict):
         return agent

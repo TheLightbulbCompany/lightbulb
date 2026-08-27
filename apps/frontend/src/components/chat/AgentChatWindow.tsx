@@ -31,7 +31,9 @@ interface AgentChatWindowProps {
 // Owner-scoped once-ever marker so `trial_first_agent_response` fires at most
 // once per trial owner — same idiom as ProvisioningStepper's
 // ONBOARDING_READY_STORAGE_KEY / TRIAL_STARTED_STORAGE_KEY.
-const TRIAL_FIRST_RESPONSE_STORAGE_KEY = "isol8_trial_first_response_v1";
+// Renamed from `lightbulb_trial_first_response_v1` at the Lightbulb AI rebrand —
+// a one-shot analytics de-dup marker, so at worst one event fires twice.
+const TRIAL_FIRST_RESPONSE_STORAGE_KEY = "lightbulb_trial_first_response_v1";
 
 // =============================================================================
 // Update Banner

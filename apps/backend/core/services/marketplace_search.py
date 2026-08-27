@@ -1,6 +1,6 @@
 """In-process marketplace search.
 
-At v0 scale (Isol8-internal only — paying users publishing to other paying
+At v0 scale (Lightbulb AI-internal only — paying users publishing to other paying
 users) the listing count is small enough that a TTL-cached table scan +
 Python tokenized scoring beats running an external SaaS search index.
 

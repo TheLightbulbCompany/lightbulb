@@ -15,8 +15,8 @@ import { LEGACY_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 // =============================================================================
 // SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
 //
-// PROD-STAGE-ONLY. This stack is only ever instantiated by isol8-stage.ts
-// when `env === "prod"` (see isol8-stage.ts for the gate) — dev/local stages
+// PROD-STAGE-ONLY. This stack is only ever instantiated by lightbulb-stage.ts
+// when `env === "prod"` (see lightbulb-stage.ts for the gate) — dev/local stages
 // create NO live SES/DNS resources. Two independent reasons drive that
 // gating:
 //   1. SetActiveReceiptRuleSet is an ACCOUNT+REGION-scoped "one active rule
@@ -406,7 +406,7 @@ export class SesInboundStack extends cdk.Stack {
     // .bucketName` / `this.rawBucket.bucketName`. Even with an explicit
     // `bucketName` prop, the L2 Bucket's `.bucketName` getter returns a CDK
     // Token (`Ref` to the underlying CfnBucket), not the plain string. Since
-    // isol8-stage.ts threads `attachmentsBucketName` into ServiceStack (a
+    // lightbulb-stage.ts threads `attachmentsBucketName` into ServiceStack (a
     // DIFFERENT stack), a Token there would force CDK to emit a real
     // CloudFormation Export/Fn::ImportValue pair across the stack boundary —
     // exactly the "export that can never be safely renamed/deleted" trap
@@ -589,7 +589,7 @@ export class SesInboundStack extends cdk.Stack {
     // set before SES is permitted to write to the bucket / invoke the fn.
     activateRuleSet.node.addDependency(catchAllRule);
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", envName);
   }
 }

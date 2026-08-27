@@ -241,7 +241,7 @@ def _deliver_to_recipients(
     return enqueued, skipped
 
 
-# The user-facing text for each way an owner can run out of Isol8 budget.
+# The user-facing text for each way an owner can run out of Lightbulb AI budget.
 # ONE copy, shared by gate_chat's pre-send refusal and the gateway's mid-run
 # reclassification: a turn refused before it starts and a turn refused halfway
 # through are the same event to the user and must never drift into two wordings.
@@ -986,7 +986,7 @@ class GatewayConnection:
             self._pending_rpcs.pop(req_id, None)
 
     async def _budget_error_code(self) -> tuple[str, str] | None:
-        """Is this owner's `rate_limit` actually an Isol8 budget refusal?
+        """Is this owner's `rate_limit` actually an Lightbulb AI budget refusal?
 
         The bedrock-gate returns budget denials as `429 ThrottlingException`
         so the container never learns it's behind a proxy. OpenClaw classifies
@@ -995,10 +995,10 @@ class GatewayConnection:
         time the error reaches us the money reason is gone, and the only honest
         way to recover it is to re-read the budget.
 
-        PROVIDER-AWARE BY CONSTRUCTION. Only owners whose inference Isol8 funds
+        PROVIDER-AWARE BY CONSTRUCTION. Only owners whose inference Lightbulb AI funds
         (`trial_local`, or paid `bedrock_claude`) can be reclassified. A
         ChatGPT-OAuth or BYO-key owner's 429 comes from THEIR provider on THEIR
-        account; relabelling it would route them to an Isol8 billing page to fix
+        account; relabelling it would route them to an Lightbulb AI billing page to fix
         someone else's quota. Same reasoning that made the wake-admission gate
         reuse gate_chat rather than a trial-only predicate.
 
@@ -2138,7 +2138,7 @@ class GatewayConnection:
                         fwd["session_id"] = session_id
                     await self._forward_to_frontends(fwd, target_member)
 
-                # Authoritative "run truly ended" frame. This is an Isol8-
+                # Authoritative "run truly ended" frame. This is an Lightbulb AI-
                 # synthesized frame — there is no upstream `run_ended` event; we
                 # derive it from the chat terminal states. ADDITIONAL to the
                 # done/error/aborted frames above — never a replacement. The
@@ -2813,7 +2813,7 @@ class GatewayConnectionPool:
            landed could keep talking through the gateway indefinitely on
            cards 1 + 2.
         2. **Free-tier $3/day cost cap.** A ``trial_local`` owner's model
-           spend is pure Isol8 cost (no BYOK/OAuth/credit backstop). This is
+           spend is pure Lightbulb AI cost (no BYOK/OAuth/credit backstop). This is
            a **read-only** check of the daily-spend counter the Bedrock
            invocation-log meter Lambda maintains — the backend never writes
            to it and places no reserve, because the meter counts every

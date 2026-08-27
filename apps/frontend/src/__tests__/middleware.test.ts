@@ -22,7 +22,7 @@ describe('domain config', () => {
   it('derives the shipped values', () => {
     expect(SITE_URL).toBe('https://isol8.co');
     expect(ROOT_DOMAIN).toBe('isol8.co');
-    expect(DEEP_LINK_SCHEME).toBe('isol8');
+    expect(DEEP_LINK_SCHEME).toBe('lightbulbai');
     expect(DEFAULT_ADMIN_HOSTS).toEqual([...ADMIN_HOSTS]);
     expect(PAPERCLIP_HOSTS).toEqual(['company.isol8.co', 'dev.company.isol8.co']);
   });

@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ConfigSnapshot, ToolsCatalogResponse } from "./agents-types";
 
-// Plugins Isol8 manages itself — provider plumbing + bundled workflow
+// Plugins Lightbulb AI manages itself — provider plumbing + bundled workflow
 // extensions. Disabling them can break inference or the agent runtime, so
 // they're shown read-only (mirrors how the Skills tab locks `always` skills).
 const LOCKED_PLUGIN_IDS = new Set(["amazon-bedrock", "lobster", "llm-task"]);

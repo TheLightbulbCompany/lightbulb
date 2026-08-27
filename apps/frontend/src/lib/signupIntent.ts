@@ -17,7 +17,7 @@
  * through `hasTeamSignupIntentCookie` below — do not add a third open-coded
  * `readSignupIntentCookie(...) === "team"`.
  */
-export const SIGNUP_INTENT_COOKIE = "isol8_signup_intent";
+export const SIGNUP_INTENT_COOKIE = "lightbulb_signup_intent";
 
 /** Parse the signup-intent value out of a `document.cookie` string. Pure. */
 export function readSignupIntentCookie(cookieString: string): string | null {

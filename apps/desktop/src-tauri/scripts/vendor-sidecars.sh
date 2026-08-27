@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Vendor sidecars for the Isol8 desktop browser node.
+# Vendor sidecars for the Lightbulb AI desktop browser node.
 # Produces: src-tauri/bin/ containing
 #   - node-<triple>                               (per-arch Mach-O binary)
 #   - openclaw-host-<triple>/                     (per-arch npm install)
-#   - isol8-browser-service-universal-apple-darwin (single dispatch shim)
+#   - lightbulb-browser-service-universal-apple-darwin (single dispatch shim)
 #
 # Tauri's --target universal-apple-darwin bundler looks for exactly one
 # externalBin file named `<base>-universal-apple-darwin`. Bash shims
@@ -58,7 +58,7 @@ vendor_arch() {
     mkdir -p "$HOST_DIR"
     cat > "$HOST_DIR/package.json" <<EOF
 {
-  "name": "isol8-openclaw-host-${TRIPLE}",
+  "name": "lightbulb-openclaw-host-${TRIPLE}",
   "private": true,
   "version": "0.0.0",
   "dependencies": {
@@ -94,7 +94,7 @@ EOF
 # flat Resources/ fallback (older bundle layouts), finally co-located.
 write_launcher() {
     local TRIPLE="$1"
-    local LAUNCHER="$BIN_DIR/isol8-browser-service-${TRIPLE}"
+    local LAUNCHER="$BIN_DIR/lightbulb-browser-service-${TRIPLE}"
     cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -106,9 +106,9 @@ elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
 else
     ASSETS="\$HERE"
 fi
-# Target Tauri's loopback WSS proxy. Tauri sets ISOL8_PROXY_PORT,
+# Target Tauri's loopback WSS proxy. Tauri sets LIGHTBULB_PROXY_PORT,
 # OPENCLAW_STATE_DIR, and OPENCLAW_GATEWAY_TOKEN before spawning.
-: "\${ISOL8_PROXY_PORT:?ISOL8_PROXY_PORT must be set by Tauri supervisor}"
+: "\${LIGHTBULB_PROXY_PORT:?LIGHTBULB_PROXY_PORT must be set by Tauri supervisor}"
 # Isolate the bundled openclaw's config dir from the user's
 # personal ~/.openclaw/. Without OPENCLAW_HOME, both the CLI install
 # and our bundled copy read the same ~/.openclaw/openclaw.json — so
@@ -121,7 +121,7 @@ export OPENCLAW_HOME="\${HOME}/Library/Application Support/co.isol8.desktop/open
 mkdir -p "\$OPENCLAW_HOME"
 exec "\$ASSETS/node-${TRIPLE}" \\
     "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
-    node run --host 127.0.0.1 --port "\$ISOL8_PROXY_PORT" "\$@"
+    node run --host 127.0.0.1 --port "\$LIGHTBULB_PROXY_PORT" "\$@"
 LAUNCHER_EOF
     chmod +x "$LAUNCHER"
 }

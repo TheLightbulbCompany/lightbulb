@@ -6,7 +6,7 @@
 // Subset: pure DOM helpers used by the Inbox keyboard-nav hook (Task 6).
 // Skipped from upstream: issue-detail chord shortcuts (g i / g c) and the
 // resolveInboxQuickArchiveKeyAction / resolveIssueDetailGoKeyAction helpers —
-// Isol8 doesn't yet have those routes/flows. resolveInboxUndoArchiveKeyAction
+// Lightbulb AI doesn't yet have those routes/flows. resolveInboxUndoArchiveKeyAction
 // and shouldBlurPageSearchOnEscape preserve upstream's destructured-arg
 // signatures + behavior verbatim (the undo shortcut is the unmodified `u`
 // key, not Cmd+Z; Esc-blurs only when the search input is empty so a populated

@@ -86,7 +86,7 @@ jobs:
     - name: Set up signing keychain
       run: |-
         set -euo pipefail
-        KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+        KEYCHAIN_PATH="$RUNNER_TEMP/lightbulb-build.keychain-db"
         KEYCHAIN_PASSWORD="$(uuidgen)"
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
@@ -160,7 +160,7 @@ jobs:
       with:
         projectPath: apps/desktop
         tagName: desktop-dev-v0.4.${{ github.run_number }}
-        releaseName: Isol8 Desktop [DEV] v0.4.${{ github.run_number }}
+        releaseName: Lightbulb AI Desktop [DEV] v0.4.${{ github.run_number }}
         releaseDraft: true
         prerelease: true
         args: --target aarch64-apple-darwin
@@ -171,19 +171,19 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        ISOL8_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
         # Compile-time targets for the native node-host + pairing client.
         # These default to dev in lib.rs, but set them explicitly so the
         # dev/prod split is visible here and can't silently regress.
-        ISOL8_API_BASE: https://api-dev.flickmeon.ai
-        ISOL8_WS_URL: wss://ws-dev.flickmeon.ai
+        LIGHTBULB_API_BASE: https://api-dev.flickmeon.ai
+        LIGHTBULB_WS_URL: wss://ws-dev.flickmeon.ai
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
-        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb AI.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
         VERSION="0.4.${{ github.run_number }}"
-        DMG="Isol8_${VERSION}_aarch64.dmg"
+        DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
@@ -192,13 +192,13 @@ jobs:
         # sidesteps that TCC wall. ditto (not makehybrid) is required because a
         # shell-script binary's code signature lives in extended attributes, which
         # makehybrid drops -> notarization rejects the DMG as "not signed".
-        RW="$RUNNER_TEMP/isol8_rw.dmg"
-        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        RW="$RUNNER_TEMP/lightbulb_rw.dmg"
+        MNT="$RUNNER_TEMP/lightbulb_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
-        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb AI" "$RW"
         hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
-        ditto "$APP" "$MNT/Isol8.app"
+        ditto "$APP" "$MNT/Lightbulb AI.app"
         ln -s /Applications "$MNT/Applications"
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"
@@ -222,7 +222,7 @@ jobs:
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()
-      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true
+      run: security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true
   build-desktop-prod:
     name: BuildDesktopProd
     runs-on:
@@ -274,7 +274,7 @@ jobs:
     - name: Set up signing keychain
       run: |-
         set -euo pipefail
-        KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+        KEYCHAIN_PATH="$RUNNER_TEMP/lightbulb-build.keychain-db"
         KEYCHAIN_PASSWORD="$(uuidgen)"
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
@@ -348,7 +348,7 @@ jobs:
       with:
         projectPath: apps/desktop
         tagName: desktop-v0.4.${{ github.run_number }}
-        releaseName: Isol8 Desktop v0.4.${{ github.run_number }}
+        releaseName: Lightbulb AI Desktop v0.4.${{ github.run_number }}
         releaseDraft: true
         prerelease: false
         args: --target aarch64-apple-darwin
@@ -359,20 +359,20 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        ISOL8_CALLBACK_URL: https://isol8.co/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://isol8.co/auth/desktop-callback
         # Point the native node-host + pairing client at PROD. Without these
         # the compile-time defaults in lib.rs fall back to dev, so the prod
         # app's "computer access" half pairs against dev while the chat UI +
         # Friday run on prod — they never connect.
-        ISOL8_API_BASE: https://api.isol8.co
-        ISOL8_WS_URL: wss://ws.isol8.co
+        LIGHTBULB_API_BASE: https://api.isol8.co
+        LIGHTBULB_WS_URL: wss://ws.isol8.co
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
-        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb AI.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
         VERSION="0.4.${{ github.run_number }}"
-        DMG="Isol8_${VERSION}_aarch64.dmg"
+        DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
@@ -381,13 +381,13 @@ jobs:
         # sidesteps that TCC wall. ditto (not makehybrid) is required because a
         # shell-script binary's code signature lives in extended attributes, which
         # makehybrid drops -> notarization rejects the DMG as "not signed".
-        RW="$RUNNER_TEMP/isol8_rw.dmg"
-        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        RW="$RUNNER_TEMP/lightbulb_rw.dmg"
+        MNT="$RUNNER_TEMP/lightbulb_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
-        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb AI" "$RW"
         hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
-        ditto "$APP" "$MNT/Isol8.app"
+        ditto "$APP" "$MNT/Lightbulb AI.app"
         ln -s /Applications "$MNT/Applications"
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"
@@ -411,4 +411,4 @@ jobs:
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()
-      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true
+      run: security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true

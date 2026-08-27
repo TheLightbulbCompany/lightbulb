@@ -40,7 +40,7 @@ def mock_settings():
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
-        s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
+        s.CLOUD_MAP_NAMESPACE_NAME = "lightbulb-dev.local"
         s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
         yield s
@@ -105,13 +105,13 @@ def test_build_kwargs_marks_backend_config_lock_protocol(manager, mock_ecs_clien
         "fsap-user",
         environment_for_task=[
             {"name": "CODEX_HOME", "value": "/state/codex"},
-            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "stale-value"},
+            {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "stale-value"},
         ],
     )
     environment = kwargs["containerDefinitions"][0]["environment"]
     assert {"name": "CODEX_HOME", "value": "/state/codex"} in environment
-    assert [entry for entry in environment if entry["name"] == "ISOL8_CONFIG_LOCK_PROTOCOL"] == [
-        {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
+    assert [entry for entry in environment if entry["name"] == "LIGHTBULB_CONFIG_LOCK_PROTOCOL"] == [
+        {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
     ]
 
 
@@ -312,7 +312,7 @@ class TestBedrockProvisionMint:
 
 class TestNonBedrockProvisionMint:
     """Every owner — not just Bedrock owners — runs under the per-owner ECS task
-    role isol8-<env>-owner-bedrock-<owner_id>. A non-Bedrock owner mints the role
+    role lightbulb-<env>-owner-bedrock-<owner_id>. A non-Bedrock owner mints the role
     SHELL (base policy + permissions boundary) with skip_bedrock_grant=True so it
     carries NO Bedrock inline grant and NO Bedrock AIPs, and the registered task
     def's taskRoleArn is the per-owner role — never the shared base role."""
@@ -584,8 +584,8 @@ class TestBedrockGateTokenProvision:
         assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
 
     @pytest.mark.asyncio
-    async def test_isol8_api_url_env_injected(self, manager, mock_settings, monkeypatch):
-        """Every provisioned container gets ISOL8_API_URL so the isol8 skill can
+    async def test_lightbulb_api_url_env_injected(self, manager, mock_settings, monkeypatch):
+        """Every provisioned container gets ISOL8_API_URL so the lightbulb skill can
         live-read the connectable catalog from GET /api/v1/platform-info. It is
         unconditional (added before any provider branch) and derived from the
         single URL builder — a refactor of provision_user_container must not

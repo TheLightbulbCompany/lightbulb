@@ -1,6 +1,6 @@
 import * as Notifications from "expo-notifications";
 
-import { sessionIdFromKey } from "@isol8/shared";
+import { sessionIdFromKey } from "@lightbulb/shared";
 
 /**
  * Suppress the in-app banner only when the app is foregrounded on the exact

@@ -6,7 +6,7 @@ Both ride the same SES transport — this module adds only the concerns that
 are specific to app mail:
 
 - **[ENV] subject tagging** so a dev/staging test send is obvious in the
-  inbox ("[DEV] Welcome to Isol8"). Prod sends are unprefixed. Agent replies
+  inbox ("[DEV] Welcome to Lightbulb AI"). Prod sends are unprefixed. Agent replies
   deliberately do NOT get this — they go to real customers.
 - **Reply-To routing** to the support mailbox.
 

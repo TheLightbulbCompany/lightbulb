@@ -105,7 +105,7 @@ def _fixture():
         {"id": "c_a", "name": "Alpha"},
         {"id": "c_b", "name": "Beta"},
         {"id": "c_c", "name": "Gamma"},
-        {"id": "c_x", "name": "Isol8"},
+        {"id": "c_x", "name": "Lightbulb AI"},
     ]
     old = "2026-06-01T00:00:00Z"
     routines = [
@@ -323,7 +323,7 @@ def test_north_star_excludes_nightly_and_headline_four_weeks():
         "owners": ["Alpha"],
         "weeks": [_week(4), _week(3), _week(2), _week(1)],
     }
-    assert out["segments"]["internal"]["headline"]["owners"] == ["Isol8"]
+    assert out["segments"]["internal"]["headline"]["owners"] == ["Lightbulb AI"]
 
 
 def test_retention_survival_and_depth():

@@ -28,7 +28,7 @@ function buildDbStack(environment: "dev" | "prod"): Template {
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
- * Container). Mirrors the wiring in isol8-stage.ts so the synthesized template
+ * Container). Mirrors the wiring in lightbulb-stage.ts so the synthesized template
  * matches what gets deployed.
  */
 function buildServiceStack(environment: "dev" | "prod"): Template {

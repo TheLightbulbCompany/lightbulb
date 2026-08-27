@@ -778,7 +778,7 @@ export interface CompanyAgent {
   status?: string | null;
   /** ID of the agent this one reports to (null/absent = root). */
   reportsTo?: string | null;
-  /** Server-stamped: this is an Isol8-seeded agent (Friday/Atlas) and is
+  /** Server-stamped: this is an Lightbulb AI-seeded agent (Friday/Atlas) and is
    *  locked — undeletable, meta read-only. Determined from persisted
    *  seeded-agent IDs by the BFF, never from role/name. */
   seeded?: boolean;
@@ -1375,7 +1375,7 @@ export interface CompanySearchResponse {
 //
 // Mirrors upstream Paperclip's `AttentionFeed` (packages/shared/src/types/
 // attention.ts), narrowed to the fields this UI reads, PLUS the two rows the
-// Isol8 BFF hydrates onto each item (`approval`, `interaction`) so a decision
+// Lightbulb AI BFF hydrates onto each item (`approval`, `interaction`) so a decision
 // can be resolved from the list without a follow-up fetch. See
 // apps/backend/routers/teams/attention.py.
 

@@ -1,7 +1,7 @@
 // Slack app manifest the setup wizard has users paste into "Create app from
 // manifest". Mirrors OpenClaw 6.6's canonical buildSlackManifest
 // (extensions/slack/src/setup-shared.ts) — 23 bot scopes / 15 events + App Home
-// + assistant view — rebranded to "Isol8 Agent".
+// + assistant view — rebranded to "Lightbulb AI Agent".
 //
 // These scopes gate BOTH the Slack channel relay AND the agent's bundled `slack`
 // tool: the tool's react / pin / files / read / channel-post actions reuse this

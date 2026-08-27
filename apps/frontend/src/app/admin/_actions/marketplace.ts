@@ -9,7 +9,7 @@ import { adminGet, adminPost, type ActionResult } from "./_shared";
  * can list / approve / reject / take down listings and read the takedowns
  * audit log.
  *
- * Takedowns workflow note: under the Isol8-internal scope there is no
+ * Takedowns workflow note: under the Lightbulb AI-internal scope there is no
  * public DMCA filing form, so the takedown queue is structurally empty.
  * The admin initiates the takedown directly from the listing detail page;
  * the takedowns route is reframed as an audit-log view of historical

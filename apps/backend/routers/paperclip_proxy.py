@@ -12,7 +12,7 @@ This module owns the *router* only. The host-conditional dispatch lives
 in T16's middleware in ``main.py``: when an incoming request carries
 ``X-Isol8-Public-Host: company.isol8.co`` (or the env-specific equivalent)
 the middleware mounts this router on the request path; for any other
-host the middleware passes through to the normal Isol8 routers.
+host the middleware passes through to the normal Lightbulb AI routers.
 
 **Why ``X-Isol8-Public-Host`` and not ``Host`` / ``request.url.hostname``?**
 API Gateway HTTP API rewrites the upstream ``Host`` header to the
@@ -359,7 +359,7 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
         # will honour x-paperclip-cloud-tenant-token + x-paperclip-cloud-user-id
         # / -user-email / -stack-role as a *self-asserted* identity (see
         # paperclip/server/src/middleware/auth.ts), and x-paperclip-run-id is
-        # likewise client-forgeable. Isol8 supplies the real identity via the
+        # likewise client-forgeable. Lightbulb AI supplies the real identity via the
         # server-minted Better Auth session cookie only, so a browser must never
         # be able to smuggle these upstream.
         if lower.startswith("x-paperclip-"):
@@ -387,16 +387,16 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
 # §4 adapter-plugin-store pre-disable.
 # ---------------------------------------------------------------------------
 
-# Isol8 runs OpenClaw only. `hermes_gateway` is a second remote-gateway adapter
+# Lightbulb AI runs OpenClaw only. `hermes_gateway` is a second remote-gateway adapter
 # the fork supports and would be equally host-safe, but it is deliberately
-# excluded until Isol8 ships a Hermes flow — add it here if that changes.
+# excluded until Lightbulb AI ships a Hermes flow — add it here if that changes.
 _ALLOWED_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
 
 # Each entry is (methods, pattern); methods=None matches every method. `path`
 # is matched WITHOUT its leading slash (e.g. "api/companies/x/agents").
 _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     # Adapter registry: npm install / uninstall / reload / toggle — host mutation
-    # + inventory disclosure of the dangerous adapters. Isol8 owns agent-create.
+    # + inventory disclosure of the dangerous adapters. Lightbulb AI owns agent-create.
     (None, re.compile(r"^api/adapters(?:/|$)")),
     # Plugin system: install (npm on host), config eval, tool exec, info leak.
     (None, re.compile(r"^api/plugins(?:/|$)")),
@@ -406,18 +406,18 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     # Unauthenticated tenant-controlled outbound HEAD. Trailing-slash-safe:
     # Express non-strict routing treats ``/foo`` and ``/foo/`` identically.
     (None, re.compile(r"^api/invites/[^/]+/test-resolution/?$")),
-    # Paperclip's own auth surface — Isol8 injects a service-account cookie.
+    # Paperclip's own auth surface — Lightbulb AI injects a service-account cookie.
     (None, re.compile(r"^api/auth(?:/|$)")),
     # Instance-wide admin: settings, DB backups, cross-tenant scheduler list.
     (None, re.compile(r"^api/instance(?:/|$)")),
     (None, re.compile(r"^api/admin(?:/|$)")),
-    # Company lifecycle is Isol8-owned; portability import carries agent bundles
+    # Company lifecycle is Lightbulb AI-owned; portability import carries agent bundles
     # (adapterType nested per-agent — blocked wholesale rather than walked).
     ({"POST"}, re.compile(r"^api/companies/?$")),
     ({"DELETE"}, re.compile(r"^api/companies/[^/]+/?$")),
     (None, re.compile(r"^api/companies/import")),
     (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
-    # Agent creation must pass through an Isol8-owned BFF so the owner-wide
+    # Agent creation must pass through an Lightbulb AI-owned BFF so the owner-wide
     # budget cap and server-derived idempotency key are enforced. The raw
     # Paperclip route has neither control and would let any authenticated owner
     # bypass both simply by supplying the otherwise-safe gateway adapter.
@@ -432,7 +432,7 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     (None, re.compile(r"^api/agents/[^/]+/config-revisions/[^/]+/rollback/?$")),
     # Join-request approve creates an agent from the STORED join-request's
     # adapterType, falling back to "process" when it is null — a pre-fence row
-    # is a host-exec path. Isol8 does not use the external-agent-join flow
+    # is a host-exec path. Lightbulb AI does not use the external-agent-join flow
     # (marketplace hire is the path), so block it; the §3.6 migration + the
     # invite-accept filter cover new/existing rows.
     (None, re.compile(r"^api/companies/[^/]+/join-requests/[^/]+/approve/?$")),
@@ -459,7 +459,7 @@ _ADAPTER_CREATE_ROUTES = (
 _INVITE_ACCEPT_ROUTES = (re.compile(r"^api/invites/[^/]+/accept/?$"),)
 
 # Approval create/resubmit can mint an agent later when a hire approval is
-# approved. Isol8-owned marketplace code files those approvals internally; the
+# approved. Lightbulb AI-owned marketplace code files those approvals internally; the
 # customer proxy must not expose a second, ungated create path.
 _APPROVAL_CREATE_ROUTES = (re.compile(r"^api/companies/[^/]+/approvals/?$"),)
 _APPROVAL_RESUBMIT_ROUTES = (re.compile(r"^api/approvals/[^/]+/resubmit/?$"),)
@@ -539,7 +539,7 @@ def _assert_paperclip_request_allowed(
 
     # A compressed request body would hide adapterType from us while Paperclip's
     # express.json() (inflate=true by default) still decodes and processes it
-    # upstream. No Isol8 client sends compressed request bodies — refuse them.
+    # upstream. No Lightbulb AI client sends compressed request bodies — refuse them.
     if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
         raise HTTPException(status_code=403, detail="Encoded request body not permitted")
 
@@ -575,7 +575,7 @@ def _assert_paperclip_request_allowed(
             raise HTTPException(status_code=403, detail="adapterType required")
 
     # Approval CREATE: approving a hire-shaped payload mints an agent without
-    # Isol8's budget/idempotency boundary. Non-hire approvals still pass.
+    # Lightbulb AI's budget/idempotency boundary. Non-hire approvals still pass.
     if any(r.match(p) for r in _APPROVAL_CREATE_ROUTES):
         payload = data.get("payload")
         is_hire = data.get("type") == "hire_agent" or (
@@ -614,7 +614,7 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
 
 
 def _brand_rewrite_html(body: bytes) -> bytes:
-    """Replace Paperclip brand strings with Isol8 equivalents in HTML bytes.
+    """Replace Paperclip brand strings with Lightbulb AI equivalents in HTML bytes.
 
     Only safe for ``text/html`` bodies — the patterns are anchored on
     HTML markup. Idempotent: the rewritten output never matches the
@@ -694,7 +694,7 @@ def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str | None = None
 # directly — Clerk dev instances scope ``__session`` to the application's
 # exact host (e.g. ``dev.isol8.co``), so it never reaches
 # ``company-dev.isol8.co``. The HTTP path uses our own session cookie
-# (``isol8_paperclip``) issued by the bootstrap handshake.
+# (``lightbulb_paperclip``) issued by the bootstrap handshake.
 _CLERK_SESSION_COOKIE = "__session"
 
 # --- Proxy session cookie (issued by /__handshake__) ---
@@ -724,7 +724,7 @@ _CLERK_SESSION_COOKIE = "__session"
 # the backend container — see ``core/services/service_token.py``). Different
 # ``kind`` claim distinguishes proxy-session JWTs from agent service tokens
 # so the two can never be cross-used.
-_PAPERCLIP_SESSION_COOKIE = "isol8_paperclip"
+_PAPERCLIP_SESSION_COOKIE = "lightbulb_paperclip"
 _PAPERCLIP_SESSION_KIND = "paperclip_session"
 _PAPERCLIP_SESSION_TTL_HOURS = 8
 
@@ -943,7 +943,7 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
          deliberately does NOT fall back to the cookie: for a browser
          nav, ``proxy()`` upgrades the 401 to a redirect that restarts
          the handshake with a fresh token.
-      2. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
+      2. ``lightbulb_paperclip`` cookie — fastest, no network roundtrip, set by
          the handshake endpoint after a successful Clerk validation.
       3. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
          (Postman, curl, the handshake endpoint itself, post-deploy
@@ -1228,7 +1228,7 @@ def _strip_handoff_param(request: Request) -> str:
 
 
 def _frontend_url() -> str:
-    """Public URL of the dev/prod Isol8 frontend. Used for redirects when
+    """Public URL of the dev/prod Lightbulb AI frontend. Used for redirects when
     the user lands on the company host without prerequisite state.
 
     ``FRONTEND_URL`` carries its own non-empty default in ``core/config.py``
@@ -1250,12 +1250,12 @@ async def proxy(path: str, request: Request) -> Response:
     1. **Initial handshake** (``?__t=<clerk_jwt>`` query param). The Teams
        button on dev.isol8.co appends a fresh Clerk JWT to the navigation
        URL because top-level browser nav can't carry an Authorization
-       header. We validate it, check the user has an Isol8 container
+       header. We validate it, check the user has an Lightbulb AI container
        (302 to /chat if not), auto-provision their Paperclip company if
        missing, then mint a host-scoped session cookie and 302 to the
        same URL minus the token. The browser follows with the cookie and
        proxies through normally.
-    2. **Established session** (``isol8_paperclip`` cookie). Skip the
+    2. **Established session** (``lightbulb_paperclip`` cookie). Skip the
        container/provision checks (they ran at handshake time); proceed
        to forward the request to Paperclip.
     3. **No auth, browser nav** — redirect to ``dev.isol8.co/chat`` with
@@ -1270,7 +1270,7 @@ async def proxy(path: str, request: Request) -> Response:
     try:
         auth = await _get_paperclip_user(request)
     except HTTPException as e:
-        # Browser nav with no auth → redirect to the Isol8 frontend.
+        # Browser nav with no auth → redirect to the Lightbulb AI frontend.
         # company-dev.isol8.co isn't a sign-in destination on its own; the
         # canonical entry point is the Teams button on /chat.
         if e.status_code == 401 and _wants_html(request):
@@ -1283,7 +1283,7 @@ async def proxy(path: str, request: Request) -> Response:
         raise
 
     if is_initial_handshake:
-        # Container guard: if the user has no Isol8 container, Teams has
+        # Container guard: if the user has no Lightbulb AI container, Teams has
         # nothing to attach to (the seeded Main Agent's openclaw-gateway
         # adapter would point at a nonexistent target). Send them back to
         # /chat to provision one first. Use resolve_owner_id so org users
@@ -1458,7 +1458,7 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Resolve the upstream session cookie (reuse > mint) ----
     # The browser already holds the Paperclip ``.session_token`` cookie
     # (rewritten to ``.isol8.co`` on a prior sign-in) plus its
-    # ``isol8_pc_bind`` companion. If that cookie is present AND its
+    # ``lightbulb_pc_bind`` companion. If that cookie is present AND its
     # binding cookie's ``sub`` matches the authenticated proxy user, we
     # forward it as-is and SKIP the sign-in — that eliminates the
     # per-request re-auth storm. Otherwise (cold start / cross-user /
@@ -1486,7 +1486,7 @@ async def proxy(path: str, request: Request) -> Response:
             # time and never updated, so it survives a Clerk primary-email
             # change that would otherwise 401 every sign-in. The Clerk JWT's
             # ``email`` claim is the fallback for rows written before that
-            # field existed; the Isol8 ``users`` row has no email column. The
+            # field existed; the Lightbulb AI ``users`` row has no email column. The
             # password is the per-user random one we encrypted at
             # provisioning time.
             email = company.paperclip_email or (auth.email or "").strip()
@@ -1608,7 +1608,7 @@ async def proxy(path: str, request: Request) -> Response:
         # ``seed_cookie`` is set to the freshly-minted cookie whenever we
         # sign in (cold start or 401 fallback); the response builder below
         # then seeds both the rewritten Paperclip Set-Cookie AND the
-        # ``isol8_pc_bind`` companion. A reused cookie is already in the
+        # ``lightbulb_pc_bind`` companion. A reused cookie is already in the
         # browser, so we leave ``seed_cookie`` None and reseed nothing.
         seed_cookie: str | None = None
         try:
@@ -1706,7 +1706,7 @@ async def proxy(path: str, request: Request) -> Response:
 
     # If we cold-minted (or re-minted on 401) a session cookie this
     # request, seed the browser with it (domain-broadened to .isol8.co)
-    # plus the ``isol8_pc_bind`` companion, so the NEXT request reuses it
+    # plus the ``lightbulb_pc_bind`` companion, so the NEXT request reuses it
     # and we skip the sign-in. The minted cookie came from a separate
     # ``sign_in_user`` call, not the forwarded request, so the upstream
     # rotation Set-Cookies above don't necessarily carry it — we must set
@@ -1781,7 +1781,7 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         return
 
     # ---- Step 1: Extract + validate session ----
-    # Prefer the proxy session cookie (``isol8_paperclip``) over Clerk's
+    # Prefer the proxy session cookie (``lightbulb_paperclip``) over Clerk's
     # ``__session``. The HTTP bootstrap establishes the proxy cookie before
     # Paperclip's UI ever loads, so by the time live-events WS connects the
     # cookie is always there. Clerk ``__session`` falls through as a
@@ -1819,7 +1819,7 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         return
     if not email:
         # Same constraint as the HTTP path — Better Auth needs email +
-        # password to sign the user in, and the Isol8 ``users`` row has
+        # password to sign the user in, and the Lightbulb AI ``users`` row has
         # no email column to fall back on.
         logger.warning(
             "paperclip_proxy_ws: user %s has no email claim on JWT; cannot sign in",
@@ -1843,7 +1843,7 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         await websocket.close(code=4503, reason="Paperclip not provisioned")
         return
 
-    # The email extracted above (from the ``isol8_paperclip`` cookie JWT, else
+    # The email extracted above (from the ``lightbulb_paperclip`` cookie JWT, else
     # Clerk's) is the user's LIVE address; Better Auth's is frozen at provision
     # time. Prefer what the row records, and keep the live claim only as the
     # fallback for a row written before ``paperclip_email`` existed.

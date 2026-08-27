@@ -8,7 +8,7 @@ on:
       - main
   workflow_dispatch: {}
 concurrency:
-  group: isol8-deploy
+  group: lightbulb-deploy
   cancel-in-progress: false
 jobs:
   Build-Synth:

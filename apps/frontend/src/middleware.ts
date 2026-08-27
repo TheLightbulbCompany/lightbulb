@@ -82,7 +82,7 @@ export function decideAdminHostRouting(
 
 // Hostnames whose traffic is handled by the paperclip-proxy upstream
 // via a Next-level rewrite (next.config.ts `beforeFiles`). Middleware
-// must passthrough for these or it'll run Clerk auth on a non-Isol8
+// must passthrough for these or it'll run Clerk auth on a non-Lightbulb AI
 // host (where there's no Clerk session) and redirect users away
 // before the rewrite gets a chance to proxy the request.
 //

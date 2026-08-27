@@ -2078,7 +2078,7 @@ async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
     # recovery publishes the protocol marker. This keeps backend mutations
     # available while every backend replica learns the recovery guard.
     assert os.path.isfile(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
-    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock.isol8-guard"))
+    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock.lightbulb-guard"))
 
 
 @pytest.mark.asyncio

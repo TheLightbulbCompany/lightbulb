@@ -1,6 +1,6 @@
 """Read-only reconciliation: AWS Bedrock vs the usage-counters ledger.
 
-A safety net for the cost-metering pipeline. Isol8's ``usage-counters``
+A safety net for the cost-metering pipeline. Lightbulb AI's ``usage-counters``
 ledger once captured ~3% of real Bedrock spend (cache tokens recorded as
 0) and the ~30x undercount went unnoticed for weeks because nothing ever
 compared the ledger to what AWS actually metered. This script is that
@@ -38,7 +38,7 @@ Scope notes
 
 * **Account-wide, not per-owner.** Bedrock's CloudWatch metrics AND Cost
   Explorer's Bedrock cost are emitted for the whole AWS account — Bedrock
-  does not tag invocations with an Isol8 owner unless
+  does not tag invocations with an Lightbulb AI owner unless
   model-invocation-logging with custom dimensions is enabled (it is NOT).
   So the only meaningful comparison is account-wide AWS totals vs the sum
   of *all* owners' ledger rows. Per-owner attribution would require
@@ -72,7 +72,7 @@ Scope notes
 
 * **RAW spend, not the customer price.** The ledger's
   ``total_spend_microdollars`` column (a misnomer — it stores microcents;
-  1 USD = 1e6 microcents) holds Isol8's RAW, un-marked-up cost: in
+  1 USD = 1e6 microcents) holds Lightbulb AI's RAW, un-marked-up cost: in
   ``record_usage`` it is taken verbatim from OpenClaw's
   ``estimatedCostUsd`` (or recomputed pre-markup from the Bedrock pricing
   table). The 1.4× customer markup is applied only by Metronome's rate
@@ -355,7 +355,7 @@ async def fetch_ledger_spend_usd(periods: list[str]) -> float:
     double-count, same as the token side). The column stores microcents
     (the name is a legacy misnomer); ``microcents / 1e6 = USD``.
 
-    This is Isol8's RAW, un-marked-up cost — comparable to the AWS bill.
+    This is Lightbulb AI's RAW, un-marked-up cost — comparable to the AWS bill.
     See the module docstring's "RAW spend" note.
     """
     from core.dynamodb import get_table, run_in_thread
@@ -641,7 +641,7 @@ async def main(args: argparse.Namespace) -> int:
 
     # --- Dollar reconciliation: Cost Explorer $ vs ledger RAW spend $ ---
     # No Bedrock-owner filter needed here: record_usage records non-Bedrock
-    # sessions with spend 0 (only Bedrock is Isol8-billed), so non-Bedrock
+    # sessions with spend 0 (only Bedrock is Lightbulb AI-billed), so non-Bedrock
     # owners contribute $0 to the ledger spend column already.
     aws_usd = await fetch_bedrock_actual_cost_usd(start=start, end=end, region=region)
     ledger_usd = await fetch_ledger_spend_usd(periods)

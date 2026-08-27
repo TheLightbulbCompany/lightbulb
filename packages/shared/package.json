@@ -1,5 +1,5 @@
 {
-  "name": "@isol8/shared",
+  "name": "@lightbulb/shared",
   "version": "0.1.0",
   "private": true,
   "description": "Framework-neutral core shared by the web and mobile clients: API client, gateway WebSocket protocol, data hooks, and protocol types. No next/*, no react-native, no DOM globals — platform specifics are injected via PlatformAdapter.",

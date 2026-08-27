@@ -55,10 +55,10 @@ export class AgentMailOutboundStack extends cdk.Stack {
       // Same shared secret the SES-ingest Lambda presents — the backend's
       // ses-events handler verifies it with the same compare.
       authorization: events.Authorization.apiKey(
-        "X-Isol8-SES-Secret",
+        "X-Lightbulb-SES-Secret",
         cdk.SecretValue.secretsManager(sesIngestSecretName),
       ),
-      description: `isol8 ${envName} agent-mail SES events → backend`,
+      description: `Lightbulb AI ${envName} agent-mail SES events → backend`,
     });
     const destination = new events.ApiDestination(this, "BackendSesEvents", {
       connection,
@@ -73,7 +73,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     // REPLAY: `aws sqs receive-message --queue-url <this queue>`, then re-POST
     // the message body (the EventBridge event) to
     // https://{apiDomain}/api/v1/webhooks/ses-events with the
-    // X-Isol8-SES-Secret header. Replay is safe to repeat — the handler's
+    // X-Lightbulb-SES-Secret header. Replay is safe to repeat — the handler's
     // disable is an `update_settings` SET, not an increment.
     const dlq = new sqs.Queue(this, "ComplaintDlq", {
       queueName: `isol8-${envName}-agent-mail-complaint-dlq`,
@@ -82,7 +82,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     });
 
     new events.Rule(this, "SesComplaintRule", {
-      description: `isol8 ${envName}: SES complaints on ${this.configurationSetName}`,
+      description: `Lightbulb AI ${envName}: SES complaints on ${this.configurationSetName}`,
       eventPattern: {
         source: ["aws.ses"],
         detailType: ["Email Complaint Received"],
@@ -128,7 +128,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
       ),
     );
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", envName);
   }
 }

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Isol8 connector — grants Isol8 scoped AssumeRole access to this account
+  Lightbulb AI connector — grants Lightbulb AI scoped AssumeRole access to this account
   at the access tier you selected, gated by an STS ExternalId.
 
 Parameters:
@@ -8,14 +8,14 @@ Parameters:
     Type: String
     NoEcho: true
     Description: >-
-      The high-entropy STS ExternalId Isol8 generated for this connection.
+      The high-entropy STS ExternalId Lightbulb AI generated for this connection.
       Required on every AssumeRole call; without it the role cannot be assumed.
 
   TrustedPrincipalArn:
     Type: String
     Description: >-
-      The Isol8 platform principal allowed to assume this role — Isol8's AWS
-      account root (arn:aws:iam::877352799272:root). Isol8's backend performs
+      The Lightbulb AI platform principal allowed to assume this role — Lightbulb AI's AWS
+      account root (arn:aws:iam::877352799272:root). Lightbulb AI's backend performs
       the AssumeRole; the ExternalId condition scopes it to this connection.
 
   ManagedPolicyArn:
@@ -32,7 +32,7 @@ Resources:
   # the resource in any already-deployed stack updated with this template —
   # which would delete + recreate the role and break its trust mid-flight.
   # It stays. (RoleName below is what anyone actually sees.)
-  Isol8ReadOnlyRole:
+  Lightbulb AIReadOnlyRole:
     Type: AWS::IAM::Role
     Properties:
       # Canonical name = backend bedrock_aip.CONNECTOR_ROLE_NAME. Must stay in
@@ -40,8 +40,8 @@ Resources:
       # a rename here silently breaks the self-account trust-pin check.
       RoleName: isol8-connector
       Description: >-
-        Connector role assumed by Isol8's backend on behalf of this account's
-        Isol8 owner. Trust is pinned to the Isol8 platform principal and gated
+        Connector role assumed by Lightbulb AI's backend on behalf of this account's
+        Lightbulb AI owner. Trust is pinned to the Lightbulb AI platform principal and gated
         by an STS ExternalId. Access tier = the attached managed policy.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -58,11 +58,11 @@ Resources:
         - !Ref ManagedPolicyArn
       Tags:
         - Key: ManagedBy
-          Value: isol8
+          Value: Lightbulb AI
 
 Outputs:
   RoleArn:
     Description: >-
-      ARN of the created connector role — paste this back into Isol8 to
+      ARN of the created connector role — paste this back into Lightbulb AI to
       complete the AWS connection (aws-complete).
-    Value: !GetAtt Isol8ReadOnlyRole.Arn
+    Value: !GetAtt Lightbulb AIReadOnlyRole.Arn

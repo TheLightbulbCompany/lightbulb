@@ -83,7 +83,7 @@ function stagingIdFor(buildId) {
 // EXDEV) and NOT ~/.openclaw/workspaces (which `openclaw doctor --fix`
 // recursively deletes on every boot).
 function _agentsRoot() {
-  return process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+  return process.env.LIGHTBULB_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
 }
 
 function _stagingWorkspaceDir(buildId) {

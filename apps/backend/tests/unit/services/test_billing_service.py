@@ -1033,7 +1033,7 @@ async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_change_provider_refreshes_owner_facts(monkeypatch):
     """A committed provider switch rewrites the owner-facts file, so agents
-    reading it via the isol8 skill see the NEW provider on both paths."""
+    reading it via the lightbulb skill see the NEW provider on both paths."""
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",

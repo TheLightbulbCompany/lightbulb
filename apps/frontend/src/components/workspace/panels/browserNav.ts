@@ -1,6 +1,6 @@
 // Address-bar input → a navigable URL for the browser chrome's URL field.
 // Ported verbatim from the OpenClaw fork's Control-UI helper
-// (ui/src/components/browser/browser-url.ts) so the isol8 panel's URL bar
+// (ui/src/components/browser/browser-url.ts) so the Lightbulb AI panel's URL bar
 // coerces exactly like the container's own browser panel — bare hosts get
 // https://, an explicit non-http(s) scheme is rejected, and a "host:port" is
 // not mistaken for a scheme. Kept import-free + pure so it's unit-testable

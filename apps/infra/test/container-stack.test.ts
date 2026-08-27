@@ -72,9 +72,9 @@ function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
           "-c",
           Match.stringLikeRegexp(
             // `\\|` escapes the regex alternation so we match a literal `|`.
-            "\\[ -x /usr/local/bin/isol8-local-sqlite-boot\\.sh \\] \\|\\| \\{ echo .*FATAL.*"
+            "\\[ -x \"\\$SQLITE_BOOT\" \\] \\|\\| \\{ echo .*FATAL.*"
             + "exit 1; \\}; "
-            + ".*exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
+            + ".*exec setpriv --reuid=1000 --regid=1000 --init-groups \"\\$SQLITE_BOOT\"$",
           ),
         ],
       }),
@@ -106,7 +106,7 @@ function expectDisplayGate(
   const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
   const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
   const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
-  const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
+  const boot = command.indexOf('exec setpriv --reuid=1000 --regid=1000 --init-groups "$SQLITE_BOOT"');
 
   // The guard must precede the launch it protects, and everything must precede
   // the exec that replaces this shell — nothing can be appended after that.
@@ -312,7 +312,7 @@ describe("ContainerStack — dev", () => {
     const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
     const mkdir = command.indexOf("install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1");
     const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
-    const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
+    const boot = command.indexOf('exec setpriv --reuid=1000 --regid=1000 --init-groups "$SQLITE_BOOT"');
 
     expect([recovery, migration, move, mkdir, symlink, boot].every((index) => index >= 0)).toBe(true);
     expect(recovery).toBeLessThan(migration);
@@ -331,9 +331,12 @@ describe("ContainerStack — dev", () => {
 
   test("openclaw container performs a guarded one-time protocol transition", () => {
     const command = openclawStartupCommand(template, "dev");
-    expect(command).toMatch(/^if \[ "\$\{ISOL8_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);
-    expect(command).toContain('guard_path = lock_path + ".isol8-guard"');
-    expect(command).toContain('protocol_path = lock_path + ".isol8-protocol"');
+    expect(command).toMatch(/^if \[ "\$\{LIGHTBULB_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);
+    expect(command).toContain(
+      'guard_paths = [lock_path + ".isol8-guard", lock_path + ".lightbulb-guard"]',
+    );
+    expect(command).toContain('protocol_path = lock_path + ".lightbulb-protocol"');
+    expect(command).toContain('legacy_protocol_path = lock_path + ".isol8-protocol"');
     expect(command).toContain("acquire_until(guard_fd, deadline");
     expect(command).toContain("fcntl.LOCK_EX | fcntl.LOCK_NB");
     expect(command).toContain("current.st_ino == opened.st_ino");
@@ -552,12 +555,12 @@ describe("ContainerStack — dev", () => {
     //    before layer 9c existed must still boot.
     const command = openclawStartupCommand(template, "dev");
     expect(command).toContain(
-      "[ ! -x /usr/local/bin/isol8-warp-boot.sh ] || { /usr/local/bin/isol8-warp-boot.sh & }",
+      '[ ! -x "$WARP_BOOT" ] || { "$WARP_BOOT" & }',
     );
-    expect(command).not.toContain("isol8-warp-boot.sh; exit 1");
+    expect(command).not.toContain('"$WARP_BOOT"; exit 1');
     // Ordered before the exec that replaces this shell, or it never runs.
-    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(
-      command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh"),
+    expect(command.indexOf("lightbulb-warp-boot.sh")).toBeLessThan(
+      command.indexOf('exec setpriv --reuid=1000 --regid=1000 --init-groups "$SQLITE_BOOT"'),
     );
   });
 
@@ -608,9 +611,9 @@ describe("ContainerStack — dev", () => {
 
     // Everything root needs to do must precede the drop: setpriv execs, so
     // nothing appended after it ever runs.
-    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(drop);
+    expect(command.indexOf("lightbulb-warp-boot.sh")).toBeLessThan(drop);
     expect(command.indexOf("websockify")).toBeLessThan(drop);
-    expect(command.endsWith("/usr/local/bin/isol8-local-sqlite-boot.sh")).toBe(true);
+    expect(command.endsWith('--init-groups "$SQLITE_BOOT"')).toBe(true);
   });
 
   test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {

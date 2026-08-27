@@ -9,7 +9,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 /**
  * One-click deploy / buy button for a listing.
  *
- * Free listings (price_cents === 0) → "Deploy to my Isol8 container":
+ * Free listings (price_cents === 0) → "Deploy to my Lightbulb AI container":
  *   - Signed-out: clicking redirects to Clerk sign-in then back to this listing.
  *   - Signed-in: POST /listings/{listing_id}/deploy →
  *     /marketplace/deploy-success?listing_id=…&agent_uuid=…

@@ -280,7 +280,7 @@ def test_staging_overwrites_a_partial_prior_attempt():
 # kickoff picked three next moves that each needed an integration already in
 # providers.yaml (waitlist email, social posting, payments) and recommended
 # none of them, because nothing in the kickoff asked and it never opened the
-# isol8 skill. The catalog endpoint is handed over directly instead.
+# lightbulb skill. The catalog endpoint is handed over directly instead.
 
 CATALOG = "/api/v1/platform-info"
 
@@ -294,7 +294,7 @@ def test_first_run_message_asks_for_integration_recommendations(brief):
     assert CATALOG in msg
     assert "integrations to connect" in msg
     # The one-click mint path is handed over too (the agent may never open the skill).
-    assert "connections/u/$ISOL8_OWNER_ID/<provider>/authorize" in msg
+    assert "connections/u/$LIGHTBULB_OWNER_ID/<provider>/authorize" in msg
 
 
 def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
@@ -314,11 +314,11 @@ def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
 #
 # Discovery is not enough on its own. A live prod run showed the agent asked to
 # email its owner hunting for gog/himalaya/an OpenClaw email channel and
-# concluding none was configured — it never opened the isol8 skill. The kickoff
+# concluding none was configured — it never opened the lightbulb skill. The kickoff
 # hands it the command directly so first contact does not depend on the agent
 # making that leap.
 
-SCRIPT = "/app/skills/isol8/scripts/isol8-mail.sh"
+SCRIPT = "/app/skills/lightbulb/scripts/lightbulb-mail.sh"
 
 
 def test_first_run_message_instructs_naming_and_email():

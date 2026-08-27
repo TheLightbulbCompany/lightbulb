@@ -366,7 +366,7 @@ describe("FirstRunFunnel", () => {
 
     expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
     expect(screen.queryByDisplayValue("org-a-secret.com")).toBeNull();
-    expect(window.sessionStorage.getItem("isol8_first_run_draft_v1:org_b")).toBeNull();
+    expect(window.sessionStorage.getItem("lightbulb_first_run_draft_v1:org_b")).toBeNull();
   });
 
   it("restores the draft for the SAME workspace across a remount", () => {

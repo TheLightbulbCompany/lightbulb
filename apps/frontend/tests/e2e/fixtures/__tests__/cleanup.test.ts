@@ -34,7 +34,7 @@ const ENV_KEYS = {
 function makeUser(overrides: Partial<E2EUser> = {}): E2EUser {
   return {
     runId: '1776572400000-abcdef',
-    email: 'isol8-e2e-test@mailsac.com',
+    email: 'lightbulb-e2e-test@mailsac.com',
     password: 'pw',
     clerkUserId: 'user_abc',
     page: {
@@ -129,7 +129,7 @@ describe('cleanupUser', () => {
   it('throws when Clerk user still exists after teardown', async () => {
     vi.mocked(findUserByEmail).mockResolvedValue({
       id: 'user_leaked',
-      email_addresses: [{ email_address: 'isol8-e2e-test@mailsac.com' }],
+      email_addresses: [{ email_address: 'lightbulb-e2e-test@mailsac.com' }],
     });
 
     const promise = cleanupUser(makeUser());

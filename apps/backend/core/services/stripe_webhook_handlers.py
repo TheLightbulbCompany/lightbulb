@@ -1151,7 +1151,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # the recovery path either way.)
                 await _rollback_conversion_entry(account["owner_id"], event_data["id"])
 
-    # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
+    # Refresh the owner-facts file (plan/provider snapshot the bundled Lightbulb AI
     # skill points agents at). Subscription-state flips land HERE — not via
     # change_provider — so without this write a past_due/canceled transition
     # would leave agents reporting an active paid plan. The just-persisted

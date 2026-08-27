@@ -50,14 +50,14 @@ async def test_reply_to_becomes_a_header(monkeypatch, sent):
         to="a@b.com",
         subject="Welcome",
         html="<p>hi</p>",
-        from_addr="Isol8 <hello@isol8.co>",
+        from_addr="Lightbulb AI <hello@isol8.co>",
         reply_to="support@isol8.co",
         kind="welcome",
     )
 
     kwargs = sent.call_args.kwargs
     assert kwargs["headers"] == {"Reply-To": "support@isol8.co"}
-    assert kwargs["from_addr"] == "Isol8 <hello@isol8.co>"
+    assert kwargs["from_addr"] == "Lightbulb AI <hello@isol8.co>"
     assert kwargs["body_html"] == "<p>hi</p>"
     assert kwargs["kind"] == "welcome"
     assert kwargs["body_text"] is None
@@ -102,7 +102,7 @@ async def test_welcome_email_renders_as_html_not_plaintext(monkeypatch):
         to="a@b.com",
         subject="Welcome to Lightbulb AI",
         html="<p>hi</p>",
-        from_addr="Isol8 <hello@isol8.co>",
+        from_addr="Lightbulb AI <hello@isol8.co>",
         reply_to="support@isol8.co",
         kind="welcome",
     )

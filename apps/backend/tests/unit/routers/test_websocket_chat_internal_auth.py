@@ -23,15 +23,15 @@ from routers.websocket_chat import require_ws_internal_caller, router
 def test_disabled_by_default_passes_without_header(monkeypatch):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", False)
     # Even a bogus/absent header passes when enforcement is off — no behavior change.
-    assert require_ws_internal_caller(x_isol8_ws_internal=None) is None
-    assert require_ws_internal_caller(x_isol8_ws_internal="anything") is None
+    assert require_ws_internal_caller(x_lightbulb_ws_internal=None) is None
+    assert require_ws_internal_caller(x_lightbulb_ws_internal="anything") is None
 
 
 def test_enforced_rejects_missing_header(monkeypatch):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", True)
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "top-secret-value")
     with pytest.raises(HTTPException) as exc:
-        require_ws_internal_caller(x_isol8_ws_internal=None)
+        require_ws_internal_caller(x_lightbulb_ws_internal=None)
     assert exc.value.status_code == 403
 
 
@@ -39,14 +39,14 @@ def test_enforced_rejects_wrong_header(monkeypatch):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", True)
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "top-secret-value")
     with pytest.raises(HTTPException) as exc:
-        require_ws_internal_caller(x_isol8_ws_internal="not-the-secret")
+        require_ws_internal_caller(x_lightbulb_ws_internal="not-the-secret")
     assert exc.value.status_code == 403
 
 
 def test_enforced_allows_correct_header(monkeypatch):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", True)
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "top-secret-value")
-    assert require_ws_internal_caller(x_isol8_ws_internal="top-secret-value") is None
+    assert require_ws_internal_caller(x_lightbulb_ws_internal="top-secret-value") is None
 
 
 def test_enforced_but_unconfigured_fails_closed(monkeypatch):
@@ -54,7 +54,7 @@ def test_enforced_but_unconfigured_fails_closed(monkeypatch):
     monkeypatch.setattr(settings, "WS_ENFORCE_INTERNAL_SECRET", True)
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "")
     with pytest.raises(HTTPException) as exc:
-        require_ws_internal_caller(x_isol8_ws_internal="anything")
+        require_ws_internal_caller(x_lightbulb_ws_internal="anything")
     assert exc.value.status_code == 503
 
 

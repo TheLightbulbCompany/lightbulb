@@ -153,7 +153,7 @@ export class BedrockGateStack extends cdk.Stack {
         reservedConcurrentExecutions: 100,
         environment: {
           // The env dimension on the gate's EMF metrics (namespace
-          // Isol8/BedrockGate) and the env segment the alarms key off.
+          // LightbulbAI/BedrockGate) and the env segment the alarms key off.
           GATE_ENV: gateEnv,
           // Bearer-token table (this stack) — SHA-256(token) -> owner_id/denied.
           TOKENS_TABLE: tokensTable.tableName,
@@ -392,7 +392,7 @@ export class BedrockGateStack extends cdk.Stack {
       //  - gate.hold_release_failed: a reservation hold could not be released,
       //    so it sits until TTL — repeated failures silently shrink an owner's
       //    admittable budget. Both burn correctness/money, so both PAGE.
-      // EMF auto-publishes these into namespace Isol8/BedrockGate with a single
+      // EMF auto-publishes these into namespace LightbulbAI/BedrockGate with a single
       // `env` dimension (metrics.mjs), so the alarm keys on env alone.
       const pagingMetrics: Array<[string, string]> = [
         ["gate.error", "GateErrorAlarm"],
@@ -403,7 +403,7 @@ export class BedrockGateStack extends cdk.Stack {
           alarmName: `isol8-${gateEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock gate (${gateEnv}) emitted ${metricName} - the synchronous debit/hold accounting invariant broke. Investigate immediately (money/correctness).`,
           metric: new cloudwatch.Metric({
-            namespace: "Isol8/BedrockGate",
+            namespace: "LightbulbAI/BedrockGate",
             metricName,
             dimensionsMap: {
               env: gateEnv,
@@ -424,7 +424,7 @@ export class BedrockGateStack extends cdk.Stack {
     this.gateFnDev = fns["dev"];
     this.gateFnProd = fns["prod"];
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", props.envName);
   }
 }

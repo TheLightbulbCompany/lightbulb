@@ -47,7 +47,7 @@ async def test_oauth_client_raises_when_client_id_missing(mock_byo_get):
 @patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock)
 @patch("core.services.credentials.oauth_dance.platform_oauth_app_store.get", new_callable=AsyncMock)
 async def test_oauth_client_platform_app_skips_owner_store(mock_platform_get, mock_byo_get):
-    # instagram declares oauth.platform_app — the client is Isol8's shared app,
+    # instagram declares oauth.platform_app — the client is Lightbulb AI's shared app,
     # and the per-owner BYO/DCR store must never be consulted.
     mock_platform_get.return_value = {"client_id": "ig_cid", "client_secret": "ig_sec"}
     cid, sec = await oauth_dance._oauth_client("user_1", "instagram")

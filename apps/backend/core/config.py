@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     WEBHOOK_DEDUP_TABLE: str = ""
 
     # WebSocket Configuration (API Gateway Management API)
-    WS_CONNECTIONS_TABLE: str = "isol8-websocket-connections"
+    WS_CONNECTIONS_TABLE: str = "lightbulb-websocket-connections"
     WS_MANAGEMENT_API_URL: str = ""  # Set by Terraform
     # Public WSS endpoint returned by POST /api/v1/desktop/pair so desktop
     # clients know which gateway to connect to. Wired by CDK service-stack from
@@ -432,7 +432,7 @@ class Settings(BaseSettings):
 
     # --- Paperclip integration ---
     # Internal URL the backend uses to reach Paperclip's REST API (private subnet).
-    # e.g. ``http://paperclip.internal.isol8.local`` — set by CDK in deployed envs.
+    # e.g. ``http://paperclip.internal.lightbulb.local`` — set by CDK in deployed envs.
     PAPERCLIP_INTERNAL_URL: str = ""
     # Public-facing URL for browsers (used by the proxy router for cookie scope
     # and origin checks; T14/T15 introduce the actual proxy). e.g.
@@ -446,7 +446,7 @@ class Settings(BaseSettings):
     # Shared bearer token the isol8.notifications Paperclip plugin sends on
     # POST /webhooks/paperclip-events. Empty disables the receiver (404).
     # Populated from Secrets Manager by the CDK service stack; the same secret
-    # is injected into the Paperclip task as PAPERCLIP_ISOL8_NOTIFY_TOKEN by
+    # is injected into the Paperclip task as PAPERCLIP_LIGHTBULB_NOTIFY_TOKEN by
     # paperclip-stack (the plugin worker reads it via an env passthrough —
     # plugin configJson is per-company on the deployed fork line, so env is
     # the only instance-wide channel).

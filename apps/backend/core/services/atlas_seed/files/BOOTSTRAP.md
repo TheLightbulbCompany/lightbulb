@@ -17,8 +17,8 @@ The bridge endpoint `build.lobster` curls to register a built agent:
 - `POST /api/v1/agent-builder/u/{owner_id}/register-built-agent` — snapshots the
   staging workspace, mints a Paperclip agent, and deploys it live. The concrete
   per-owner URL is substituted into `build.lobster` at stage time (the vendored
-  file ships a literal `{{ISOL8_BRIDGE_URL}}` placeholder). Confirm the
-  placeholder was substituted; if it still reads `{{ISOL8_BRIDGE_URL}}`, refuse to
+  file ships a literal `{{LIGHTBULB_BRIDGE_URL}}` placeholder). Confirm the
+  placeholder was substituted; if it still reads `{{LIGHTBULB_BRIDGE_URL}}`, refuse to
   proceed — the build pipeline cannot register agents. It is the ONLY way an agent
   gets created, and the only place an `agent_id` comes from: Atlas names agents,
   the platform assigns their ids. If the bridge errors, report it verbatim and
@@ -111,7 +111,7 @@ node atlas-activation-check.js
 ```
 
 Validates: `OPENCLAW_HOOK_TOKEN` present, bridge URL substituted (no leftover
-`{{ISOL8_BRIDGE_URL}}`), `atlas/*` state defaults initialized, cron jobs
+`{{LIGHTBULB_BRIDGE_URL}}`), `atlas/*` state defaults initialized, cron jobs
 registered, notification channels verified, security stack installed, and
 openclaw.json `tools.deny` includes the full ClawHavoc list.
 

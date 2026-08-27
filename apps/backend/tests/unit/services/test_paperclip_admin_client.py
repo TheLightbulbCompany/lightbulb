@@ -67,14 +67,14 @@ async def test_create_company_sends_session_cookie_and_idempotency_key(client_fa
     company = await client.create_company(
         session_cookie="sess_owner",
         name="u@example.com",
-        description="provisioned by Isol8",
+        description="provisioned by Lightbulb AI",
         idempotency_key="user_123",
     )
     assert captured["cookie"] == "sess_owner"
     assert captured["idem"] == "user_123"
     body = _json.loads(captured["body"])
     assert body["name"] == "u@example.com"
-    assert body["description"] == "provisioned by Isol8"
+    assert body["description"] == "provisioned by Lightbulb AI"
     # Default budget_monthly_cents=0 should not be sent (kept off the
     # wire so server uses its own default behavior).
     assert "budgetMonthlyCents" not in body

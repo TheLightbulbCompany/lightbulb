@@ -253,7 +253,7 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
 # credentials/providers.yaml — waitlist email, social posting, payments — and
 # offered zero of them.
 #
-# The isol8 skill has a first-run rule for exactly this, but it covers only
+# The lightbulb skill has a first-run rule for exactly this, but it covers only
 # `requestable` (not-yet-available) integrations, and the agent has to open the
 # skill to see it — which the 2026-07-26 run below proved she may not do. So the
 # endpoint is handed over directly, same as the email script: it is public and
@@ -263,13 +263,13 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
 # curl rides along for the same reason the catalog one does.
 _INTEGRATIONS_STEP = (
     "\n\nAlong with those moves, tell me which integrations to connect. Read the "
-    "live catalog first — `curl -s $ISOL8_API_URL/api/v1/platform-info` — then "
+    "live catalog first — `curl -s $LIGHTBULB_API_URL/api/v1/platform-info` — then "
     "name only the ones that serve the moves you picked, say what each one "
     "unlocks, and say what it costs me to set up (each entry's `requestable` and "
     "`byo_required` flags tell you that — don't promise me one click without "
     "checking them). For the one-click ones (both flags false) don't wait on me: "
     'mint the sign-in link yourself — `curl -s -H "Authorization: Bearer '
-    '$OPENCLAW_HOOK_TOKEN" "$ISOL8_API_URL/api/v1/connections/u/$ISOL8_OWNER_ID/'
+    '$OPENCLAW_HOOK_TOKEN" "$LIGHTBULB_API_URL/api/v1/connections/u/$LIGHTBULB_OWNER_ID/'
     '<provider>/authorize"` returns `authorize_url` — open it in your browser, and '
     "tell me to sign in in the Browser panel. Anything else, just tell me which "
     "are worth my time."
@@ -282,7 +282,7 @@ _INTEGRATIONS_STEP = (
 # A live prod run (2026-07-26) showed why that matters. Asked to email its
 # owner, the agent searched for gog, himalaya, and an OpenClaw "email channel",
 # found none, and reported that email was unconfigured — it never opened the
-# isol8 skill, because nothing in that skill's description mentioned email.
+# lightbulb skill, because nothing in that skill's description mentioned email.
 # The description is fixed separately; this removes the dependency on discovery
 # entirely for the one send that must not be missed.
 #
@@ -293,7 +293,7 @@ _INTEGRATIONS_STEP = (
 _CLOSING_STEPS = (
     "\n\nOne more thing before you stop: email me a short note in your own "
     "voice about what you found:\n"
-    "printf '%s' \"<your note>\" | /app/skills/isol8/scripts/isol8-mail.sh send --owner "
+    "printf '%s' \"<your note>\" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner "
     '--subject "<subject>"\n'
     "That script is how you send email here — there is no Gmail, himalaya, or "
     "email channel to configure."

@@ -69,7 +69,7 @@ def test_key_carries_the_allowlisted_prefix():
     email threads. A key outside it is rejected by the container outright."""
     key = thread_session_key({"Message-ID": SELF})
     assert key is not None
-    assert key.startswith("isol8-email:")
+    assert key.startswith("lightbulb-email:")
 
 
 def test_key_is_hashed_not_the_raw_message_id():

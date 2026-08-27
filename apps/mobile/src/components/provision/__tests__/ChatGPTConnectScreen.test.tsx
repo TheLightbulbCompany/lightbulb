@@ -11,8 +11,8 @@ jest.mock("@clerk/clerk-expo", () => ({
 // Real useChatGPTOAuth (jest.requireActual) — only the API client factory is
 // stubbed, so this test exercises the actual shared hook logic, same as
 // FirstRunGate.test.tsx's established pattern.
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ get: mockGet, post: mockPost }),
 }));
 

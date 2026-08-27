@@ -1,6 +1,6 @@
 """Tests for the public webhook ingress proxy.
 
-This router is the ONLY isol8 router that deliberately does NOT use
+This router is the ONLY Lightbulb AI router that deliberately does NOT use
 ``Depends(get_current_user)`` — external webhook senders don't have
 Clerk tokens. Auth is timing-safe bearer-token compare against
 ``containers.hook_token`` only.

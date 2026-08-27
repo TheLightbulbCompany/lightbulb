@@ -1,6 +1,6 @@
 """Seed (or rotate) a platform OAuth app client in Secrets Manager.
 
-Writes ``isol8/<env>/integrations/platform-oauth/<name>`` — the Isol8-owned
+Writes ``isol8/<env>/integrations/platform-oauth/<name>`` — the Lightbulb AI-owned
 OAuth client that platform-app providers (see ``OAuthSpec.platform_app``) use
 for every owner's connect. Reusable ops tool, not a one-shot backfill: run it
 again to rotate the secret after a Meta app-secret reset.

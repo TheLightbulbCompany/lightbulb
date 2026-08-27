@@ -7,7 +7,7 @@ look up the user's container IP via ``EcsManager.resolve_running_container``,
 rewrite X-Forwarded-* with the true caller IP, and forward to
 ``http://<ip>:18789/hooks/{hook_path}``.
 
-**Auth model.** This router is the ONLY isol8 router that does NOT use
+**Auth model.** This router is the ONLY Lightbulb AI router that does NOT use
 ``Depends(get_current_user)``. External callers don't have Clerk tokens.
 Auth is timing-safe bearer-token compare against ``containers.hook_token``
 via ``hmac.compare_digest``. Do not add Clerk auth — it would break every

@@ -64,7 +64,7 @@ async def test_create_paperclip_for_chat_forwards_meta_fields():
     assert kwargs["title"] == "Backend specialist"
     assert kwargs["capabilities"] == "Writes services."
     assert kwargs["icon"] == "terminal"
-    assert kwargs["idempotency_key"].startswith("isol8-agent-create:v1:chat:")
+    assert kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:chat:")
 
 
 @pytest.mark.asyncio

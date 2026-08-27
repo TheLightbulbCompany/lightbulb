@@ -2,8 +2,10 @@
 // Mirrors paperclip/ui/src/lib/recent-assignees.ts (MIT, © 2025 Paperclip AI).
 // Used by AssigneePicker to bubble up frequently-picked agents.
 
-export const RECENT_ASSIGNEES_KEY = "isol8.teams.recent-assignees";
-export const RECENT_REVIEWERS_KEY = "isol8.teams.recent-reviewers";
+// Renamed from `isol8.*` at the Lightbulb AI rebrand — the remembered
+// assignee/reviewer MRU starts empty once.
+export const RECENT_ASSIGNEES_KEY = "lightbulb.teams.recent-assignees";
+export const RECENT_REVIEWERS_KEY = "lightbulb.teams.recent-reviewers";
 const MAX_RECENT = 5;
 export type RecentAgentRole = "assignee" | "reviewer";
 

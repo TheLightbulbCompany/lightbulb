@@ -14,7 +14,7 @@ import { mutate } from "swr";
 import {
   useGatewayConnection,
   type GatewayConnectionValue,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 import { WS_URL } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
@@ -23,7 +23,7 @@ import { lastInputAgeMs } from "@/lib/presence";
 import { useContainerWake } from "@/hooks/useContainerWake";
 
 // The connection machine (reconnect/backoff, keepalive, RPC correlation,
-// message routing) lives in @isol8/shared so web and mobile share one
+// message routing) lives in @lightbulb/shared so web and mobile share one
 // protocol implementation — see the mobile-app plan. This module is the web
 // platform wrapper: React context + the Tauri desktop-webview effects.
 
@@ -32,7 +32,7 @@ export type {
   ChatIncomingMessage,
   GatewayEvent,
   ToolResultBlock,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 export type GatewayContextValue = GatewayConnectionValue;
 

@@ -1,7 +1,7 @@
 """Tests for the public platform-info catalog route.
 
 The route serves the LIVE connectable integrations + channels catalog with NO
-auth so the baked isol8 skill can read it from inside a container instead of
+auth so the baked lightbulb skill can read it from inside a container instead of
 hardcoding a drift-prone list. These tests pin the two guarantees that make the
 live read worth it:
 

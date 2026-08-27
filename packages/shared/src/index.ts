@@ -1,5 +1,5 @@
 /**
- * @isol8/shared — framework-neutral core for Isol8 clients.
+ * @lightbulb/shared — framework-neutral core for Lightbulb AI clients.
  *
  * Contents: adapter contract, API client core, the gateway WebSocket
  * protocol machine, and the platform-parameterized data hooks. useAgentChat

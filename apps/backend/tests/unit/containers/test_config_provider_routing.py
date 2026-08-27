@@ -289,7 +289,7 @@ async def test_meta_shim_present_to_defeat_auto_restore(tmp_path):
 async def test_memory_search_provider_resolves_per_auth_path(tmp_path, provider_choice, byo_provider):
     """memorySearch's embedding backend is provider-derived: semantic (vector)
     only where the owner's OWN credential pays, keyword-only (FTS) otherwise so
-    Isol8 never pays for embeddings. Only byo_key+openai has a native, owner-
+    Lightbulb AI never pays for embeddings. Only byo_key+openai has a native, owner-
     billed embeddings path; chatgpt_oauth (OAuth can't hit /v1/embeddings),
     byo_key+anthropic (no embeddings API), and bedrock_claude (Titan would bill
     us, not the owner) all fall back to FTS. Recall stays enabled everywhere."""

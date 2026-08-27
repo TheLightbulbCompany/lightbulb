@@ -3,7 +3,7 @@
 // Ported from upstream Paperclip's timeAgo.ts (paperclip/ui/src/lib/timeAgo.ts)
 // (MIT, (c) 2025 Paperclip AI).
 //
-// ISOL8-LOCAL EDIT: upstream's version is past-only — it subtracts and formats
+// LIGHTBULB AI-LOCAL EDIT: upstream's version is past-only — it subtracts and formats
 // the result, so ANY future instant lands in the `< MINUTE` branch and renders
 // as "just now". That is silently wrong wherever we show a scheduled time: an
 // issue monitor's "Re-check {timeAgo(nextCheckAt)}" read "just now" for a check

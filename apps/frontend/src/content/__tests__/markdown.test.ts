@@ -5,8 +5,8 @@ import { getAllDocs } from "../docs";
 
 describe("parseFrontmatter", () => {
   it("parses JSON values, falls back to bare strings, and returns the body", () => {
-    const { meta, content } = parseFrontmatter('---\ntitle: "A: b"\ntags: ["x","y"]\norder: 2\nauthor: isol8\n---\n\nbody\n');
-    expect(meta).toEqual({ title: "A: b", tags: ["x", "y"], order: 2, author: "isol8" });
+    const { meta, content } = parseFrontmatter('---\ntitle: "A: b"\ntags: ["x","y"]\norder: 2\nauthor: Lightbulb AI\n---\n\nbody\n');
+    expect(meta).toEqual({ title: "A: b", tags: ["x", "y"], order: 2, author: "Lightbulb AI" });
     expect(content).toBe("body\n");
   });
   it("accepts CRLF line endings", () => {

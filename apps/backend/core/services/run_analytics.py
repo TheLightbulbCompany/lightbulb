@@ -253,7 +253,7 @@ def _match_dispatching_run(runs: list, issue_id: str) -> dict | None:
 
 
 async def resolve_internal_owner(owner_id: str) -> bool:
-    """Isol8-team tagging via the platform-admin email rule on the owner's
+    """Lightbulb AI-team tagging via the platform-admin email rule on the owner's
     Clerk PRIMARY email — Clerk is the email truth (the users table carries no
     email attribute). Org owners resolve through the org's ``created_by``
     user. Real answers cache for an hour.

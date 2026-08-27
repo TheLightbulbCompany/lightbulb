@@ -79,7 +79,7 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
 
     # Try to get live bot usernames from channels.status probe via the
     # gateway pool. This calls getMe() / /users/@me on each provider and
-    # returns the actual bot handle (e.g. @Isol8DevBot). Falls back to
+    # returns the actual bot handle (e.g. @Lightbulb AIDevBot). Falls back to
     # agent_id if the container isn't reachable or the probe fails.
     bot_usernames: dict[str, dict[str, str]] = {}  # provider -> accountId -> username
     try:

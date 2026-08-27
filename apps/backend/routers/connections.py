@@ -470,7 +470,7 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
     try:
         # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)
         # fit. Truncate to the 64-char API limit.
-        session_name = f"isol8-{body.owner_id}"[:64]
+        session_name = f"lightbulb-{body.owner_id}"[:64]
         resp = await run_in_thread(
             _sts_client().assume_role,
             RoleArn=rec["role_arn"],
@@ -610,7 +610,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
         Allow only denies our own account, so a wildcard that slips through
         could reach arbitrary external accounts), and
       * an ARN inside OUR OWN account (877352799272), which would point the
-        vend-time AssumeRole back at Isol8's own infrastructure.
+        vend-time AssumeRole back at Lightbulb AI's own infrastructure.
     The vend endpoint (POST /aws/credentials) assumes EXACTLY the stored ARN;
     this validation is the gate that keeps a bad ARN from ever being stored."""
     require_org_admin(auth)
@@ -643,7 +643,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     # Fetch the pending record ONCE. A missing/setup-less record yields the 409
     # "run aws-setup first" BEFORE the trust-pin check, so an our-account ARN
     # pasted without a prior setup gets the accurate 409 (not the misleading
-    # "not Isol8's" 400). The same external_id feeds the trust-pin verification.
+    # "not Lightbulb AI's" 400). The same external_id feeds the trust-pin verification.
     rec = await integration_secret_store.get(owner_id, provider)
     external_id = (rec or {}).get("external_id")
     if not external_id:

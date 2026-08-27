@@ -1,5 +1,5 @@
 #!/bin/sh
-# isol8-local-sqlite-boot.sh — prepare container-local SQLite state, then hand
+# lightbulb-local-sqlite-boot.sh — prepare container-local SQLite state, then hand
 # off to litestream.
 #
 # Invoked unconditionally by the CDK startupCommand in every environment. The
@@ -36,10 +36,10 @@
 # replica — silent data destruction, the one outcome this script must prevent.
 set -eu
 
-STATE_ROOT="${ISOL8_STATE_ROOT:-/home/node/.openclaw}"
+STATE_ROOT="${LIGHTBULB_STATE_ROOT:-/home/node/.openclaw}"
 BUCKET="${LITESTREAM_S3_BUCKET:?LITESTREAM_S3_BUCKET is required}"
-LITESTREAM_CONFIG="${ISOL8_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
-APP_CMD="${ISOL8_APP_CMD:-/usr/local/bin/isol8-local-sqlite-app.sh}"
+LITESTREAM_CONFIG="${LIGHTBULB_LITESTREAM_CONFIG:-/etc/lightbulb-litestream.yml}"
+APP_CMD="${LIGHTBULB_APP_CMD:-/usr/local/bin/lightbulb-local-sqlite-app.sh}"
 
 log() { echo "[storage-boot] $*"; }
 
@@ -52,15 +52,15 @@ for _bin in sqlite3 jq aws litestream; do
 done
 
 # --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
-OWNER_ID="${ISOL8_OWNER_ID:-}"
-if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/isol8-facts.json" ]; then
-  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/isol8-facts.json" 2>/dev/null || true)
+OWNER_ID="${LIGHTBULB_OWNER_ID:-}"
+if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/lightbulb-facts.json" ]; then
+  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/lightbulb-facts.json" 2>/dev/null || true)
 fi
-[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
+[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no LIGHTBULB_OWNER_ID env, no lightbulb-facts.json)"; exit 1; }
 export OWNER_ID
-# The baked litestream config references $ISOL8_STATE_ROOT so it always replicates
+# The baked litestream config references $LIGHTBULB_STATE_ROOT so it always replicates
 # the SAME databases this script restored into.
-export ISOL8_STATE_ROOT="$STATE_ROOT"
+export LIGHTBULB_STATE_ROOT="$STATE_ROOT"
 log "owner=$OWNER_ID bucket=$BUCKET state_root=$STATE_ROOT"
 
 mkdir -p "$STATE_ROOT/state" "$STATE_ROOT/agents"
@@ -101,8 +101,8 @@ done
 
 # --- 2. Enumerate the owner's S3 prefix.
 KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
-        --query 'Contents[].Key' --output text 2>/tmp/isol8-s3-err) || {
-  log "FATAL: S3 enumeration failed: $(cat /tmp/isol8-s3-err 2>/dev/null)"; exit 1; }
+        --query 'Contents[].Key' --output text 2>/tmp/lightbulb-s3-err) || {
+  log "FATAL: S3 enumeration failed: $(cat /tmp/lightbulb-s3-err 2>/dev/null)"; exit 1; }
 [ "$KEYS" = "None" ] && KEYS=""
 
 # Agent tombstones are parsed BEFORE the database keys: a freshly deleted

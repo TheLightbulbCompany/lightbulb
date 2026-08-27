@@ -82,7 +82,7 @@ async def test_seeds_atlas_files_keyed_by_uuid(workspace_stub, fake_files_dir):
     ]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" in paths
+    assert "workspace-uuid-atlas/.openclaw/lightbulb-setup-seed.json" in paths
     assert "workspace-uuid-atlas/IDENTITY.md" in paths
     assert "workspace-uuid-atlas/build.lobster" in paths
     assert "workspace-uuid-atlas/skills/fast-io/SKILL.md" in paths
@@ -218,7 +218,7 @@ async def test_state_file_written_first(workspace_stub, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert paths[0] == "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json", f"state first, got: {paths}"
+    assert paths[0] == "workspace-uuid-atlas/.openclaw/lightbulb-setup-seed.json", f"state first, got: {paths}"
 
 
 @pytest.mark.asyncio
@@ -233,7 +233,7 @@ async def test_state_file_timestamps_are_js_canonical(captured_ws, fake_files_di
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
 
-    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/isol8-setup-seed.json"])
+    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/lightbulb-setup-seed.json"])
     _assert_js_canonical_roundtrip(state["bootstrapSeededAt"])
     _assert_js_canonical_roundtrip(state["setupCompletedAt"])
 
@@ -274,13 +274,13 @@ async def test_acp_section_appended_to_agents(captured_ws, tmp_path, monkeypatch
 
 
 def _bridge_files_dir(tmp_path, monkeypatch):
-    """Files dir whose build.lobster carries the {{ISOL8_BRIDGE_URL}} placeholder
+    """Files dir whose build.lobster carries the {{LIGHTBULB_BRIDGE_URL}} placeholder
     that pre_stage_atlas substitutes at stage time."""
     root = tmp_path / "files"
     root.mkdir(parents=True)
     (root / "IDENTITY.md").write_text("# Atlas", encoding="utf-8")
     (root / "build.lobster").write_text(
-        'name: build\nsteps:\n  - id: register\n    command: curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"\n',
+        'name: build\nsteps:\n  - id: register\n    command: curl -sS -X POST "{{LIGHTBULB_BRIDGE_URL}}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(atlas_seed, "_FILES_DIR", root)
@@ -298,7 +298,7 @@ def _bridge_files_dir(tmp_path, monkeypatch):
     ],
 )
 async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, monkeypatch, api_base, expected_host):
-    """pre_stage rewrites build.lobster's {{ISOL8_BRIDGE_URL}} placeholder to the
+    """pre_stage rewrites build.lobster's {{LIGHTBULB_BRIDGE_URL}} placeholder to the
     concrete per-env, per-owner agent-builder bridge URL, leaving none behind.
     The host is PUBLIC_API_BASE — this API's own public origin, wired by CDK."""
     _bridge_files_dir(tmp_path, monkeypatch)
@@ -308,7 +308,7 @@ async def test_bridge_url_substituted_into_build_lobster(captured_ws, tmp_path, 
     await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=captured_ws)
 
     build_lobster = captured_ws.written["workspace-uuid-atlas/build.lobster"]
-    assert "{{ISOL8_BRIDGE_URL}}" not in build_lobster
+    assert "{{LIGHTBULB_BRIDGE_URL}}" not in build_lobster
     assert f"{expected_host}/api/v1/agent-builder/u/org_abc/register-built-agent" in build_lobster
 
 
@@ -372,14 +372,14 @@ async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
     # force-written; the one-shot state marker is NOT -- checked for BOTH the
     # native sentinel we write today and the retired legacy name, so this stays
     # meaningful rather than vacuously passing on a renamed file.
-    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" not in force_ws.overwrote
+    assert "workspace-uuid-atlas/.openclaw/lightbulb-setup-seed.json" not in force_ws.overwrote
     assert "workspace-uuid-atlas/.openclaw/workspace-state.json" not in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
     # The fingerprint marker is stamped via write_file too, but it is
     # bookkeeping, not a bundle file — it must not count in `overwritten`.
-    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".isol8-seed-fingerprint")]
-    assert "workspace-uuid-atlas/.isol8-seed-fingerprint" in force_ws.overwrote
+    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".lightbulb-seed-fingerprint")]
+    assert "workspace-uuid-atlas/.lightbulb-seed-fingerprint" in force_ws.overwrote
     assert result["overwritten"] == len(bundle_writes) == 3
 
 
@@ -391,7 +391,7 @@ async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
 
     for state_rel in (
-        "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json",
+        "workspace-uuid-atlas/.openclaw/lightbulb-setup-seed.json",
         "workspace-uuid-atlas/.openclaw/workspace-state.json",
     ):
         assert state_rel not in force_ws.overwrote
@@ -417,7 +417,7 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="org_abc", paperclip_agents=agents, workspace=force_ws, force=True)
     build = written["workspace-uuid-atlas/build.lobster"]
-    assert "{{ISOL8_BRIDGE_URL}}" not in build
+    assert "{{LIGHTBULB_BRIDGE_URL}}" not in build
     assert "https://api-dev.isol8.co/api/v1/agent-builder/u/org_abc/register-built-agent" in build
 
 
@@ -444,7 +444,7 @@ async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monke
     assert force_ws.if_missing_calls == []  # never the skip-writer
     assert result["force"] is True
     assert result["written"] == 0  # force → no "new write" accounting, all in overwritten
-    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".isol8-seed-fingerprint")]
+    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".lightbulb-seed-fingerprint")]
     assert result["overwritten"] == len(bundle_writes)
 
 
@@ -483,7 +483,7 @@ def _existing_ws(marker: str | None):
 
 
 _AGENTS = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
-_MARKER_PATH = "workspace-uuid-atlas/.isol8-seed-fingerprint"
+_MARKER_PATH = "workspace-uuid-atlas/.lightbulb-seed-fingerprint"
 
 
 @pytest.mark.asyncio
@@ -518,7 +518,7 @@ async def test_current_marker_skips_refresh(fake_files_dir):
     ws = _existing_ws(_bundle_fingerprint())
     result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
     assert result["auto_refreshed"] is False
-    assert [p for p in ws.overwrote if not p.endswith(".isol8-seed-fingerprint")] == []
+    assert [p for p in ws.overwrote if not p.endswith(".lightbulb-seed-fingerprint")] == []
     assert "workspace-uuid-atlas/IDENTITY.md" in ws.if_missing_calls
 
 

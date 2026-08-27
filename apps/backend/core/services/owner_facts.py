@@ -1,7 +1,7 @@
 """Owner-facts file: per-owner dynamic platform state on EFS.
 
-``isol8-facts.json`` sits at the EFS user root (in-container:
-``~/.openclaw/isol8-facts.json`` — the access point chroots
+``lightbulb-facts.json`` sits at the EFS user root (in-container:
+``~/.openclaw/lightbulb-facts.json`` — the access point chroots
 ``/users/{user_id}`` to ``/home/node/.openclaw``) so every agent — Friday,
 Atlas, scaffolded specialists, marketplace hires — can read the owner's
 CURRENT plan/provider state instead of trusting seed files rendered once at
@@ -11,7 +11,7 @@ provision time. The backend is the sole writer; writes happen at provision
 (``stripe_webhook_handlers.handle_subscription_state``). Best-effort by
 design: a facts write must never block any of those callers.
 
-The bundled ``isol8`` platform skill tells agents to read this file for
+The bundled ``lightbulb`` platform skill tells agents to read this file for
 plan/provider questions.
 """
 
@@ -27,7 +27,12 @@ from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-FACTS_FILENAME = "isol8-facts.json"
+FACTS_FILENAME = "lightbulb-facts.json"
+# Pre-rebrand name. Written alongside the current one so an image built before
+# the rename — which points agents and its own boot script at this path — keeps
+# reading fresh data. Friday's USER.md pointer is repointed by
+# ``friday_identity._migrate_legacy_user_md``.
+LEGACY_FACTS_FILENAME = "isol8-facts.json"
 
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:
@@ -95,7 +100,7 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         # `email_address` alone cannot distinguish "email is off for this
         # owner" from "you can send; your address is created by your first
         # send" — and the address IS minted by the first send, so it is null
-        # right up until the agent acts. The isol8 skill's rule is "null =>
+        # right up until the agent acts. The lightbulb skill's rule is "null =>
         # don't claim an address and don't offer email", so without this flag
         # the agent reads null, correctly declines, and first contact
         # deadlocks on its own instructions.
@@ -147,6 +152,17 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
         if account_overrides:
             account = {**account, **account_overrides}
         facts = build_owner_facts(owner_id, account, email_address=await _lookup_email_address(owner_id))
-        get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
+        blob = json.dumps(facts, indent=2) + "\n"
+        ws = get_workspace()
+        ws.write_file(owner_id, FACTS_FILENAME, blob)
+        # The pre-rebrand filename is what an image built before the rename
+        # tells agents (and its boot script) to read. Keep it in step rather
+        # than deleting it — a stale snapshot is worse than a duplicate, and a
+        # missing one breaks the boot script's owner-id fallback. Drop this
+        # write once dev and prod are pinned to a post-rename image.
+        try:
+            ws.write_file(owner_id, LEGACY_FACTS_FILENAME, blob)
+        except Exception:  # noqa: BLE001 — facts must never block callers
+            pass
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

@@ -1,5 +1,5 @@
 """
-Shared test fixtures for Isol8 backend tests.
+Shared test fixtures for Lightbulb AI backend tests.
 
 Tests use mocked DynamoDB (via moto or plain mocks) — no real database needed.
 """

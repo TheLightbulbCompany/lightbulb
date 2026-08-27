@@ -3,7 +3,7 @@
 // Ported + adapted from upstream Paperclip (ui/src/components/search/
 // SearchResultRow.tsx, MIT © 2025 Paperclip AI). Renders one cross-entity
 // search result (issue / artifact / agent / project) with matched-field
-// snippets and highlights. Navigation is rewired to Isol8's in-shell panel
+// snippets and highlights. Navigation is rewired to Lightbulb AI's in-shell panel
 // router: rows prefer `nav.openDetail(...)` when rendered under /chat and fall
 // back to a real anchor href (teamsDetailUrl / agentInspectorUrl) so native
 // new-tab / middle-click still works.

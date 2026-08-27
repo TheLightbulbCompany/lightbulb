@@ -1,4 +1,4 @@
-// Isol8 container Chrome runs under a kiosk window manager that fullscreens
+// Lightbulb AI container Chrome runs under a kiosk window manager that fullscreens
 // every top-level window and offers no switcher: a page's window.open popup
 // (an OAuth consent, typically) lands on top of the page and the owner
 // watching the live view cannot get back. Chrome's own tab strip IS a

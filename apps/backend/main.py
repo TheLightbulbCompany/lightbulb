@@ -86,12 +86,12 @@ _started = False
 # When a request arrives at ``company.isol8.co`` (or the env-suffixed
 # variant ``company-{env}.isol8.co``) we dispatch the entire request to
 # the Paperclip reverse-proxy router instead of the standard ``/api/v1``
-# surface. The dispatch key is ``X-Isol8-Public-Host``, NOT ``Host``:
+# surface. The dispatch key is ``X-Lightbulb-Public-Host``, NOT ``Host``:
 # API Gateway HTTP API rewrites the upstream ``Host`` header to the
 # integration target's DNS (the internal ALB), so by the time we see the
 # request the original public hostname is gone from ``Host``. The
 # parameter mapping in ``api-stack.ts`` copies ``$context.domainName``
-# into ``X-Isol8-Public-Host`` so the dispatch key survives the integration
+# into ``X-Lightbulb-Public-Host`` so the dispatch key survives the integration
 # hop. (We can't use ``X-Forwarded-Host`` for this — API Gateway HTTP
 # API restricts parameter mapping on ``x-forwarded-*`` headers.)
 #
@@ -105,7 +105,7 @@ _started = False
 # order on the way IN (the last ``add_middleware`` call wraps outermost
 # and runs first). We register ``HostDispatcherMiddleware`` BEFORE
 # ``ProxyHeadersMiddleware`` so the dispatcher runs AFTER proxy-headers
-# on inbound requests — though we only read X-Isol8-Public-Host directly
+# on inbound requests — though we only read X-Lightbulb-Public-Host directly
 # from the ASGI scope, so the ordering doesn't matter for correctness.
 # What does matter is that we run before any auth/CORS/etc. middleware
 # we want to skip for proxied traffic, which the placement here gives
@@ -142,11 +142,11 @@ class HostDispatcherMiddleware:
     """Pure ASGI middleware that rewrites the request scope path with a
     sentinel prefix when the request arrives at a Paperclip-proxy host.
 
-    Reads ``X-Isol8-Public-Host`` directly off the ASGI scope headers.
+    Reads ``X-Lightbulb-Public-Host`` directly off the ASGI scope headers.
     We can't use ``X-Forwarded-Host`` because API Gateway HTTP API
     restricts parameter mapping on ``x-forwarded-*`` headers ("Operations
     on header x-forwarded-host are restricted"); ``api-stack.ts`` sets
-    our custom header via ``overwrite:header.X-Isol8-Public-Host`` =
+    our custom header via ``overwrite:header.X-Lightbulb-Public-Host`` =
     ``$context.domainName`` on the integration. Reading it off the raw
     scope sidesteps Starlette's ``ProxyHeadersMiddleware`` which only
     promotes ``X-Forwarded-For`` / ``X-Forwarded-Proto``.
@@ -168,14 +168,14 @@ class HostDispatcherMiddleware:
         # would silently drop the second value of any repeated header.
         xph_raw: bytes | None = None
         for name, value in scope.get("headers", ()):
-            if name == b"x-isol8-public-host":
+            if name == b"x-lightbulb-public-host":
                 xph_raw = value
                 break
         if xph_raw is None:
             await self.app(scope, receive, send)
             return
 
-        # X-Isol8-Public-Host is set by API Gateway parameter mapping to
+        # X-Lightbulb-Public-Host is set by API Gateway parameter mapping to
         # exactly $context.domainName, so it shouldn't carry comma chains
         # or ports — but defensively normalize anyway in case some other
         # caller (local dev, tests) sets it manually.
@@ -658,11 +658,11 @@ from core.middleware.shutdown_aware import ShutdownAwareMiddleware, set_shutting
 app.add_middleware(ShutdownAwareMiddleware)
 
 # Host-dispatch middleware (Paperclip) — rewrites the ASGI scope path to
-# the paperclip_proxy mount prefix when X-Isol8-Public-Host names a
+# the paperclip_proxy mount prefix when X-Lightbulb-Public-Host names a
 # Paperclip domain. Added before ProxyHeadersMiddleware so it sits INSIDE
 # the proxy-headers wrapper on the inbound path (Starlette runs middleware
 # in LIFO source order — last added runs first). The dispatcher reads
-# X-Isol8-Public-Host directly off the scope, so it doesn't actually depend
+# X-Lightbulb-Public-Host directly off the scope, so it doesn't actually depend
 # on ProxyHeadersMiddleware running first; the placement here is about
 # letting CORS/E2E/admin-metrics still see all traffic uniformly.
 app.add_middleware(HostDispatcherMiddleware)
@@ -888,7 +888,7 @@ app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])
 
 # Public connectable catalog (integrations + channels) read live by the baked
-# isol8 skill from inside per-owner containers. No auth — non-sensitive catalog
+# lightbulb skill from inside per-owner containers. No auth — non-sensitive catalog
 # data. See routers/platform_info.py.
 app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["platform-info"])
 
@@ -915,7 +915,7 @@ app.include_router(teams_router, prefix="/api/v1")
 
 # Paperclip proxy router — mounted at the sentinel prefix that
 # HostDispatcherMiddleware rewrites paths to. Never reachable directly
-# from a normal browser URL: API Gateway never sets X-Isol8-Public-Host
+# from a normal browser URL: API Gateway never sets X-Lightbulb-Public-Host
 # to a Paperclip domain unless the request actually arrived at one, and
 # the prefix has a leading double-underscore that no real route uses.
 #

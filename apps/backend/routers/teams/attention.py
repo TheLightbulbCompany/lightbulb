@@ -1,6 +1,6 @@
 """Teams BFF — the unified "needs you" attention feed.
 
-Isol8 surfaces two entirely different things a human has to answer, and
+Lightbulb AI surfaces two entirely different things a human has to answer, and
 until this route existed neither was aggregated anywhere:
 
 * **Board approvals** — listed by ``GET /teams/approvals``.

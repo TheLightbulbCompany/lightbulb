@@ -16,7 +16,7 @@ import {
   createApiClient,
   fetchJsonWithStatus,
   type PlatformAdapter,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import {
   gateFromError,

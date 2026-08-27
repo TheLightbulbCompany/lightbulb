@@ -33,7 +33,7 @@ pub struct SubprocessHandle {
 ///
 /// Args:
 /// - `binary`: path to the launcher shim (the bundled
-///   `isol8-browser-service` externalBin inside the Tauri app bundle —
+///   `lightbulb-browser-service` externalBin inside the Tauri app bundle —
 ///   resolved at runtime alongside the main executable, see
 ///   `lib.rs::run_bootstrap`). The shim then locates the underlying
 ///   per-arch `openclaw-host` npm install on disk.
@@ -104,7 +104,7 @@ pub async fn spawn(
     // 2. Spawn the subprocess. The bundled launcher shim
     // (`apps/desktop/src-tauri/scripts/vendor-sidecars.sh::write_launcher`)
     // is self-contained — its `exec` line already invokes
-    // `openclaw node run --host 127.0.0.1 --port "$ISOL8_PROXY_PORT"`,
+    // `openclaw node run --host 127.0.0.1 --port "$LIGHTBULB_PROXY_PORT"`,
     // so we must NOT pass those args here. Passing them duplicates the
     // subcommand and openclaw's commander parser bails with
     // "option '--port <port>' argument missing" (the second `node`
@@ -113,7 +113,7 @@ pub async fn spawn(
     let mut cmd = Command::new(&binary);
     cmd.env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)
-        .env("ISOL8_PROXY_PORT", &port_str)
+        .env("LIGHTBULB_PROXY_PORT", &port_str)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -122,7 +122,7 @@ pub async fn spawn(
         .spawn()
         .map_err(|e| format!("spawn subprocess: {e}"))?;
 
-    // Forward child stdio line-by-line to /tmp/isol8-desktop.log so
+    // Forward child stdio line-by-line to /tmp/lightbulb-desktop.log so
     // openclaw's `node host gateway connect failed: ...` panic/error
     // traces are visible. Without this, child stderr disappears into
     // the void (Tauri GUI apps have no terminal attached on macOS).

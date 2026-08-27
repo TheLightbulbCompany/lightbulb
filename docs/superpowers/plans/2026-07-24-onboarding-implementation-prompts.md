@@ -57,7 +57,7 @@ This PR changes no behavior and deletes nothing. It unblocks ONBOARD-TABLE and S
 
 ### Session `FORK1` — Paperclip: honor Idempotency-Key (fork repo)
 ```
-REPO: Isol8AI/paperclip (the fork; NOT this monorepo). Work on the isol8/2026.7-circuit-breaker line; ship via its own CI/tag, then bump paperclip-version.json's pin in this repo (dev then prod) in a follow-up.
+REPO: Isol8AI/paperclip (the fork; NOT this monorepo). Work on the lightbulb/2026.7-circuit-breaker line; ship via its own CI/tag, then bump paperclip-version.json's pin in this repo (dev then prod) in a follow-up.
 TASK (spec PR-1 / FORK-1): Make company-create and agent-create honor Idempotency-Key: store key→response for a bounded TTL and replay the stored response on a repeat, instead of minting a duplicate. Today the key is read exactly once server-wide (an unrelated webhook route) — verified against 2fdafe83.
 - Tests: two create calls with the same Idempotency-Key return the SAME company/agent (replay), not two rows.
 This unblocks deleting this repo's reconcile-adopt / Atlas-skip / 409-as-success family (later, in FORK-ADOPT). Do NOT touch this repo's compensations here.

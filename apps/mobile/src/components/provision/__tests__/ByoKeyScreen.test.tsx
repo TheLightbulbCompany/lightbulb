@@ -7,8 +7,8 @@ jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
 }));
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ put: mockPut, post: mockPost }),
 }));
 
@@ -18,7 +18,7 @@ jest.mock("react-native-safe-area-context", () => ({
 
 // The real class — the mock above spreads requireActual, so `instanceof
 // ApiError` inside the component matches what these tests throw.
-import { ApiError } from "@isol8/shared";
+import { ApiError } from "@lightbulb/shared";
 import { ByoKeyScreen } from "../ByoKeyScreen";
 
 const ADMIN_ONLY_MESSAGE = "Ask your workspace admin to finish this on isol8.co.";

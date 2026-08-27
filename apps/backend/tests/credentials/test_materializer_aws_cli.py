@@ -33,7 +33,7 @@ def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
     assert body == (
         "[profile isol8-connector]\n"
         "region = us-east-1\n"
-        "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/isol8-creds.mjs\n"
+        "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/lightbulb-creds.mjs\n"
     )
     # The config must carry no assume-role or secret material: a profile mixing
     # role_arn with credential_process would flip botocore into assume-role mode,
@@ -136,7 +136,7 @@ def test_helper_end_to_end_fetch_then_cache(tmp_path, monkeypatch):
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
     """A 200 with a truthy-but-malformed body ({}) must not be emitted or
-    cached as credentials — with no cache the helper exits 1 with an isol8:
+    cached as credentials — with no cache the helper exits 1 with a lightbulb:
     error instead of handing the CLI an empty credential object."""
     _StubHandler.calls = []
     orig_creds = _StubHandler.creds
@@ -151,7 +151,7 @@ def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
         r = subprocess.run(["node", str(aws_dir / aws_cli.HELPER_FILENAME)], capture_output=True, text=True, timeout=30)
         assert r.returncode == 1
         assert r.stdout == ""  # nothing emitted — the CLI must not see {} as creds
-        assert "isol8" in r.stderr
+        assert "lightbulb" in r.stderr
         # And the malformed payload must not poison the cache.
         assert not (aws_dir / aws_cli.CACHE_FILENAME).exists()
     finally:
@@ -168,4 +168,4 @@ def test_helper_clear_error_when_backend_unreachable_and_no_cache(tmp_path, monk
     helper = Path(tmp_path) / "org_x" / ".aws" / aws_cli.HELPER_FILENAME
     r = subprocess.run(["node", str(helper)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 1
-    assert "isol8" in r.stderr  # names us, not a bare stack trace
+    assert "lightbulb" in r.stderr  # names us, not a bare stack trace

@@ -3,9 +3,9 @@
  * onboarding-parity Slice 3). Mobile had no wordmark anywhere; web's
  * onboarding cards all lead with one (`<Logo size="lg" href={null}/>` at the
  * top of every ProvisioningStepper branch), which is what makes those screens
- * read as "Isol8 is setting things up" rather than an anonymous spinner.
+ * read as "Lightbulb AI is setting things up" rather than an anonymous spinner.
  *
- * Text + casing mirror web's `Logo.tsx` (`<span …>ISOL8</span>`) — uppercase,
+ * Text + casing mirror web's `Logo.tsx` (`<span …>LIGHTBULB AI</span>`) — uppercase,
  * serif, forest. The letter-spacing is what keeps the uppercase reading as a
  * wordmark instead of a shouty heading.
  */
@@ -20,7 +20,7 @@ export function Wordmark() {
       accessibilityRole="header"
       accessibilityLabel="Lightbulb AI"
     >
-      ISOL8
+      LIGHTBULB AI
     </Text>
   );
 }

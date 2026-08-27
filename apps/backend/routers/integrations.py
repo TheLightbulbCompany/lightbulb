@@ -2,7 +2,7 @@
 
 CRUD for OpenClaw-native MCP server definitions stored under ``mcp.servers``
 in the owner's ``openclaw.json``. Equivalent to ``openclaw mcp list/show/set/unset``
-inside the container — but operated from the Isol8 control panel via the
+inside the container — but operated from the Lightbulb AI control panel via the
 file-locked patcher in ``core.services.config_patcher``.
 
 Reads use ``read_openclaw_config_from_efs``. Writes use the same atomic

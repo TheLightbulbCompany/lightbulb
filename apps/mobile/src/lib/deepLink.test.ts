@@ -2,21 +2,21 @@ import { parseAgentDeepLink, parseCheckoutReturn } from "./deepLink";
 
 describe("parseAgentDeepLink", () => {
   it("parses an agent deep link", () => {
-    expect(parseAgentDeepLink("isol8://agent/agent_123")).toEqual({ agentId: "agent_123" });
+    expect(parseAgentDeepLink("lightbulbai://agent/agent_123")).toEqual({ agentId: "agent_123" });
   });
   it("parses with a query string", () => {
-    expect(parseAgentDeepLink("isol8://agent/agent_123?session=s1")).toEqual({ agentId: "agent_123" });
+    expect(parseAgentDeepLink("lightbulbai://agent/agent_123?session=s1")).toEqual({ agentId: "agent_123" });
   });
   it("returns null for the oauth callback", () => {
-    expect(parseAgentDeepLink("isol8://oauth-native-callback")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://oauth-native-callback")).toBeNull();
   });
   it("returns null for junk", () => {
     expect(parseAgentDeepLink("https://example.com")).toBeNull();
-    expect(parseAgentDeepLink("isol8://agent/")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://agent/")).toBeNull();
   });
   it("returns null (not throws) for malformed percent-encoding", () => {
-    expect(parseAgentDeepLink("isol8://agent/%")).toBeNull();
-    expect(parseAgentDeepLink("isol8://agent/%zz")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://agent/%")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://agent/%zz")).toBeNull();
   });
 });
 
@@ -28,7 +28,7 @@ describe("parseCheckoutReturn", () => {
     expect(parseCheckoutReturn("https://isol8.co/checkout_redirect/success")).toEqual({
       status: "success",
     });
-    expect(parseCheckoutReturn("isol8://checkout_redirect/success")).toEqual({
+    expect(parseCheckoutReturn("lightbulbai://checkout_redirect/success")).toEqual({
       status: "success",
     });
     expect(parseCheckoutReturn("https://isol8.co/checkout_redirect/cancel")).toEqual({
@@ -49,7 +49,7 @@ describe("parseCheckoutReturn", () => {
   it("rejects look-alike hosts and unrelated links", () => {
     expect(parseCheckoutReturn("https://isol8.co.evil.com/checkout_redirect/success")).toBeNull();
     expect(parseCheckoutReturn("https://evil.com/checkout_redirect/success")).toBeNull();
-    expect(parseCheckoutReturn("isol8://agent/agent_123")).toBeNull();
+    expect(parseCheckoutReturn("lightbulbai://agent/agent_123")).toBeNull();
     expect(parseCheckoutReturn("https://isol8.co/chat")).toBeNull();
     expect(parseCheckoutReturn("")).toBeNull();
   });
@@ -64,7 +64,7 @@ it("recognises the customer-portal return", () => {
   expect(parseCheckoutReturn("https://isol8.co/checkout_redirect/portal")).toEqual({
     status: "portal",
   });
-  expect(parseCheckoutReturn("isol8://checkout_redirect/portal")).toEqual({
+  expect(parseCheckoutReturn("lightbulbai://checkout_redirect/portal")).toEqual({
     status: "portal",
   });
 });

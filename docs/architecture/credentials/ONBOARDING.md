@@ -4,7 +4,7 @@ You (Claude) are picking up an in-progress design workstream. This file is the e
 
 ## What this project is
 
-**Lightbulb AI** is a multi-tenant managed-agent SaaS built on top of **OpenClaw** (real, MIT-licensed personal-agent runtime — github.com/openclaw/openclaw, cloned locally at `~/Desktop/openclaw`, HEAD `510628ca6f` as of 2026-05-21). This repo (`~/Desktop/isol8.nosync`) is the Lightbulb AI platform itself. Each Lightbulb AI customer gets a dedicated ECS Fargate container running OpenClaw + an EFS workspace. The platform ships seed agents (Friday = CEO/orchestrator, Atlas = recruiter) and has a marketplace where buyers one-click deploy pre-built agents into their own container. The platform team also has its own internal engineering agent ("Jarvis") with email `admin@isol8.co`.
+**Lightbulb AI** is a multi-tenant managed-agent SaaS built on top of **OpenClaw** (real, MIT-licensed personal-agent runtime — github.com/openclaw/openclaw, cloned locally at `~/Desktop/openclaw`, HEAD `510628ca6f` as of 2026-05-21). This repo (`~/Desktop/lightbulb.nosync`) is the Lightbulb AI platform itself. Each Lightbulb AI customer gets a dedicated ECS Fargate container running OpenClaw + an EFS workspace. The platform ships seed agents (Friday = CEO/orchestrator, Atlas = recruiter) and has a marketplace where buyers one-click deploy pre-built agents into their own container. The platform team also has its own internal engineering agent ("Jarvis") with email `admin@isol8.co`.
 
 **The active design workstream** is the credential management layer: how third-party SaaS tokens (Slack, Salesforce, GitHub, PostHog, Vercel, Google), agent-identity credentials (Jarvis's GitHub PAT, AWS keys), and platform-operator credentials get provisioned, stored, refreshed, and delivered to running agents.
 
@@ -48,7 +48,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
 | End-customer SaaS OAuth (tier 3) | **Nango self-hosted, ELv2** — only platform satisfying all four hard constraints (license, self-host completeness, BYO OAuth per provider, server-side token-fetch). | Researched. Brief written (stale). Discovery doc §10.1 makes the category case. |
 | Agent-identity secrets (tier 2) | **Infisical, MIT** — ships an ECS sidecar pattern with AWS IAM auth on machine identities. Production reference: Hugging Face. | Researched. Not yet in the solution brief. The user expressed interest in Infisical's "agent vault." |
 | Platform-operator secrets (tier 1) | **AWS Secrets Manager** (existing). One-time human bootstrap per provider. | No change from current. |
-| Runtime credential delivery to MCP/CLI/plugin/skill | **`isol8-tool` wrapper shim** (sources env file at exec time). Avoids the MCP `getDefaultEnvironment()` trap. | Designed in §2.3 of the stale brief. Verified to work against the MCP spawn code. |
+| Runtime credential delivery to MCP/CLI/plugin/skill | **`lightbulb-tool` wrapper shim** (sources env file at exec time). Avoids the MCP `getDefaultEnvironment()` trap. | Designed in §2.3 of the stale brief. Verified to work against the MCP spawn code. |
 | **AWS cross-account roles** (new — not yet in any doc) | Customer-deployed CFN template creating a role with external ID + Lightbulb AI calls `sts:AssumeRole`. Standard pattern. | **Open task** — add as fourth solution category to discovery doc §10. |
 | CLI standardization | **Don't adopt Printing Press or OpenCLI.** Printing Press is a build-time CLI generator (wrong layer); OpenCLI explicitly excludes auth from scope. Wrapper shim covers it. | Researched. Decision documented in stale brief. |
 
@@ -66,7 +66,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
 
 ## Things to know (gotchas, conventions)
 
-- The user works on macOS, M1 Pro. Repo lives at `~/Desktop/isol8.nosync/` (`.nosync` suffix prevents iCloud sync). The OpenClaw clone is at `~/Desktop/openclaw` and is a real `git@github.com:openclaw/openclaw.git` checkout — read it directly when you need to verify upstream behavior, don't re-clone.
+- The user works on macOS, M1 Pro. Repo lives at `~/Desktop/lightbulb.nosync/` (`.nosync` suffix prevents iCloud sync). The OpenClaw clone is at `~/Desktop/openclaw` and is a real `git@github.com:openclaw/openclaw.git` checkout — read it directly when you need to verify upstream behavior, don't re-clone.
 - **Don't claim OpenClaw is fabricated.** An earlier research agent did, and was wrong. The repo is real. (The agent's skepticism was based on its sandbox not being able to reach GitHub, not on any actual signal.)
 - The user pushes back hard and correctly on over-engineering, premature vendor selection, and writing-before-thinking. Match that posture.
 - When you don't know something, look at the actual OpenClaw source instead of inferring. The clone is right there.

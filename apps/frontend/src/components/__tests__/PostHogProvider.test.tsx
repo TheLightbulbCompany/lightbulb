@@ -156,7 +156,7 @@ describe("PostHogProvider", () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     mockRouterState.pathname = "/chat";
     mockRouterState.search = "";
-    window.localStorage.setItem("isol8:signup_intent:v1", JSON.stringify({
+    window.localStorage.setItem("lightbulb:signup_intent:v1", JSON.stringify({
       path: "/sign-up?provider=byo_key",
       provider_choice: "byo_key",
       timestamp: "2026-08-20T05:58:00.000Z",
@@ -193,8 +193,8 @@ describe("PostHogProvider", () => {
     mockRouterState.search = "";
     mockClerkState.isSignedIn = true;
     mockClerkState.userId = "user_123";
-    window.localStorage.setItem("isol8:signup_intent:v1", JSON.stringify({ path: "/sign-up" }));
-    window.localStorage.setItem("isol8:signup_started_identified:user_123", "1");
+    window.localStorage.setItem("lightbulb:signup_intent:v1", JSON.stringify({ path: "/sign-up" }));
+    window.localStorage.setItem("lightbulb:signup_started_identified:user_123", "1");
 
     const mod = await import("../PostHogProvider");
     render(

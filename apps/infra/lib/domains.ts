@@ -8,7 +8,7 @@
 // It is NO LONGER the root domain: mail moved to its own domain, so the product
 // hostnames and the mail hostnames now change independently.
 //
-// Both are threaded from `lib/app.ts` through `Isol8StageProps` into every stack
+// Both are threaded from `lib/app.ts` through `LightbulbStageProps` into every stack
 // that builds a hostname, so a per-environment change is a one-line edit at the
 // stage construction site. The constants below are the defaults every stack
 // falls back to when a prop is omitted (unit-test synths), and the value the

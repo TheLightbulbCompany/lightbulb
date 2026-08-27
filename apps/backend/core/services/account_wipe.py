@@ -122,7 +122,7 @@ WipeStatus = Literal["ok", "skipped", "failed", "would_delete"]
 # DDB paperclip-companies row and NOTHING else, so an Aurora company whose DDB
 # row never landed (partial provision, prior partial wipe, duplicate-signup
 # debris) is left behind. That is not fixable by "enumerate from Aurora
-# instead": Aurora carries no Isol8 owner id, and every Isol8 user is
+# instead": Aurora carries no Lightbulb AI owner id, and every Lightbulb AI user is
 # ``membership_role='owner'`` in every company they belong to (provision_org
 # AND provision_member both invite with ``human_role="owner"``) — so an
 # email-keyed lookup cannot tell an orphaned personal company from a LIVE org

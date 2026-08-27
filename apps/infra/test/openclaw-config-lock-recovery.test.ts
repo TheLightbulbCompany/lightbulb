@@ -14,7 +14,7 @@ import {
 } from "../lib/openclaw-config-lock-recovery";
 
 function fixturePath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "isol8-config-lock-"));
+  const dir = mkdtempSync(join(tmpdir(), "lightbulb-config-lock-"));
   return join(dir, "openclaw.json.lock");
 }
 
@@ -63,8 +63,11 @@ describe("OpenClaw config-lock boot recovery", () => {
       "utf8",
     );
     expect(ecsManager).toContain('_CONFIG_LOCK_PROTOCOL_VERSION = "guard-v1"');
-    expect(backendLock).toContain('OPENCLAW_CONFIG_GUARD_SUFFIX = ".isol8-guard"');
-    expect(backendLock).toContain('OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".isol8-protocol"');
+    expect(backendLock).toContain('OPENCLAW_CONFIG_GUARD_SUFFIX = ".lightbulb-guard"');
+    expect(backendLock).toContain('OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".lightbulb-protocol"');
+    // Dual-read of the pre-rebrand sentinels must stay in lockstep on both sides.
+    expect(backendLock).toContain('OPENCLAW_CONFIG_LEGACY_GUARD_SUFFIX = ".isol8-guard"');
+    expect(backendLock).toContain('OPENCLAW_CONFIG_LEGACY_PROTOCOL_SUFFIX = ".isol8-protocol"');
     expect(backendLock).toContain('OPENCLAW_CONFIG_PROTOCOL_MIGRATING = b"migrating-v1\\n"');
     expect(backendLock).toContain('OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL = b"ephemeral-v1\\n"');
   });
@@ -91,7 +94,7 @@ describe("OpenClaw config-lock boot recovery", () => {
 
     const updatedBackend = spawnSync("sh", ["-c", command], {
       encoding: "utf8",
-      env: { ISOL8_CONFIG_LOCK_PROTOCOL: "guard-v1" },
+      env: { LIGHTBULB_CONFIG_LOCK_PROTOCOL: "guard-v1" },
     });
     expect(updatedBackend.status).toBe(0);
     expect(existsSync(lockPath)).toBe(false);
@@ -106,7 +109,7 @@ describe("OpenClaw config-lock boot recovery", () => {
 
     const result = spawnSync("sh", ["-c", command], {
       encoding: "utf8",
-      env: { ISOL8_CONFIG_LOCK_PROTOCOL: "guard-v1" },
+      env: { LIGHTBULB_CONFIG_LOCK_PROTOCOL: "guard-v1" },
     });
 
     expect(result.status).toBe(1);

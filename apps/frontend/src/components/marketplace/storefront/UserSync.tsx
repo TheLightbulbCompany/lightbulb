@@ -4,7 +4,9 @@ import { useAuth } from "@clerk/nextjs";
 import { useEffect } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-const SESSION_KEY = "isol8.users.synced";
+// Renamed from `isol8.users.synced` at the Lightbulb AI rebrand — costs one
+// extra sync per session, nothing else.
+const SESSION_KEY = "lightbulb.users.synced";
 
 /**
  * Invisible client component that calls POST /users/sync once per browser

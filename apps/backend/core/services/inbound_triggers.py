@@ -18,7 +18,7 @@ instead of composing the description: see ``_append_platform_block``.
 
 The inbound shapes:
 
-``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Isol8
+``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Lightbulb AI
 has no reachable register-a-webhook API for the provider (creating a Stripe
 endpoint needs a restricted API key we don't hold), so the owner pastes the
 returned ``proxy_url`` into the provider's own dashboard, then pastes the
@@ -389,7 +389,7 @@ def automation_requirement(provider_key: str, event_id: str) -> dict[str, Any] |
     ``needs_resource`` is True for every registration shape that binds a
     provider-side resource only the buyer can name (their repo, Vercel
     project, Meta Page, Google account); guided_paste needs nothing but the
-    proxy URL Isol8 hands them.
+    proxy URL Lightbulb AI hands them.
     """
     try:
         provider = registry.get_provider(provider_key)
@@ -700,7 +700,7 @@ async def _subscribe_meta_asset(asset: dict[str, str], fields: list[str]) -> Non
     """Bind the app's ONE webhook callback to this asset for ``fields``.
 
     Raises ``ValueError`` with a caller-facing message on the expected refusals
-    — the connected account doesn't administer the asset, or the Isol8 Meta app
+    — the connected account doesn't administer the asset, or the Lightbulb AI Meta app
     doesn't hold the webhook permission for that object type. Graph reports
     both as a 400/403 whose subcode we'd only be guessing at, so they share one
     message that names both causes."""

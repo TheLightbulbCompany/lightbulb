@@ -167,7 +167,9 @@ function isLoaded(): boolean {
   return (posthog as unknown as PostHogLoadState).__loaded === true;
 }
 
-const ATTRIBUTION_STORAGE_KEY = "isol8_attribution_v1";
+// Renamed from `lightbulb_attribution_v1` at the Lightbulb AI rebrand — an
+// in-flight first-touch attribution breadcrumb is dropped once.
+const ATTRIBUTION_STORAGE_KEY = "lightbulb_attribution_v1";
 const UTM_KEYS = [
   "utm_source",
   "utm_medium",

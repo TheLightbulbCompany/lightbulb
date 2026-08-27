@@ -1,4 +1,4 @@
-"""Chaos suite fixtures: moto-backed DynamoDB + S3 with all isol8 tables, and
+"""Chaos suite fixtures: moto-backed DynamoDB + S3 with all Lightbulb AI tables, and
 hypothesis profiles.
 
 Table names are derived three different ways in production code, so the

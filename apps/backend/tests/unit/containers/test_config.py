@@ -80,7 +80,7 @@ class TestOpenclawConfigShape:
         which is the default -- so the key is simply dropped rather than
         relocated. The original reason still holds: the ledger's per-event
         transactions were the dominant SQLite lock contender on EFS and nothing
-        in Isol8 consumes audit.* RPCs."""
+        in Lightbulb AI consumes audit.* RPCs."""
         config = _cfg()
         assert "audit" not in config
         assert "audit" not in config.get("logging", {})
@@ -478,7 +478,7 @@ class TestWriteOpenclawConfigAsync:
         # Phase one remains on the legacy persistent sidecar until boot
         # recovery publishes the protocol marker.
         assert (tmp_path / "openclaw.json.lock").is_file()
-        assert (tmp_path / "openclaw.json.lock.isol8-guard").is_file()
+        assert (tmp_path / "openclaw.json.lock.lightbulb-guard").is_file()
 
     async def test_post_transition_full_write_uses_ephemeral_sidecar(self, tmp_path):
         out = tmp_path / "openclaw.json"
@@ -580,7 +580,7 @@ class TestEnsureNodePairedEntry:
             owner_id="owner_42",
             public_key_pem=_FIXTURE_PUBKEY_PEM,
             client_id="node-host",
-            display_name="Alice | Isol8 Desktop (CLI)",
+            display_name="Alice | Lightbulb AI Desktop (CLI)",
             commands=["system.run", "browser.proxy"],
             workspace=mock_workspace,
         )
@@ -603,7 +603,7 @@ class TestEnsureNodePairedEntry:
         assert entry["clientId"] == "node-host"
         assert entry["role"] == "node"
         assert entry["commands"] == ["system.run", "browser.proxy"]
-        assert entry["displayName"] == "Alice | Isol8 Desktop (CLI)"
+        assert entry["displayName"] == "Alice | Lightbulb AI Desktop (CLI)"
         # deviceId derives from pubkey (sha256 of raw key bytes).
         assert entry["deviceId"] == _FIXTURE_EXPECTED_DEVICE_ID
         # tokens.node is load-bearing for the role-upgrade gate.
@@ -658,7 +658,7 @@ class TestEnsureNodePairedEntry:
                 "publicKey": "other-pem",
                 "role": "node",
                 "clientId": "openclaw-macos",
-                "displayName": "Bob | Isol8 Mac",
+                "displayName": "Bob | Lightbulb AI Mac",
                 "commands": ["system.notify"],
                 "tokens": {"node": {"token": "keep-me", "createdAtMs": 1}},
                 "createdAtMs": 1,

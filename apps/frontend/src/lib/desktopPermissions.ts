@@ -13,8 +13,11 @@ export type DesktopPermissionGrant = {
   permissions: DesktopPermissionSet;
 };
 
-export const DESKTOP_PERMISSIONS_STORAGE_KEY = "isol8.desktop.permissions.v1";
-export const DESKTOP_PERMISSIONS_CHANGED_EVENT = "isol8:desktop-permissions-changed";
+// Renamed from `isol8.*` at the Lightbulb AI rebrand — desktop folder grants
+// are re-asked once. The event name is same-document only, so both sides flip
+// together.
+export const DESKTOP_PERMISSIONS_STORAGE_KEY = "lightbulb.desktop.permissions.v1";
+export const DESKTOP_PERMISSIONS_CHANGED_EVENT = "lightbulb:desktop-permissions-changed";
 
 // Cross-tab storage-event filter: only permission-grant writes (or a full
 // localStorage.clear, which fires with key === null) concern the listeners

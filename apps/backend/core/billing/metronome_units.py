@@ -7,7 +7,7 @@ every money field we touch: alert thresholds, commit access-schedule
 amounts, getNetBalance ``balance``, and webhook ``remaining_balance``.
 Sandbox validation re-confirmed this before cutover.
 
-Isol8's internal ledger and API surface speak MICROCENTS. Every boundary
+Lightbulb AI's internal ledger and API surface speak MICROCENTS. Every boundary
 crossing converts through these two helpers so a denomination correction is
 a one-file fix instead of a hunt for scattered constants.
 """

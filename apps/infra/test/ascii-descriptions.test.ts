@@ -1,6 +1,6 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { Isol8Stage } from "../lib/isol8-stage";
+import { LightbulbStage } from "../lib/lightbulb-stage";
 import { HOSTED_ZONE_CONTEXT } from "./helpers";
 
 /**
@@ -58,7 +58,7 @@ function assertAscii(template: Template, resourceType: string, descKey: string) 
 }
 
 /**
- * Synthesizes an Isol8 stage with the static cdk.context.json lookups
+ * Synthesizes an Lightbulb AI stage with the static cdk.context.json lookups
  * inlined so DnsStack's HostedZone.fromLookup resolves without an AWS API
  * call. BOTH dev and prod are synthesized: some stacks are prod-only
  * (e.g. BedrockMeterStack), and an em-dash in its SG GroupDescription was
@@ -66,7 +66,7 @@ function assertAscii(template: Template, resourceType: string, descKey: string) 
  */
 function synthStageTemplates(environment: "dev" | "prod"): Template[] {
   const app = new App({ context: HOSTED_ZONE_CONTEXT });
-  const stage = new Isol8Stage(app, environment, {
+  const stage = new LightbulbStage(app, environment, {
     environment,
     env: { account: "877352799272", region: "us-east-1" },
   });

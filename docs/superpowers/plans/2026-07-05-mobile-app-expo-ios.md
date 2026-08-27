@@ -39,7 +39,7 @@ see the dev-build note).
 - **Apple billing rules (Guideline 3.1.1):** the app must NOT initiate Stripe checkout for the $50/mo subscription or paid marketplace listings in-app for v1. Mobile renders subscription/entitlement *state* and directs users to manage billing on the web (see Decisions & Risks). Marketplace **browsing + deploying free/already-owned listings** is in scope; in-app purchase of paid listings is out.
 - **No secrets in the app bundle.** Only `EXPO_PUBLIC_*` values that are safe-public (API URL, Clerk publishable key, PostHog key) — same posture as `NEXT_PUBLIC_*`.
 - **Env parity:** dev builds point at `api-dev.flickmeon.ai` / `ws-dev.flickmeon.ai`; prod at `api.flickmeon.ai` / `ws.flickmeon.ai`. The `deriveWebSocketUrl` hostname rewrite in shared code is reused as-is.
-- **Bundle ID:** `co.isol8.mobile` (sibling of desktop's `co.isol8.desktop`) — both are native identifiers that move to `ai.flickmeon.*` at the flag-day flip, not before. Apple Developer team is the prerequisite for Phases 7–8; everything before runs in Expo Go / simulator.
+- **Bundle ID:** `co.lightbulb.mobile` (sibling of desktop's `co.lightbulb.desktop`) — both are native identifiers that move to `ai.flickmeon.*` at the flag-day flip, not before. Apple Developer team is the prerequisite for Phases 7–8; everything before runs in Expo Go / simulator.
 - **iOS only for v1.** Do not add Android config beyond what Expo scaffolds by default; do not spend effort making Android work.
 
 ## Decisions & Risks (resolve before/while executing)
@@ -166,7 +166,7 @@ see the dev-build note).
 - [ ] **Task 1: EAS project setup.** `eas.json` with `development` / `preview` (dev API, internal distribution) / `production` profiles; EAS-managed Apple signing under the Lightbulb AI Apple Developer team; `EXPO_TOKEN` + Apple credentials in GH secrets (never in repo).
 - [ ] **Task 2: `mobile-build.yml`.** Path-filtered on `apps/mobile/**` + `packages/shared/**`. PR: lint/typecheck/vitest only (no build). Main: `eas build --profile preview --non-interactive`. Tag `mobile-v*`: production build + `eas submit` to TestFlight. Runs on `ubuntu-latest` — EAS's hosted macOS fleet does the native build, so **no self-hosted mac runner needed** (unlike `desktop-build.yml`).
 - [ ] **Task 3: OTA updates.** Wire `eas update` for JS-only hotfixes on the production channel; document the "native change ⇒ store build, JS change ⇒ OTA" rule in `apps/mobile/README.md`.
-- [ ] **Task 4: Store submission.** App Store Connect listing (screenshots, privacy nutrition labels — Clerk/PostHog data flows disclosed), demo account for review (NOT the reserved `isol8-e2e-testing@mailsac.com` account (the mailsac prefix is not renamed)), review notes covering the D1 billing posture.
+- [ ] **Task 4: Store submission.** App Store Connect listing (screenshots, privacy nutrition labels — Clerk/PostHog data flows disclosed), demo account for review (NOT the reserved `lightbulb-e2e-testing@mailsac.com` account (the mailsac prefix is not renamed)), review notes covering the D1 billing posture.
 
 ---
 

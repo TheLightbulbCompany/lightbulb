@@ -1,4 +1,4 @@
-// Pure mapping between Isol8's billing-side provider_choice and the
+// Pure mapping between Lightbulb AI's billing-side provider_choice and the
 // container's live models.authStatus snapshot. Extracted from LLMPanel so the
 // provider-id resolution + status→color rules are testable without React.
 
@@ -36,7 +36,7 @@ function normalizeId(id: string): string {
   return id.trim().toLowerCase();
 }
 
-// Candidate container provider ids for a given Isol8 provider choice. Match is
+// Candidate container provider ids for a given Lightbulb AI provider choice. Match is
 // exact-or-prefix on the normalized id because the container may report a more
 // specific variant (e.g. openai-codex, openai-responses) than our coarse
 // choice. ChatGPT OAuth is the openai-codex provider upstream.

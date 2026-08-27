@@ -31,7 +31,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 def _admit_test_user(app, email: str = "admin@isol8.co"):
-    """Override auth so the caller looks like an Isol8 team member."""
+    """Override auth so the caller looks like an Lightbulb AI team member."""
     ctx = AuthContext(user_id="user_test_123", email=email)
     app.dependency_overrides[get_current_user] = lambda: ctx
 

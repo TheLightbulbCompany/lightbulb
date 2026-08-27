@@ -27,7 +27,7 @@ function minimalLayout(panels: SerializedDockview["panels"]): SerializedDockview
 
 describe("layoutStorage", () => {
   it("scopes the key per owner", () => {
-    expect(layoutStorageKey("org_1")).toBe("isol8.workspace.layout.v2:org_1");
+    expect(layoutStorageKey("org_1")).toBe("lightbulb.workspace.layout.v2:org_1");
   });
 
   it("round-trips a valid layout", () => {

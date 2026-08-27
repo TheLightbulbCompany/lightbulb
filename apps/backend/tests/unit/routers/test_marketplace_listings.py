@@ -1446,7 +1446,9 @@ def test_deploy_threads_reports_to_into_paperclip_create(
     )
     assert resp.status_code == 200, resp.text
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-agent-id"
-    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:marketplace-deploy:")
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith(
+        "lightbulb-agent-create:v1:marketplace-deploy:"
+    )
 
 
 def test_deploy_request_blank_reports_to_coerced_to_none():
@@ -2989,7 +2991,7 @@ def test_artifact_from_agent_exports_off_loop_and_reports_pruned_paths(
 
     mock_find_active.return_value = None
     mock_is_friday.return_value = False
-    mock_run_in_thread.return_value = _fake_package(pruned_paths=["isol8"])
+    mock_run_in_thread.return_value = _fake_package(pruned_paths=["lightbulb"])
     mock_replace.return_value = {"listing_id": "lst_42", "version": 1, "manifest_sha256": "abc123"}
 
     tc = authed_client_factory("u_seller", "seller@example.com")
@@ -2998,7 +3000,7 @@ def test_artifact_from_agent_exports_off_loop_and_reports_pruned_paths(
         json={"agent_id": "custom-1", "paths": ["README.md", "skills"]},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["pruned_paths"] == ["isol8"]
+    assert resp.json()["pruned_paths"] == ["lightbulb"]
     mock_run_in_thread.assert_called_once()
     assert mock_run_in_thread.call_args.args[0] is agent_export.export_agent_from_efs
     assert mock_run_in_thread.call_args.kwargs["paths"] == ["README.md", "skills"]
@@ -3017,12 +3019,12 @@ def test_artifact_from_agent_413s_when_workspace_exceeds_cap(
 
     mock_find_active.return_value = None
     mock_is_friday.return_value = False
-    mock_export.side_effect = ExportTooLargeError(file_count=2001, byte_count=1, largest=[("isol8", 70 << 20)])
+    mock_export.side_effect = ExportTooLargeError(file_count=2001, byte_count=1, largest=[("lightbulb", 70 << 20)])
 
     tc = authed_client_factory("u_seller", "seller@example.com")
     resp = tc.post("/api/v1/marketplace/listings/lst_42/artifact-from-agent", json={"agent_id": "custom-1"})
     assert resp.status_code == 413
-    assert "isol8" in resp.json()["detail"]
+    assert "lightbulb" in resp.json()["detail"]
     assert "paths" in resp.json()["detail"]
 
 

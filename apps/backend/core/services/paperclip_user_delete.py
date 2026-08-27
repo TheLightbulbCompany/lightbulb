@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #
 # BOTH entries stay, and the second one is not redundant: the bootstrap admin's
 # address differs PER ENVIRONMENT. Prod was renamed to the plus-addressed alias
-# so the instance_admin role can't leak into admin@isol8.co's regular Isol8
+# so the instance_admin role can't leak into admin@isol8.co's regular Lightbulb AI
 # identity; dev still carries the bare address from before that rename (see
 # auth-stack.ts's PaperclipAdminCredentials comment, and
 # paperclip_admin_session's module docstring). The live email is in Secrets

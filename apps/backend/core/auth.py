@@ -265,7 +265,7 @@ async def get_optional_user(
         return None
 
 
-# Email domains that identify Isol8 team members. Any authenticated user whose
+# Email domains that identify Lightbulb AI team members. Any authenticated user whose
 # Clerk JWT carries an email ending with one of these suffixes is a platform
 # admin. No env var, no Secrets Manager entry, no Clerk user IDs in git — Clerk
 # itself holds the list of who can sign in on these domains, and this gate just
@@ -295,7 +295,7 @@ _PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(
 
 
 def is_platform_admin_email(email: str | None) -> bool:
-    """True when *email* identifies an Isol8 team member: ends with one of
+    """True when *email* identifies an Lightbulb AI team member: ends with one of
     ``_PLATFORM_ADMIN_EMAIL_DOMAINS`` or is in ``_PLATFORM_ADMIN_EXTRA_EMAILS``.
     The single definition of "internal" — shared by the admin route gate and the
     internal-owner tagging in run analytics."""
@@ -305,7 +305,7 @@ def is_platform_admin_email(email: str | None) -> bool:
 
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
     """
-    Allow only platform admins (Isol8 team) — distinct from customer org admins.
+    Allow only platform admins (Lightbulb AI team) — distinct from customer org admins.
 
     Gate: the Clerk JWT's ``email`` claim must pass ``is_platform_admin_email``.
     Clerk populates the claim from the user's primary verified email. Removing

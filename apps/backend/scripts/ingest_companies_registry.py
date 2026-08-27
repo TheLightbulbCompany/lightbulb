@@ -35,7 +35,7 @@ from core.services.agent_export import _scan_tarball_for_safety_flags as scan_ta
 from core.services.company_package import parse_company_meta
 from core.services.marketplace_service import _upload_artifact_to_s3
 
-ISOL8_SYSTEM_SELLER_ID = "__isol8__"
+LIGHTBULB_SYSTEM_SELLER_ID = "__isol8__"
 SOURCE_REPO = "paperclipai/companies"
 _EXCLUDED = {".git", ".DS_Store", "__pycache__", "node_modules"}
 # Registry packages out of ingestion scope: not deployable on any current tier.
@@ -121,7 +121,7 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
         price_cents=0,
         tags=["company"],
         category="company",
-        seller_id=ISOL8_SYSTEM_SELLER_ID,
+        seller_id=LIGHTBULB_SYSTEM_SELLER_ID,
         s3_prefix=s3_prefix,
         manifest_sha256=sha,
         manifest_json_str=json.dumps(manifest),
@@ -134,7 +134,7 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
     await marketplace_repo.update_artifact_fields(
         listing_id=listing_id,
         version=1,
-        seller_id=ISOL8_SYSTEM_SELLER_ID,
+        seller_id=LIGHTBULB_SYSTEM_SELLER_ID,
         sha=sha,
         manifest=manifest,
         s3_prefix=s3_prefix,
@@ -143,13 +143,13 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
     await marketplace_repo.mark_review(
         listing_id=listing_id,
         version=1,
-        seller_id=ISOL8_SYSTEM_SELLER_ID,
+        seller_id=LIGHTBULB_SYSTEM_SELLER_ID,
         now_iso=now_iso,
     )
     await marketplace_repo.mark_published(
         listing_id=listing_id,
         version=1,
-        approved_by=ISOL8_SYSTEM_SELLER_ID,
+        approved_by=LIGHTBULB_SYSTEM_SELLER_ID,
         now_iso=now_iso,
     )
     # Register the slug so a second registry dir declaring the same slug in

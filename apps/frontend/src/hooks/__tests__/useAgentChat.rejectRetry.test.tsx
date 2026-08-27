@@ -144,7 +144,7 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
   });
 
   it("a RETRYABLE GatewayRpcError (container starting up, retryable:true) keeps the skeleton and retries, then recovers", async () => {
-    const { GatewayRpcError } = await import("@isol8/shared");
+    const { GatewayRpcError } = await import("@lightbulb/shared");
     let reads = 0;
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
@@ -178,7 +178,7 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
   });
 
   it("a NON-retryable GatewayRpcError (No container provisioned) terminates immediately — no retry, does not hold the loading shell", async () => {
-    const { GatewayRpcError } = await import("@isol8/shared");
+    const { GatewayRpcError } = await import("@lightbulb/shared");
     let reads = 0;
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {

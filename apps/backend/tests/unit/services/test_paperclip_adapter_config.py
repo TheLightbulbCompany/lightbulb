@@ -90,7 +90,7 @@ def test_synthesize_returns_canonical_shape(monkeypatch):
         service_token="JWT_TOKEN_HERE",
         user_id="user_123",
     )
-    # Token must live in the URL query string — the Isol8 WS API Gateway
+    # Token must live in the URL query string — the Lightbulb AI WS API Gateway
     # authorizer reads it from `route.request.querystring.token`. clientId routes
     # the connection to the operator relay at $connect.
     assert cfg["url"] == f"wss://ws-dev.{APEX}?token=JWT_TOKEN_HERE&clientId=paperclip-operator"

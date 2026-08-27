@@ -14,8 +14,14 @@ import {
 // v2: Mission Control put Browser (not Dashboard) in the right-top slot. The
 // bump orphans every v1 blob so all owners land on the new default once;
 // readLayout drops the dead v1 key so it does not sit in localStorage forever.
-const KEY_PREFIX = "isol8.workspace.layout.v2";
-const LEGACY_KEY_PREFIX = "isol8.workspace.layout.v1";
+// Renamed from `isol8.*` at the Lightbulb AI rebrand — every owner lands on
+// the default layout once. LEGACY_KEY_PREFIXES is the list readLayout sweeps;
+// it must keep naming the OLD strings, which is where the stale blobs live.
+const KEY_PREFIX = "lightbulb.workspace.layout.v2";
+const LEGACY_KEY_PREFIXES = [
+  "isol8.workspace.layout.v2",
+  "isol8.workspace.layout.v1",
+];
 
 // Params that may live on a panel while it's open but must NOT survive into
 // the persisted blob. initialTab is a navigation intent (the Get Started
@@ -244,7 +250,9 @@ export function readLayout(
 ): SerializedDockview | null {
   if (typeof window === "undefined") return null;
   try {
-    window.localStorage.removeItem(`${LEGACY_KEY_PREFIX}:${scopeId}`);
+    for (const legacy of LEGACY_KEY_PREFIXES) {
+      window.localStorage.removeItem(`${legacy}:${scopeId}`);
+    }
     const raw = window.localStorage.getItem(layoutStorageKey(scopeId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredLayout>;

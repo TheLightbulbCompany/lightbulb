@@ -41,7 +41,7 @@ const GOVERNED_AGENT_CREATION_ENVIRONMENTS = new Set<string>(["dev"]);
 /**
  * PaperclipStack — runs the pinned Paperclip image (an extended overlay of the
  * official image; see apps/infra/paperclip-extended/) as a single Fargate
- * service inside the Isol8 VPC.
+ * service inside the Lightbulb AI VPC.
  *
  * Reachability: the FastAPI backend talks to Paperclip over Cloud Map
  * service discovery. The service registers as `paperclip` inside the
@@ -190,7 +190,7 @@ export class PaperclipStack extends cdk.Stack {
     this.taskSecurityGroup = new ec2.SecurityGroup(this, "PaperclipTaskSg", {
       vpc: props.vpc,
       // ASCII-only: EC2 GroupDescription rejects non-ASCII (em-dashes, arrows, etc.)
-      description: `Isol8 ${env} Paperclip task SG - Aurora egress + ALB/FastAPI ingress`,
+      description: `Lightbulb AI ${env} Paperclip task SG - Aurora egress + ALB/FastAPI ingress`,
       allowAllOutbound: true,
     });
 
@@ -233,7 +233,7 @@ export class PaperclipStack extends cdk.Stack {
     // ─────────────────────────────────────────────────────────────────
     const executionRole = new iam.Role(this, "PaperclipTaskExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip Fargate task execution role`,
+      description: `Lightbulb AI ${env} Paperclip Fargate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -288,7 +288,7 @@ export class PaperclipStack extends cdk.Stack {
     // ─────────────────────────────────────────────────────────────────
     const taskRole = new iam.Role(this, "PaperclipTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip Fargate task role`,
+      description: `Lightbulb AI ${env} Paperclip Fargate task role`,
     });
     taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -360,7 +360,7 @@ export class PaperclipStack extends cdk.Stack {
     // PAPERCLIP_PUBLIC_URL is Better Auth's ORIGIN IDENTITY — it feeds the auth
     // baseURL, the trustedOrigins set, the secure-cookie scheme, and the `Origin`
     // header the backend BFF sends on /api/auth/* calls (server/src/auth/better-auth.ts).
-    // It is NEVER dereferenced over the network (the Teams UI is native in the isol8
+    // It is NEVER dereferenced over the network (the Teams UI is native in the Lightbulb AI
     // frontend; the backend reaches Paperclip over PAPERCLIP_INTERNAL_URL), so the
     // fact that `company.isol8.co` is NXDOMAIN does not matter here — it just has to
     // be a STABLE https origin that the backend's Origin header matches. Pointing it
@@ -422,7 +422,7 @@ export class PaperclipStack extends cdk.Stack {
         HOST: "0.0.0.0",
         SERVE_UI: "true",
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
-        // Isol8 tenants must contain EXACTLY the Isol8-seeded agents
+        // Lightbulb AI tenants must contain EXACTLY the Lightbulb AI-seeded agents
         // (Friday + Atlas). The fork (v2026.7-isol8.5+) gates its built-in
         // starter-agent auto-provisioning (Reflection Coach / Summarizer)
         // behind this env var — covering BOTH company-create and the
@@ -431,9 +431,9 @@ export class PaperclipStack extends cdk.Stack {
         // (409 built_in_agent_undeletable), so not creating them is the
         // only path. Inert on images older than isol8.5 (unread env).
         PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
-        // Isol8 owns the agent cap, OpenClaw pairing, and marketplace
+        // Lightbulb AI owns the agent cap, OpenClaw pairing, and marketplace
         // provenance, but per-user containers reach Paperclip directly on the
-        // in-VPC host (paperclip_adapter_config.paperclipApiUrl), so the Isol8
+        // in-VPC host (paperclip_adapter_config.paperclipApiUrl), so the Lightbulb AI
         // proxy's route filter never sees an agent's call. With this on, the
         // fork refuses agent creation whenever the in-flight request is
         // authenticated as an agent principal — enforced in agentService.create,
@@ -441,7 +441,7 @@ export class PaperclipStack extends cdk.Stack {
         // CEO-agent company import are covered too — and requires a
         // `hire_agent` approval to name a pre-created pending agent, so
         // approving one activates rather than mints. Board principals — which
-        // is only ever the Isol8 control plane, since the proxy already blocks
+        // is only ever the Lightbulb AI control plane, since the proxy already blocks
         // POST /agents and /agent-hires for browsers — are unaffected.
         //
         // FAILS OPEN by design: any value other than 1/true/yes/on leaves the
@@ -634,7 +634,7 @@ export class PaperclipStack extends cdk.Stack {
     // ─────────────────────────────────────────────────────────────────
     const migrateExecutionRole = new iam.Role(this, "PaperclipMigrateExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip migrate task execution role`,
+      description: `Lightbulb AI ${env} Paperclip migrate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -771,7 +771,7 @@ export class PaperclipStack extends cdk.Stack {
     });
 
     // Tags
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "Lightbulb AI");
     cdk.Tags.of(this).add("Environment", env);
     cdk.Tags.of(this).add("Component", "paperclip");
   }

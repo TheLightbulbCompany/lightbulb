@@ -52,7 +52,7 @@ const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 /**
  * Maps a connect/setup ApiError to a short, user-facing string. The backend
  * hands back a useful `detail` (→ ApiError.message) for the 400/409 cases —
- * "role must be in your own AWS account, not Isol8's", "run aws-setup first",
+ * "role must be in your own AWS account, not Lightbulb AI's", "run aws-setup first",
  * "invalid role ARN" — so those surface verbatim. 403 is special-cased for the
  * non-admin permission state.
  */

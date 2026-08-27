@@ -339,7 +339,7 @@ class TestSetWebhookSecret:
     """Verification is native in Paperclip now — arming a trigger means
     resolving public_id -> Paperclip's internal trigger id
     (``_lookup_trigger_detail``) and rotating that trigger's Paperclip
-    secret to the caller-supplied value. No Isol8-side secret store,
+    secret to the caller-supplied value. No Lightbulb AI-side secret store,
     marker, or cache is touched anymore."""
 
     @pytest.fixture(autouse=True)

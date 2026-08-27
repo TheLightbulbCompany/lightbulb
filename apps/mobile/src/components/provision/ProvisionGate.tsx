@@ -48,7 +48,7 @@
  */
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { createApiClient } from "@isol8/shared";
+import { createApiClient } from "@lightbulb/shared";
 import {
   ActivityIndicator,
   Alert,

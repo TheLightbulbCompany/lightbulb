@@ -1,7 +1,7 @@
 // Ported from upstream Paperclip's Identity.tsx
 // (paperclip/ui/src/components/Identity.tsx) (MIT, (c) 2025 Paperclip AI).
 // Deviations from upstream: upstream wraps a shadcn <Avatar> built on
-// `radix-ui` (the meta-package). The Isol8 frontend ships no shadcn
+// `radix-ui` (the meta-package). The Lightbulb AI frontend ships no shadcn
 // avatar.tsx primitive at components/ui/, so we render a minimal
 // initials-on-circle avatar inline. Visual behaviour matches the upstream
 // fallback path; if a shadcn Avatar primitive ever lands, swap the inline

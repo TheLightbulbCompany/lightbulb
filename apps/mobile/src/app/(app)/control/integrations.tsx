@@ -16,7 +16,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ApiError, createApiClient } from "@isol8/shared";
+import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";

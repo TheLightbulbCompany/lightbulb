@@ -4,7 +4,7 @@
  * Kept separate from index.ts so it is testable without loading the OpenClaw
  * plugin SDK (and therefore the whole agent runtime) into the test process.
  */
-export interface Isol8Env {
+export interface LightbulbEnv {
     base: string;
     ownerId: string;
     token: string;
@@ -14,16 +14,16 @@ export type RawEnv = Record<string, string | undefined>;
  * Read backend base URL, owner id, and the container's hook credential.
  *
  * A BAKED plugin is byte-identical in every container, so unlike Atlas's
- * per-owner seed files (which substitute `{{ISOL8_BRIDGE_URL}}` at stage time)
+ * per-owner seed files (which substitute `{{LIGHTBULB_BRIDGE_URL}}` at stage time)
  * it cannot carry owner identity in its source. It must read it from the
- * environment — hence ISOL8_OWNER_ID, injected per task definition.
+ * environment — hence LIGHTBULB_OWNER_ID, injected per task definition.
  *
- * ISOL8_OWNER_ID is an identifier, not a credential. OPENCLAW_HOOK_TOKEN is
+ * LIGHTBULB_OWNER_ID is an identifier, not a credential. OPENCLAW_HOOK_TOKEN is
  * what actually authenticates the call, and the backend compares it
  * timing-safely against the named owner's own container row — so naming
  * another owner does not grant access to them.
  */
-export declare function resolveEnv(env: RawEnv): Isol8Env;
+export declare function resolveEnv(env: RawEnv): LightbulbEnv;
 /** Public, unauthenticated search — compact projection only. */
 export declare function buildSearchPath(query: string): string;
 /**

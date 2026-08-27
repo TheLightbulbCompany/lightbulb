@@ -31,7 +31,7 @@ export type IssueDetailLocationState = {
   issueDetailInboxQuickArchiveArmed?: boolean;
 };
 
-// Translate upstream `/issues/:id` to Isol8's canonical in-shell detail URL.
+// Translate upstream `/issues/:id` to Lightbulb AI's canonical in-shell detail URL.
 export function createIssueDetailPath(issuePathId: string): string {
   return teamsDetailUrl("issue", issuePathId);
 }

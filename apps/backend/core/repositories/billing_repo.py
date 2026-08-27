@@ -82,7 +82,7 @@ async def get_by_apple_original_transaction_id(original_transaction_id: str) -> 
     """Resolve the billing row an Apple auto-renewable subscription belongs to.
 
     App Store Server Notifications identify a subscription only by its
-    ``originalTransactionId`` — they carry no Isol8 owner id — so this is how a
+    ``originalTransactionId`` — they carry no Lightbulb AI owner id — so this is how a
     renewal, expiry, or refund finds the account to update. The mapping is
     written by :func:`set_apple_subscription` when the purchase is first linked.
 

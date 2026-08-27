@@ -49,7 +49,7 @@ def test_posthog_inbound_is_bearer_guided():
     p = get_provider("posthog")
     assert p.inbound is not None
     # Reverse-guided: still guided_paste (the owner creates the HTTP Webhook
-    # destination by hand in PostHog's UI), but the secret flows Isol8 →
+    # destination by hand in PostHog's UI), but the secret flows Lightbulb AI →
     # provider — PostHog sends no signature, only the Authorization header
     # the owner configures, verified by Paperclip's native bearer mode.
     assert p.inbound.webhook_registration == "guided_paste"
@@ -73,7 +73,7 @@ def test_posthog_inbound_is_bearer_guided():
     assert event.starter_prompt is not None
     assert "duplicate-activation-blocker" in event.starter_prompt
     assert "CloudWatch" in event.starter_prompt
-    assert "{{code, service=isol8-backend, env=prod}}" in event.starter_prompt
+    assert "{{code, service=lightbulb-backend, env=prod}}" in event.starter_prompt
     assert "conversation data" in event.starter_prompt
     assert "{event_label}" in p.inbound.template.title
 

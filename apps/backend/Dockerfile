@@ -1,8 +1,8 @@
 # =============================================================================
-# Isol8 Backend Dockerfile
+# Lightbulb AI Backend Dockerfile
 # =============================================================================
-# Build: docker build -t isol8-backend .
-# Run:   docker run -p 8000:8000 --env-file .env isol8-backend
+# Build: docker build -t lightbulb-backend .
+# Run:   docker run -p 8000:8000 --env-file .env lightbulb-backend
 # =============================================================================
 
 # -----------------------------------------------------------------------------

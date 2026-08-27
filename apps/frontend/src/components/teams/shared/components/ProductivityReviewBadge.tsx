@@ -5,7 +5,7 @@
 // Paperclip AI). Two deviations from upstream:
 //   * React-Router `Link to=` -> next/link `href=`
 //   * Upstream's <Tooltip> wrapper requires the shadcn tooltip primitive +
-//     @radix-ui/react-tooltip, neither of which exist in the Isol8 frontend
+//     @radix-ui/react-tooltip, neither of which exist in the Lightbulb AI frontend
 //     yet. Until they land we fall back to a native `title=` attribute on
 //     the link so the trigger label still surfaces on hover. The richer
 //     multi-line popover content is preserved in the JSX below but rendered

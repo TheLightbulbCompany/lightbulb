@@ -1,5 +1,5 @@
 /**
- * Web's `VisibilityAdapter` for `useOnboardingStatus` (`@isol8/shared`).
+ * Web's `VisibilityAdapter` for `useOnboardingStatus` (`@lightbulb/shared`).
  *
  * Deliberately `document.visibilityState`, NOT presence (`@/lib/presence`'s
  * `isPresent`, which additionally requires recent input): occlusion — a tab
@@ -11,7 +11,7 @@
  */
 "use client";
 
-import type { VisibilityAdapter } from "@isol8/shared";
+import type { VisibilityAdapter } from "@lightbulb/shared";
 
 export const webVisibilityAdapter: VisibilityAdapter = {
   isVisible: () =>

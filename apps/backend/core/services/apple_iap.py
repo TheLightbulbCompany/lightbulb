@@ -94,7 +94,7 @@ class AppleSubscription:
     product_id: str
     # None for a lifetime/non-renewing shape; every auto-renewable one has it.
     expires_at_ms: int | None
-    #: Isol8 ``subscription_status`` this transaction implies.
+    #: Lightbulb AI ``subscription_status`` this transaction implies.
     status: str
     #: ``appAccountToken`` the client stamped at purchase, when present — the
     #: UUID form of an owner id (see :func:`owner_account_token`), not the owner
@@ -483,7 +483,7 @@ def _status_for(
     now_ms: int | None = None,
     in_grace_period: bool = False,
 ) -> str:
-    """Map an Apple event to the Isol8 ``subscription_status`` vocabulary.
+    """Map an Apple event to the Lightbulb AI ``subscription_status`` vocabulary.
 
     Kept as one function so the link path and the notification path can never
     disagree about what a given event means.
@@ -628,7 +628,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     # install base of un-stamped purchases to grandfather, and every transaction
     # that can exist comes from a build that stamps.
     #
-    # Deliberately narrows one case: an owner who deletes their Isol8 account
+    # Deliberately narrows one case: an owner who deletes their Lightbulb AI account
     # and signs up again cannot restore onto the new one, because the token is
     # bound to the id that bought it. That is the correct trade — the looser
     # rule ("allow it when no row claims the transaction") makes deleting an

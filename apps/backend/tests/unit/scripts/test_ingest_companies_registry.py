@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from scripts.ingest_companies_registry import (
-    ISOL8_SYSTEM_SELLER_ID,
+    LIGHTBULB_SYSTEM_SELLER_ID,
     build_package_tarball,
     discover_packages,
     ingest_all,
@@ -93,7 +93,7 @@ async def test_ingest_one_pipeline(monkeypatch):
         "commit": "abc123",
         "path": "gstack",
     }
-    assert put_draft.call_args.kwargs["seller_id"] == ISOL8_SYSTEM_SELLER_ID
+    assert put_draft.call_args.kwargs["seller_id"] == LIGHTBULB_SYSTEM_SELLER_ID
     assert put_draft.call_args.kwargs["format"] == "company"
     assert put_draft.call_args.kwargs["price_cents"] == 0
     # update_artifact_fields must run between draft and review: it flips
@@ -102,8 +102,8 @@ async def test_ingest_one_pipeline(monkeypatch):
     assert update_artifact.await_count == 1
     assert update_artifact.call_args.kwargs["manifest"] == manifest
     assert update_artifact.call_args.kwargs["sha"] == "sha"
-    assert update_artifact.call_args.kwargs["seller_id"] == ISOL8_SYSTEM_SELLER_ID
-    assert mark_published.call_args.kwargs["approved_by"] == ISOL8_SYSTEM_SELLER_ID
+    assert update_artifact.call_args.kwargs["seller_id"] == LIGHTBULB_SYSTEM_SELLER_ID
+    assert mark_published.call_args.kwargs["approved_by"] == LIGHTBULB_SYSTEM_SELLER_ID
 
 
 @pytest.mark.asyncio

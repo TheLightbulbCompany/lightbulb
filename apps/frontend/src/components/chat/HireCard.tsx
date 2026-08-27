@@ -36,7 +36,7 @@ export interface HireListing {
 }
 
 export interface HireSuggestion {
-  kind: "isol8.hire_suggestion";
+  kind: "lightbulb.hire_suggestion";
   reason: string;
   listings: HireListing[];
 }
@@ -66,12 +66,16 @@ function asListing(value: unknown): HireListing | null {
 export function parseHireSuggestion(value: unknown): HireSuggestion | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
-  if (v.kind !== "isol8.hire_suggestion") return null;
+  // `isol8.*` is the pre-rebrand kind: the emitting plugin is baked into the
+  // container image, which is promoted separately from this app, so both
+  // spellings are accepted until every container runs the renamed plugin.
+  if (v.kind !== "lightbulb.hire_suggestion" && v.kind !== "isol8.hire_suggestion")
+    return null;
   if (!Array.isArray(v.listings)) return null;
   const listings = v.listings.map(asListing).filter((l): l is HireListing => l !== null);
   if (listings.length === 0) return null;
   return {
-    kind: "isol8.hire_suggestion",
+    kind: "lightbulb.hire_suggestion",
     reason: typeof v.reason === "string" ? v.reason : "",
     listings,
   };

@@ -16,7 +16,7 @@ The two unauthenticated routes — ``sign_up_user`` and
 ``sign_in_user`` — hit Better Auth's public endpoints directly and
 don't carry any auth at all.
 
-Endpoint surface verified against the Isol8 Paperclip FORK
+Endpoint surface verified against the Lightbulb AI Paperclip FORK
 (``Isol8AI/paperclip``) — what we actually deploy. The vanilla
 ``paperclipai/paperclip`` clone can diverge; don't verify against it.
 Paths below are fork-relative:
@@ -53,7 +53,7 @@ Notable deviations from the original plan template:
     per-user board-key minting endpoint; board API keys are only
     mintable via the CLI auth challenge flow
     (``server/src/services/board-auth.ts``). The new auth model
-    instead creates a Better Auth account per Isol8 user (see
+    instead creates a Better Auth account per Lightbulb AI user (see
     ``sign_up_user`` / ``sign_in_user``) and authenticates proxied
     requests with the resulting session token.
   - ``create_company`` body is ``{name, description?, budgetMonthlyCents?}``
@@ -211,7 +211,7 @@ class PaperclipAgentCreateReplayMiss(PaperclipApiError):
 
 class PaperclipAdminClient:
     """Async client wrapping the subset of Paperclip's REST API that
-    Isol8's provisioning + cleanup paths need.
+    Lightbulb AI's provisioning + cleanup paths need.
 
     The underlying ``httpx.AsyncClient`` is supplied by the caller so
     that it can be shared with other Paperclip-bound code (e.g. proxy

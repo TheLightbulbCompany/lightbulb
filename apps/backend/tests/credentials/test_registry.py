@@ -289,7 +289,7 @@ def test_github_is_on_materializer_rail():
     assert p.requires.bins == ["gh"]
     assert p.wiring.materializer == "gh_cli"
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
-    # One Isol8-owned app per env, no BYO and no DCR.
+    # One Lightbulb AI-owned app per env, no BYO and no DCR.
     assert p.oauth is not None
     assert p.oauth.platform_app == "github"
     assert not p.byo_required and p.oauth.registration_url is None

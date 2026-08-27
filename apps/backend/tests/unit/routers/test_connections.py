@@ -467,7 +467,7 @@ class TestEnvGatedProvider:
             display_name="X",
             acquisition="direct_oauth",
             actor="cli",
-            refresh_owner="isol8_rematerialize",
+            refresh_owner="lightbulb_rematerialize",
             wiring={"materializer": "instagram_cli"},
             oauth={
                 "authorization_url": "https://x/a",
@@ -2097,7 +2097,7 @@ class TestAwsComplete:
     # --- Trust-pin gate: a role IN OUR account is allowed ONLY if its trust
     # policy pins the platform trust principal (our account root) + THIS
     # owner's ExternalId, verified via iam:GetRole. This is the guarantee that
-    # no tenant can ever connect one of Isol8's own AWS roles.
+    # no tenant can ever connect one of Lightbulb AI's own AWS roles.
     _PLATFORM_PRINCIPAL = "arn:aws:iam::877352799272:root"
     _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/isol8-connector"
 
@@ -2255,7 +2255,7 @@ class TestAwsComplete:
     ):
         # An our-account ARN with NO prior aws-setup (no stored ExternalId) must
         # yield the accurate 409 "run aws-setup first" BEFORE the trust-pin check
-        # — not the misleading "not Isol8's" 400.
+        # — not the misleading "not Lightbulb AI's" 400.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
         mock_store.get = AsyncMock(return_value=None)
         mock_apply.apply_connection = AsyncMock()
@@ -2539,7 +2539,7 @@ class TestAwsCredentialsEndpoint:
         assert kwargs["RoleArn"] == "arn:aws:iam::123456789012:role/IsolReadOnly"
         assert kwargs["ExternalId"] == "ext_abc"
         assert kwargs["DurationSeconds"] == 3600
-        assert kwargs["RoleSessionName"].startswith("isol8-")
+        assert kwargs["RoleSessionName"].startswith("lightbulb-")
 
     @pytest.mark.asyncio
     async def test_missing_bearer_is_401(self, async_client):

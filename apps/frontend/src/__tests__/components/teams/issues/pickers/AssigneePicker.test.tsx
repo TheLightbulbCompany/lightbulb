@@ -237,7 +237,7 @@ describe("AssigneePicker", () => {
     const user = userEvent.setup();
     // Pre-seed: "Saturday" is the most-recently-picked.
     localStorage.setItem(
-      "isol8.teams.recent-assignees",
+      "lightbulb.teams.recent-assignees",
       JSON.stringify(["ag_3"]),
     );
     render(

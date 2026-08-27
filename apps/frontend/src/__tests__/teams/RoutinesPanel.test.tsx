@@ -802,7 +802,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(screen.getByText("Bearer pcsec_ph")).toBeInTheDocument();
     expect(screen.getByText(/data pipelines/i)).toBeInTheDocument();
 
-    // The secret flows Isol8 → PostHog: no paste-back input, no arming PUT,
+    // The secret flows Lightbulb AI → PostHog: no paste-back input, no arming PUT,
     // and no "Registered." claim — the owner still has PostHog-side setup.
     expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Registered.")).not.toBeInTheDocument();

@@ -8,7 +8,7 @@
 
 ## TL;DR
 
-The stale brief's wrapper-shim (`isol8-tool`) is **not required**. OpenClaw already has the runtime machinery to deliver credentials cleanly:
+The stale brief's wrapper-shim (`lightbulb-tool`) is **not required**. OpenClaw already has the runtime machinery to deliver credentials cleanly:
 
 1. `mcp.servers[].env` accepts string values, passed explicitly to the child at spawn — full parent-env-inheritance is NOT needed.
 2. Config-load env substitution (`${VAR}`) is a **documented first-class feature**, not "accidental." The discovery doc undersells this.
@@ -24,8 +24,8 @@ The stale brief's wrapper-shim (`isol8-tool`) is **not required**. OpenClaw alre
 - Marketplace manifest schema (still undefined; deferred to a separate RFC)
 
 **What we DON'T need to build:**
-- `isol8-tool` wrapper shim
-- `isol8-credinit` Go binary
+- `lightbulb-tool` wrapper shim
+- `lightbulb-credinit` Go binary
 - Per-MCP wrapper scripts
 - SIGHUP reload protocol for OpenClaw children
 - A new file watcher on the credential file
@@ -133,16 +133,16 @@ Same rubric as discovery doc §10.3, but now informed by §1 above. Designs rank
 
 **Score:** Same as C on #16/#17/#19. **Worse on #18** because in-life refresh requires more orchestration.
 
-### Design A — Wrapper shim (`isol8-tool`)
+### Design A — Wrapper shim (`lightbulb-tool`)
 
-**Mechanism:** as described in the stale brief §2.3. Every credential-needing tool is invoked through `isol8-tool` which sources `/run/isol8/env/credentials.env` then `exec`s the real binary. Refresh updates the env file; next spawn picks it up.
+**Mechanism:** as described in the stale brief §2.3. Every credential-needing tool is invoked through `lightbulb-tool` which sources `/run/isol8/env/credentials.env` then `exec`s the real binary. Refresh updates the env file; next spawn picks it up.
 
 **Pros:**
 - Tokens never in openclaw.json or any other config artifact.
 - Same mechanism for MCPs, CLIs, plugins, skills (anything invoked as a process).
 
 **Cons:**
-- New binary + new convention + new safety-scanner rule (every credentialed tool must declare `command: isol8-tool, args: [<real_command>, ...]`).
+- New binary + new convention + new safety-scanner rule (every credentialed tool must declare `command: lightbulb-tool, args: [<real_command>, ...]`).
 - Long-running MCP children still need SIGHUP+respawn to see new tokens (file is re-sourced only at exec time; in-process env doesn't update). We'd build the SIGHUP daemon ourselves.
 - Materializer handling still needed separately for file-based creds.
 
@@ -152,7 +152,7 @@ Same rubric as discovery doc §10.3, but now informed by §1 above. Designs rank
 
 **Status:** PR #72548 (plugin seam) explicitly defers `mcp.servers[].env` SecretRef coverage. Issue #76493 (open the schema) has no PR. Neither lands in our timeline.
 
-**Note:** even if both land, the migration cost from Design C is ~1 week (write a Nango SecretRef plugin against #72548's SDK, swap literal values for `{source: "nango", provider: "isol8", id: "slack/access_token"}` references). Nothing about Design C makes a future Design D migration harder.
+**Note:** even if both land, the migration cost from Design C is ~1 week (write a Nango SecretRef plugin against #72548's SDK, swap literal values for `{source: "nango", provider: "Lightbulb AI", id: "slack/access_token"}` references). Nothing about Design C makes a future Design D migration harder.
 
 ---
 

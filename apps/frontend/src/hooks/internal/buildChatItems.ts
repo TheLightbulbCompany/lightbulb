@@ -2,7 +2,7 @@
 //
 // Build a flat render-item list from useAgentChat's state. Mirrors
 // upstream's `ui/src/ui/chat/build-chat-items.ts`
-// with one addition: a `live-thinking` item kind (Isol8 keeps live
+// with one addition: a `live-thinking` item kind (Lightbulb AI keeps live
 // thinking, upstream drops it).
 
 import type { ChatRenderItem, HistoryMessage } from "./types";

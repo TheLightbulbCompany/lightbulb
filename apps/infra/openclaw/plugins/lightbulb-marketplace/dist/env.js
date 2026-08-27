@@ -8,23 +8,23 @@
  * Read backend base URL, owner id, and the container's hook credential.
  *
  * A BAKED plugin is byte-identical in every container, so unlike Atlas's
- * per-owner seed files (which substitute `{{ISOL8_BRIDGE_URL}}` at stage time)
+ * per-owner seed files (which substitute `{{LIGHTBULB_BRIDGE_URL}}` at stage time)
  * it cannot carry owner identity in its source. It must read it from the
- * environment — hence ISOL8_OWNER_ID, injected per task definition.
+ * environment — hence LIGHTBULB_OWNER_ID, injected per task definition.
  *
- * ISOL8_OWNER_ID is an identifier, not a credential. OPENCLAW_HOOK_TOKEN is
+ * LIGHTBULB_OWNER_ID is an identifier, not a credential. OPENCLAW_HOOK_TOKEN is
  * what actually authenticates the call, and the backend compares it
  * timing-safely against the named owner's own container row — so naming
  * another owner does not grant access to them.
  */
 export function resolveEnv(env) {
-    const base = (env.ISOL8_API_URL ?? "").trim().replace(/\/+$/, "");
-    const ownerId = (env.ISOL8_OWNER_ID ?? "").trim();
+    const base = (env.LIGHTBULB_API_URL ?? "").trim().replace(/\/+$/, "");
+    const ownerId = (env.LIGHTBULB_OWNER_ID ?? "").trim();
     const token = (env.OPENCLAW_HOOK_TOKEN ?? "").trim();
     if (!base)
-        throw new Error("ISOL8_API_URL is not set on this container");
+        throw new Error("LIGHTBULB_API_URL is not set on this container");
     if (!ownerId)
-        throw new Error("ISOL8_OWNER_ID is not set on this container");
+        throw new Error("LIGHTBULB_OWNER_ID is not set on this container");
     if (!token)
         throw new Error("OPENCLAW_HOOK_TOKEN is not set on this container");
     return { base, ownerId, token };

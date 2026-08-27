@@ -63,7 +63,7 @@ async def list_routines(ctx: TeamsContext = Depends(_ctx)):
     """List routines in the caller's company.
 
     Archived routines are filtered out: ``delete_routine`` archives rather
-    than deletes (upstream has no DELETE route), and Isol8 has no archive
+    than deletes (upstream has no DELETE route), and Lightbulb AI has no archive
     view — an archived row surfacing here would resurrect a "deleted"
     routine in the panel with controls that cannot work on it.
     """

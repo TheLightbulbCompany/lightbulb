@@ -46,8 +46,8 @@ function makeRoster(over: Partial<Record<string, unknown>> = {}) {
   };
 }
 let mockAgents = makeRoster();
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useAgents: () => mockAgents,
   useGatewayRpcMutation: () => jest.fn(),
 }));

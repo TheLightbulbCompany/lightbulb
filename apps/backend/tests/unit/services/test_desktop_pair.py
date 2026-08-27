@@ -53,12 +53,12 @@ def test_build_paired_entry_derives_device_id_from_pubkey():
     entry = build_paired_entry(
         pubkey_pem=pubkey_pem,
         client_id="openclaw-macos",
-        display_name="Alice | Isol8 Mac",
+        display_name="Alice | Lightbulb AI Mac",
         commands=list(DESKTOP_MAC_COMMANDS),
     )
     assert entry["role"] == "node"
     assert entry["clientId"] == "openclaw-macos"
-    assert entry["displayName"] == "Alice | Isol8 Mac"
+    assert entry["displayName"] == "Alice | Lightbulb AI Mac"
     assert entry["commands"] == list(DESKTOP_MAC_COMMANDS)
     assert len(entry["deviceId"]) == 64
     assert all(c in "0123456789abcdef" for c in entry["deviceId"])
@@ -178,7 +178,7 @@ def test_build_node_paired_entry_approves_openclaw_command_surface():
     device_entry = build_paired_entry(
         pubkey_pem=pubkey_pem,
         client_id="node-host",
-        display_name="Alice | Isol8 Desktop (CLI)",
+        display_name="Alice | Lightbulb AI Desktop (CLI)",
         commands=list(DESKTOP_CLI_COMMANDS),
     )
 
@@ -431,8 +431,8 @@ async def test_pair_desktop_devices_preserves_existing_operator_entry():
         "deviceId": existing_operator_id,
         "publicKey": "-----BEGIN PUBLIC KEY-----\noperator-key\n-----END PUBLIC KEY-----\n",
         "role": "operator",
-        "clientId": "isol8-operator",
-        "displayName": "Isol8 backend operator",
+        "clientId": "lightbulb-operator",
+        "displayName": "Lightbulb AI backend operator",
         "commands": [],
         "tokens": {"node": {"token": "operator-token", "createdAtMs": 1}},
         "createdAtMs": 1,
@@ -613,14 +613,14 @@ async def test_pair_desktop_devices_preserves_other_org_members_entries():
                 "clientId": "openclaw-macos",
                 "userId": "user_bob",
                 "publicKey": "-----BEGIN PUBLIC KEY-----\nbob-mac\n-----END PUBLIC KEY-----\n",
-                "displayName": "Bob | Isol8 Mac",
+                "displayName": "Bob | Lightbulb AI Mac",
             },
             bob_cli_id: {
                 "deviceId": bob_cli_id,
                 "clientId": "node-host",
                 "userId": "user_bob",
                 "publicKey": "-----BEGIN PUBLIC KEY-----\nbob-cli\n-----END PUBLIC KEY-----\n",
-                "displayName": "Bob | Isol8 Desktop (CLI)",
+                "displayName": "Bob | Lightbulb AI Desktop (CLI)",
             },
         }
     )
@@ -793,14 +793,14 @@ async def test_pair_desktop_devices_does_not_overwrite_other_users_stamp_on_pubk
                 "publicKey": _public_key_raw_base64url(tauri_pub),
                 "clientId": "openclaw-macos",
                 "userId": "user_bob",
-                "displayName": "Bob | Isol8 Mac",
+                "displayName": "Bob | Lightbulb AI Mac",
             },
             cli_device_id: {
                 "deviceId": cli_device_id,
                 "publicKey": _public_key_raw_base64url(cli_pub),
                 "clientId": "node-host",
                 "userId": "user_bob",
-                "displayName": "Bob | Isol8 Desktop (CLI)",
+                "displayName": "Bob | Lightbulb AI Desktop (CLI)",
             },
         }
     )

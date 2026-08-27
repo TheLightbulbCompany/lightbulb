@@ -7,7 +7,7 @@ Covers the cookie contract both surfaces (Teams BFF + board proxy) share:
   - parallel cold start: N concurrent resolves -> exactly one ``mint``
     (singleflight coalesces the burst).
   - binding rejection: a session cookie with no / mismatched
-    ``isol8_pc_bind`` is treated as cold (confused-deputy guard).
+    ``lightbulb_pc_bind`` is treated as cold (confused-deputy guard).
   - force=True: evicts the singleflight buffer and re-mints.
 """
 
@@ -68,7 +68,7 @@ async def test_warm_path_reuses_bound_cookie_without_minting():
     mint, calls = _mint_factory("should-not-be-used")
     cookies = {
         _SESSION_NAME: "abc123",
-        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=abc123"),
+        "lightbulb_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=abc123"),
     }
     resp = _FakeResponse()
 
@@ -91,7 +91,7 @@ async def test_cold_start_mints_once_and_seeds_both_cookies():
     assert calls["n"] == 1
     # Both the session cookie and the binding cookie were seeded.
     assert _SESSION_NAME in resp.cookies
-    assert "isol8_pc_bind" in resp.cookies
+    assert "lightbulb_pc_bind" in resp.cookies
     # Session cookie is HttpOnly and scoped to the configured product apex.
     seeded = resp.cookies[_SESSION_NAME]
     assert seeded["httponly"] is True
@@ -131,7 +131,7 @@ async def test_mismatched_binding_is_rejected():
     # Binding cookie is for a DIFFERENT user -> confused-deputy guard fires.
     cookies = {
         _SESSION_NAME: "u2s-cookie",
-        "isol8_pc_bind": mint_binding("u2", f"{_SESSION_NAME}=u2s-cookie"),
+        "lightbulb_pc_bind": mint_binding("u2", f"{_SESSION_NAME}=u2s-cookie"),
     }
     resp = _FakeResponse()
 
@@ -150,7 +150,7 @@ async def test_right_user_wrong_session_token_is_rejected():
     mint, calls = _mint_factory(f"{_SESSION_NAME}=minted")
     cookies = {
         _SESSION_NAME: "injected-different-token",
-        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=the-real-token"),
+        "lightbulb_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=the-real-token"),
     }
     resp = _FakeResponse()
 
@@ -166,7 +166,7 @@ async def test_force_evicts_and_remints_even_with_bound_cookie():
     mint, calls = _mint_factory(f"{_SESSION_NAME}=re-minted")
     cookies = {
         _SESSION_NAME: "old-value",
-        "isol8_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=old-value"),
+        "lightbulb_pc_bind": mint_binding("u1", f"{_SESSION_NAME}=old-value"),
     }
     resp = _FakeResponse()
 

@@ -7,7 +7,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
-/** Seeded = Isol8 provisioning contract (Friday/Atlas), locked from
+/** Seeded = Lightbulb AI provisioning contract (Friday/Atlas), locked from
  *  deletion/meta-edits. The BFF stamps ``seeded`` from the persisted
  *  seeded-agent IDs (core/services/paperclip_openclaw_pairing.is_seeded_agent),
  *  so a user-created agent using role "ceo" or the name "Atlas" is never

@@ -359,7 +359,7 @@ def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGE
 
 
 def require_ws_internal_caller(
-    x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
+    x_lightbulb_ws_internal: Optional[str] = Header(None, alias="x-lightbulb-ws-internal"),
 ) -> None:
     """Authenticate the CALLER of the /ws/* endpoints — the trusted WebSocket
     Lambdas — not the user identity in x-user-id (which the caller chooses, so
@@ -387,7 +387,7 @@ def require_ws_internal_caller(
             "rejecting /ws/* calls until the secret is configured"
         )
         raise HTTPException(status_code=503, detail="WebSocket gateway not configured")
-    if not x_isol8_ws_internal or not hmac.compare_digest(x_isol8_ws_internal, secret):
+    if not x_lightbulb_ws_internal or not hmac.compare_digest(x_lightbulb_ws_internal, secret):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -791,7 +791,7 @@ async def _admit_operator_wake(
     This calls the SAME ``pool.gate_chat`` the human ``agent_chat`` path calls, so
     wakes and human sends obey one contract. Reusing it is load-bearing for
     provider safety: gate_chat is already provider-aware, so ChatGPT-OAuth and
-    BYOK owners — who consume no Isol8 budget — can never be blocked on one,
+    BYOK owners — who consume no Lightbulb AI budget — can never be blocked on one,
     while paid Bedrock owners are blocked only on genuinely exhausted credits.
     A trial-only predicate here would have been the WRONG primitive.
 
@@ -2399,7 +2399,7 @@ async def _process_agent_chat_background(
         # observed-run adoption) and never fires a second, and the container's
         # per-session JSONL write-lock serializes anything that still races (it
         # retries up to 60s — see upstream session-write-lock.ts). Upstream's web
-        # UI has no server gate either; an earlier Isol8 `agent_busy` gate was an
+        # UI has no server gate either; an earlier Lightbulb AI `agent_busy` gate was an
         # extra layer that diverged from that model (and caused side-run / steer
         # / multi-tab interaction bugs the single-client UI never has), so it is
         # removed in favor of the upstream three-layer approach.

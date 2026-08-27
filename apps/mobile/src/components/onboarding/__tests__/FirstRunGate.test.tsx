@@ -6,7 +6,7 @@ import { Text } from "react-native";
 // already runs, via useContainerStatusContext(). Mocking conventions follow
 // FirstRunFunnel.test.tsx (the funnel renders for real in the "eligible"
 // cases below, so it needs the same @clerk/clerk-expo / safe-area-context /
-// @isol8/shared mocks that file uses). Not run to green as part of this
+// @lightbulb/shared mocks that file uses). Not run to green as part of this
 // task per controller policy — full suite runs once at branch end.
 const mockUpdate = jest.fn(async () => undefined);
 type MockUser = { id: string; unsafeMetadata: Record<string, unknown>; update: typeof mockUpdate } | null;
@@ -24,8 +24,8 @@ jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ get: jest.fn(), post: jest.fn() }),
 }));
 

@@ -90,7 +90,7 @@ async def request_top_up(
     # idempotent replay requires the retried body to be identical (same key
     # + different body → 409), and Metronome stamps the commit's creation
     # time itself.
-    description = f"isol8 top-up owner={owner_id} amount_cents={amount_cents}"
+    description = f"lightbulb top-up owner={owner_id} amount_cents={amount_cents}"
 
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
@@ -182,7 +182,7 @@ async def grant_prepaid_credits(
 
     # No timestamp in the description — idempotent replay requires a
     # byte-identical body (same key + different body → 409).
-    description = f"isol8 checkout top-up owner={owner_id} amount_cents={amount_cents}"
+    description = f"lightbulb checkout top-up owner={owner_id} amount_cents={amount_cents}"
 
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:

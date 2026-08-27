@@ -1,6 +1,6 @@
 """Takedown workflow (admin-initiated).
 
-Under the Isol8-internal scope there is no public DMCA filing form, so the
+Under the Lightbulb AI-internal scope there is no public DMCA filing form, so the
 takedown queue is structurally empty. The supported flow is:
 
 - execute_admin_initiated_takedown(): admin types a reason on the listing

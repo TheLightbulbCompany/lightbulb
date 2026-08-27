@@ -1,4 +1,4 @@
-"""Carry an imported agent's conversation history into its Isol8 container.
+"""Carry an imported agent's conversation history into its Lightbulb AI container.
 
 Inputs (from the backup, see openclaw_backup_import._history_for):
   agents/<old>/sessions/{sessions.json,*.jsonl} — the canonical append-only
@@ -130,7 +130,7 @@ def rewrite_legacy_sessions(src_dir: Path, dst_dir: Path, *, old_id: str, new_id
 def stage_history(*, owner_id: str, source_agent_id: str, new_agent_id: str, history: HistoryInfo) -> list[str]:
     import_state = get_workspace().user_path(owner_id) / "import-state"
     # Build under a hidden `.tmp-<id>` sibling of agents/, then atomically
-    # rename into place. The boot script's hand-off (isol8-local-sqlite-boot.sh
+    # rename into place. The boot script's hand-off (lightbulb-local-sqlite-boot.sh
     # step 4b) only globs import-state/agents/*, so a `.tmp-*` dir left behind
     # by a crash mid-build is never partially consumed — os.replace is what
     # makes the final agents/<id> either fully old or fully new, never a

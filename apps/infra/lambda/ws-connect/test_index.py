@@ -135,7 +135,7 @@ def test_connect_writes_owner_id_personal_and_org():
 
 def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
     """With WS_INTERNAL_SECRET_SECRET_ARN set, the Lambda fetches the secret and
-    attaches it as x-isol8-ws-internal so the backend can authenticate the caller."""
+    attaches it as x-lightbulb-ws-internal so the backend can authenticate the caller."""
     import index
 
     monkeypatch.setenv("WS_INTERNAL_SECRET_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:ws")
@@ -146,7 +146,7 @@ def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
         "index.urllib.request.urlopen", side_effect=fake_urlopen
     ):
         index.handler(_make_event(qs={"token": "j"}), None)
-    assert captured["headers_lc"].get("x-isol8-ws-internal") == "s3cr3t-value"
+    assert captured["headers_lc"].get("x-lightbulb-ws-internal") == "s3cr3t-value"
 
 
 def test_omits_ws_internal_header_when_unconfigured():
@@ -156,4 +156,4 @@ def test_omits_ws_internal_header_when_unconfigured():
     captured, fake_urlopen = _capture_headers()
     with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
         index.handler(_make_event(qs={"token": "j"}), None)
-    assert "x-isol8-ws-internal" not in captured["headers_lc"]
+    assert "x-lightbulb-ws-internal" not in captured["headers_lc"]

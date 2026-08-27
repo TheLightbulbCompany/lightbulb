@@ -27,12 +27,12 @@ describe("useUserSyncOnce", () => {
     });
     rerender({ on: true });
     rerender({ on: true });
-    await waitFor(() => expect(window.sessionStorage.getItem("isol8:user-synced")).toBe("1"));
+    await waitFor(() => expect(window.sessionStorage.getItem("lightbulb:user-synced")).toBe("1"));
     expect(syncUser).toHaveBeenCalledTimes(1);
   });
 
   it("skips when the session marker is already set", () => {
-    window.sessionStorage.setItem("isol8:user-synced", "1");
+    window.sessionStorage.setItem("lightbulb:user-synced", "1");
     renderHook(() => useUserSyncOnce(true));
     expect(syncUser).not.toHaveBeenCalled();
   });
@@ -42,7 +42,7 @@ describe("useUserSyncOnce", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const first = renderHook(() => useUserSyncOnce(true));
     await waitFor(() => expect(syncUser).toHaveBeenCalledTimes(1));
-    expect(window.sessionStorage.getItem("isol8:user-synced")).toBeNull();
+    expect(window.sessionStorage.getItem("lightbulb:user-synced")).toBeNull();
     first.unmount();
     syncUser.mockResolvedValue(undefined);
     renderHook(() => useUserSyncOnce(true));

@@ -1,5 +1,5 @@
 """
-Core services for Isol8.
+Core services for Lightbulb AI.
 
 Services encapsulate business logic for agent management,
 WebSocket connection state, and other domain-specific operations.

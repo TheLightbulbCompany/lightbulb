@@ -11,19 +11,19 @@ that ownership split is deliberate).
 
 Two surfaces share this module:
   - the native Teams BFF (``routers/teams/*``), which proves the caller's
-    Isol8 identity with a Clerk bearer JWT, and
+    Lightbulb AI identity with a Clerk bearer JWT, and
   - the ``company.isol8.co`` proxy (``routers/paperclip_proxy.py``), which
-    proves it with the ``isol8_paperclip`` cookie.
+    proves it with the ``lightbulb_paperclip`` cookie.
 
 Confused-deputy binding (why a presented cookie can't be ridden by another
 user): the Paperclip session cookie is opaque — we can't read whose it is.
 So whenever we mint it for user X we also set an HS256 *binding* cookie
-(``isol8_pc_bind``), signed with the same ``PAPERCLIP_SERVICE_TOKEN_KEY`` and
-``kind`` discipline as ``isol8_paperclip``. A presented session cookie is
+(``lightbulb_pc_bind``), signed with the same ``PAPERCLIP_SERVICE_TOKEN_KEY`` and
+``kind`` discipline as ``lightbulb_paperclip``. A presented session cookie is
 only trusted + forwarded when its binding cookie's ``sub`` matches the
-request's already-authenticated Isol8 user; otherwise we mint fresh for the
-authenticated user. Isol8 is the binding issuer — Clerk does nothing special
-— which matches the fact that Isol8 owns the Clerk -> Paperclip mapping.
+request's already-authenticated Lightbulb AI user; otherwise we mint fresh for the
+authenticated user. Lightbulb AI is the binding issuer — Clerk does nothing special
+— which matches the fact that Lightbulb AI owns the Clerk -> Paperclip mapping.
 
 The session cookie stays ``HttpOnly`` (browser auto-sends it, JS cannot read
 it -> no XSS exfiltration). "Client-side" means the browser cookie jar, not a
@@ -60,7 +60,7 @@ _COOKIE_DOMAIN = f".{settings.root_domain}"
 _SESSION_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 # Confused-deputy binding cookie.
-_BIND_COOKIE = "isol8_pc_bind"
+_BIND_COOKIE = "lightbulb_pc_bind"
 _BIND_KIND = "paperclip_bind"
 
 # Cold-start singleflight: when the Teams page first loads it fires ~6-8 panel
@@ -81,7 +81,7 @@ MintFn = Callable[[], Awaitable[str]]
 
 
 # ---------------------------------------------------------------------------
-# Binding cookie (HS256, same secret + kind discipline as isol8_paperclip)
+# Binding cookie (HS256, same secret + kind discipline as lightbulb_paperclip)
 # ---------------------------------------------------------------------------
 
 
@@ -105,7 +105,7 @@ def _session_hash(session_cookie_line: str) -> str:
 
 
 def mint_binding(user_id: str, session_cookie_line: str) -> str:
-    """HS256 JWT binding a SPECIFIC Paperclip session cookie to an Isol8 user.
+    """HS256 JWT binding a SPECIFIC Paperclip session cookie to an Lightbulb AI user.
 
     Carries the user id AND a hash of the session-token value, so on reuse we
     can verify the presented ``.session_token`` is the exact one this binding

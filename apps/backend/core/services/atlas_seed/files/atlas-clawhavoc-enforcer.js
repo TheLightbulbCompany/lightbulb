@@ -81,11 +81,11 @@ function main() {
   if (args.mode === 'build') {
     if (!args.buildId) { console.error('--build-id required for build mode'); process.exit(2); }
     // Same staging dir atlas-skeleton-generator.js writeDisk materializes into:
-    // the EFS user root (ISOL8_AGENTS_DIR = /home/node/.openclaw), NOT
+    // the EFS user root (LIGHTBULB_AGENTS_DIR = /home/node/.openclaw), NOT
     // ~/.openclaw/agents (an ephemeral local mount) and NOT ~/.openclaw/workspaces
     // (deleted by `openclaw doctor --fix` every boot). Build-id sanitization
     // matches the generator's `_safeName`.
-    const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+    const agentsRoot = process.env.LIGHTBULB_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
     const safe = String(args.buildId).replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
     bundlePath = path.join(agentsRoot, `.atlas-staging-${safe}`);
   } else if (args.mode === 'publish') {

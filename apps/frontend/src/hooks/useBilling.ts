@@ -137,7 +137,7 @@ export function useBilling() {
   // inference with a zero credit balance they were never asked to fund.
   // `creditsCents` is the starter Claude-credit amount bundled into the same
   // Checkout as a one-time line item — bedrock_claude only, since the other
-  // two providers spend no Isol8 credits. Omitted => the server default. The
+  // two providers spend no Lightbulb AI credits. Omitted => the server default. The
   // server re-validates and re-scopes it; this is a UI convenience, never the
   // authority on what gets charged.
   const startTrialCheckout = useCallback(async (

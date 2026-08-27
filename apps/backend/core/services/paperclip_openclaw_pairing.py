@@ -309,7 +309,7 @@ async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str
 
 
 async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
-    """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
+    """Whether ``agent_id`` is an Lightbulb AI-seeded agent (Friday or Atlas).
 
     This backs the **delete guards** (OpenClaw gateway + Teams REST), so it
     FAILS CLOSED: if the persisted-id lookup errors (e.g. a DynamoDB outage),
@@ -343,7 +343,7 @@ async def register_paperclip_agent_devices(
     token. Returns the entries to fold into ``build_device_paired_json``.
 
     Called at container provision (the per-container ``gateway_token`` is only
-    known then). For each ``openclaw_gateway`` agent carrying an Isol8-minted
+    known then). For each ``openclaw_gateway`` agent carrying an Lightbulb AI-minted
     ``devicePrivateKeyPem``:
 
     1. Derive its device identity (public key + deviceId) from the PEM.
@@ -390,7 +390,7 @@ async def register_paperclip_agent_devices(
         cfg = agent.get("adapterConfig") or {}
         pem = cfg.get("devicePrivateKeyPem")
         if not pem:
-            # Legacy / ephemeral-key agent — no stable Isol8-minted device to pair.
+            # Legacy / ephemeral-key agent — no stable Lightbulb AI-minted device to pair.
             continue
         try:
             identity = device_identity_from_pem(pem)
@@ -749,7 +749,7 @@ async def ensure_operator_device_paired(
     cfg = paperclip_agent.get("adapterConfig") or {}
     pem = cfg.get("devicePrivateKeyPem")
     if not pem:
-        # Legacy / ephemeral-key agent — no stable Isol8-minted device to pair.
+        # Legacy / ephemeral-key agent — no stable Lightbulb AI-minted device to pair.
         return
     agent_id = paperclip_agent.get("id")
 

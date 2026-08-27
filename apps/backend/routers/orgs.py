@@ -38,7 +38,7 @@ def _has_active_personal_tenancy(account: dict) -> bool:
     summary="Create an org invitation",
     description=(
         "Refuses with 409 if the invitee already has an active or trialing "
-        "personal Isol8 subscription. Otherwise forwards to Clerk's "
+        "personal Lightbulb AI subscription. Otherwise forwards to Clerk's "
         "createInvitation API."
     ),
     operation_id="create_org_invitation",

@@ -2,7 +2,7 @@
 
 // Ported from upstream Paperclip's ExecutionParticipantPicker.tsx
 // (paperclip/ui/src/components/ExecutionParticipantPicker.tsx) (MIT,
-// (c) 2025 Paperclip AI). Adapted to the Isol8 rail: agents + members arrive as
+// (c) 2025 Paperclip AI). Adapted to the Lightbulb AI rail: agents + members arrive as
 // props (matching AssigneePicker) rather than a useQuery directory fetch, and
 // the surface is themed with the cream/forest tokens. A multi-select popover —
 // the LabelPicker pattern, but over the agent + human-member union — toggling an

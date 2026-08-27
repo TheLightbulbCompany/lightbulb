@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # elsewhere in the module use _caller_account_id() instead.
 OUR_ACCOUNT_ID: str = "877352799272"
 
-# The IAM role name of the read-only connector Isol8 stands up in its OWN account
+# The IAM role name of the read-only connector Lightbulb AI stands up in its OWN account
 # for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
 # connections import) so the literal has a single home — aws_cfn already imports
 # bedrock_aip, so the constant can't live there without a cycle.
@@ -440,7 +440,7 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
                 tags=[
                     {"key": "owner_id", "value": owner_id},
                     {"key": "tier", "value": tier},
-                    {"key": "ManagedBy", "value": "isol8-backend"},
+                    {"key": "ManagedBy", "value": "lightbulb-backend"},
                 ],
             )
             arns[tier] = resp["inferenceProfileArn"]
@@ -651,10 +651,10 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
     create_kwargs: dict = {
         "RoleName": role_name,
         "AssumeRolePolicyDocument": json.dumps(_assume_role_doc(account_id)),
-        "Description": f"Isol8 per-owner Bedrock role for {owner_id}",
+        "Description": f"Lightbulb AI per-owner Bedrock role for {owner_id}",
         "Tags": [
             {"Key": "owner_id", "Value": owner_id},
-            {"Key": "ManagedBy", "Value": "isol8-backend"},
+            {"Key": "ManagedBy", "Value": "lightbulb-backend"},
             # Born with the conditioned trust policy → mark converged so the
             # existing-role path's backfill skips it on every later call.
             {"Key": "trust_hardened", "Value": "1"},

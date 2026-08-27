@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { capture } from "@/lib/analytics";
 
-// Sidebar footer for the desktop app. Replaces the static "isol8 v0.1"
+// Sidebar footer for the desktop app. Replaces the static "Lightbulb AI v0.1"
 // label with a clickable updater. In the regular browser this just
 // renders the version label — the updater UI only appears when the
 // Tauri webview is present.

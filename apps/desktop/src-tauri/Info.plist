@@ -20,8 +20,8 @@
 
     Measured on a live 0.4.53 install (2026-08-03), scheduling priority:
 
-        backgrounded  isol8-desktop = 4    openclaw-node = 31
-        foregrounded  isol8-desktop = 46   openclaw-node = 31
+        backgrounded  lightbulb-desktop = 4    openclaw-node = 31
+        foregrounded  lightbulb-desktop = 46   openclaw-node = 31
 
     Only the relay is throttled; the signer is unaffected. Prod API Gateway
     logs caught the consequence — a challenge pushed at 23:08:23 and signed at

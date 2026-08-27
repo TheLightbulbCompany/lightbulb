@@ -277,7 +277,7 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
     });
 
-    // Paperclip companies — maps Isol8 user_id → their Paperclip company
+    // Paperclip companies — maps Lightbulb AI user_id → their Paperclip company
     // record + encrypted credentials. GSI by-status-purge-at lets the
     // cleanup cron find disabled rows past their grace window. Per the
     // paperclip-rebuild plan (Task 2). Customer-managed KMS to match the
@@ -403,7 +403,7 @@ export class DatabaseStack extends cdk.Stack {
     // / service-stack) only from the backend SG and the Paperclip task SG.
     //
     // Cross-stack note: the props.vpc reference here is the only reason
-    // DatabaseStack now depends on NetworkStack. See isol8-stage.ts for
+    // DatabaseStack now depends on NetworkStack. See lightbulb-stage.ts for
     // the wiring.
     // ─────────────────────────────────────────────────────────────────
     const paperclipDbSubnetGroup = new rds.SubnetGroup(this, "PaperclipDbSubnets", {

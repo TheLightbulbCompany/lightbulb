@@ -12,7 +12,7 @@ name: build
 #    scan flags + file list + bundle SHA256 in the prompt and approves the whole write.
 #  - The agent's files are assembled from the per-build matrix the agent loop enriched
 #    (atlas/requirement-matrix[build_id]) + the intake + brief, then materialized to
-#    `workspace-atlas-staging-{build_id}/` under the EFS user root (ISOL8_AGENTS_DIR =
+#    `workspace-atlas-staging-{build_id}/` under the EFS user root (LIGHTBULB_AGENTS_DIR =
 #    /home/node/.openclaw) where files land under `workspace/`.
 #  - ATLAS NEVER PICKS AN AGENT ID. Every path here is keyed by the build's staging
 #    token; the id is assigned by the bridge (Paperclip mint) and comes back in the
@@ -38,14 +38,14 @@ steps:
   - id: clawhavoc-scan
     command: node atlas-clawhavoc-enforcer.js --mode=build --build-id="$LOBSTER_ARG_BUILD_ID"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.2 — Sensitive-data sniff (WARN; surfaced in the gate prompt, audit-logged).
   - id: sensitive-sniff
     command: node atlas-sensitive-sniff.js --mode=build --build-id="$LOBSTER_ARG_BUILD_ID"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.3 — S10 file-write gate (sync hard block). Presents the scan flags, the file
@@ -99,7 +99,7 @@ steps:
     stdin: $assemble-spec.stdout
     on_error: continue
 
-  # Step 6.7 — Atomic file generation via staging-dir-then-mv. ISOL8_AGENTS_DIR points at
+  # Step 6.7 — Atomic file generation via staging-dir-then-mv. LIGHTBULB_AGENTS_DIR points at
   #            the EFS user root, so the build lands at
   #            `workspace-atlas-staging-{build_id}/` with files under `workspace/` —
   #            exactly where the bridge's export_built_agent_from_staging reads and tars
@@ -110,7 +110,7 @@ steps:
     command: node atlas-skeleton-generator.js --action=write-disk --build-id="$LOBSTER_ARG_BUILD_ID"
     stdin: $assemble-draft.stdout
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.8 — Re-validate the promoted openclaw.json against the installed schema
@@ -121,7 +121,7 @@ steps:
     condition: $file-write-gate.approved
     command: node atlas-skeleton-generator.js --action=verify-write --build-id="$LOBSTER_ARG_BUILD_ID"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.9 — Register the built agent via the backend bridge (the gateway-free CREATE).
@@ -136,7 +136,7 @@ steps:
     # curl args. The bridge URL below is substituted per-owner at stage time.
     command: >
       node -e 'process.stdout.write(JSON.stringify({staging_agent_id:process.env.STAGING_ID,name:process.env.LOBSTER_ARG_AGENT_NAME,reports_to:null}))'
-      | curl -sS -X POST "{{ISOL8_BRIDGE_URL}}"
+      | curl -sS -X POST "{{LIGHTBULB_BRIDGE_URL}}"
       -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN"
       -H "Content-Type: application/json"
       --data @-
@@ -156,7 +156,7 @@ steps:
     condition: $register-built-agent.json.registered == true
     command: node atlas-trigger-registrar.js --mode=register --build-id="$LOBSTER_ARG_BUILD_ID" --agent-id="$register-built-agent.json.agent_id"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.12 — Central build status (always runs; defaults all inputs so it never refs a
@@ -199,7 +199,7 @@ steps:
     condition: "$build-status.json.registered == true && $build-status.json.triggers_ok == false"
     command: node atlas-trigger-registrar.js --mode=deregister --build-id="$LOBSTER_ARG_BUILD_ID" --agent-id="$build-status.json.agent_id"
     env:
-      ISOL8_AGENTS_DIR: /home/node/.openclaw
+      LIGHTBULB_AGENTS_DIR: /home/node/.openclaw
     on_error: continue
 
   # Step 6.13a — Verify-failure notification. When the gate WAS approved (write was

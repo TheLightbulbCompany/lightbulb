@@ -47,6 +47,6 @@ describe("ChatErrorCard", () => {
   it("renders the plain message card for uncoded errors", async () => {
     await render(<ChatErrorCard message="Send failed" />);
     expect(screen.getByText("Send failed")).toBeTruthy();
-    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/on Lightbulb AI\.co/)).toBeNull();
   });
 });

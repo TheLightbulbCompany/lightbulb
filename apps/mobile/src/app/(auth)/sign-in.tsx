@@ -84,9 +84,9 @@ export default function SignIn() {
       const { createdSessionId, authSessionResult } = await startSSOFlow({
         strategy: "oauth_google",
         // The explicit path matches Clerk's documented native pattern AND the
-        // prod instance's existing allowlist entry (isol8://oauth-native-callback).
+        // prod instance's existing allowlist entry (lightbulbai://oauth-native-callback).
         // Expo Go yields exp://<host>:8081/--/oauth-native-callback; dev/release
-        // builds yield isol8://oauth-native-callback.
+        // builds yield lightbulbai://oauth-native-callback.
         redirectUrl: AuthSession.makeRedirectUri({ path: "oauth-native-callback" }),
       });
       if (createdSessionId) {

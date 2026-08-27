@@ -45,15 +45,15 @@ it works even when the platform itself is sick.)
 
 ## 2. Health: what to watch
 
-- **Gate alarms** (`Isol8/BedrockGate`, per-env): `gate.error` and
+- **Gate alarms** (`LightbulbAI/BedrockGate`, per-env): `gate.error` and
   `gate.hold_release_failed` PAGE; Lambda `Errors`/`Throttles` warn.
-- **Reconciliation**: `meter.reconciled_gateway_miss` (namespace `Isol8`,
+- **Reconciliation**: `meter.reconciled_gateway_miss` (namespace `Lightbulb AI`,
   dims service=`isol8-bedrock-meter`, env) counts invocations the gate failed
   to settle (client aborts are legitimate contributors; a sustained rate means
   a gate accounting bug):
 
 ```bash
-aws cloudwatch get-metric-statistics --namespace Isol8 \
+aws cloudwatch get-metric-statistics --namespace Lightbulb AI \
   --metric-name meter.reconciled_gateway_miss \
   --dimensions Name=service,Value=isol8-bedrock-meter Name=env,Value=prod \
   --start-time $(date -u -v-24H +%FT%TZ) --end-time $(date -u +%FT%TZ) \

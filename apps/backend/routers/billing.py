@@ -653,7 +653,7 @@ async def create_trial_checkout(
             # provider_choice on the right per-Clerk-user row.
             clerk_user_id=auth.user_id,
             # Scoped to bedrock_claude at the boundary rather than trusting the
-            # body: the other two providers spend no Isol8 credits, so a client
+            # body: the other two providers spend no Lightbulb AI credits, so a client
             # sending credits_cents with them would be charged for a balance it
             # can never draw down. Pydantic already bounded the value to
             # $5–$1,000; this bounds WHO it can apply to.

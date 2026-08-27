@@ -1,6 +1,6 @@
 """Purchases, Stripe webhook, refunds.
 
-Isol8-internal scope: buyers are signed-in Isol8 users who deploy
+Lightbulb AI-internal scope: buyers are signed-in Lightbulb AI users who deploy
 listings into their existing OpenClaw container via the deploy endpoint
 in marketplace_listings. There is no CLI installer.
 """
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace-purchases"])
 
 
 def _validate_return_url(url: str, field: str) -> str:
-    """Restrict Stripe Checkout return URLs to Isol8-owned origins.
+    """Restrict Stripe Checkout return URLs to Lightbulb AI-owned origins.
 
     These are client-supplied; without the check an org admin could mint a
     legitimate Stripe session that redirects buyers to an arbitrary domain

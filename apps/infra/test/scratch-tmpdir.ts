@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { afterAll } from "vitest";
 
 const originalTmpdir = process.env.TMPDIR;
-const scratch = mkdtempSync(join(tmpdir(), "isol8-infra-test-"));
+const scratch = mkdtempSync(join(tmpdir(), "lightbulb-infra-test-"));
 process.env.TMPDIR = scratch;
 
 afterAll(() => {

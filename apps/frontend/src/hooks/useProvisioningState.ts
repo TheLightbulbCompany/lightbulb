@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useOnboardingStatus, type StatusContract } from "@isol8/shared";
+import { useOnboardingStatus, type StatusContract } from "@lightbulb/shared";
 
 import { recordRequestId } from "@/lib/requestIdLog";
 import { isPresent } from "@/lib/presence";

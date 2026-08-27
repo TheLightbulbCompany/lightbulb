@@ -27,7 +27,7 @@ react to that (best-effort belt-and-suspenders — ``write_file_if_missing``
 already protects the files themselves from being overwritten).
 
 As of 2026-07-25 that seed is the NATIVE sentinel
-``.openclaw/isol8-setup-seed.json``, NOT the legacy
+``.openclaw/lightbulb-setup-seed.json``, NOT the legacy
 ``.openclaw/workspace-state.json``. The fork's boot hook converts it
 directly into OpenClaw's own SQLite setup-state via
 ``mergeWorkspaceSetupState`` and deletes it, so no legacy file ever exists
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 #     sha256-of-bytes receipt) then deletes — fragile on re-seed, which is
 #     exactly the #1429 brick (see seed_workspace_state's docstring).
 _LEGACY_STATE_REL = ".openclaw/workspace-state.json"
-_NATIVE_SEED_REL = ".openclaw/isol8-setup-seed.json"
+_NATIVE_SEED_REL = ".openclaw/lightbulb-setup-seed.json"
 
 
 def js_iso_now() -> str:
@@ -107,7 +107,7 @@ def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -
     (existing workspace healed of a re-seeded LEGACY copy — see below).
 
     FORMAT — the NATIVE sentinel, unconditionally:
-    ``workspace-{agent_uuid}/.openclaw/isol8-setup-seed.json`` containing
+    ``workspace-{agent_uuid}/.openclaw/lightbulb-setup-seed.json`` containing
     ``{"bootstrapSeededAt", "setupCompletedAt"}``. The fork's boot hook
     (``ensureAgentWorkspace``, v2026.7.2-isol8.2+) converts it via
     ``mergeWorkspaceSetupState`` then deletes it, so the legacy presence gate
@@ -167,7 +167,7 @@ def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -
         # minus the legacy-only ``version`` key. The legacy file is NEVER
         # written any more, so the #1429 presence gate has nothing to trip on.
         #
-        # Requires the isol8.2+ base image (v2026.7.2-isol8.2, the boot hook in
+        # Requires the lightbulb.2+ base image (v2026.7.2-isol8.2, the boot hook in
         # ``ensureAgentWorkspace``) — deployed to dev AND prod as
         # ``2026.7.2-isol8.2-5fecaee`` before this became unconditional. On an
         # older image the sentinel is simply ignored and the workspace derives
@@ -213,7 +213,7 @@ _SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
 # so the heal migration below must match BOTH: guarding on the new heading
 # alone would append a second grounding section under the old one, on every
 # owner, permanently.
-_LEGACY_SELF_GROUNDING_HEADING = "## You are made of Isol8"
+_LEGACY_SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
 
 # Leading blank line so both composition sites (mid-template substitution and
 # the append migration) get a clean separator without extra bookkeeping.
@@ -234,12 +234,12 @@ design for trigger-based, event-driven, or autonomous operations.
 # migration. Keep verbatim — it is matched against files already on EFS.
 _LEGACY_SELF_GROUNDING_SECTION = """\
 
-## You are made of Isol8
+## You are made of Lightbulb AI
 
-You are not just ON Isol8 — the capabilities in `skill isol8` are YOUR
-capabilities. Whenever the conversation turns to what Isol8 can do, should
+You are not just ON Lightbulb AI — the capabilities in `skill isol8` are YOUR
+capabilities. Whenever the conversation turns to what Lightbulb AI can do, should
 do, or how to build on it — including strategy discussions that never say
-the word "Isol8" — run `skill isol8` FIRST and reason from the platform's
+the word "Lightbulb AI" — run `skill isol8` FIRST and reason from the platform's
 actual primitives, not from generic first principles. That covers connecting
 integrations, the marketplace, billing, what the UI can do, and any design
 for trigger-based, event-driven, or autonomous operations.
@@ -822,11 +822,11 @@ def _is_org_owner_id(owner_id: str) -> bool:
 # evolved content and must be preserved. These are matched against files
 # already on EFS, so the pre-rebrand wording stays verbatim: renaming them
 # would silently stop the migration from ever finding its target again.
-_LEGACY_PLAN_LINE = "- **Isol8 plan:** Starter ($50/mo flat-fee)"
+_LEGACY_PLAN_LINE = "- **Lightbulb AI plan:** Starter ($50/mo flat-fee)"
 _LEGACY_PROVIDER_PREFIX = "- **Provider:** "
 _LEGACY_PROVIDER_LABELS = (
     "ChatGPT (their own OpenAI account)",
-    "Bedrock (Claude, Isol8-managed credits)",
+    "Bedrock (Claude, Lightbulb AI-managed credits)",
     "Bedrock (Claude Sonnet, free trial — $3/day)",
     "BYO Anthropic key",
     "BYO OpenAI key",
@@ -842,7 +842,7 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
 
     Seeds are write-if-missing, so already-provisioned owners would otherwise
     keep the stale hardcoded plan/provider in Friday's boot context forever —
-    directly contradicting the facts file the isol8 skill points at. This
+    directly contradicting the facts file the lightbulb skill points at. This
     runs on every (re)provision/config-rewrite, so the fleet heals during the
     same image-promotion apply that ships the skill.
 
@@ -929,7 +929,7 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     """Reconcile the self-grounding section in an EXISTING SOUL.md.
 
     SOUL.md is seeded write-if-missing, so already-provisioned Fridays would
-    otherwise never learn that the isol8 skill covers platform-shaped strategy
+    otherwise never learn that the lightbulb skill covers platform-shaped strategy
     conversations, not just UI mechanics — they answer from generic priors and
     only read the skill after the owner corrects them.
 
@@ -1347,7 +1347,7 @@ async def stage_paperclip_identity_for_agent(
         )
         return
 
-    # Lock the file shape — it's Isol8-defined and read by the seed prompt
+    # Lock the file shape — it's Lightbulb AI-defined and read by the seed prompt
     # via `jq -r .token` / .agentId / .companyId / .apiUrl.
     content = json.dumps(
         {
@@ -1433,7 +1433,7 @@ async def pre_stage_paperclip_identities(
         token = agent_keys.get(agent_id)
         if not token:
             continue
-        # Lock the file shape — it's Isol8-defined and read by the seed prompt
+        # Lock the file shape — it's Lightbulb AI-defined and read by the seed prompt
         # via `jq -r .token` / .agentId / .companyId / .apiUrl.
         content = json.dumps(
             {

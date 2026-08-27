@@ -5,7 +5,7 @@
 // full-text query and (b) structured filters, driven by inline operator tokens
 // (`status:todo`, `assignee:me`, `project:"Acme"`, `is:open`, `updated:>7d`).
 //
-// Isol8 adaptations: `status:` is validated against SEARCH_ISSUE_STATUSES — the
+// Lightbulb AI adaptations: `status:` is validated against SEARCH_ISSUE_STATUSES — the
 // exact set the `/teams/search` BFF (routers/teams/search.py `_ISSUE_STATUSES`)
 // forwards to upstream, NOT the board-column `ISSUE_STATUSES` from shared/types.
 // The priority + updated-within lists are inlined local, and the upstream

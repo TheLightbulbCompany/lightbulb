@@ -1,4 +1,4 @@
 {
-  "external_crx": "/opt/isol8/chrome-extensions/popups-to-tabs.crx",
+  "external_crx": "/opt/lightbulb/chrome-extensions/popups-to-tabs.crx",
   "external_version": "1.0"
 }

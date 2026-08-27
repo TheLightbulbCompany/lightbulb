@@ -98,7 +98,7 @@ def claimed_api_key_path(agent_id: str) -> str:
 
     Each agent's own workspace is its cwd (``~/.openclaw/workspace-{agentId}/``,
     upstream's per-agent convention — the bare ``~/.openclaw/workspace`` is the
-    default-agent dir and would collide across agents). Isol8 pre-stages the per-agent identity file there
+    default-agent dir and would collide across agents). Lightbulb AI pre-stages the per-agent identity file there
     (``friday_identity.pre_stage_paperclip_identities``). We surface it as the
     adapter's ``claimedApiKeyPath`` so Paperclip's native wake flow points at the
     same per-agent file rather than the colliding default.
@@ -169,7 +169,7 @@ def synthesize_openclaw_adapter(
     ``paperclip_provisioning.py:256-261`` so seeded agents and
     user-created agents have identical wire format.
 
-    ``device_private_key_pem``: Isol8 mints + owns the per-agent ed25519 device
+    ``device_private_key_pem``: Lightbulb AI mints + owns the per-agent ed25519 device
     keypair so the deviceId is stable and can be pre-registered in the
     container's ``paired.json`` before the first connect (a remote operator
     device that isn't pre-paired is rejected NOT_PAIRED). Pass the agent's
@@ -190,7 +190,7 @@ def synthesize_openclaw_adapter(
     if not user_id or not isinstance(user_id, str):
         raise AdapterConfigError("user_id is empty or non-string")
 
-    # The Isol8 WS API Gateway authorizer reads the auth token ONLY from
+    # The Lightbulb AI WS API Gateway authorizer reads the auth token ONLY from
     # the `?token=` query string (identitySource
     # `route.request.querystring.token`). The upstream Paperclip
     # openclaw_gateway adapter sends `authToken` as an Authorization header,

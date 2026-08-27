@@ -55,27 +55,27 @@ afterEach(() => {
 describe("GET /api/desktop/update/[target]/[current_version]", () => {
   const armBundle: GhAssetFixture = {
     url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/11",
-    name: "Isol8_0.2.11_aarch64.app.tar.gz",
+    name: "Lightbulb AI_0.2.11_aarch64.app.tar.gz",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Isol8_0.2.11_aarch64.app.tar.gz",
+      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Lightbulb AI_0.2.11_aarch64.app.tar.gz",
   };
   const armSig: GhAssetFixture = {
     url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/12",
-    name: "Isol8_0.2.11_aarch64.app.tar.gz.sig",
+    name: "Lightbulb AI_0.2.11_aarch64.app.tar.gz.sig",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Isol8_0.2.11_aarch64.app.tar.gz.sig",
+      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.2.11/Lightbulb AI_0.2.11_aarch64.app.tar.gz.sig",
   };
 
   const dmgOnlyRelease: GhReleaseFixture = {
     tag_name: "desktop-dev-v0.2.11",
-    name: "Isol8 Desktop [DEV] desktop-dev-v0.2.11",
+    name: "Lightbulb AI Desktop [DEV] desktop-dev-v0.2.11",
     body: "release notes",
     draft: false,
     published_at: "2026-05-12T22:00:00Z",
     assets: [
       {
         url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/10",
-        name: "Isol8_0.2.11_aarch64.dmg",
+        name: "Lightbulb AI_0.2.11_aarch64.dmg",
         browser_download_url: "https://example/dmg",
       },
     ],
@@ -206,13 +206,13 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       assets: [
         {
           url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/21",
-          name: "Isol8_0.3.0_aarch64.app.tar.gz",
+          name: "Lightbulb AI_0.3.0_aarch64.app.tar.gz",
           browser_download_url:
-            "https://example/v0.3.0/Isol8_0.3.0_aarch64.app.tar.gz",
+            "https://example/v0.3.0/Lightbulb AI_0.3.0_aarch64.app.tar.gz",
         },
         {
           url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/22",
-          name: "Isol8_0.3.0_aarch64.app.tar.gz.sig",
+          name: "Lightbulb AI_0.3.0_aarch64.app.tar.gz.sig",
           browser_download_url: "https://example/v0.3.0/sig",
         },
       ],
@@ -243,13 +243,13 @@ describe("GET /api/desktop/update/[target]/[current_version]", () => {
       assets: [
         {
           url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/31",
-          name: "Isol8_0.3.1_aarch64.app.tar.gz",
+          name: "Lightbulb AI_0.3.1_aarch64.app.tar.gz",
           browser_download_url:
-            "https://example/v0.3.1/Isol8_0.3.1_aarch64.app.tar.gz",
+            "https://example/v0.3.1/Lightbulb AI_0.3.1_aarch64.app.tar.gz",
         },
         {
           url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/32",
-          name: "Isol8_0.3.1_aarch64.app.tar.gz.sig",
+          name: "Lightbulb AI_0.3.1_aarch64.app.tar.gz.sig",
           browser_download_url: "https://example/v0.3.1/sig",
         },
       ],

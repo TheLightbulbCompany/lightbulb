@@ -141,7 +141,7 @@ const PROD_TEMPLATE = buildTemplate("prod");
 // ---------------------------------------------------------------------------
 
 /**
- * Every Isol8-namespace metric an alarm in this stack binds, mapped to the
+ * Every Lightbulb AI-namespace metric an alarm in this stack binds, mapped to the
  * EXTRA dimension key sets its backend emitter publishes (env + service are
  * on everything and are excluded here).
  *
@@ -203,13 +203,13 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
 type MetricBinding = { alarm: string; metricName: string; extraDims: string[] };
 
 /**
- * Every Isol8-namespace metric an alarm binds, from BOTH shapes CloudFormation
+ * Every Lightbulb AI-namespace metric an alarm binds, from BOTH shapes CloudFormation
  * renders: a plain metric alarm (Namespace/MetricName/Dimensions at the top
  * level) and a metric-math alarm (nested under Metrics[].MetricStat.Metric —
  * where W1 and W10 live). Search-expression alarms carry no MetricStat and are
  * skipped: they match on dimension VALUES, so there is no set to check.
  */
-function isol8MetricBindings(template: Template): MetricBinding[] {
+function lightbulbMetricBindings(template: Template): MetricBinding[] {
   const bindings: MetricBinding[] = [];
   for (const [logicalId, res] of Object.entries(
     template.findResources("AWS::CloudWatch::Alarm"),
@@ -218,7 +218,7 @@ function isol8MetricBindings(template: Template): MetricBinding[] {
     const alarm =
       typeof props.AlarmName === "string" ? props.AlarmName : logicalId;
     const collect = (namespace: any, metricName: any, dimensions: any) => {
-      if (namespace !== "Isol8" || typeof metricName !== "string") return;
+      if (namespace !== "LightbulbAI" || typeof metricName !== "string") return;
       bindings.push({
         alarm,
         metricName,
@@ -335,7 +335,7 @@ describe("ObservabilityStack", () => {
   test("P15 pages on the inline-provision-timeout stream", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "isol8-dev-P15-provision-inline-timeout",
-      Namespace: "Isol8",
+      Namespace: "LightbulbAI",
       MetricName: "container.provision",
       Threshold: 0,
       Period: 60,
@@ -403,8 +403,8 @@ describe("ObservabilityStack", () => {
   // Alarm <-> emitter dimension contract
   // -------------------------------------------------------------------
 
-  test("every Isol8-namespace alarm binds a dimension set an emitter publishes", () => {
-    const bindings = isol8MetricBindings(template);
+  test("every Lightbulb AI-namespace alarm binds a dimension set an emitter publishes", () => {
+    const bindings = lightbulbMetricBindings(template);
     // Anti-vacuity: a CloudFormation shape change that stops the walker from
     // finding anything would otherwise make this test pass on an empty list.
     expect(bindings.length).toBeGreaterThan(30);
@@ -449,7 +449,7 @@ describe("ObservabilityStack", () => {
   // put_metric emits the [env, service] rollup — pin the binding so a future
   // "let me add a dimension to this alarm" quietly kills them again.
   test("W2/W8/W10 watch the env+service rollup, with no extra dimensions", () => {
-    const rollupOnly = isol8MetricBindings(template).filter(
+    const rollupOnly = lightbulbMetricBindings(template).filter(
       (b) =>
         ["container.lifecycle.latency", "gateway.rpc.error", "chat.error"].includes(
           b.metricName,
@@ -483,7 +483,7 @@ describe("ObservabilityStack", () => {
   test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       MetricName: "gateway.running.count",
-      Namespace: "Isol8",
+      Namespace: "LightbulbAI",
       Statistic: "SampleCount",
       ComparisonOperator: "LessThanThreshold",
       Threshold: 5,

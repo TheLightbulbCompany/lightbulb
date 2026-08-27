@@ -24,7 +24,7 @@ async def test_parses_formatted_records_and_caches_secret_arn(monkeypatch):
         {"SecretList": [{"Name": "isol8-test-paperclip-db-credentials-abc", "ARN": "arn:secret:1"}]}
     ]
     rds = MagicMock()
-    rds.execute_statement.return_value = {"formattedRecords": '[{"n": 2, "name": "Isol8"}]'}
+    rds.execute_statement.return_value = {"formattedRecords": '[{"n": 2, "name": "Lightbulb AI"}]'}
     with (
         patch("core.services.paperclip_sql.secretsmanager_client", return_value=sm),
         patch("core.services.paperclip_sql.rds_data_client", return_value=rds),
@@ -32,7 +32,7 @@ async def test_parses_formatted_records_and_caches_secret_arn(monkeypatch):
         rows = await paperclip_sql.select_rows("  select count(*) as n from companies", env="test")
         rows2 = await paperclip_sql.select_rows("WITH x AS (select 1) select * from x", env="test")
 
-    assert rows == [{"n": 2, "name": "Isol8"}]
+    assert rows == [{"n": 2, "name": "Lightbulb AI"}]
     assert rows2 == rows
     assert sm.get_paginator.call_count == 1  # cached after the first lookup
     kwargs = rds.execute_statement.call_args.kwargs

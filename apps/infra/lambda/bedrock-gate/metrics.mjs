@@ -1,6 +1,6 @@
 // EMF metrics to stdout — same shape as the meter Lambda's _emit_metric, so the
 // gate's metrics land on CloudWatch with an env dimension the alarms key off.
-// Namespace Isol8/BedrockGate. Never throws (telemetry must not break the path).
+// Namespace LightbulbAI/BedrockGate. Never throws (telemetry must not break the path).
 export function emit(name, env, extra = {}) {
   try {
     const meterEnv = env?.GATE_ENV || "unknown";
@@ -8,7 +8,7 @@ export function emit(name, env, extra = {}) {
       _aws: {
         Timestamp: Date.now(),
         CloudWatchMetrics: [
-          { Namespace: "Isol8/BedrockGate", Dimensions: [["env"]], Metrics: [{ Name: name, Unit: "Count" }] },
+          { Namespace: "LightbulbAI/BedrockGate", Dimensions: [["env"]], Metrics: [{ Name: name, Unit: "Count" }] },
         ],
       },
       env: meterEnv,

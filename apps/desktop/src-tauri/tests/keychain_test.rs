@@ -1,4 +1,4 @@
-use isol8_desktop::keychain::{
+use lightbulb_desktop::keychain::{
     delete, generate_keypair, load_or_generate, KeychainSlot,
 };
 

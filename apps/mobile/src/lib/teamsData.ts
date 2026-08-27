@@ -34,7 +34,7 @@ import {
   createApiClient,
   fetchJsonWithStatus,
   type PlatformAdapter,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { colors } from "../config/theme";
 import { makeAdapter } from "./adapter";

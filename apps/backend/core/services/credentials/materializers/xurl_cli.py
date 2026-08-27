@@ -5,7 +5,7 @@ The backend writes the owner EFS copy of that file so the owner container's bake
 xurl binary can act and refresh as the user without shell-based auth.
 
 The file may also contain user-created xurl apps. This materializer owns only the
-`isol8-x` app entry: writes replace that app and preserve every other app;
+`lightbulb-x` app entry: writes replace that app and preserve every other app;
 remove deletes only that app, deleting ~/.xurl only when no apps remain.
 """
 
@@ -26,7 +26,7 @@ from core.services.credentials.materializers.base import NODE_GID, NODE_UID, own
 
 logger = logging.getLogger(__name__)
 
-_XURL_APP_NAME = "isol8-x"
+_XURL_APP_NAME = "lightbulb-x"
 _XURL_USERS_ME_URL = "https://api.x.com/2/users/me"
 
 
@@ -132,7 +132,7 @@ def _token_username(credential: dict[str, Any]) -> str:
 
 
 def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
-    """Write/replace Isol8's xurl app entry and return the connected handle/id."""
+    """Write/replace Lightbulb AI's xurl app entry and return the connected handle/id."""
     username = _token_username(credential)
     entry = {
         "client_id": credential["client_id"],
@@ -153,8 +153,8 @@ def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
 
     def _mutate(store: dict[str, Any]) -> dict[str, Any]:
         store["apps"][_XURL_APP_NAME] = entry
-        # Make xurl default to the freshly-connected Isol8 app. Unrelated apps
-        # remain in the file and become default again if isol8-x is later removed.
+        # Make xurl default to the freshly-connected Lightbulb AI app. Unrelated apps
+        # remain in the file and become default again if lightbulb-x is later removed.
         store["default_app"] = _XURL_APP_NAME
         return store
 
@@ -163,7 +163,7 @@ def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
 
 
 def remove(owner_id: str, provider_key: str, credential: dict[str, Any] | None = None) -> None:
-    """Remove only the Isol8-owned xurl app, preserving unrelated xurl apps."""
+    """Remove only the Lightbulb AI-owned xurl app, preserving unrelated xurl apps."""
     path = _xurl_path(owner_id)
     if not path.exists():
         return

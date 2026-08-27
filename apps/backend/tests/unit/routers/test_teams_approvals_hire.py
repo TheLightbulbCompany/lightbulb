@@ -1,7 +1,7 @@
 """The approve handler's marketplace-install hook.
 
 Approving a marketplace hire has to do two things: flip the agent live in
-Paperclip AND install its workspace on Isol8's side. Wiring only the first
+Paperclip AND install its workspace on Lightbulb AI's side. Wiring only the first
 would hand the owner an agent with no workspace while the UI says "approved" —
 the silent-failure shape this codebase has been bitten by before.
 """

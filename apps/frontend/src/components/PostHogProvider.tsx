@@ -24,8 +24,10 @@ const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // the real PostHog UI.
 const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
-const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
-const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
+// Renamed from `isol8:*` at the Lightbulb AI rebrand — drops any in-flight
+// signup-intent breadcrumb stored under the old key.
+const SIGNUP_INTENT_KEY = "lightbulb:signup_intent:v1";
+const SIGNUP_STARTED_IDENTIFIED_PREFIX = "lightbulb:signup_started_identified:";
 
 function safeStorageGet(key: string): string | null {
   if (typeof window === "undefined") return null;

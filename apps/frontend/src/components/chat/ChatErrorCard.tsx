@@ -16,13 +16,13 @@ import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
  * tailored copy + an action button so the user knows what to do next,
  * instead of seeing a generic "Failed to generate" block.
  *
- * `trial_daily_cap` is a separate, Isol8-side code (not an OpenClaw
+ * `trial_daily_cap` is a separate, Lightbulb AI-side code (not an OpenClaw
  * errorKind) — the gate_chat free-tier $3/day cost cap blocks the turn
  * before it ever reaches OpenClaw (core/gateway/connection_pool.py). It gets
  * its own branch below so a free-tier user sees a distinct "come back
  * tomorrow or upgrade" state rather than a generic failure.
  *
- * `trial_expired` is the sibling Isol8-side code for the 3-day
+ * `trial_expired` is the sibling Lightbulb AI-side code for the 3-day
  * `trial_local` window itself running out (as opposed to the daily cost
  * cap) — surfaced by both the provision gate and gate_chat's Layer 2
  * (core/services/provision_gate.py, core/gateway/connection_pool.py).
@@ -76,7 +76,7 @@ interface ErrorPresentation {
 }
 
 /**
- * Codes where the run died because the owner is out of Isol8 budget, not
+ * Codes where the run died because the owner is out of Lightbulb AI budget, not
  * because anything malfunctioned. Retry is suppressed for all of them: it
  * cannot succeed until the cap resets or the owner pays, and offering it
  * makes an exhausted allowance look like a flaky product.
@@ -94,7 +94,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
       // Generic "switch provider" framing is wrong here — switching to a BYO
       // key has the same provider-quota problem. The three real remedies are
       // (a) wait for the provider's quota to reset, (b) upgrade your plan
-      // with the provider, or (c) move this workspace to Isol8's
+      // with the provider, or (c) move this workspace to Lightbulb AI's
       // Bedrock-managed credits, which sidesteps third-party quotas entirely.
       // Upstream `message` ("The usage limit has been reached.") isn't
       // actionable, so we always use our own copy here.

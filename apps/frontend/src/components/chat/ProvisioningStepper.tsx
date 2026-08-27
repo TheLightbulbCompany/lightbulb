@@ -34,7 +34,7 @@ import {
   MIN_CREDITS_CENTS,
   formatUsdCents,
 } from "@/lib/creditAmounts";
-// Provisioning copy + timing live in @isol8/shared so the web and mobile
+// Provisioning copy + timing live in @lightbulb/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
 import {
@@ -44,7 +44,7 @@ import {
   formatProvisionElapsed as formatElapsed,
   deriveUIPhase,
   type UIPhase,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
@@ -136,13 +136,15 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
 // once per browser, ever. Routine restarts of a stopped/errored container also
 // pass through provisioning on a normal /chat visit, so an in-memory guard
 // alone can't distinguish a first activation from a replay.
-const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
+// Renamed from `isol8_*` at the Lightbulb AI rebrand — these are one-shot
+// analytics de-dup markers, so at worst one event fires twice.
+const ONBOARDING_READY_STORAGE_KEY = "lightbulb_onboarding_ready_v1";
 
 // Same idiom as ONBOARDING_READY_STORAGE_KEY above, for the free-tier
 // `trial_started` funnel milestone — a distinct marker because a trial owner
 // who later converts to paid must NOT re-fire this on a subsequent
 // container recovery pass.
-const TRIAL_STARTED_STORAGE_KEY = "isol8_trial_started_v1";
+const TRIAL_STARTED_STORAGE_KEY = "lightbulb_trial_started_v1";
 
 function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   const [idx, setIdx] = useState(0);
@@ -2152,7 +2154,7 @@ export function ProviderPicker({
   const [error, setError] = useState<string | null>(null);
   // Starter Claude credits for the bedrock_claude path. Sent with that card's
   // Checkout only; the server re-scopes it to bedrock anyway, since the other
-  // two providers spend no Isol8 credits.
+  // two providers spend no Lightbulb AI credits.
   const [creditsCents, setCreditsCents] = useState<number>(DEFAULT_STARTER_CREDITS_CENTS);
 
   const handlePick = useCallback(async (id: ProviderChoiceId) => {

@@ -56,10 +56,10 @@ function _defaultIoAdapter() {
 }
 
 function _defaultStagingDir(buildId) {
-  // Match the deployed ISOL8_AGENTS_DIR (build.lobster and recap-and-cost.lobster
+  // Match the deployed LIGHTBULB_AGENTS_DIR (build.lobster and recap-and-cost.lobster
   // both set the EFS user root, /home/node/.openclaw) so a direct invocation
   // without the env resolves the same dir atlas-skeleton-generator.js writes.
-  const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
+  const agentsRoot = process.env.LIGHTBULB_AGENTS_DIR || path.join(os.homedir(), '.openclaw');
   const safe = String(buildId || '').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
   return path.join(agentsRoot, `.atlas-staging-${safe}`);
 }
@@ -139,7 +139,7 @@ function audit({ buildId, stagingDir, _ioAdapter }) {
       // that happens to exist would otherwise SUPPRESS the pipeline_missing
       // failure and let a deterministic requirement clear S9.5 with no real
       // in-workspace pipeline behind it. Same rule as the trigger registrar.
-      // resolve() both sides — ISOL8_AGENTS_DIR (or --staging-dir) may be
+      // resolve() both sides — LIGHTBULB_AGENTS_DIR (or --staging-dir) may be
       // relative, and a resolved path never matches an unresolved root.
       const workspaceRoot = path.resolve(workspaceDir);
       const pipelinePath = path.resolve(workspaceRoot, t.pipeline);

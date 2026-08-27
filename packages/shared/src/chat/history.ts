@@ -20,7 +20,7 @@
  * Both are resolved here toward the more permissive reading, which is the one
  * that renders more of the user's actual transcript. When re-syncing against
  * upstream, the source of truth is `ui/src/pages/chat/chat-history.ts` and
- * `src/chat/tool-content.ts` in the Isol8 OpenClaw fork (`Isol8AI/agent`).
+ * `src/chat/tool-content.ts` in the Lightbulb AI OpenClaw fork (`Isol8AI/agent`).
  */
 
 // ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ logger = logging.getLogger(__name__)
 # Plus-addressed alias of admin@isol8.co. Routes to the same inbox via
 # Gmail/Workspace plus-addressing, but Paperclip's Better Auth treats
 # it as a distinct user identity. Why distinct: admin@isol8.co is also
-# a real Isol8 end-user account (signs in via Clerk, has a Clerk org +
+# a real Lightbulb AI end-user account (signs in via Clerk, has a Clerk org +
 # OpenClaw container). If the bootstrap admin and the end-user shared
 # the same email, every provision_org call for that org would collide
 # with this signup ("user already exists"), and the end-user's normal
@@ -126,7 +126,7 @@ async def _signup(paperclip_url: str, password: str) -> dict:
         return await client.sign_up_user(
             email=ADMIN_EMAIL,
             password=password,
-            name="Isol8 Backend Admin",
+            name="Lightbulb AI Backend Admin",
         )
 
 

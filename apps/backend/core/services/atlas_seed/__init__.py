@@ -16,7 +16,7 @@ try/except; additionally each file write is guarded so one unreadable file can't
 strand the remaining ~150. This function never raises.
 
 By default each file is staged via ``write_file_if_missing`` (O_EXCL) — but a
-bundle-fingerprint marker (``.isol8-seed-fingerprint`` in Atlas's workspace)
+bundle-fingerprint marker (``.lightbulb-seed-fingerprint`` in Atlas's workspace)
 detects when an EXISTING workspace was staged from an older bundle, and that
 pass auto-flips to force-overwrite. So any path through
 ``write_user_configs`` (fresh provision, reprovision, admin
@@ -100,7 +100,7 @@ _FILES_DIR = Path(__file__).parent / "files"
 # agent-builder bridge. The vendored file ships a literal placeholder; the
 # concrete per-env, per-owner URL is substituted at stage time (see
 # pre_stage_atlas below). The placeholder string must match build.lobster.
-_BRIDGE_URL_PLACEHOLDER = "{{ISOL8_BRIDGE_URL}}"
+_BRIDGE_URL_PLACEHOLDER = "{{LIGHTBULB_BRIDGE_URL}}"
 
 
 def _api_base_url() -> str:
@@ -157,7 +157,7 @@ def _is_staged(rel_path: Path) -> bool:
 # staged with. A dotfile so agent_export's hygiene filter keeps it out of
 # marketplace snapshots. Lives inside Atlas's workspace so it travels with the
 # workspace (a recreated Atlas gets a fresh one).
-_FINGERPRINT_FILENAME = ".isol8-seed-fingerprint"
+_FINGERPRINT_FILENAME = ".lightbulb-seed-fingerprint"
 
 
 def _bundle_fingerprint() -> str:
@@ -356,7 +356,7 @@ async def pre_stage_atlas(
         logger.warning("atlas_seed: ACP AGENTS.md augmentation failed owner=%s: %s", owner_id, exc)
 
     # Stage-time bridge-URL templating. build.lobster's CREATE step curls the
-    # per-owner agent-builder bridge but ships with a literal {{ISOL8_BRIDGE_URL}}
+    # per-owner agent-builder bridge but ships with a literal {{LIGHTBULB_BRIDGE_URL}}
     # placeholder (the URL is per-env + per-owner, not known until provision).
     # Substitute it BEFORE the generic vendored-file loop so the loop's
     # write_file_if_missing no-ops on build.lobster (the substituted copy wins) —

@@ -164,7 +164,7 @@ async def test_create_alert_shape():
     client, fake = _client_with(_resp(200, {}))
     await client.create_alert(
         customer_id="cust-uuid-1",
-        name="isol8-low-balance-org_abc",
+        name="lightbulb-low-balance-org_abc",
         alert_type="low_remaining_commit_balance_reached",
         threshold_cents=500,
         credit_type_id="ct-usd-cents",
@@ -176,7 +176,7 @@ async def test_create_alert_shape():
     # commit-balance alert type (the validator rejects it otherwise).
     assert kwargs["json"] == {
         "customer_id": "cust-uuid-1",
-        "name": "isol8-low-balance-org_abc",
+        "name": "lightbulb-low-balance-org_abc",
         "alert_type": "low_remaining_commit_balance_reached",
         "threshold": 500,
         "credit_type_id": "ct-usd-cents",
@@ -221,7 +221,7 @@ async def test_create_prepaid_commit_flat_body_shape():
         product_id="prod-credits",
         credit_type_id="ct-usd-cents",
         amount_cents=2573,
-        description="isol8 top-up owner=org_abc amount_cents=2573",
+        description="lightbulb top-up owner=org_abc amount_cents=2573",
         idempotency_key="topup-org_abc-uuid-1",
     )
 
@@ -236,7 +236,7 @@ async def test_create_prepaid_commit_flat_body_shape():
     assert body["priority"] == 100
     assert body["applicable_contract_ids"] == ["contract-1"]
     assert body["invoice_contract_id"] == "contract-1"
-    assert body["description"] == "isol8 top-up owner=org_abc amount_cents=2573"
+    assert body["description"] == "lightbulb top-up owner=org_abc amount_cents=2573"
     # This API has no payment_gate_config field at all (live-verified: the
     # validator rejects it) — the body must never carry one.
     assert "payment_gate_config" not in body
@@ -263,7 +263,7 @@ async def test_create_prepaid_commit_sends_idempotency_key_header():
         product_id="prod-credits",
         credit_type_id="ct-usd-cents",
         amount_cents=2500,
-        description="isol8 top-up owner=org_abc amount_cents=2500",
+        description="lightbulb top-up owner=org_abc amount_cents=2500",
         idempotency_key="topup-org_abc-3f1d2c",
     )
 
@@ -286,7 +286,7 @@ async def test_create_gated_prepaid_commit_v2_body_shape():
         product_id="prod-credits",
         credit_type_id="ct-usd-cents",
         amount_cents=2573,
-        description="isol8 top-up owner=org_abc amount_cents=2573",
+        description="lightbulb top-up owner=org_abc amount_cents=2573",
         idempotency_key="topup-org_abc-uuid-2",
     )
 
@@ -303,7 +303,7 @@ async def test_create_gated_prepaid_commit_v2_body_shape():
     assert commit["type"] == "PREPAID"
     assert commit["product_id"] == "prod-credits"
     assert commit["priority"] == 100
-    assert commit["description"] == "isol8 top-up owner=org_abc amount_cents=2573"
+    assert commit["description"] == "lightbulb top-up owner=org_abc amount_cents=2573"
     assert commit["payment_gate_config"] == {"payment_gate_type": "STRIPE"}
     access = commit["access_schedule"]
     assert access["credit_type_id"] == "ct-usd-cents"

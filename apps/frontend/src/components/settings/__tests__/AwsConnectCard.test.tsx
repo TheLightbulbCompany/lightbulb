@@ -19,7 +19,7 @@ vi.mock("@/lib/api", async () => {
 });
 
 const SETUP = {
-  external_id: "isol8-ext-abc123",
+  external_id: "lightbulb-ext-abc123",
   principal_arn: "arn:aws:iam::877352799272:role/isol8-prod-owner-task",
   our_account_id: "877352799272",
   default_region: "us-east-1",

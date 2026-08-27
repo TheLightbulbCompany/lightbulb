@@ -27,7 +27,7 @@ const CLAUDE_PREVIEW = {
   safety_flags: [], warnings: [], skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
   claude: {
     collections: [
-      { id: "isol8-abc123", label: "isol8", file_count: 3 },
+      { id: "lightbulb-abc123", label: "Lightbulb AI", file_count: 3 },
       { id: "notes-def456", label: "notes", file_count: 1 },
     ],
     has_user_memory: true,
@@ -147,7 +147,7 @@ describe("ImportBackupDialog", () => {
       if (url.endsWith("/confirm")) return {
         agents: [], plugins_installed: [], history_staged: [], restarting: true, warnings: [],
         claude_items: [
-          { item: "memory:isol8-abc123", status: "applied" },
+          { item: "memory:lightbulb-abc123", status: "applied" },
           { item: "user-memory", status: "applied" },
           { item: "skill:graphify", status: "skipped_exists" },
         ],
@@ -173,7 +173,7 @@ describe("ImportBackupDialog", () => {
     fireEvent.click(screen.getByLabelText("notes"));
     fireEvent.click(confirmBtn);
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/marketplace/import/import-claude456789/confirm", {
-      target_agent_id: "agent1", claude_collections: ["isol8-abc123"], claude_skills: ["graphify"],
+      target_agent_id: "agent1", claude_collections: ["lightbulb-abc123"], claude_skills: ["graphify"],
     }));
     // per-item results rendered after confirm; the dialog stays open (the
     // parent closes it inside onImported) until Done is clicked
@@ -217,7 +217,7 @@ describe("ImportBackupDialog", () => {
     expect(confirmBtn).toBeEnabled();
     // uncheck both collections and the one skill → an empty confirm would only
     // delete the staging, so the button must disable
-    fireEvent.click(screen.getByLabelText("isol8"));
+    fireEvent.click(screen.getByLabelText("Lightbulb AI"));
     fireEvent.click(screen.getByLabelText("notes"));
     fireEvent.click(screen.getByLabelText("graphify"));
     expect(confirmBtn).toBeDisabled();

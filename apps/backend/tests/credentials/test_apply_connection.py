@@ -141,7 +141,7 @@ async def test_apply_x_provider_invokes_xurl_materializer(monkeypatch):
 
     def fake_materializer(owner_id, provider_key, credential):
         calls.append((owner_id, provider_key, credential))
-        return "isol8"
+        return "lightbulb"
 
     async def fake_run_in_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
@@ -158,5 +158,5 @@ async def test_apply_x_provider_invokes_xurl_materializer(monkeypatch):
     }
     identity = await ac.apply_connection("org_1", "x", credential)
 
-    assert identity == "isol8"
+    assert identity == "lightbulb"
     assert calls == [("org_1", "x", credential)]

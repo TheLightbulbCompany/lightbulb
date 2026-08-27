@@ -14,7 +14,7 @@ import { useMemo } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { RunLogResponse } from "@/components/teams/dashboard/hooks/useRunLog";
 import { runLogToMessages } from "./runLogToMessages";
-import type { HistoryMessage } from "@isol8/shared";
+import type { HistoryMessage } from "@lightbulb/shared";
 
 /** Matches the BFF's RUN_LOG_MAX_LIMIT_BYTES ceiling. */
 export const RUN_TRANSCRIPT_LIMIT_BYTES = 262_144;

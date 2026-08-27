@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from core.services import node_proxy
 from core.services.node_proxy import (
     handle_node_connect,
     handle_node_disconnect,
@@ -671,3 +672,15 @@ async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_
 
     # CLI gone, patched-session pin gone.
     assert _patched_sessions.get("agent:a1:user_alice") is None
+
+
+def test_node_display_name_is_idempotent_across_the_rebrand():
+    """Reconnects re-send the suffixed name; appending twice is the bug this
+    guards. Both the current and the pre-rebrand suffix must be stripped."""
+    assert node_proxy.node_display_name("Alice") == "Alice | Lightbulb AI Desktop"
+    # Current suffix: replaced, not compounded.
+    assert node_proxy.node_display_name("Alice | Lightbulb AI Desktop") == "Alice | Lightbulb AI Desktop"
+    # Pre-rebrand suffix on an already-paired node: rewritten, not compounded.
+    assert node_proxy.node_display_name("Alice | Isol8 Desktop") == "Alice | Lightbulb AI Desktop"
+    # A lookalike that is not the suffix survives.
+    assert node_proxy.node_display_name("My Isol8 Desktop rig") == "My Isol8 Desktop rig | Lightbulb AI Desktop"

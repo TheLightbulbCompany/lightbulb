@@ -5,7 +5,7 @@ import { render, waitFor } from "@testing-library/react-native";
 const mockPost = jest.fn(
   async (_path: string, _body: Record<string, unknown>) => ({}),
 );
-jest.mock("@isol8/shared", () => ({
+jest.mock("@lightbulb/shared", () => ({
   createApiClient: () => ({ post: mockPost }),
   // Needed by the agent-chat route. Omitting it made that branch throw, which
   // went unnoticed while no test exercised a tap.

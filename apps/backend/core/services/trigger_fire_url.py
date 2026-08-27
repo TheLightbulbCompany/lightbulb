@@ -30,7 +30,7 @@ def trigger_fire_url(owner_id: str, public_id: str) -> str:
 
 
 def stamp_fire_urls(payload: Any, owner_id: str) -> Any:
-    """Add the Isol8-facing fire URL to an upstream routine/trigger response.
+    """Add the Lightbulb AI-facing fire URL to an upstream routine/trigger response.
 
     Two upstream shapes, both handled in place:
 

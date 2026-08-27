@@ -15,7 +15,7 @@ describe("isPermissionsStorageEvent", () => {
   });
   it("ignores unrelated keys (e.g. future workspace layout writes)", () => {
     expect(
-      isPermissionsStorageEvent({ key: "isol8.workspace.layout.v1:user_x" } as StorageEvent),
+      isPermissionsStorageEvent({ key: "lightbulb.workspace.layout.v2:user_x" } as StorageEvent),
     ).toBe(false);
   });
 });

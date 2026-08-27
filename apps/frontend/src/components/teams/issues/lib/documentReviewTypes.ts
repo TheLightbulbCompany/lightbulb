@@ -1,6 +1,6 @@
 // Wire types for the plan-document review surface (A3). Local subset of the
 // upstream Paperclip `DocumentRevision` / `DocumentAnnotationThreadWithComments`
-// shapes — only the fields the Isol8 Teams UI reads. Kept local to the issues
+// shapes — only the fields the Lightbulb AI Teams UI reads. Kept local to the issues
 // module (not shared/types.ts) so this A3 addition doesn't touch a file other
 // agents edit in parallel.
 

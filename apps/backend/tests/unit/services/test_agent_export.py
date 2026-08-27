@@ -1915,30 +1915,30 @@ def test_paths_symlink_escape_is_rejected(fake_efs, tmp_path):
 
 def test_nested_repo_checkouts_are_pruned_by_default(fake_efs):
     seller_id, agent_id, agent_dir = fake_efs
-    _add_repo_checkout(agent_dir, "isol8")
+    _add_repo_checkout(agent_dir, "lightbulb")
     _add_repo_checkout(agent_dir, "vendor/lib", gitfile=True)
 
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
 
     names = _list_tar_names(pkg.tarball_bytes)
-    assert not any(n.startswith("./isol8") for n in names)
+    assert not any(n.startswith("./lightbulb") for n in names)
     assert not any(n.startswith("./vendor/lib") for n in names)
     # The agent dir's own .git (fixture) never prunes the root.
     assert "./README.md" in names
-    assert pkg.pruned_paths == ["isol8", "vendor/lib"]
+    assert pkg.pruned_paths == ["lightbulb", "vendor/lib"]
 
 
 def test_explicit_paths_ship_a_checkouts_working_tree_but_never_its_git_dir(fake_efs):
     """Naming a checkout in ``paths`` is the seller opting in: the working
     tree ships, ``.git`` itself still falls to the junk-dir skip."""
     seller_id, agent_id, agent_dir = fake_efs
-    _add_repo_checkout(agent_dir, "isol8")
+    _add_repo_checkout(agent_dir, "lightbulb")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["isol8"])
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["lightbulb"])
 
     names = _list_tar_names(pkg.tarball_bytes)
-    assert "./isol8/src/main.py" in names
-    assert "./isol8/README.md" in names
+    assert "./lightbulb/src/main.py" in names
+    assert "./lightbulb/README.md" in names
     assert not any(".git" in n for n in names)
     assert pkg.pruned_paths == []
 

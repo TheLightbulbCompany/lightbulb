@@ -1,7 +1,7 @@
 """Marketplace hires routed through Paperclip's approval surface.
 
 A headless Friday cannot hire; she can only ask. The ask becomes a Paperclip
-``hire_agent`` approval over an agent Isol8 pre-created and parked inert, linked
+``hire_agent`` approval over an agent Lightbulb AI pre-created and parked inert, linked
 to the issue that prompted it. The roster moves only on approve.
 
 Separate from — and does not disturb — the direct-create flow that seeds
@@ -489,7 +489,9 @@ async def test_retry_reuses_the_existing_hire_approval(resolve_company, create_a
     assert approval_id == "ap_existing"
     admin.update_agent.assert_not_awaited()
     admin.create_approval.assert_not_awaited()
-    assert create_agent.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:marketplace-approval:")
+    assert create_agent.await_args.kwargs["idempotency_key"].startswith(
+        "lightbulb-agent-create:v1:marketplace-approval:"
+    )
 
 
 @pytest.mark.asyncio

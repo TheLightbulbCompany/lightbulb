@@ -93,14 +93,14 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
     assert alert_kwargs == [
         {
             "customer_id": "cust-uuid-1",
-            "name": "isol8-low-balance-org_abc-warn",
+            "name": "lightbulb-low-balance-org_abc-warn",
             "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 500,
             "credit_type_id": "ct-usd-cents",
         },
         {
             "customer_id": "cust-uuid-1",
-            "name": "isol8-low-balance-org_abc-zero",
+            "name": "lightbulb-low-balance-org_abc-zero",
             "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 0,
             "credit_type_id": "ct-usd-cents",

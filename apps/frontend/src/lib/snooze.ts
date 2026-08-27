@@ -18,9 +18,9 @@ export function setSnoozed(key: string, durationMs = DEFAULT_DURATION_MS): void 
 }
 
 export function budgetSnoozeKey(threshold: number): string {
-  return `isol8_budget_snooze_${threshold}`;
+  return `lightbulb_budget_snooze_${threshold}`;
 }
 
 export function updateSnoozeKey(updateId: string): string {
-  return `isol8_update_snooze_${updateId}`;
+  return `lightbulb_update_snooze_${updateId}`;
 }

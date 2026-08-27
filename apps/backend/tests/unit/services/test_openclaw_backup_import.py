@@ -186,7 +186,7 @@ def root_state_dir_archive() -> bytes:
 
 
 def artifact_shaped_archive() -> bytes:
-    """R1: an Isol8 artifact re-upload — ``openclaw.json`` beside persona
+    """R1: an Lightbulb AI artifact re-upload — ``openclaw.json`` beside persona
     files at the root, no ``agents``/``state``/``credentials``/``browser``
     sibling. Workspace-shaped: NO state-relative skips apply, so its own
     ``memory/`` directory (agent content, not runtime junk) survives."""
@@ -631,7 +631,7 @@ def test_stage_upload_agent_without_workspace_warns(tmp_path: Path):
 
 
 def test_stage_upload_state_level_extras_ship_as_workspace_content(tmp_path: Path):
-    """R2: an Isol8 artifact re-upload (openclaw.json beside persona files,
+    """R2: an Lightbulb AI artifact re-upload (openclaw.json beside persona files,
     the state dir IS the workspace) keeps memory/ and tools/ as ordinary
     workspace content — they are NOT in _STATE_RUNTIME_DIRS, unlike a real
     state dir where memory/*.sqlite is already dropped at extraction time."""

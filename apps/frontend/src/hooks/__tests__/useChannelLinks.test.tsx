@@ -24,7 +24,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function bot(overrides: Partial<{ agent_id: string; bot_username: string; linked: boolean }> = {}) {
-  return { agent_id: "agent_1", bot_username: "isol8_bot", linked: false, ...overrides };
+  return { agent_id: "agent_1", bot_username: "lightbulb_bot", linked: false, ...overrides };
 }
 
 describe("useChannelLinks", () => {

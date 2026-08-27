@@ -194,7 +194,7 @@ def test_handler_posts_clean_payload_with_verdicts_and_attachment():
     assert att["download_url"] == "https://s3.example.com/presigned-url"
 
     # The shared secret is forwarded as the auth header, exactly as fetched.
-    assert captured["headers"]["x-isol8-ses-secret"] == SHARED_SECRET
+    assert captured["headers"]["x-lightbulb-ses-secret"] == SHARED_SECRET
     assert captured["headers"]["content-type"] == "application/json"
     assert captured["url"] == BACKEND_INGEST_URL
 

@@ -170,14 +170,14 @@ export interface ServiceStackProps extends cdk.StackProps {
   alertPageTopicArn?: string;
   /**
    * Attachments bucket name from the prod-stage SesInboundStack, when it
-   * exists (prod-only — see isol8-stage.ts). Undefined/empty in
+   * exists (prod-only — see lightbulb-stage.ts). Undefined/empty in
    * every env where that stack isn't instantiated; the backend only reads
    * this when AGENT_EMAIL_DOMAIN is also set, so an empty string is inert.
    */
   agentEmailAttachmentsBucket?: string;
   /**
    * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
-   * prod-only SesInboundStack — see isol8-stage.ts). Empty/undefined in every
+   * prod-only SesInboundStack — see lightbulb-stage.ts). Empty/undefined in every
    * other env; the backend's AGENT_EMAIL_DOMAIN guards treat that as "agent
    * email off", keeping dev/local/CI inert.
    */
@@ -185,7 +185,7 @@ export interface ServiceStackProps extends cdk.StackProps {
   /**
    * SES configuration set every agent-mail send is stamped with; empty ⇒
    * unstamped. Sourced from the AgentMailOutboundStack instantiated in
-   * lockstep with agentEmailDomain (see isol8-stage.ts) — undefined in any
+   * lockstep with agentEmailDomain (see lightbulb-stage.ts) — undefined in any
    * env/deploy where that stack isn't instantiated.
    */
   agentMailConfigurationSet?: string;
@@ -225,7 +225,7 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     const serviceSg = new ec2.SecurityGroup(this, "ServiceSecurityGroup", {
       vpc: props.vpc,
-      description: `Isol8 ${env} Fargate service security group`,
+      description: `Lightbulb AI ${env} Fargate service security group`,
       allowAllOutbound: true,
     });
 
@@ -264,7 +264,7 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     this.taskRole = new iam.Role(this, "TaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Fargate task role`,
+      description: `Lightbulb AI ${env} Fargate task role`,
     });
 
     // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
@@ -449,7 +449,7 @@ export class ServiceStack extends cdk.Stack {
         }),
         // Bedrock control plane. AIP ARNs are created at runtime so cannot be
         // pre-scoped by ARN; we constrain by tag instead. The mint stamps every
-        // AIP with ManagedBy=isol8-backend (see bedrock_aip.ensure_owner_aips),
+        // AIP with ManagedBy=lightbulb-backend (see bedrock_aip.ensure_owner_aips),
         // so:
         //   - create + tag-on-create are gated on aws:RequestTag/ManagedBy, so
         //     the backend can only mint profiles it marks as its own;
@@ -470,7 +470,7 @@ export class ServiceStack extends cdk.Stack {
           resources: ["*"],
           conditions: {
             StringEquals: {
-              "aws:RequestTag/ManagedBy": "isol8-backend",
+              "aws:RequestTag/ManagedBy": "lightbulb-backend",
             },
           },
         }),
@@ -485,7 +485,7 @@ export class ServiceStack extends cdk.Stack {
           resources: ["*"],
           conditions: {
             StringEquals: {
-              "aws:ResourceTag/ManagedBy": "isol8-backend",
+              "aws:ResourceTag/ManagedBy": "lightbulb-backend",
             },
           },
         }),
@@ -875,7 +875,7 @@ export class ServiceStack extends cdk.Stack {
     // (apps/backend/core/services/cloudwatch_logs.py). Scoped to the
     // backend's own log group ARN; never "*" — least privilege.
     //
-    // Log group name matches service-stack.ts + isol8-stage.ts —
+    // Log group name matches service-stack.ts + lightbulb-stage.ts —
     // `/ecs/isol8-${env}` (no /aws prefix, no
     // -backend suffix). The cloudwatch_logs service must use this same
     // name when constructing FilterLogEvents calls.
@@ -1213,7 +1213,7 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     const taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Fargate task execution role`,
+      description: `Lightbulb AI ${env} Fargate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -1282,7 +1282,7 @@ export class ServiceStack extends cdk.Stack {
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
       // WS caller-attestation gate, enforced in every env. The
-      // x-isol8-ws-internal header is verified flowing from the WS Lambdas on
+      // x-lightbulb-ws-internal header is verified flowing from the WS Lambdas on
       // both dev and prod (zero secret-fetch failures across real connects),
       // so the backend rejects /ws/* callers that lack it — closing the
       // unauthenticated WebSocket-impersonation hole on the public HTTP
@@ -1357,7 +1357,7 @@ export class ServiceStack extends cdk.Stack {
         env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
       // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
       // (apps/backend/main.py) builds an empty dispatch host set, so requests
-      // to `company-{env}.isol8.co` fall through to the default Isol8 API
+      // to `company-{env}.isol8.co` fall through to the default Lightbulb AI API
       // instead of being rewritten to the paperclip_proxy router. Mirrors
       // the env-derivation in paperclip-stack.ts so the two stay in lockstep
       // (keeps ServiceStack independent of PaperclipStack synth order).
@@ -1549,7 +1549,7 @@ export class ServiceStack extends cdk.Stack {
       // dev/local/CI stay inert.
       AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
       // Agent-email inbound attachments bucket, from the prod-stage
-      // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
+      // SesInboundStack when it exists (prod-only — see lightbulb-stage.ts).
       // Empty string in every env where that stack isn't deployed; the
       // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
       // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
@@ -1680,7 +1680,7 @@ export class ServiceStack extends cdk.Stack {
           props.secretNames.metronomeWebhookSecret,
         ),
       ),
-      // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
+      // Shared secret the WS Lambdas attach as x-lightbulb-ws-internal. The
       // backend compares it (require_ws_internal_caller) only when
       // WS_ENFORCE_INTERNAL_SECRET is "true". Same CMK as the other auth
       // secrets, so KmsDecryptForSecrets below already covers decrypt.
@@ -1691,7 +1691,7 @@ export class ServiceStack extends cdk.Stack {
           props.secretNames.wsInternalSecret,
         ),
       ),
-      // Shared secret the SES-ingest Lambda attaches as X-Isol8-SES-Secret.
+      // Shared secret the SES-ingest Lambda attaches as X-Lightbulb-SES-Secret.
       // The backend compares it in constant time (routers/ses_inbound.py)
       // only when AGENT_EMAIL_DOMAIN is also set. KMS decrypt covered by
       // the wildcard SecretsAccess + KmsDecryptForSecrets below (same CMK
@@ -2296,7 +2296,7 @@ export class ServiceStack extends cdk.Stack {
     // Tags
     // -------------------------------------------------------------------------
     cdk.Tags.of(this.service).add("Name", `isol8-${env}-backend`);
-    cdk.Tags.of(this.service).add("Project", "isol8");
+    cdk.Tags.of(this.service).add("Project", "Lightbulb AI");
     cdk.Tags.of(this.service).add("Environment", env);
   }
 }

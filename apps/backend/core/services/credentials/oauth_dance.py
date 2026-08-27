@@ -7,7 +7,7 @@ the registry. Three client-acquisition modes:
   endpoint, so the dance registers a fresh PUBLIC client (no secret, PKCE-only)
   the first time the owner connects and caches it in the same store, keyed
   client_secret="" to mark it public.
-- Platform app (e.g. instagram): Isol8 hosts ONE reviewed OAuth client
+- Platform app (e.g. instagram): Lightbulb AI hosts ONE reviewed OAuth client
   (oauth.platform_app names it in platform_oauth_app_store); every owner
   authorizes against it and grants access to their own assets. The per-owner
   app store is never consulted.
@@ -128,7 +128,7 @@ def _registered_redirect_uris(cached: dict | None) -> list[str]:
 
 
 async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
-    """The OAuth client for this provider: the Isol8 platform app (when the
+    """The OAuth client for this provider: the Lightbulb AI platform app (when the
     provider declares one), the owner's BYO app, or a DCR-registered public
     client. A missing/half-populated app is an error — start() and exchange()
     both call this, so a connect attempt without a usable client fails fast.
@@ -299,7 +299,7 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     # need it for Graph calls, so carry it through when present.
     if tok.get("user_id"):
         credential["provider_user_id"] = str(tok["user_id"])
-    # The platform app's secret is Isol8's, not the owner's. It must exist only in
+    # The platform app's secret is Lightbulb AI's, not the owner's. It must exist only in
     # its own Secrets Manager entry — never inside a per-owner credential payload,
     # where downstream rails (materializers, client_information) would carry it
     # toward agent-readable surfaces.

@@ -1,6 +1,6 @@
 """Stable logical-operation keys for Paperclip agent creation.
 
-The key intentionally excludes adapter credentials. Isol8 remints the service
+The key intentionally excludes adapter credentials. Lightbulb AI remints the service
 token and operator device key for every attempt, so hashing the raw Paperclip
 request would turn an honest retry into a distinct create.
 """
@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from typing import Any
 
 _OPERATION_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-_KEY_PREFIX = "isol8-agent-create:v1"
+_KEY_PREFIX = "lightbulb-agent-create:v1"
 
 
 def build_agent_create_idempotency_key(

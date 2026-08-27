@@ -65,7 +65,7 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@/components/teams/shared/types";
 
-const OTHER_ANSWER_ID = "__isol8_other__";
+const OTHER_ANSWER_ID = "__lightbulb_other__";
 
 export interface IssueThreadInteractionCardProps {
   interaction: IssueThreadInteraction;

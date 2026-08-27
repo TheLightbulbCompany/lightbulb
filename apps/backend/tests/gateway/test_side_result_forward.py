@@ -1,7 +1,7 @@
 """Gateway forwarding for `/btw` side-channel answers (`chat.side_result`).
 
 OpenClaw emits a `/btw` aside on a distinct `chat.side_result` event channel
-(chat.ts), separate from the primary run's streaming. Isol8's gateway used to
+(chat.ts), separate from the primary run's streaming. Lightbulb AI's gateway used to
 fall through to the raw-forward `else`, so the frame never reached the chat
 renderer. These tests pin the translation to a `btw_result` frontend frame.
 """

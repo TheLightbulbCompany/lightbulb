@@ -242,7 +242,7 @@ def build_paired_entry(
         "approvedAtMs": now_ms,
     }
     if user_id is not None:
-        # Custom Isol8 field. Upstream openclaw's `coercePairingStateRecord`
+        # Custom Lightbulb AI field. Upstream openclaw's `coercePairingStateRecord`
         # (pairing-files.ts) does a permissive cast — unknown fields are
         # preserved across read/write cycles. We use this on re-pair to
         # distinguish "this user's prior stale entries" (safe to prune)
@@ -300,7 +300,7 @@ def build_node_paired_entry(
     1. ``devices/paired.json`` authenticates the connecting device identity.
     2. ``nodes/paired.json`` approves the live command/capability surface.
 
-    Isol8 already performs an authenticated Clerk-backed desktop pair flow and
+    Lightbulb AI already performs an authenticated Clerk-backed desktop pair flow and
     derives the command set server-side, so that pair call is our approval
     moment for first-party desktop nodes. Without this entry the device can
     connect, but OpenClaw strips live commands to ``[]`` and agents see errors

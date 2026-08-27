@@ -532,7 +532,7 @@ class Workspace:
         Uses O_EXCL semantics so the existence check + create is atomic at
         the filesystem level — no race window between checking and writing.
         Mirrors OpenClaw's `writeFileIfMissing` (`agents/workspace.ts`)
-        so any file pre-staged by Isol8 is honored by OpenClaw's own
+        so any file pre-staged by Lightbulb AI is honored by OpenClaw's own
         bootstrap on first agent run.
 
         Creates parent directories as needed. Sets ownership to 1000:1000
@@ -1065,7 +1065,7 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
     logger.info("deleted_oauth_credential", extra={"user_id": user_id, "removed": removed})
 
 
-# The default agent's on-disk dir name. OpenClaw's DEFAULT agent (Isol8's
+# The default agent's on-disk dir name. OpenClaw's DEFAULT agent (Lightbulb AI's
 # Friday, config.py role=='ceo') is the single credential source; every other
 # agent reads through it (mergeAuthProfileStores(MAIN, agent)). Its store lives
 # at <EFS>/{user_id}/agents/main/agent/openclaw-agent.sqlite.

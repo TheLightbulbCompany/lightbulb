@@ -13,14 +13,14 @@ import { AppState } from "react-native";
  * packages/shared/src/hooks/useOnboardingStatus.test.ts — re-mocking
  * `fetchJsonWithStatus` here (the pre-CLIENT-HOOK strategy) no longer
  * intercepts anything: the shared hook imports it from its own internal
- * `../api/client`, not the `@isol8/shared` barrel this file's mock used to
+ * `../api/client`, not the `@lightbulb/shared` barrel this file's mock used to
  * patch.
  */
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
 }));
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useOnboardingStatus: jest.fn(),
 }));
 jest.mock("../adapter", () => ({ makeAdapter: () => ({}) }));
@@ -28,7 +28,7 @@ jest.mock("../adapter", () => ({ makeAdapter: () => ({}) }));
 import { useContainerStatus } from "../containerStatus";
 
 const { useOnboardingStatus: mockUseOnboardingStatus } = jest.requireMock(
-  "@isol8/shared",
+  "@lightbulb/shared",
 ) as {
   useOnboardingStatus: jest.Mock;
 };

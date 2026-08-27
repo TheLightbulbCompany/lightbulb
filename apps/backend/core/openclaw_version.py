@@ -157,13 +157,13 @@ def deployed_upstream_at_least(target: str) -> bool:
 
 
 # Extended tags are ``<upstream>-isol8.<n>-<shortsha>`` (e.g.
-# ``2026.7.2-isol8.8-8f700f0``); ``<n>`` is the Isol8 fork patch level, which
+# ``2026.7.2-isol8.8-8f700f0``); ``<n>`` is the Lightbulb AI fork patch level, which
 # is what decides whether a fork-only config key exists — the upstream prefix
 # is identical across every isol8.N of the same base.
 _ISOL8_PATCH_RE = re.compile(r"-isol8\.(\d+)(?:-|$)")
 
 
-def isol8_patch_level(tag: str | None) -> int:
+def fork_patch_level(tag: str | None) -> int:
     """Fork patch level carried by an extended-image tag; 0 when the tag is
     empty, unknown, or carries no ``isol8.N`` segment (a value we can't read
     must never satisfy a ``>=`` gate)."""
@@ -198,4 +198,4 @@ def deployed_fork_at_least(base: str, patch: int, *, tag: str | None = None) -> 
         return True
     if upstream < wanted:
         return False
-    return isol8_patch_level(t) >= patch
+    return fork_patch_level(t) >= patch

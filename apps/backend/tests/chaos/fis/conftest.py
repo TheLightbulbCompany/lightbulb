@@ -11,7 +11,7 @@ account sanity check. The account check is NOT a dev/prod discriminator —
 dev and prod share one AWS account (877352799272), so confirming the account
 proves nothing about which environment you are pointed at. The real
 prod-safety boundary is that the FIS experiment templates only exist in the
-dev CDK stage (instantiated solely for dev in isol8-stage.ts); there is
+dev CDK stage (instantiated solely for dev in lightbulb-stage.ts); there is
 nothing in prod for this harness to start.
 """
 
@@ -30,7 +30,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 import boto3
 import pytest
 
-DEV_ACCOUNT_ID = "877352799272"  # isol8 AWS account (CLAUDE.md). Dev + prod share
+DEV_ACCOUNT_ID = "877352799272"  # Lightbulb AI AWS account (CLAUDE.md). Dev + prod share
 # this ONE account, so the account check below is a sanity check only — NOT a
 # dev/prod discriminator. The env gates + the dev-only FIS stack are what keep
 # this off prod.
@@ -43,9 +43,9 @@ def _dev_only_guard():
     Two env gates plus an account sanity check:
       1. ENVIRONMENT=dev
       2. CHAOS_FIS_CONFIRM=dev (explicit caller opt-in)
-      3. AWS account == isol8 account — a sanity check, NOT a dev/prod
+      3. AWS account == Lightbulb AI account — a sanity check, NOT a dev/prod
          discriminator: dev and prod share one account (877352799272), so
-         this confirms only that credentials point at isol8 at all. The real
+         this confirms only that credentials point at Lightbulb AI at all. The real
          prod-safety boundary is that the FIS experiment templates only exist
          in the dev CDK stage — there is nothing in prod for this harness to
          start.
@@ -57,7 +57,7 @@ def _dev_only_guard():
     if os.environ.get("CHAOS_FIS_CONFIRM") != "dev":
         pytest.skip("set CHAOS_FIS_CONFIRM=dev to confirm a dev game-day run")
     ident = boto3.client("sts").get_caller_identity()
-    assert ident["Account"] == DEV_ACCOUNT_ID, f"refusing: account {ident['Account']} != isol8"
+    assert ident["Account"] == DEV_ACCOUNT_ID, f"refusing: account {ident['Account']} != Lightbulb AI"
 
 
 def assert_dev_cluster(cluster_arn: str) -> None:

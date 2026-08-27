@@ -1,9 +1,9 @@
 """DynamoDB repository for paperclip-companies table.
 
 PK: user_id (S)
-Maps Isol8 user -> Paperclip Better Auth account + the org-shared
+Maps Lightbulb AI user -> Paperclip Better Auth account + the org-shared
 Paperclip company. Each row is per-USER (not per-org); members of the
-same Isol8 org share the same ``company_id`` value across multiple
+same Lightbulb AI org share the same ``company_id`` value across multiple
 rows.
 
 Async repository following the same pattern as peer repos in
@@ -18,9 +18,9 @@ Paperclip's REST API has no per-user board-API-key minting endpoint
 (it's only mintable via the CLI auth challenge flow). The right design
 is therefore:
 
-* One Paperclip company per Isol8 *org* (Clerk org). All Isol8 users
+* One Paperclip company per Lightbulb AI *org* (Clerk org). All Lightbulb AI users
   belonging to the same org share the same ``company_id`` value.
-* One Better Auth account per Isol8 *user*, identified by
+* One Better Auth account per Lightbulb AI *user*, identified by
   ``paperclip_user_id`` and authenticated with a per-user random
   password (Fernet-encrypted at rest as ``paperclip_password_encrypted``).
 * Members are added to the shared company via Paperclip's
@@ -174,17 +174,17 @@ def _pending_brief_key(owner_id: str) -> str:
 @dataclass
 class PaperclipCompany:
     """Per-USER row. ``company_id`` is shared across all rows belonging
-    to the same Isol8 org; the other fields are per-user.
+    to the same Lightbulb AI org; the other fields are per-user.
     """
 
     user_id: str
-    """Isol8 user ID (Clerk user)."""
+    """Lightbulb AI user ID (Clerk user)."""
 
     org_id: str
-    """Isol8 org ID (Clerk org). Identical for all rows in the same org."""
+    """Lightbulb AI org ID (Clerk org). Identical for all rows in the same org."""
 
     company_id: str
-    """Paperclip company ID. Same value for every Isol8 user in the
+    """Paperclip company ID. Same value for every Lightbulb AI user in the
     same org — the Paperclip company is org-scoped, not user-scoped."""
 
     paperclip_user_id: str
@@ -224,7 +224,7 @@ class PaperclipCompany:
     last_error: Optional[str] = None
     scheduled_purge_at: Optional[datetime] = None
     seeded_agent_ids: Optional[list[str]] = None
-    """Paperclip agent IDs of the Isol8-seeded agents (Friday + Atlas)
+    """Paperclip agent IDs of the Lightbulb AI-seeded agents (Friday + Atlas)
     captured at provision time. The stable marker for "this agent is part
     of the provisioning contract and must not be deleted" — used by
     ``paperclip_openclaw_pairing.is_seeded_agent`` and the Teams BFF
@@ -741,7 +741,7 @@ class PaperclipRepo:
         """Yield each raw Query response page, following ``LastEvaluatedKey``.
 
         The one pagination loop for every GSI reader in this repo (Query caps
-        a page at ~1MB regardless of result size). For typical Isol8 org
+        a page at ~1MB regardless of result size). For typical Lightbulb AI org
         sizes (1-10 users) one page suffices.
         """
         while True:

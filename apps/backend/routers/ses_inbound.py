@@ -10,7 +10,7 @@ those verdicts are the AUTHORITATIVE sender-authentication signal here (see
 the auth-verdict gate below), unlike the Resend predecessor's best-effort
 `Authentication-Results` header parse.
 
-Auth is a shared secret (``X-Isol8-SES-Secret``), timing-safe compared
+Auth is a shared secret (``X-Lightbulb-SES-Secret``), timing-safe compared
 against ``SES_INBOUND_SECRET`` — there is no per-request signature the way
 Svix gave the old Resend webhook, because the Lambda is trusted
 infrastructure we control, not a third party. An empty secret disables the
@@ -167,7 +167,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 
         # Auth BEFORE any parsing/dedup work — an unauthenticated caller must
         # not be able to churn the dedup table or trigger downstream reads.
-        presented = request.headers.get("X-Isol8-SES-Secret", "")
+        presented = request.headers.get("X-Lightbulb-SES-Secret", "")
         if not presented or not hmac.compare_digest(
             presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")
         ):
@@ -360,7 +360,7 @@ async def handle_ses_events(request: Request):
     """SES complaint events (configuration-set → EventBridge → API destination)."""
     if not settings.SES_INBOUND_SECRET or not settings.AGENT_EMAIL_DOMAIN.strip():
         return {"status": "disabled"}
-    presented = request.headers.get("X-Isol8-SES-Secret", "")
+    presented = request.headers.get("X-Lightbulb-SES-Secret", "")
     if not presented or not hmac.compare_digest(presented.encode("utf-8"), settings.SES_INBOUND_SECRET.encode("utf-8")):
         return JSONResponse(status_code=401, content={"status": "bad_secret"})
     try:

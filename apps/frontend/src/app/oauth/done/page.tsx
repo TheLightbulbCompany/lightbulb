@@ -12,7 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
  * container Chrome, which has no Clerk session. A protected landing would
  * bounce the agent's Chrome to a sign-in page right after the connect
  * succeeded — and an owner who signed in there would hand the agent's browser
- * an Isol8 session. So: a signed-in viewer continues to /settings/connections
+ * an Lightbulb AI session. So: a signed-in viewer continues to /settings/connections
  * exactly as before (same query string, same toasts); anyone else gets a
  * close-this-tab note and nothing else. No data is fetched here.
  */

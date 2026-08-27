@@ -5,9 +5,9 @@ import {
   useChatGPTOAuth as useChatGPTOAuthShared,
   type ChatGPTOAuthOptions,
   type OAuthState,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
-// The hook body lives in @isol8/shared (extracted for the mobile app — see
+// The hook body lives in @lightbulb/shared (extracted for the mobile app — see
 // docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md). This module is
 // the web platform wrapper: it supplies the real useApi() client and
 // preserves the historical no-arg call signature + OAuthState export so

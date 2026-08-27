@@ -5,9 +5,9 @@ and prod tracks with the same `Developer ID Application: Prasiddha
 Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
 GitHub, every future `desktop-dev-v*` or `desktop-v*` tag produces a clean
-signed + notarized DMG that opens without the "Isol8 is damaged" Gatekeeper
+signed + notarized DMG that opens without the "Lightbulb AI is damaged" Gatekeeper
 warning. (That string is Tauri's `productName`, so it reads "Lightbulb AI is
-damaged" once the brand swap lands. `Isol8AI/isol8` and the `isol8-notarize`
+damaged" once the brand swap lands. `Isol8AI/isol8` and the `lightbulb-notarize`
 app-specific-password label are NOT renamed.)
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
@@ -38,7 +38,7 @@ Notarization uses your Apple ID with an **app-specific password** (not your
 real Apple ID password — that won't work over the notary API).
 
 1. Sign in at <https://appleid.apple.com>.
-2. Sign-In and Security → App-Specific Passwords → "+" → label `isol8-notarize`.
+2. Sign-In and Security → App-Specific Passwords → "+" → label `lightbulb-notarize`.
 3. Copy the generated password (format `xxxx-xxxx-xxxx-xxxx`).
 
 ### 4. Add the 5 GitHub repo secrets

@@ -47,7 +47,7 @@ const DECISION_KINDS: ReadonlySet<AttentionSourceKind> = new Set([
 // `executionState.monitor`, which is the client-side scan this surface exists
 // to avoid (the issue list silently caps ~120 rows, isol8 #1992) and would put
 // a second, disagreeing source behind a badge whose whole promise is one
-// number. The correct fix is upstream (or the Isol8 Paperclip fork) emitting a
+// number. The correct fix is upstream (or the Lightbulb AI Paperclip fork) emitting a
 // `monitor` source kind; once it does, this becomes one entry here plus a
 // label in AttentionList's SOURCE_LABEL, and it inherits everything else.
 

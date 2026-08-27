@@ -25,7 +25,7 @@ on:
       # extension-only change must rebuild + republish too.
       - "apps/infra/openclaw/chrome-extensions/**"
       # Same staleness class: the Dockerfile bakes the local-sqlite boot chain
-      # (isol8-local-sqlite-boot.sh / isol8-local-sqlite-app.sh / isol8-litestream.yml).
+      # (lightbulb-local-sqlite-boot.sh / lightbulb-local-sqlite-app.sh / lightbulb-litestream.yml).
       - "apps/infra/openclaw/local-sqlite/**"
       # The Dockerfile also bakes apps/infra/openclaw/plugins/** (the in-repo
       # aws-exec-profile plugin) into /app/dist/extensions, so a change there
@@ -91,7 +91,7 @@ jobs:
       - name: Run smoke suite
         run: |
           sh apps/infra/openclaw/local-sqlite/smoke-test.sh \
-             apps/infra/openclaw/local-sqlite/isol8-local-sqlite-boot.sh
+             apps/infra/openclaw/local-sqlite/lightbulb-local-sqlite-boot.sh
 
   build-and-push:
     name: Build and push extended OpenClaw image
@@ -139,7 +139,7 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # The base image (openclaw-version.json#upstream) is the Isol8 OpenClaw
+      # The base image (openclaw-version.json#upstream) is the Lightbulb AI OpenClaw
       # fork on GHCR, a private package this repo has been granted read access
       # to. The build below pulls it via FROM, so authenticate to GHCR first.
       - name: Login to GHCR

@@ -17,7 +17,7 @@ export type SlashCommand = {
   aliases?: string[];
 };
 
-// Always-on OpenClaw commands that are irrelevant to the Isol8 web surface
+// Always-on OpenClaw commands that are irrelevant to the Lightbulb AI web surface
 // (channel-routing, voice, ACP, privileged noise) or that the GUI owns. The
 // backend `commands` flag block already blocks the privileged ones from
 // running; this hides the always-on remainder from the menu. Tunable.

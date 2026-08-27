@@ -44,7 +44,7 @@ export class AuthStack extends cdk.Stack {
     // KMS key for general encryption (EBS, EFS, DynamoDB)
     this.kmsKey = new kms.Key(this, "GeneralEncryptionKey", {
       enableKeyRotation: true,
-      description: `Isol8 ${env} general encryption key (EBS, EFS, DynamoDB)`,
+      description: `Lightbulb AI ${env} general encryption key (EBS, EFS, DynamoDB)`,
       alias: `isol8-${env}-general`,
     });
 
@@ -52,7 +52,7 @@ export class AuthStack extends cdk.Stack {
     // If secretValues is provided (local dev), use that value instead of random generation.
     // If generateConfig is provided, CDK will generate a random string per the config
     // on first create (ignored when an initialValue is seeded for local dev).
-    // Optional description overrides the default `Isol8 ${env} ${secretName}` shape.
+    // Optional description overrides the default `Lightbulb AI ${env} ${secretName}` shape.
     const secretVals = props.secretValues ?? {};
     const createSecret = (
       logicalId: string,
@@ -63,7 +63,7 @@ export class AuthStack extends cdk.Stack {
       const initialValue = secretVals[secretName];
       return new secretsmanager.Secret(this, logicalId, {
         secretName: `isol8/${env}/${secretName}`,
-        description: description ?? `Isol8 ${env} ${secretName}`,
+        description: description ?? `Lightbulb AI ${env} ${secretName}`,
         encryptionKey: this.kmsKey,
         ...(initialValue
           ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
@@ -105,7 +105,7 @@ export class AuthStack extends cdk.Stack {
       "PaperclipBetterAuthSecret",
       "paperclip_better_auth_secret",
       { passwordLength: 64, excludePunctuation: true },
-      "Required by Paperclip server for cookie/session signing; not consumed by Isol8 backend.",
+      "Required by Paperclip server for cookie/session signing; not consumed by Lightbulb AI backend.",
     );
 
     this.paperclipServiceTokenKey = createSecret(
@@ -169,7 +169,7 @@ export class AuthStack extends cdk.Stack {
     );
 
     // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
-    // only) presents as the X-Isol8-SES-Secret header on its POST
+    // only) presents as the X-Lightbulb-SES-Secret header on its POST
     // to /webhooks/ses-inbound; the backend compares it in constant time (see
     // routers/ses_inbound.py). Created unconditionally in every env — same
     // posture as wsInternalSecret — but only ever actually READ
@@ -198,7 +198,7 @@ export class AuthStack extends cdk.Stack {
     // ``admin+paperclip@isol8.co`` (a plus-addressed alias of
     // admin@isol8.co, kept distinct so the bootstrap admin's
     // instance_admin role doesn't leak into admin@isol8.co's regular
-    // Isol8 user identity). Legacy envs (dev) carry the bare
+    // Lightbulb AI user identity). Legacy envs (dev) carry the bare
     // ``admin@isol8.co`` from before the rename — safe there only
     // because no dev user has signed up with that email.
     this.paperclipAdminCredentials = createSecret(
@@ -237,7 +237,7 @@ export class AuthStack extends cdk.Stack {
     // Placeholder-until-set, like paperclipAdminCredentials: CDK generates a
     // random string on first create and a human pastes the real JSON in after
     // the Zero Trust org exists. That is a designed state, not a broken one —
-    // isol8-warp-boot.sh treats "not enrollment JSON" as "skip, browser egress
+    // lightbulb-warp-boot.sh treats "not enrollment JSON" as "skip, browser egress
     // stays on the NAT IP" and exits 0.
     //
     // ONE FLEET-WIDE TOKEN, and it is readable by every customer's agent (it

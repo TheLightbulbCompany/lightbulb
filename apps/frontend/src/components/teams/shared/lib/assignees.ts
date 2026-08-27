@@ -3,7 +3,7 @@
 // Ported from upstream Paperclip's assignees.ts (paperclip/ui/src/lib/assignees.ts)
 // (MIT, (c) 2025 Paperclip AI). Subset retained for IssueRow /
 // IssueFiltersPopover. Upstream's User parameter was already a bare userId
-// string, so no Isol8 CompanyMember swap is required.
+// string, so no Lightbulb AI CompanyMember swap is required.
 
 export interface AssigneeSelection {
   assigneeAgentId: string | null;

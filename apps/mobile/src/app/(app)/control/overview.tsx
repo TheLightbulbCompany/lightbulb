@@ -21,7 +21,7 @@ import {
   fetchJsonWithStatus,
   useAgents,
   useGatewayRpc,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";

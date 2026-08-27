@@ -119,7 +119,7 @@ async def test_request_description_is_deterministic(provisioned_billing_row):
     first = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     await request_top_up("org_abc", 2573, client=fake)
     second = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
-    assert first == second == "isol8 top-up owner=org_abc amount_cents=2573"
+    assert first == second == "lightbulb top-up owner=org_abc amount_cents=2573"
 
 
 @pytest.mark.asyncio

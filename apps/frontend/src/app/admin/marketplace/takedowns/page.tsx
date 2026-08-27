@@ -26,7 +26,7 @@ const BASIS_TRUNCATE = 240;
 /**
  * Recent takedowns (audit-log view) — Server Component.
  *
- * Under the Isol8-internal scope there is no public takedown filing form,
+ * Under the Lightbulb AI-internal scope there is no public takedown filing form,
  * so admins initiate takedowns directly from the listing detail page (see
  * `TakedownButton`). This page is the historical record: granted takedowns
  * ordered by `decided_at` desc, with no Grant button (already granted).

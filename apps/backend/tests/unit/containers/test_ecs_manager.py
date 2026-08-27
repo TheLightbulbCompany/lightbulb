@@ -2960,10 +2960,10 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
                         ],
                         "environment": [
-                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
+                            {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
                         ],
                     }
                 ]
@@ -3027,10 +3027,10 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
                         ],
                         "environment": [
-                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
+                            {"name": "LIGHTBULB_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
                         ],
                     }
                 ]
@@ -3074,7 +3074,7 @@ class TestConfigLockProtocolRollout:
                         "command": [
                             "sh",
                             "-c",
-                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                            "${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + || exit 1",
                         ],
                     }
                 ]

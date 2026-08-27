@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 export const DEFAULT_WORKSPACE_ROOT = "/home/node/.openclaw";
 export const KEY_FILENAME = "paperclip-claimed-api-key.json";
 
-// The file shape is Isol8-defined and locked (friday_identity.py says so).
+// The file shape is Lightbulb AI-defined and locked (friday_identity.py says so).
 // Map each field to the env var the skill and the Paperclip wake text expect.
 const FIELD_TO_ENV = {
   token: "PAPERCLIP_API_KEY",

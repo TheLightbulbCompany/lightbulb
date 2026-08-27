@@ -36,7 +36,7 @@
 **Infra**
 - `apps/infra/lib/stacks/auth-stack.ts` — MODIFY: declare the Expo secret.
 - `apps/infra/lib/stacks/service-stack.ts` — MODIFY: `SecretNames` member + `secrets:` entry.
-- `apps/infra/lib/stages/isol8-stage.ts`, `apps/infra/lib/stages/local-stage.ts` — MODIFY: pass `expoAccessToken` name.
+- `apps/infra/lib/stages/lightbulb-stage.ts`, `apps/infra/lib/stages/local-stage.ts` — MODIFY: pass `expoAccessToken` name.
 
 **Mobile**
 - `apps/mobile/babel.config.js`, `apps/mobile/jest.config.js`, `apps/mobile/jest-setup.ts` — CREATE (Task 7).
@@ -868,7 +868,7 @@ git commit -m "feat(backend): hold container connection during active runs so cl
 ## Task 6: Infra — `EXPO_ACCESS_TOKEN` secret
 
 **Files:**
-- Modify: `apps/infra/lib/stacks/auth-stack.ts`, `apps/infra/lib/stacks/service-stack.ts`, `apps/infra/lib/stages/isol8-stage.ts`, `apps/infra/lib/stages/local-stage.ts`
+- Modify: `apps/infra/lib/stacks/auth-stack.ts`, `apps/infra/lib/stacks/service-stack.ts`, `apps/infra/lib/stages/lightbulb-stage.ts`, `apps/infra/lib/stages/local-stage.ts`
 
 No new IAM (secret is under the `isol8/${env}/*` prefix already granted). This is a config task — commit as one unit; validated by `cdk synth`.
 
@@ -916,7 +916,7 @@ Inside the `secrets: { ... }` block, before its closing `},` (line 1353):
 
 - [ ] **Step 4: Wire both stages**
 
-In `isol8-stage.ts` (in the `secretNames: { ... }` object, after `wsInternalSecret: auth.wsInternalSecret.secretName,` line 122):
+In `lightbulb-stage.ts` (in the `secretNames: { ... }` object, after `wsInternalSecret: auth.wsInternalSecret.secretName,` line 122):
 
 ```typescript
         expoAccessToken: auth.expoAccessToken.secretName,
@@ -932,7 +932,7 @@ Expected: synth succeeds (no unresolved-token / missing-property errors). Also r
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/infra/lib/stacks/auth-stack.ts apps/infra/lib/stacks/service-stack.ts apps/infra/lib/stages/isol8-stage.ts apps/infra/lib/stages/local-stage.ts
+git add apps/infra/lib/stacks/auth-stack.ts apps/infra/lib/stacks/service-stack.ts apps/infra/lib/stages/lightbulb-stage.ts apps/infra/lib/stages/local-stage.ts
 git commit -m "feat(infra): EXPO_ACCESS_TOKEN secret for the Expo Push API"
 ```
 

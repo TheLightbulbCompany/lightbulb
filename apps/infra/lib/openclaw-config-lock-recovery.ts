@@ -1,6 +1,13 @@
 export const OPENCLAW_CONFIG_LOCK_PATH = "/home/node/.openclaw/openclaw.json.lock";
-export const OPENCLAW_CONFIG_GUARD_SUFFIX = ".isol8-guard";
-export const OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".isol8-protocol";
+export const OPENCLAW_CONFIG_GUARD_SUFFIX = ".lightbulb-guard";
+export const OPENCLAW_CONFIG_PROTOCOL_SUFFIX = ".lightbulb-protocol";
+// Pre-rebrand sentinel names. Mirrors core/services/efs_file_lock.py: read the
+// protocol marker new-first/legacy-second, hold BOTH guards in the same fixed
+// order (legacy, then current) so an old-code backend peer is still excluded
+// and the pair cannot deadlock, and never unlink a legacy file — removing one
+// would strand a peer that only knows that name.
+export const OPENCLAW_CONFIG_LEGACY_GUARD_SUFFIX = ".isol8-guard";
+export const OPENCLAW_CONFIG_LEGACY_PROTOCOL_SUFFIX = ".isol8-protocol";
 export const OPENCLAW_CONFIG_PROTOCOL_MIGRATING = "migrating-v1\n";
 export const OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL = "ephemeral-v1\n";
 export const OPENCLAW_CONFIG_LOCK_RECOVERY_TIMEOUT_S = 30;
@@ -18,8 +25,9 @@ import time
 
 lock_path = sys.argv[1]
 timeout_s = float(sys.argv[2])
-guard_path = lock_path + ".isol8-guard"
-protocol_path = lock_path + ".isol8-protocol"
+guard_paths = [lock_path + ".isol8-guard", lock_path + ".lightbulb-guard"]
+protocol_path = lock_path + ".lightbulb-protocol"
+legacy_protocol_path = lock_path + ".isol8-protocol"
 migrating_protocol = b"migrating-v1\n"
 ephemeral_protocol = b"ephemeral-v1\n"
 
@@ -68,20 +76,21 @@ def acquire_until(fd, deadline, timeout_message):
 
 
 def require_guard_identity():
-    if not path_names_fd(guard_path, guard_fd):
-        fail("config-lock recovery guard changed identity")
+    for path, fd in guard_fds:
+        if not path_names_fd(path, fd):
+            fail("config-lock recovery guard changed identity")
 
 
-def read_protocol():
+def read_one_protocol(path):
     try:
-        observed = os.lstat(protocol_path)
+        observed = os.lstat(path)
     except FileNotFoundError:
         return None
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
         fail("config lock protocol marker is not a regular non-symlink file")
-    fd = open_regular(protocol_path, os.O_RDONLY)
+    fd = open_regular(path, os.O_RDONLY)
     try:
-        if not path_names_fd(protocol_path, fd):
+        if not path_names_fd(path, fd):
             fail("config lock protocol marker changed identity while opening")
         value = os.read(fd, 64)
     finally:
@@ -89,6 +98,16 @@ def read_protocol():
     if value not in (migrating_protocol, ephemeral_protocol):
         fail("config lock protocol marker has an invalid value")
     return value
+
+
+def read_protocol():
+    # New name first; a container that transitioned before the rename still
+    # carries only the legacy marker and must not be read as "no protocol".
+    for path in (protocol_path, legacy_protocol_path):
+        value = read_one_protocol(path)
+        if value is not None:
+            return value, path
+    return None, None
 
 
 def write_protocol(value):
@@ -115,18 +134,21 @@ def write_protocol(value):
 
 
 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-guard_fd = open_regular(guard_path, os.O_RDWR | os.O_CREAT)
+guard_fds = []
 lock_fd = None
 try:
-    try:
-        os.chown(guard_path, 1000, 1000)
-    except OSError:
-        pass
     deadline = time.monotonic() + max(0.0, timeout_s)
-    acquire_until(guard_fd, deadline, "config-lock recovery guard is held by a live backend writer")
+    for guard_path in guard_paths:
+        guard_fd = open_regular(guard_path, os.O_RDWR | os.O_CREAT)
+        guard_fds.append((guard_path, guard_fd))
+        try:
+            os.chown(guard_path, 1000, 1000)
+        except OSError:
+            pass
+        acquire_until(guard_fd, deadline, "config-lock recovery guard is held by a live backend writer")
     require_guard_identity()
 
-    protocol = read_protocol()
+    protocol, protocol_source = read_protocol()
 
     try:
         observed = os.lstat(lock_path)
@@ -171,7 +193,11 @@ try:
     else:
         print("[boot] config lock recovery: no sidecar")
 
-    if protocol != ephemeral_protocol:
+    # A protocol_source that is not protocol_path means the container finished
+    # the transition under the pre-rebrand marker: publish the current name too
+    # so the backend stops depending on the legacy fallback. The legacy marker
+    # is deliberately left behind for old-code peers.
+    if protocol != ephemeral_protocol or protocol_source != protocol_path:
         require_guard_identity()
         write_protocol(ephemeral_protocol)
         require_guard_identity()
@@ -182,10 +208,11 @@ finally:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
         finally:
             os.close(lock_fd)
-    try:
-        fcntl.lockf(guard_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(guard_fd)
+    for guard_path, guard_fd in reversed(guard_fds):
+        try:
+            fcntl.lockf(guard_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(guard_fd)
 `;
 
 function shellQuote(value: string): string {
@@ -204,7 +231,7 @@ export function openclawConfigLockRecoveryCommand(
     String(timeoutSeconds),
   ].join(" ");
   return [
-    `if [ "\${ISOL8_CONFIG_LOCK_PROTOCOL:-}" = "${OPENCLAW_CONFIG_LOCK_PROTOCOL_VERSION}" ]; then`,
+    `if [ "\${LIGHTBULB_CONFIG_LOCK_PROTOCOL:-}" = "${OPENCLAW_CONFIG_LOCK_PROTOCOL_VERSION}" ]; then`,
     `${recovery} || exit 1;`,
     "else echo '[boot] config lock recovery skipped: backend protocol is not guard-v1'; fi",
   ].join(" ");

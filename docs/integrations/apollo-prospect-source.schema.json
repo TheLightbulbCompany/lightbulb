@@ -9,7 +9,7 @@
     "campaign_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Isol8/Paperclip campaign or routine identifier requesting this bounded pilot batch."
+      "description": "LightbulbAI/Paperclip campaign or routine identifier requesting this bounded pilot batch."
     },
     "source_run_id": {
       "type": "string",

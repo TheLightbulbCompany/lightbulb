@@ -12,7 +12,7 @@ import { ServiceStack } from "../lib/stacks/service-stack";
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
- * Container). Mirrors the wiring in isol8-stage.ts (and marketplace-resources.test.ts)
+ * Container). Mirrors the wiring in lightbulb-stage.ts (and marketplace-resources.test.ts)
  * so the synthesized template matches what gets deployed.
  */
 function buildServiceStack(environment: "dev" | "prod"): Template {
@@ -243,7 +243,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Resource: "*",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "aws:RequestTag/ManagedBy": "isol8-backend",
+                "aws:RequestTag/ManagedBy": "lightbulb-backend",
               }),
             }),
           }),
@@ -262,7 +262,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Resource: "*",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "aws:ResourceTag/ManagedBy": "isol8-backend",
+                "aws:ResourceTag/ManagedBy": "lightbulb-backend",
               }),
             }),
           }),

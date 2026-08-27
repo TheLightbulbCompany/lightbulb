@@ -53,13 +53,13 @@ function makeRoster(over: Partial<Record<string, unknown>> = {}) {
   };
 }
 let mockAgents: RosterResult = makeRoster();
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useAgents: () => mockAgents,
 }));
 
 import Chat from "../chat";
-import { GatewayRpcError } from "@isol8/shared";
+import { GatewayRpcError } from "@lightbulb/shared";
 
 const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 

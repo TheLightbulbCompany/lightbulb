@@ -82,7 +82,7 @@ describe("useActiveSession — persistence across a full page refresh", () => {
       a.result.current.selectSession(NAMED);
     });
     expect(a.result.current.activeSessionId).toBe(NAMED);
-    expect(window.localStorage.getItem("isol8:activeSession:agent-X")).toBe(NAMED);
+    expect(window.localStorage.getItem("lightbulb:activeSession:agent-X")).toBe(NAMED);
 
     // Simulate a refresh: fresh module (empty Map), same localStorage.
     const second = await freshLoad();
@@ -110,14 +110,14 @@ describe("useActiveSession — persistence across a full page refresh", () => {
     act(() => {
       a.result.current.selectSession(NAMED);
     });
-    expect(window.localStorage.getItem("isol8:activeSession:agent-X")).toBe(NAMED);
+    expect(window.localStorage.getItem("lightbulb:activeSession:agent-X")).toBe(NAMED);
 
     // Switch back to General — the stored key must be cleared.
     act(() => {
       a.result.current.selectSession(null);
     });
     expect(a.result.current.activeSessionId).toBeNull();
-    expect(window.localStorage.getItem("isol8:activeSession:agent-X")).toBeNull();
+    expect(window.localStorage.getItem("lightbulb:activeSession:agent-X")).toBeNull();
 
     // A refresh now restores General (null), not the stale named session.
     const second = await freshLoad();

@@ -110,7 +110,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeTruthy();
-    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/on Lightbulb AI\.co/)).toBeNull();
     expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
 
@@ -135,7 +135,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("MOCK_BYO_KEY_SCREEN")).toBeTruthy();
-    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/on Lightbulb AI\.co/)).toBeNull();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
   });
 
@@ -274,7 +274,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText("APP")).toBeNull();
     // Nothing for the member to do on the web — their admin's provision is
     // already running and the poll clears this on its own.
-    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/on Lightbulb AI\.co/)).toBeNull();
   });
 
   // needsSignup used to hand off to the web page where a plan is bought, which
@@ -448,7 +448,7 @@ describe("ProvisionGate container-error interstitial", () => {
     expect(screen.getByText("Sign out")).toBeTruthy();
     // No outbound "Manage on isol8.co" CTA — there's nothing to manage for
     // a failed provision, unlike the blocked/needsSignup gate states.
-    expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/on Lightbulb AI\.co/)).toBeNull();
   });
 
   it("does NOT render children while in the error state — the interstitial replaces the tree", async () => {

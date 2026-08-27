@@ -15,7 +15,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { LogoMark } from "@/components/Logo";
+import { LogoMark, SunriseMark } from "@/components/Logo";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
@@ -70,6 +70,11 @@ export function HeroFunnel() {
 
   return (
     <section className="ld-funnel" id="start">
+      {/* The ray fan sits behind the headline; the lamp that casts it is
+          fixed to the viewport (HangingLamp), not to this section. */}
+      <div className="ld-funnel-fan" aria-hidden="true">
+        <SunriseMark />
+      </div>
       <div className="ld-funnel-in">
         <p className="ld-mono ld-funnel-eyebrow">
           The Integrated Management Environment

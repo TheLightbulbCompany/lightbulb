@@ -530,7 +530,7 @@
   padding: 9px 16px;
   border-radius: 999px;
   border: 1px solid var(--edge);
-  background: #fff;
+  background: var(--cream);
   font-size: 13px;
   font-weight: 500;
   color: var(--ink-soft);
@@ -600,7 +600,7 @@
   width: 62px;
   height: 62px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(245, 239, 226, 0.10);
   display: grid;
   place-items: center;
   color: var(--cream);
@@ -657,7 +657,7 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: #cfe9da;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(245, 239, 226, 0.22);
   padding: 11px 16px;
   border-radius: 999px;
 }
@@ -682,7 +682,7 @@
   border-radius: 22px;
   background:
     radial-gradient(ellipse at 50% 40%, rgba(6, 64, 43, 0.04), transparent 70%),
-    #fff;
+    var(--cream);
   padding: 64px 48px 56px;
   overflow: hidden;
 }
@@ -867,7 +867,7 @@
   padding: 18px 18px 16px;
   border: 1px solid rgba(6, 64, 43, 0.16);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(245, 239, 226, 0.96);
   box-shadow: 0 24px 68px rgba(26, 26, 26, 0.14);
   color: var(--ink);
   pointer-events: auto;
@@ -968,7 +968,7 @@
   position: relative;
   border: 1px solid var(--edge);
   border-radius: 22px;
-  background: #fff;
+  background: var(--cream);
   padding: 52px 22px 22px;
   overflow: hidden;
 }
@@ -999,7 +999,7 @@
 
 .ld-ib-item.is-active {
   border-color: rgba(6, 64, 43, 0.35);
-  background: #fff;
+  background: var(--cream);
   box-shadow: 0 10px 28px rgba(6, 64, 43, 0.07);
 }
 
@@ -1097,7 +1097,7 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: #fff;
+  background: var(--cream);
 }
 
 .ld-ib-thread-hd {
@@ -1300,7 +1300,7 @@
   gap: 14px;
   padding: 26px 24px;
   border-radius: 18px;
-  background: #fff;
+  background: var(--cream);
   border: 1px solid var(--edge);
   color: var(--ink);
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
@@ -1430,7 +1430,7 @@
   padding: 34px 30px;
   border-radius: 20px;
   border: 1px solid var(--edge);
-  background: #fff;
+  background: var(--cream);
   position: relative;
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.4s ease;
 }
@@ -1535,7 +1535,7 @@
 }
 
 .ld-price-card--hi .ld-btn:hover {
-  background: #fff;
+  background: var(--cream);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.25);
 }
 
@@ -1730,7 +1730,7 @@
 }
 
 .ld-footer-cta .ld-btn:hover {
-  background: #fff;
+  background: var(--cream);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.3);
 }
 
@@ -2055,48 +2055,86 @@
 /* top edge is inside the first viewport at 1440x900.                  */
 /* ================================================================== */
 
+/* ================================================================ */
+/* The funnel hero — "Quiet Room" (Brand Identity Manual v1.0).       */
+/*                                                                    */
+/* The lamp hangs over the page from the top of the viewport and the  */
+/* fan sits behind the headline; both are painted by HangingLamp and  */
+/* .ld-funnel-fan. Restraint is the direction: brass hairlines, one   */
+/* ray fan, a lot of cream, and the lamp as the only theatre.         */
+/* ================================================================ */
+
 .ld-funnel {
-  padding: 128px 48px 56px;
+  position: relative;
+  padding: clamp(120px, 20vh, 200px) 48px 56px;
   display: grid;
   place-items: center;
   text-align: center;
+  /* `clip`, not `hidden`: the fan is wider than the viewport and must be
+     contained on x while still bleeding up behind the nav. `hidden` would
+     also make this a scroll container and break the sticky nav. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .ld-funnel-in {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 820px;
 }
 
-.ld-funnel-eyebrow {
-  margin: 0 0 26px;
-  font-size: 11px;
-  letter-spacing: 0.26em;
-  color: var(--forest);
+/* The ray fan, sitting behind the headline. Barely embers while the room is
+   dark; it blooms when the lamp is switched on. That differential IS the
+   payoff of pulling the cord — without it the toggle reads as a colour swap. */
+.ld-funnel-fan {
+  position: absolute;
+  top: -14%;
+  left: 50%;
+  translate: -50% 0;
+  width: min(1180px, 150vw);
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.2;
+  scale: 1;
+  transition: opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+    scale 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ld-funnel-fan .brand-sunrise > path,
+.ld-funnel-fan .brand-sunrise > g:not(:first-child),
+.ld-funnel-fan .brand-sunrise > rect {
+  display: none; /* fan only — the glass, cage and platform stay in the mark */
 }
 
-/* The identity moment: the og-image serif 8, static, quiet fade-in. */
+.ld-funnel-eyebrow {
+  margin: 0 0 22px;
+  font-size: 11px;
+  letter-spacing: 0.19em; /* §05: small labels set wide and uppercase */
+  /* §06 "Decided": labels on cream are midnight at reduced opacity, never
+     brass (2.94:1). 60% as written measures 4.40:1 — under the 4.5:1 AA
+     floor — so this uses 66% (5.34:1), the nearest value that clears it. */
+  color: rgba(15, 26, 43, 0.66);
+}
+
 .ld-funnel-mark {
-  font-size: 84px;
-  color: var(--ink);
-  margin-bottom: 18px;
+  display: block;
+  height: 84px;
+  width: auto;
+  margin: 0 auto 18px;
   animation: ld-fade 0.9s ease both;
 }
 
 @keyframes ld-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .ld-funnel-h1 {
   font-family: var(--font-lora-serif), Georgia, serif;
-  font-weight: 500;
-  font-size: clamp(36px, 4.6vw, 56px);
-  line-height: 1.08;
-  letter-spacing: -0.018em;
+  font-weight: 600; /* §05 Lora SemiBold · display */
+  font-size: clamp(38px, 5.2vw, 66px);
+  line-height: 1.04;
+  letter-spacing: -0.01em; /* §05 display sets tight */
   color: var(--ink);
   margin: 0;
   text-wrap: balance;
@@ -2111,14 +2149,16 @@
   gap: 8px;
   padding: 8px 8px 8px 24px;
   border-radius: 999px;
-  background: #fff;
+  /* §06: never pure white. #fff was the one harsh surface on the page. */
+  background: var(--cream-deeper);
   border: 1px solid var(--edge);
-  box-shadow: 0 18px 44px rgba(6, 64, 43, 0.08);
-  transition: border-color 0.3s ease;
+  box-shadow: 0 18px 44px rgba(15, 26, 43, 0.07);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
 }
 
 .ld-ask:focus-within {
-  border-color: var(--forest);
+  border-color: var(--brass);
+  box-shadow: 0 0 0 4px rgba(240, 195, 78, 0.18);
 }
 
 .ld-ask input {
@@ -2133,17 +2173,26 @@
 }
 
 .ld-ask input::placeholder {
-  color: #b9b2a3;
+  color: rgba(15, 26, 43, 0.5);
 }
 
 .ld-ask input:focus {
   outline: none;
 }
 
+/* The Start button is the light: bulb on midnight type, the one place the
+   yellow is allowed to fill a shape (§06 — it is the light source). */
 .ld-ask .ld-btn {
   flex-shrink: 0;
   padding: 12px 24px;
   font-size: 14px;
+  background: var(--bulb);
+  border-color: var(--bulb);
+  color: var(--midnight);
+}
+
+.ld-ask .ld-btn:hover:not(:disabled) {
+  box-shadow: 0 12px 30px rgba(240, 195, 78, 0.32);
 }
 
 .ld-ask .ld-btn:disabled {
@@ -2165,7 +2214,8 @@
   margin-top: 22px;
   background: none;
   border: 0;
-  padding: 0;
+  padding: 10px;
+  min-height: 44px;
   cursor: pointer;
   font-size: 13px;
   color: var(--mute);
@@ -2176,7 +2226,13 @@
 }
 
 .ld-funnel-swap:hover {
-  color: var(--forest);
+  color: var(--ink);
+}
+
+@media (max-width: 720px) {
+  .ld-funnel { padding-inline: 20px; }
+  .ld-ask { flex-direction: column; align-items: stretch; padding: 14px; border-radius: 18px; }
+  .ld-ask .ld-btn { justify-content: center; }
 }
 
 /* ================================================================ */
@@ -2210,8 +2266,8 @@
 
 /* The demo sidebar's app-icon slot: the serif 8 mark alone. */
 .ld-sidebar-mark {
-  font-size: 26px;
-  color: var(--ink);
+  height: 26px;
+  width: auto;
 }
 
 /* Slim hairline chrome — no mac-dots title bar. */
@@ -2252,7 +2308,7 @@
   height: 44px;
   padding: 0 12px;
   border-bottom: 1px solid var(--edge);
-  background: #fff;
+  background: var(--cream);
 }
 
 .ld-topbar-icon {
@@ -2302,7 +2358,7 @@
   padding: 0 10px 0 12px;
   font-size: 12.5px;
   color: var(--ink);
-  background: #fff;
+  background: var(--cream);
 }
 
 .ld-tab-x {
@@ -2386,7 +2442,7 @@
   }
 
   .ld-funnel-mark {
-    font-size: 64px;
+    height: 64px;
   }
 
   .ld-ask {
@@ -2408,4 +2464,99 @@
   .ld-funnel-mark {
     animation: none;
   }
+}
+
+/* ================================================================ */
+/* THE HANGING LAMP + the dark room                                  */
+/*                                                                    */
+/* Scoped to `.ld-page` on purpose. `data-lb-theme` is written on     */
+/* <html> so the lamp can be mounted anywhere on the page, but only   */
+/* the landing surface reads it — /chat has its own surface contract  */
+/* and must not be repainted by a marketing control.                  */
+/* ================================================================ */
+
+.ld-lamp {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  margin-left: -145px;
+  width: 290px;
+  z-index: 90;
+  pointer-events: none;
+  transform-origin: 50% 0;
+  will-change: transform;
+}
+.ld-lamp-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+.ld-lamp-glass {
+  pointer-events: auto;
+  cursor: pointer;
+  fill: var(--bulb);
+  stroke: var(--midnight);
+  stroke-width: 4;
+  transition: fill 0.5s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.5s ease;
+}
+.ld-lamp-fil {
+  fill: var(--midnight);
+  stroke: var(--midnight);
+  stroke-width: 3.4;
+  stroke-linejoin: round;
+  transition: fill 0.5s ease, stroke 0.5s ease;
+}
+.ld-lamp-collar { fill: var(--midnight); transition: fill 0.5s ease; }
+.ld-lamp-cord {
+  fill: none;
+  stroke: var(--midnight);
+  stroke-width: 2.4;
+  opacity: 0.55;
+  transition: stroke 0.5s ease;
+}
+.ld-lamp-pull { pointer-events: auto; cursor: pointer; fill: var(--brass); }
+
+.ld-lamp-glass:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 4px;
+}
+
+/* ---- the room, switched off ---- */
+[data-lb-theme="dark"] .ld-page {
+  --cream: #0F1A2B;
+  --cream-deeper: #16223a;
+  --cream-deepest: #1d2b45;
+  --edge: rgba(245, 239, 226, 0.14);
+  --edge-soft: rgba(245, 239, 226, 0.09);
+  --ink: #F5EFE2;
+  --ink-soft: rgba(245, 239, 226, 0.78);
+  /* §06 "Decided": labels on a MIDNIGHT ground are brass (5.2:1 AA). The
+     66%-midnight value used on cream would be invisible here. */
+  --mute: #B68235;
+  --mute-soft: rgba(245, 239, 226, 0.55);
+  --forest: #F5EFE2;
+  --forest-tint: rgba(240, 195, 78, 0.12);
+}
+
+[data-lb-theme="dark"] .ld-lamp-glass {
+  fill: rgba(245, 239, 226, 0.06);
+  stroke: rgba(245, 239, 226, 0.75);
+}
+[data-lb-theme="dark"] .ld-lamp-fil {
+  fill: rgba(245, 239, 226, 0.7);
+  stroke: rgba(245, 239, 226, 0.7);
+}
+[data-lb-theme="dark"] .ld-lamp-collar { fill: rgba(245, 239, 226, 0.8); }
+[data-lb-theme="dark"] .ld-lamp-cord { stroke: rgba(245, 239, 226, 0.5); }
+
+/* The fan is embers while the lamp is off, and blooms when it is lit. */
+[data-lb-theme="dark"] .ld-funnel-fan { opacity: 0.07; scale: 0.94; }
+[data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
+
+.ld-page { transition: background 0.5s cubic-bezier(0.22, 1, 0.36, 1), color 0.5s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-lamp { transform: none !important; }
+  .ld-page, .ld-funnel-fan { transition: none; }
+}
+
+@media (max-width: 720px) {
+  .ld-lamp { transform: scale(0.7); transform-origin: 50% 0; }
 }

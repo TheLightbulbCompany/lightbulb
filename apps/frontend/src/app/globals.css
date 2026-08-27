@@ -6,6 +6,18 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* Tailwind's `bg-white` / `text-white` / `border-white` repointed to cream.
+   *
+   * 62 component files use `bg-white`, and every one of them means "the
+   * lightest surface", not "#ffffff". §06 is explicit that the light ground
+   * is cream and never pure white, so repointing the utility rebrands all of
+   * them at once instead of a 62-file diff that would have to be repeated
+   * every time someone reaches for the utility again.
+   *
+   * If you genuinely need paper-white (a print stylesheet, an image matte),
+   * write the literal — do not reach for this class. */
+  --color-white: var(--cream);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
@@ -66,16 +78,35 @@
  */
 :root {
   --radius: 0.5rem;
-  --cream: #faf7f2;
-  --cream-deeper: #f3efe6;
-  --cream-deepest: #ebe5d6;
-  --edge: #e0dbd0;
-  --edge-soft: #ebe6da;
-  --edge-forest: #d4e6dc;
-  --forest: #06402B;
-  --forest-soft: #4a9e74;
-  --forest-tint: #e6efe9;
-  --gold: #c2a378;
+
+  /* ── The Lightbulb Company palette ────────────────────────────────────
+   * Brand Identity Manual v1.0 §06. Four values, no fifth, no gradient
+   * ramps, no tint scales. Forest green is retired.
+   *
+   * The legacy token NAMES are kept and repointed rather than renamed:
+   * `--forest` is referenced in ~83 files through the shadcn surface
+   * contract below, so repointing rebrands every primitive at once and a
+   * rename would be a thousand-line diff with the same result. `--forest`
+   * now holds midnight, which keeps its ONE structural job — the dark
+   * ground that cream type sits on (15.2:1, unchanged from forest's 13.9).
+   *
+   * The greens (`--forest-soft`, `--forest-tint`, `--edge-forest`) become
+   * brass and bulb tints. Nothing in the system is green any more.
+   */
+  --midnight: #0F1A2B;
+  --bulb: #F0C34E;
+  --brass: #B68235;
+
+  --cream: #F5EFE2;
+  --cream-deeper: #EFE8D9;
+  --cream-deepest: #E7DECB;
+  --edge: #ded5c2;
+  --edge-soft: #e8e0d0;
+  --edge-forest: #ecdcbb;      /* was a green edge; now a brass one */
+  --forest: #0F1A2B;           /* midnight — the dark ground */
+  --forest-soft: #B68235;      /* was #4a9e74 green */
+  --forest-tint: #f6ead0;      /* was #e6efe9 green tint; now bulb tint */
+  --gold: #B68235;             /* brass */
   --ink: #1a1a1a;
   --ink-soft: #3d3d3d;
   /* #767061, not the older #8a8578: --mute is secondary BODY text, and
@@ -89,8 +120,18 @@
    * the text that used to reference it. #8a8578 is 3.44:1. (It is the value
    * --mute held before that token was darkened to #767061 for AA.) */
   --mute-soft: #8a8578;
-  --warn: #c47a1d;
-  --danger: #b32424;
+  /* §06 states, as lamps. The manual's green/orange/red/blue state palette
+   * is deliberately unused: it forces a fifth and sixth colour into a
+   * four-colour system. Status is a lamp — on, dim, or out — and because
+   * three states share one hue, "never colour alone" binds harder here:
+   * every lamp in the UI ships beside a word. `--danger` keeps a distinct
+   * value because a destructive confirm is the one place a word alone is
+   * not enough, and it is desaturated toward the palette. */
+  --lamp-on: #F0C34E;
+  --lamp-dim: #B68235;
+  --lamp-out: rgba(15, 26, 43, 0.30);
+  --warn: #B68235;
+  --danger: #96382B;
 
   /*
    * shadcn/ui surface contract, repointed at the editorial palette above.
@@ -450,50 +491,66 @@
 }
 
 /* ═══════════════════════════════════════════════
-   AGENT GLYPH
-   Rotates between upright 8 (idle) and horizontal ∞ (thinking).
-   Back-out easing gives the rotation a subtle overshoot so the
-   state change feels purposeful rather than mechanical.
+   THINKING FILAMENT
+   Replaces the rotating 8 → ∞ glyph. The lamp's cage
+   filament heats while the agent works and cools when
+   it stops. Fast attack, slow decay — a square 50/50
+   blink reads as a broken bulb, i.e. an error, which is
+   the opposite of "running".
    ═══════════════════════════════════════════════ */
 
-.agent-glyph {
-  transform-origin: center center;
-  transform: rotate(90deg);
-  transition: transform 650ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.agent-glyph.agent-glyph--thinking {
-  transform: rotate(0deg);
-}
+.agent-glyph { display: block; flex: none; }
 
-/* Two-path composition:
-   - base   = the full, solid figure-eight stroke (100% drawn when idle)
-   - tracer = a short segment that chases around the loop while thinking
-   Idle: base at full opacity, tracer hidden.
-   Thinking: base dims so the tracer reads as the moving element. */
-.agent-glyph .agent-glyph-base {
-  stroke: #302d28;
-  opacity: 1;
+.agent-glyph .agent-glyph-glass {
+  fill: none;
+  stroke: var(--ink);
+  opacity: 0.34;
+  transition: stroke 400ms ease, opacity 400ms ease;
+}
+.agent-glyph .agent-glyph-cage {
+  fill: var(--ink);
+  stroke: var(--ink);
+  opacity: 0.32;
+  transition: opacity 350ms ease, fill 350ms ease, stroke 350ms ease;
+}
+.agent-glyph .agent-glyph-collar {
+  fill: var(--ink);
+  opacity: 0.45;
   transition: opacity 350ms ease;
 }
-.agent-glyph .agent-glyph-tracer {
-  stroke: #302d28;
-  stroke-dasharray: 12 36;
-  stroke-dashoffset: 48;
-  opacity: 0;
-  transition: opacity 250ms ease;
+
+.agent-glyph.agent-glyph--thinking .agent-glyph-cage {
+  animation: filament-incandesce 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) infinite;
 }
-.agent-glyph.agent-glyph--thinking .agent-glyph-base {
-  opacity: 0.3;
-}
-.agent-glyph.agent-glyph--thinking .agent-glyph-tracer {
-  opacity: 1;
-  animation: agent-glyph-trace 1.8s linear infinite;
-  animation-delay: 250ms; /* let rotation + base-fade finish before tracing begins */
+.agent-glyph.agent-glyph--thinking .agent-glyph-glass {
+  animation: filament-envelope 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) infinite;
 }
 
-@keyframes agent-glyph-trace {
-  0%   { stroke-dashoffset: 48; }
-  100% { stroke-dashoffset: 0; }
+@keyframes filament-incandesce {
+  0%   { opacity: 0.28; fill: var(--ink);  stroke: var(--ink); }
+  14%  { opacity: 1;    fill: var(--bulb); stroke: var(--bulb); }  /* attack */
+  62%  { opacity: 0.62; fill: var(--bulb); stroke: var(--bulb); }  /* decay  */
+  100% { opacity: 0.28; fill: var(--ink);  stroke: var(--ink); }
+}
+@keyframes filament-envelope {
+  0%   { opacity: 0.34; stroke: var(--ink); }
+  14%  { opacity: 0.95; stroke: var(--brass); }
+  62%  { opacity: 0.55; stroke: var(--brass); }
+  100% { opacity: 0.34; stroke: var(--ink); }
+}
+
+/* Motion is decoration here, not information — the label beside the glyph
+   ("Working…", "Thinking…") already carries the state, so reduced-motion
+   holds the bulb lit rather than cycling it. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-glyph.agent-glyph--thinking .agent-glyph-cage,
+  .agent-glyph.agent-glyph--thinking .agent-glyph-glass { animation: none; }
+  .agent-glyph.agent-glyph--thinking .agent-glyph-cage {
+    opacity: 1; fill: var(--bulb); stroke: var(--bulb);
+  }
+  .agent-glyph.agent-glyph--thinking .agent-glyph-glass {
+    opacity: 0.9; stroke: var(--brass);
+  }
 }
 
 /* ═══════════════════════════════════════════════
@@ -1393,39 +1450,41 @@ button:focus-visible { border-radius: 999px; }
 .brand-logo-link { display: inline-flex; align-items: center; text-decoration: none; }
 .brand-logo {
   font-family: var(--font-lora), Georgia, serif;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  line-height: 1;
-  display: inline-block;
+  /* §03 wordmark spec: Lora Medium, uppercase, tracking +0.18em. Weight
+     below 400 is never used, and 700 is not the spec — 500 is. */
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  line-height: 1.15;
+  display: inline-flex;
+  align-items: center;
   transition: color .2s ease;
 }
 .brand-logo--ink   { color: var(--ink); }
 .brand-logo--cream { color: var(--cream); }
 
-/* The serif 8 mark (og-image.png's Didone numeral, as a styled glyph).
-   Scaled by font-size at each call site. Didot/Bodoni lead the stack —
-   the og mark IS a Didone, and Georgia/Lora's low-contrast figures read
-   flat next to it. Georgia is the non-Apple fallback. */
+/* The product bulb (§01). Was a styled Didone "8" glyph; it is artwork now,
+   so it scales by em like the glyph did but cannot be re-set wrong by a
+   font fallback. Height leads because the bulb is taller than it is wide. */
 .brand-mark {
-  font-family: Didot, "Bodoni MT", "Bodoni 72", Georgia,
-    var(--font-lora-serif), serif;
-  font-weight: 400;
-  font-style: normal;
-  letter-spacing: 0;
-  line-height: 1;
   display: inline-block;
-  color: inherit;
+  height: 1.35em;
+  width: auto;
+  vertical-align: -0.22em;
+  flex: none;
 }
 .brand-logo .brand-mark {
-  font-size: 1.45em;
-  margin-right: 0.42em;
-  transform: translateY(0.04em);
+  margin-right: 0.5em;
+}
+.brand-sunrise {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .brand-logo--sm { font-size: 15px; }
 .brand-logo--md { font-size: 18px; }
 .brand-logo--lg { font-size: 24px; }
 .brand-logo-link:hover .brand-logo--ink { color: var(--forest); }
-.brand-logo-link:hover .brand-logo--cream { color: #ffffff; }
+.brand-logo-link:hover .brand-logo--cream { color: var(--bulb); }
 
 /* ── TEAM (formerly Orchestration) ── */
 .landing-orch { background: var(--cream-deeper); padding: 128px 48px; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }

@@ -576,7 +576,7 @@ button:focus-visible { border-radius: 999px; }
   background: rgba(250,247,242,0.95);
   backdrop-filter: blur(12px);
 }
-.nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: #777; }
+.nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: var(--mute); }
 .nav-links a {
   padding: 6px 14px; border-radius: 99px;
   transition: color .2s, background .2s;
@@ -595,13 +595,17 @@ button:focus-visible { border-radius: 999px; }
 .nav-badge {
   display: inline-block;
   font-size: 8px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
-  color: var(--forest-soft); background: rgba(182, 130, 53,.12);
+  /* NOT --forest-soft: that token is brass since the rebrand, and §06
+     records brass on cream at 2.9:1 — a fail it names explicitly. Midnight
+     is 15.2:1, and the brass stays where it belongs, on the rule and the
+     wash behind this badge. */
+  color: var(--forest); background: rgba(182, 130, 53,.12);
   border: 1px solid rgba(182, 130, 53,.3);
   padding: 1px 5px; border-radius: 99px;
   vertical-align: super; margin-left: 3px; line-height: 1.4;
 }
 .nav-right { display: flex; align-items: center; gap: 16px; justify-content: flex-end; }
-.nav-login { font-size: 14px; font-weight: 500; color: #777; transition: color .2s; text-decoration: none; }
+.nav-login { font-size: 14px; font-weight: 500; color: var(--mute); transition: color .2s; text-decoration: none; }
 .nav-login:hover { color: var(--forest); }
 .btn-primary {
   padding: 8px 20px; font-size: 14px; font-weight: 700; font-family: inherit;
@@ -612,10 +616,10 @@ button:focus-visible { border-radius: 999px; }
 .btn-primary:active { background: #0a1422; }
 .btn-secondary {
   padding: 12px 28px; font-size: 14px; font-weight: 500; font-family: inherit;
-  color: #888; border: 1px solid #ddd; border-radius: 999px; background: transparent;
+  color: var(--mute); border: 1px solid var(--edge); border-radius: 999px; background: transparent;
   cursor: pointer; transition: background .2s, border-color .2s; text-decoration: none; display: inline-block;
 }
-.btn-secondary:hover { background: #f0ebe0; border-color: #ccc; }
+.btn-secondary:hover { background: var(--cream-deeper); border-color: var(--mute-soft); }
 .btn-large {
   padding: 12px 28px; font-size: 14px; font-weight: 700; font-family: inherit;
   color: var(--cream); background: var(--forest); border-radius: 999px;
@@ -711,7 +715,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .hero-h1 em { font-style: italic; color: var(--forest); }
 .hero-h1 em {
-  background: linear-gradient(90deg, var(--forest) 0%, #B68235 40%, var(--forest) 80%);
+  background: var(--brass);
   background-size: 200% auto;
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -782,7 +786,7 @@ button:focus-visible { border-radius: 999px; }
 .wf-int:nth-child(2) .wf-int-bubble { animation: wf-float 3.2s ease-in-out infinite .7s; }
 .wf-int:nth-child(3) .wf-int-bubble { animation: wf-float 3.2s ease-in-out infinite 1.4s; }
 @keyframes wf-float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
-.wf-int-lbl { font-size: 10px; font-weight: 600; color: #888; }
+.wf-int-lbl { font-size: 10px; font-weight: 600; color: var(--mute); }
 .wf-tasks-card { background: var(--cream); border: 1px solid var(--edge); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; transition: transform .3s ease, box-shadow .3s ease; }
 .wf-tasks-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
 .wf-task { display: flex; align-items: center; gap: 10px; }
@@ -902,7 +906,7 @@ button:focus-visible { border-radius: 999px; }
 .feat-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--forest); display: flex; align-items: center; justify-content: center; margin-bottom: 24px; transition: transform .4s cubic-bezier(.34,1.56,.64,1), box-shadow .3s; }
 .feat-card:hover .feat-icon { transform: rotateY(180deg); box-shadow: 0 4px 16px rgba(15, 26, 43,.2); }
 .feat-title { font-family: var(--font-lora); font-size: 21px; font-weight: 400; color: var(--ink); margin-bottom: 12px; }
-.feat-desc { font-size: 14px; color: #888; line-height: 1.7; }
+.feat-desc { font-size: 14px; color: var(--mute); line-height: 1.7; }
 @media (max-width: 768px) {
   .landing-features { padding: 64px 20px; }
   .feat-grid { grid-template-columns: 1fr; gap: 0; }
@@ -917,7 +921,7 @@ button:focus-visible { border-radius: 999px; }
 .price-card:hover { transform: translateY(-3px); box-shadow: 0 16px 40px rgba(15, 26, 43,.1); }
 .price-card.highlight { border-color: var(--forest); box-shadow: 0 8px 32px rgba(15, 26, 43,.1); }
 .popular-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); padding: 4px 16px; background: var(--forest); color: var(--cream); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; border-radius: 999px; white-space: nowrap; overflow: hidden; }
-.popular-badge::after { content: ''; position: absolute; top: 0; left: -100%; width: 60%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent); animation: badge-shimmer 3s ease-in-out infinite; }
+.popular-badge::after { content: ''; position: absolute; top: 0; left: -100%; width: 60%; height: 100%; background: linear-gradient(90deg, transparent, rgba(245,239,226,.3), transparent); animation: badge-shimmer 3s ease-in-out infinite; }
 @keyframes badge-shimmer { 0%, 70%, 100% { left: -100%; } 85% { left: 150%; } }
 .plan-name { font-size: 11px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: #888; margin-bottom: 16px; }
 .plan-price { display: flex; align-items: baseline; gap: 4px; margin-bottom: 8px; }
@@ -1083,7 +1087,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 /* ── SCROLL PROGRESS ── */
-.scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: linear-gradient(90deg, var(--forest), var(--forest-soft)); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(182, 130, 53,.4); }
+.scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: var(--forest); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(182, 130, 53,.4); }
 
 /* ── FOOTER ── */
 .landing-footer { background: #0F1A2B; padding: 48px 24px; }
@@ -1365,7 +1369,7 @@ button:focus-visible { border-radius: 999px; }
 
 .support-field input::placeholder,
 .support-field textarea::placeholder {
-  color: #a0a0a0;
+  color: var(--mute);
 }
 
 .support-field select {

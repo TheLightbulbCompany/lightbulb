@@ -91,7 +91,7 @@
   transform: translateY(-2px);
 }
 .blog-card:hover::before {
-  color: var(--forest-soft);
+  color: var(--forest);
 }
 .blog-card:hover::after {
   transform: scaleX(1);
@@ -224,7 +224,11 @@
   text-decoration-thickness: 1px;
 }
 .blog-prose a:hover {
-  color: var(--forest-soft);
+  /* NOT --forest-soft: brass since the rebrand, 2.9:1 on cream. The default
+     is already midnight, so hover changes the rule rather than the hue —
+     which is also the one thing §06 lets brass do on a light ground. */
+  text-decoration-color: var(--brass);
+  text-decoration-thickness: 2px;
 }
 .blog-prose ul,
 .blog-prose ol {
@@ -243,7 +247,7 @@
   padding-left: 4px;
 }
 .blog-prose li::marker {
-  color: var(--forest-soft);
+  color: var(--forest);
 }
 .blog-prose code {
   font-family: var(--font-geist-mono), ui-monospace, monospace;

@@ -1012,7 +1012,10 @@
 }
 
 .ld-ib-item.is-active .ld-ib-id {
-  color: var(--forest-soft);
+  /* --forest-soft is brass now (2.9:1 on cream, §06 names it a fail).
+     Midnight carries the active state; weight does the rest. */
+  color: var(--forest);
+  font-weight: 600;
 }
 
 .ld-ib-title {
@@ -2362,7 +2365,7 @@
 }
 
 .ld-tab-x {
-  color: #9b9b9b;
+  color: var(--mute);
 }
 
 .ld-panel-body {

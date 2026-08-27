@@ -18,6 +18,7 @@ import asyncio
 import pytest
 
 import core.services.paperclip_session_cookie as sc
+from core.config import apex_domain, settings as _settings, url_host
 from core.services.paperclip_session_cookie import (
     mint_binding,
     resolve_session_cookie,
@@ -91,10 +92,10 @@ async def test_cold_start_mints_once_and_seeds_both_cookies():
     # Both the session cookie and the binding cookie were seeded.
     assert _SESSION_NAME in resp.cookies
     assert "isol8_pc_bind" in resp.cookies
-    # Session cookie is HttpOnly + .isol8.co scoped.
+    # Session cookie is HttpOnly and scoped to the configured product apex.
     seeded = resp.cookies[_SESSION_NAME]
     assert seeded["httponly"] is True
-    assert seeded["domain"] == ".isol8.co"
+    assert seeded["domain"] == f".{apex_domain(url_host(_settings.FRONTEND_URL))}"
 
 
 @pytest.mark.asyncio

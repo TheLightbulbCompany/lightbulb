@@ -27,6 +27,7 @@ import time
 import httpx
 import pytest
 
+from core.config import apex_domain, settings, url_host
 from routers.paperclip_proxy import (
     _AGENT_ROUTE_RE,
     _BRAND_REWRITES,
@@ -44,6 +45,11 @@ from routers.paperclip_proxy import (
     _redact_agent_secrets_json,
     _rewrite_set_cookie_domain,
 )
+
+# The Set-Cookie Domain is derived from settings.FRONTEND_URL, so the expected
+# value must derive too. A literal here matched only while the configured domain
+# happened to equal it — which stopped being true when the product domain moved.
+COOKIE_APEX = apex_domain(url_host(settings.FRONTEND_URL))
 
 
 # ---------------------------------------------------------------
@@ -206,7 +212,7 @@ def test_circuit_breaker_recloses_after_cooldown_window(monkeypatch):
 def test_rewrite_set_cookie_replaces_existing_domain():
     src = "session=abc; Path=/; Domain=paperclip.internal; HttpOnly; Secure"
     out = _rewrite_set_cookie_domain(src)
-    assert "Domain=.isol8.co" in out
+    assert f"Domain=.{COOKIE_APEX}" in out
     assert "paperclip.internal" not in out
     # Other attributes preserved.
     assert "Path=/" in out
@@ -217,7 +223,7 @@ def test_rewrite_set_cookie_replaces_existing_domain():
 def test_rewrite_set_cookie_appends_domain_if_missing():
     src = "session=abc; Path=/; HttpOnly; Secure"
     out = _rewrite_set_cookie_domain(src)
-    assert out.endswith("; Domain=.isol8.co")
+    assert out.endswith(f"; Domain=.{COOKIE_APEX}")
     # Original attributes are not mutated when appending.
     assert "Path=/" in out
     assert "HttpOnly" in out
@@ -233,17 +239,17 @@ def test_rewrite_set_cookie_case_insensitive():
     # cookies are case-insensitive per RFC 6265 §5.2; browsers honor
     # either form.
     assert out.lower().count("domain=") == 1
-    assert ".isol8.co" in out
+    assert f".{COOKIE_APEX}" in out
     assert "other.example" not in out
     # Original case preserved on the attribute name.
-    assert "domain=.isol8.co" in out
+    assert f"domain=.{COOKIE_APEX}" in out
 
 
 def test_rewrite_set_cookie_preserves_samesite():
     src = "tok=v; Path=/; SameSite=Lax; HttpOnly"
     out = _rewrite_set_cookie_domain(src)
     assert "SameSite=Lax" in out
-    assert "; Domain=.isol8.co" in out
+    assert f"; Domain=.{COOKIE_APEX}" in out
 
 
 def test_rewrite_set_cookie_custom_target_domain():
@@ -260,6 +266,9 @@ def test_rewrite_set_cookie_default_scope_follows_the_frontend_apex(monkeypatch)
 
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.example.ai")
     assert "; Domain=.example.ai" in _rewrite_set_cookie_domain("tok=v")
+    # Literal on purpose: this line PAIRS with the monkeypatch above it. The
+    # test's whole point is that the cookie follows whatever is configured, so
+    # here the expectation must be the patched value, not the derived default.
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://isol8.co")
     assert "; Domain=.isol8.co" in _rewrite_set_cookie_domain("tok=v")
 

@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+
+from core.config import apex_domain, settings as _settings, url_host
 from moto import mock_aws
 
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
@@ -246,7 +248,10 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     # silently fails on every provision.
     assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     adapter_cfg = agent_kwargs["adapter_config"]
-    assert adapter_cfg["url"] == f"wss://ws-dev.isol8.co?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
+    # Derived, not literal: the adapter URL is built from the configured gateway
+    # apex, so a literal here would only be a tripwire on the next domain move.
+    _apex = apex_domain(url_host(_settings.WS_GATEWAY_URL))
+    assert adapter_cfg["url"] == f"wss://ws-dev.{_apex}?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
     # "paperclip:" namespaced so the adapter's agent:<agentId>: prefix cannot
     # collide with the owner's /chat "General" session key.
     assert agent_kwargs["adapter_config"]["sessionKey"] == "paperclip:user_owner"

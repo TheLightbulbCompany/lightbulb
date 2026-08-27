@@ -62,6 +62,16 @@ fi
 cat <<'MANUAL'
 
 == Still manual (no API, or needs a human login) ==
+  GitHub      REPO SECRETS the prod frontend build reads. These are not vendor
+    secrets   config -- they are baked into the bundle at build time, so the app
+              talks to whatever they said when it was built:
+                NEXT_PUBLIC_API_URL_PROD            -> https://api.flickmeon.ai/api/v1
+                NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD -> the NEW pk_live_
+              Update BOTH, then re-run the prod deploy so a build picks them up.
+              (Confirm with `gh secret list --repo Isol8AI/isol8`: the _DEV twins
+               were updated on the dev flip, so their timestamps show the pattern.)
+              Missing NEXT_PUBLIC_API_URL_PROD = the prod app calls a dead host.
+
   Metronome   webhook URL -> https://api.flickmeon.ai/api/v1/webhooks/metronome
               (api key at isol8/prod/metronome_api_key; drives the paid-chat
                fast-gate flag + the Bedrock kill-switch)

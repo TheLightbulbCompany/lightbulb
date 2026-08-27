@@ -45,14 +45,14 @@ def test_both_team_domains_are_accepted():
     a code change needs a deploy — so the gate accepts the old AND the new team
     domain across a mailbox move rather than locking admins out for that gap."""
     assert is_platform_admin_email("someone@isol8.co")
-    assert is_platform_admin_email("someone@thelightbulbcompanies.com")
-    assert is_platform_admin_email("SOMEONE@THELIGHTBULBCOMPANIES.COM")
+    assert is_platform_admin_email("someone@thelightbulb.company")
+    assert is_platform_admin_email("SOMEONE@THELIGHTBULB.COMPANY")
 
 
 def test_random_domain_is_still_rejected():
     assert not is_platform_admin_email("attacker@example.com")
     # Suffix matching must not be fooled by a lookalike domain.
-    assert not is_platform_admin_email("attacker@evil-thelightbulbcompanies.com.example")
+    assert not is_platform_admin_email("attacker@evil-thelightbulb.company.example")
     assert not is_platform_admin_email(None)
 
 

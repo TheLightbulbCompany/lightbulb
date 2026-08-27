@@ -57,7 +57,7 @@ async def test_get_user_session_cookie_prefers_the_stored_paperclip_email(active
     repo.get = AsyncMock(return_value=active_company)
     admin_client = MagicMock()
     admin_client.sign_in_user = AsyncMock(return_value={"_session_cookie": "c"})
-    clerk_resolver = AsyncMock(return_value="alice@thelightbulbcompanies.com")
+    clerk_resolver = AsyncMock(return_value="alice@thelightbulb.company")
 
     await get_user_session_cookie(
         user_id="u1",

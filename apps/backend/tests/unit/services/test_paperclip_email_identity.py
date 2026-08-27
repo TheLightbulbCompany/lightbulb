@@ -60,7 +60,7 @@ async def test_provision_org_adopt_signs_in_with_the_stored_email(monkeypatch):
         owner_id="org_xyz",
         owner_user_id="user_owner",
         # The human has MOVED domains; Clerk now mints the new address.
-        owner_email="owner@thelightbulbcompanies.com",
+        owner_email="owner@thelightbulb.company",
     )
 
     admin.sign_in_user.assert_awaited_once_with(email="owner@isol8.co", password="owner-pw")
@@ -160,8 +160,8 @@ async def test_provision_member_adopt_and_owner_resignin_use_stored_emails(monke
     await svc.provision_member(
         owner_id="org_xyz",
         user_id="user_member",
-        email="member@thelightbulbcompanies.com",
-        owner_email="owner@thelightbulbcompanies.com",
+        email="member@thelightbulb.company",
+        owner_email="owner@thelightbulb.company",
     )
 
     signed_in = [c.kwargs["email"] for c in admin.sign_in_user.await_args_list]

@@ -38,7 +38,7 @@ class TestPlan:
         """The stored value IS what the sign-in doors use. Overwriting it on a
         disagreement is the one-way door slamming; surface it for a human."""
         rows = [_row(paperclip_email="alice@isol8.co")]
-        targets, mismatches, _ = plan(rows, {"pc_x": "alice@thelightbulbcompanies.com"})
+        targets, mismatches, _ = plan(rows, {"pc_x": "alice@thelightbulb.company"})
         assert targets == []
         assert mismatches == 1
 

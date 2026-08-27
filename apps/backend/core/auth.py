@@ -279,7 +279,7 @@ async def get_optional_user(
 # only once nobody signs in on it.
 _PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = (
     "@isol8.co",
-    "@thelightbulbcompanies.com",
+    "@thelightbulb.company",
 )
 
 # Hardcoded extra-admin allowlist for individuals without a team-domain

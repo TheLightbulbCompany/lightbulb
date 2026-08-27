@@ -8,7 +8,7 @@ import { Footer } from "@/components/landing/Footer";
 import { JsonLd, organizationJsonLd, pageMetadata, softwareApplicationJsonLd, websiteJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "isol8 — AI Agents for Autonomous Businesses",
+  title: "Lightbulb AI — AI Agents for Autonomous Businesses",
   description: "Run your company with persistent AI agents, cloud workspaces, and an agent marketplace for autonomous business operations.",
   path: "/",
 });

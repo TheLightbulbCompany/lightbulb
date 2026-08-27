@@ -27,7 +27,7 @@ A skill is a packaged capability an agent reads before acting — a workflow, a 
 Open **Company → Automations**, or ask Friday to set the loop up.
 
 - **Schedule** — pick the agent, the cadence, and the brief.
-- **Webhook** — for GitHub, Vercel, and Google, Isol8 registers the webhook in the service for you. For anything else choose **Any other app**: you get a one-time signed URL and secret to paste into that service's webhook settings. The [webhook event reference](/blog/webhook-event-reference) lists the events ten providers send.
+- **Webhook** — for GitHub, Vercel, and Google, Lightbulb AI registers the webhook in the service for you. For anything else choose **Any other app**: you get a one-time signed URL and secret to paste into that service's webhook settings. The [webhook event reference](/blog/webhook-event-reference) lists the events ten providers send.
 - **Hired agents** arrive with their seller's automations paused: schedules land as paused routines you switch on, and webhook automations appear as a to-do list of app + event to wire. A live trigger in someone else's repo or mailbox can't port.
 
 ## What needs a paid plan

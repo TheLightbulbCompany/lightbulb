@@ -107,7 +107,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
       return {
         title: "Provider rate limit reached",
         description:
-          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Isol8's Bedrock-managed credits.",
+          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Lightbulb AI's Bedrock-managed credits.",
         action: { label: "Switch provider", href: "/chat?panel=llm&action=change-provider" },
       };
     case "context_length":

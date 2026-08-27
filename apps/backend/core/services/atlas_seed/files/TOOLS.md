@@ -115,7 +115,7 @@ Frozen `Object.freeze` constants. Update discipline: append + bump version + add
 
 The refusal message for a build-time ClawHavoc-listed-skill request links here. **Verified** = a publisher-signed manifest URL from the official domain, a signed release artifact from the publisher's GitHub releases (verifiable PGP), or a direct URL to the skill's manifest in the publisher's official docs. **Not verified** = a ClawHub community comment, a third-party repost/fork, a fork of unknown provenance, a `*/community-skills/` path, or a search-result link.
 
-A URL claiming verification is run through `skill-vetter`; only a vetter pass makes the skill recommendable, and a denied skill installs only via the S10 gate (no separate override). The denylist is isol8's curated internal list (`tools.deny[]`), no publication cited inline.
+A URL claiming verification is run through `skill-vetter`; only a vetter pass makes the skill recommendable, and a denied skill installs only via the S10 gate (no separate override). The denylist is Lightbulb AI's curated internal list (`tools.deny[]`), no publication cited inline.
 
 ## Atomic Write Contract
 

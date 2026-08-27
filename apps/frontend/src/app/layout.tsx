@@ -45,7 +45,7 @@ const epilogue = Epilogue({
   weight: ["300", "400", "500"],
 });
 
-const SITE_TITLE = "isol8 — AI Agents for Autonomous Businesses";
+const SITE_TITLE = "Lightbulb AI — AI Agents for Autonomous Businesses";
 const SITE_DESCRIPTION =
   "Point agents at the business you already run — sales, support, finance — and let it run itself. Always-on, cloud-isolated, and yours.";
 
@@ -57,9 +57,9 @@ export const metadata: Metadata = {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     url: SITE_URL,
-    siteName: "isol8",
+    siteName: "Lightbulb AI",
     type: "website",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "isol8" }],
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb AI" }],
   },
   twitter: {
     card: "summary_large_image",

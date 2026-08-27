@@ -105,7 +105,7 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
     >
       <Text style={styles.title}>Before you start</Text>
       <Text style={styles.lede}>
-        Isol8 runs your agents on AI models operated by other companies. To do
+        Lightbulb AI runs your agents on AI models operated by other companies. To do
         that, it has to send them what you and your agents are working on.
       </Text>
 
@@ -126,7 +126,7 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
           </Text>
         ))}
         <Text style={styles.caption}>
-          These providers process your content to generate a response. Isol8
+          These providers process your content to generate a response. Lightbulb AI
           does not sell your data or use it to train models.
         </Text>
       </View>

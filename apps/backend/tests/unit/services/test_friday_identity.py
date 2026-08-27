@@ -1227,9 +1227,18 @@ def test_migrate_add_nightly_section_noop_when_no_file():
 # ---------------------------------------------------------------------------
 
 
+def _soul_workspace(store):
+    """A Workspace double backed by ``store``, keyed on the relative path."""
+
+    workspace = MagicMock()
+    workspace.read_file = lambda owner_id, rel_path: store[rel_path]
+    workspace.write_file = lambda owner_id, rel_path, content: store.__setitem__(rel_path, content)
+    return workspace
+
+
 def test_soul_md_contains_self_grounding_section():
     soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
-    assert "## You are made of Isol8" in soul_md
+    assert "## You are made of Lightbulb AI" in soul_md
     assert "skill isol8" in soul_md
     # No leftover substitution placeholder in the rendered output.
     assert "{self_grounding_section}" not in soul_md
@@ -1239,25 +1248,70 @@ def test_migrate_add_soul_grounding_appends_when_absent():
     """An existing SOUL.md without the section gets it appended; idempotent on
     a second run."""
     store = {"workspace-friday-uuid/SOUL.md": "# SOUL.md - Who You Are\n\nFriday's own evolved soul.\n"}
-
-    def read_file(owner_id, rel_path):
-        return store[rel_path]
-
-    def write_file(owner_id, rel_path, content):
-        store[rel_path] = content
-
-    workspace = MagicMock()
-    workspace.read_file = read_file
-    workspace.write_file = write_file
+    workspace = _soul_workspace(store)
 
     changed = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")
     assert changed is True
     migrated = store["workspace-friday-uuid/SOUL.md"]
-    assert "## You are made of Isol8" in migrated
+    assert "## You are made of Lightbulb AI" in migrated
     assert "Friday's own evolved soul." in migrated
 
     changed_again = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")
     assert changed_again is False
+
+
+def test_migrate_add_soul_grounding_rebrands_legacy_heading_in_place():
+    """The pre-rebrand section is REWRITTEN, never appended-under.
+
+    Every already-provisioned Friday's SOUL.md carries the old heading. If the
+    migration only recognised the new one it would append a second grounding
+    section, leaving the stale Isol8-branded one above it forever.
+    """
+    rel = "workspace-friday-uuid/SOUL.md"
+    store = {
+        rel: (
+            "# SOUL.md - Who You Are\n\nFriday's own evolved soul.\n" + friday_identity._LEGACY_SELF_GROUNDING_SECTION
+        )
+    }
+    workspace = _soul_workspace(store)
+
+    assert friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid") is True
+    migrated = store[rel]
+
+    # Rewritten in place: exactly one grounding section, and none of it stale.
+    assert migrated.count(friday_identity._SELF_GROUNDING_HEADING) == 1
+    assert friday_identity._LEGACY_SELF_GROUNDING_HEADING not in migrated
+    assert "made of Isol8" not in migrated
+    # Friday's own prose survives, and nothing was appended.
+    assert "Friday's own evolved soul." in migrated
+    assert migrated.count("## You are made of") == 1
+
+    # Second run is a no-op — the new heading is now the matcher.
+    assert friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid") is False
+    assert store[rel] == migrated
+
+
+def test_migrate_add_soul_grounding_rebrands_heading_when_body_was_evolved():
+    """A Friday that edited the section's body still gets the heading swapped,
+    so the next pass recognises it instead of appending a duplicate."""
+    rel = "workspace-friday-uuid/SOUL.md"
+    store = {
+        rel: (
+            "# SOUL.md - Who You Are\n\n"
+            + friday_identity._LEGACY_SELF_GROUNDING_HEADING
+            + "\n\nI rewrote this part in my own words.\n"
+        )
+    }
+    workspace = _soul_workspace(store)
+
+    assert friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid") is True
+    migrated = store[rel]
+
+    assert migrated.count("## You are made of") == 1
+    assert friday_identity._LEGACY_SELF_GROUNDING_HEADING not in migrated
+    assert "I rewrote this part in my own words." in migrated
+
+    assert friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid") is False
 
 
 def test_migrate_add_soul_grounding_noop_when_no_file():

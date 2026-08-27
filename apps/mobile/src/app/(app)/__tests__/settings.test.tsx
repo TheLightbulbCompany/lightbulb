@@ -50,7 +50,7 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    expect(await screen.findByText("Isol8 Free plan")).toBeTruthy();
+    expect(await screen.findByText("Lightbulb AI Free plan")).toBeTruthy();
     expect(screen.getByText(/daily free usage allowance/i)).toBeTruthy();
     // Provider card: free tier runs Claude Sonnet — not "No provider selected".
     expect(screen.getByText("Claude Sonnet")).toBeTruthy();
@@ -68,7 +68,7 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    expect(await screen.findByText("Isol8")).toBeTruthy();
+    expect(await screen.findByText("Lightbulb AI")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
   });
 
@@ -89,7 +89,7 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    await screen.findByText(/Isol8|No plan on this account/);
+    await screen.findByText(/Lightbulb AI|No plan on this account/);
 
     expect(screen.queryByText(/upgrade/i)).toBeNull();
     expect(screen.queryByText(/manage billing/i)).toBeNull();

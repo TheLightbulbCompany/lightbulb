@@ -313,7 +313,7 @@ export function PaywallScreen({
 
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content} testID="paywall">
-      <Text style={styles.title}>Isol8</Text>
+      <Text style={styles.title}>Lightbulb AI</Text>
       <Text style={styles.lede}>
         Keep your agents running around the clock, with a higher monthly compute
         allowance.

@@ -478,7 +478,7 @@ export default function Settings() {
           <Text style={styles.overline}>PLAN</Text>
           <View style={styles.planRow}>
             <Text style={styles.bodyText}>
-              {isTrialLocal ? "Isol8 Free plan" : "Isol8"}
+              {isTrialLocal ? "Lightbulb AI Free plan" : "Lightbulb AI"}
             </Text>
             {chip != null && (
               <View style={styles.planBadge}>

@@ -160,7 +160,7 @@ function OnboardingFlow() {
           <Mail className="h-10 w-10 mx-auto mb-3 text-primary" />
           <h1 className="text-2xl font-bold">You have been invited</h1>
           <p className="text-muted-foreground mt-2">
-            Accept an invitation to join an organization on Isol8.
+            Accept an invitation to join an organization on Lightbulb AI.
           </p>
         </div>
 

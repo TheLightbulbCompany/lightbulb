@@ -707,7 +707,7 @@ Some actions require board approval. You cannot bypass these gates.
 ### Requesting a hire
 
 Do not call Paperclip's native `/agents` or `/agent-hires` creation routes,
-and do not file a `hire_agent` approval yourself. Isol8 owns the roster: it
+and do not file a `hire_agent` approval yourself. Lightbulb AI owns the roster: it
 applies the plan's agent cap, materializes the OpenClaw workspace, and binds
 the approval to the agent it pre-created. An agent minted around that has no
 workspace and no runtime twin, so it can never actually do any work.
@@ -715,7 +715,7 @@ workspace and no runtime twin, so it can never actually do any work.
 Search the live marketplace with `marketplace_search` and send a one-click
 card with `recommend_agents`. If no listing fits, create a child issue for
 Atlas with the role, outcomes, capabilities, and reporting line. Only the
-owner's governed Isol8 deploy or approval flow may change the roster.
+owner's governed Lightbulb AI deploy or approval flow may change the roster.
 
 ### CEO strategy approval
 
@@ -979,7 +979,7 @@ An assigned issue in any status other than `backlog` dispatches an agent run on 
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
-| POST   | `/api/companies/:companyId/agents` | Platform provisioning only — never call this in Isol8 |
+| POST   | `/api/companies/:companyId/agents` | Platform provisioning only — never call this in Lightbulb AI |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
 | POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |
 | POST   | `/api/agents/:agentId/resume`      | Resume a paused agent                |
@@ -1142,7 +1142,7 @@ safe helper commands are in `attention-decisions-search.md`.
 | ------ | -------------------------------------------- | ---------------------------------- |
 | GET    | `/api/companies/:companyId/approvals`        | List approvals (`?status=pending`) |
 | POST   | `/api/companies/:companyId/approvals`        | Create approval request            |
-| POST   | `/api/companies/:companyId/agent-hires`      | Never call this in Isol8; use the marketplace/Atlas flow |
+| POST   | `/api/companies/:companyId/agent-hires`      | Never call this in Lightbulb AI; use the marketplace/Atlas flow |
 | GET    | `/api/approvals/:approvalId`                 | Approval details                   |
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |

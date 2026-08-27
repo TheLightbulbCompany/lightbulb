@@ -96,7 +96,7 @@ export default function SupportPage() {
         <div className="support-direct" id="data-deletion">
           <h2>Deleting your data</h2>
           <p>
-            To delete your Isol8 account and everything we hold for it &mdash; your workspace,
+            To delete your Lightbulb AI account and everything we hold for it &mdash; your workspace,
             your agents, their history, and the credentials for any service you connected
             &mdash; email <a
               href="mailto:support@isol8.co?subject=Delete%20my%20account"
@@ -104,7 +104,7 @@ export default function SupportPage() {
             >support@isol8.co</a> from your account email address and we&rsquo;ll action it.
           </p>
           <p>
-            On a personal account you can also delete it yourself in the Isol8 iOS app, under
+            On a personal account you can also delete it yourself in the Lightbulb AI iOS app, under
             Settings. Team accounts are deleted on request.
           </p>
           <p>
@@ -116,7 +116,7 @@ export default function SupportPage() {
       </main>
 
       <footer className="legal-footer">
-        <p>&copy; {new Date().getFullYear()} isol8 Inc. All rights reserved.</p>
+        <p>&copy; {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.</p>
         <nav className="legal-footer-links">
           <Link href="/privacy">Privacy Policy</Link>
           <Link href="/terms">Terms</Link>

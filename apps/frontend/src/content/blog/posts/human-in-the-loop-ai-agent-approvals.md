@@ -2,7 +2,7 @@
 title: "Human-in-the-loop approval gates for AI agents"
 description: "How approval gates let AI agents move fast while keeping humans in control of deploys, spend, refunds, legal terms, and sensitive communication."
 date: "2026-08-24"
-author: "isol8"
+author: "Lightbulb AI"
 tags: ["human in the loop","ai governance","agent approvals","paperclip"]
 ---
 
@@ -22,9 +22,9 @@ A good approval gate captures:
 
 Then the human approves, rejects, or asks for a revision. If approved, the same agent continues the work and verifies the result.
 
-## Where Isol8 uses this pattern
+## Where Lightbulb AI uses this pattern
 
-Isol8 agents use human-in-the-loop gates for governed actions such as:
+Lightbulb AI agents use human-in-the-loop gates for governed actions such as:
 
 - production merges and deploys,
 - rollbacks or data repair,
@@ -60,4 +60,4 @@ For serious business use, ask whether the platform can:
 
 That is the foundation for useful agent autonomy.
 
-[Learn how Isol8 handles Paperclip tasks and approvals →](/docs/approvals-security-privacy)
+[Learn how Lightbulb AI handles Paperclip tasks and approvals →](/docs/approvals-security-privacy)

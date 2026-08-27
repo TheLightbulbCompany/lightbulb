@@ -37,21 +37,21 @@ async function getJson(path: string, signal?: AbortSignal): Promise<any> {
     signal,
   });
   if (!res.ok) {
-    throw new Error(`Isol8 API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new Error(`Lightbulb AI API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   return res.json();
 }
 
 export default defineToolPlugin({
   id: "isol8-marketplace",
-  name: "Isol8 Marketplace",
-  description: "Discover hireable agents in the Isol8 marketplace and recommend them to the owner.",
+  name: "Lightbulb AI Marketplace",
+  description: "Discover hireable agents in the Lightbulb AI marketplace and recommend them to the owner.",
   tools: (tool) => [
     tool({
       name: "marketplace_search",
-      label: "Search the Isol8 marketplace",
+      label: "Search the Lightbulb AI marketplace",
       description:
-        "Search published Isol8 marketplace agents the owner could add to their team. " +
+        "Search published Lightbulb AI marketplace agents the owner could add to their team. " +
         "Use whenever a task needs a capability nobody on the roster has — check here " +
         "BEFORE asking Atlas to build one, since an existing agent is ready immediately " +
         "and costs nothing to add.",

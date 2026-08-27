@@ -1,7 +1,7 @@
 {
   "id": "isol8-marketplace",
-  "name": "Isol8 Marketplace",
-  "description": "Discover hireable agents in the Isol8 marketplace and recommend them to the owner.",
+  "name": "Lightbulb AI Marketplace",
+  "description": "Discover hireable agents in the Lightbulb AI marketplace and recommend them to the owner.",
   "version": "0.1.0",
   "configSchema": {
     "type": "object",

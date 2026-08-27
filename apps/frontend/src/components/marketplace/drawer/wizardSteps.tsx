@@ -617,12 +617,12 @@ export function PricingStep({
             <span className="text-[12px] text-[#5b5b5b]">USD · one-time, perpetual license</span>
           </div>
           <p className="text-[11.5px] text-[#5b5b5b] mb-3">
-            Suggested range: $5–$20. Listings over $20 require Isol8 approval.
+            Suggested range: $5–$20. Listings over $20 require Lightbulb AI approval.
           </p>
           <div className="bg-white border border-[var(--edge)] rounded-xl px-4 py-3.5 text-[13px]">
             <Row label="List price" value={`$${v.toFixed(2)}`} />
             <Row label="Stripe processing fee (2.9% + $0.30)" value={`−$${stripe.toFixed(2)}`} />
-            <Row label="Isol8 platform fee (15%)" value={`−$${platform.toFixed(2)}`} />
+            <Row label="Lightbulb AI platform fee (15%)" value={`−$${platform.toFixed(2)}`} />
             <div className="flex justify-between border-t border-[var(--edge)] mt-1.5 pt-2.5 text-[var(--ink)] font-semibold">
               <span>Your take-home per install</span>
               <span className="font-editorial-serif text-[var(--forest)] text-base">
@@ -736,7 +736,7 @@ export function ReviewStep({ form }: { form: PublishForm }) {
         <a href="/terms" target="_blank" rel="noreferrer" className="text-[var(--forest)] underline">
           Marketplace Terms
         </a>{" "}
-        and confirm this agent is yours to publish. Isol8 retains the right to remove listings
+        and confirm this agent is yours to publish. Lightbulb AI retains the right to remove listings
         that violate the{" "}
         <a
           href="/acceptable-use"

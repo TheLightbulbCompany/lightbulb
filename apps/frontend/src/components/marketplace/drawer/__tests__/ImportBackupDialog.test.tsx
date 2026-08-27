@@ -17,7 +17,7 @@ const PREVIEW = {
   agents: [{ id: "main", name: "Quill", has_history: true, history_bytes: 4096 }, { id: "work", name: "Work Bot", has_history: false, history_bytes: 0 }],
   plugins: [{ id: "weather", spec: "openclaw-weather@1.2.0", has_dependencies: true }],
   file_count: 7, files: ["./AGENTS.md"], mcp_servers: ["gh"], skills: ["remotion", "notes"], cron_jobs: 1,
-  safety_flags: [], warnings: ["backup was written by OpenClaw 2026.3.11; Isol8 runs 2026.7.2 — unsupported config keys are dropped, not failed"],
+  safety_flags: [], warnings: ["backup was written by OpenClaw 2026.3.11; Lightbulb AI runs 2026.7.2 — unsupported config keys are dropped, not failed"],
   skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
 };
 

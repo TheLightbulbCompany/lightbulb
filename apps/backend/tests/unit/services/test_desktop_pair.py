@@ -325,13 +325,13 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
 
     mac_entry = written[result.device_id_mac]
     assert mac_entry["clientId"] == "openclaw-macos"
-    assert mac_entry["displayName"] == "Alice Smith | Isol8 Mac"
+    assert mac_entry["displayName"] == "Alice Smith | Lightbulb AI Mac"
     assert mac_entry["commands"] == list(DESKTOP_MAC_COMMANDS)
     assert mac_entry["tokens"]["node"]["token"]
 
     cli_entry = written[result.device_id_cli]
     assert cli_entry["clientId"] == "node-host"
-    assert cli_entry["displayName"] == "Alice Smith | Isol8 Desktop (CLI)"
+    assert cli_entry["displayName"] == "Alice Smith | Lightbulb AI Desktop (CLI)"
     assert cli_entry["commands"] == list(DESKTOP_CLI_COMMANDS)
 
     node_paired = workspace.node_paired_state

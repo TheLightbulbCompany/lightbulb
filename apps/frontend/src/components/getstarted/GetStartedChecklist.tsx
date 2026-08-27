@@ -13,7 +13,7 @@ export function GetStartedChecklist({ completed, onAction, onMeet, onDismiss }: 
   return (
     <div>
       <div className="text-[13.5px] leading-relaxed text-[var(--ink)] bg-[var(--forest-tint)] border border-[var(--edge-forest)] rounded-xl p-3.5 mb-3.5">
-        Isol8 runs like a tiny company. <b className="text-[var(--forest)]">Friday</b> is your CEO — you talk to it, it delegates. <b className="text-[var(--forest)]">Atlas</b> recruits new agents when a job needs a skill you don’t have yet. You’re set up — now put them to work.
+        Lightbulb AI runs like a tiny company. <b className="text-[var(--forest)]">Friday</b> is your CEO — you talk to it, it delegates. <b className="text-[var(--forest)]">Atlas</b> recruits new agents when a job needs a skill you don’t have yet. You’re set up — now put them to work.
       </div>
       <div className="flex items-center gap-2.5 flex-wrap bg-[var(--cream-deeper)] border border-dashed border-[var(--edge)] rounded-xl px-3 py-2.5 mb-5 text-xs text-[var(--mute)]">
         <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--forest-soft)]"><Check size={13} /> Plan & billing</span>

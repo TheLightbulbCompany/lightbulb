@@ -130,14 +130,14 @@ _HOP_BY_HOP_HEADERS = frozenset(
 _BRAND_REWRITES: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
     (
         re.compile(rb"<title>Paperclip</title>", re.IGNORECASE),
-        b"<title>Isol8 Teams</title>",
+        b"<title>Lightbulb AI Teams</title>",
     ),
     (
         re.compile(
             rb'(<meta[^>]*property=["\']og:site_name["\'][^>]*content=["\'])Paperclip',
             re.IGNORECASE,
         ),
-        rb"\1Isol8",
+        rb"\1Lightbulb AI",
     ),
 )
 

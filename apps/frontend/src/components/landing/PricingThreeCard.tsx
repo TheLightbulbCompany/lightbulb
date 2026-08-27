@@ -73,7 +73,7 @@ export function PricingThreeCard() {
 
         <div className="ld-teams-strip" data-ld-reveal>
           <div className="ld-teams-copy">
-            <h3>Isol8 for Teams</h3>
+            <h3>Lightbulb AI for Teams</h3>
             <p>Shared agents, one workspace, per-seat pricing.</p>
           </div>
           <Link

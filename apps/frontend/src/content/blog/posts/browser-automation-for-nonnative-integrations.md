@@ -2,7 +2,7 @@
 title: "How AI agents can use browser automation when there is no native integration"
 description: "Native connectors are best, but browser automation lets AI agents operate UI-only tools, marketing platforms, and niche apps when APIs are missing."
 date: "2026-08-24"
-author: "isol8"
+author: "Lightbulb AI"
 tags: ["browser automation","ai agent integrations","connectors","marketing automation"]
 ---
 
@@ -19,7 +19,7 @@ The order should be:
 3. **Channel integration** when the workflow lives in chat or social messaging.
 4. **Browser automation** when the service is UI-only or the fastest useful integration is a human-like workflow.
 
-In Isol8, agents can use a Browser panel backed by a real browser. That makes it possible to operate services that do not yet have a native Isol8 connector, as long as the owner handles login and permissions safely.
+In Lightbulb AI, agents can use a Browser panel backed by a real browser. That makes it possible to operate services that do not yet have a native Lightbulb AI connector, as long as the owner handles login and permissions safely.
 
 ## Good browser automation use cases
 
@@ -52,4 +52,4 @@ Browser automation should be explicit:
 
 Browser automation is not a replacement for robust APIs. It is the bridge that lets agents help now, while native integrations and webhooks cover the workflows that need maximum reliability.
 
-[See the Isol8 docs for connectors and browser workflows →](/docs/browser-and-apps)
+[See the Lightbulb AI docs for connectors and browser workflows →](/docs/browser-and-apps)

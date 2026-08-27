@@ -203,7 +203,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
     <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
       <p className="text-sm font-medium text-[#1c1917]">Connect {display_name} (read-only)</p>
       <p className="text-xs text-[var(--mute)]">
-        Isol8 will assume a role you create in your AWS account — no keys to paste.
+        Lightbulb AI will assume a role you create in your AWS account — no keys to paste.
       </p>
 
       {/* Step 1 — scope choice (ViewOnly default). */}
@@ -270,7 +270,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
                 Only needed if you deploy the role manually (e.g. via Terraform) instead of the
                 one-click button below.
               </span>
-              {renderCopyableField("principal_arn", "Isol8 principal ARN", setup.principal_arn)}
+              {renderCopyableField("principal_arn", "Lightbulb AI principal ARN", setup.principal_arn)}
               {renderCopyableField("external_id", "ExternalId", setup.external_id)}
             </div>
           </details>

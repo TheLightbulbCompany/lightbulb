@@ -114,7 +114,7 @@ export function DesktopFileAccess() {
       <div className="settings-panel" id="panel-desktop">
         <h1 className="settings-page-title">Desktop file access</h1>
         <p className="settings-page-desc">
-          This setting lives on your Mac — open the Isol8 desktop app to
+          This setting lives on your Mac — open the Lightbulb AI desktop app to
           manage which folders your agent can read or write.
         </p>
       </div>

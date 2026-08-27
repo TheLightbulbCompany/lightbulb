@@ -307,7 +307,7 @@ export default function Page() {
               </div>
               <h2 className="auth-title">Welcome back</h2>
               <p className="auth-subtitle">
-                Sign in to your isol8 account to continue.
+                Sign in to your Lightbulb AI account to continue.
               </p>
             </div>
 

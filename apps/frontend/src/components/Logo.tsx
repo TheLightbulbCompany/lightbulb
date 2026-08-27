@@ -33,7 +33,7 @@ export function Logo({
   size = "md",
   href = "/",
   className,
-  ariaLabel = "isol8 home",
+  ariaLabel = "Lightbulb AI home",
   withMark = false,
 }: LogoProps) {
   const classes = ["brand-logo", `brand-logo--${tone}`, `brand-logo--${size}`, className]

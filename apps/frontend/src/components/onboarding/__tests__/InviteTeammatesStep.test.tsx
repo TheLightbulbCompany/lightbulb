@@ -40,7 +40,7 @@ describe("InviteTeammatesStep", () => {
         detail: {
           code: "personal_user_exists",
           message:
-            "subscriber@example.com already has an active personal Isol8 subscription. They must cancel it before they can be invited to an organization.",
+            "subscriber@example.com already has an active personal Lightbulb AI subscription. They must cancel it before they can be invited to an organization.",
         },
       },
     });
@@ -52,7 +52,7 @@ describe("InviteTeammatesStep", () => {
     fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
 
     expect(
-      await screen.findByText(/already has an active personal Isol8 subscription/i),
+      await screen.findByText(/already has an active personal Lightbulb AI subscription/i),
     ).toBeInTheDocument();
   });
 

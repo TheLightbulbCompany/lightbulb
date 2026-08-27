@@ -45,8 +45,8 @@ class TestOpenAPIMetadata:
 
     @pytest.mark.asyncio
     async def test_title(self, openapi_spec):
-        """Spec title should be 'Isol8 API'."""
-        assert openapi_spec["info"]["title"] == "Isol8 API"
+        """Spec title should be 'Lightbulb AI API'."""
+        assert openapi_spec["info"]["title"] == "Lightbulb AI API"
 
     @pytest.mark.asyncio
     async def test_version(self, openapi_spec):

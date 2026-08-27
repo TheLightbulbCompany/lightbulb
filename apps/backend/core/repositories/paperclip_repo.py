@@ -205,6 +205,22 @@ class PaperclipCompany:
     status: PaperclipCompanyStatus
     created_at: datetime
     updated_at: datetime
+
+    paperclip_email: str = ""
+    """The address Better Auth actually holds for ``paperclip_user_id``.
+
+    Better Auth's ``user.email`` is written once at sign-up and NEVER
+    updated, so it is NOT interchangeable with the user's live Clerk primary
+    email: the moment a human moves mailbox domains, signing in with the
+    Clerk address 401s, falls through to sign-UP, and mints a DUPLICATE
+    Better Auth account (whose sign-in rate limit is per-IP, i.e. fleet-wide
+    degradation). Every sign-in door reads this first and falls back to the
+    live Clerk address only when it is empty (a row written before this
+    field existed and not yet backfilled).
+
+    Defaults to "" so pre-backfill rows read back unchanged.
+    """
+
     last_error: Optional[str] = None
     scheduled_purge_at: Optional[datetime] = None
     seeded_agent_ids: Optional[list[str]] = None
@@ -370,6 +386,7 @@ class PaperclipRepo:
             "org_id": company.org_id,
             "paperclip_user_id": company.paperclip_user_id,
             "paperclip_password_encrypted": company.paperclip_password_encrypted,
+            "paperclip_email": company.paperclip_email,
             "service_token_encrypted": company.service_token_encrypted,
             "status": company.status,
             "created_at": company.created_at.isoformat(),
@@ -465,6 +482,7 @@ class PaperclipRepo:
             company_id=item.get("company_id", ""),
             paperclip_user_id=item.get("paperclip_user_id", ""),
             paperclip_password_encrypted=item.get("paperclip_password_encrypted", ""),
+            paperclip_email=item.get("paperclip_email", ""),
             service_token_encrypted=item.get("service_token_encrypted", ""),
             status=item["status"],
             created_at=datetime.fromisoformat(item["created_at"]),

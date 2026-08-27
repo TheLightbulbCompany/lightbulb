@@ -47,6 +47,50 @@ async def test_get_user_session_cookie_signs_in_with_decrypted_password(active_c
 
 
 @pytest.mark.asyncio
+async def test_get_user_session_cookie_prefers_the_stored_paperclip_email(active_company, monkeypatch):
+    """Better Auth's user.email is frozen at provision time, so a Clerk
+    primary-email change must NOT reach the sign-in — it would 401, fall
+    through to sign-UP, and mint a duplicate Better Auth account."""
+    monkeypatch.setattr("core.services.paperclip_user_session.decrypt", lambda v: "the-password")
+    active_company.paperclip_email = "alice@isol8.co"
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=active_company)
+    admin_client = MagicMock()
+    admin_client.sign_in_user = AsyncMock(return_value={"_session_cookie": "c"})
+    clerk_resolver = AsyncMock(return_value="alice@thelightbulb.company")
+
+    await get_user_session_cookie(
+        user_id="u1",
+        repo=repo,
+        admin_client=admin_client,
+        clerk_email_resolver=clerk_resolver,
+    )
+
+    admin_client.sign_in_user.assert_awaited_once_with(email="alice@isol8.co", password="the-password")
+    # A genuine preference, not a silent overwrite: Clerk is never consulted.
+    clerk_resolver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_user_session_cookie_falls_back_when_email_unbackfilled(active_company, monkeypatch):
+    monkeypatch.setattr("core.services.paperclip_user_session.decrypt", lambda v: "the-password")
+    assert active_company.paperclip_email == ""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=active_company)
+    admin_client = MagicMock()
+    admin_client.sign_in_user = AsyncMock(return_value={"_session_cookie": "c"})
+
+    await get_user_session_cookie(
+        user_id="u1",
+        repo=repo,
+        admin_client=admin_client,
+        clerk_email_resolver=AsyncMock(return_value="alice@example.com"),
+    )
+
+    admin_client.sign_in_user.assert_awaited_once_with(email="alice@example.com", password="the-password")
+
+
+@pytest.mark.asyncio
 async def test_get_user_session_cookie_raises_when_company_missing():
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)

@@ -92,6 +92,7 @@ def _make_company(user_id="u1", status="active", **kwargs):
         company_id=kwargs.get("company_id", f"co_{user_id}"),
         paperclip_user_id=kwargs.get("paperclip_user_id", f"pc_user_{user_id}"),
         paperclip_password_encrypted=kwargs.get("paperclip_password_encrypted", "enc_pwd"),
+        paperclip_email=kwargs.get("paperclip_email", ""),
         service_token_encrypted="enc_token",
         status=status,
         created_at=kwargs.get("created_at", now),
@@ -124,6 +125,27 @@ async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
     await repo.put(_make_company(user_id="user_noseed"))
     retrieved = await repo.get("user_noseed")
     assert retrieved.seeded_agent_ids is None
+
+
+async def test_paperclip_email_round_trips(repo):
+    await repo.put(_make_company(user_id="user_email", paperclip_email="alice@isol8.co"))
+    retrieved = await repo.get("user_email")
+    assert retrieved.paperclip_email == "alice@isol8.co"
+
+
+async def test_paperclip_email_absent_round_trips_as_empty(repo):
+    """Rows written before the field existed must still read back — the
+    sign-in doors treat "" as "fall back to the live Clerk address"."""
+    table = repo._table()
+    company = _make_company(user_id="user_legacy")
+    await repo.put(company)
+    await asyncio.to_thread(
+        table.update_item,
+        Key={"user_id": "user_legacy"},
+        UpdateExpression="REMOVE paperclip_email",
+    )
+    retrieved = await repo.get("user_legacy")
+    assert retrieved.paperclip_email == ""
 
 
 async def test_put_and_get_round_trips(repo):

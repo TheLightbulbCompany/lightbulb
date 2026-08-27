@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 # live per-env address means reading the secret from inside a delete guard —
 # a read whose failure mode is "delete the bootstrap admin". Not worth it for
 # a two-element allowlist.
+# DO NOT RENAME / REWRITE these addresses: they are live Better Auth rows in
+# Aurora and values inside Secrets Manager isol8/{env}/paperclip_admin_credentials —
+# no repo edit changes either. Editing them here silently disarms the guard and
+# the next admin wipe deletes the bootstrap admin, breaking provisioning fleet-wide.
 BOOTSTRAP_EMAILS: frozenset[str] = frozenset({"admin@isol8.co", "admin+paperclip@isol8.co"})
 
 

@@ -1473,11 +1473,15 @@ async def proxy(path: str, request: Request) -> Response:
 
         async def _sign_in() -> str:
             # Cold-mint a fresh Better Auth session cookie for this user.
-            # Email comes from the Clerk JWT (``email`` claim) — the Isol8
-            # ``users`` row has no email column to fall back on. The
+            # Email comes from the company row (``paperclip_email``) — the
+            # address Better Auth actually holds, written once at provision
+            # time and never updated, so it survives a Clerk primary-email
+            # change that would otherwise 401 every sign-in. The Clerk JWT's
+            # ``email`` claim is the fallback for rows written before that
+            # field existed; the Isol8 ``users`` row has no email column. The
             # password is the per-user random one we encrypted at
             # provisioning time.
-            email = (auth.email or "").strip()
+            email = company.paperclip_email or (auth.email or "").strip()
             if not email:
                 logger.warning(
                     "paperclip_proxy: user %s has no email claim on JWT; cannot sign in to Paperclip",
@@ -1830,6 +1834,12 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     if company is None or company.status != "active":
         await websocket.close(code=4503, reason="Paperclip not provisioned")
         return
+
+    # The email extracted above (from the ``isol8_paperclip`` cookie JWT, else
+    # Clerk's) is the user's LIVE address; Better Auth's is frozen at provision
+    # time. Prefer what the row records, and keep the live claim only as the
+    # fallback for a row written before ``paperclip_email`` existed.
+    email = company.paperclip_email or email
 
     try:
         password = decrypt(company.paperclip_password_encrypted)

@@ -106,8 +106,25 @@ async def _register_dcr_client(owner_id: str, provider_key: str, p: registry.Pro
         client_secret=info.get("client_secret") or "",
         client_information=info,
         scope=body["scope"],
+        redirect_uri=redirect_uri,
     )
     return info
+
+
+def _registered_redirect_uris(cached: dict | None) -> list[str]:
+    """Redirect URIs a cached DCR client is known to be registered under.
+
+    Empty means UNKNOWN (a pre-``redirect_uri`` record whose registration
+    response did not echo ``redirect_uris``), not "none" — callers must treat
+    it as no-drift rather than as a mismatch.
+    """
+    if not cached:
+        return []
+    stored = cached.get("redirect_uri")
+    if stored:
+        return [stored]
+    echoed = (cached.get("client_information") or {}).get("redirect_uris")
+    return list(echoed) if isinstance(echoed, list) else []
 
 
 async def _oauth_client(owner_id: str, provider_key: str) -> tuple[str, str]:
@@ -152,7 +169,20 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: 
     if p.oauth.registration_url:
         cached = await oauth_app_store.get(owner_id, provider_key)
         requested_scope = p.oauth.scope_separator.join(p.oauth.scopes)
-        if not (cached and cached.get("client_id")) or cached.get("scope") != requested_scope:
+        # ...and re-register on a REDIRECT-URI change too. Registration pins
+        # ``redirect_uris`` (see the body in _register_dcr_client), so after a
+        # callback-domain move every cached client rejects the new URI and no
+        # amount of "the owner reconnects" heals it. Prefer the uri we now
+        # record on the app-store record; records written before that field
+        # existed fall back to the registration response's own echo of
+        # ``redirect_uris``. When neither is present the uri is unknown, and we
+        # deliberately do NOT churn the client on a guess.
+        registered_uris = _registered_redirect_uris(cached)
+        if (
+            not (cached and cached.get("client_id"))
+            or cached.get("scope") != requested_scope
+            or (registered_uris and redirect_uri not in registered_uris)
+        ):
             await _register_dcr_client(owner_id, provider_key, p, redirect_uri=redirect_uri)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)

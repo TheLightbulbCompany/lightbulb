@@ -50,6 +50,7 @@ async def put(
     client_secret: str,
     client_information: dict[str, Any] | None = None,
     scope: str | None = None,
+    redirect_uri: str | None = None,
 ) -> str:
     name = _secret_name(owner_id, provider)
     record: dict[str, Any] = {"client_id": client_id, "client_secret": client_secret}
@@ -63,6 +64,12 @@ async def put(
     # AWS's async secret-name release on a quick reconnect.
     if scope is not None:
         record["scope"] = scope
+    # The redirect URI a DCR client was registered under. DCR PINS
+    # ``redirect_uris`` at registration, so a callback-URL change (a domain
+    # move) leaves every existing client rejecting the new URI with nothing to
+    # detect the drift — start() compares this to re-register instead.
+    if redirect_uri is not None:
+        record["redirect_uri"] = redirect_uri
     payload = json.dumps(record)
 
     def _put() -> str:

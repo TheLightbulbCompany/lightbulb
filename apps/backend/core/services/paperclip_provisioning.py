@@ -157,6 +157,19 @@ def _carry_forward_onboarding_fields(existing: Optional[PaperclipCompany]) -> di
     return {name: getattr(existing, name) for name in _ONBOARDING_FIELD_NAMES}
 
 
+def _auth_email(existing: Optional[PaperclipCompany], live_email: str) -> str:
+    """The address to sign in to Better Auth with.
+
+    Better Auth's ``user.email`` is set at sign-up and never updated, so the
+    live Clerk address stops being the sign-in truth the moment a human moves
+    mailbox domains. Prefer the address recorded on the row; fall back to the
+    live one only for rows written before ``paperclip_email`` existed (or not
+    yet backfilled). NEVER the other way round — overwriting the stored value
+    with a live Clerk address is what mints duplicate Better Auth accounts.
+    """
+    return (existing.paperclip_email if existing is not None else "") or live_email
+
+
 async def build_paperclip_provisioning() -> "PaperclipProvisioning":
     """Build a PaperclipProvisioning for this request.
 
@@ -454,10 +467,12 @@ class PaperclipProvisioning:
             #    session is used later for the invite-accept and seed-agent
             #    steps.
             if adopting_existing:
-                signin = await self._admin.sign_in_user(email=owner_email, password=password)
+                owner_auth_email = _auth_email(existing, owner_email)
+                signin = await self._admin.sign_in_user(email=owner_auth_email, password=password)
                 paperclip_user_id = existing.paperclip_user_id
                 new_user_session_cookie = signin["_session_cookie"]
             else:
+                owner_auth_email = owner_email
                 signup = await self._admin.sign_up_user(
                     email=owner_email,
                     password=password,
@@ -500,6 +515,7 @@ class PaperclipProvisioning:
                         company_id="",
                         paperclip_user_id=paperclip_user_id,
                         paperclip_password_encrypted=encrypt(password),
+                        paperclip_email=owner_auth_email,
                         service_token_encrypted="",
                         status="provisioning",
                         created_at=now,
@@ -813,6 +829,7 @@ class PaperclipProvisioning:
                 company_id=company_id,
                 paperclip_user_id=paperclip_user_id,
                 paperclip_password_encrypted=encrypt(password),
+                paperclip_email=owner_auth_email,
                 service_token_encrypted=encrypt(svc_token),
                 status="active" if seed_ok else "failed",
                 created_at=now,
@@ -977,8 +994,9 @@ class PaperclipProvisioning:
         )
         try:
             # 1. Obtain the member's Better Auth account + session.
+            member_auth_email = _auth_email(existing, email) if adopting_existing else email
             if adopting_existing:
-                member_signin = await self._admin.sign_in_user(email=email, password=member_password)
+                member_signin = await self._admin.sign_in_user(email=member_auth_email, password=member_password)
                 member_paperclip_user_id = existing.paperclip_user_id
                 member_session_cookie = member_signin["_session_cookie"]
             else:
@@ -1022,6 +1040,7 @@ class PaperclipProvisioning:
                         company_id=company_id,
                         paperclip_user_id=member_paperclip_user_id,
                         paperclip_password_encrypted=encrypt(member_password),
+                        paperclip_email=member_auth_email,
                         service_token_encrypted="",
                         status="provisioning",
                         created_at=now,
@@ -1032,7 +1051,7 @@ class PaperclipProvisioning:
             # 2. Sign in as the org owner so we can act on the company
             #    (create invite + approve join request).
             owner_signin = await self._admin.sign_in_user(
-                email=owner_email,
+                email=_auth_email(owner_row, owner_email),
                 password=owner_password,
             )
             owner_session_cookie = owner_signin["_session_cookie"]
@@ -1094,6 +1113,7 @@ class PaperclipProvisioning:
                 company_id=company_id,
                 paperclip_user_id=member_paperclip_user_id,
                 paperclip_password_encrypted=encrypt(member_password),
+                paperclip_email=member_auth_email,
                 service_token_encrypted=encrypt(svc_token),
                 status="active",
                 created_at=now,

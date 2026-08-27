@@ -29,13 +29,23 @@ every example below goes through it:
 gql() {
   local resp vars="$2"
   [ -n "$vars" ] || vars='{}'
+  # Timeouts are not optional here: this helper is what an unattended nightly
+  # routine loops through, and a stalled socket would hang it until someone
+  # noticed. A timeout exits non-zero, so it FAILS the run — it must never be
+  # mistaken for an empty page, which is how you get a confident zero.
   resp=$(jq -n --arg q "$1" --argjson v "$vars" '{query: $q, variables: $v}' \
-    | curl -sS --fail-with-body "$API" \
+    | curl -sS --fail-with-body --connect-timeout 10 --max-time 120 "$API" \
         -H "X-Shopify-Access-Token: $TOKEN" \
         -H "Content-Type: application/json" -d @-) \
     || { echo "shopify: request failed — $resp" >&2; return 1; }
   jq -e 'has("errors") | not' >/dev/null <<<"$resp" \
     || { echo "shopify: $(jq -c .errors <<<"$resp")" >&2; return 1; }
+  # A query can succeed and still be wrong. An unrecognised search field is
+  # IGNORED with a warning rather than rejected, which silently widens the
+  # result set — a filter that evaporates returns everything. Surface warnings;
+  # do not fail on them.
+  jq -r '(.extensions.warnings // .warnings // [])[] | "shopify warning: \(.message? // .)"' \
+    <<<"$resp" >&2
   printf '%s' "$resp"
 }
 ```
@@ -65,7 +75,9 @@ the error names the variable, not the mix-up.
 
 Dates in `query:` filters are the store's own search syntax, not GraphQL. Pass the
 whole filter as a String variable and build it in the shell — a date baked into
-the query text keeps reporting from that date forever.
+the query text keeps reporting from that date forever. Keep the quotes around the
+date itself: Shopify's syntax requires date values to be quoted, and the hyphens
+are otherwise special characters.
 
 **Recent orders with totals**
 
@@ -96,8 +108,11 @@ SINCE=$(TZ="$STORE_TZ" date +%Y-%m-01)                    # month to date
 ```
 
 ```bash
+# sortKey matches the field the filter is on. With cursor pagination the sort
+# order IS the page boundary, so a sort unrelated to the filter can skip or
+# repeat orders between pages — and Shopify's own guidance is to match the two.
 Q_SALES='query PaidOrdersSince($cursor: String, $filter: String!) {
-  orders(first: 250, after: $cursor, query: $filter) {
+  orders(first: 250, after: $cursor, sortKey: CREATED_AT, query: $filter) {
     nodes { currentTotalPriceSet { shopMoney { amount } } }
     pageInfo { hasNextPage endCursor }
   }
@@ -107,7 +122,7 @@ CURSOR=null          # JSON null on the first page. --argjson, never --arg: the
 SUMS=()              # string "null" is a cursor value, and Shopify 400s on it.
 while :; do
   VARS=$(jq -n --argjson cursor "$CURSOR" --arg since "$SINCE" \
-    '{cursor: $cursor, filter: ("created_at:>=" + $since + " AND financial_status:paid")}')
+    '{cursor: $cursor, filter: ("created_at:>=\"" + $since + "\" AND financial_status:paid")}')
   PAGE=$(gql "$Q_SALES" "$VARS") || exit 1
   SUMS+=("$(jq '[.data.orders.nodes[].currentTotalPriceSet.shopMoney.amount | tonumber] | add // 0' <<<"$PAGE")")
   jq -e '.data.orders.pageInfo.hasNextPage' >/dev/null <<<"$PAGE" || break
@@ -119,17 +134,31 @@ printf '%s\n' "${SUMS[@]}" | jq -s 'add // 0'
 
 **A partial run is not a total.** `gql` exits non-zero on a bad page and the loop
 exits with it, deliberately: say the figure could not be produced rather than
-publishing the pages that did land as if they were the period. Cancelled orders
-are included unless you add `AND -status:cancelled`; refunds are not subtracted by
-this field.
+publishing the pages that did land as if they were the period.
+
+**Know which total you are quoting.** `currentTotalPriceSet` is the order total
+*after* returns, refunds and order edits — what the store actually kept — so it is
+the right field for "sales in this period" and it is what the loop above sums.
+`originalTotalPriceSet` is the total at the moment the order was placed, before
+any of that; use it only when you specifically mean gross bookings, and label it
+as such. Reporting one under the other's name is how a refunded month reads as a
+flat one. Cancelled orders are included unless you add `AND -status:cancelled`.
 
 **Low-stock products.** Page to the end — a store with more than one page of low
 stock is precisely the store the alert is for, and a first-page answer would call
 it fifty.
 
+`sortKey: ID` is Shopify's default here and is stated explicitly on purpose. The
+docs suggest matching the sort to the searched field, which would mean
+`INVENTORY_QUANTITY` — do not: inventory changes while you page, so sorting by the
+value you are filtering on moves rows across page boundaries and the run both
+double-counts and misses items. ID is immutable, so the pages stay disjoint. Stock
+can still change mid-run, which shifts which variants qualify at all; treat the
+result as a snapshot, not a ledger.
+
 ```bash
 Q_LOWSTOCK='query LowStock($cursor: String) {
-  productVariants(first: 50, after: $cursor, query: "inventory_quantity:<10") {
+  productVariants(first: 50, after: $cursor, sortKey: ID, query: "inventory_quantity:<10") {
     nodes {
       sku
       displayName
@@ -167,8 +196,12 @@ Q_CUSTOMERS='query NewCustomers($cursor: String, $filter: String!) {
 
 CURSOR=null
 while :; do
+  # customer_date, NOT created_at: the customer search grammar has no
+  # `created_at`, and Shopify IGNORES an unknown search field (with a warning)
+  # instead of rejecting it — so the filter would evaporate and this would page
+  # the entire customer base, emailed addresses and all, as "new customers".
   VARS=$(jq -n --argjson cursor "$CURSOR" --arg since "$SINCE" \
-    '{cursor: $cursor, filter: ("created_at:>=" + $since)}')
+    '{cursor: $cursor, filter: ("customer_date:>=\"" + $since + "\"")}')
   PAGE=$(gql "$Q_CUSTOMERS" "$VARS") || exit 1
   jq -r '.data.customers.nodes[] | [.displayName, .email // "-", .createdAt] | @tsv' <<<"$PAGE"
   jq -e '.data.customers.pageInfo.hasNextPage' >/dev/null <<<"$PAGE" || break

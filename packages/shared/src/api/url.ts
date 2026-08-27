@@ -3,7 +3,7 @@
  *
  * Hostname rewrite:
  *   api.isol8.co         → ws.isol8.co
- *   api-dev.isol8.co     → ws-dev.isol8.co
+ *   api-dev.flickmeon.ai → ws-dev.flickmeon.ai
  *   api-staging.isol8.co → ws-staging.isol8.co
  *   localhost:8000       → localhost:8000   (untouched — local dev hits the same host)
  *

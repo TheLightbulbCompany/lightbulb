@@ -64,7 +64,7 @@ class Settings(BaseSettings):
 
     # Public-facing base URL for this API. Used to build absolute URLs in
     # responses (e.g., the webhook URL surfaced via /hooks/credentials).
-    # Per env: https://api-dev.isol8.co, https://api-staging.isol8.co,
+    # Per env: https://api-dev.flickmeon.ai, https://api.flickmeon.ai,
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     # Public WSS endpoint returned by POST /api/v1/desktop/pair so desktop
     # clients know which gateway to connect to. Wired by CDK service-stack from
     # api-stack's WebSocket stage URL.
-    WS_GATEWAY_URL: str = "wss://ws-dev.isol8.co"
+    WS_GATEWAY_URL: str = "wss://ws-dev.flickmeon.ai"
 
     # Shared secret that authenticates the CALLER of the /api/v1/ws/* endpoints.
     # Those endpoints derive identity from request headers (x-user-id etc.) and
@@ -433,13 +433,13 @@ class Settings(BaseSettings):
     # talk to. Publishable keys are public by design — Clerk literally
     # serves them in HTML; storing in env (not Secrets Manager) is correct.
     CLERK_PUBLISHABLE_KEY: str = ""
-    # Public URL of the Isol8 frontend (e.g. https://dev.isol8.co). Used by
+    # Public URL of the frontend (e.g. https://dev.flickmeon.ai). Used by
     # the paperclip-proxy to redirect users back to /chat when they land on
     # company.isol8.co without prerequisites (no container, no Clerk
     # session, no Paperclip company row). Same value as CORS_ORIGINS in
     # most envs but kept separate so the proxy doesn't need to parse a
     # comma-separated list.
-    FRONTEND_URL: str = "https://dev.isol8.co"
+    FRONTEND_URL: str = "https://dev.flickmeon.ai"
 
     # --- Transactional email ---
     # OUTBOUND app-generated mail (the welcome email on signup, support-ticket

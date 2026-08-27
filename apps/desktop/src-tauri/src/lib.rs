@@ -28,7 +28,7 @@ const KEYCHAIN_SERVICE: &str = "co.isol8.desktop";
 /// build is produced.
 const ISOL8_API_BASE: &str = match option_env!("ISOL8_API_BASE") {
     Some(v) => v,
-    None => "https://api-dev.isol8.co",
+    None => "https://api-dev.flickmeon.ai",
 };
 
 /// Shared auth token state
@@ -202,7 +202,7 @@ fn send_auth_token(
         *current = token.clone();
     }
 
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
+    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
     // is `wss://host?token=…` (no slash), the resulting request line is
@@ -531,7 +531,7 @@ async fn start_from_persisted_state(
     // on this path ever depends on a webview JWT. Publishing also flips
     // send_auth_token into its rotate-only branch, so a later webview JWT
     // just refreshes the URL cell instead of re-bootstrapping.
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
+    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     let shared_url = Arc::new(RwLock::new(format!(
         "{}/?clientId=openclaw-macos",
         ws_url
@@ -970,7 +970,7 @@ async fn serve_manifest_once(body: String) -> Result<String, String> {
 /// with the appropriate bypass param instead of hard-coding the secret.
 const DESKTOP_CALLBACK_URL: &str = match option_env!("ISOL8_CALLBACK_URL") {
     Some(url) => url,
-    None => "https://dev.isol8.co/auth/desktop-callback",
+    None => "https://dev.flickmeon.ai/auth/desktop-callback",
 };
 
 fn is_oauth_url(url: &Url) -> bool {

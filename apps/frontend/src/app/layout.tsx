@@ -7,6 +7,7 @@ import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -55,13 +56,13 @@ const SITE_DESCRIPTION =
   "Point agents at the business you already run — sales, support, finance — and let it run itself. Always-on, cloud-isolated, and yours.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://isol8.co"),
+  metadataBase: new URL(SITE_URL),
   title: SITE_TITLE,
   description: SITE_DESCRIPTION,
   openGraph: {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    url: "https://isol8.co",
+    url: SITE_URL,
     siteName: "isol8",
     type: "website",
     images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "isol8" }],

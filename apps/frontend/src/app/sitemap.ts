@@ -2,9 +2,8 @@ import type { MetadataRoute } from "next";
 
 import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
+import { SITE_URL } from "@/lib/domain";
 import { seoLandingPages } from "@/lib/seo";
-
-const SITE_URL = "https://isol8.co";
 
 /**
  * Public sitemap. Covers the marketing surface + blog. Private app routes

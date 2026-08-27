@@ -67,6 +67,7 @@ import {
   useContainerStatus,
   type ContainerStatus,
 } from "../../lib/containerStatus";
+import { WEB_ORIGIN } from "../../config/domain";
 import { makeAdapter } from "../../lib/adapter";
 import { APPLE_IAP_AVAILABLE } from "../../lib/appleIap";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
@@ -76,10 +77,9 @@ import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
 
-const WEB_ORIGIN = "https://isol8.co";
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
 
-/** Relative gate hrefs (e.g. "/settings/billing") → absolute isol8.co URL. */
+/** Relative gate hrefs (e.g. "/settings/billing") → absolute web URL. */
 function resolveManageUrl(href: string | null): string {
   if (!href) return DEFAULT_MANAGE_URL;
   if (href.startsWith("http")) return href;

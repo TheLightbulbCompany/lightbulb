@@ -3,6 +3,8 @@
 import { useAuth, SignIn } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
+import { DEEP_LINK_SCHEME } from "@/lib/domain";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api-dev.isol8.co/api/v1";
 
 export default function DesktopCallback() {
@@ -38,7 +40,7 @@ export default function DesktopCallback() {
 
         // Redirect to the desktop app with the sign-in token
         setStatus("Opening Isol8 desktop app...");
-        window.location.href = `isol8://auth?ticket=${encodeURIComponent(data.token)}`;
+        window.location.href = `${DEEP_LINK_SCHEME}://auth?ticket=${encodeURIComponent(data.token)}`;
       } catch (err) {
         console.error("Desktop callback error:", err);
         setStatus("Something went wrong. Please try again.");

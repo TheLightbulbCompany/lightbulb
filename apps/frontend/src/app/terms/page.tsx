@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 
 import { LegalDocument } from "@/components/legal/LegalDocument";
+import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Terms & Conditions — isol8",
-  alternates: { canonical: "https://isol8.co/terms" },
+  alternates: { canonical: absoluteUrl("/terms") },
   description: "The terms and conditions governing your use of isol8.",
 };
 

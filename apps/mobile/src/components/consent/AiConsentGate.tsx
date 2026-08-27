@@ -37,10 +37,11 @@ import {
   View,
 } from "react-native";
 
+import { WEB_ORIGIN } from "../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { readAiConsent, writeAiConsent } from "../../lib/aiConsent";
 
-const PRIVACY_URL = "https://isol8.co/privacy";
+const PRIVACY_URL = `${WEB_ORIGIN}/privacy`;
 
 /** What leaves the device, in the user's terms — not a data-category taxonomy. */
 const DATA_SENT = [

@@ -1,4 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import {
+  DEFAULT_ADMIN_HOSTS,
+  DEEP_LINK_SCHEME,
+  PAPERCLIP_HOSTS,
+  ROOT_DOMAIN,
+  SITE_URL,
+} from '@/lib/domain';
 import { decideAdminHostRouting } from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
@@ -6,6 +13,20 @@ const ADMIN_HOSTS = new Set([
   'admin.dev.isol8.co',
   'admin.localhost:3000',
 ]);
+
+// The host sets are DERIVED from ROOT_DOMAIN rather than spelled out, and none
+// of the env vars that could override them is set in any deployed environment.
+// These assertions are the guard that the derivation still produces exactly the
+// hosts DNS actually serves — `admin.dev.<root>`, not `admin-dev.<root>`.
+describe('domain config', () => {
+  it('derives the shipped values', () => {
+    expect(SITE_URL).toBe('https://isol8.co');
+    expect(ROOT_DOMAIN).toBe('isol8.co');
+    expect(DEEP_LINK_SCHEME).toBe('isol8');
+    expect(DEFAULT_ADMIN_HOSTS).toEqual([...ADMIN_HOSTS]);
+    expect(PAPERCLIP_HOSTS).toEqual(['company.isol8.co', 'dev.company.isol8.co']);
+  });
+});
 
 describe('decideAdminHostRouting (admin host gate)', () => {
   it('passes through when an admin host hits an /admin path', () => {

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { browseListings } from "@/lib/marketplace/api";
 import { ListingCard } from "@/components/marketplace/storefront/Listing/ListingCard";
 import { SectionLabel } from "@/components/agents/AgentIdentity";
-import { JsonLd, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
+import { JsonLd, absoluteUrl, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
   title: "AI Agent Marketplace for Autonomous Business | isol8",
@@ -23,7 +23,7 @@ export default async function Home() {
 
   return (
     <main className="mx-auto max-w-6xl px-6">
-      <JsonLd data={{ ...softwareApplicationJsonLd, name: "isol8 AI Agent Marketplace", url: "https://isol8.co/marketplace" }} />
+      <JsonLd data={{ ...softwareApplicationJsonLd, name: "isol8 AI Agent Marketplace", url: absoluteUrl("/marketplace") }} />
       <JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Marketplace", path: "/marketplace" }])} />
       <section className="border-b border-[var(--edge)] py-16 md:py-24">
         <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--mute)]">

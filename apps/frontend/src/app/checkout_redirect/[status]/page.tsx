@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+import { DEEP_LINK_SCHEME } from "@/lib/domain";
+
 /**
  * Landing page for the Stripe app-to-web Checkout return.
  *
@@ -67,7 +69,7 @@ export default async function CheckoutRedirectPage({
             can fail to open the app. Harmless on desktop, where it simply
             does nothing. */}
         <p>
-          <a href="isol8://">Open the isol8 app</a>
+          <a href={`${DEEP_LINK_SCHEME}://`}>Open the isol8 app</a>
         </p>
       </main>
     </div>

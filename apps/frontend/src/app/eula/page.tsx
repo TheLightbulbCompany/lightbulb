@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 
 import { LegalDocument } from "@/components/legal/LegalDocument";
+import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "End User License Agreement — isol8",
-  alternates: { canonical: "https://isol8.co/eula" },
+  alternates: { canonical: absoluteUrl("/eula") },
   description: "The license terms for the isol8 desktop application.",
 };
 

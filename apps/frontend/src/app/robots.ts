@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 
-const SITE_URL = "https://isol8.co";
+import { SITE_URL } from "@/lib/domain";
 
 /**
  * robots.txt — allow crawling of the public marketing + blog surface, keep

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { ROOT_DOMAIN } from "@/lib/domain";
 import {
   githubHeaders,
   isNewer,
@@ -8,10 +9,19 @@ import {
   versionFromTag,
 } from "@/lib/githubReleases";
 
+// Anti host-header-injection allowlist: the manifest hands the client a URL
+// built from the request's own Host, so only OUR hosts may be echoed back.
+// Exact matches only — a suffix match would accept `isol8.co.evil.com`.
+const KNOWN_UPDATE_HOSTS = new Set([
+  ROOT_DOMAIN,
+  `www.${ROOT_DOMAIN}`,
+  `dev.${ROOT_DOMAIN}`,
+]);
+
 // Tauri updater manifest endpoint.
 //
 // Tauri's `tauri-plugin-updater` polls a URL like:
-//   https://dev.isol8.co/api/desktop/update/darwin-aarch64/0.1.0
+//   https://dev.<root-domain>/api/desktop/update/darwin-aarch64/0.1.0
 // where {{target}} and {{current_version}} are substituted from
 // `plugins.updater.endpoints` in tauri.conf.json.
 //
@@ -113,16 +123,14 @@ export async function GET(
   // when it's one of ours — never a client-controlled value.
   const rawHost = (req.headers.get("host") ?? "").toLowerCase();
   const isKnownHost =
-    rawHost === "isol8.co" ||
-    rawHost === "www.isol8.co" ||
-    rawHost === "dev.isol8.co" ||
+    KNOWN_UPDATE_HOSTS.has(rawHost) ||
     rawHost.startsWith("localhost") ||
     rawHost.endsWith(".vercel.app");
   const host = isKnownHost
     ? rawHost
     : prefix === "desktop-dev-v"
-      ? "dev.isol8.co"
-      : "isol8.co";
+      ? `dev.${ROOT_DOMAIN}`
+      : ROOT_DOMAIN;
   const scheme = host.startsWith("localhost") ? "http" : "https";
 
   return NextResponse.json({

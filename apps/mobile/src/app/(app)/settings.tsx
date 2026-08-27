@@ -15,6 +15,7 @@ import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@isol8/shared";
 
 import { usePulse } from "../../components/chat/usePulse";
+import { WEB_ORIGIN } from "../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
@@ -581,14 +582,14 @@ export default function Settings() {
         <Text style={styles.overline}>LEGAL</Text>
         <Pressable
           style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
-          onPress={() => void Linking.openURL("https://isol8.co/privacy")}
+          onPress={() => void Linking.openURL(`${WEB_ORIGIN}/privacy`)}
           accessibilityRole="link"
         >
           <Text style={styles.linkText}>Privacy Policy</Text>
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
-          onPress={() => void Linking.openURL("https://isol8.co/terms")}
+          onPress={() => void Linking.openURL(`${WEB_ORIGIN}/terms`)}
           accessibilityRole="link"
         >
           <Text style={styles.linkText}>Terms of Service</Text>

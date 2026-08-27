@@ -7,8 +7,7 @@ import { Footer } from "@/components/landing/Footer";
 import { BlogArticleBody } from "@/components/blog/BlogArticleBody";
 import { getAllPosts, getPostBySlug } from "@/content/blog";
 import { formatPostDate } from "@/content/blog/format";
-
-const SITE_URL = "https://isol8.co";
+import { SITE_URL } from "@/lib/domain";
 
 export const dynamicParams = false;
 

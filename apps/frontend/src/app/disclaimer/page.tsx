@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 
 import { LegalDocument } from "@/components/legal/LegalDocument";
+import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Disclaimer — isol8",
-  alternates: { canonical: "https://isol8.co/disclaimer" },
+  alternates: { canonical: absoluteUrl("/disclaimer") },
   description: "Disclaimers governing your use of isol8 and its AI agents.",
 };
 

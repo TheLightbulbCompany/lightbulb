@@ -7,11 +7,12 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { Monogram, AgentPill } from "@/components/agents/AgentIdentity";
 import { fromListing, initialsFor, paletteFor } from "@/lib/agentDesign";
+import { SITE_URL } from "@/lib/domain";
 import { getListing } from "@/lib/marketplace/api";
 import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://isol8.co";
+const APP_URL = SITE_URL;
 
 function titleCase(token: string): string {
   return token

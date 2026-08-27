@@ -6,7 +6,9 @@ Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
 GitHub, every future `desktop-dev-v*` or `desktop-v*` tag produces a clean
 signed + notarized DMG that opens without the "Isol8 is damaged" Gatekeeper
-warning.
+warning. (That string is Tauri's `productName`, so it reads "Lightbulb AI is
+damaged" once the brand swap lands. `Isol8AI/isol8` and the `isol8-notarize`
+app-specific-password label are NOT renamed.)
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
 

@@ -81,7 +81,7 @@ users[user_id].push_tokens = {
 
 - Add deps + config: `expo-notifications` (dep + config plugin), `expo-device`; add the
   `aps-environment` entitlement via the plugin / `app.json` `ios.entitlements`. (`app.json`
-  today: `ios.bundleIdentifier = co.isol8.mobile`, `appleTeamId = WZX4U3C22Y`, no
+  today: `ios.bundleIdentifier = co.isol8.mobile` (→ `ai.flickmeon.mobile` at the flag-day flip), `appleTeamId = WZX4U3C22Y`, no
   `aps-environment`; SDK 57; `expo-updates` present; `expo-secure-store` already a dep.)
 - New `<PushRegistration/>` component mounted **inside the signed-in subtree** — in
   `apps/mobile/src/app/(app)/_layout.tsx` inside `<GatewayProvider>` (line ~28), a sibling of
@@ -132,8 +132,8 @@ users[user_id].push_tokens = {
 
 ### 5. Deep-link (client)
 
-- Register an `isol8://agent/<agentId>?session=<key>` route (the scheme is OAuth-callback-only
-  today — `isol8://oauth-native-callback` in `sign-in.tsx`). Tapping a notification routes to
+- Register an `lightbulbai://agent/<agentId>?session=<key>` route (the scheme is OAuth-callback-only
+  today — `lightbulbai://oauth-native-callback` in `sign-in.tsx`). Tapping a notification routes to
   `(app)/agent/[agentId]` and selects the session. Reuses the same deep-link plumbing the future
   Shortcuts/App-Intents item will need.
 
@@ -193,7 +193,7 @@ assumption the desktop keeps it alive, so v1 works with no lifecycle change. To 
   unchanged; no-op when permission denied.
 - Notification handler suppression matrix: foreground+on-session → suppressed; foreground+other
   route → shown; background → shown.
-- Deep-link parse: `isol8://agent/a1?session=s1` → correct route params.
+- Deep-link parse: `lightbulbai://agent/a1?session=s1` → correct route params.
 
 ### On-device (manual, exit gate)
 - Send from phone → background app → push arrives with agent name + preview → tap → lands on that

@@ -40,10 +40,10 @@ leave deployed indefinitely.
    }
    ```
 
-   Use `https://api-dev.isol8.co` for dev. The endpoint returns `queued` and
+   Use `https://api-dev.flickmeon.ai` for dev. The endpoint returns `queued` and
    `skipped` counts.
 4. Verify the complete dev owner rollout. Only then submit the same request to
-   `https://api.isol8.co` and verify the prod owner rollout.
+   `https://api.isol8.co` (prod moves to `api.flickmeon.ai` only at the flag-day flip) and verify the prod owner rollout.
 
 Updating the CDK base task definition alone is insufficient: every owner runs
 a per-owner clone. The queued operation re-registers each clone from the latest

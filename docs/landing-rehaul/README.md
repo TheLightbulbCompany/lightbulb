@@ -21,7 +21,7 @@ card grid, the Isolation block, the Teams-inbox mock, the `ld-rule` label bands,
 and GooseTown.
 
 Design direction was drawn from hf0.com, sierra.ai, cognition.com, illoca.com,
-incredibles.dev and datum.xyz — architecture and motion patterns, with isol8
+incredibles.dev and datum.xyz — architecture and motion patterns, with our own
 copy and tokens throughout.
 
 ## Two findings that need a decision before this ships

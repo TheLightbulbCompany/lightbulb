@@ -1,4 +1,4 @@
-# The Credential Problem in Isol8 — Discovery Report
+# The Credential Problem in Lightbulb AI — Discovery Report
 
 **Author:** Claude (research synthesis)
 **Date:** 2026-05-21
@@ -12,7 +12,7 @@ A previous architecture brief jumped to vendor selection (Nango, Infisical) befo
 
 It does three things, in order:
 
-1. **Maps the problem space.** Three credential subjects × four tool primitives × three personas × lifecycle phases. There is no single "credential problem" in Isol8 — there are nine, and they don't share a vendor.
+1. **Maps the problem space.** Three credential subjects × four tool primitives × three personas × lifecycle phases. There is no single "credential problem" in Lightbulb AI — there are nine, and they don't share a vendor.
 2. **Documents the current state with evidence.** Every claim about how things work today cites either the OpenClaw source (`/Users/prasiddhaparthsarthy/Desktop/openclaw`, HEAD `510628ca6f`), a verified competitor URL, or a passage from your Jarvis transcript. No hand-waving.
 3. **States acceptance criteria.** What does "solved" mean for each persona? If a solution proposal can't be measured against these criteria, the criteria are wrong; if the proposal fails them, it isn't a solution.
 
@@ -22,7 +22,7 @@ The deliverable from this document is a clear problem statement that any future 
 
 ## 1. The shortest possible statement of the problem
 
-> Isol8 wants to ship pre-built agents to non-technical buyers. Those agents need to act in third-party systems (Slack, Greenhouse, Google) under the buyer's identity, while the agent itself also needs its own identity for things the buyer doesn't own (its GitHub PAT, its AWS role). OpenClaw — the runtime Isol8 builds on — was designed for one operator on one machine, has no concept of "another tenant," and stores credentials as inline JSON values or files on the operator's disk. Every credential path in OpenClaw today fails when "the operator" is no longer a single trusted human.
+> Lightbulb AI wants to ship pre-built agents to non-technical buyers. Those agents need to act in third-party systems (Slack, Greenhouse, Google) under the buyer's identity, while the agent itself also needs its own identity for things the buyer doesn't own (its GitHub PAT, its AWS role). OpenClaw — the runtime Lightbulb AI builds on — was designed for one operator on one machine, has no concept of "another tenant," and stores credentials as inline JSON values or files on the operator's disk. Every credential path in OpenClaw today fails when "the operator" is no longer a single trusted human.
 
 That single paragraph compresses ~85 hours of upstream design assumptions. The rest of this document unpacks why.
 
@@ -34,7 +34,7 @@ That single paragraph compresses ~85 hours of upstream design assumptions. The r
 
 - **Third-party SaaS credentials** the customer's agent needs (Slack, Greenhouse, Google Workspace acting as the customer, Salesforce, HubSpot, Notion, GitHub-as-customer, etc.)
 - **Agent identity credentials** the agent uses to act as itself (its own GitHub PAT for repo work, its AWS IAM keys, its persistent Google refresh token if it has its own mailbox)
-- **Platform-operator credentials** Isol8 itself uses (the `admin@isol8.co` Google account, prod Stripe key, the OAuth `client_id`/`client_secret` Isol8 registers at every provider so the consent screen says "Isol8")
+- **Platform-operator credentials** Lightbulb AI itself uses (the `admin@isol8.co` Google account, prod Stripe key, the OAuth `client_id`/`client_secret` Lightbulb AI registers at every provider so the consent screen says "Lightbulb AI")
 - **The marketplace** install flow's role in provisioning all three
 - **The four tool primitives** that consume these credentials: MCP servers, CLIs, plugins, skills
 - **The lifecycle**: initial bootstrap, ongoing use, refresh, revocation, rotation, audit
@@ -50,7 +50,7 @@ That single paragraph compresses ~85 hours of upstream design assumptions. The r
 
 Three primary sources, all reproducible:
 
-1. **The Jarvis transcript** the user supplied — a real session with their own engineering agent in a real Isol8 ECS container, surfacing concrete failure points.
+1. **The Jarvis transcript** the user supplied — a real session with their own engineering agent in a real Lightbulb AI ECS container, surfacing concrete failure points.
 2. **The OpenClaw source** at HEAD `510628ca6f` (verified at `~/Desktop/openclaw`). All file paths and line numbers below are clickable in your editor.
 3. **Competitor UX research** against ten platforms' public documentation (Anthropic Connectors, ChatGPT Apps, Lindy, Gumloop, n8n, Pipedream Connect, Zapier, Make, Anthropic MCP API, Workato). Cited inline.
 
@@ -60,16 +60,16 @@ Three primary sources, all reproducible:
 
 Every credential decision is made by, for, or about one of four personas. The same word ("user") means different people in different contexts; this document keeps them distinct.
 
-### 3.1 Platform operator — Isol8 the company
+### 3.1 Platform operator — Lightbulb AI the company
 
-- **Who:** the Isol8 engineering team. Plausibly 1–10 people in v1.
-- **Their credentials:** `admin@isol8.co` Google Workspace (for sign-ups, password resets, Jarvis's mailbox), root AWS account, Stripe platform key, Vercel team owner, GitHub org owner, and one OAuth `client_id`/`client_secret` *per integrated provider* (because Isol8 must register its own OAuth apps at Google, Slack, Greenhouse, etc., so end-customer consent screens read "Isol8" — see §6).
+- **Who:** the Lightbulb AI engineering team. Plausibly 1–10 people in v1.
+- **Their credentials:** `admin@isol8.co` Google Workspace (for sign-ups, password resets, Jarvis's mailbox), root AWS account, Stripe platform key, Vercel team owner, GitHub org owner, and one OAuth `client_id`/`client_secret` *per integrated provider* (because Lightbulb AI must register its own OAuth apps at Google, Slack, Greenhouse, etc., so end-customer consent screens read "Lightbulb AI" — see §6).
 - **Frequency of credential work:** initial bootstrap is intense (need to register apps at every provider once); steady state is rare (rotate yearly, respond to incidents).
 - **Technical level:** high. This is the only persona we can assume reads documentation.
 
 ### 3.2 Marketplace seller — an agent author
 
-- **Who:** anyone publishing an agent into the Isol8 marketplace (the user's own team for seed agents Friday and Atlas; third parties later).
+- **Who:** anyone publishing an agent into the Lightbulb AI marketplace (the user's own team for seed agents Friday and Atlas; third parties later).
 - **Their relationship to credentials:** they don't have any. Sellers ship an agent definition (tarball + manifest + plugins/MCPs/skills). They cannot embed credentials. They must declare credential *requirements* in the manifest so the install flow can provision them at the right tier.
 - **Frequency of credential work:** per-agent, at authoring time. They need to know which provider names map to which env vars.
 - **Technical level:** high (a developer publishing an agent). But they hate writing auth code and just want it handled.
@@ -168,24 +168,24 @@ And in the open issue tracker:
 - **#71058** — "Support for multiple Azure/Teams bots on a single OpenClaw Gateway."
 - **#76493** — "Allow SecretRef objects in `mcp.servers[].env` schema."
 
-**The conclusion:** OpenClaw is *not* a hosted SaaS substrate today, and upstream knows this. Isol8 cannot wait for the upstream gap to close; Isol8's value proposition is built directly atop it. Every credential mechanism above is single-tenant-by-design. Our job is to bolt on the missing tier without forking.
+**The conclusion:** OpenClaw is *not* a hosted SaaS substrate today, and upstream knows this. Lightbulb AI cannot wait for the upstream gap to close; Lightbulb AI's value proposition is built directly atop it. Every credential mechanism above is single-tenant-by-design. Our job is to bolt on the missing tier without forking.
 
 ---
 
 ## 5. Current user experience — four annotated journeys
 
-Each journey below is a story with a beginning, middle, and end. Each one ends in failure or excessive friction. These are the experiences Isol8 must replace.
+Each journey below is a story with a beginning, middle, and end. Each one ends in failure or excessive friction. These are the experiences Lightbulb AI must replace.
 
 ### Journey A — Jarvis bootstraps himself (verbatim from the user's transcript)
 
-**Persona:** platform operator (Isol8 team) creating their internal engineering agent.
+**Persona:** platform operator (Lightbulb AI team) creating their internal engineering agent.
 
 **Steps actually observed in the user's transcript:**
 
 1. User boots a new container running OpenClaw, names it Jarvis, opens the chat: *"Hey Jarvis, hows it going. I just created you and your purpose is to be my engineering agent."*
 2. Jarvis introspects its container. `aws sts get-caller-identity` → `aws: not found`. AWS CLI is not installed in the OpenClaw image.
 3. Jarvis introspects further: `gh` is installed but not authenticated. Git, Node available. Docker not (expected in Fargate). `AWS_DEFAULT_REGION=us-east-1` is set; task IAM role may exist but unverifiable without the AWS CLI.
-4. Jarvis reports back: *"What I need from you: GitHub personal access token … Decision on AWS CLI install … Isol8 repo URL."*
+4. Jarvis reports back: *"What I need from you: GitHub personal access token … Decision on AWS CLI install … Lightbulb AI repo URL."*
 5. User asks the meta question: *"if I give you your own email would you be able to do it autonomously?"*
 6. Jarvis's answer (verbatim): *"You'd still need to create an IAM user/role and give me the credentials … Most of these sign-ups require email verification (click a link). I'd need either: Access to the inbox (via the himalaya or gog skill I have), or You forward me the verification codes."*
 7. User commits to `admin@isol8.co` as Jarvis's identity. Jarvis lays out the gog (Google) setup:
@@ -197,7 +197,7 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
 - **Step 2-3** — there's no platform mechanism to ensure the right CLIs are present in the container image. Jarvis hits "AWS CLI not found" and has to ask. This is a container-build-time problem masquerading as a credential problem.
 - **Step 4-6** — Jarvis can describe the OAuth dance but cannot execute it. Every step assumes a human who can leave the chat, click into Google Cloud Console, configure things, return, paste a result.
 - **Step 7** — the "create an OAuth client" step is the wall. It is not optional. Every Google API access requires it. The same wall exists for Slack, for GitHub (creating an OAuth App or GitHub App), for Microsoft (Entra ID app registration), for Salesforce (Connected App). **OpenClaw has no answer for this step today.**
-- **Step 8** — the user has identified the right problem. A non-technical person cannot complete this. But Jarvis is *not* a non-technical person's agent — Jarvis is the *platform team's* agent. The right question is "should the platform team have to do this for every single Isol8 instance, or once?" (Answer: once. But the mechanism for "once and then re-used" doesn't exist either.)
+- **Step 8** — the user has identified the right problem. A non-technical person cannot complete this. But Jarvis is *not* a non-technical person's agent — Jarvis is the *platform team's* agent. The right question is "should the platform team have to do this for every single Lightbulb AI instance, or once?" (Answer: once. But the mechanism for "once and then re-used" doesn't exist either.)
 
 **Acceptance criterion this journey produces:** Jarvis (and any platform-internal agent) should boot with its identity credentials already present in the container, refreshed automatically, never requiring a human to paste anything.
 
@@ -207,9 +207,9 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
 
 **Best-case scenario (what we want):**
 
-1. Customer signs into Isol8, browses marketplace, picks Atlas.
+1. Customer signs into Lightbulb AI, browses marketplace, picks Atlas.
 2. Deploy page shows: *"Atlas needs to connect to your Greenhouse, your Slack, and your Google Calendar."*
-3. Customer clicks "Connect Greenhouse" → Greenhouse OAuth page reads *"Isol8 wants access to your Greenhouse"* → customer clicks Authorize → returns to Isol8 → green checkmark.
+3. Customer clicks "Connect Greenhouse" → Greenhouse OAuth page reads *"Lightbulb AI wants access to your Greenhouse"* → customer clicks Authorize → returns to Lightbulb AI → green checkmark.
 4. Repeat for Slack, Google Calendar.
 5. Customer clicks "Deploy" → Atlas is running in their container 30 seconds later, fully credentialed.
 6. Customer never types a token, never opens Greenhouse's API console, never sees the word "OAuth."
@@ -221,11 +221,11 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
 3. Slack: same. Telegram-style channel setup wizard at best, with manual BotFather instructions.
 4. Token rotation: when Greenhouse rotates their key in 90 days, Atlas silently fails until the customer notices, then repeats step 2.
 
-**Acceptance criterion this journey produces:** end customers click one button per provider, see a consent screen branded "Isol8," and never touch tokens or API consoles. Token refresh is invisible.
+**Acceptance criterion this journey produces:** end customers click one button per provider, see a consent screen branded "Lightbulb AI," and never touch tokens or API consoles. Token refresh is invisible.
 
 ### Journey C — Marketplace seller publishes Atlas
 
-**Persona:** marketplace seller (could be the Isol8 team for seed agents).
+**Persona:** marketplace seller (could be the Lightbulb AI team for seed agents).
 
 **Steps:**
 
@@ -235,7 +235,7 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
    - Leave the env value blank, document "buyers must set this themselves" — pushes Journey B's wall onto every buyer.
    - Use `${GREENHOUSE_API_KEY}` interpolation hoping the env var is set by *something* before OpenClaw loads — works by accident, no platform contract.
 3. Atlas bundles a `gh` CLI for some operations. The seller assumes the buyer has authenticated `gh`; if not, Atlas fails opaquely.
-4. Atlas bundles a custom CLI the seller wrote. That CLI reads `GREENHOUSE_API_KEY` from env. The seller has no way to declare this requirement in a machine-readable manifest — there's no Isol8 manifest schema today, just OpenClaw's config schema.
+4. Atlas bundles a custom CLI the seller wrote. That CLI reads `GREENHOUSE_API_KEY` from env. The seller has no way to declare this requirement in a machine-readable manifest — there's no Lightbulb AI manifest schema today, just OpenClaw's config schema.
 5. Atlas is published. Buyer adopts. Buyer's Atlas container boots with nothing wired. Atlas tries to call Greenhouse, fails, surfaces a confusing error.
 
 **Where this breaks:**
@@ -250,7 +250,7 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
 
 **Persona:** end customer, ambient.
 
-**Scenario:** Customer connected Slack two weeks ago. Slack's `access_token` (the customer's, returned to Isol8 by Slack's OAuth) is normally long-lived, but suppose it gets rotated by Slack's IT admin out-of-band. Or: customer connected Salesforce, and Salesforce's session-token-style auth expires hourly.
+**Scenario:** Customer connected Slack two weeks ago. Slack's `access_token` (the customer's, returned to Lightbulb AI by Slack's OAuth) is normally long-lived, but suppose it gets rotated by Slack's IT admin out-of-band. Or: customer connected Salesforce, and Salesforce's session-token-style auth expires hourly.
 
 **What happens today on OpenClaw:**
 
@@ -262,7 +262,7 @@ Each journey below is a story with a beginning, middle, and end. Each one ends i
 **What good looks like:**
 
 1. Refresh is automatic for refreshable tokens.
-2. For non-refreshable revocations, customer sees a red badge on their Slack connection in Isol8's UI within minutes.
+2. For non-refreshable revocations, customer sees a red badge on their Slack connection in Lightbulb AI's UI within minutes.
 3. One-click reconnect → re-OAuth → Atlas resumes.
 4. No support ticket, no waiting.
 
@@ -293,7 +293,7 @@ Documented competitor flows give us a calibrated sense of the design space. The 
 
 **The pattern is mechanical: if the platform has signed paperwork with Google/Slack/Microsoft and registered ONE OAuth client per provider, end-customers get a one-click "Connect" experience.** If the platform has NOT done this — and pushes registration onto each end-customer — the experience is "leave my product, go to Slack's API console, follow 11 steps, return with three secrets to paste."
 
-**There is no third option.** Every platform doing one-click consent has Isol8-the-platform registering one OAuth app per provider, holding the `client_secret` server-side, and using it on behalf of every customer.
+**There is no third option.** Every platform doing one-click consent has Lightbulb AI-the-platform registering one OAuth app per provider, holding the `client_secret` server-side, and using it on behalf of every customer.
 
 ### 6.2 The brand-on-consent-screen tradeoff
 
@@ -301,7 +301,7 @@ When Google shows "Zapier wants access to your Gmail," users transfer trust to Z
 
 Pipedream learned this in reverse: they shipped BYO OAuth clients in June 2024 because enterprise customers wouldn't ship to their end-customers a product whose consent screens read "Pipedream wants access." Now Pipedream offers both: default-Pipedream-branded for fast onboarding, BYO-customer-branded for production.
 
-**Implication for Isol8:** Isol8 must register `client_id`/`client_secret` per provider for first-party-feeling consent. ("Isol8 wants access to your Slack.") This is platform-tier infrastructure work, done once per provider, never per customer.
+**Implication for Lightbulb AI:** Lightbulb AI must register `client_id`/`client_secret` per provider for first-party-feeling consent. ("Lightbulb AI wants access to your Slack.") This is platform-tier infrastructure work, done once per provider, never per customer.
 
 ### 6.3 Marketplace templates work only when OAuth is platform-registered
 
@@ -309,7 +309,7 @@ Zapier templates ("Use this Zap") are a credential list disguised as a feature. 
 
 The same flow on n8n (also has templates) requires the adopter to first complete the 11-step app-registration crawl *per provider* in the template, then run the template. **Templates without platform-registered OAuth are starter kits, not marketplaces.**
 
-**Implication for Isol8:** the marketplace promise (one-click hire an agent) depends entirely on the credential layer's "one-click connect" promise. They are the same project.
+**Implication for Lightbulb AI:** the marketplace promise (one-click hire an agent) depends entirely on the credential layer's "one-click connect" promise. They are the same project.
 
 ### 6.4 The four UX failure modes documented in competitor research
 
@@ -318,7 +318,7 @@ The same flow on n8n (also has templates) requires the adopter to first complete
 3. **Token expiry surfaces as a generic tool failure** rather than a connection-status warning (Lindy long-tail, Claude.ai pre-fix).
 4. **Multi-account ambiguity** — user has two Gmails, the agent uses the wrong one (Gumloop team-credentials default footgun).
 
-Isol8 must avoid all four. The UX research has detailed examples of each in the appendix.
+Lightbulb AI must avoid all four. The UX research has detailed examples of each in the appendix.
 
 ---
 
@@ -328,9 +328,9 @@ Solutions will be evaluated against these. Each is testable.
 
 ### 7.1 For the end customer
 
-1. **One-click connect per provider.** Customer clicks "Connect [Slack/Greenhouse/Google]" → sees consent screen branded "Isol8 wants access" → clicks Authorize → green checkmark in Isol8.
+1. **One-click connect per provider.** Customer clicks "Connect [Slack/Greenhouse/Google]" → sees consent screen branded "Lightbulb AI wants access" → clicks Authorize → green checkmark in Lightbulb AI.
 2. **Never sees a token.** Customer never types, pastes, or even sees the string form of any credential.
-3. **Never leaves Isol8 to register anything.** No "go to Slack API console" step. Ever.
+3. **Never leaves Lightbulb AI to register anything.** No "go to Slack API console" step. Ever.
 4. **One place to see connection status.** Customer can see all their connected providers, their freshness, and their connected accounts (if multiple) on one screen.
 5. **Connection breakage is visible.** When a token expires/revokes, the customer sees a red badge before they see a tool failure. One-click reconnect.
 6. **Disconnection works.** Customer can revoke any connection at any time. Affected agents stop trying.
@@ -343,7 +343,7 @@ Solutions will be evaluated against these. Each is testable.
 10. **Safety scanner rejects bundles** with hardcoded OAuth secrets, direct calls to OAuth endpoints, or undeclared provider env reads.
 11. **Documented provider catalog.** Sellers can look up the canonical env var name for any supported provider in one place.
 
-### 7.3 For the platform operator (Isol8 team)
+### 7.3 For the platform operator (Lightbulb AI team)
 
 12. **One-time provider onboarding.** Onboarding a new provider to the platform — registering the OAuth app at the provider, storing `client_id`/`client_secret`, adding the catalog entry — happens once and benefits every customer thereafter.
 13. **Platform-internal agents (Jarvis) bootstrap without per-deployment human action.** Jarvis's `admin@isol8.co` Google refresh token, GitHub PAT, AWS role are present in every Jarvis container at boot. Set up once at company founding, refreshed automatically.
@@ -360,7 +360,7 @@ Solutions will be evaluated against these. Each is testable.
 ### 7.5 Non-goals (explicit)
 
 - Not solving end-to-end audit at the API-call level (different workstream).
-- Not solving cross-tenant credential sharing (e.g., a shared corporate Slack token across multiple Isol8-customer agents). Defer to v2.
+- Not solving cross-tenant credential sharing (e.g., a shared corporate Slack token across multiple Lightbulb AI-customer agents). Defer to v2.
 - Not solving SCIM/enterprise SSO-driven auto-provisioning of customer connections.
 - Not building our own OAuth implementation. We will adopt or buy.
 
@@ -374,7 +374,7 @@ The "credential problem" is actually nine sub-problems, one per cell of this mat
 
 | Subject | Who provisions | Lifetime | Storage substrate (today) | Storage substrate (target) |
 |---|---|---|---|---|
-| **Platform** (Isol8) | Human Isol8 employees, once | Years | AWS Secrets Manager | AWS Secrets Manager (unchanged) |
+| **Platform** (Lightbulb AI) | Human Lightbulb AI employees, once | Years | AWS Secrets Manager | AWS Secrets Manager (unchanged) |
 | **Agent identity** (Jarvis's own GitHub) | Human at agent-creation time, then refresh | Years; refresh tokens months | Nothing — has to live somewhere | TBD (candidate: a secrets vault) |
 | **End-customer delegated** (customer's Slack) | Customer at deploy time | Refresh tokens months; access tokens hours-days | Nothing — has to live somewhere | TBD (candidate: an OAuth broker) |
 
@@ -440,7 +440,7 @@ Here we enumerate the *kinds* of solutions, with tradeoffs. Concrete vendor sele
 |---|---|---|---|
 | **OAuth broker (managed token vault)** | A platform like Nango/Klavis/Composio handles the OAuth dance, stores tokens, refreshes them, exposes a per-customer fetch API | Production-ready; one-click connect; refresh handled; many providers built-in | Vendor dependency; license posture varies (Nango ELv2, Klavis Apache, Composio closed backend) |
 | **Brokered HTTPS proxy** | All outbound HTTPS goes through a service that injects tokens; agent never sees tokens | Best blast-radius; built-in per-call audit | Breaks for non-HTTPS tools (CLIs that don't go through a proxy, gRPC, raw socket) — fails the four-primitive constraint |
-| **Build our own** | OAuth dance + token vault as Isol8 code | Full control; no vendor dependency | 6+ months of engineering; we'd be redoing what Nango/Klavis built |
+| **Build our own** | OAuth dance + token vault as Lightbulb AI code | Full control; no vendor dependency | 6+ months of engineering; we'd be redoing what Nango/Klavis built |
 | **Punt OAuth to the customer** | Customer registers OAuth apps themselves (n8n model) | Zero vendor dependency | Fails §7.1 acceptance criteria 1, 3; competitive UX disaster |
 
 **Tradeoff:** OAuth broker is the only category that can satisfy §7.1 in weeks. Build-your-own is foreclosed by §9-hard ("ships in weeks"). Brokered proxy is foreclosed by §9-hard ("works for all four primitives"). Punt-to-customer is foreclosed by §7.1.
@@ -461,7 +461,7 @@ Here we enumerate the *kinds* of solutions, with tradeoffs. Concrete vendor sele
 |---|---|---|---|
 | **Wrapper shim per tool** | Every credential-needing tool is invoked through a small script that sources credentials at exec time | Primitive-agnostic; works today against current OpenClaw; we fully control it | All tools must go through the wrapper — minor inconvenience |
 | **`mcp.servers[].env` interpolation** | Use OpenClaw's accidental `${VAR}` substitution to inject creds at config-load | Zero new mechanism | Not promised by schema; only fires at config-load (no refresh); doesn't help CLIs/plugins/skills |
-| **Wait for upstream PRs** | Wait for #72548 + #76493 to land, then write a Nango SecretRef provider plugin | Most idiomatic | Timeline unknown (months+); doesn't ship Isol8 in weeks |
+| **Wait for upstream PRs** | Wait for #72548 + #76493 to land, then write a Nango SecretRef provider plugin | Most idiomatic | Timeline unknown (months+); doesn't ship Lightbulb AI in weeks |
 | **Fork OpenClaw** | Patch credential injection in directly | Full control | Foreclosed by §9-hard |
 | **Inject into `getDefaultEnvironment()` allowlist** | Modify the MCP SDK at the consumer level to allow more env through | Tempting | Breaks the MCP SDK's security model; not portable |
 
@@ -472,7 +472,7 @@ Here we enumerate the *kinds* of solutions, with tradeoffs. Concrete vendor sele
 | Approach | What it is | Pros | Cons |
 |---|---|---|---|
 | **Wrap every CLI in our shim** | Treat heterogeneous CLIs as opaque binaries the shim populates env for | Works for any CLI (aws, gh, stripe, custom) | We don't get any structured introspection — CLIs are black boxes |
-| **Adopt Printing Press for new CLIs** | Use Printing Press code-gen for first-party Isol8 CLIs | Uniform env-var contract for our own CLIs | Doesn't help with third-party CLIs; not load-bearing |
+| **Adopt Printing Press for new CLIs** | Use Printing Press code-gen for first-party Lightbulb AI CLIs | Uniform env-var contract for our own CLIs | Doesn't help with third-party CLIs; not load-bearing |
 | **Adopt OpenCLI spec** | Standardize CLI descriptions across the ecosystem | Future-facing | OpenCLI doesn't address auth at all (researched & verified); wrong layer |
 | **Refuse CLIs in marketplace bundles** | Only allow MCP servers; no bundled CLIs | Smaller attack surface | User explicitly wants CLIs supported per existing constraints |
 
@@ -482,8 +482,8 @@ Here we enumerate the *kinds* of solutions, with tradeoffs. Concrete vendor sele
 
 | Approach | What it is | Pros | Cons |
 |---|---|---|---|
-| **One-time human OAuth setup per provider, then automated** | Human Isol8 admin runs the Google Cloud Console steps once, drops `client_secret.json` and initial refresh token into the secrets manager, every Jarvis container reads it | Solves the Jarvis transcript pain | Only works for platform-internal agents — does not solve customer's experience |
-| **OAuth-broker-with-Isol8-as-the-only-customer** | Treat Isol8-the-company as a single "customer" in the OAuth broker | Reuses the §10.1 mechanism | Conceptual contortion; mixes platform and customer credential subjects |
+| **One-time human OAuth setup per provider, then automated** | Human Lightbulb AI admin runs the Google Cloud Console steps once, drops `client_secret.json` and initial refresh token into the secrets manager, every Jarvis container reads it | Solves the Jarvis transcript pain | Only works for platform-internal agents — does not solve customer's experience |
+| **OAuth-broker-with-Lightbulb AI-as-the-only-customer** | Treat Lightbulb AI-the-company as a single "customer" in the OAuth broker | Reuses the §10.1 mechanism | Conceptual contortion; mixes platform and customer credential subjects |
 | **Pre-bake credentials into container image** | Encrypt and ship at build time | Simple | Rotation requires rebuild; image scanning may flag |
 
 **Tradeoff:** the first option (one-time human setup → secrets manager) is the right shape. It only solves a slice of the larger problem, but that slice has a different solution from the customer-OAuth slice — they should not be conflated.
@@ -494,13 +494,13 @@ Here we enumerate the *kinds* of solutions, with tradeoffs. Concrete vendor sele
 
 These need to be resolved before solution selection.
 
-1. **Does Isol8 want to support BYO OAuth clients per customer?** Pipedream learned the hard way this was necessary for enterprise. Default position: ship platform-registered only in v1; add BYO in v2. Confirm.
+1. **Does Lightbulb AI want to support BYO OAuth clients per customer?** Pipedream learned the hard way this was necessary for enterprise. Default position: ship platform-registered only in v1; add BYO in v2. Confirm.
 2. **What's the SLA target for token-refresh latency?** Nango et al. don't publish SLAs. If we need <60s refresh for some provider, we'll need to layer our own freshness check.
 3. **What's the marketplace seller's manifest format going to be?** OpenClaw has no marketplace concept upstream. We're inventing the manifest. Need a schema RFC.
 4. **Where do connection-state events go?** Webhook from Nango → backend → DDB? Polling? Server-Sent Events to the customer UI?
-5. **Does Jarvis count as a marketplace agent, or as a platform-internal special case?** Affects whether the platform-credentials path is exposed to non-Isol8 sellers.
+5. **Does Jarvis count as a marketplace agent, or as a platform-internal special case?** Affects whether the platform-credentials path is exposed to non-Lightbulb AI sellers.
 6. **What's the rollback story when a new provider integration ships broken?** Need a kill switch per provider.
-7. **Multi-account-per-provider — v1 or v2?** Gumloop nails it; everyone else punts. Isol8's customers will eventually want "Atlas connects to my Sales team's Slack AND my Engineering team's Slack."
+7. **Multi-account-per-provider — v1 or v2?** Gumloop nails it; everyone else punts. Lightbulb AI's customers will eventually want "Atlas connects to my Sales team's Slack AND my Engineering team's Slack."
 8. **Audit retention policy.** How long do we keep connection grant/revoke/refresh logs? Influences DB sizing.
 9. **What is the failure mode for offline Nango (or chosen vendor) outage?** Need a runbook.
 10. **Does the wrapper-shim approach satisfy the marketplace safety scanner's "no credential handling in seller code" rule?** Need to think through whether the shim being a wrapper makes seller-supplied scripts effectively co-credential-handlers.
@@ -511,7 +511,7 @@ These need to be resolved before solution selection.
 
 1. **The credential problem is three credential subjects × four tool primitives × three personas × lifecycle.** Not one problem, nine.
 2. **OpenClaw is single-tenant by design**, upstream knows this, and the gap will not be closed by upstream in our timeline. We bolt on; we do not wait.
-3. **The end customer's experience is the load-bearing acceptance criterion.** One-click connect with Isol8-branded consent screens. Everything else exists to support this.
+3. **The end customer's experience is the load-bearing acceptance criterion.** One-click connect with Lightbulb AI-branded consent screens. Everything else exists to support this.
 4. **The platform must register OAuth clients at every supported provider.** This is not optional; it's the dividing line between "marketplace" and "starter kit." It's also a one-time platform-operator workflow, not a per-customer workflow.
 5. **No single vendor solves all nine cells.** OAuth broker for customer-SaaS; secrets manager for agent-identity; AWS Secrets Manager for platform secrets; a wrapper shim for runtime delivery. Each has its own evaluation criteria.
 6. **The Jarvis bootstrap problem is a different problem from the marketplace customer problem.** Conflating them led to confusion in the previous brief. They share infrastructure ideas (encrypted token storage) but have different personas, lifecycles, and acceptance criteria.
@@ -559,11 +559,11 @@ These need to be resolved before solution selection.
 
 | Term | Meaning in this document |
 |---|---|
-| **Platform operator** | Isol8 the company / its engineering team |
-| **Marketplace seller** | Author of a marketplace agent (Isol8 team for seed agents, third parties later) |
-| **End customer** | The buyer of an Isol8 agent. Non-technical assumed. |
+| **Platform operator** | Lightbulb AI the company / its engineering team |
+| **Marketplace seller** | Author of a marketplace agent (Lightbulb AI team for seed agents, third parties later) |
+| **End customer** | The buyer of an Lightbulb AI agent. Non-technical assumed. |
 | **Agent** | An OpenClaw runtime instance dedicated to one end customer, possibly multiple per customer |
-| **Platform-internal agent** | An agent serving the Isol8 team itself, e.g., Jarvis. Not a customer's agent. |
+| **Platform-internal agent** | An agent serving the Lightbulb AI team itself, e.g., Jarvis. Not a customer's agent. |
 | **OAuth broker** | A platform like Nango/Klavis/Composio that handles OAuth dance, stores tokens, exposes per-customer fetch API |
 | **Secrets manager** | A platform like Infisical/Vault that stores arbitrary secrets, supports machine identity auth |
 | **Tool primitive** | One of MCP server, CLI, plugin, skill — the four ways tools attach to an agent |

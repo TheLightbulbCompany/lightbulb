@@ -1,7 +1,7 @@
 # Admin "Wipe Account" Tool — Design
 
 **Status:** Approved to build (decisions locked below)
-**Motivation:** There is no way to fully delete an Isol8 account. The reprovision
+**Motivation:** There is no way to fully delete an Lightbulb AI account. The reprovision
 skill preserves billing; the dev-reset is all-or-nothing. Cleaning up a single
 account (a test signup, an offboarding user, a GDPR erase) means hand-running a
 long, error-prone sequence of AWS/Clerk/Aurora commands — and even that misses

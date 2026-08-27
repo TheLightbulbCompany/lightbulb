@@ -1,6 +1,9 @@
 # Admin dashboard rollout
 
-Operational runbook for `admin.isol8.co` (and `admin.dev.isol8.co`).
+Operational runbook for the admin host: `admin.dev.flickmeon.ai` on dev,
+`admin.isol8.co` on prod until the flag-day flip moves it to
+`admin.flickmeon.ai`. AWS resource names (`isol8-{env}-*`, `isol8/{env}/*`) and
+the `isol8-frontend-*` Vercel project names are NOT renamed.
 
 **Tracking issue:** [Isol8AI/isol8#351](https://github.com/Isol8AI/isol8/issues/351)
 **Spec:** [`docs/superpowers/specs/2026-04-21-admin-dashboard-design.md`](../superpowers/specs/2026-04-21-admin-dashboard-design.md)
@@ -8,7 +11,7 @@ Operational runbook for `admin.isol8.co` (and `admin.dev.isol8.co`).
 
 ## What's in v1
 
-- Dedicated subdomain `admin.isol8.co` aliased to the existing `isol8-frontend-*` Vercel project.
+- Dedicated subdomain (`admin.` on the environment's root domain) aliased to the existing `isol8-frontend-*` Vercel project.
 - Route group at `apps/frontend/src/app/admin/*`, gated by host-based middleware (only the admin host serves these routes).
 - Backend `/api/v1/admin/*` endpoints, gated by `Depends(require_platform_admin)` (allowlist driven by `PLATFORM_ADMIN_USER_IDS`).
 - Audit table `isol8-{env}-admin-actions` records every write action.
@@ -16,9 +19,9 @@ Operational runbook for `admin.isol8.co` (and `admin.dev.isol8.co`).
 
 ## Prerequisites — one-time per environment
 
-1. **DNS + Vercel domain alias:** `admin.dev.isol8.co` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` → `isol8-frontend-prod`. Verify with `dig admin.dev.isol8.co CNAME`.
+1. **DNS + Vercel domain alias:** `admin.dev.flickmeon.ai` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` (→ `admin.flickmeon.ai` at the flag-day flip) → `isol8-frontend-prod`. Verify with `dig admin.dev.flickmeon.ai CNAME`.
 2. **Backend secrets** (one Secrets Manager entry per value, consistent with existing `isol8/{env}/clerk_issuer`, `isol8/{env}/stripe_secret_key`, etc.):
-   - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Isol8 team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
+   - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Lightbulb AI team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
    - `isol8/{env}/posthog_project_api_key` — PostHog personal API key with scopes `person:read`, `events:read`, `session_recording:read`. Wired as `POSTHOG_PROJECT_API_KEY`. Optional; the Activity tab stubs gracefully when absent.
 
    `POSTHOG_HOST` and `POSTHOG_PROJECT_ID` are plaintext env vars on the backend task definition (not secrets — project ID is public in every PostHog URL).
@@ -39,7 +42,7 @@ Operational runbook for `admin.isol8.co` (and `admin.dev.isol8.co`).
      --profile isol8-admin
    ```
 
-3. Force a backend rollout (`aws ecs update-service --force-new-deployment ...`). Within ~2 min the new admin can sign into `https://admin-{env}.isol8.co/admin` via Clerk and reach `/admin/users`.
+3. Force a backend rollout (`aws ecs update-service --force-new-deployment ...`). Within ~2 min the new admin can sign into the admin host at `/admin` via Clerk and reach `/admin/users` (`https://admin.dev.flickmeon.ai` on dev, `https://admin.isol8.co` on prod — note there is no `admin-{env}.` record; that form never resolved).
 
 ## Removing an admin (immediate)
 
@@ -64,7 +67,7 @@ DNS alias and Vercel project remain. Once the incident is resolved, restore the 
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/admin` returns 404 in browser | Wrong host (you're on `isol8.co/admin` instead of `admin.isol8.co/admin`) | Check URL |
+| `/admin` returns 404 in browser | Wrong host (you're on the app host instead of the `admin.` host) | Check URL |
 | `/admin/me` returns 403 | Your Clerk user_id missing from `PLATFORM_ADMIN_USER_IDS` | Add it; redeploy |
 | Admin page renders but Stripe panel shows error banner | Stripe API timeout or auth issue; `admin_service` returns partial responses on upstream failure | Check Stripe dashboard health; verify `STRIPE_SECRET_KEY` in Secrets Manager |
 | PostHog tab shows "No PostHog activity recorded — user may not have visited the frontend" | User legitimately has no PostHog identify yet; OR `POSTHOG_PROJECT_API_KEY` is unset | Confirm by visiting the frontend as that user; otherwise mint the PostHog project key |
@@ -79,7 +82,7 @@ Watch the `admin_api.errors` CloudWatch metric (added in Phase B) for repeated 4
 
 - **Cloudflare Access** — SSO gate in front of the subdomain. Requires Cloudflare as a vendor + DNS handover.
 - **Vercel Deployment Protection** — Vercel-native password / SSO gate. Pro+ plan only.
-- **HTTP basic auth via Next.js middleware** — ~15 LOC: if `host=admin.isol8.co` and no `Authorization: Basic` header, return 401 challenge. Username/password in `ADMIN_BASIC_AUTH_*` env vars. Zero new vendor.
+- **HTTP basic auth via Next.js middleware** — ~15 LOC: if the host is the `admin.` host and there is no `Authorization: Basic` header, return 401 challenge. Username/password in `ADMIN_BASIC_AUTH_*` env vars. Zero new vendor.
 
 ## Local development
 
@@ -93,6 +96,9 @@ PLATFORM_ADMIN_USER_IDS=user_<your dev Clerk id>
 Frontend env (`apps/frontend/.env.local`):
 
 ```
+# dev today, and prod after the flag-day flip
+NEXT_PUBLIC_ADMIN_HOSTS=admin.flickmeon.ai,admin.dev.flickmeon.ai,admin.localhost:3000
+# prod until the flip
 NEXT_PUBLIC_ADMIN_HOSTS=admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000
 ```
 

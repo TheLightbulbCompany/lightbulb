@@ -1,4 +1,4 @@
-# Isol8 iOS Mobile App (Expo / React Native) — Implementation Plan
+# Lightbulb AI iOS Mobile App (Expo / React Native) — Implementation Plan
 
 **Status:** Phases 0–6 shipped — full end-user parity (auth, chat with
 history/sessions, settings/billing, all control panels, teams inbox,
@@ -38,18 +38,18 @@ see the dev-build note).
 - **pnpm + Expo/Metro:** add `node-linker=hoisted` to the repo `.npmrc` scope needed by `apps/mobile` (Metro does not follow pnpm symlinks). Validate this does not break the Next.js or Tauri builds before merging Phase 0.
 - **Apple billing rules (Guideline 3.1.1):** the app must NOT initiate Stripe checkout for the $50/mo subscription or paid marketplace listings in-app for v1. Mobile renders subscription/entitlement *state* and directs users to manage billing on the web (see Decisions & Risks). Marketplace **browsing + deploying free/already-owned listings** is in scope; in-app purchase of paid listings is out.
 - **No secrets in the app bundle.** Only `EXPO_PUBLIC_*` values that are safe-public (API URL, Clerk publishable key, PostHog key) — same posture as `NEXT_PUBLIC_*`.
-- **Env parity:** dev builds point at `api-dev.isol8.co` / `ws-dev.isol8.co`; prod at `api.isol8.co` / `ws.isol8.co`. The `deriveWebSocketUrl` hostname rewrite in shared code is reused as-is.
-- **Bundle ID:** `co.isol8.mobile` (sibling of desktop's `co.isol8.desktop`). Apple Developer team is the prerequisite for Phases 7–8; everything before runs in Expo Go / simulator.
+- **Env parity:** dev builds point at `api-dev.flickmeon.ai` / `ws-dev.flickmeon.ai`; prod at `api.flickmeon.ai` / `ws.flickmeon.ai`. The `deriveWebSocketUrl` hostname rewrite in shared code is reused as-is.
+- **Bundle ID:** `co.isol8.mobile` (sibling of desktop's `co.isol8.desktop`) — both are native identifiers that move to `ai.flickmeon.*` at the flag-day flip, not before. Apple Developer team is the prerequisite for Phases 7–8; everything before runs in Expo Go / simulator.
 - **iOS only for v1.** Do not add Android config beyond what Expo scaffolds by default; do not spend effort making Android work.
 
 ## Decisions & Risks (resolve before/while executing)
 
 | # | Item | Position |
 |---|------|----------|
-| D1 | **Subscription billing on iOS** | v1: no in-app purchase flow. Show plan status read-only + "Manage billing on isol8.co". Post-2025 US external-purchase-link rules allow an outbound link; keep copy neutral and revisit IAP only if App Store review forces it or conversion demands it. |
+| D1 | **Subscription billing on iOS** | v1: no in-app purchase flow. Show plan status read-only + "Manage billing on flickmeon.ai". Post-2025 US external-purchase-link rules allow an outbound link; keep copy neutral and revisit IAP only if App Store review forces it or conversion demands it. |
 | D2 | **Marketplace is buyer-only** | Browse everything, deploy free/owned listings; paid purchase deep-links to web (same posture as D1). The seller side — listing creation, publish pipeline, payout accounts — is web-only, permanently. |
 | D3 | **Admin surface + all ops tooling** | Permanently out of scope (see Scope boundary above) — never port `/admin`, admin components/hooks, marketplace moderation, or debug surfaces to mobile. |
-| D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `isol8://` or universal links; if not, defer to "manage on web" like D1. |
+| D4 | **ChatGPT OAuth / BYOK flows** | Settings shows provider state; the OAuth dance and key entry use in-app browser (`expo-web-browser`) against existing web/API flows. Verify redirect URIs work with `lightbulbai://` or universal links; if not, defer to "manage on web" like D1. |
 | D5 | **Desktop-node features** (exec approvals, browser proxy, iMessage) | Render approval cards read-only where they appear in chat; node pairing itself is desktop-only and out of scope. |
 | D6 | **Styling system** | ~~NativeWind vs StyleSheet~~ **Resolved in Phase 0:** scaffold ships plain StyleSheet + a future tokens file; NativeWind re-evaluated when Phase 2 builds the first real screens (adopting it later is additive, ripping it out isn't). |
 | R1 | **App Store review risk** | Full-parity app with real native UI clears Guideline 4.2 easily; the billing posture (D1/D2) is the main review surface. Have a demo account ready for review notes. |
@@ -64,7 +64,7 @@ see the dev-build note).
 |------|--------|----------------|
 | `packages/shared/` | **New** | Framework-neutral core: `src/api/` (client core, ApiError, URL derivation), `src/gateway/` (protocol types, connection state machine), `src/hooks/` (useAgentChat/useAgents/etc. against injected adapters), `src/types/` (OpenClaw + BFF contracts) |
 | `apps/mobile/` | **New** | Expo app: `app/` (expo-router routes), `src/components/`, `src/adapters/` (Clerk/env/uuid platform adapters), `app.json`, `eas.json` |
-| `apps/frontend/src/lib/api.ts`, `src/hooks/useGateway.tsx`, `src/hooks/useAgentChat.ts`, `src/hooks/useAgents.ts`, `src/hooks/useGatewayRpc.ts`, `src/hooks/useContainerStatus.ts`, teams data layer | Refactor | Re-export from / delegate to `@isol8/shared` with the web adapter (behavior-preserving) |
+| `apps/frontend/src/lib/api.ts`, `src/hooks/useGateway.tsx`, `src/hooks/useAgentChat.ts`, `src/hooks/useAgents.ts`, `src/hooks/useGatewayRpc.ts`, `src/hooks/useContainerStatus.ts`, teams data layer | Refactor | Re-export from / delegate to `@lightbulb/shared` with the web adapter (behavior-preserving) |
 | `pnpm-workspace.yaml`, `turbo.json`, root `package.json` | Modify | Already glob `packages/*`; add turbo tasks for mobile (`lint`, `test`, `typecheck`); no workspace-glob change needed |
 | `.npmrc` / `apps/mobile/.npmrc` | New/Modify | `node-linker=hoisted` scoped for Metro |
 | `.github/workflows/mobile-build.yml` | **New** | Path-filtered EAS build/submit workflow (mirrors `desktop-build.yml`'s standalone pattern, but on GitHub-hosted runners — EAS does the macOS part) |
@@ -78,7 +78,7 @@ see the dev-build note).
 **Exit gate:** `apps/mobile` boots in the iOS simulator showing a placeholder screen; `turbo run lint test` green across frontend + shared; frontend prod build unaffected.
 
 - [x] **Task 1: Workspace wiring.** Scaffolded `apps/mobile` with `create-expo-app` (Expo SDK 57 / RN 0.86 / React 19.2.3 — exact match with frontend's React). No `.npmrc` change needed (see R3). `pnpm install` green across all 7 workspace projects; `typecheck` task added to `turbo.json`.
-- [x] **Task 2: `packages/shared` skeleton.** `@isol8/shared` created with tsconfig (ES2022, no DOM lib), vitest harness, and the `PlatformAdapter` interface (`getToken`/`apiUrl`/`wsUrl?`/`uuid`). Smoke test passing.
+- [x] **Task 2: `packages/shared` skeleton.** `@lightbulb/shared` created with tsconfig (ES2022, no DOM lib), vitest harness, and the `PlatformAdapter` interface (`getToken`/`apiUrl`/`wsUrl?`/`uuid`). Smoke test passing.
 - [x] **Task 3: Styling + navigation baseline.** StyleSheet for now (D6). expo-router skeleton: `(auth)/sign-in` placeholder + `(app)` tab shell (Chat/Teams/Control/Settings), typed routes + React Compiler enabled. `expo lint` configured (flat config).
 - [x] **Task 4: Env config.** `src/config/env.ts` reads `EXPO_PUBLIC_API_URL`/`EXPO_PUBLIC_WS_URL` with the same WS-derivation rules as web (temporary duplicate; delegates to shared in Phase 1). Documented in `apps/mobile/README.md`.
 
@@ -86,13 +86,13 @@ see the dev-build note).
 
 ## Phase 1 — Shared extraction + auth
 
-**Exit gate:** web frontend fully on `@isol8/shared` with its existing tests passing; mobile signs in via Clerk and makes an authenticated `GET /users/me`-class call against dev.
+**Exit gate:** web frontend fully on `@lightbulb/shared` with its existing tests passing; mobile signs in via Clerk and makes an authenticated `GET /users/me`-class call against dev.
 
-- [x] **Task 1: Extract API core.** Done: `packages/shared/src/api/` (error/url/client) parameterized by `ApiClientConfig` (`getToken`/`apiUrl`/`onRequestId`); `apps/frontend/src/lib/api.ts` is now the web wrapper (env source, Clerk hook, request-id ring buffer) with its historical export surface intact. `transpilePackages: ["@isol8/shared"]` added to next.config. New shared tests cover the 401-retry-once, detail-message extraction, FormData content-type skip, and request-id reporting.
+- [x] **Task 1: Extract API core.** Done: `packages/shared/src/api/` (error/url/client) parameterized by `ApiClientConfig` (`getToken`/`apiUrl`/`onRequestId`); `apps/frontend/src/lib/api.ts` is now the web wrapper (env source, Clerk hook, request-id ring buffer) with its historical export surface intact. `transpilePackages: ["@lightbulb/shared"]` added to next.config. New shared tests cover the 401-retry-once, detail-message extraction, FormData content-type skip, and request-id reporting.
 - [x] **Task 2: Extract gateway core.** Done: `packages/shared/src/gateway/` (`types.ts` + `useGatewayConnection`) with `getToken`/`wsUrl`/`uuid` routed through refs to preserve the single-flight connect contract; web `useGateway.tsx` keeps React context + both Tauri effects (node:status via the new `setNodeConnected` escape hatch) and re-exports the protocol types.
 - [x] **Task 3: Extract data hooks (scoped).** Done: `useGatewayRpc`/`useGatewayRpcMutation` moved to shared, parameterized on the gateway connection value (web wrapper binds `useGateway()`, preserving the no-arg signature); `Agent`/`AgentModelRef`/`AgentsListResponse` types + `getAgentModelString`/`agentDisplayName` helpers moved to shared and re-exported from `useAgents`. **Deliberately NOT extracted:** `useAgentChat` (2,020 lines, deeply coupled to the web chat-history/timeline model — mobile builds a lean chat on gateway primitives until parity demands it), `useAgents`'s mutation hook (PostHog `capture` coupling), `useProvisioningState` + teams data hooks (deferred to their consuming phases 3/5).
 - [x] **Task 4: Mobile auth.** Done: `@clerk/clerk-expo` + keychain token cache (`expo-secure-store`), headless email+password sign-in (other first factors deferred to web with an explicit message), `(auth)`/`(app)` navigation guards, sign-out in Settings, mobile adapter (`expo-crypto` randomUUID). Chat tab proves the plumbing with the real `GET /container/status` 200-vs-202 call through the shared client. **Clerk dashboard check still pending:** confirm the dev instance allows native-app requests; sign-in against dev is untested until a human runs Expo Go.
-- [ ] **Task 5: Cookie posture for Teams BFF.** Verify RN `fetch` cookie behavior for the `.isol8.co` Paperclip HttpOnly cookie + retry-on-401 reseed flow against dev; if RN cookie jar handling breaks it, record the fallback (e.g. explicit cookie header plumbing) before Phase 5.
+- [ ] **Task 5: Cookie posture for Teams BFF.** Verify RN `fetch` cookie behavior for the root-domain (`.isol8.co` → `.flickmeon.ai`) Paperclip HttpOnly cookie + retry-on-401 reseed flow against dev; if RN cookie jar handling breaks it, record the fallback (e.g. explicit cookie header plumbing) before Phase 5.
 
 **Phase 1 verification record (2026-07-06, Linux CI container):** shared vitest 22/22 + tsc + eslint clean (incl. a `no-restricted-globals` ban on DOM-only APIs); frontend `api.test.ts` 13/13, `useGateway.connectRace` 2/2, `useAgentChat` queue/demux/reconnect/cancel/busyGate + `useBilling` + `useProvisioningState` 48/48, full frontend `tsc --noEmit` clean, lint 0 errors; mobile tsc + `expo lint` clean, `expo export --platform ios` bundles 1238 modules with Clerk + shared included. Pending human: Expo Go sign-in against dev.
 
@@ -156,17 +156,17 @@ see the dev-build note).
 - **Audience = the canonical dispatch `user_id` carried on the `_active_runs` entry, NOT the echoed session-key member id.** Upstream OpenClaw lowercases session keys, but the `users` PK is the mixed-case Clerk id; a case-sensitive lookup on a lowercased id would silently miss. So `mark_run_active` stashes the canonical member id (the JWT sub) on the run entry, and `_dispatch_push_notification` reads it back at `run_ended`. This forced folding `_active_runs` keys to `.lower()` consistently on both store and read — which also repaired a latent key-mismatch bug (run-entry leak for mixed-case users + the `chat.e2e.latency` SLO metric never emitting for them). A teardown guard holds the container connection open while a run is active so a phone-only send-then-close still delivers.
 
 - [x] **Task 1: Backend push endpoint (the one server change).** Done: device-token registration (`POST` / `DELETE /api/v1/devices`, dedicated `routers/devices.py`, DDB `users`-row map) + a fire-and-forget push dispatch on the once-per-run `run_ended` terminal in `connection_pool.py` (member-scoped, agent-name title, ~120-char reply preview) via `core/services/push_service.py` → Expo Push API (anonymous sends; no backend secret) plus the active-run teardown guard.
-- [x] **Task 2: Client side** — Done: permission prompt + Expo-token registration (`<PushRegistration/>` mounted inside the signed-in `GatewayProvider` subtree), `isol8://agent/<id>` deep-link parse + notification-tap routing, and a foreground-suppression handler. `jest-expo` + `@testing-library/react-native` runner added (T7) and wired into `mobile-ci.yml`. **Deferred:** active-session suppression ships with `getCurrentAgentId → null` (shows all banners; pure decision is in place, threading the active agent id is a small follow-up); badge counts are v2. On-device exit gate is manual and **not yet run** (needs a device-installable EAS build) — checklist in `apps/mobile/README.md`.
+- [x] **Task 2: Client side** — Done: permission prompt + Expo-token registration (`<PushRegistration/>` mounted inside the signed-in `GatewayProvider` subtree), `lightbulbai://agent/<id>` deep-link parse + notification-tap routing, and a foreground-suppression handler. `jest-expo` + `@testing-library/react-native` runner added (T7) and wired into `mobile-ci.yml`. **Deferred:** active-session suppression ships with `getCurrentAgentId → null` (shows all banners; pure decision is in place, threading the active agent id is a small follow-up); badge counts are v2. On-device exit gate is manual and **not yet run** (needs a device-installable EAS build) — checklist in `apps/mobile/README.md`.
 - [ ] **Task 3: Polish pass** — icons, splash, haptics, keyboard avoidance audit, accessibility (VoiceOver on chat timeline), performance profile of the message list.
 
 ## Phase 8 — CI/CD, TestFlight, App Store
 
 **Exit gate:** merged-to-main mobile changes produce an EAS build; tagged releases auto-submit to TestFlight; App Store submission checklist complete.
 
-- [ ] **Task 1: EAS project setup.** `eas.json` with `development` / `preview` (dev API, internal distribution) / `production` profiles; EAS-managed Apple signing under the Isol8 Apple Developer team; `EXPO_TOKEN` + Apple credentials in GH secrets (never in repo).
+- [ ] **Task 1: EAS project setup.** `eas.json` with `development` / `preview` (dev API, internal distribution) / `production` profiles; EAS-managed Apple signing under the Lightbulb AI Apple Developer team; `EXPO_TOKEN` + Apple credentials in GH secrets (never in repo).
 - [ ] **Task 2: `mobile-build.yml`.** Path-filtered on `apps/mobile/**` + `packages/shared/**`. PR: lint/typecheck/vitest only (no build). Main: `eas build --profile preview --non-interactive`. Tag `mobile-v*`: production build + `eas submit` to TestFlight. Runs on `ubuntu-latest` — EAS's hosted macOS fleet does the native build, so **no self-hosted mac runner needed** (unlike `desktop-build.yml`).
 - [ ] **Task 3: OTA updates.** Wire `eas update` for JS-only hotfixes on the production channel; document the "native change ⇒ store build, JS change ⇒ OTA" rule in `apps/mobile/README.md`.
-- [ ] **Task 4: Store submission.** App Store Connect listing (screenshots, privacy nutrition labels — Clerk/PostHog data flows disclosed), demo account for review (NOT the reserved `isol8-e2e-testing@mailsac.com` account), review notes covering the D1 billing posture.
+- [ ] **Task 4: Store submission.** App Store Connect listing (screenshots, privacy nutrition labels — Clerk/PostHog data flows disclosed), demo account for review (NOT the reserved `isol8-e2e-testing@mailsac.com` account (the mailsac prefix is not renamed)), review notes covering the D1 billing posture.
 
 ---
 

@@ -1,8 +1,8 @@
-# Isol8 — Content & SEO-Led Growth Plan
+# Lightbulb AI — Content & SEO-Led Growth Plan
 
 _Date: 2026-07-10 · Owner: Prez · Status: draft for discussion_
 
-Framing: Isol8 is **already launched** (live product, $50/mo, 14-day trial, marketplace,
+Framing: Lightbulb AI is **already launched** (live product, $50/mo, 14-day trial, marketplace,
 Tauri desktop app, Friday/Atlas seed agents). This is a **post-launch, organic-led growth
 plan** weighted toward content/SEO — the channel the founder asked about — with the honest
 caveat that SEO is the slow-compounding lever, not the this-quarter trial lever.
@@ -18,7 +18,7 @@ caveat that SEO is the slow-compounding lever, not the this-quarter trial lever.
   "team," not "AI CEO/company" — content should match that language.)
 - **Audience exists but is niche.** Realistic near-term ICP: technical founders / indie
   hackers / solopreneurs who already believe in agents, plus the **OpenClaw community** (warm —
-  Isol8 is literally built on their fork). This is thousands, not millions — fine at this stage.
+  Lightbulb AI is literally built on their fork). This is thousands, not millions — fine at this stage.
 - **The activation bottleneck is now being actively fixed (updated 2026-07-15).** Two big things
   shipped since this plan was drafted:
   - **No-card free tier is LIVE** (#1201/#1231, flag removed #1240) — signup auto-provisions a
@@ -35,10 +35,10 @@ caveat that SEO is the slow-compounding lever, not the this-quarter trial lever.
 
 ## 1. The SEO structural decision (settle this first)
 
-**Use `isol8.co/blog` (subfolder), NOT `blog.isol8.co` (subdomain).**
+**Use `flickmeon.ai/blog` (subfolder), NOT `blog.flickmeon.ai` (subdomain).**
 
 - Subfolder consolidates all link equity on one young domain; a subdomain silos it.
-- Isol8 is Next.js on Vercel → `/blog` is a trivial App Router route with free SSG/SSR.
+- Lightbulb AI is Next.js on Vercel → `/blog` is a trivial App Router route with free SSG/SSR.
 - No technical reason to reach for a subdomain (that's only for un-mergeable hosted CMSs).
 - Ship with: per-post `<title>`/meta, OpenGraph, `Article` JSON-LD, `sitemap.xml`, fast LCP.
 
@@ -50,8 +50,8 @@ caveat that SEO is the slow-compounding lever, not the this-quarter trial lever.
 |---|---------|-----|-----------------|------------------------|
 | 1 | **OpenClaw community** (Discord/GitHub/subreddit) | ~$0 | Days | Post a genuine "here's what we built on top of OpenClaw" show-and-tell; be a contributor, not a billboard |
 | 2 | **Reddit** (r/AI_Agents, r/LocalLLaMA, r/SideProject, r/selfhosted) | ~$0 | Days–weeks | One high-effort build-log post in r/AI_Agents (not a launch ad) |
-| 3 | **Content/SEO blog** (`isol8.co/blog`) | ~$0 marginal | 3–9 months | Publish the 2 highest-intent posts below; wire sitemap + schema |
-| 4 | **Hacker News (Show HN)** | ~$0 | One-shot spike | Prep a "Show HN: Isol8 — give an AI agent its own persistent workspace + Slack" |
+| 3 | **Content/SEO blog** (`flickmeon.ai/blog`) | ~$0 marginal | 3–9 months | Publish the 2 highest-intent posts below; wire sitemap + schema |
+| 4 | **Hacker News (Show HN)** | ~$0 | One-shot spike | Prep a "Show HN: Lightbulb AI — give an AI agent its own persistent workspace + Slack" |
 | 5 | **X/Twitter build-in-public** | ~$0 | Weeks–months | Start a weekly thread cadence: agent demos + trial metrics |
 
 Deliberately **not** prioritizing Product Hunt (one-time spike, you've likely spent that card
@@ -63,7 +63,7 @@ skip until activation is solid).
 ## 3. Content strategy — posts that target real search intent
 
 Lead with **long-tail, problem-specific** queries you can actually rank for. Avoid head terms
-("AI agent platform") — bloodbath. Each post below = search intent + a natural Isol8 payoff.
+("AI agent platform") — bloodbath. Each post below = search intent + a natural Lightbulb AI payoff.
 
 1. **"How to give an AI agent its own persistent workspace (that survives restarts)"**
    — maps to the per-user container/EFS differentiator. Distribute: r/AI_Agents, r/LocalLLaMA,
@@ -72,9 +72,9 @@ Lead with **long-tail, problem-specific** queries you can actually rank for. Avo
    — high intent, tutorial-shaped, directly demos the channels feature. Distribute:
    r/selfhosted, r/automation, dev.to cross-post.
 3. **"Self-hosted vs managed AI agents: when to run your own OpenClaw"**
-   — captures OpenClaw-curious searchers, positions Isol8 as the managed path. Distribute:
+   — captures OpenClaw-curious searchers, positions Lightbulb AI as the managed path. Distribute:
    OpenClaw Discord, r/LocalLLaMA, HN.
-4. **"Isol8 vs [competitor: Lindy / Relevance AI / CrewAI]"** comparison page
+4. **"Lightbulb AI vs [competitor: Lindy / Relevance AI / CrewAI]"** comparison page
    — bottom-funnel, buyers comparing. One per competitor over time. Distribute: organic search
    + answer relevant Reddit/HN threads (disclosed).
 5. **"I gave an AI 'CEO' a team of agents for 14 days — here's what happened"**
@@ -103,7 +103,7 @@ snippets for the landing page. Write once, distribute five ways.
 ## 5. Communities to engage (be a member, not a spammer)
 
 - **OpenClaw Discord + GitHub Discussions** — warmest possible audience; contribute fixes/plugins
-  (you already upstream patches), mention Isol8 contextually.
+  (you already upstream patches), mention Lightbulb AI contextually.
 - **r/AI_Agents** — the single best subreddit for this ICP; build-logs and honest teardowns win.
 - **Indie Hackers** — post revenue/activation milestones; the build-in-public crowd converts.
 
@@ -111,7 +111,7 @@ Partnerships / integrations worth chasing:
 - **OpenClaw itself** — a "powered by / hosted OpenClaw" nod or listing; symbiotic.
 - **A marketplace-agent creator** — co-market a killer published agent as a distribution wedge.
 
-**Creative growth hack (Isol8-specific):** let Friday/Atlas write the build-in-public content.
+**Creative growth hack (Lightbulb AI-specific):** let Friday/Atlas write the build-in-public content.
 "My AI CEO wrote this week's changelog" — the product dogfoods its own marketing, which is both
 proof and content. Nobody else can copy it because nobody else ships a Friday.
 
@@ -145,7 +145,7 @@ Activation is the metric that gates everything — it's first for a reason.
 
 ## Immediate next actions (this week)
 
-1. **Decide:** `isol8.co/blog` subfolder — I can scaffold the Next.js route + SEO plumbing.
+1. **Decide:** `flickmeon.ai/blog` subfolder — I can scaffold the Next.js route + SEO plumbing.
 2. **Write** posts #1 and #2 (highest intent, fastest to draft).
 3. **Record** the 60–90s "watch it work" demo.
 4. **Post** one honest build-log in r/AI_Agents + the OpenClaw Discord.

@@ -15,7 +15,7 @@
 - **v1 fires only on `state == "final"`** (a completed reply). Error/aborted terminals do not push in v1.
 - **No APNs credentials in our infra** — Expo/EAS manages the APNs key. The only backend secret is `EXPO_ACCESS_TOKEN` (Expo access token), read from the env var of the same name.
 - **Expo project id** (for `getExpoPushTokenAsync`): `2def259d-5e79-462b-9b0f-3d01d666ba66` (from `app.json` `extra.eas.projectId`; read at runtime via `expo-constants`).
-- **iOS ids:** bundle `co.isol8.mobile`, Apple team `WZX4U3C22Y`.
+- **iOS ids:** bundle `co.isol8.mobile` (→ `ai.flickmeon.mobile` at the flag-day flip), Apple team `WZX4U3C22Y`.
 - **Mobile authenticated REST pattern (mandatory):** pin Clerk's `getToken` behind a ref, build the client once — `const getTokenRef = useRef(getToken); getTokenRef.current = getToken; const config = useMemo(() => makeAdapter(() => getTokenRef.current()), []); const api = useMemo(() => createApiClient(config), [config]);` A `[getToken]` dep is an infinite-loop trap.
 - **Secret naming:** the Expo secret is `isol8/${env}/expo_access_token`; the existing `isol8/${env}/*` IAM grants cover read+decrypt, so **no new IAM**.
 - **Do not run full `pnpm test`** across the monorepo (RAM-heavy). Run per-package filtered test commands only.
@@ -41,7 +41,7 @@
 **Mobile**
 - `apps/mobile/babel.config.js`, `apps/mobile/jest.config.js`, `apps/mobile/jest-setup.ts` — CREATE (Task 7).
 - `apps/mobile/package.json`, `apps/mobile/app.json` — MODIFY: test runner + expo-notifications deps/config.
-- `apps/mobile/src/lib/deepLink.ts` (+ `.test.ts`) — CREATE: parse `isol8://agent/<id>`.
+- `apps/mobile/src/lib/deepLink.ts` (+ `.test.ts`) — CREATE: parse `lightbulbai://agent/<id>`.
 - `apps/mobile/src/lib/notifications.ts` (+ `.test.ts`) — CREATE: foreground-suppression decision + handler config.
 - `apps/mobile/src/components/push/PushRegistration.tsx` — CREATE: permission + token registration + tap routing.
 - `apps/mobile/src/app/(app)/_layout.tsx` — MODIFY: mount `<PushRegistration/>`.
@@ -946,7 +946,7 @@ git commit -m "feat(infra): EXPO_ACCESS_TOKEN secret for the Expo Push API"
 - Create: `apps/mobile/src/lib/__tests__/smoke.test.ts`
 - Modify: `.github/workflows/mobile-ci.yml`
 
-**Interfaces:** Produces a working `pnpm --filter @isol8/mobile run test` (jest-expo). Later mobile tasks add tests against it.
+**Interfaces:** Produces a working `pnpm --filter @lightbulb/mobile run test` (jest-expo). Later mobile tasks add tests against it.
 
 - [ ] **Step 1: Install the SDK-matched dev deps**
 
@@ -1019,14 +1019,14 @@ describe("jest-expo harness", () => {
 
 - [ ] **Step 7: Run it**
 
-Run: `pnpm --filter @isol8/mobile run test`
+Run: `pnpm --filter @lightbulb/mobile run test`
 Expected: PASS (1 test). If jest-expo fights the SDK-57/React-19 stack (transform/renderer errors), resolve versions with `npx expo install --dev --check`; if component rendering (not pure logic) is the blocker, keep this pure-logic harness green and note component tests as manual for now.
 
 - [ ] **Step 8: Wire CI** — in `.github/workflows/mobile-ci.yml`, in the `check-and-bundle` job, add after the `Mobile lint` step (before `Mobile iOS bundle`):
 
 ```yaml
       - name: Mobile tests
-        run: pnpm --filter @isol8/mobile run test
+        run: pnpm --filter @lightbulb/mobile run test
 ```
 
 - [ ] **Step 9: Commit**
@@ -1069,7 +1069,7 @@ Add the APNs entitlement inside `ios` (alongside `infoPlist`):
 
 - [ ] **Step 3: Verify the Metro bundle still resolves**
 
-Run: `pnpm --filter @isol8/mobile run export:ios 2>&1 | tail -5`
+Run: `pnpm --filter @lightbulb/mobile run export:ios 2>&1 | tail -5`
 Expected: export succeeds (expo-notifications resolves).
 
 - [ ] **Step 4: Commit**
@@ -1096,24 +1096,24 @@ import { parseAgentDeepLink } from "./deepLink";
 
 describe("parseAgentDeepLink", () => {
   it("parses an agent deep link", () => {
-    expect(parseAgentDeepLink("isol8://agent/agent_123")).toEqual({ agentId: "agent_123" });
+    expect(parseAgentDeepLink("lightbulbai://agent/agent_123")).toEqual({ agentId: "agent_123" });
   });
   it("parses with a query string", () => {
-    expect(parseAgentDeepLink("isol8://agent/agent_123?session=s1")).toEqual({ agentId: "agent_123" });
+    expect(parseAgentDeepLink("lightbulbai://agent/agent_123?session=s1")).toEqual({ agentId: "agent_123" });
   });
   it("returns null for the oauth callback", () => {
-    expect(parseAgentDeepLink("isol8://oauth-native-callback")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://oauth-native-callback")).toBeNull();
   });
   it("returns null for junk", () => {
     expect(parseAgentDeepLink("https://example.com")).toBeNull();
-    expect(parseAgentDeepLink("isol8://agent/")).toBeNull();
+    expect(parseAgentDeepLink("lightbulbai://agent/")).toBeNull();
   });
 });
 ```
 
 - [ ] **Step 2: Run it (fails)**
 
-Run: `pnpm --filter @isol8/mobile run test -- deepLink`
+Run: `pnpm --filter @lightbulb/mobile run test -- deepLink`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement**
@@ -1121,11 +1121,11 @@ Expected: FAIL — module not found.
 ```typescript
 // apps/mobile/src/lib/deepLink.ts
 /**
- * Parse an `isol8://agent/<agentId>` deep link (optionally with a query string).
+ * Parse an `lightbulbai://agent/<agentId>` deep link (optionally with a query string).
  * Returns null for any other scheme/host (e.g. the oauth-native-callback link).
  */
 export function parseAgentDeepLink(url: string): { agentId: string } | null {
-  const match = /^isol8:\/\/agent\/([^/?#]+)/.exec(url);
+  const match = /^lightbulbai:\/\/agent\/([^/?#]+)/.exec(url);
   if (!match) return null;
   const agentId = decodeURIComponent(match[1]);
   return agentId ? { agentId } : null;
@@ -1134,14 +1134,14 @@ export function parseAgentDeepLink(url: string): { agentId: string } | null {
 
 - [ ] **Step 4: Run it (passes)**
 
-Run: `pnpm --filter @isol8/mobile run test -- deepLink`
+Run: `pnpm --filter @lightbulb/mobile run test -- deepLink`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/mobile/src/lib/deepLink.ts apps/mobile/src/lib/deepLink.test.ts
-git commit -m "feat(mobile): isol8://agent deep-link parser"
+git commit -m "feat(mobile): lightbulbai://agent deep-link parser"
 ```
 
 ---
@@ -1177,7 +1177,7 @@ describe("shouldSuppressBanner", () => {
 
 - [ ] **Step 2: Run it (fails)**
 
-Run: `pnpm --filter @isol8/mobile run test -- notifications`
+Run: `pnpm --filter @lightbulb/mobile run test -- notifications`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement**
@@ -1220,7 +1220,7 @@ export function configureNotificationHandler(getCurrentAgentId: () => string | n
 
 - [ ] **Step 4: Run it (passes)**
 
-Run: `pnpm --filter @isol8/mobile run test -- notifications`
+Run: `pnpm --filter @lightbulb/mobile run test -- notifications`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
@@ -1248,7 +1248,7 @@ git commit -m "feat(mobile): notification handler with foreground suppression"
 import { render, waitFor } from "@testing-library/react-native";
 
 const post = jest.fn(async () => ({}));
-jest.mock("@isol8/shared", () => ({
+jest.mock("@lightbulb/shared", () => ({
   createApiClient: () => ({ post }),
 }));
 jest.mock("../../lib/adapter", () => ({ makeAdapter: () => ({}) }));
@@ -1275,7 +1275,7 @@ it("requests a token and POSTs it once", async () => {
 
 - [ ] **Step 2: Run it (fails)**
 
-Run: `pnpm --filter @isol8/mobile run test -- PushRegistration`
+Run: `pnpm --filter @lightbulb/mobile run test -- PushRegistration`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the component**
@@ -1283,7 +1283,7 @@ Expected: FAIL — module not found.
 ```tsx
 // apps/mobile/src/components/push/PushRegistration.tsx
 import { useAuth } from "@clerk/clerk-expo";
-import { createApiClient } from "@isol8/shared";
+import { createApiClient } from "@lightbulb/shared";
 import Constants from "expo-constants";
 import { randomUUID } from "expo-crypto";
 import * as Notifications from "expo-notifications";
@@ -1296,7 +1296,7 @@ import { parseAgentDeepLink } from "../../lib/deepLink";
 import { configureNotificationHandler } from "../../lib/notifications";
 import { makeAdapter } from "../../lib/adapter";
 
-const DEVICE_ID_KEY = "isol8.push.deviceId";
+const DEVICE_ID_KEY = "isol8.push.deviceId"; // storage keys ride the bundle-id change, not this rebrand PR
 const LAST_TOKEN_KEY = "isol8.push.lastToken";
 
 async function getDeviceId(): Promise<string> {
@@ -1394,12 +1394,12 @@ import { PushRegistration } from "../../components/push/PushRegistration";
 
 - [ ] **Step 5: Run the component test**
 
-Run: `pnpm --filter @isol8/mobile run test -- PushRegistration`
+Run: `pnpm --filter @lightbulb/mobile run test -- PushRegistration`
 Expected: PASS. If RNTL rendering fights the stack, keep the pure-logic tests (Tasks 9/10) green and verify this component on-device instead (note it in the PR).
 
 - [ ] **Step 6: Typecheck + bundle**
 
-Run: `pnpm --filter @isol8/mobile run typecheck && pnpm --filter @isol8/mobile run export:ios 2>&1 | tail -3`
+Run: `pnpm --filter @lightbulb/mobile run typecheck && pnpm --filter @lightbulb/mobile run export:ios 2>&1 | tail -3`
 Expected: both succeed.
 
 - [ ] **Step 7: Commit**
@@ -1416,7 +1416,7 @@ git commit -m "feat(mobile): PushRegistration — permission, token registration
 **Files:**
 - Modify: `apps/mobile/README.md`, `docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md`
 
-- [ ] **Step 1: Update the mobile README** — add a "Push notifications" section: the new native-build requirement (expo-notifications + entitlement = a store/TestFlight build, not OTA), the `jest-expo` test runner (`pnpm --filter @isol8/mobile test`), and that the Expo access token secret is set out-of-band in Secrets Manager.
+- [ ] **Step 1: Update the mobile README** — add a "Push notifications" section: the new native-build requirement (expo-notifications + entitlement = a store/TestFlight build, not OTA), the `jest-expo` test runner (`pnpm --filter @lightbulb/mobile test`), and that the Expo access token secret is set out-of-band in Secrets Manager.
 
 - [ ] **Step 2: Reconcile the Phase 7 plan** — in `docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md`, mark Phase 7 Task 1/2 as specced/implemented here; record the Expo-Push-API (not bare APNs) decision and the `users`-row token store.
 

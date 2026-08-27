@@ -15,7 +15,7 @@ doc replaces that direction with a stronger one, proven by Polsia ($1M ARR ~1 mo
 after launch, same core proposition as us):
 
 > **The aha moment is not a demo the user watches. It is an autonomous first-run the
-> user receives.** Between signup and first chat, Isol8 turns one line of input into a
+> user receives.** Between signup and first chat, Lightbulb AI turns one line of input into a
 > researched, operating company: the user watches Friday come online and do real work
 > on *their* business — research, a mission document, a populated task board — before
 > they have paid anything or connected anything.
@@ -320,8 +320,8 @@ railway (existing integration vs platform-provisioned build), then phase it.
 - *Railways weighed:* we already have **gog** (per-agent Google OAuth) — but gog is
   the **act-as-me** rail: it sends from the *user's* Gmail identity and requires an
   OAuth connect, exactly the "sounds sketchy" step Polsia's founder stripped from
-  onboarding. The company-identity rail must be **provisioned**: SES on an Isol8
-  subdomain (`friday@{slug}.mail.isol8.co` shape), outbound with DKIM, inbound routed
+  onboarding. The company-identity rail must be **provisioned**: SES on an Lightbulb AI
+  subdomain (`friday@{slug}.thelightbulb.company` shape — agent mail lives on the mail domain, never on `flickmeon.ai`), outbound with DKIM, inbound routed
   to Paperclip (email → issue/comment or Friday wake). Both rails coexist — they do
   different jobs (company-acts-as-itself vs agent-acts-as-me); onboarding and the
   daily digest use the provisioned one. **Decision: provision, don't integrate.**
@@ -333,7 +333,7 @@ railway (existing integration vs platform-provisioned build), then phase it.
 - *Railways weighed:* the **Vercel CLI integration (shipped)** is the power rail —
   but it needs the user's Vercel account: an integration step, wrong for onboarding.
   Platform rail: static publish to S3/CloudFront under a wildcard subdomain
-  (`{slug}.sites.isol8.co`) — DNS, CloudFront, and certs are rails we already
+  (`{slug}.sites.flickmeon.ai`) — DNS, CloudFront, and certs are rails we already
   operate in CDK; the new piece is a publish path from Friday's workspace and a
   safety/abuse review (user-authored HTML on our domain). **Decision: platform
   static hosting for the default; Vercel integration remains the power path.**

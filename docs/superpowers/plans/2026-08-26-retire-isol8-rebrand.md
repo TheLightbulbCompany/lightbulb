@@ -669,3 +669,39 @@ only remaining prerequisite.
 
 **Not doing this now, deliberately.** It depends on a mailbox I cannot create or verify from
 here. It is listed so it is not mistaken for finished when the product domain is done.
+
+
+---
+
+## Appendix J — two brand strings live in Clerk's dashboard, not in this repo (2026-08-27)
+
+Verified in-browser on dev (`dev.flickmeon.ai/chat`, signed out). The domain flip is clean —
+**zero console errors, zero network requests to `isol8.co`**, everything served from
+`dev.flickmeon.ai`, Clerk on `up-moth-55.clerk.accounts.dev` as expected for a dev instance.
+
+But the sign-in card still reads:
+
+```
+Welcome back
+Sign in to your isol8 account to continue.
+        Continue to Isol8
+```
+
+That string is Clerk's **application name**, which is dashboard configuration. It is not in the
+repo, so **PR #2069 (brand text) cannot reach it** — nor can any code change. Same for the
+application logo.
+
+There are **two separate instances**, each with its own application record, so this is two
+dashboard edits, not one:
+
+| instance | id |
+|---|---|
+| dev | `ins_37u3y1fdBOCCKPTRsyOcl9eGQLi` |
+| prod | `ins_38duYVCNiumxSyegmw2BVyBnEjm` |
+
+**Owner action, and independent of the Clerk domain change** — the application name can be
+renamed to "Lightbulb AI" at any time, today, without touching the domain, the publishable key,
+or anyone's session. Worth doing early: it is the single most visible remaining "Isol8" string,
+shown to every user on every sign-in.
+
+The logo should wait for Aden's brand manual; the name should not.

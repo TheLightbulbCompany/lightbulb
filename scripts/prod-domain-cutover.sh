@@ -10,6 +10,26 @@
 # all stay valid. Do NOT "add a new endpoint" instead — routers/billing.py verifies
 # against a SINGLE STRIPE_WEBHOOK_SECRET and every event would 400.
 #
+# ⛔ BEFORE THE FLIP: installed DESKTOP apps lose their update channel.
+#
+# desktop-build.yml sets `.plugins.updater.endpoints = [$updateUrl]` -- a
+# SINGLE-element array -- to https://isol8.co/api/desktop/update/... . The flip
+# moves the Vercel prod alias to flickmeon.ai and the synthesized prod templates
+# no longer contain an `api.isol8.co` custom domain, so CFN deletes it. An app
+# already installed then has no reachable updater, and therefore can never
+# receive the build that would point it at the new domain. Manual reinstall only.
+#
+# MOBILE is fine: app.json sets updates.url = https://u.expo.dev/<project>, which
+# is Expo's CDN and not our domain, so an OTA reaches installed apps regardless.
+#
+# Pick one before flipping:
+#   a) ship a desktop build whose updater endpoint is flickmeon.ai, let installed
+#      apps take it, and only then flip; or
+#   b) keep isol8.co serving /api/desktop/update/* through the transition (this
+#      is a dual-domain window, which the brief explicitly rules out); or
+#   c) accept it and tell desktop users to reinstall -- fine only if the installed
+#      count is genuinely ~0.
+#
 # Usage:  ./prod-domain-cutover.sh --check      (read-only; safe any time)
 #         ./prod-domain-cutover.sh --apply      (mutates Stripe)
 set -euo pipefail

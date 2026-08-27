@@ -1926,7 +1926,6 @@ jobs:
       - Assets-FileAsset2
       - Assets-FileAsset10
       - prod-isol8-prod-auth-Deploy
-      - prod-isol8-prod-dns-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy

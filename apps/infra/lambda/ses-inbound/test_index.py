@@ -667,6 +667,27 @@ def test_dev_routing_is_inert_when_unconfigured(monkeypatch):
     assert arn == SECRET_ARN
 
 
+def test_routes_every_configured_dev_suffix(monkeypatch):
+    """A mail-domain move leaves TWO live dev suffixes at once.
+
+    Addresses already minted into DynamoDB stay on the old domain, so both the
+    new and the legacy dev suffix must reach the DEV backend — a single-value
+    DEV_MAIL_SUFFIX would hand every legacy dev address to PROD.
+    """
+    import index
+
+    monkeypatch.setenv("DEV_MAIL_SUFFIX", "dev.thelightbulb.company,dev.isol8.co")
+    monkeypatch.setenv("DEV_BACKEND_INGEST_URL", "https://api-dev.example/ingest")
+    monkeypatch.setenv("DEV_SES_INBOUND_SECRET_ARN", "arn:dev-secret")
+
+    for addr in ("friday@acme.dev.thelightbulb.company", "friday@acme.dev.isol8.co"):
+        assert index._route_for([addr])[0] == "https://api-dev.example/ingest", addr
+
+    # A prod address under either domain still goes to prod.
+    for addr in ("friday@acme.thelightbulb.company", "friday@acme.isol8.co"):
+        assert index._route_for([addr])[0] == BACKEND_INGEST_URL, addr
+
+
 def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
     """`notdev.isol8.co` must not match a `dev.isol8.co` suffix."""
     import index

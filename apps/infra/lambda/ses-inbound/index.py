@@ -339,6 +339,12 @@ def _route_for(recipients):
     ``endswith`` of the suffix itself: ``acme.notdev.isol8.co`` must not be
     mistaken for a dev address.
 
+    ``DEV_MAIL_SUFFIX`` is a COMMA-SEPARATED list, because a mail-domain move
+    leaves two live dev suffixes at once (``dev.thelightbulb.company`` and the
+    ``dev.isol8.co`` addresses already minted into DynamoDB). A single value
+    would hand every legacy dev address to the PROD backend, which has never
+    heard of it. One value is still just a list of one.
+
     INERT until dev is configured: with no ``DEV_*`` environment, every
     message routes to prod exactly as before.
 
@@ -349,15 +355,19 @@ def _route_for(recipients):
     beats splitting one message across two backends.
     """
     prod = (os.environ["BACKEND_INGEST_URL"], os.environ["SES_INBOUND_SECRET_ARN"])
-    dev_suffix = (os.environ.get("DEV_MAIL_SUFFIX") or "").strip().lower()
+    dev_suffixes = [
+        s.strip().lower()
+        for s in (os.environ.get("DEV_MAIL_SUFFIX") or "").split(",")
+        if s.strip()
+    ]
     dev_url = (os.environ.get("DEV_BACKEND_INGEST_URL") or "").strip()
     dev_arn = (os.environ.get("DEV_SES_INBOUND_SECRET_ARN") or "").strip()
-    if not (dev_suffix and dev_url and dev_arn):
+    if not (dev_suffixes and dev_url and dev_arn):
         return prod
 
     for addr in recipients or []:
         domain = str(addr).rsplit("@", 1)[-1].strip().lower()
-        if domain == dev_suffix or domain.endswith("." + dev_suffix):
+        if any(domain == s or domain.endswith("." + s) for s in dev_suffixes):
             return (dev_url, dev_arn)
         break  # first recipient decides — see docstring
     return prod

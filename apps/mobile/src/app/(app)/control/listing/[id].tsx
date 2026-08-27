@@ -258,7 +258,7 @@ export default function ListingDetailScreen() {
           // Plain text on purpose — no button, no link, nothing that starts a
           // purchase from inside the app.
           <Text style={styles.webOnlyNote}>
-            Paid agents are hired from the web app at isol8.co.
+            Paid agents are hired from the web app at flickmeon.ai.
           </Text>
         )}
       </ScrollView>

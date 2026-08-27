@@ -450,7 +450,7 @@ export function WorkspaceDemo() {
             aria-label="Live agent activity"
           >
             <div>naming the company → northwindceramics</div>
-            <div>minting friday@northwindceramics.isol8.co …</div>
+            <div>minting friday@northwindceramics.flickmeon.ai …</div>
           </div>
         </div>
       </section>

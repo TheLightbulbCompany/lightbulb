@@ -202,7 +202,7 @@ export default function ChannelsPanel() {
         <Text style={styles.emptyGlyph}>8</Text>
         <Text style={styles.dim}>No channels configured.</Text>
         <Text style={styles.dimSmall}>
-          Set up Telegram, Discord, or Slack on isol8.co.
+          Set up Telegram, Discord, or Slack on flickmeon.ai.
         </Text>
       </View>
     );

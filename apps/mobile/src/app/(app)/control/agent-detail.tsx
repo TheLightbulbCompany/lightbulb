@@ -524,7 +524,7 @@ export default function AgentDetail() {
         </View>
       )}
       <Text style={styles.footnote}>
-        Tool and channel editing lives in the web control panel on isol8.co.
+        Tool and channel editing lives in the web control panel on flickmeon.ai.
       </Text>
 
       {/* Danger zone */}

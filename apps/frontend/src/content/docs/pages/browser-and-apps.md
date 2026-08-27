@@ -28,7 +28,7 @@ Two honest limits: sites that block automation may still challenge the browser, 
 
 ## Agent email
 
-Each agent can have its own address, `<agent>@<company>.isol8.co`, minted on first use from the company name — so name the company first. Mail from you or an allow-listed sender wakes the agent; anything else (verification codes, newsletters) waits in its inbox for 30 days. Agents can always email you. Emailing anyone else is off until you enable it in **Control Panel → Agents → Email**, and outbound pauses for the whole account if a recipient reports spam.
+Each agent can have its own address, `<agent>@<company>.flickmeon.ai`, minted on first use from the company name — so name the company first. Mail from you or an allow-listed sender wakes the agent; anything else (verification codes, newsletters) waits in its inbox for 30 days. Agents can always email you. Emailing anyone else is off until you enable it in **Control Panel → Agents → Email**, and outbound pauses for the whole account if a recipient reports spam.
 
 ## Files and the company brain
 

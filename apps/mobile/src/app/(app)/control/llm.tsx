@@ -369,9 +369,9 @@ export default function LlmPanel() {
         <Text style={styles.overline}>PROVIDER</Text>
         <Text style={styles.bodyText}>No provider selected yet</Text>
         <Text style={styles.captionText}>
-          Finish setup on isol8.co to pick a model provider.
+          Finish setup on flickmeon.ai to pick a model provider.
         </Text>
-        <ManageLink label="Set up on isol8.co" />
+        <ManageLink label="Set up on flickmeon.ai" />
       </Card>
     );
   } else {
@@ -400,7 +400,7 @@ export default function LlmPanel() {
         {provider.detail != null && (
           <Text style={styles.captionText}>{provider.detail}</Text>
         )}
-        <ManageLink label="Manage provider on isol8.co" />
+        <ManageLink label="Manage provider on flickmeon.ai" />
       </Card>
     );
   }
@@ -428,7 +428,7 @@ export default function LlmPanel() {
             ? "Prepaid balance for Bedrock inference."
             : "Balance unavailable right now."}
         </Text>
-        {topUpAvailable && <ManageLink label="Top up on isol8.co" />}
+        {topUpAvailable && <ManageLink label="Top up on flickmeon.ai" />}
       </Card>
     );
   }
@@ -486,7 +486,7 @@ export default function LlmPanel() {
           </View>
         ))}
         <Text style={styles.captionText}>
-          Model routing is read-only here. Change the default on isol8.co.
+          Model routing is read-only here. Change the default on flickmeon.ai.
         </Text>
       </Card>
     );

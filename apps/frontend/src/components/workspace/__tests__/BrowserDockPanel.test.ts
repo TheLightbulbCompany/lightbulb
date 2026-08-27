@@ -6,14 +6,14 @@ import { browserViewWsUrl } from "../panels/browserViewUrl";
 // that spins forever against a door that drops the connection.
 describe("browserViewWsUrl", () => {
   it("maps the dev api host to the CloudFront bv host", () => {
-    expect(browserViewWsUrl("https://api-dev.isol8.co/api/v1")).toBe(
-      "wss://bv-dev.isol8.co/api/v1/browser-view/ws",
+    expect(browserViewWsUrl("https://api-dev.flickmeon.ai/api/v1")).toBe(
+      "wss://bv-dev.flickmeon.ai/api/v1/browser-view/ws",
     );
   });
 
-  it("maps the prod api host to bv.isol8.co", () => {
-    expect(browserViewWsUrl("https://api.isol8.co/api/v1")).toBe(
-      "wss://bv.isol8.co/api/v1/browser-view/ws",
+  it("maps the prod api host to bv.flickmeon.ai", () => {
+    expect(browserViewWsUrl("https://api.flickmeon.ai/api/v1")).toBe(
+      "wss://bv.flickmeon.ai/api/v1/browser-view/ws",
     );
   });
 

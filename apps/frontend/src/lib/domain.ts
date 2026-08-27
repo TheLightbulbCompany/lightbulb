@@ -18,7 +18,7 @@
 
 /** Absolute origin the public site is served from, no trailing slash. */
 export const SITE_URL = (
-  process.env.NEXT_PUBLIC_APP_URL ?? "https://isol8.co"
+  process.env.NEXT_PUBLIC_APP_URL ?? "https://flickmeon.ai"
 ).replace(/\/+$/, "");
 
 /** Bare host of {@link SITE_URL} — the root every sibling host is built from. */
@@ -28,34 +28,30 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
 );
 
 /**
- * Custom URL scheme the desktop app registers for deep links (`isol8://auth`,
- * `isol8://checkout_redirect/...`). Mirrored by the mobile app's own config and
+ * Custom URL scheme the desktop app registers for deep links
+ * (`flickmeon://auth`, `flickmeon://checkout_redirect/...`). Mirrored by the mobile app's own config and
  * by `apps/desktop/src-tauri/tauri.conf.json`; those are separate registries,
  * so a change here is not a change there.
  *
  * NOT the internal `isol8-file://` asset scheme, and NOT the `isol8:*`
- * localStorage prefixes — neither is a domain.
+ * localStorage prefixes — neither is a domain, and neither is OS-registered.
  */
-export const DEEP_LINK_SCHEME = "isol8";
+export const DEEP_LINK_SCHEME = "flickmeon";
 
 /** `admin.<root>` etc. — hosts allowed to serve the /admin route group. */
 /**
- * Product domains this build answers on, during the isol8.co -> flickmeon.ai
- * move. BOTH are listed on purpose.
+ * The product domains this build answers on.
  *
- * `SITE_URL` is a single literal and `NEXT_PUBLIC_APP_URL` is set in no Vercel
- * environment, so `ROOT_DOMAIN` is the SAME value in dev and prod. But dev is
- * already served from flickmeon.ai while prod is still isol8.co, so any host
- * list derived from `ROOT_DOMAIN` alone is wrong in exactly one environment.
+ * Now a single canonical domain: isol8.co is retired, so admitting it would
+ * allow a host that no longer resolves. It is still derived rather than
+ * literal, because `SITE_URL` is the one place the domain is written down.
  *
- * That is not hypothetical: it made `admin.dev.flickmeon.ai/admin` return 404,
- * because the admin allowlist held only `admin.dev.isol8.co`. The same applies
- * to the Paperclip company hosts below.
- *
- * Drop the retired entry once isol8.co no longer serves.
+ * The bug this list exists to prevent: `admin.dev.flickmeon.ai/admin` returned
+ * 404 while the allowlist held only the old apex, because `SITE_URL` is one
+ * literal shared by both deployments.
  */
 const PRODUCT_DOMAINS = Array.from(
-  new Set([ROOT_DOMAIN, "flickmeon.ai", "isol8.co"]),
+  new Set([ROOT_DOMAIN]),
 );
 
 export const DEFAULT_ADMIN_HOSTS = [

@@ -66,7 +66,7 @@ describe("openSubscriptionManagement", () => {
       openAppleSubscriptions: jest.fn(async () => {}),
     });
 
-    expect(openURL).toHaveBeenCalledWith("https://isol8.co/settings?panel=billing");
+    expect(openURL).toHaveBeenCalledWith("https://flickmeon.ai/settings?panel=billing");
     openURL.mockRestore();
   });
 });

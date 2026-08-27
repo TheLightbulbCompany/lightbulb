@@ -6,7 +6,7 @@
   "scripts": {
     "start": "expo start",
     "start:dev": "EXPO_PUBLIC_API_URL=https://api-dev.flickmeon.ai/api/v1 EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk expo start",
-    "start:prod": "EXPO_PUBLIC_API_URL=https://api.isol8.co/api/v1 EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsuaXNvbDguY28k expo start",
+    "start:prod": "EXPO_PUBLIC_API_URL=https://api.flickmeon.ai/api/v1 EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA expo start",
     "ios": "expo run:ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",

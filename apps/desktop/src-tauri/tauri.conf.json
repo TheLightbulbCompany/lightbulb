@@ -54,7 +54,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["isol8"]
+        "schemes": ["flickmeon"]
       }
     },
     "updater": {

@@ -160,7 +160,7 @@ export default function RunDetailScreen() {
         {state.message ? <Text style={styles.stateDetail}>{state.message}</Text> : null}
         {isSubscription ? (
           <ActionButton
-            label="Manage on isol8.co"
+            label="Manage on flickmeon.ai"
             onPress={() => void Linking.openURL(teamsDetailUrl("run", runId, "issues"))}
           />
         ) : (

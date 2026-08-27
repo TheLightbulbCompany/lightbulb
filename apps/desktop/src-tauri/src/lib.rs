@@ -1015,7 +1015,7 @@ fn redact_url(url_str: &str) -> String {
 
 fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
     log(&format!("[deep-link] received: {}", redact_url(url_str)));
-    if url_str.starts_with("isol8://auth") {
+    if url_str.starts_with("flickmeon://auth") {
         if let Ok(parsed) = url::Url::parse(url_str) {
             if let Some(ticket) = parsed
                 .query_pairs()
@@ -1077,14 +1077,14 @@ pub fn run() {
         })
         // MUST be registered before any other plugin so it can hijack
         // launches from a deep-link click: macOS spawns a new process for
-        // `isol8://...` URLs, and without single_instance the new process
+        // `flickmeon://...` URLs, and without single_instance the new process
         // starts Tauri fresh — a second window, a fresh webview with no
         // Clerk session, and the ticket never reaches the original app.
         // With single_instance, the second launch's argv gets forwarded
         // to this callback on the ORIGINAL process and we can wake it up.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Redact each argv entry before logging. Protocol-handler
-            // launches include isol8://auth?...&ticket=... in argv, which
+            // launches include flickmeon://auth?...&ticket=... in argv, which
             // would leak the Clerk one-time sign-in ticket otherwise.
             let redacted: Vec<String> = argv.iter().map(|a| redact_url(a)).collect();
             log(&format!(
@@ -1093,7 +1093,7 @@ pub fn run() {
             ));
             // The deep-link URL appears as one of the argv entries.
             for arg in argv {
-                if arg.starts_with("isol8://") {
+                if arg.starts_with("flickmeon://") {
                     handle_deep_link_url(app, &arg);
                 }
             }
@@ -1180,17 +1180,17 @@ end tell"#,
                 log(&format!("[setup] file_access::init failed: {}", e));
             }
 
-            // Force-register isol8:// with this running binary's path so
+            // Force-register flickmeon:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without
             // this, a stale bundle from an earlier build (or a prior
             // worktree) can still be registered as the handler, and
-            // Safari clicks on isol8://auth?... will launch THAT ghost
+            // Safari clicks on flickmeon://auth?... will launch THAT ghost
             // bundle instead of hitting our on_open_url handler.
             #[cfg(debug_assertions)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 match app.deep_link().register_all() {
-                    Ok(()) => log("[setup] registered isol8:// URL schemes"),
+                    Ok(()) => log("[setup] registered flickmeon:// URL schemes"),
                     Err(e) => log(&format!("[setup] register_all failed: {}", e)),
                 }
             }
@@ -1216,7 +1216,7 @@ end tell"#,
                 }
             });
 
-            // Handle deep links (isol8:// protocol). This fires when the app
+            // Handle deep links (flickmeon:// protocol). This fires when the app
             // is already running and a cross-process deep link is delivered
             // by the OS directly (no second process spawn). The parallel
             // single_instance callback above handles the cold-launch case.

@@ -9,8 +9,6 @@ import {
 import { decideAdminHostRouting } from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
-  'admin.isol8.co',
-  'admin.dev.isol8.co',
   'admin.flickmeon.ai',
   'admin.dev.flickmeon.ai',
   'admin.localhost:3000',
@@ -20,19 +18,19 @@ const ADMIN_HOSTS = new Set([
 // is set in any deployed environment.
 //
 // The previous version of this block asserted the derivation equalled the
-// isol8.co hosts exactly. It passed while `admin.dev.flickmeon.ai/admin`
+// the old apex exactly. It passed while `admin.dev.flickmeon.ai/admin`
 // returned 404 in dev, because it was checking that the code agreed with
 // itself, not that it agreed with DNS. `SITE_URL` is one literal shared by both
 // deployments, so the moment dev and prod are on different domains, any list
 // derived from it alone is wrong in exactly one of them.
 //
 // So: assert COVERAGE of every host DNS actually serves, not equality with one
-// domain's worth. Drop the isol8.co entries when isol8.co stops serving.
+// domain's worth. The retired apex is gone from these lists entirely.
 describe('domain config', () => {
   it('derives the shipped values', () => {
-    expect(SITE_URL).toBe('https://isol8.co');
-    expect(ROOT_DOMAIN).toBe('isol8.co');
-    expect(DEEP_LINK_SCHEME).toBe('isol8');
+    expect(SITE_URL).toBe('https://flickmeon.ai');
+    expect(ROOT_DOMAIN).toBe('flickmeon.ai');
+    expect(DEEP_LINK_SCHEME).toBe('flickmeon');
   });
 
   it('admits the admin host of EVERY product domain currently served', () => {
@@ -40,7 +38,7 @@ describe('domain config', () => {
   });
 
   it('admits the company host of EVERY product domain currently served', () => {
-    for (const d of ['isol8.co', 'flickmeon.ai']) {
+    for (const d of ['flickmeon.ai']) {
       expect(PAPERCLIP_HOSTS).toContain(`company.${d}`);
       expect(PAPERCLIP_HOSTS).toContain(`dev.company.${d}`);
     }
@@ -55,19 +53,19 @@ describe('domain config', () => {
 describe('decideAdminHostRouting (admin host gate)', () => {
   it('passes through when an admin host hits an /admin path', () => {
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('returns 404 for an /admin path on a non-admin host', () => {
     expect(
-      decideAdminHostRouting('app.isol8.co', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('app.flickmeon.ai', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'not_found' });
   });
 
   it('redirects to /admin when an admin host requests a non-admin path', () => {
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/admin' });
   });
 
@@ -91,20 +89,20 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('passes through public hosts on public paths', () => {
     expect(
-      decideAdminHostRouting('app.isol8.co', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('app.flickmeon.ai', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('matches /admin exactly (not just prefix-with-extra-letters)', () => {
     // /administrator should NOT be treated as an admin path
     expect(
-      decideAdminHostRouting('app.isol8.co', '/administrator', ADMIN_HOSTS),
+      decideAdminHostRouting('app.flickmeon.ai', '/administrator', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('is case-insensitive on host comparison', () => {
     expect(
-      decideAdminHostRouting('ADMIN.ISOL8.CO', '/admin/users', ADMIN_HOSTS),
+      decideAdminHostRouting('ADMIN.FLICKMEON.AI', '/admin/users', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
@@ -119,23 +117,23 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('passes through /sign-in on admin hosts so AdminLayout can complete auth', () => {
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/sign-in', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/sign-in', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('passes through /sign-up on admin hosts', () => {
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/sign-up', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/sign-up', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
   it('passes through Clerk catchall sub-paths under /sign-in', () => {
     // Clerk renders /sign-in/factor-one, /sign-in/sso-callback, etc.
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/sign-in/factor-one', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/sign-in/factor-one', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/sign-up/verify-email-address', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/sign-up/verify-email-address', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 
@@ -143,7 +141,7 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     // Regression guard — the original gate behavior for non-auth, non-admin
     // paths is preserved.
     expect(
-      decideAdminHostRouting('admin.isol8.co', '/chat', ADMIN_HOSTS),
+      decideAdminHostRouting('admin.flickmeon.ai', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/admin' });
   });
 });

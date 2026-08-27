@@ -84,9 +84,9 @@ export default function SignIn() {
       const { createdSessionId, authSessionResult } = await startSSOFlow({
         strategy: "oauth_google",
         // The explicit path matches Clerk's documented native pattern AND the
-        // prod instance's existing allowlist entry (isol8://oauth-native-callback).
+        // prod instance's existing allowlist entry (flickmeon://oauth-native-callback).
         // Expo Go yields exp://<host>:8081/--/oauth-native-callback; dev/release
-        // builds yield isol8://oauth-native-callback.
+        // builds yield flickmeon://oauth-native-callback.
         redirectUrl: AuthSession.makeRedirectUri({ path: "oauth-native-callback" }),
       });
       if (createdSessionId) {
@@ -99,7 +99,7 @@ export default function SignIn() {
         // User closed the browser — not an error, stay quiet.
       } else {
         setError(
-          "Google sign-in needs another step — finish signing in on isol8.co for now.",
+          "Google sign-in needs another step — finish signing in on flickmeon.ai for now.",
         );
       }
     } catch (e) {
@@ -120,7 +120,7 @@ export default function SignIn() {
         // (auth) layout redirects to /(app)/chat once isSignedIn flips.
       } else {
         setError(
-          "This account needs another verification step — sign in on isol8.co for now.",
+          "This account needs another verification step — sign in on flickmeon.ai for now.",
         );
       }
     } catch (e) {
@@ -234,7 +234,7 @@ export default function SignIn() {
           <Text style={styles.buttonText}>Sign in</Text>
         )}
       </Pressable>
-      <Text style={styles.hint}>New here? Create your account at isol8.co</Text>
+      <Text style={styles.hint}>New here? Create your account at flickmeon.ai</Text>
     </KeyboardAvoidingView>
   );
 }

@@ -1,7 +1,7 @@
 /**
  * In-app subscription purchase — App Store guidelines 3.1.1 / 3.1.3(b).
  *
- * App Review rejected 0.1.0 (17) holding that a plan sold on isol8.co must also
+ * App Review rejected 0.1.0 (17) holding that a plan sold on flickmeon.ai must also
  * be purchasable inside the app. This is that purchase path.
  *
  * BOTH options are offered WITH THEIR PRICES, which is legal specifically on
@@ -193,7 +193,7 @@ export function PaywallScreen({
   }, [api]);
 
   // Return leg of the web checkout. Stripe's success_url is a universal link
-  // back into the app, and the fallback page offers the isol8:// scheme when
+  // back into the app, and the fallback page offers the flickmeon:// scheme when
   // iOS declines to open it — both land here.
   //
   // A returning URL is only a HINT to go re-read entitlement, never a grant.
@@ -371,8 +371,8 @@ export function PaywallScreen({
               is allowed, a wrong price is a 5.1.1 violation. */}
           <Text style={styles.caption}>
             {webPriceUsd != null
-              ? `You can also subscribe on isol8.co in your browser for $${webPriceUsd}/month, and manage billing there.`
-              : "You can also subscribe on isol8.co in your browser, and manage billing there."}
+              ? `You can also subscribe on flickmeon.ai in your browser for $${webPriceUsd}/month, and manage billing there.`
+              : "You can also subscribe on flickmeon.ai in your browser, and manage billing there."}
           </Text>
           <Pressable
             onPress={() => void onWebCheckout()}
@@ -381,7 +381,7 @@ export function PaywallScreen({
             style={({ pressed }) => [styles.linkRow, (pressed || webBusy) && styles.dim]}
           >
             <Text style={styles.linkText}>
-              {webBusy ? "Opening checkout…" : "Subscribe on isol8.co"}
+              {webBusy ? "Opening checkout…" : "Subscribe on flickmeon.ai"}
             </Text>
           </Pressable>
         </View>

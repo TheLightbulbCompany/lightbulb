@@ -1,5 +1,5 @@
-// The relay lives on its own CloudFront host (bv[-env].isol8.co), NOT the api
-// host — api[-env].isol8.co is an API Gateway HTTP API, which cannot pass
+// The relay lives on its own CloudFront host (bv[-env].flickmeon.ai), NOT the api
+// host — api[-env].flickmeon.ai is an API Gateway HTTP API, which cannot pass
 // WebSocket upgrades (api-stack.ts, BrowserViewDistribution). Local dev has no
 // CloudFront in front of uvicorn, so localhost connects straight through.
 //

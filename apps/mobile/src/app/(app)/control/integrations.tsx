@@ -228,9 +228,9 @@ export default function IntegrationsPanel() {
         <Text style={styles.emptyGlyph}>8</Text>
         <Text style={styles.dim}>No MCP servers connected.</Text>
         <Text style={styles.dimSmall}>
-          Add Model Context Protocol servers on isol8.co.
+          Add Model Context Protocol servers on flickmeon.ai.
         </Text>
-        <ManageLink label="Manage on isol8.co" />
+        <ManageLink label="Manage on flickmeon.ai" />
       </View>
     );
   } else {
@@ -249,9 +249,9 @@ export default function IntegrationsPanel() {
         <View style={styles.noteCard}>
           <Text style={styles.captionText}>
             Adding or removing servers is read-only here. Manage integrations on
-            isol8.co.
+            flickmeon.ai.
           </Text>
-          <ManageLink label="Manage on isol8.co" />
+          <ManageLink label="Manage on flickmeon.ai" />
         </View>
       </>
     );

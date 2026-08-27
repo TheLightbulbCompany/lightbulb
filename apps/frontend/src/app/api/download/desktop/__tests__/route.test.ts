@@ -95,7 +95,7 @@ describe("GET /api/download/desktop", () => {
 
   it("redirects prod host to the signed URL for the arm64 DMG by default", async () => {
     stubGitHub([prodRelease, devRelease]);
-    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(signedUrlFor(arm.url));
   });
@@ -103,7 +103,7 @@ describe("GET /api/download/desktop", () => {
   it("honors ?arch=x64 to select the Intel build", async () => {
     stubGitHub([prodRelease]);
     const res = await GET(
-      reqFor("/api/download/desktop?arch=x64", "isol8.co"),
+      reqFor("/api/download/desktop?arch=x64", "flickmeon.ai"),
     );
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(signedUrlFor(intel.url));
@@ -112,7 +112,7 @@ describe("GET /api/download/desktop", () => {
   it("serves the updater bundle via ?kind=bundle", async () => {
     stubGitHub([prodRelease]);
     const res = await GET(
-      reqFor("/api/download/desktop?kind=bundle", "isol8.co"),
+      reqFor("/api/download/desktop?kind=bundle", "flickmeon.ai"),
     );
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(signedUrlFor(armBundle.url));
@@ -121,7 +121,7 @@ describe("GET /api/download/desktop", () => {
   it("sends the token on GitHub calls when configured", async () => {
     vi.stubEnv("GITHUB_RELEASES_TOKEN", "ghp_test123");
     const { fetchMock } = stubGitHub([prodRelease]);
-    await GET(reqFor("/api/download/desktop", "isol8.co"));
+    await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/releases?"),
       expect.objectContaining({
@@ -142,9 +142,9 @@ describe("GET /api/download/desktop", () => {
     );
   });
 
-  it("uses the desktop-dev-v prefix on dev.isol8.co", async () => {
+  it("uses the desktop-dev-v prefix on dev.flickmeon.ai", async () => {
     stubGitHub([prodRelease, devRelease]);
-    const res = await GET(reqFor("/api/download/desktop", "dev.isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "dev.flickmeon.ai"));
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(signedUrlFor(devAsset.url));
   });
@@ -161,7 +161,7 @@ describe("GET /api/download/desktop", () => {
   it("ignores draft releases", async () => {
     const draftOnly: GhReleaseFixture = { ...prodRelease, draft: true };
     stubGitHub([draftOnly]);
-    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body).toMatchObject({ error: "no_release" });
@@ -171,7 +171,7 @@ describe("GET /api/download/desktop", () => {
     const armOnly: GhReleaseFixture = { ...prodRelease, assets: [arm] };
     stubGitHub([armOnly]);
     const res = await GET(
-      reqFor("/api/download/desktop?arch=x64", "isol8.co"),
+      reqFor("/api/download/desktop?arch=x64", "flickmeon.ai"),
     );
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -197,13 +197,13 @@ describe("GET /api/download/desktop", () => {
       assets: [newerAsset],
     };
     stubGitHub([older, newer]);
-    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(res.headers.get("location")).toBe(signedUrlFor(newerAsset.url));
   });
 
   it("returns 502 when GitHub is unreachable", async () => {
     stubGitHub([], false, 503);
-    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(res.status).toBe(502);
   });
 
@@ -226,7 +226,7 @@ describe("GET /api/download/desktop", () => {
       } as unknown as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
-    const res = await GET(reqFor("/api/download/desktop", "isol8.co"));
+    const res = await GET(reqFor("/api/download/desktop", "flickmeon.ai"));
     expect(res.status).toBe(502);
     const body = await res.json();
     expect(body).toMatchObject({ error: "asset_unresolvable", status: 404 });

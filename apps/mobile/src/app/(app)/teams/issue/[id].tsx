@@ -304,10 +304,10 @@ export default function IssueDetailScreen() {
       body = (
         <CenteredState
           title="Teams requires an active subscription"
-          detail="Manage your subscription on isol8.co to unlock your team workspace."
+          detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
           action={
             <OutlineButton
-              label="Manage on isol8.co"
+              label="Manage on flickmeon.ai"
               onPress={() => void Linking.openURL(teamsDetailUrl("issue", id, "issues"))}
             />
           }

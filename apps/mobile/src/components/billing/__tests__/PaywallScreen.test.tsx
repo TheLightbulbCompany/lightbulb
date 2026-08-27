@@ -105,7 +105,7 @@ describe("PaywallScreen", () => {
     expect(screen.getByText("$64.99")).toBeTruthy();
     expect(screen.getByText("Subscribe")).toBeTruthy();
     expect(await screen.findByText(/\$50\/month/)).toBeTruthy();
-    expect(screen.getByText("Subscribe on isol8.co")).toBeTruthy();
+    expect(screen.getByText("Subscribe on flickmeon.ai")).toBeTruthy();
   });
 
   // The web price is server-owned. A figure baked into the binary goes stale
@@ -124,7 +124,7 @@ describe("PaywallScreen", () => {
   it("shows the link without a price when the server price is unavailable", async () => {
     await render(<PaywallScreen api={makeApi(null)} onPurchased={jest.fn()} />);
 
-    expect(await screen.findByText("Subscribe on isol8.co")).toBeTruthy();
+    expect(await screen.findByText("Subscribe on flickmeon.ai")).toBeTruthy();
     expect(screen.queryByText(/\$50\/month/)).toBeNull();
   });
 
@@ -136,7 +136,7 @@ describe("PaywallScreen", () => {
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
     await screen.findByText("$64.99");
 
-    expect(screen.queryByText("Subscribe on isol8.co")).toBeNull();
+    expect(screen.queryByText("Subscribe on flickmeon.ai")).toBeNull();
     expect(screen.queryByText(/\$50\/month/)).toBeNull();
   });
 
@@ -149,7 +149,7 @@ describe("PaywallScreen", () => {
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
     await screen.findByText("$64.99");
 
-    expect(screen.queryByText("Subscribe on isol8.co")).toBeNull();
+    expect(screen.queryByText("Subscribe on flickmeon.ai")).toBeNull();
   });
 
   it("requests the subscription product on subscribe", async () => {
@@ -245,9 +245,9 @@ describe("PaywallScreen", () => {
     const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
     const u = userEvent.setup();
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
-    await screen.findByText("Subscribe on isol8.co");
+    await screen.findByText("Subscribe on flickmeon.ai");
 
-    await u.press(screen.getByText("Subscribe on isol8.co"));
+    await u.press(screen.getByText("Subscribe on flickmeon.ai"));
 
     expect(mockWebCheckout).toHaveBeenCalled();
     await waitFor(() =>
@@ -263,12 +263,12 @@ describe("PaywallScreen", () => {
     const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
     const u = userEvent.setup();
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
-    await screen.findByText("Subscribe on isol8.co");
+    await screen.findByText("Subscribe on flickmeon.ai");
 
-    await u.press(screen.getByText("Subscribe on isol8.co"));
+    await u.press(screen.getByText("Subscribe on flickmeon.ai"));
 
     await waitFor(() =>
-      expect(openURL).toHaveBeenCalledWith("https://isol8.co/settings?panel=billing"),
+      expect(openURL).toHaveBeenCalledWith("https://flickmeon.ai/settings?panel=billing"),
     );
     openURL.mockRestore();
   });

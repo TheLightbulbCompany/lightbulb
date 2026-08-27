@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react-native";
 
 import { ChatErrorCard, describeChatError } from "../ChatErrorCard";
 
-// This card used to carry an "Upgrade on isol8.co" button and to prefer the
+// This card used to carry an "Upgrade on flickmeon.ai" button and to prefer the
 // backend's copy over the local fallback. Both were removed for App Store
 // guideline 3.1.3(f) — see lib/purchaseCta. The assertions below are the
 // inverse of what they were on purpose; a reviewer restoring either behaviour

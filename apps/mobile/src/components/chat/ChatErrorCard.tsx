@@ -13,7 +13,7 @@ import { purchaseGateCopy } from "../../lib/purchaseCta";
  * full-width error card.
  *
  * DIVERGES FROM WEB, deliberately (App Store 3.1.3(f) — see lib/purchaseCta):
- * web renders an "Upgrade on isol8.co" button here and prefers the server's
+ * web renders an "Upgrade on flickmeon.ai" button here and prefers the server's
  * message. iOS renders neither. The server copy for both of these codes ends
  * in a call to action ("Upgrade to keep going" / "Pick a plan to keep your
  * agent"), so for a purchase gate the LOCAL text wins and no action is shown —

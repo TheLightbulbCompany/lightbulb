@@ -286,15 +286,15 @@ export default function UsagePanel() {
       <Card>
         <Text style={styles.overline}>USAGE</Text>
         <Text style={styles.bodyText}>
-          Usage is available to workspace admins on isol8.co
+          Usage is available to workspace admins on flickmeon.ai
         </Text>
         <Pressable
           style={({ pressed }) => [styles.linkRow, pressed && styles.pressed]}
           onPress={() => void Linking.openURL(USAGE_WEB_URL)}
           accessibilityRole="button"
-          accessibilityLabel="Open usage on isol8.co"
+          accessibilityLabel="Open usage on flickmeon.ai"
         >
-          <Text style={styles.linkText}>Open usage on isol8.co</Text>
+          <Text style={styles.linkText}>Open usage on flickmeon.ai</Text>
         </Pressable>
       </Card>
     );

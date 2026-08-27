@@ -5,7 +5,9 @@ import { MetricStat } from "@/components/admin/MetricStat";
 import { planLabel } from "@/lib/planLabel";
 import type { GrowthData, GrowthSegment, GrowthOwnerStage } from "../_lib/api";
 
-const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
+// Exported so charts.tsx can reuse the exact same ladder-stage copy for the
+// Activation gate chart's row labels — one source of truth, no copy drift.
+export const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
   signed_up: "signed up",
   subscribed: "subscribed",
   container_ready: "container ready",
@@ -24,7 +26,7 @@ const FLAG_LABEL: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, string
   first_autonomous_success: "first autonomous success",
 };
 
-function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
+export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
   if (rows.length === 0) return <div className="text-xs text-zinc-500">none</div>;
   return (
     <div className="overflow-x-auto">
@@ -76,22 +78,20 @@ export function Owners({ seg }: { seg: GrowthSegment }) {
   const o = seg.owners;
   const fmt = (m: Record<string, number>) => Object.entries(m).map(([k, v]) => `${k} ${v}`).join(" · ") || "—";
   return (
-    <Card title="Owners">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-        <MetricStat label="owners" value={o.total} />
-        <MetricStat label="paying" value={o.paid} hint={fmt(o.paid_by_plan)} />
-        <MetricStat label="paid by provider" value={fmt(o.paid_by_provider)} />
-        <MetricStat label="trials active" value={o.trial_active} />
-        <MetricStat label="trials expired" value={o.trial_expired} tone={o.trial_expired ? "unknown" : "default"} />
-      </div>
-    </Card>
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <MetricStat label="owners" value={o.total} />
+      <MetricStat label="paying" value={o.paid} hint={fmt(o.paid_by_plan)} />
+      <MetricStat label="paid by provider" value={fmt(o.paid_by_provider)} />
+      <MetricStat label="trials active" value={o.trial_active} />
+      <MetricStat label="trials expired" value={o.trial_expired} tone={o.trial_expired ? "unknown" : "default"} />
+    </div>
   );
 }
 
 export function Activation({ seg }: { seg: GrowthSegment }) {
   const a = seg.activation;
   return (
-    <Card title="Activation gate (subscribed → ready → automation armed → first autonomous run succeeds)">
+    <>
       <div className="grid grid-cols-3 gap-4 md:grid-cols-6">
         {(Object.keys(STAGE_LABEL) as GrowthOwnerStage["stage"][]).map((s) => (
           <MetricStat key={s} label={STAGE_LABEL[s]} value={a.stages[s]} />
@@ -116,13 +116,13 @@ export function Activation({ seg }: { seg: GrowthSegment }) {
           ])}
         />
       </div>
-    </Card>
+    </>
   );
 }
 
 export function NorthStar({ seg }: { seg: GrowthSegment }) {
   return (
-    <Card title="North Star — successful runs per week (nightly CEO shown, never counted)">
+    <>
       <Table
         head={[
           "week",
@@ -145,14 +145,14 @@ export function NorthStar({ seg }: { seg: GrowthSegment }) {
         human = every run not dispatched by a schedule or webhook — issue assignments, run-now, and the nightly
         CEO&apos;s follow-on work included
       </div>
-    </Card>
+    </>
   );
 }
 
 export function RetentionDepth({ seg }: { seg: GrowthSegment }) {
   const s = seg.retention.automation_survival;
   return (
-    <Card title="Automation survival (routines ≥30 days old) · depth">
+    <>
       <div className="grid grid-cols-4 gap-4">
         <MetricStat label="still armed" value={s.armed} />
         <MetricStat label="paused by owner" value={s.paused_manual} />
@@ -163,32 +163,30 @@ export function RetentionDepth({ seg }: { seg: GrowthSegment }) {
         <Table head={["owner", "armed automations", "trigger kinds"]} rows={seg.depth.armed_per_owner.map((o) => [owner(o), o.armed, o.trigger_kinds.join(", ")])} />
         <Table head={["owner", "connected providers"]} rows={seg.depth.providers_per_owner.map((o) => [owner(o), o.providers.join(", ")])} />
       </div>
-    </Card>
+    </>
   );
 }
 
 export function Counters({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
   return (
-    <Card title="Counter-metrics (falsifiers)">
-      <div className="grid gap-6 md:grid-cols-3">
-        <div>
-          <div className="mb-1 text-xs text-zinc-500">auto-paused automations</div>
-          <Table head={["owner", "routine", "since"]} rows={seg.counters.auto_paused.map((r) => [owner(r), r.title, r.since ?? "—"])} />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-zinc-500">archived within 7 days of creation</div>
-          <Table head={["owner", "routine"]} rows={seg.counters.archived_within_7d.map((r) => [owner(r), r.title])} />
-        </div>
-        <div>
-          <div className="mb-1 text-xs text-zinc-500">provision.gate.blocked, last 7d (CloudWatch, all owners)</div>
-          <Table head={["code", "count"]} rows={data.gate_blocked_7d.map((g) => [g.code, g.n])} />
-          <div className="mt-3 text-xs text-zinc-500">
-            nightly CEO (paid owners): {seg.nightly_ceo.armed} armed · {seg.nightly_ceo.opted_out} opted out ·{" "}
-            <span className={seg.nightly_ceo.never_armed ? "text-red-300" : ""}>{seg.nightly_ceo.never_armed} never armed</span>
-          </div>
+    <div className="grid gap-6 md:grid-cols-3">
+      <div>
+        <div className="mb-1 text-xs text-zinc-500">auto-paused automations</div>
+        <Table head={["owner", "routine", "since"]} rows={seg.counters.auto_paused.map((r) => [owner(r), r.title, r.since ?? "—"])} />
+      </div>
+      <div>
+        <div className="mb-1 text-xs text-zinc-500">archived within 7 days of creation</div>
+        <Table head={["owner", "routine"]} rows={seg.counters.archived_within_7d.map((r) => [owner(r), r.title])} />
+      </div>
+      <div>
+        <div className="mb-1 text-xs text-zinc-500">provision.gate.blocked, last 7d (CloudWatch, all owners)</div>
+        <Table head={["code", "count"]} rows={data.gate_blocked_7d.map((g) => [g.code, g.n])} />
+        <div className="mt-3 text-xs text-zinc-500">
+          nightly CEO (paid owners): {seg.nightly_ceo.armed} armed · {seg.nightly_ceo.opted_out} opted out ·{" "}
+          <span className={seg.nightly_ceo.never_armed ? "text-red-300" : ""}>{seg.nightly_ceo.never_armed} never armed</span>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -214,7 +212,7 @@ function funnelByWeek(data: GrowthData) {
 export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthData }) {
   const funnel = funnelByWeek(data);
   return (
-    <Card title="Acquisition — client funnel per week (PostHog, unique persons, unsegmented — dev and prod share one PostHog project, so these count both environments) · signups per week (billing rows)">
+    <>
       <div className="grid gap-6 md:grid-cols-[1fr_auto_auto]">
         <Table head={["week", ...FUNNEL_EVENTS]} rows={data.weeks.map((w) => [w, ...FUNNEL_EVENTS.map((e) => funnel.get(w)?.[e] ?? 0)])} />
         <Table head={["week", "signups"]} rows={seg.owners.signups_by_week.map((w) => [w.week, w.n])} />
@@ -227,7 +225,7 @@ export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthDat
         trial → first agent response is the SEO plan&apos;s old activation read; it is a trial-stage signal only — trials cannot arm automations.
         Churn/NRR are not built (no cancel reason is stored); activated vs cancelled per week is the stand-in.
       </div>
-    </Card>
+    </>
   );
 }
 
@@ -235,11 +233,9 @@ export function PosthogCrosscheck({ data }: { data: GrowthData }) {
   const byWeek = new Map<string, Record<string, number>>();
   for (const r of data.posthog.runs) byWeek.set(r.week, { ...(byWeek.get(r.week) ?? {}), [r.kind]: r.n });
   return (
-    <Card title="PostHog cross-check — agent_run_completed by initiation (attribution there is lossy; the DB above is the ledger) · counts both environments">
-      <Table
-        head={["week", "autonomous", "human", "unknown"]}
-        rows={data.weeks.map((w) => [w, byWeek.get(w)?.autonomous ?? 0, byWeek.get(w)?.human ?? 0, byWeek.get(w)?.unknown ?? 0])}
-      />
-    </Card>
+    <Table
+      head={["week", "autonomous", "human", "unknown"]}
+      rows={data.weeks.map((w) => [w, byWeek.get(w)?.autonomous ?? 0, byWeek.get(w)?.human ?? 0, byWeek.get(w)?.unknown ?? 0])}
+    />
   );
 }

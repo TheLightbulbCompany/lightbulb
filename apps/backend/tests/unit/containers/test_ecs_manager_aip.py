@@ -588,18 +588,29 @@ class TestBedrockGateTokenProvision:
         """Every provisioned container gets ISOL8_API_URL so the isol8 skill can
         live-read the connectable catalog from GET /api/v1/platform-info. It is
         unconditional (added before any provider branch) and derived from the
-        single per-env URL builder — a refactor of provision_user_container must
-        not silently drop it. (mock_settings pins ENVIRONMENT="dev".)"""
+        single URL builder — a refactor of provision_user_container must not
+        silently drop it.
+
+        The builder reads ``settings.PUBLIC_API_BASE`` (wired by CDK per env),
+        NOT the env name, so this pins that setting the way CDK does. Note the
+        ``mock_settings`` fixture patches ``ecs_manager.settings`` only; the
+        builder lives in ``atlas_seed`` and holds its own settings reference,
+        which is why it needs its own patch here."""
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
             AsyncMock(return_value={"owner_id": "user_x"}),
         )
+        monkeypatch.setattr(
+            "core.services.atlas_seed.settings.PUBLIC_API_BASE",
+            "https://api-dev.flickmeon.ai",
+            raising=False,
+        )
 
         await manager.provision_user_container("user_x", provider_choice="bedrock_claude", owner_type="personal")
 
         env = {e["name"]: e["value"] for e in manager.create_user_service.call_args.kwargs["environment_for_task"]}
-        assert env["ISOL8_API_URL"] == "https://api-dev.isol8.co"
+        assert env["ISOL8_API_URL"] == "https://api-dev.flickmeon.ai"
 
     @pytest.mark.asyncio
     async def test_bearer_env_absent_in_direct_mode(self, manager, mock_settings, monkeypatch):

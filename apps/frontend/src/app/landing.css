@@ -3,8 +3,8 @@
  *
  * Editorial print aesthetic on the brand cream/forest tokens defined in
  * globals.css (:root). Every class is prefixed `ld-` so it cannot collide
- * with the legacy landing classes still used by /marketplace and the
- * GooseTown section (gt-*), which keep their original styles.
+ * with the legacy landing classes still used by /marketplace, which keep
+ * their original styles.
  *
  * Motion contract:
  *   [data-ld-reveal]        — single element, animated in by ScrollManager (GSAP)

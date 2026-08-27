@@ -705,3 +705,40 @@ or anyone's session. Worth doing early: it is the single most visible remaining 
 shown to every user on every sign-in.
 
 The logo should wait for Aden's brand manual; the name should not.
+
+---
+
+## Appendix K — the prod flip, synthesized and audited (2026-08-27)
+
+`feat/prod-flip-flickmeon`, rebased on main. **Not pushed** — it is the flag-day change.
+
+```
+cdk synth        exit 0
+deploy.yml       no drift (the committed copy already matches the generated one)
+infra tests      298 passed / 22 files
+```
+
+**Nine product hosts move** to the new domain in the synthesized prod assembly: the apex,
+`api`, `www`, `company`, `ws`, `bv`, `admin`, the wildcard cert, and `api-dev` (the SES
+ingest URL for dev mail, which prod owns).
+
+**Everything still naming the old domain was audited rather than assumed** — each is
+deliberate, and each has an owner:
+
+| stack | reference | why it stays |
+|---|---|---|
+| `observability` | `admin@isol8.co` | SNS alert email — **mail** track, moves in #2067 (note: SNS email subscriptions *replace* on endpoint change, so the new one sits `PendingConfirmation` until someone clicks the AWS mail) |
+| `service` | `arn:…:identity/isol8.co` | SES identity for agent mail — same track |
+| `dns` | `*.isol8.co`, `isol8.co` | the legacy wildcard cert, pinned to `LEGACY_ROOT_DOMAIN` so its cross-stack Export never changes while network + api import it |
+| `api` | `clerk.isol8.co` | the Clerk host — moves at flag day, via the `CLERK_DOMAIN` parameter added in #2077 |
+
+So the product domain, mail, and auth are three genuinely independent tracks in the
+synthesized output, not just in intent.
+
+**One bug this audit caught** — before #2077, this same assembly contained
+`"https://clerk.flickmeon.ai/.well-known/jwks.json"`, because the WebSocket Lambda
+authorizer's issuer was templated off `rootDomain`. Deploying that would have left the
+authorizer unable to fetch JWKS and rejecting every `$connect` — chat down fleet-wide from a
+deploy that looks unrelated to auth. **All 298 infra tests passed with the bug present**,
+because they assert the template matches the code and the code was self-consistent. Grepping
+the synthesized assembly is what found it; no test could have.

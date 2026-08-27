@@ -10,6 +10,8 @@ on:
     paths:
       - 'apps/backend/**'
       - 'apps/infra/lambda/bedrock-usage-meter/**'
+      - 'apps/infra/lambda/ses-inbound/**'
+      - 'apps/infra/lambda/ws-connect/**'
       - '.github/workflows/backend.yml'
 
 # Supersede in-flight runs for the same PR. Every push to a branch used to
@@ -89,6 +91,30 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
         run: uv run pytest ../infra/lambda/bedrock-usage-meter -v
+        working-directory: apps/backend
+
+      # Same reasoning as the meter Lambda above: this one has its own tests and
+      # they ran in NO job at all. It is the ingest path for every inbound agent
+      # email -- recipient-suffix routing, the dev/prod backend split, and the
+      # shared-secret header -- and a change to it shipped unverified because the
+      # infra job only synthesizes templates and never executes Lambda code.
+      - name: Run SES inbound Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/ses-inbound -v
+        working-directory: apps/backend
+
+      # Third one in the same state. ws-connect authorizes and records every
+      # WebSocket $connect, so a regression here is chat down, not a degraded
+      # edge case.
+      - name: Run ws-connect Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/ws-connect -v
         working-directory: apps/backend
 
       - name: Upload coverage

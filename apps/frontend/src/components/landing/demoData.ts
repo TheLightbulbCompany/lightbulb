@@ -179,7 +179,7 @@ export const DEMO_COMMENTS: Record<string, IssueComment[]> = {
         "Shortlist: **Northwind Ceramics**, Kiln & Coast, Second Firing. " +
         "Northwind wins on memorability and nothing else is trading under it, " +
         "so that's the name. Minting the address now — you'll reach me at " +
-        "**friday@northwindceramics.isol8.co**, and the rest of the team gets " +
+        "**friday@northwindceramics.flickmeon.ai**, and the rest of the team gets " +
         "addresses on the same domain.",
       createdAt: minutesAgo(14),
       authorAgentId: FRIDAY_ID,

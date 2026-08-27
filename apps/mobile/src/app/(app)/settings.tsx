@@ -21,13 +21,13 @@ import { makeAdapter } from "../../lib/adapter";
 import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
 import { unregisterDevice } from "../../lib/pushDevice";
 
-// Billing is READ-ONLY here. This screen used to carry "Upgrade on isol8.co"
-// and "Manage billing on isol8.co" rows out to the web checkout; both are
+// Billing is READ-ONLY here. This screen used to carry "Upgrade on flickmeon.ai"
+// and "Manage billing on flickmeon.ai" rows out to the web checkout; both are
 // gone, along with the plan's price, because App Store guideline 3.1.3(f)
 // exempts this app only while it contains no call to action for purchase
 // outside it (see lib/purchaseCta). Plan state, credits, and provider still
 // render — describing what you have is not a CTA. Customers manage plans on
-// isol8.co, which the web and desktop clients still link to.
+// flickmeon.ai, which the web and desktop clients still link to.
 
 // ---------------------------------------------------------------------------
 // Contract shapes (W2 billing contract §2)
@@ -508,7 +508,7 @@ export default function Settings() {
             </Text>
             <Text style={styles.captionText}>
               {credits?.balance_dollars != null
-                ? "Prepaid balance for Bedrock inference. Top up on isol8.co."
+                ? "Prepaid balance for Bedrock inference. Top up on flickmeon.ai."
                 : "Balance unavailable right now."}
             </Text>
           </Card>
@@ -525,7 +525,7 @@ export default function Settings() {
             <Text style={styles.captionText}>
               {isAppleManaged(account.subscription_source)
                 ? "Billed through your Apple Account. Manage or cancel in iOS Settings."
-                : "Billed through isol8.co. Manage or cancel in the billing portal."}
+                : "Billed through flickmeon.ai. Manage or cancel in the billing portal."}
             </Text>
             <Pressable
               style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}

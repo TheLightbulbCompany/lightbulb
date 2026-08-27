@@ -18,7 +18,7 @@
  *     admin hasn't provisioned the workspace yet) shows a pulsing "Setting
  *     up your team workspace…" affordance + Retry — NOT a thin bar over a
  *     broken chat. A NON-purchase `blocked` code shows an OUTBOUND "Manage on
- *     isol8.co" link (Linking.openURL) — the mobile app never reimplements
+ *     flickmeon.ai" link (Linking.openURL) — the mobile app never reimplements
  *     billing / checkout (D1). admin-only gates tell org members to ask
  *     their workspace admin instead of showing a CTA. A PURCHASE gate — and
  *     `needsSignup`, which is one in all but name — shows neither the link
@@ -26,7 +26,7 @@
  *     call to action for a purchase (App Store 3.1.3(f)). `error` (mobile
  *     onboarding-parity Slice 1 — the backend-reported container failure;
  *     see `containerStatus.ts`) shows Retry only, no outbound link — there
- *     is nothing to manage on isol8.co for a failed provision, only a
+ *     is nothing to manage on flickmeon.ai for a failed provision, only a
  *     re-provision to retry.
  *
  *     Two `blocked` codes are the exception to D1's "never reimplement" for
@@ -181,14 +181,14 @@ function ManageAction({
     return (
       <View style={styles.adminNote}>
         <Text style={styles.adminNoteText}>
-          Ask your workspace admin to finish this on isol8.co.
+          Ask your workspace admin to finish this on flickmeon.ai.
         </Text>
       </View>
     );
   }
-  // Keep the "on isol8.co" cue: the button leaves the app (D1 — billing /
+  // Keep the "on flickmeon.ai" cue: the button leaves the app (D1 — billing /
   // checkout / OAuth never happen in-app).
-  const label = `${actionLabel || "Manage"} on isol8.co`;
+  const label = `${actionLabel || "Manage"} on flickmeon.ai`;
   return (
     <Pressable
       style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
@@ -213,7 +213,7 @@ function blockedCopy(status: Extract<ContainerStatus, { kind: "blocked" }>): {
     headline: status.title,
     body:
       status.message ??
-      "Your workspace needs attention before your agents can run. Manage it on isol8.co.",
+      "Your workspace needs attention before your agents can run. Manage it on flickmeon.ai.",
   };
 }
 
@@ -475,7 +475,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // phase) — otherwise it would read "starting" forever. Unifies with web's
   // ProvisioningStepper "Setup failed" card. A blocking interstitial (there is
   // no working chat behind a failed container) with Retry + sign-out, and no
-  // outbound link — there's nothing to manage on isol8.co for this one. The
+  // outbound link — there's nothing to manage on flickmeon.ai for this one. The
   // copy is honest that this is a REAL failure: Retry only re-checks status
   // (recovery needs an admin reprovision), so it does not promise "temporary".
   if (status.kind === "error") {

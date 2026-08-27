@@ -8,7 +8,7 @@ import { useEffect, useRef } from "react";
  *
  * When the user authenticates via Google OAuth in the system browser,
  * the desktop-callback page creates a one-time Clerk sign-in token
- * and sends it to the Tauri app via deep link (isol8://auth?ticket=...).
+ * and sends it to the Tauri app via deep link (flickmeon://auth?ticket=...).
  * Tauri emits an "auth:sign-in-ticket" event to the WebView.
  * This hook consumes the ticket to establish a Clerk session in the WebView.
  */

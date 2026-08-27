@@ -246,6 +246,17 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           env: vercelEnv,
         },
         {
+          // REGISTER before aliasing. The project's SSO protection is set to
+          // `all_except_custom_domains`, so a host Vercel does not know as a
+          // project domain is treated as a deployment URL and sits behind the
+          // Vercel login wall. The apex was aliased but never registered, which
+          // is why flickmeon.ai answered 302 -> vercel.com/sso-api while
+          // www.flickmeon.ai (registered just below) served fine.
+          name: `Register ${ROOT_DOMAIN} project domain`,
+          run: `vercel domains add ${ROOT_DOMAIN} frontend --force --token="$VERCEL_TOKEN"`,
+          env: vercelEnv,
+        },
+        {
           name: `Alias to ${ROOT_DOMAIN}`,
           run: `vercel alias \${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} ${ROOT_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,

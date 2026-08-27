@@ -256,21 +256,20 @@ jobs:
     - name: Patch tauri.conf.json for prod
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
-        # TWO updater endpoints, tried in order, with the LIVE host first.
-        # Post-flip that is flickmeon.ai; the isol8.co entry stays as a
-        # vestigial fallback for as long as that host still answers, and costs
-        # nothing once it does not (it is only reached if the first fails).
-        # Drop the isol8.co entry once isol8.co is fully retired.
+        # ONE updater endpoint, on the live domain. isol8.co is being retired
+        # outright, so a fallback pointing at it would be dead weight -- and a
+        # dead first-choice endpoint only slows the update check down. Desktop
+        # apps installed before the cutover cannot self-update and need a
+        # manual reinstall; that is accepted (the install base is internal).
         jq --arg url "https://flickmeon.ai/chat" \
            --arg updateUrl "https://flickmeon.ai/api/desktop/update/{{target}}/{{current_version}}" \
-           --arg nextUpdateUrl "https://isol8.co/api/desktop/update/{{target}}/{{current_version}}" \
            --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
           .bundle.targets = ["app"] |
           .build.devUrl = $url |
           .build.frontendDist = $url |
           .app.windows[0].url = $url |
-          .plugins.updater.endpoints = [$updateUrl, $nextUpdateUrl]
+          .plugins.updater.endpoints = [$updateUrl]
         ' "$TAURI_CFG" > "$TAURI_CFG.new"
         mv "$TAURI_CFG.new" "$TAURI_CFG"
         echo "Patched tauri.conf.json:"

@@ -59,7 +59,7 @@ export const LEGACY_MAIL_DOMAIN = "isol8.co";
  * exists so the product domain and the auth domain can move independently, and
  * is repointed in its own change once the Clerk domain has actually moved.
  */
-export const CLERK_DOMAIN = "isol8.co";
+export const CLERK_DOMAIN = "flickmeon.ai";
 
 /**
  * DEV product domain — flipped to the new brand ahead of prod so the whole

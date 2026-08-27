@@ -6,7 +6,7 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "isol8",
+    "scheme": "flickmeon",
     "userInterfaceStyle": "automatic",
     "runtimeVersion": {
       "policy": "fingerprint"
@@ -26,7 +26,7 @@
         "aps-environment": "production"
       },
       "associatedDomains": [
-        "applinks:isol8.co"
+        "applinks:flickmeon.ai"
       ]
     },
     "plugins": [

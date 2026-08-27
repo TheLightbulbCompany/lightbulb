@@ -5,7 +5,7 @@
  * web-based tool ONLY while there is "no purchasing inside the app, or calls
  * to action for purchase outside of the app". Isol8 sells hosted compute, so
  * the exemption fits — but the build Apple rejected on 2026-08-12 carried five
- * "Upgrade on isol8.co" CTAs, which fails that condition on its face.
+ * "Upgrade on flickmeon.ai" CTAs, which fails that condition on its face.
  *
  * Deleting the hardcoded button labels is NOT enough, and that is why this
  * module exists rather than a few inline edits. The gate copy itself comes

@@ -11,7 +11,7 @@ import {
 
 // Anti host-header-injection allowlist: the manifest hands the client a URL
 // built from the request's own Host, so only OUR hosts may be echoed back.
-// Exact matches only — a suffix match would accept `isol8.co.evil.com`.
+// Exact matches only — a suffix match would accept `flickmeon.ai.evil.com`.
 const KNOWN_UPDATE_HOSTS = new Set([
   ROOT_DOMAIN,
   `www.${ROOT_DOMAIN}`,

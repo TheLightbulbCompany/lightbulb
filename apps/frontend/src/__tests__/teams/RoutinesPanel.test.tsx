@@ -410,7 +410,7 @@ describe("RoutinesPanel", () => {
     const user = userEvent.setup();
     mockPost.mockResolvedValueOnce({ id: "rt3" }).mockResolvedValueOnce({
       secretMaterial: {
-        webhookUrl: "https://api.isol8.co/hooks/abc",
+        webhookUrl: "https://api.flickmeon.ai/hooks/abc",
         webhookSecret: "whsec_123",
       },
     });
@@ -437,7 +437,7 @@ describe("RoutinesPanel", () => {
     expect(tb.signing_mode).toBe("bearer");
 
     // The one-time secret dialog replaces the create form.
-    expect(await screen.findByText("https://api.isol8.co/hooks/abc")).toBeInTheDocument();
+    expect(await screen.findByText("https://api.flickmeon.ai/hooks/abc")).toBeInTheDocument();
     expect(screen.getByText("whsec_123")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Done" }));
@@ -545,7 +545,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
     });
     const user = await openConnectedAppRung();
@@ -614,7 +614,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
       instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
       secret_hint: "whsec_…",
@@ -635,7 +635,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     });
 
     expect(
-      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+      await screen.findByText("https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1"),
     ).toBeInTheDocument();
 
     // Done is gated until the whsec is saved — dismissing here would leave
@@ -667,7 +667,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
   it("guided (Stripe): an instructions string embedding the proxy URL renders it as a wrapped code span, not raw inline text", async () => {
     connectionsData = [connection()];
     const proxyUrl =
-      "https://api.isol8.co/api/v1/hooks/t/org_3H3viGAfq2SXc9dIdcatmGXg8Td/b9b40b9a392b15fa77ddf1fa";
+      "https://api.flickmeon.ai/api/v1/hooks/t/org_3H3viGAfq2SXc9dIdcatmGXg8Td/b9b40b9a392b15fa77ddf1fa";
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
@@ -717,7 +717,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
       instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
     });
@@ -729,7 +729,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     await openEventList(user);
     await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
     await user.click(screen.getByText("Create"));
-    await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1");
+    await screen.findByText("https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1");
 
     const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
     await user.type(secretField, "whsec_bad");
@@ -771,7 +771,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
       instructions:
         "In PostHog, open Data pipelines → Destinations and create a new 'HTTP Webhook' destination.",
@@ -795,7 +795,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     });
 
     expect(
-      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+      await screen.findByText("https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1"),
     ).toBeInTheDocument();
     // The FULL header value, Bearer prefix included — copying it whole
     // eliminates the forgot-the-prefix failure.
@@ -830,7 +830,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_new",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
     });
     const user = await pickStripeRefundEvent();
@@ -852,7 +852,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_revenue",
       trigger_public_id: "pub_att",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_att",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_att",
       guided: true,
       instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
       secret_hint: "whsec_…",
@@ -875,7 +875,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     // The guided half is unchanged — same URL to paste, same secret to arm
     // it with. Attaching only changes WHICH routine the trigger hangs off.
     expect(
-      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_att"),
+      await screen.findByText("https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_att"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/paste your stripe signing secret/i)).toBeInTheDocument();
   });
@@ -984,7 +984,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: false,
       instructions: null,
       secret_hint: null,
@@ -1059,7 +1059,7 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: false,
       instructions: null,
       secret_hint: null,
@@ -1151,7 +1151,7 @@ describe("RoutinesPanel — auto_meta asset picker", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: false,
       instructions: null,
       secret_hint: null,
@@ -1259,7 +1259,7 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: false,
       instructions: null,
       secret_hint: null,
@@ -1544,7 +1544,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
     mockAutomationsPost.mockResolvedValue({
       routine_id: "rt_1",
       trigger_public_id: "pub_1",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      proxy_url: "https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1",
       guided: false,
       instructions:
         "Create the topic, grant gmail-api-push the Publisher role, then add a push subscription.",
@@ -1579,7 +1579,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
     // no secret paste-back, and Done is enabled immediately (unlike guided).
     expect(await screen.findByText("Finish setup")).toBeInTheDocument();
     expect(
-      screen.getByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+      screen.getByText("https://api-dev.flickmeon.ai/api/v1/hooks/t/owner_1/pub_1"),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/Create the topic, grant gmail-api-push/),

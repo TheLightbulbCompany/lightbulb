@@ -10,16 +10,16 @@
  * OAuth never happen in-app), and the scheme is fixed by the native binary.
  *
  * `APP_SCHEME` mirrors `app.json`'s `scheme` and the desktop app's
- * `isol8://` registration — three separate registries, so changing one is not
+ * `flickmeon://` registration — three separate registries, so changing one is not
  * changing the others. `WEB_ORIGIN`'s host must stay in step with `app.json`'s
  * `associatedDomains` (`applinks:…`) or Universal Links stop resolving.
  */
 
 /** Bare root domain — every sibling host (api, api-dev, …) is built from it. */
-export const ROOT_DOMAIN = "isol8.co";
+export const ROOT_DOMAIN = "flickmeon.ai";
 
 /** Absolute origin of the web app, no trailing slash. */
 export const WEB_ORIGIN = `https://${ROOT_DOMAIN}`;
 
 /** Custom URL scheme this app registers for deep links. */
-export const APP_SCHEME = "isol8";
+export const APP_SCHEME = "flickmeon";

@@ -16,24 +16,24 @@ describe('deriveWebSocketUrl', () => {
     }
   });
 
-  it('rewrites prod apex hostname: api.isol8.co → ws.isol8.co', () => {
-    // Regression: before the fix this returned `wss://api.isol8.co` because the
+  it('rewrites prod apex hostname: api.flickmeon.ai → ws.flickmeon.ai', () => {
+    // Regression: before the fix this returned `wss://api.flickmeon.ai` because the
     // old `.replace("api-", "ws-")` only matched env-prefixed hostnames. Prod
     // silently routed WebSocket traffic to the ALB and failed.
-    expect(deriveWebSocketUrl('https://api.isol8.co/api/v1')).toBe(
-      'wss://ws.isol8.co',
+    expect(deriveWebSocketUrl('https://api.flickmeon.ai/api/v1')).toBe(
+      'wss://ws.flickmeon.ai',
     );
   });
 
-  it('rewrites dev env-prefixed hostname: api-dev.isol8.co → ws-dev.isol8.co', () => {
-    expect(deriveWebSocketUrl('https://api-dev.isol8.co/api/v1')).toBe(
-      'wss://ws-dev.isol8.co',
+  it('rewrites dev env-prefixed hostname: api-dev.flickmeon.ai → ws-dev.flickmeon.ai', () => {
+    expect(deriveWebSocketUrl('https://api-dev.flickmeon.ai/api/v1')).toBe(
+      'wss://ws-dev.flickmeon.ai',
     );
   });
 
   it('rewrites staging env-prefixed hostname', () => {
-    expect(deriveWebSocketUrl('https://api-staging.isol8.co/api/v1')).toBe(
-      'wss://ws-staging.isol8.co',
+    expect(deriveWebSocketUrl('https://api-staging.flickmeon.ai/api/v1')).toBe(
+      'wss://ws-staging.flickmeon.ai',
     );
   });
 
@@ -44,14 +44,14 @@ describe('deriveWebSocketUrl', () => {
   });
 
   it('downgrades https→wss and http→ws', () => {
-    expect(deriveWebSocketUrl('http://api-dev.isol8.co/api/v1')).toBe(
-      'ws://ws-dev.isol8.co',
+    expect(deriveWebSocketUrl('http://api-dev.flickmeon.ai/api/v1')).toBe(
+      'ws://ws-dev.flickmeon.ai',
     );
   });
 
   it('NEXT_PUBLIC_WS_URL override short-circuits derivation', () => {
     process.env.NEXT_PUBLIC_WS_URL = 'wss://custom.example.com';
-    expect(deriveWebSocketUrl('https://api.isol8.co/api/v1')).toBe(
+    expect(deriveWebSocketUrl('https://api.flickmeon.ai/api/v1')).toBe(
       'wss://custom.example.com',
     );
   });

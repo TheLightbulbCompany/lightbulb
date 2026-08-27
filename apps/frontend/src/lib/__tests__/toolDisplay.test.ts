@@ -97,7 +97,7 @@ describe("resolveToolDisplay", () => {
 
   it("uses the per-action label for multiplexed tools", () => {
     // `browser` alone would render 20+ different operations identically.
-    const open = resolveToolDisplay("browser", { action: "open", url: "https://isol8.co/chat" });
+    const open = resolveToolDisplay("browser", { action: "open", url: "https://flickmeon.ai/chat" });
     expect(open.gerund).toContain("open");
   });
 

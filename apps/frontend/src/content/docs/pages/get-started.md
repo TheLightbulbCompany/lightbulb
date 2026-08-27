@@ -8,7 +8,7 @@ Lightbulb AI gives you a private AI company: your own isolated workspace, persis
 
 ## 1. Sign up
 
-Create an account at [isol8.co/sign-up](/sign-up). The free tier needs no credit card. Solo owners get a personal workspace; a team creates an organization during sign-up and invites teammates — everyone in the organization shares one workspace and one roster.
+Create an account at [flickmeon.ai/sign-up](/sign-up). The free tier needs no credit card. Solo owners get a personal workspace; a team creates an organization during sign-up and invites teammates — everyone in the organization shares one workspace and one roster.
 
 ## 2. Brief your CEO
 

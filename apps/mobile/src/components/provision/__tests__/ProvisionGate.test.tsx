@@ -162,7 +162,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("You've been invited to a workspace")).toBeTruthy();
-    expect(screen.getByText("View invitation on isol8.co")).toBeTruthy();
+    expect(screen.getByText("View invitation on flickmeon.ai")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
@@ -248,7 +248,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
     expect(screen.getByText("Sign in with ChatGPT")).toBeTruthy();
     expect(
-      screen.getByText("Ask your workspace admin to finish this on isol8.co."),
+      screen.getByText("Ask your workspace admin to finish this on flickmeon.ai."),
     ).toBeTruthy();
   });
 
@@ -446,7 +446,7 @@ describe("ProvisionGate container-error interstitial", () => {
     expect(screen.getByText("Setup failed")).toBeTruthy();
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(screen.getByText("Sign out")).toBeTruthy();
-    // No outbound "Manage on isol8.co" CTA — there's nothing to manage for
+    // No outbound "Manage on flickmeon.ai" CTA — there's nothing to manage for
     // a failed provision, unlike the blocked/needsSignup gate states.
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
   });

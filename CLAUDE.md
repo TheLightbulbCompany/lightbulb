@@ -208,8 +208,19 @@ deploy run, post-merge**. Locally, `cdk synth` silently REWRITES the file instea
 complaining. So any change touching `apps/infra/lib/` must run `cd apps/infra && npx cdk synth`
 and **commit the regenerated `deploy.yml` in the same PR**. `infra-ci.yml` now enforces this
 on the PR (isol8 #2004) after four separate incidents where drift blocked every dev+prod
-deploy job. `npx cdk synth` needs a running Docker daemon — this machine runs **OrbStack**
-(`open -a OrbStack`), not Docker Desktop.
+deploy job. `npx cdk synth` does **NOT** require Docker when a local toolchain is present
+(verified 2026-08-25: `CDK_DOCKER=/usr/bin/false npx cdk synth` exits 0). The two bundled
+Lambdas (`bedrock-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
+`pip3 install`) and only fall back to a Docker bundling image when node/npm or python3/pip3
+is missing; the backend `DockerImageAsset` hashes its build context and defers `docker build`
+to the publish step, not synth. So any machine — **or an OpenClaw container** (git/gh/node/npm/
+python3-pip/uv are all baked into `apps/infra/openclaw/Dockerfile`, so an agent like Forge can
+regenerate + commit `deploy.yml` for infra PRs) — synths with no daemon. **OrbStack**
+(`open -a OrbStack`) is only the fallback if that local toolchain is absent, or if the
+`api-stack.ts` `__pycache__` EISDIR footgun silently demotes the Python authorizer synth to
+Docker. (The `infra-ci.yml` drift-guard comment still claims "Docker is required … no
+supported way to skip bundling" — that is overstated; the repo's own `local.tryBundle` is the
+skip.)
 - **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.

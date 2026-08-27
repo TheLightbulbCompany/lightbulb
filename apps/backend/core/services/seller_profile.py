@@ -40,7 +40,12 @@ BIO_MAX_LEN: Final[int] = 280
 
 RESERVED_HANDLES: Final[frozenset[str]] = frozenset(
     {
+        # Brand handles. "isol8" stays reserved after the rebrand — releasing a
+        # retired brand lets someone else publish listings under it.
         "isol8",
+        "flickmeon",
+        "lightbulb",
+        "lightbulbai",
         "admin",
         "administrator",
         "support",

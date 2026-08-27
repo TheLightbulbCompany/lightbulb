@@ -46,7 +46,10 @@ def _client():
     return boto3.client("cloudwatch", region_name=settings.AWS_REGION)
 
 
-async def last_7d() -> list[dict]:
+async def last_7d() -> dict:
+    """Returns {"totals": [...], "daily": [...]} — totals summed per code over
+    the 7-day window (unchanged shape/content), daily is the same GetMetricData
+    response's per-day buckets, one row per (day, code) with n>0."""
     env_name = (settings.ENVIRONMENT or "dev").lower()  # mirrors metrics._get_env
     end = datetime.now(timezone.utc)
     queries = [
@@ -81,7 +84,17 @@ async def last_7d() -> list[dict]:
             # a real block count then quietly vanishes from the dashboard.
             raise RuntimeError(f"GetMetricData {r['Id']}: {r.get('StatusCode')} {r.get('Messages')}")
     counts = {r["Id"][2:]: int(sum(r.get("Values") or [])) for r in results}
-    return sorted(
+    totals = sorted(
         ({"code": c, "n": n} for c, n in counts.items() if n > 0),
         key=lambda x: (-x["n"], x["code"]),
     )
+    # Timestamps come back newest-first; zip pairs each by index rather than
+    # assuming order, since that's the only guarantee boto3 gives us.
+    daily = [
+        {"day": ts.date().isoformat(), "code": r["Id"][2:], "n": int(v)}
+        for r in results
+        for ts, v in zip(r.get("Timestamps") or [], r.get("Values") or [])
+        if v > 0
+    ]
+    daily.sort(key=lambda x: (x["day"], x["code"]))
+    return {"totals": totals, "daily": daily}

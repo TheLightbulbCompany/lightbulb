@@ -25,6 +25,7 @@ from core.services.ops import envelope as env
 logger = logging.getLogger(__name__)
 
 WINDOW_WEEKS = 8
+WINDOW_DAYS = WINDOW_WEEKS * 7  # 56
 HEADLINE_BAR = 5  # "five external owners with armed automations firing for four consecutive weeks"
 HEADLINE_WEEKS = 4
 _PAID = frozenset({"active", "trialing"})  # = provision_gate.is_paid_subscription
@@ -67,6 +68,24 @@ WHERE hr.created_at > now() - interval '{WINDOW_WEEKS + 1} weeks'
 GROUP BY 1, 2, 3
 """
 
+# Same query as SQL_RUNS_BY_WEEK (see its ponytail note re: seq-scans), bucketed
+# by day instead of week for the daily charts.
+SQL_RUNS_BY_DAY = f"""
+SELECT hr.company_id,
+       to_char(date_trunc('day', hr.created_at), 'YYYY-MM-DD') AS day,
+       CASE WHEN r.title = '{NIGHTLY_CEO_ROUTINE_TITLE}' THEN 'nightly_ceo'
+            WHEN rr.source IN ('schedule', 'webhook') THEN 'autonomous'
+            ELSE 'human' END AS kind,
+       count(*) FILTER (WHERE hr.status = 'succeeded') AS ok,
+       count(*) AS total
+FROM heartbeat_runs hr
+LEFT JOIN issues i ON i.id::text = hr.context_snapshot->>'issueId'
+LEFT JOIN routine_runs rr ON rr.linked_issue_id = i.id
+LEFT JOIN routines r ON r.id = rr.routine_id
+WHERE hr.created_at > now() - interval '{WINDOW_DAYS + 1} days'
+GROUP BY 1, 2, 3
+"""
+
 # ponytail: seq-scans heartbeat_runs (every fork index is company_id-leading;
 # no created_at index) on the tenant-facing 0-4 ACU Aurora, once per 60s while
 # an admin has the page open — fine at tens of tenants; when it isn't, add a
@@ -102,6 +121,17 @@ where event in ('landing_viewed', 'signup_started', 'trial_started', 'first_run_
 group by week, event order by week, event limit 500
 """
 
+# Same event list/window as HOGQL_FUNNEL, bucketed by day for the daily charts.
+HOGQL_FUNNEL_DAILY = f"""
+select toDate(timestamp) as day, event, uniq(distinct_id) as owners
+from events
+where event in ('landing_viewed', 'signup_started', 'trial_started', 'first_run_brief_submitted',
+                'trial_first_agent_response', 'chat_completed', 'trial_converted',
+                'subscription_activated', 'subscription_cancelled', 'automation_armed')
+  and timestamp > now() - interval {WINDOW_WEEKS + 1} week
+group by day, event order by day, event limit 2000
+"""
+
 # Organic / referral share of signups (SEO plan §6). person_profiles is
 # identified_only and signup_started fires pre-identify, so
 # person.properties.$initial_* is empty here — read the EVENT's own
@@ -125,10 +155,23 @@ def week_of(ts: str | None) -> str | None:
     return (d - timedelta(days=d.weekday())).isoformat()
 
 
+def day_of(ts: str | None) -> str | None:
+    """ISO date for an ISO-8601 timestamp (or None)."""
+    if not ts:
+        return None
+    return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).date().isoformat()
+
+
 def _weeks(now: datetime, n: int) -> list[str]:
     """The last n Monday buckets, oldest first, ending with the current (partial) week."""
     monday = (now - timedelta(days=now.weekday())).date()
     return [(monday - timedelta(weeks=i)).isoformat() for i in range(n - 1, -1, -1)]
+
+
+def _days(now: datetime, n: int) -> list[str]:
+    """The last n calendar days, oldest first, ending with today (UTC date of `now`)."""
+    today = now.date()
+    return [(today - timedelta(days=i)).isoformat() for i in range(n - 1, -1, -1)]
 
 
 def _iso(v) -> str | None:
@@ -156,10 +199,12 @@ def derive(
     routines: list[dict],
     runs: list[dict],
     first_autonomous: list[dict],
-    gate_blocked: list[dict],
+    gate_blocked: dict,
     posthog_runs: list[list],
     posthog_funnel: list[list],
     posthog_sources: list[list],
+    runs_daily: list[dict],
+    posthog_funnel_daily: list[list],
     internal: set[str],
     now: datetime,
     weeks: int = WINDOW_WEEKS,
@@ -205,6 +250,7 @@ def derive(
         if it.get("status", "connected") == "connected":
             providers_by_owner[it["owner_id"]].append(it["provider"])
     week_list = _weeks(now, weeks)
+    day_list = _days(now, WINDOW_DAYS)
     headline_weeks = week_list[-HEADLINE_WEEKS - 1 : -1]  # last 4 COMPLETED weeks
 
     def is_armed(r: dict) -> bool:
@@ -309,6 +355,26 @@ def derive(
         consecutive = sorted(name_of(o) for o in owner_set if all(o in active_by_week[w] for w in headline_weeks))
         headline = {"bar": HEADLINE_BAR, "count": len(consecutive), "owners": consecutive, "weeks": headline_weeks}
 
+        # Daily — same run/signup facts as above, at day resolution for the charts.
+        # Days with no runs/signups are present with zeros: a chart needs a continuous axis.
+        seg_runs_daily = [r for r in runs_daily if r["company_id"] in company_set]
+        daily_sums: dict[str, Counter] = defaultdict(Counter)
+        for r in seg_runs_daily:
+            daily_sums[r["day"]][r["kind"]] += int(r.get("ok") or 0)
+        signups_by_day = Counter(day_of(b.get("created_at")) for b in rows)
+        daily = {
+            "runs": [
+                {
+                    "day": d,
+                    "autonomous_ok": daily_sums[d]["autonomous"],
+                    "human_ok": daily_sums[d]["human"],
+                    "nightly_ok": daily_sums[d]["nightly_ceo"],
+                }
+                for d in day_list
+            ],
+            "signups": [{"day": d, "n": signups_by_day.get(d, 0)} for d in day_list],
+        }
+
         # Retention — weekly active owners is ns_weeks.owners_active; survival over routines ≥30d old.
         cutoff = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
         cutoff = cutoff - timedelta(days=30)
@@ -383,6 +449,7 @@ def derive(
             "depth": depth,
             "counters": counters,
             "nightly_ceo": nightly,
+            "daily": daily,
         }
 
     ext_rows = [b for b in billing if b["owner_id"] not in internal]
@@ -391,13 +458,16 @@ def derive(
         "generated_at": now.isoformat(),
         "window_weeks": weeks,
         "weeks": week_list,
+        "days": day_list,
         "segments": {"external": segment(ext_rows), "internal": segment(int_rows)},
         "internal_owner_ids": sorted(internal),
-        "gate_blocked_7d": gate_blocked,
+        "gate_blocked_7d": (gate_blocked or {}).get("totals", []),
+        "gate_blocked_daily": (gate_blocked or {}).get("daily", []),
         "posthog": {
             "runs": [{"week": str(r[0])[:10], "kind": r[1], "n": r[2]} for r in posthog_runs],
             "funnel": [{"week": str(r[0])[:10], "event": r[1], "owners": r[2]} for r in posthog_funnel],
             "signup_sources": [{"source": r[0], "owners": r[1]} for r in posthog_sources],
+            "funnel_daily": [{"day": str(r[0])[:10], "event": r[1], "owners": r[2]} for r in posthog_funnel_daily],
         },
     }
 
@@ -422,28 +492,42 @@ async def _read_ddb() -> dict:
 async def _read_aurora() -> dict:
     from core.services.paperclip_sql import select_rows
 
-    companies, routines, runs, first = await asyncio.gather(
+    companies, routines, runs, first, runs_daily = await asyncio.gather(
         select_rows(SQL_COMPANIES),
         select_rows(SQL_ROUTINES),
         select_rows(SQL_RUNS_BY_WEEK),
         select_rows(SQL_FIRST_AUTONOMOUS),
+        select_rows(SQL_RUNS_BY_DAY),
     )
-    return {"companies": companies, "routines": routines, "runs": runs, "first_autonomous": first}
+    return {
+        "companies": companies,
+        "routines": routines,
+        "runs": runs,
+        "first_autonomous": first,
+        "runs_daily": runs_daily,
+    }
 
 
 async def _read_posthog() -> dict:
     from core.services.posthog_admin import hogql
 
-    runs, funnel, sources = await asyncio.gather(hogql(HOGQL_RUNS), hogql(HOGQL_FUNNEL), hogql(HOGQL_SIGNUP_SOURCES))
-    for name, res in (("runs", runs), ("funnel", funnel), ("sources", sources)):
+    runs, funnel, sources, funnel_daily = await asyncio.gather(
+        hogql(HOGQL_RUNS), hogql(HOGQL_FUNNEL), hogql(HOGQL_SIGNUP_SOURCES), hogql(HOGQL_FUNNEL_DAILY)
+    )
+    for name, res in (("runs", runs), ("funnel", funnel), ("sources", sources), ("funnel_daily", funnel_daily)):
         if res["error"]:
             raise RuntimeError(f"hogql {name}: {res['error']}")
-    if any(res["stubbed"] for res in (runs, funnel, sources)):
+    if any(res["stubbed"] for res in (runs, funnel, sources, funnel_daily)):
         raise RuntimeError("hogql stubbed: POSTHOG_PROJECT_API_KEY/POSTHOG_PROJECT_ID unset")
-    return {"runs": runs["results"], "funnel": funnel["results"], "sources": sources["results"]}
+    return {
+        "runs": runs["results"],
+        "funnel": funnel["results"],
+        "sources": sources["results"],
+        "funnel_daily": funnel_daily["results"],
+    }
 
 
-async def _read_gate_blocked() -> list[dict]:
+async def _read_gate_blocked() -> dict:
     from core.services.ops import gate_blocked
 
     return await gate_blocked.last_7d()
@@ -496,16 +580,17 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     errors = aurora_err + ph_err + gate_err
     state = env.PARTIAL if errors else env.OK
 
-    aurora = aurora or {"companies": [], "routines": [], "runs": [], "first_autonomous": []}
-    ph = ph or {"runs": [], "funnel": [], "sources": []}
+    aurora = aurora or {"companies": [], "routines": [], "runs": [], "first_autonomous": [], "runs_daily": []}
+    ph = ph or {"runs": [], "funnel": [], "sources": [], "funnel_daily": []}
     try:
         data = derive(
             **ddb,
             **aurora,
-            gate_blocked=gate or [],
+            gate_blocked=gate or {},
             posthog_runs=ph["runs"],
             posthog_funnel=ph["funnel"],
             posthog_sources=ph["sources"],
+            posthog_funnel_daily=ph["funnel_daily"],
             internal=internal,
             now=datetime.now(timezone.utc),
         )

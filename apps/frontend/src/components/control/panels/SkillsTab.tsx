@@ -582,7 +582,7 @@ function SkillCard({
               // read as "I can't modify this and don't know why".
               <span
                 className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--mute)] cursor-help"
-                title="This skill is always on — it's managed by Isol8 and can't be turned off."
+                title="This skill is always on — it's managed by Lightbulb AI and can't be turned off."
                 style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 Always on

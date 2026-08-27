@@ -374,7 +374,7 @@ class TrialCheckoutRequest(BaseModel):
             "line item, for provider_choice=bedrock_claude only. Min $5, max "
             "$1,000 — the same window the standalone top-up enforces. Omit for "
             "the default. Ignored for the other two providers, which spend no "
-            "Isol8 credits."
+            "Lightbulb AI credits."
         ),
     )
 

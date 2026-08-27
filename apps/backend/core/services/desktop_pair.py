@@ -348,14 +348,14 @@ async def pair_desktop_devices(
     mac_entry = build_paired_entry(
         pubkey_pem=tauri_mac_pubkey,
         client_id="openclaw-macos",
-        display_name=f"{display_name_base} | Isol8 Mac",
+        display_name=f"{display_name_base} | Lightbulb AI Mac",
         commands=list(mac_commands),
         user_id=user_id,
     )
     cli_entry = build_paired_entry(
         pubkey_pem=cli_pubkey,
         client_id="node-host",
-        display_name=f"{display_name_base} | Isol8 Desktop (CLI)",
+        display_name=f"{display_name_base} | Lightbulb AI Desktop (CLI)",
         commands=list(cli_commands),
         user_id=user_id,
     )

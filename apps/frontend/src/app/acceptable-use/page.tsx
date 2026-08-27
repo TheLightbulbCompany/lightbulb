@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Acceptable Use Policy — isol8",
+  title: "Acceptable Use Policy — Lightbulb AI",
   alternates: { canonical: absoluteUrl("/acceptable-use") },
-  description: "The rules governing acceptable use of the isol8 platform.",
+  description: "The rules governing acceptable use of the Lightbulb AI platform.",
 };
 
 export default function AcceptableUsePage() {

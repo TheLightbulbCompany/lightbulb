@@ -86,7 +86,7 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     expect(btn).toHaveTextContent("$150");
 
     // The existing $50 card + Manage Payment button stay intact.
-    expect(screen.getByText("Isol8 — $50 / month")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI — $50 / month")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
 
     await act(async () => {

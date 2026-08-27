@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Accessibility Statement — isol8",
+  title: "Accessibility Statement — Lightbulb AI",
   alternates: { canonical: absoluteUrl("/accessibility") },
-  description: "isol8's commitment to digital accessibility and WCAG 2.2 AA.",
+  description: "Lightbulb AI's commitment to digital accessibility and WCAG 2.2 AA.",
 };
 
 export default function AccessibilityPage() {

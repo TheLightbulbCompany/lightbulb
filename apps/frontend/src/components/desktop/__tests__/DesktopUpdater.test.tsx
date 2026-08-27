@@ -30,7 +30,7 @@ describe("DesktopUpdater webview-driven flow", () => {
 
   it("renders the static version label when not running under Tauri", () => {
     render(<DesktopUpdater version="9.9" />);
-    expect(screen.getByText(/isol8 v9\.9/i)).toBeTruthy();
+    expect(screen.getByText(/Lightbulb AI v9\.9/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /check for updates/i })).toBeNull();
   });
 

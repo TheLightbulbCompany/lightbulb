@@ -13,7 +13,7 @@ description: >
 <!--
   ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
   This skill is vendored from the Paperclip skills-catalog, but carries
-  Isol8-local changes that upstream does not have. If you re-vendor, re-apply
+  Lightbulb AI-local changes that upstream does not have. If you re-vendor, re-apply
   each of these rather than letting them silently revert:
 
   1. Write-path helper mandate ("Writing to the Paperclip API" section + the
@@ -29,7 +29,7 @@ description: >
      issues on the owner's live board to debug API behavior; use --dry-run.
   4. Scripts: /app/skills/paperclip/scripts/paperclip-api.sh and /app/skills/paperclip/scripts/paperclip-issue-update.sh
      treat PAPERCLIP_RUN_ID as optional (header sent only when set), and
-     paperclip-api.sh carries an Isol8-added top-level `create` subcommand,
+     paperclip-api.sh carries a Lightbulb AI-added top-level `create` subcommand,
      a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
      body) so no write ever needs hand-rolled curl, and `update` field
      flags (--title/--priority/--assignee) so the webchat section's
@@ -50,7 +50,7 @@ description: >
      an agent filing a few assigned tasks in one heartbeat starts a run storm.
      Keep both the helper default and the doc wording on re-vendor.
   7. Webchat capability section ("Webchat and interactive sessions"): upstream
-     documents only the heartbeat worldview; Isol8 owners drive agents from a
+     documents only the heartbeat worldview; Lightbulb AI owners drive agents from a
      live chat surface daily. Added after a first-run Friday, asked in webchat
      to adjust tasks it had just created, tried to checkout, got "Agent run id
      required", and relayed that to the owner — instead of just PATCHing the
@@ -476,7 +476,7 @@ For commands, response fields, and MCP tools, read:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them — except back to the agent that created an open ancestor of your issue (`409 delegation_cycle`). When the only remaining owner is a human, use an approval/confirmation card on your own issue (Step 7), never an unassigned child.
 - **Never create or leave a follow-up or blocker issue unassigned.** (Top-level `backlog` items filed for later may stay unassigned.) Unassigned blockers are reassigned to their creator by the recovery pass; an unassigned issue is not a handoff to the board.
-- **Hiring**: do not call Paperclip's `/agents` or `/agent-hires` endpoints. Isol8 owns agent limits, workspaces, and approval pairing. Search the live Isol8 marketplace and send a `recommend_agents` card first. If no listing fits, delegate a role specification to Atlas; only the owner's governed Isol8 deploy or approval flow may change the roster.
+- **Hiring**: do not call Paperclip's `/agents` or `/agent-hires` endpoints. Lightbulb AI owns agent limits, workspaces, and approval pairing. Search the live Lightbulb AI marketplace and send a `recommend_agents` card first. If no listing fits, delegate a role specification to Atlas; only the owner's governed Lightbulb AI deploy or approval flow may change the roster.
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 
 This is rule #1:

@@ -100,7 +100,7 @@ async def test_welcome_email_renders_as_html_not_plaintext(monkeypatch):
 
     result = await email_service.send_email(
         to="a@b.com",
-        subject="Welcome to Isol8",
+        subject="Welcome to Lightbulb AI",
         html="<p>hi</p>",
         from_addr="Isol8 <hello@isol8.co>",
         reply_to="support@isol8.co",
@@ -113,7 +113,7 @@ async def test_welcome_email_renders_as_html_not_plaintext(monkeypatch):
     assert parsed.get_content_type() == "text/html"
     assert not parsed.is_multipart()
     assert parsed["Reply-To"] == "support@isol8.co"
-    assert parsed["Subject"] == "Welcome to Isol8"
+    assert parsed["Subject"] == "Welcome to Lightbulb AI"
     assert parsed.get_content().strip() == "<p>hi</p>"
 
 

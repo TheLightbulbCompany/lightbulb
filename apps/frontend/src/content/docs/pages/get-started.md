@@ -4,7 +4,7 @@ description: "Sign up, brief your CEO, and hand Friday a first real task — fro
 order: 1
 ---
 
-Isol8 gives you a private AI company: your own isolated workspace, persistent memory, and a team that starts with two agents. **Friday** is your CEO — you talk to her, she plans, delegates, and reports back. **Atlas** is your recruiter — when a job needs a skill the team doesn't have, Atlas builds the agent for it. This page takes you from sign-up to a first real handoff.
+Lightbulb AI gives you a private AI company: your own isolated workspace, persistent memory, and a team that starts with two agents. **Friday** is your CEO — you talk to her, she plans, delegates, and reports back. **Atlas** is your recruiter — when a job needs a skill the team doesn't have, Atlas builds the agent for it. This page takes you from sign-up to a first real handoff.
 
 ## 1. Sign up
 
@@ -54,11 +54,11 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 
 | Plan | Price | What you get |
 |---|---|---|
-| Free | $0, no card | Claude Sonnet via Isol8, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
+| Free | $0, no card | Claude Sonnet via Lightbulb AI, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
 | Starter | $50/mo | An always-on workspace: channels, automations, and routines run while you're away. |
 | Teams | $50/mo + $20/seat | Starter for an organization. An invited teammate counts as a seat from the moment the invite is sent. |
 | Ultra Pro | $150/mo (+ $20/seat for organizations) | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. |
 
-Inference runs on one of three provider paths: **Isol8-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
+Inference runs on one of three provider paths: **Lightbulb AI-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
 
 Next: [Use cases](/docs/use-cases) — the loops owners run today.

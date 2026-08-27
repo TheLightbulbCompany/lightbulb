@@ -6,7 +6,7 @@ import React from "react";
 // a subscribed org on a flat/comped sub (is_seat_subscription: false) must
 // NOT see the per-seat "N seats × $price" paywall math fabricated from a
 // nonexistent Stripe subscription item — it should fall through to the
-// plain "Isol8 plan / Active" card with the spend line instead. A real
+// plain "Lightbulb AI plan / Active" card with the spend line instead. A real
 // per-seat sub (is_seat_subscription: true) still gets TeamBillingCard.
 //
 // Mocking harness copied from ../page.nav.test.tsx: mock next/navigation's
@@ -92,7 +92,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText(/teams billing/i)).not.toBeInTheDocument();
 
     // The plain subscribed plan card renders instead.
-    expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI plan")).toBeInTheDocument();
     expect(screen.getByText("Active subscription")).toBeInTheDocument();
 
     // The spend line was removed from the settings billing card (provider-
@@ -124,7 +124,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI plan")).toBeInTheDocument();
     expect(screen.getByText("Past due")).toBeInTheDocument();
     expect(screen.queryByText("past_due")).not.toBeInTheDocument();
   });
@@ -148,7 +148,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
 
     expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
     expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
-    expect(screen.queryByText("Isol8 plan")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lightbulb AI plan")).not.toBeInTheDocument();
   });
 
   it("unsubscribed org renders TeamBillingCard with the subscribe CTA", () => {
@@ -158,7 +158,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole("button", { name: /subscribe your team/i })).toBeInTheDocument();
-    expect(screen.queryByText("Isol8 plan")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lightbulb AI plan")).not.toBeInTheDocument();
   });
 
   it("non-admin member of a flat/comped subscribed org sees no spend and no Manage/CTA button (security fix)", () => {
@@ -271,7 +271,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
 
     // Free-tier framing: mapped title + chip, never the raw enum, and
     // never the paid "Active subscription" copy.
-    expect(screen.getByText("Isol8 — Free tier")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI — Free tier")).toBeInTheDocument();
     expect(screen.getByText("Free tier")).toBeInTheDocument();
     expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
@@ -338,7 +338,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Isol8 — Free tier")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI — Free tier")).toBeInTheDocument();
     expect(screen.getByText("Free tier")).toBeInTheDocument();
     expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
     // The expired framing must NOT appear while the window is open.
@@ -407,7 +407,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Isol8 — $50 / month")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb AI — $50 / month")).toBeInTheDocument();
     expect(screen.getByText("Active subscription")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /subscribe — \$50\/mo/i })).not.toBeInTheDocument();

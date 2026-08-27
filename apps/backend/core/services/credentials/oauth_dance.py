@@ -84,7 +84,7 @@ async def _register_dcr_client(owner_id: str, provider_key: str, p: registry.Pro
     OAuthClientInformationMixed) is cached so re-connects reuse the same client;
     client_secret is stored as "" to flag the client public to exchange()."""
     body = {
-        "client_name": "Isol8",
+        "client_name": "Lightbulb AI",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],

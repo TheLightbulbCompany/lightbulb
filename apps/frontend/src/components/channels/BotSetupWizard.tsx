@@ -617,7 +617,7 @@ export function BotSetupWizard({
             Go to <span className="font-semibold">Basic Information</span> → scroll to{" "}
             <span className="font-semibold">App-Level Tokens</span> →{" "}
             <span className="font-semibold">Generate Token and Scopes</span>, name it{" "}
-            <span className="font-mono">isol8</span>, add the{" "}
+            <span className="font-mono">Lightbulb AI</span>, add the{" "}
             <span className="font-mono">connections:write</span> scope, click{" "}
             <span className="font-semibold">Generate</span>, copy the <span className="font-mono">xapp-</span>
             {" "}token.

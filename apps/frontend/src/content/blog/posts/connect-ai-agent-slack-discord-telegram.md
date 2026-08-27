@@ -2,7 +2,7 @@
 title: "How to connect an AI agent to Slack, Discord, or Telegram"
 description: "An AI agent is far more useful when it lives where your team already talks. Here's how to give an agent its own channel presence on Slack, Discord, and Telegram — and what to watch out for."
 date: "2026-07-15"
-author: "The isol8 team"
+author: "The Lightbulb AI team"
 tags: ["ai-agents","channels","slack","discord","telegram"]
 ---
 
@@ -40,9 +40,9 @@ A few things reliably bite people wiring agents into channels:
 - **Message loops.** An agent that reacts to its own messages can spiral. The routing layer needs to ignore the bot's own output.
 - **Reprovision wipes.** If your platform rebuilds the agent's container, naive setups lose the channel wiring. You want channel bindings stored as durable state, not baked into an ephemeral runtime.
 
-## How isol8 handles it
+## How Lightbulb AI handles it
 
-[isol8](/) treats channels as first-class. Each agent in your pod can be bound to **Slack, Discord, or Telegram**, and the platform manages the parts that are tedious and easy to get wrong:
+[Lightbulb AI](/) treats channels as first-class. Each agent in your pod can be bound to **Slack, Discord, or Telegram**, and the platform manages the parts that are tedious and easy to get wrong:
 
 - **Guided setup** — a setup wizard walks you through connecting the bot, instead of hand-wiring webhooks and tokens for each platform separately.
 - **One agent per channel** — a bot token binds to a single agent, and the platform refuses to assign the same token to two agents, so routing is never ambiguous.
@@ -58,4 +58,4 @@ Start a private pod for **free, no credit card required** — you can chat with 
 
 ---
 
-*isol8 gives you a private, isolated AI pod with a team of agents that can live in your channels — built on [OpenClaw](https://github.com/openclaw/openclaw).*
+*Lightbulb AI gives you a private, isolated AI pod with a team of agents that can live in your channels — built on [OpenClaw](https://github.com/openclaw/openclaw).*

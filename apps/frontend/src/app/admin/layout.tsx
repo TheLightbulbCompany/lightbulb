@@ -54,7 +54,7 @@ export default async function AdminLayout({
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-8">
             <Link href="/admin" className="text-lg font-semibold text-zinc-100">
-              isol8 admin
+              Lightbulb AI admin
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <Link

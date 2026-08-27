@@ -144,7 +144,7 @@ export default function SignIn() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <Text style={styles.logo}>isol8</Text>
+      <Text style={styles.logo}>Lightbulb AI</Text>
       {/* Apple's own button component, NOT a look-alike. Rejected under
           guideline 4 (2026-08-12) for drawing the mark as a U+F8FF text glyph:
           the logo artwork has to come from Apple, which for React Native means

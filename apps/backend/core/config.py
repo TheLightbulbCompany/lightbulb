@@ -490,7 +490,7 @@ class Settings(BaseSettings):
     # Visible From identities on the verified isol8.co domain. Same across
     # envs, so plain defaults (no CDK wiring) — override via env only if a
     # future env needs a different sender.
-    EMAIL_FROM_WELCOME: str = "Isol8 <hello@isol8.co>"
+    EMAIL_FROM_WELCOME: str = "Lightbulb AI <hello@isol8.co>"
     # The Google Workspace support mailbox. Used as Reply-To on the welcome
     # email (a plain reply lands in the inbox the agent watches) and (Plan 2)
     # as the ticket destination.
@@ -498,7 +498,7 @@ class Settings(BaseSettings):
     # Sender identity for support-ticket delivery emails. Lands in the
     # EMAIL_SUPPORT_ADDRESS inbox; distinct from welcome's hello@ so a Gmail
     # filter / the agent can tell app-generated tickets from direct customer mail.
-    EMAIL_FROM_TICKETS: str = "Isol8 Support <tickets@isol8.co>"
+    EMAIL_FROM_TICKETS: str = "Lightbulb AI Support <tickets@isol8.co>"
 
     @field_validator("CLERK_ISSUER")
     @classmethod

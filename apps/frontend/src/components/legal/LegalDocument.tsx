@@ -32,7 +32,7 @@ export function LegalDocument({ dataId }: LegalDocumentProps) {
       </main>
 
       <footer className="legal-footer">
-        <p>&copy; {new Date().getFullYear()} isol8 Inc. All rights reserved.</p>
+        <p>&copy; {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.</p>
         <nav className="legal-footer-links">
           <Link href="/privacy">Privacy Policy</Link>
           <Link href="/terms">Terms of Service</Link>

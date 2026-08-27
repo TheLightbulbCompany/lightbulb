@@ -1351,7 +1351,7 @@ async def _guard_seeded_delete(
             "id": req_id,
             "ok": False,
             "error": {
-                "message": "Friday and Atlas are managed by Isol8 and can't be deleted.",
+                "message": "Friday and Atlas are managed by Lightbulb AI and can't be deleted.",
             },
         },
     )

@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Disclaimer — isol8",
+  title: "Disclaimer — Lightbulb AI",
   alternates: { canonical: absoluteUrl("/disclaimer") },
-  description: "Disclaimers governing your use of isol8 and its AI agents.",
+  description: "Disclaimers governing your use of Lightbulb AI and its AI agents.",
 };
 
 export default function DisclaimerPage() {

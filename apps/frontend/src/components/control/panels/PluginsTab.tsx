@@ -136,7 +136,7 @@ export function PluginsTab() {
             </h2>
             <p className="text-sm text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               OpenClaw plugins loaded in your container. A plugin bundles tools, skills,
-              providers and channels. Isol8-managed plugins are locked.
+              providers and channels. Lightbulb AI-managed plugins are locked.
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--mute)] hover:text-[var(--ink)]">

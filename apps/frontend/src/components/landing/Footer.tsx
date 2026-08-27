@@ -44,12 +44,12 @@ export function Footer() {
         </div>
 
         <div className="ld-footer-base">
-          <span>© {new Date().getFullYear()} isol8 Inc. All rights reserved.</span>
+          <span>© {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.</span>
           <span>Autonomous businesses · built on OpenClaw</span>
         </div>
 
         <span className="ld-footer-word" aria-hidden="true">
-          isol8
+          Lightbulb AI
         </span>
       </div>
     </footer>

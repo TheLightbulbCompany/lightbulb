@@ -1,7 +1,7 @@
 import { SettingsGatewayGate } from "@/components/settings/SettingsGatewayGate";
 
 export const metadata = {
-  title: 'Settings - isol8',
+  title: 'Settings - Lightbulb AI',
   description: 'Manage your agent settings and preferences',
 }
 

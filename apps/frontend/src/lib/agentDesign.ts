@@ -70,7 +70,7 @@ function firstSentence(text: string, max = 140): string {
 export function fromListing(listing: Listing): EditorialListing {
   const palette = paletteFor(listing.slug);
   const monogram = initialsFor(listing.name);
-  const vibe = firstSentence(stripMarkdown(listing.description_md)) || "An Isol8 marketplace agent.";
+  const vibe = firstSentence(stripMarkdown(listing.description_md)) || "A Lightbulb AI marketplace agent.";
   const role = listing.tags[0] ? listing.tags[0] : "Agent";
   const isFree = listing.price_cents === 0;
   const price = isFree ? "Free" : `$${(listing.price_cents / 100).toFixed(2)}`;

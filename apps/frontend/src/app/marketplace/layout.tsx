@@ -6,8 +6,8 @@ import { Navbar } from "@/components/landing/Navbar";
 import { UserSync } from "@/components/marketplace/storefront/UserSync";
 
 export const metadata: Metadata = {
-  title: "Isol8 Marketplace — AI agents you can deploy in one click",
-  description: "Browse, buy, and deploy AI agents into your Isol8 container.",
+  title: "Lightbulb AI Marketplace — AI agents you can deploy in one click",
+  description: "Browse, buy, and deploy AI agents into your Lightbulb AI container.",
 };
 
 export default function MarketplaceLayout({ children }: { children: React.ReactNode }) {
@@ -69,7 +69,7 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
       <div className="flex-1">{children}</div>
       <footer className="border-t border-[var(--edge)] bg-[var(--cream-deeper)]">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6 text-xs text-[var(--mute)]">
-          <span className="font-mono uppercase tracking-[0.14em]">Isol8 marketplace · v0</span>
+          <span className="font-mono uppercase tracking-[0.14em]">Lightbulb AI marketplace · v0</span>
           <nav className="flex items-center gap-4">
             <Link href="/terms" className="text-[var(--mute)] no-underline hover:text-[var(--forest)]">
               Terms
@@ -78,7 +78,7 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
               Privacy
             </Link>
             <Link href="/" className="text-[var(--mute)] no-underline hover:text-[var(--forest)]">
-              ← Back to Isol8
+              ← Back to Lightbulb AI
             </Link>
           </nav>
           <span>Free to install. Usage costs follow your provider settings.</span>

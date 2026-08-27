@@ -5,7 +5,7 @@ import { AgentsBrowse } from "./AgentsBrowse";
 import { JsonLd, absoluteUrl, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "Browse AI Agents for Business Workflows | isol8",
+  title: "Browse AI Agents for Business Workflows | Lightbulb AI",
   description: "Search deployable AI agents for company workflows, including operations, customer support, research, sales, and internal automation.",
   path: "/marketplace/agents",
 });
@@ -21,7 +21,7 @@ export default async function Agents() {
 
   return (
     <main>
-      <JsonLd data={{ ...softwareApplicationJsonLd, name: "isol8 deployable AI agents", url: absoluteUrl("/marketplace/agents") }} />
+      <JsonLd data={{ ...softwareApplicationJsonLd, name: "Lightbulb AI deployable AI agents", url: absoluteUrl("/marketplace/agents") }} />
       <JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Marketplace", path: "/marketplace" }, { name: "Agents", path: "/marketplace/agents" }])} />
       <section className="border-b border-[var(--edge)] px-6 py-14">
         <div className="mx-auto max-w-6xl">
@@ -32,7 +32,7 @@ export default async function Agents() {
             Browse <em className="text-[var(--forest)]">agents.</em>
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--ink-soft)]">
-            {items.length} {items.length === 1 ? "agent" : "agents"} ready to deploy into your Isol8
+            {items.length} {items.length === 1 ? "agent" : "agents"} ready to deploy into your Lightbulb AI
             container.
           </p>
         </div>

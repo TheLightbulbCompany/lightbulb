@@ -6,7 +6,7 @@ import { Footer } from "@/components/landing/Footer";
 import { getAllPosts } from "@/content/blog";
 import { formatPostDate } from "@/content/blog/format";
 
-const TITLE = "Blog — isol8";
+const TITLE = "Blog — Lightbulb AI";
 const DESCRIPTION =
   "Practical writing on AI agents, persistent workspaces, and building an AI team you actually own.";
 
@@ -19,7 +19,7 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
     url: "/blog",
     type: "website",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "isol8" }],
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb AI" }],
   },
   twitter: {
     card: "summary_large_image",
@@ -39,7 +39,7 @@ export default function BlogIndexPage() {
       <section className="blog-wrap">
         <header className="blog-header">
           <p className="blog-eyebrow">field_notes</p>
-          <h1 className="blog-title">The isol8 blog</h1>
+          <h1 className="blog-title">The Lightbulb AI blog</h1>
           <p className="blog-lede">{DESCRIPTION}</p>
         </header>
 

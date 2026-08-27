@@ -15,18 +15,18 @@
 //
 // Guarded by slackManifest.test.ts so a future edit can't silently drop scopes.
 export const SLACK_APP_MANIFEST = `display_information:
-  name: Isol8 Agent
-  description: Connect Slack to your Isol8 agents.
+  name: Lightbulb AI Agent
+  description: Connect Slack to your Lightbulb AI agents.
 features:
   bot_user:
-    display_name: Isol8 Agent
+    display_name: Lightbulb AI Agent
     always_online: true
   app_home:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   assistant_view:
-    assistant_description: Isol8 Agent connects Slack assistant threads to your Isol8 agents.
+    assistant_description: Lightbulb AI Agent connects Slack assistant threads to your Lightbulb AI agents.
     suggested_prompts:
       - title: What can you do?
         message: What can you help me with?

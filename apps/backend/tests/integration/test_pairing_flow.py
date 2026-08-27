@@ -203,7 +203,7 @@ async def test_friday_identity_skipped_on_reprovision(monkeypatch, tmp_path):
     # conversations), so the file is prefix-preserved, not byte-identical.
     content = soul_path.read_text()
     assert content.startswith("CUSTOM SOUL — user edited this")
-    assert content.count("## You are made of Isol8") == 1
+    assert content.count(friday_identity._SELF_GROUNDING_HEADING) == 1
 
     # Third provision: the migration is idempotent — no second append.
     await friday_identity.pre_stage_friday_identity(

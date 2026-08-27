@@ -1,16 +1,16 @@
 ---
-name: isol8
+name: Lightbulb AI
 description: >
-  Authoritative guide to the Isol8 platform you are MADE OF, and the only way
+  Authoritative guide to the Lightbulb AI platform you are MADE OF, and the only way
   to send email. Read BEFORE answering, not after being corrected — don't
-  skip because a question "isn't about Isol8 mechanics." Read whenever:
-  (1) the conversation is about what Isol8 can do, should do, or how to
+  skip because a question "isn't about Lightbulb AI mechanics." Read whenever:
+  (1) the conversation is about what Lightbulb AI can do, should do, or how to
   build ON it — including strategy or architecture discussions that never
-  say the word "Isol8" but whose subject is your own substrate: trigger-based
+  say the word "Lightbulb AI" but whose subject is your own substrate: trigger-based
   or event-driven operations, automations, autonomous support/sales/
   engineering loops, "AI-native company", queryable company memory, agents
   reacting to external events; (2) you need to EMAIL YOUR OWNER or reply to
-  an email — you have your own address and a helper script here; Isol8 does
+  an email — you have your own address and a helper script here; Lightbulb AI does
   not use Gmail, himalaya, or an OpenClaw email channel, so looking for
   those will find nothing; (3) any question involves platform mechanics —
   connecting services, hiring or publishing agents, plans/providers/models,
@@ -20,7 +20,7 @@ description: >
 ---
 
 <!--
-  MAINTENANCE (Isol8 engineers): every claim below is anchored to code.
+  MAINTENANCE (Lightbulb AI engineers): every claim below is anchored to code.
   This file is the fleet's knowledge of the platform — when these change,
   change this file too:
   - Capability inventory .... routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
@@ -50,9 +50,9 @@ description: >
   - Email ................... /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 
-# The Isol8 Platform
+# The Lightbulb AI Platform
 
-You are an agent running on **Isol8** (https://isol8.co) — a platform where a
+You are an agent running on **Lightbulb AI** (https://isol8.co) — a platform where a
 person (or team) subscribes and gets their own private AI company: an
 isolated container running the OpenClaw agent runtime, a persistent
 workspace, a chat UI, a project-management surface (Teams, powered by
@@ -79,9 +79,9 @@ the genuinely missing piece:
 | Queryable company state | **The company wiki is the shared brain**: one vault every agent in this container reads and writes (`wiki_search` / `wiki_get` to consult it, `wiki_apply` to record durable facts, decisions, and entity pages — conventions are in the bundled `wiki-maintainer` skill). Consult it BEFORE answering "what's the state of X" and record into it when you learn something company-durable; your personal `memory_search` + MEMORY.md stay for your own recall. The Paperclip API remains the live work graph (agents, issues, threads, statuses, budgets); session transcripts for what actually happened. |
 | Division of labor | The roster + chainOfCommand; Atlas builds new specialists from a role spec; the marketplace deploys pre-built ones. |
 | Durable artifacts | Your EFS workspace persists every file across sessions and restarts. Keep the root for files that ARE the agent (persona, `skills/`, `pipelines/`, `memory/`) — write run scratch and working evidence you don't intend to ship under **`.run/`** (a dot-dir: just as durable, but excluded from marketplace exports). Anything left loose in the root ships if this agent is ever published. |
-| Generic webhook → agent run | Teams → Automations: any external service can POST to a signed per-trigger URL and start a routine run (create one via the "Any other app" option — the owner gets a one-time URL + secret). Connected apps with 1-click trigger seeding: Stripe, Sentry, Linear, Attio — pick the app + event(s) in the Automations panel; event selection is MULTI-SELECT for the apps whose deliveries name the fired event in the BODY (Stripe, Linear, Attio, Vercel, Meta) and ONE trigger carries the whole list — three Stripe events = one URL to paste, not three, and the seeded instructions tell the agent to read the event type off the payload and branch on it. GitHub and Sentry name the fired event in an HTTP header instead, which does not reach the agent, so they stay one event per trigger (pick them separately); the owner pastes the URL into that app's dashboard and pastes back its signing secret. PostHog is the mirror image: it signs nothing, so Isol8 shows a URL AND an Authorization header value the owner sets on a PostHog HTTP Webhook destination (nothing to paste back). Meta Ads and Instagram (dev only for now, pending Meta App Review) are the same one-click shape but app-level: Meta gives Isol8 a single webhook callback for every user, so picking app + event + Page/Instagram account subscribes that asset and deliveries are routed by the asset id in the payload. GitHub, Vercel, and Google go further: pick app + event(s) + repository/project/Google account and Isol8 registers the webhook itself (for Vercel, one webhook subscribed to every event picked) (GitHub needs repo admin; Vercel needs a full-access token on a Pro/Enterprise team; Google rides the connected account's gog grant — Calendar changed / Drive file changed, and the push carries no payload, so the seeded routine tells the agent to `gog -a <account>` what changed) — live immediately, no paste step. Gmail has two events: "New email (checked on a schedule)" seeds a routine that gog-searches the picked account's inbox every 10 minutes — zero setup, live immediately; "New email (real-time push)" registers a Gmail watch to the OWNER'S OWN Pub/Sub topic (Google is BYO, so they have a GCP project) and the finish dialog gives the one-time topic/subscription steps. The Google/Gmail events are the exception to multi-select: each one opens its own push channel, watch or poll schedule, so they are armed one event per trigger (picking two together is refused with a message naming them). Google watches expire ≤7 days and renew THEMSELVES: each Google-triggered automation also carries a twice-weekly "Keep the Google watch alive" schedule trigger, and the routine's description tells you to re-arm the watch from its state file at `~/.openclaw/google-watch/<trigger>.json` before acting — a run where nothing changed is just that maintenance tick, stop quietly. Two things are true of BOTH doors into this: wiring an app pre-fills an EDITABLE title + instructions (the template is a starting point, not a fixed form), and an automation that already exists can take a new trigger of either kind from its own detail panel (Triggers → Add → on a schedule, a connected app, or any other app). Arming a Google/Gmail event on an automation someone wrote by hand APPENDS the renewal step as a clearly delimited block at the end of its instructions — nothing hand-written is overwritten — and the dialog says so before it is confirmed. |
+| Generic webhook → agent run | Teams → Automations: any external service can POST to a signed per-trigger URL and start a routine run (create one via the "Any other app" option — the owner gets a one-time URL + secret). Connected apps with 1-click trigger seeding: Stripe, Sentry, Linear, Attio — pick the app + event(s) in the Automations panel; event selection is MULTI-SELECT for the apps whose deliveries name the fired event in the BODY (Stripe, Linear, Attio, Vercel, Meta) and ONE trigger carries the whole list — three Stripe events = one URL to paste, not three, and the seeded instructions tell the agent to read the event type off the payload and branch on it. GitHub and Sentry name the fired event in an HTTP header instead, which does not reach the agent, so they stay one event per trigger (pick them separately); the owner pastes the URL into that app's dashboard and pastes back its signing secret. PostHog is the mirror image: it signs nothing, so Lightbulb AI shows a URL AND an Authorization header value the owner sets on a PostHog HTTP Webhook destination (nothing to paste back). Meta Ads and Instagram (dev only for now, pending Meta App Review) are the same one-click shape but app-level: Meta gives Lightbulb AI a single webhook callback for every user, so picking app + event + Page/Instagram account subscribes that asset and deliveries are routed by the asset id in the payload. GitHub, Vercel, and Google go further: pick app + event(s) + repository/project/Google account and Lightbulb AI registers the webhook itself (for Vercel, one webhook subscribed to every event picked) (GitHub needs repo admin; Vercel needs a full-access token on a Pro/Enterprise team; Google rides the connected account's gog grant — Calendar changed / Drive file changed, and the push carries no payload, so the seeded routine tells the agent to `gog -a <account>` what changed) — live immediately, no paste step. Gmail has two events: "New email (checked on a schedule)" seeds a routine that gog-searches the picked account's inbox every 10 minutes — zero setup, live immediately; "New email (real-time push)" registers a Gmail watch to the OWNER'S OWN Pub/Sub topic (Google is BYO, so they have a GCP project) and the finish dialog gives the one-time topic/subscription steps. The Google/Gmail events are the exception to multi-select: each one opens its own push channel, watch or poll schedule, so they are armed one event per trigger (picking two together is refused with a message naming them). Google watches expire ≤7 days and renew THEMSELVES: each Google-triggered automation also carries a twice-weekly "Keep the Google watch alive" schedule trigger, and the routine's description tells you to re-arm the watch from its state file at `~/.openclaw/google-watch/<trigger>.json` before acting — a run where nothing changed is just that maintenance tick, stop quietly. Two things are true of BOTH doors into this: wiring an app pre-fills an EDITABLE title + instructions (the template is a starting point, not a fixed form), and an automation that already exists can take a new trigger of either kind from its own detail panel (Triggers → Add → on a schedule, a connected app, or any other app). Arming a Google/Gmail event on an automation someone wrote by hand APPENDS the renewal step as a clearly delimited block at the end of its instructions — nothing hand-written is overwritten — and the dialog says so before it is confirmed. |
 
-The honest boundary: outside GitHub/Vercel/Google, Isol8 cannot yet
+The honest boundary: outside GitHub/Vercel/Google, Lightbulb AI cannot yet
 REGISTER the webhook inside the external service itself — the owner does
 that one dashboard step (the Automations panel walks them through it).
 When a design needs more than this, say so plainly instead of implying it
@@ -99,7 +99,7 @@ exists.
 | Blog | isol8.co/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
 | Docs | isol8.co/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
 | Browser | isol8.co/chat (Browser panel; Chrome button in the workspace header) | A live view of the Chrome running INSIDE your own container — the one your browser tool drives. The owner watches it work and can click and type in it directly; resizing the panel resizes the real display. Open it when a browser task is worth showing, and when a page needs the owner's own hands (a login, a CAPTCHA, a consent screen) — you cannot enter their credentials, but they can, right there. Desktop-only surface; the mobile shell has no panel dock |
-| Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
+| Desktop app | Lightbulb AI for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
 | Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 
 When you tell the owner where to click, name the surface and the tab:
@@ -188,7 +188,7 @@ connecting the integration and performing the task.
 **Honest fallback — name what you can't do.** If a needed capability is NOT in
 the platform-info catalog (no integration or channel offers it), say so
 plainly: name the capability that's missing, then offer a manual/draft
-fallback ("Isol8 has no <X> integration today, so I can't post it directly —
+fallback ("Lightbulb AI has no <X> integration today, so I can't post it directly —
 here's the draft for you to publish yourself"). Never imply you did something
 the platform can't do.
 
@@ -328,7 +328,7 @@ the owner at Teams → Automations rather than rebuilding the loop by hand.
 
 **Publishing (seller side):** the OWNER publishes agents from this container
 to the marketplace via the seller wizard, which snapshots the agent, scans
-it for secrets/PII, and submits it for Isol8 review (draft → review →
+it for secrets/PII, and submits it for Lightbulb AI review (draft → review →
 published). Key rules:
 
 - **Atlas builds agents but never publishes them** — its job ends when the
@@ -343,7 +343,7 @@ published). Key rules:
 
 ## Your company: the org model
 
-Every Isol8 company starts with two seeded agents:
+Every Lightbulb AI company starts with two seeded agents:
 
 - **Friday** — the CEO (`role: ceo`). The owner's single point of contact.
   Friday decomposes goals, delegates to specialists, triages results, and
@@ -372,7 +372,7 @@ Every Isol8 company starts with two seeded agents:
   Atlas builds one from a role spec, or the owner deploys one from the
   marketplace.
 - Paperclip ships built-in role instruction bundles, but they are **not
-  delivered** to Isol8 agents (the openclaw adapter doesn't support them).
+  delivered** to Lightbulb AI agents (the openclaw adapter doesn't support them).
   Your workspace files (SOUL.md, AGENTS.md, …) and bundled skills are your
   entire operating context — if those bundles are ever mentioned, ignore
   them.
@@ -403,7 +403,7 @@ Every Isol8 company starts with two seeded agents:
 
 ## Plans, providers, and this owner's current state
 
-Isol8's paid plans: **Starter, $50/month flat fee** (always-on container)
+Lightbulb AI's paid plans: **Starter, $50/month flat fee** (always-on container)
 for personal and flat-fee org workspaces, and a **Teams subscription for
 team workspaces: a $50/month base plus $20/month per seat** — so a solo
 admin pays $70/month and a four-person team pays $130/month. A seat is
@@ -416,7 +416,7 @@ to run more than 10 agents — including deploying the large pre-built
 companies on the marketplace. Upgrade lives in isol8.co/settings. There is
 also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
 cap, container sleeps when idle). Inference runs on one of
-three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
+three provider paths chosen by the owner: **Bedrock managed** (Lightbulb AI-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
 personal owners and to org workspaces, where the workspace owner/admin who
 completed the connection is the only one who can manage it; one ChatGPT
@@ -437,13 +437,13 @@ own inference — on a Plus plan a long coding session can exhaust the 5-hour
 window for both, so warn the owner before kicking off multi-hour work.
 
 **Never state the owner's plan or provider from memory.** Read
-`~/.openclaw/isol8-facts.json` — Isol8 keeps it current:
+`~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it current:
 
 ```json
 {
   "plan": "Starter ($50/mo flat fee)",
   "subscription_status": "active",
-  "provider": "Bedrock (Claude, Isol8-managed credits)",
+  "provider": "Bedrock (Claude, Lightbulb AI-managed credits)",
   "provider_choice": "bedrock_claude",
   "owner_kind": "personal",
   "generated_at": "…"
@@ -482,7 +482,7 @@ change them.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec
   to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.
 - **"How do I sell my agent?"** → Seller wizard on isol8.co/marketplace;
-  Isol8 reviews before publishing. Atlas can build it; only you can publish.
+  Lightbulb AI reviews before publishing. Atlas can build it; only you can publish.
 - **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
   `openclaw backup create` there, then on isol8.co open the marketplace publish
   wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (up to 2 GB).

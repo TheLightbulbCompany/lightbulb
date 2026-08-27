@@ -107,7 +107,11 @@ jobs:
             || { echo '::error::prod API URL NOT inlined in OTA bundle'; FAIL=1; }
           grep -aq "$EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID" "$HBC" \
             || { echo '::error::Apple IAP product id NOT inlined — the paywall would ship with no in-app purchase'; FAIL=1; }
-          grep -aq 'api-dev.isol8.co' "$HBC" \
+          # Matches EITHER dev apex. This guard greps for a string that must be
+          # ABSENT, so it silently stops guarding the moment the dev URL moves and
+          # nothing fails -- which is exactly what happened when dev flipped to
+          # flickmeon.ai. Keep both spellings until isol8.co is fully retired.
+          grep -aqE 'api-dev\.(isol8\.co|flickmeon\.ai)' "$HBC" \
             && { echo '::error::DEV fallback URL present in OTA bundle (env not applied)'; FAIL=1; }
           exit $FAIL
 

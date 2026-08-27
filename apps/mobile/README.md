@@ -10,7 +10,7 @@ settings; no admin/ops, no seller side, no in-app billing).
 ```bash
 pnpm install                 # from repo root
 cd apps/mobile
-pnpm start:dev               # Metro against DEV (api-dev.isol8.co + dev Clerk)
+pnpm start:dev               # Metro against DEV (api-dev.flickmeon.ai + dev Clerk)
 pnpm start:prod              # Metro against PROD (api.isol8.co + prod Clerk) — real accounts, real billing
 pnpm ios                     # open in the iOS simulator (macOS only)
 ```
@@ -28,7 +28,7 @@ over whatever `.env.local` contains. Plain `pnpm start` falls back to
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.isol8.co/api/v1` |
+| `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.flickmeon.ai/api/v1` |
 | `EXPO_PUBLIC_WS_URL` | Explicit WS gateway override | derived (`api` host → `ws` host) |
 | `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key | required — app renders setup instructions without it |
 

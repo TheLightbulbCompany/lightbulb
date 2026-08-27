@@ -9,7 +9,7 @@
       "distribution": "internal",
       "channel": "development",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api-dev.isol8.co/api/v1",
+        "EXPO_PUBLIC_API_URL": "https://api-dev.flickmeon.ai/api/v1",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
         "EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID": "co.isol8.mobile.plan.monthly"
       }
@@ -24,7 +24,7 @@
       "distribution": "internal",
       "channel": "preview",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api-dev.isol8.co/api/v1",
+        "EXPO_PUBLIC_API_URL": "https://api-dev.flickmeon.ai/api/v1",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
         "EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID": "co.isol8.mobile.plan.monthly"
       }

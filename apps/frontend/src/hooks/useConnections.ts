@@ -40,6 +40,12 @@ export interface Connection {
    */
   token_setup_url?: string | null;
   /**
+   * Placeholder for the paste box, when the provider packs two values into the
+   * one input (Shopify's `<shop>|<token>`). Null for the usual bare-key
+   * provider, where the generic placeholder already says everything.
+   */
+  token_paste_hint?: string | null;
+  /**
    * This owner cannot connect the provider directly — it is gated off their
    * environment and they are not on its owner_allowlist. The row offers
    * Request access (emails support) instead of Connect. Set by the backend's

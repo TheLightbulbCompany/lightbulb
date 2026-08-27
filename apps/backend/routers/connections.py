@@ -38,6 +38,10 @@ from core.services.google_identity import seed_agent_google_identity
 
 logger = logging.getLogger(__name__)
 
+# Separator for the two-value paste rail ("<host>|<token>", see
+# ValidateSpec.host_pattern) — split on the FIRST one, so a secret may contain it.
+_PASTE_SEPARATOR = "|"
+
 router = APIRouter(prefix="/connections", tags=["connections"])
 
 
@@ -282,6 +286,9 @@ def _connection_row(
         # Where a paste_token provider's key is minted, so an API-key row isn't
         # just a blank box the owner has to go hunting for.
         "token_setup_url": v.token_setup_url,
+        # Placeholder for the paste box, when the provider packs two values into
+        # the one input (Shopify's "<shop>|<token>"). None = the generic hint.
+        "token_paste_hint": v.token_paste_hint,
         # can_trigger: this provider's inbound event labels (registry `inbound`,
         # T1) — the Integrations card's "Can trigger" line. Empty when the
         # provider isn't (yet) wired as an Automations trigger source.
@@ -340,6 +347,18 @@ def _connection_row(
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
+    url = p.validation.url
+    if p.validation.host_pattern:
+        # Two-value paste ("<host>|<token>", Shopify): the left half builds the
+        # per-store validate URL, the right half is the credential every check
+        # below then applies to. Both halves must be present and the host must
+        # full-match the provider's own domain pattern — this is the one validate
+        # URL a caller can influence, so an unmatched host is refused, never
+        # fetched.
+        host, separator, token = token.partition(_PASTE_SEPARATOR)
+        if not separator or not re.fullmatch(p.validation.host_pattern, host):
+            return False
+        url = url.format(host=host)
     # Reject a token shape the wired server cannot use, before spending an HTTP
     # call: some validate endpoints accept token types the env var doesn't (Slack
     # auth.test oks a bot `xoxb-` token, but the server gets the user-token slot).
@@ -355,7 +374,7 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
             kwargs: dict = {"headers": headers}
             if p.validation.body is not None:
                 kwargs["json"] = p.validation.body
-            resp = await client.request(p.validation.method, p.validation.url, **kwargs)
+            resp = await client.request(p.validation.method, url, **kwargs)
         if resp.status_code >= 400:
             return False
         # Providers that answer 200 even for a bad token (Slack auth.test,
@@ -483,6 +502,15 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
+    # A two-value provider gets its own 422. The likeliest mistake is pasting
+    # only the token — which is exactly right for every other integration — and
+    # the generic message below would answer that by blaming the token.
+    if p.validation and p.validation.host_pattern and _PASTE_SEPARATOR not in body.token:
+        hint = p.token_paste_hint or f"<host>{_PASTE_SEPARATOR}<token>"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{p.display_name} needs two values in one box — paste {hint}",
+        )
     if not await _validate_token(p, body.token):
         raise HTTPException(status_code=422, detail="token failed validation against the provider")
     credential = {"token": body.token}

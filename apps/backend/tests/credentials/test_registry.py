@@ -440,6 +440,81 @@ def test_vercel_cli_is_skill_paste_provider():
     assert p.validation.token_prefix is None
 
 
+def test_shopify_is_two_value_paste_skill_provider():
+    # Shopify rides the same paste-key + bundled-skill rail as vercel_cli, but its
+    # admin API needs TWO values (the store's host and the token) where the paste
+    # rail carries one string — so the pasted value is "<shop>|<token>", declared
+    # by the validate spec's host_pattern and split again by the SKILL.md at
+    # runtime, which is why the env var is named for the credential not the token.
+    p = registry.get_provider("shopify")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "skill"
+    assert p.refresh_owner == "none"
+    assert p.wiring.materializer == "skill_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    assert p.skill is not None
+    assert p.skill.key == "shopify"
+    assert p.skill.primary_env == "SHOPIFY_ADMIN_CREDENTIAL"
+    # No npm package: the SKILL.md drives the GraphQL Admin API with the baked
+    # curl/jq, so nothing is npx-ed and {{PKG}} never appears in the template.
+    assert p.skill.package == ""
+    # Without a hint the paste box reads "Paste API key" at a field wanting two
+    # values, and the format is discoverable nowhere else.
+    assert p.token_paste_hint and "|" in p.token_paste_hint
+    assert p.token_setup_url
+    # Validate proves the token against the OWNER'S store, so the URL is a
+    # template. `{ shop { name } }` costs 1 of the 1000 points a single GraphQL
+    # query may spend; the bare-token scheme and shpat_ prefix are Shopify's.
+    assert p.validation is not None
+    assert p.validation.url == "https://{host}/admin/api/2026-07/graphql.json"
+    assert p.validation.auth_header == "X-Shopify-Access-Token"
+    assert p.validation.auth_scheme == ""
+    assert p.validation.token_prefix == "shpat_"
+    assert p.validation.body == {"query": "{ shop { name } }"}
+    assert p.validation.success_json_field == "data.shop.name"
+
+
+def test_shopify_host_pattern_pins_the_validate_host():
+    # host_pattern is a trust boundary, not a hint: its match is interpolated into
+    # a URL the BACKEND fetches, so anything but the provider's own domain must
+    # fail — otherwise the paste field is an SSRF primitive.
+    import re
+
+    pattern = registry.get_provider("shopify").validation.host_pattern
+    assert pattern
+    assert re.fullmatch(pattern, "mystore.myshopify.com")
+    assert re.fullmatch(pattern, "my-store-2.myshopify.com")
+    for bad in (
+        "169.254.169.254",
+        "localhost",
+        "evil.com",
+        "mystore.myshopify.com.evil.com",
+        "mystore.myshopify.com/admin",
+        "mystore.myshopify.com:8080",
+        "",
+    ):
+        assert not re.fullmatch(pattern, bad), bad
+
+
+def test_shopify_has_no_inbound_trigger_block():
+    # Shopify's webhooks are rich, but it signs them with a BASE64 HMAC-SHA256
+    # (X-Shopify-Hmac-Sha256) and every native Paperclip signing mode compares a
+    # HEX digest of the raw body — the length check alone rejects base64. An
+    # inbound block would arm a trigger that 401s on every delivery.
+    assert registry.get_provider("shopify").inbound is None
+
+
+def test_shopify_skill_template_ships_next_to_the_registry():
+    # skill_cli reads skills/<key>/SKILL.md at CONNECT time, so a missing or
+    # mis-keyed template fails the owner's connect rather than the import.
+    p = registry.get_provider("shopify")
+    body = (Path(registry.__file__).parent / "skills" / p.skill.key / "SKILL.md").read_text()
+    assert f"primaryEnv: {p.skill.primary_env}" in body
+    # Nothing is npx-ed here, so the pinned-package placeholder must not appear —
+    # it would seed the literal "{{PKG}}" replaced by an empty package spec.
+    assert "{{PKG}}" not in body
+
+
 def test_aws_provider_shape():
     # AWS read-only rides the aws_sts acquisition: the owner runs a CloudFormation
     # stack that grants a cross-account role, and the baked `aws` CLI delivers the
@@ -487,9 +562,18 @@ _PENDING_MATERIALIZERS: set[str] = set()
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():
+    import re
+
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 
     for key, p in registry.all_providers().items():
+        # A host_pattern's match is interpolated into a URL the BACKEND fetches,
+        # so a loose one (`.*`) silently turns the paste box into an SSRF
+        # primitive. Every such pattern must at minimum refuse link-local and
+        # loopback, whatever else it allows.
+        if p.validation and p.validation.host_pattern:
+            for host in ("169.254.169.254", "localhost"):
+                assert not re.fullmatch(p.validation.host_pattern, host), (key, host)
         if p.acquisition == "direct_oauth":
             assert p.oauth, f"{key}: direct_oauth missing oauth spec"
             if key == "cloudflare":

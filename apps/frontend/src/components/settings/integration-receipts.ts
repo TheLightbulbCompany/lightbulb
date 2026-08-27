@@ -26,4 +26,9 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   posthog: { delivers: "product analytics — query events, funnels & session recordings" },
   intercom: { delivers: "conversation search & reply tools for your Intercom inbox" },
   attio: { delivers: "CRM record search & editing across your Attio workspace" },
+  apollo: { delivers: "read-only Apollo access — people, company & contact search plus contact enrichment" },
+  cloudflare: {
+    delivers: "generated-JS access to your Cloudflare account — DNS, Workers, R2 & Zero Trust — instead of a fixed tool list",
+  },
+  parallel: { delivers: "web search powered by Parallel's API in place of the default provider" },
 };

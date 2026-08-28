@@ -1,0 +1,105 @@
+import { BACKEND_URL } from "@/lib/api";
+
+export type LaunchPhase = "waitlist" | "activation" | "live" | "ended";
+
+export interface LaunchInfo {
+  phase: LaunchPhase;
+  drop_at: string;
+  competition_start_at: string;
+  competition_end_at: string;
+  pot_cents: number;
+  entrants: number;
+  waitlist_count: number;
+  comp_slots: number;
+}
+
+export interface LeaderboardRow {
+  rank: number;
+  display_name: string;
+  delta_cents: number;
+  pct: number | null;
+  currency: string;
+}
+
+export interface LaunchEntry {
+  display_name: string;
+  public: boolean;
+  entered_at: string | null;
+  currency: string | null;
+  baseline_cents: number;
+  window_cents: number;
+  delta_cents: number;
+  refreshed_at: string | null;
+  refresh_error: string | null;
+}
+
+export interface LaunchMe {
+  phase: LaunchPhase;
+  waitlist: {
+    position: number;
+    referral_code: string;
+    in_comp_window: boolean;
+    referral_link: string;
+    referrals_signed_up: number;
+    referrals_paid: number;
+    free_months_banked: number;
+  } | null;
+  activated: boolean;
+  activated_at: string | null;
+  entry: LaunchEntry | null;
+  can_enter: boolean;
+  reason: string | null;
+}
+
+export const LAUNCH_REF_KEY = "launch_ref";
+
+// Public reads use plain fetch: the shared client refuses to send without a
+// Clerk token, and these routes are meant for signed-out visitors.
+export async function fetchLaunchInfo(): Promise<LaunchInfo | null> {
+  const res = await fetch(`${BACKEND_URL}/launch`, { cache: "no-store" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`launch_info_${res.status}`);
+  return (await res.json()) as LaunchInfo;
+}
+
+export async function fetchLeaderboard(): Promise<{ entrants: number; rows: LeaderboardRow[] }> {
+  const res = await fetch(`${BACKEND_URL}/launch/leaderboard`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`leaderboard_${res.status}`);
+  return (await res.json()) as { entrants: number; rows: LeaderboardRow[] };
+}
+
+export async function joinWaitlist(
+  email: string,
+  ref: string | null,
+): Promise<{ position: number; referral_code: string; in_comp_window: boolean }> {
+  const res = await fetch(`${BACKEND_URL}/launch/waitlist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, ref: ref ?? undefined }),
+  });
+  if (!res.ok) {
+    let detail = `http_${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as { position: number; referral_code: string; in_comp_window: boolean };
+}
+
+const SYMBOL: Record<string, string> = { usd: "$", eur: "€", gbp: "£", cad: "CA$", aud: "A$" };
+
+export function formatMoney(cents: number, currency: string): string {
+  const sym = SYMBOL[currency.toLowerCase()] ?? `${currency.toUpperCase()} `;
+  const whole = Math.round(Math.abs(cents) / 100).toLocaleString("en-US");
+  return `${cents < 0 ? "-" : ""}${sym}${whole}`;
+}
+
+export function formatPct(pct: number | null): string {
+  if (pct === null) return "new";
+  const n = Math.round(pct * 100);
+  return n < 0 ? `−${Math.abs(n)}%` : `+${n}%`;
+}

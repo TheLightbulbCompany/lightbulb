@@ -1,0 +1,68 @@
+/* apps/frontend/src/components/launch/launch.css
+   Launch Competition surfaces. Built on the landing tokens (--forest, --cream,
+   --cream-deeper, --edge, --gold, --mute, --ink, --danger) so this sheet needs
+   no change when the brand repoints them. Lives beside its components —
+   landing.css is brand-owned and is never edited from here. */
+
+.lc-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 32px auto 0;
+  max-width: 720px;
+}
+@media (min-width: 640px) {
+  .lc-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.lc-stat {
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  padding: 18px 20px;
+  background: var(--cream-deeper);
+  text-align: left;
+}
+.lc-stat-value {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 30px;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.lc-stat-label { margin-top: 6px; }
+
+.lc-card {
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  padding: 22px 24px;
+  background: var(--cream-deeper);
+  color: var(--ink);
+}
+.lc-card--lit { border-color: var(--gold); }
+
+.lc-table { width: 100%; border-collapse: collapse; font-size: 15px; color: var(--ink); }
+.lc-table th { text-align: left; padding: 0 12px 10px 0; font-weight: 500; }
+.lc-table td { padding: 10px 12px 10px 0; border-top: 1px solid var(--edge); font-variant-numeric: tabular-nums; }
+.lc-table .num { text-align: right; }
+
+.lc-field { display: block; margin-top: 16px; }
+.lc-field > span { display: block; font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.lc-field input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--edge);
+  background: var(--cream);
+  color: var(--ink);
+  font-size: 15px;
+}
+.lc-field input:focus { outline: none; border-color: var(--gold); }
+.lc-field input[data-mono] { font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 13px; }
+
+.lc-check { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; color: var(--ink); }
+.lc-alert { margin-top: 12px; font-size: 14px; color: var(--danger); }
+.lc-fine { font-size: 14px; color: var(--mute); }
+.lc-steps { margin: 8px 0 0 18px; font-size: 13px; color: var(--mute); }
+.lc-steps li + li { margin-top: 4px; }
+.lc-row { display: flex; gap: 8px; margin-top: 8px; }
+.lc-row input { flex: 1; min-width: 0; }
+.lc-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }

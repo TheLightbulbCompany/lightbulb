@@ -151,7 +151,12 @@ export type AnalyticsEvent =
   | "support_contact_clicked"
   // Workspace shell
   | "workspace_layout_reset"
-  | "workspace_panel_opened";
+  | "workspace_panel_opened"
+
+  // Launch competition
+  | "launch_waitlist_joined"
+  | "launch_entered"
+  | "launch_referral_copied";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

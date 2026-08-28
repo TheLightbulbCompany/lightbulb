@@ -1548,6 +1548,17 @@ export class ServiceStack extends cdk.Stack {
         tableName(env, "marketplace-takedowns"),
       MARKETPLACE_SELLERS_TABLE:
         tableName(env, "marketplace-sellers"),
+      // Launch Competition. LAUNCH_DROP_AT EMPTY keeps the feature inert
+      // (every /launch route 404s). Set the ISO instant per env when the
+      // waitlist opens; the other values are the sheet's assumptions.
+      LAUNCH_DROP_AT: "",
+      LAUNCH_COMP_SLOTS: "220",
+      LAUNCH_ACTIVATION_WINDOW_HOURS: "72",
+      LAUNCH_COMPETITION_DAYS: "30",
+      LAUNCH_PRIZE_FRONT_CENTS: "100000",
+      LAUNCH_POT_PER_ENTRANT_CENTS: "1000",
+      // 100%-off-once coupon id from the Stripe console (live in prod, test in dev).
+      STRIPE_FREE_MONTH_COUPON_ID: "",
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
       // Deterministic public S3 URL of the hosted AWS connector
       // CloudFormation template. The connections aws-setup endpoint feeds this

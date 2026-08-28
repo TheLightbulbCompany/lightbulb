@@ -164,6 +164,33 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend task env carries an EMPTY launch drop date — the feature is inert until an owner sets it", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "LAUNCH_DROP_AT", Value: "" }),
+            Match.objectLike({ Name: "LAUNCH_COMP_SLOTS", Value: "220" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("backend role's wildcard table statement admits the launch tables without a new grant", () => {
+    // allTableArns(env) → table/*-{env}-* — any table under the prefix is covered.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["dynamodb:PutItem", "dynamodb:Query"]),
+            Resource: Match.arrayWith([Match.stringLikeRegexp("table/\\*-dev-\\*$")]),
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("backend role can pass per-owner bedrock roles to ECS", () => {
     // The owner-bedrock prefix ARN is built from ${this.account}; in this
     // concrete-account synth CDK renders it as a literal string (it becomes an

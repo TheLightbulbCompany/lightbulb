@@ -57,6 +57,9 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplaceTakedownsTable: dynamodb.Table;
   public readonly marketplaceSellersTable: dynamodb.Table;
 
+  public readonly launchWaitlistTable: dynamodb.Table;
+  public readonly launchEntriesTable: dynamodb.Table;
+
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
@@ -400,6 +403,21 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplaceSellersTable.addGlobalSecondaryIndex({
       indexName: "handle-index",
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
+    });
+
+    // Launch Competition (docs/superpowers/specs/2026-08-28-launch-competition-design.md).
+    // Waitlist rows are keyed by lowercased email — the join to an account is
+    // users.email (written by the Clerk user.created webhook). The counter row
+    // (email = "__counter__") hands out positions atomically.
+    this.launchWaitlistTable = createTable("LaunchWaitlistTable", "launch-waitlist", {
+      partitionKey: { name: "email", type: dynamodb.AttributeType.STRING },
+    });
+    this.launchWaitlistTable.addGlobalSecondaryIndex({
+      indexName: "referral-code-index",
+      partitionKey: { name: "referral_code", type: dynamodb.AttributeType.STRING },
+    });
+    this.launchEntriesTable = createTable("LaunchEntriesTable", "launch-entries", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

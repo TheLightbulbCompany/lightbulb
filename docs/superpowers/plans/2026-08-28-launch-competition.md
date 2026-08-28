@@ -247,10 +247,11 @@ git commit -m "feat(launch): settings + phase math for the Launch Competition"
 ### Task 2: CDK — two tables, grants, env
 
 **Files:**
-- Modify: `apps/infra/lib/stacks/database-stack.ts` (public fields ~line 58; table creation after the marketplace tables ~line 405)
-- Modify: `apps/infra/lib/stacks/service-stack.ts` (props `database` interface ~line 136; grants after line 799; env after `MARKETPLACE_*` block ~line 1527)
-- Modify: `apps/infra/lib/isol8-stage.ts` (the `database: {…}` object passed to ServiceStack ~line 169)
+- Modify: `apps/infra/lib/stacks/database-stack.ts` (public fields near the other `*Table` fields; table creation right after `marketplaceSellersTable`)
+- Modify: `apps/infra/lib/stacks/service-stack.ts` (env only — after the `MARKETPLACE_*_TABLE` entries ~line 1540)
 - Test: `apps/infra/test/database-stack.test.ts`, `apps/infra/test/service-stack.test.ts`
+
+**Post-#2103/#2104 shape (read this, the older wiring is gone):** the service stack no longer receives table objects and no longer calls `grantReadWriteData` on the database stack's tables — that created cross-stack exports that blocked the rename. The backend task role now holds ONE wildcard statement from `allTableArns(region, account, env)` (`table/*-{env}-*` + `/index/*`, `service-stack.ts` ~line 724–752), which **already covers any new table under the prefix**. So this task adds NO props, NO grants and NO `isol8-stage.ts` change — only the two tables and the env vars. `isol8-stage.ts` already has `service.addDependency(database)`, so ordering is preserved.
 
 **Interfaces:**
 - Produces: tables `lightbulb-{env}-launch-waitlist` (PK `email` S; GSI `referral-code-index` on `referral_code` S) and `lightbulb-{env}-launch-entries` (PK `owner_id` S); backend env `LAUNCH_DROP_AT`, `LAUNCH_COMP_SLOTS`, `LAUNCH_ACTIVATION_WINDOW_HOURS`, `LAUNCH_COMPETITION_DAYS`, `LAUNCH_PRIZE_FRONT_CENTS`, `LAUNCH_POT_PER_ENTRANT_CENTS`, `STRIPE_FREE_MONTH_COUPON_ID`.
@@ -339,24 +340,9 @@ After the last marketplace table block (before the CfnOutputs), add:
     });
 ```
 
-- [ ] **Step 4: Wire the service stack**
+- [ ] **Step 4: Wire the service stack (env only)**
 
-In `service-stack.ts` `database` props interface add:
-
-```ts
-    launchWaitlistTable: dynamodb.Table;
-    launchEntriesTable: dynamodb.Table;
-```
-
-After `props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);` add:
-
-```ts
-    // Launch Competition tables — read via DYNAMODB_TABLE_PREFIX like the rest.
-    props.database.launchWaitlistTable.grantReadWriteData(this.taskRole);
-    props.database.launchEntriesTable.grantReadWriteData(this.taskRole);
-```
-
-After the `MARKETPLACE_*` env entries add:
+No props, no grants (see the post-#2103 note above — the `allTableArns` wildcard already admits `lightbulb-{env}-launch-*`). After the `MARKETPLACE_SELLERS_TABLE` env entry add:
 
 ```ts
       // Launch Competition. LAUNCH_DROP_AT EMPTY keeps the feature inert
@@ -372,14 +358,25 @@ After the `MARKETPLACE_*` env entries add:
       STRIPE_FREE_MONTH_COUPON_ID: "",
 ```
 
-In `isol8-stage.ts`, inside the `database: { … }` object passed to `ServiceStack`, add:
+Add one more assertion to the service-stack test (same `describe` as the env test above) that pins the reason no grant was added:
 
 ```ts
-        launchWaitlistTable: databaseStack.launchWaitlistTable,
-        launchEntriesTable: databaseStack.launchEntriesTable,
+  test("backend role's wildcard table statement admits the launch tables without a new grant", () => {
+    // allTableArns(env) → table/*-{env}-* — any table under the prefix is covered.
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["dynamodb:PutItem", "dynamodb:Query"]),
+            Resource: Match.arrayWith([Match.stringLikeRegexp("table/\\*-dev-\\*$")]),
+          }),
+        ]),
+      }),
+    });
+  });
 ```
 
-(match the variable name the file already uses for the database stack instance).
+(If the region/account render as tokens so the ARN is a `Fn::Join`, match with `Match.objectLike({ "Fn::Join": Match.anyValue() })` on that entry instead and note it in the report — the point is the statement exists, not its exact rendering.)
 
 - [ ] **Step 5: Run infra tests + synth**
 

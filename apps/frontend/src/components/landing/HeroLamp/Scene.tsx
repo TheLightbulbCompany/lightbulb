@@ -424,7 +424,9 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             invalidate.current?.();
           }}
           onIncline={() => {
-            setDpr([1, 1.5]);
+            // Same tuple when already at max: a new array is a state change, and
+            // fiber's dpr subscription would resize + clear the buffer for nothing.
+            setDpr((prev) => (prev[1] === 1.5 ? prev : [1, 1.5]));
             invalidate.current?.(); // dpr change alone clears the buffer
           }}
           // Infinity, not a small count: drei increments `flipped` before it

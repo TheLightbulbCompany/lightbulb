@@ -61,31 +61,6 @@ export default function Page() {
           position: relative;
           overflow: hidden;
         }
-        .auth-brand::before {
-          content: '';
-          position: absolute;
-          bottom: -120px;
-          right: -120px;
-          width: 480px;
-          height: 480px;
-          background: color-mix(in srgb, var(--midnight) 6%, transparent);
-          border-radius: 50%;
-          filter: blur(100px);
-          pointer-events: none;
-        }
-        .auth-brand::after {
-          content: '';
-          position: absolute;
-          top: -80px;
-          left: -80px;
-          width: 320px;
-          height: 320px;
-          background: color-mix(in srgb, var(--midnight) 60%, transparent);
-          border-radius: 50%;
-          filter: blur(80px);
-          pointer-events: none;
-        }
-
         .auth-brand-top {
           position: relative;
           z-index: 1;

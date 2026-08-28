@@ -510,6 +510,14 @@ before touching it. `debug.py` returns 403 in prod.
 
 React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
+**Colours/fonts are the Brand Identity Manual's tokens**, defined once in
+`src/app/globals.css` (`--midnight --cream --bulb --brass`, cream/midnight steps,
+four state pairs; `.dark` reverses the ground and re-points the state tokens). No
+colour literal anywhere else except `landing.css`, `lib/clerkAppearance.ts`, and
+`*Brand.ts` vendor marks — `src/__tests__/brandTokens.test.ts` enforces it,
+`node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Source Sans 3 (UI) /
+Lora (prose) / mono for code only.
+
 **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the framework-neutral
 API client (`createApiClient`), the gateway WS connection machine
 (`useGatewayConnection` — backoff, keepalive pings, RPC correlation, routing),

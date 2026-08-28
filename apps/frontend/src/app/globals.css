@@ -334,11 +334,12 @@
   color: var(--midnight);
 }
 
-/* brass = the detail colour: paid, price, a small mark — never a fill */
+/* brass = the detail colour: paid, price, a small mark. The HAIRLINE is brass;
+   the label is the ground's text colour — brass type on cream is 2.94:1 (§06 fail). */
 .agent-pill--brass {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--brass);
-  color: var(--brass);
+  color: var(--foreground);
 }
 
 .agent-pill--err {

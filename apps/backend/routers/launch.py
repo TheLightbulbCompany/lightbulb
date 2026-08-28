@@ -11,9 +11,9 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from core.auth import AuthContext, get_current_user  # noqa: F401
-from core.repositories import launch_entries_repo, launch_waitlist_repo
-from core.services import launch_phase
+from core.auth import AuthContext, get_current_user
+from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
+from core.services import launch_phase, launch_service
 from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
@@ -21,7 +21,7 @@ from schemas.launch import (
     EnterRequest,  # noqa: F401
     LaunchInfo,
     LeaderboardResponse,  # noqa: F401
-    ReferralAttributeRequest,  # noqa: F401
+    ReferralAttributeRequest,
     WaitlistJoinRequest,
     WaitlistJoinResponse,
 )
@@ -78,3 +78,30 @@ async def join_waitlist(body: WaitlistJoinRequest, request: Request, s: Schedule
         "referral_code": row["referral_code"],
         "in_comp_window": row["position"] <= s.comp_slots,
     }
+
+
+@router.get("/me", operation_id="launch_me")
+async def launch_me(auth: AuthContext = Depends(get_current_user), s: Schedule = Depends(require_launch)) -> dict:
+    return await launch_service.me(auth, s)
+
+
+@router.post("/referral", operation_id="launch_attribute_referral")
+async def attribute_referral(
+    body: ReferralAttributeRequest,
+    auth: AuthContext = Depends(get_current_user),
+    s: Schedule = Depends(require_launch),
+) -> dict:
+    """Attribute a post-drop sign-up who arrived via ``/?ref=``.
+    Refused once the caller has a live subscription — attribution must
+    precede the first payment, which is what pays the referrer."""
+    from core.auth import resolve_owner_id
+
+    email = await launch_service.resolve_email(auth)
+    if not email:
+        return {"attributed": False}
+    billing = await billing_repo.get_by_owner_id(resolve_owner_id(auth))
+    if (billing or {}).get("subscription_status") in launch_service.LIVE_FOR_ENTRY:
+        return {"attributed": False}
+    await launch_waitlist_repo.join(email, referred_by=None, source="signup")
+    wrote = await launch_waitlist_repo.attribute(email, body.ref.strip().upper())
+    return {"attributed": bool(wrote)}

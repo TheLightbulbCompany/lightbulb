@@ -1239,7 +1239,7 @@ def _soul_workspace(store):
 def test_soul_md_contains_self_grounding_section():
     soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
     assert "## You are made of Lightbulb AI" in soul_md
-    assert "skill isol8" in soul_md
+    assert "skill lightbulb" in soul_md
     # No leftover substitution placeholder in the rendered output.
     assert "{self_grounding_section}" not in soul_md
 
@@ -1354,3 +1354,60 @@ def test_agents_template_names_the_recommend_tool():
     """Discovery alone is not enough — she needs the tool that renders the
     one-click hire card, or she falls back to pasting a URL."""
     assert "recommend_agents" in friday_identity._AGENTS_TEMPLATE
+
+
+class _DictWorkspace:
+    """EFS stand-in: read_file raises for an unseeded path, like Workspace does."""
+
+    def __init__(self, files: dict[str, str]):
+        self.files = dict(files)
+
+    def read_file(self, owner_id: str, rel_path: str) -> str:
+        return self.files[rel_path]
+
+    def write_file(self, owner_id: str, rel_path: str, content: str) -> None:
+        self.files[rel_path] = content
+
+
+_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+
+def test_retired_skill_id_repaired_when_current_heading_already_present():
+    """The stranded case: a Friday healed by the heading-only rebrand swap keeps
+    the retired id in its body, and the grounding migration's early return means
+    nothing else would ever rewrite it."""
+    soul = f"{friday_identity._SELF_GROUNDING_HEADING}\n\nrun `skill isol8` FIRST.\n"
+    ws = _DictWorkspace({f"workspace-{_UUID}/SOUL.md": soul})
+
+    assert friday_identity._migrate_retired_skill_id(ws, "owner_1", _UUID) is True
+    healed = ws.files[f"workspace-{_UUID}/SOUL.md"]
+    assert "skill isol8" not in healed
+    assert "skill lightbulb" in healed
+    # the heading and surrounding prose are untouched
+    assert healed.startswith(friday_identity._SELF_GROUNDING_HEADING)
+
+
+def test_retired_skill_id_is_a_noop_when_already_current():
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": "run `skill lightbulb`.\n"})
+    assert friday_identity._migrate_retired_skill_id(ws, "owner_1", _UUID) is False
+
+
+def test_retired_skill_id_repairs_agents_md_too():
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": "see `skill isol8` for surfaces.\n"})
+    assert friday_identity._migrate_retired_skill_id(ws, "owner_1", _UUID) is True
+    assert "skill lightbulb" in ws.files[f"workspace-{_UUID}/AGENTS.md"]
+
+
+def test_legacy_grounding_section_swaps_once_and_ends_on_the_new_skill_id():
+    """Ordering guard. The legacy section is matched BYTE-EXACTLY and contains the
+    retired id, so the id repair must run after it. If it ran first the match would
+    fail and the owner would end up with two grounding sections."""
+    soul = "# SOUL\n\n" + friday_identity._LEGACY_SELF_GROUNDING_SECTION
+    ws = _DictWorkspace({f"workspace-{_UUID}/SOUL.md": soul})
+
+    friday_identity._run_heal_migrations(ws, "owner_1", _UUID)
+
+    healed = ws.files[f"workspace-{_UUID}/SOUL.md"]
+    assert healed.count(friday_identity._SELF_GROUNDING_HEADING) == 1
+    assert friday_identity._LEGACY_SELF_GROUNDING_HEADING not in healed
+    assert "skill isol8" not in healed

@@ -540,7 +540,7 @@ RUN set -eux; \
 # ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
 # Read-only agent tools (marketplace_search, recommend_agents) so an agent can
 # name real marketplace listings instead of waving at a URL. Enabled fleet-wide
-# via plugins.entries["isol8-marketplace"] in core/containers/config.py.
+# via plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
 #
 # Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
 # (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
@@ -558,9 +558,9 @@ RUN set -eux; \
 #
 # Root-owned like every other baked plugin — the loader rejects any plugin dir
 # not owned by uid 0. Enabled fleet-wide via
-# plugins.entries["isol8-marketplace"] in core/containers/config.py.
-COPY plugins/isol8-marketplace /app/dist/extensions/isol8-marketplace
-RUN chown -R root:root /app/dist/extensions/isol8-marketplace
+# plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
+COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
+RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
@@ -735,8 +735,8 @@ RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
 # AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
-# ---- Layer 16: bundled Isol8 platform skill ----
-# The `isol8` skill is every agent's authoritative reference for the
+# ---- Layer 16: bundled Lightbulb AI platform skill ----
+# The `lightbulb` skill is every agent's authoritative reference for the
 # platform itself — UI surfaces (incl. the Integrations tab), marketplace
 # mechanics, plans/providers, the Paperclip org model, and hard boundaries.
 # Baked (not seeded) so the WHOLE fleet — Friday, Atlas, scaffolded
@@ -747,7 +747,7 @@ COPY skills/paperclip /app/skills/paperclip
 # core/services/owner_facts.py); the skill points agents at it.
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.
-COPY skills/isol8 /app/skills/isol8
+COPY skills/lightbulb /app/skills/lightbulb
 
 # Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
 # Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still

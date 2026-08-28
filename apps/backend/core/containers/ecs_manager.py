@@ -2779,7 +2779,7 @@ class EcsManager:
         secrets_for_task: list[dict] = []
         environment_for_task: list[dict] = []
         # Give the container a base URL to curl the public platform-info catalog
-        # ($ISOL8_API_URL/api/v1/platform-info). The isol8 skill reads the live
+        # ($ISOL8_API_URL/api/v1/platform-info). The lightbulb skill reads the live
         # connectable integrations/channels from there instead of a stale baked
         # list. Reuse atlas_seed._api_base_url so the per-env host convention has
         # exactly one definition. Public route -> no auth, no owner_id.
@@ -4099,7 +4099,7 @@ class EcsManager:
         # re-seed; an unassigned agent needs nothing.
 
         # Refresh the owner-facts file (plan/provider snapshot the bundled
-        # isol8 skill points agents at). The provider this config was JUST
+        # lightbulb skill points agents at). The provider this config was JUST
         # rendered with rides along as an override: on the provider-switch
         # cold path this write can land right after the billing-row commit,
         # and an eventually-consistent row re-read could otherwise roll the

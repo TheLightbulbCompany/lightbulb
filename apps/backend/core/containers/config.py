@@ -2062,16 +2062,16 @@ def build_openclaw_config_dict(
                 # Enables the keyless parallel-free provider that
                 # tools.web.search.provider selects above.
                 "parallel": {"enabled": True},
-                # First-party Isol8 marketplace tools (marketplace_search,
+                # First-party Lightbulb AI marketplace tools (marketplace_search,
                 # recommend_agents), baked root-owned at
-                # /app/dist/extensions/isol8-marketplace. READ-ONLY: neither
+                # /app/dist/extensions/lightbulb-marketplace. READ-ONLY: neither
                 # tool mutates the roster — hiring always ends at a human
                 # click (the hire card in chat, or a Paperclip hire_agent
                 # approval in Teams). Enabled on EVERY provider path: an
                 # agent that cannot see the catalog recommends nothing, which
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
-                "isol8-marketplace": {"enabled": True},
+                "lightbulb-marketplace": {"enabled": True},
             },
         },
         # Channels: ship EMPTY until the user configures one. A provider block

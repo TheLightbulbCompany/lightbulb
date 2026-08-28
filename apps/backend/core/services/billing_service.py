@@ -1469,7 +1469,7 @@ async def change_provider(
     )
 
     # Keep the agents' view of plan/provider current — the owner-facts file
-    # is what the bundled isol8 skill points them at. The hot-swap path never
+    # is what the bundled lightbulb skill points them at. The hot-swap path never
     # reaches write_user_configs (which owns the write on the cold path), so
     # this explicit write is what keeps the file fresh there; on the cold
     # path it is a cheap redundant write that also covers a redeploy dying

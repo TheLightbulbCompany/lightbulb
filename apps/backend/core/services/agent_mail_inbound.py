@@ -246,7 +246,7 @@ def build_delivered_message(
         f"Subject: {subject}\n"
         f"Reply-Key: {reply_key}\n"
         "\n"
-        "To reply, run: /app/skills/isol8/scripts/isol8-mail.sh send --reply <the Reply-Key> "
+        "To reply, run: /app/skills/lightbulb/scripts/lightbulb-mail.sh send --reply <the Reply-Key> "
         "(reply body on stdin).\n"
         "\n"
         "---\n"

@@ -50,7 +50,29 @@ logger = logging.getLogger(__name__)
 # Aurora and values inside Secrets Manager isol8/{env}/paperclip_admin_credentials —
 # no repo edit changes either. Editing them here silently disarms the guard and
 # the next admin wipe deletes the bootstrap admin, breaking provisioning fleet-wide.
-BOOTSTRAP_EMAILS: frozenset[str] = frozenset({"admin@isol8.co", "admin+paperclip@isol8.co"})
+# Every address the Paperclip bootstrap admin has ever been minted under.
+#
+# This guard is keyed on the EMAIL, but the address it has to match lives in the
+# `paperclip_admin_credentials` secret -- so the secret moving to a new mail
+# domain silently disarmed it. Verified against the live account 2026-08-28:
+# dev's secret reads admin@thelightbulb.company and prod's reads
+# admin+paperclip@thelightbulb.company, while this set listed only the isol8.co
+# pair. An account wipe of the owning org would therefore have deleted the
+# bootstrap admin that owns every Paperclip company -- a fleet-wide provisioning
+# outage, which is precisely what this guard exists to prevent.
+#
+# Keep the retired addresses: the set is a protection list, not a source of
+# truth, and an entry for an account that no longer exists costs nothing while a
+# missing one is unrecoverable. If the address moves again, ADD to this set in
+# the same change that rotates the secret.
+BOOTSTRAP_EMAILS: frozenset[str] = frozenset(
+    {
+        "admin@isol8.co",
+        "admin+paperclip@isol8.co",
+        "admin@thelightbulb.company",
+        "admin+paperclip@thelightbulb.company",
+    }
+)
 
 
 class BootstrapUserProtectedError(Exception):

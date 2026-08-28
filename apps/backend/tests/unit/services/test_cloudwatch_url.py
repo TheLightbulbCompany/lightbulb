@@ -51,7 +51,7 @@ def test_url_includes_level_filter():
 
 
 def test_url_points_at_correct_log_group():
-    """Log group is /ecs/isol8-{env}."""
+    """Log group is /ecs/lightbulb-{env}."""
     from core.services.cloudwatch_url import build_insights_url
 
     url = build_insights_url(
@@ -60,8 +60,8 @@ def test_url_points_at_correct_log_group():
         end="2026-04-21T00:00:00Z",
         level="ERROR",
     )
-    # URL-encoded /ecs/isol8-dev → %2Fecs%2Fisol8-dev
-    assert "%2Fecs%2Fisol8-dev" in url
+    # URL-encoded /ecs/lightbulb-dev → %2Fecs%2Flightbulb-dev
+    assert "%2Fecs%2Flightbulb-dev" in url
 
 
 def test_url_uses_logs_insights_path():

@@ -671,3 +671,39 @@ async def test_cli_disconnect_clears_patched_sessions(mock_ecs, mock_pool, mock_
 
     # CLI gone, patched-session pin gone.
     assert _patched_sessions.get("agent:a1:user_alice") is None
+
+
+async def test_reconnect_strips_every_legacy_desktop_suffix(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """A device registered under an earlier brand reconnects with that suffix
+    already on its name. Recognising only the CURRENT one would compound it —
+    "Alice | Lightbulb AI Desktop | Lightbulb Desktop" — forever."""
+    for stored in (
+        "Alice | Lightbulb Desktop",
+        "Alice | Lightbulb AI Desktop",
+        "Alice | Isol8 Desktop",
+        # Already compounded by the one-strip bug — the real dev fleet state.
+        "Alice | Lightbulb AI Desktop | Lightbulb Desktop",
+        "Alice | Isol8 Desktop | Lightbulb Desktop",
+        "Alice | Isol8 Desktop | Lightbulb AI Desktop | Lightbulb Desktop",
+    ):
+        params = {"role": "node", "client": {"id": "node-host", "displayName": stored}}
+        await handle_node_connect(
+            owner_id="owner_42",
+            user_id="user_alice",
+            connection_id="conn_cli",
+            connect_params=params,
+            management_api=MagicMock(),
+        )
+        assert params["client"]["displayName"] == "Alice | Lightbulb Desktop"
+
+
+async def test_reconnect_leaves_an_owner_chosen_name_alone(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    params = {"role": "node", "client": {"id": "node-host", "displayName": "Alice's studio box"}}
+    await handle_node_connect(
+        owner_id="owner_42",
+        user_id="user_alice",
+        connection_id="conn_cli",
+        connect_params=params,
+        management_api=MagicMock(),
+    )
+    assert params["client"]["displayName"] == "Alice's studio box | Lightbulb Desktop"

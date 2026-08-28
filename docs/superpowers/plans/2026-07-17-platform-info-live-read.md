@@ -152,7 +152,7 @@ connects external services — each connection is an MCP server that Lightbulb
 wires into this container's config automatically.
 ```
 AFTER:
-```
+```markdown
 ## Integrations and channels (connecting external services)
 
 The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner

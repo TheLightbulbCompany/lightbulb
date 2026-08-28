@@ -213,11 +213,15 @@ _SELF_GROUNDING_HEADING = "## You are made of Lightbulb"
 _RETIRED_SKILL_INVOCATION = "skill isol8"
 _SKILL_INVOCATION = "skill lightbulb"
 
-# Pre-rebrand heading. EVERY already-provisioned Friday's SOUL.md carries it,
-# so the heal migration below must match BOTH: guarding on the new heading
-# alone would append a second grounding section under the old one, on every
-# owner, permanently.
+# Pre-rebrand headings. EVERY already-provisioned Friday's SOUL.md carries one
+# of them, so the heal migration below must match them ALL: guarding on the
+# current heading alone would leave a stale brand — or a second grounding
+# section under the old one — on every owner, permanently.
 _LEGACY_SELF_GROUNDING_HEADING = "## You are made of Isol8"
+_LEGACY_SELF_GROUNDING_HEADINGS = (
+    "## You are made of Lightbulb AI",
+    _LEGACY_SELF_GROUNDING_HEADING,
+)
 
 # Leading blank line so both composition sites (mid-template substitution and
 # the append migration) get a clean separator without extra bookkeeping.
@@ -248,6 +252,39 @@ actual primitives, not from generic first principles. That covers connecting
 integrations, the marketplace, billing, what the UI can do, and any design
 for trigger-based, event-driven, or autonomous operations.
 """
+
+# Every byte-exact retired section, newest generation first — the two
+# "Lightbulb AI" ones straddle the bundled skill's own rename (isol8 ->
+# lightbulb), so both skill ids are out there on EFS. Keep them verbatim: they
+# are matched against files already written, and "fixing" a word here silently
+# stops the migration from ever finding its target again.
+_LEGACY_SELF_GROUNDING_SECTIONS = (
+    """\
+
+## You are made of Lightbulb AI
+
+You are not just ON Lightbulb AI — the capabilities in `skill lightbulb` are YOUR
+capabilities. Whenever the conversation turns to what Lightbulb AI can do,
+should do, or how to build on it — including strategy discussions that never
+say the product's name — run `skill lightbulb` FIRST and reason from the
+platform's actual primitives, not from generic first principles. That covers
+connecting integrations, the marketplace, billing, what the UI can do, and any
+design for trigger-based, event-driven, or autonomous operations.
+""",
+    """\
+
+## You are made of Lightbulb AI
+
+You are not just ON Lightbulb AI — the capabilities in `skill isol8` are YOUR
+capabilities. Whenever the conversation turns to what Lightbulb AI can do,
+should do, or how to build on it — including strategy discussions that never
+say the product's name — run `skill isol8` FIRST and reason from the
+platform's actual primitives, not from generic first principles. That covers
+connecting integrations, the marketplace, billing, what the UI can do, and any
+design for trigger-based, event-driven, or autonomous operations.
+""",
+    _LEGACY_SELF_GROUNDING_SECTION,
+)
 
 _SOUL_TEMPLATE = """\
 # SOUL.md - Who You Are
@@ -839,6 +876,49 @@ _LEGACY_PROVIDER_LABELS = (
 _FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it"
 _FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
 
+# Platform-owned instruction fragments the seed templates wrote verbatim,
+# mapped from every retired brand generation to the current one. The migration
+# below is a plain substring swap, so each key must be long enough to be
+# unmistakably OURS — Friday's and the owner's own prose has to survive. Same
+# verbatim contract as the constants above: these are matched against files
+# already on EFS.
+_STALE_BRAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
+    # USER.md facts pointer — the personal and org templates share the wording.
+    (
+        "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it",
+        _FACTS_POINTER_LINE_1,
+    ),
+    (
+        "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it",
+        _FACTS_POINTER_LINE_1,
+    ),
+    # USER.md org header. Keyed on the static tail so the owner's {org_name}
+    # is irrelevant — and so the apostrophe that starts it can never begin a
+    # match inside anything but this sentence.
+    (
+        "'s shared workspace on Lightbulb AI. The original owner is",
+        "'s shared workspace on Lightbulb. The original owner is",
+    ),
+    (
+        "'s shared workspace on Isol8. The original owner is",
+        "'s shared workspace on Lightbulb. The original owner is",
+    ),
+    # AGENTS.md platform-mechanics pointer. Cut before the skill id — repairing
+    # that is _migrate_retired_skill_id's job, so this needs no per-skill
+    # variants of its own.
+    (
+        "surfaces, what agents can and cannot do on Lightbulb AI — run",
+        "surfaces, what agents can and cannot do on Lightbulb — run",
+    ),
+    (
+        "surfaces, what agents can and cannot do on Isol8 — run",
+        "surfaces, what agents can and cannot do on Lightbulb — run",
+    ),
+)
+
+# The seeded files those fragments can appear in.
+_BRANDED_SEED_FILES = ("USER.md", "SOUL.md", "AGENTS.md")
+
 
 def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Swap the pre-facts hardcoded plan/provider lines in an EXISTING
@@ -896,6 +976,34 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
     return True
 
 
+def _migrate_stale_brand_fragments(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Repoint platform-owned instruction lines at the CURRENT product name.
+
+    Seeds are write-if-missing and every other migration here is anchored to a
+    heading or to the pre-facts plan line, so a file seeded under an earlier
+    brand keeps that brand in lines the PLATFORM wrote, not Friday: a USER.md
+    pointer claiming "Lightbulb AI" maintains the facts file, an AGENTS.md
+    line naming a product that no longer exists. Only the exact template
+    fragments in ``_STALE_BRAND_FRAGMENTS`` are rewritten — prose the owner or
+    Friday wrote is never touched, including the legal DBA line, which keeps
+    "Lightbulb AI" on purpose. Returns True when a rewrite happened.
+    """
+    rewrote = False
+    for name in _BRANDED_SEED_FILES:
+        rel_path = f"workspace-{agent_uuid}/{name}"
+        try:
+            content = workspace.read_file(owner_id, rel_path)
+        except Exception:  # noqa: BLE001 — not seeded yet; the seed loop writes it
+            continue
+        repaired = content
+        for legacy, current in _STALE_BRAND_FRAGMENTS:
+            repaired = repaired.replace(legacy, current)
+        if repaired != content:
+            workspace.write_file(owner_id, rel_path, repaired)
+            rewrote = True
+    return rewrote
+
+
 def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Reconcile the nightly company-control section in an EXISTING AGENTS.md.
 
@@ -937,27 +1045,37 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     conversations, not just UI mechanics — they answer from generic priors and
     only read the skill after the owner corrects them.
 
-    Three cases, in order: the current heading is present (nothing to do); the
-    PRE-REBRAND heading is present (rebrand in place — appending here would
-    leave the owner with two grounding sections, the stale one first); no
-    heading at all (append, the original behaviour). The whole-section swap
-    carries the body's wording across for a Friday that never edited it, and
-    the heading-only swap is the fallback for one that did — SOUL.md is
-    Friday's file to evolve, so its prose is never clobbered wholesale.
-    Returns True when a rewrite happened.
+    Three cases, in order: the current heading is present AS A WHOLE LINE
+    (nothing to do); a PRE-REBRAND heading is present (rebrand in place —
+    appending here would leave the owner with two grounding sections, the
+    stale one first); no heading at all (append, the original behaviour). The
+    whole-section swap carries the body's wording across for a Friday that
+    never edited it, and the heading-only swap is the fallback for one that
+    did — SOUL.md is Friday's file to evolve, so its prose is never clobbered
+    wholesale. Returns True when a rewrite happened.
     """
     rel_path = f"workspace-{agent_uuid}/SOUL.md"
     try:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes the full template
         return False
-    if _SELF_GROUNDING_HEADING in content:
+    # Line-anchored, and FIRST: `## You are made of Lightbulb` is a strict
+    # PREFIX of the "Lightbulb AI" heading, so a substring test here reads an
+    # unmigrated file as already-current. Whole-line matching closes that
+    # structurally, and it also means a current SOUL.md that merely QUOTES a
+    # retired heading in Friday's own prose is left alone. ``splitlines`` so a
+    # file ending on the heading with no trailing newline still matches.
+    if any(line.strip() == _SELF_GROUNDING_HEADING for line in content.splitlines()):
         return False
-    if _LEGACY_SELF_GROUNDING_HEADING in content:
-        if _LEGACY_SELF_GROUNDING_SECTION in content:
-            new_content = content.replace(_LEGACY_SELF_GROUNDING_SECTION, _SELF_GROUNDING_SECTION, 1)
+    if any(heading in content for heading in _LEGACY_SELF_GROUNDING_HEADINGS):
+        for legacy_section in _LEGACY_SELF_GROUNDING_SECTIONS:
+            if legacy_section in content:
+                new_content = content.replace(legacy_section, _SELF_GROUNDING_SECTION, 1)
+                break
         else:
-            new_content = content.replace(_LEGACY_SELF_GROUNDING_HEADING, _SELF_GROUNDING_HEADING, 1)
+            new_content = content
+            for legacy_heading in _LEGACY_SELF_GROUNDING_HEADINGS:
+                new_content = new_content.replace(legacy_heading, _SELF_GROUNDING_HEADING, 1)
         workspace.write_file(owner_id, rel_path, new_content)
         return True
     new_content = content.rstrip("\n") + "\n" + _SELF_GROUNDING_SECTION
@@ -1166,6 +1284,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_webchat_migrated",
             "friday_identity.agents_md_webchat_migrate_error",
             "appended webchat section to AGENTS.md",
+        ),
+        (
+            _migrate_stale_brand_fragments,
+            "friday_identity.stale_brand_migrated",
+            "friday_identity.stale_brand_migrate_error",
+            "repointed stale brand fragments in seeded files",
         ),
         (
             _migrate_retired_skill_id,

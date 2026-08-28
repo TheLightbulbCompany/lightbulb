@@ -49,6 +49,31 @@ def _get_paired_lock(owner_id: str):
     return get_file_lock(f"desktop_pair:{owner_id}")
 
 
+# Retired brand generations of the display-name suffix WE compose. A device
+# that re-pairs with the same key keeps its stored entry (tokens and all), so
+# nothing else would ever refresh the name and the old product name stays
+# stuck to the device forever. Only the exact suffix is swapped — everything
+# before " | " is the member's own Clerk name, which is theirs.
+_LEGACY_DISPLAY_NAME_SUFFIXES: tuple[tuple[str, str], ...] = (
+    (" | Lightbulb AI Mac", " | Lightbulb Mac"),
+    (" | Isol8 Mac", " | Lightbulb Mac"),
+    (" | Lightbulb AI Desktop (CLI)", " | Lightbulb Desktop (CLI)"),
+    (" | Isol8 Desktop (CLI)", " | Lightbulb Desktop (CLI)"),
+)
+
+
+def normalize_legacy_display_name(name: str) -> str:
+    """Swap a retired platform suffix for its current form; leave the rest alone.
+
+    A name the platform never composed (owner-renamed, or a suffix we don't
+    recognise) comes back untouched.
+    """
+    for legacy, current in _LEGACY_DISPLAY_NAME_SUFFIXES:
+        if name.endswith(legacy):
+            return name[: -len(legacy)] + current
+    return name
+
+
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.notify",
     "screen.snapshot",
@@ -441,6 +466,14 @@ async def pair_desktop_devices(
                     # entry) is safe to node-approve. Do not stamp userId here;
                     # see the security note below.
                     node_approval_allowed_ids.add(device_id)
+                    # Ownership is established, so the platform-composed part
+                    # of the name is ours to bring current. Gated on the same
+                    # check as node approval: an unverified caller must not
+                    # rename another member's device.
+                    renamed = normalize_legacy_display_name(existing.get("displayName") or "")
+                    if renamed and renamed != existing.get("displayName"):
+                        existing["displayName"] = renamed
+                        changed = True
                 # Idempotent: existing entry has the same key — keep its
                 # tokens.
                 #

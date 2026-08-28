@@ -1413,3 +1413,69 @@ async def test_efs_workspace_adapter_pair_then_revoke_round_trip(tmp_path):
     # Adapter delegates the owner-row device registry to container_repo.
     mock_container_repo.upsert_paired_devices.assert_awaited_once()
     mock_container_repo.remove_paired_device.assert_awaited_once_with("owner", result.device_id_mac)
+
+
+def test_normalize_legacy_display_name_swaps_only_our_own_suffix():
+    from core.services.desktop_pair import normalize_legacy_display_name
+
+    assert normalize_legacy_display_name("Alice | Lightbulb AI Mac") == "Alice | Lightbulb Mac"
+    assert normalize_legacy_display_name("Alice | Isol8 Mac") == "Alice | Lightbulb Mac"
+    assert normalize_legacy_display_name("Alice | Lightbulb AI Desktop (CLI)") == "Alice | Lightbulb Desktop (CLI)"
+    assert normalize_legacy_display_name("Alice | Isol8 Desktop (CLI)") == "Alice | Lightbulb Desktop (CLI)"
+    # Already current, and names we never composed, come back untouched.
+    assert normalize_legacy_display_name("Alice | Lightbulb Mac") == "Alice | Lightbulb Mac"
+    assert normalize_legacy_display_name("Alice's studio box") == "Alice's studio box"
+    assert normalize_legacy_display_name("") == ""
+
+
+async def _pair_alice(workspace):
+    tauri_priv = Ed25519PrivateKey.from_private_bytes(b"\x11" * 32)
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x12" * 32)
+    pems = [
+        k.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+        for k in (tauri_priv, cli_priv)
+    ]
+    return await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="org_42",
+        display_name_base="Alice",
+        tauri_mac_pubkey=pems[0],
+        cli_pubkey=pems[1],
+        workspace=workspace,
+    )
+
+
+async def test_re_pair_normalizes_a_preserved_entrys_legacy_brand_suffix():
+    """A same-key re-pair PRESERVES the stored entry (tokens and all), so
+    nothing else ever refreshes the name — the retired product name stays
+    stuck to the device forever unless this path brings it current."""
+    workspace = _FakeWorkspace(initial={})
+    first = await _pair_alice(workspace)
+
+    # Rewind to the names an already-paired device carries on EFS today.
+    workspace.state[first.device_id_mac]["displayName"] = "Alice | Lightbulb AI Mac"
+    workspace.state[first.device_id_cli]["displayName"] = "Alice | Isol8 Desktop (CLI)"
+
+    await _pair_alice(workspace)
+
+    assert workspace.state[first.device_id_mac]["displayName"] == "Alice | Lightbulb Mac"
+    assert workspace.state[first.device_id_cli]["displayName"] == "Alice | Lightbulb Desktop (CLI)"
+
+
+async def test_re_pair_leaves_an_owner_renamed_device_alone():
+    workspace = _FakeWorkspace(initial={})
+    first = await _pair_alice(workspace)
+
+    workspace.state[first.device_id_mac]["displayName"] = "Alice's studio laptop"
+    writes_before = workspace.write_count
+
+    await _pair_alice(workspace)
+
+    assert workspace.state[first.device_id_mac]["displayName"] == "Alice's studio laptop"
+    # Nothing to normalise on either entry — the re-pair stays a no-op write.
+    assert workspace.write_count == writes_before

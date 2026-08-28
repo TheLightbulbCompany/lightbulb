@@ -246,7 +246,7 @@ Deferred to follow-up work:
   (`/chat`-initiated deletes) is handled by the existing interception
   at `apps/backend/routers/websocket_chat.py` `agents.delete` path.
 - **Adapter config refresh on token rotation.** Each Paperclip agent's
-  `adapterConfig` carries an Lightbulb-minted service token. When that
+  `adapterConfig` carries a Lightbulb-minted service token. When that
   token rotates, existing agents keep stale tokens until manually
   re-paired. Tracked separately.
 - **Removing the legacy `"main"` agent fallback in OpenClaw upstream.**

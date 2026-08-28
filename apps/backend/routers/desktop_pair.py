@@ -90,7 +90,8 @@ async def post_pair(
     """Idempotently pre-pair the caller's two Mac devices."""
     owner_id = resolve_owner_id(ctx)
     # AuthContext has no display_name; use user_id as the base. The service
-    # appends " | Isol8 Mac" / " | Isol8 Desktop (CLI)" suffixes itself.
+    # appends " | Lightbulb Mac" / " | Lightbulb Desktop (CLI)" suffixes itself
+    # (and normalises the retired brands' suffixes on an existing entry).
     display_name_base = ctx.user_id
 
     try:

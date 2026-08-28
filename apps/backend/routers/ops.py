@@ -63,3 +63,19 @@ async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
     n = await launch_revenue.refresh_all(force=True)
     launch_ops._cache.clear()
     return {"refreshed": n}
+
+
+@router.delete("/launch/entries/{owner_id}")
+async def delete_launch_entry(owner_id: str, _auth: AuthContext = Depends(require_platform_admin)):
+    """Take an entry off the public board and revoke its stored Stripe key.
+
+    The only removal door — self-serve key revocation is a v1 non-goal, so a
+    fraudulent or withdrawn entrant is removed here."""
+    from core.repositories import launch_entries_repo
+    from core.services import launch_revenue
+    from core.services.ops import launch as launch_ops
+
+    await launch_entries_repo.delete(owner_id)
+    await launch_revenue.delete_key(owner_id)
+    launch_ops._cache.clear()
+    return {"deleted": owner_id}

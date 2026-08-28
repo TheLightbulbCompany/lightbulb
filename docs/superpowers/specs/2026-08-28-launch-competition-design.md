@@ -201,4 +201,4 @@ not survive contact with the in-flight brand branch owning `app/page.tsx`):
 
 ## Non-goals (v1)
 
-In-shell banners; self-serve key revocation (admin deletes the entry); winner display; anti-fraud beyond the paid-referral trigger and promo-code caps; multi-currency conversion; org comps.
+In-shell banners; self-serve key revocation (admin removes the entry via `/admin/launch`); winner display; anti-fraud beyond the paid-referral trigger and promo-code caps; multi-currency conversion; org comps.

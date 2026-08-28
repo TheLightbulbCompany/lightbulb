@@ -7,7 +7,7 @@ import { Card } from "@/components/admin/Card";
 import { MetricStat } from "@/components/admin/MetricStat";
 import { formatMoney, formatPct } from "@/lib/launch";
 
-import { refreshLaunch } from "../_actions/launch";
+import { refreshLaunch, removeLaunchEntry } from "../_actions/launch";
 import type { LaunchOpsData } from "../_lib/api";
 import { Table } from "../growth/sections";
 
@@ -26,6 +26,14 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
     const r = await refreshLaunch();
     setBusy(false);
     setNote(r.ok ? `Refreshed ${(r.data as { refreshed?: number })?.refreshed ?? 0} entries.` : `Refresh failed: ${r.error ?? r.status}`);
+    router.refresh();
+  };
+
+  const remove = async (ownerId: string) => {
+    setBusy(true);
+    const r = await removeLaunchEntry(ownerId);
+    setBusy(false);
+    setNote(r.ok ? `Removed ${ownerId}.` : `Remove failed: ${r.error ?? r.status}`);
     router.refresh();
   };
 
@@ -83,7 +91,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
 
       <Card title={`Entries (${data.entries.length})`}>
         <Table
-          head={["#", "entrant", "owner", "pos", "eligible", "public", "baseline", "window", "lift", "growth", "refreshed", "error"]}
+          head={["#", "entrant", "owner", "pos", "eligible", "public", "baseline", "window", "lift", "growth", "refreshed", "error", ""]}
           rows={data.entries.map((r, i) => [
             i + 1,
             r.display_name ?? "—",
@@ -97,6 +105,15 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
             formatPct(r.pct),
             r.refreshed_at ?? "never",
             r.refresh_error ?? "",
+            <button
+              key="remove"
+              type="button"
+              onClick={() => remove(r.owner_id)}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Remove
+            </button>,
           ])}
         />
       </Card>

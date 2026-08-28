@@ -14,7 +14,11 @@ if (typeof URL.revokeObjectURL !== "function") {
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 const refreshLaunch = vi.fn().mockResolvedValue({ ok: true, status: 200, data: { refreshed: 2 } });
-vi.mock("../../_actions/launch", () => ({ refreshLaunch: () => refreshLaunch() }));
+const removeLaunchEntry = vi.fn().mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
+vi.mock("../../_actions/launch", () => ({
+  refreshLaunch: () => refreshLaunch(),
+  removeLaunchEntry: (ownerId: string) => removeLaunchEntry(ownerId),
+}));
 
 // tests/setup.ts runs a global `afterEach(() => { vi.restoreAllMocks(); ... })`, which
 // wipes a `vi.fn().mockResolvedValue(...)` configured once at module scope back to a
@@ -23,6 +27,8 @@ vi.mock("../../_actions/launch", () => ({ refreshLaunch: () => refreshLaunch() }
 beforeEach(() => {
   refreshLaunch.mockReset();
   refreshLaunch.mockResolvedValue({ ok: true, status: 200, data: { refreshed: 2 } });
+  removeLaunchEntry.mockReset();
+  removeLaunchEntry.mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
 });
 
 import type { LaunchOpsData } from "../../_lib/api";
@@ -57,6 +63,13 @@ describe("LaunchAdminClient", () => {
     fireEvent.click(screen.getByRole("button", { name: /refresh all/i }));
     expect(refreshLaunch).toHaveBeenCalled();
     expect(await screen.findByText(/refreshed 2/i)).toBeInTheDocument();
+  });
+
+  it("removes an entry from the board", async () => {
+    render(<LaunchAdminClient data={data} />);
+    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+    expect(removeLaunchEntry).toHaveBeenCalledWith("u1");
+    expect(await screen.findByText(/removed u1/i)).toBeInTheDocument();
   });
 
   it("builds a CSV from the waitlist rows", () => {

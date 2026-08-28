@@ -29,6 +29,9 @@ export function MarketplaceToast() {
   // agent), amber surface, manual dismiss.
   if (toast.error) {
     return (
+      // --err-reversed, not --err: the toast paints its own midnight fill while
+      // the document is still on :root, so the border is a state mark on
+      // midnight. --err there is the cream-ground red — 2.4:1, under 1.4.11's 3:1.
       <div
         data-testid="toast-error"
         role="alert"

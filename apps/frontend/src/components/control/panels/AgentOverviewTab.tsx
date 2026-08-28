@@ -24,7 +24,7 @@ function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: st
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">{label}</div>
+      <div className="text-[10px] uppercase tracking-wider text-midnight-label">{label}</div>
       <div className="text-sm font-medium truncate text-[var(--midnight)]">{value}</div>
     </div>
   );
@@ -274,7 +274,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
 
       {data && (
         <details className="group">
-          <summary className="text-xs text-[var(--midnight-muted)]/60 cursor-pointer hover:text-[var(--midnight-muted)]">
+          <summary className="text-xs text-midnight-muted cursor-pointer hover:text-[var(--midnight-muted)]">
             Raw identity data
           </summary>
           <pre className="mt-2 text-xs bg-[var(--cream-deep)] rounded-lg p-3 overflow-auto max-h-48 text-[var(--midnight-soft)]">

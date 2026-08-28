@@ -366,24 +366,24 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                     {allowed ? (
                       <ToggleRight className="h-4 w-4 text-ok" />
                     ) : (
-                      <ToggleLeft className="h-4 w-4 text-[var(--midnight-muted)]/40" />
+                      <ToggleLeft className="h-4 w-4 text-midnight-muted" />
                     )}
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className={cn(
                       "text-sm font-medium truncate",
-                      !allowed && "text-[var(--midnight-muted)]/50",
+                      !allowed && "text-midnight-muted",
                     )}>
                       {tool.label}
                     </div>
                     {tool.description && (
-                      <div className="text-xs text-[var(--midnight-muted)]/70 line-clamp-1">
+                      <div className="text-xs text-midnight-muted line-clamp-1">
                         {tool.description}
                       </div>
                     )}
                   </div>
                   {tool.source && (
-                    <span className="text-[10px] text-[var(--midnight-muted)]/40 flex-shrink-0">
+                    <span className="text-[10px] text-midnight-muted flex-shrink-0">
                       {String(tool.source)}
                     </span>
                   )}
@@ -395,7 +395,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
       ))}
 
       <details className="group">
-        <summary className="text-xs text-[var(--midnight-muted)]/60 cursor-pointer hover:text-[var(--midnight-muted)]">
+        <summary className="text-xs text-midnight-muted cursor-pointer hover:text-[var(--midnight-muted)]">
           Raw catalog data
         </summary>
         <pre className="mt-2 text-xs bg-[var(--cream-deep)] rounded-lg p-3 overflow-auto max-h-48 text-[var(--midnight-soft)]">

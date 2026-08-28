@@ -15,7 +15,7 @@ import {
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
 const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
 const SELECT_CLS =
   "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50 w-full";
 

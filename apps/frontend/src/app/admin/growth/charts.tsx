@@ -24,10 +24,12 @@ import { STAGE_LABEL } from "./sections";
 //   CHART_1 ok    — autonomous / healthy / the ladder
 //   CHART_4 err   — alert: auto-paused, the largest gate-blocked reason
 //   CHART_5 brass — secondary / unknown / order-independent
-// CHART_2 (info) and CHART_3 (warn) also serve as plain distinct hues where a
-// multi-series chart needs one more line than there are meanings — so
-// `trial_converted` is warn and `archived` is info for separation, not status.
+// CHART_2 (info), CHART_3 (warn) and CHART_4 (err) also serve as plain distinct
+// hues where a multi-series chart needs one more line than there are meanings —
+// so `trial_started` is err and `archived` is info for separation, not status.
 // Read the legend, not the colour, on the funnel and survival charts.
+// CHART_3 (warn) and CHART_5 (brass) are both warm golds and are the weakest
+// pair to tell apart, so a four-line chart takes one of them, not both.
 const CHART_1 = "var(--chart-1)";
 const CHART_2 = "var(--chart-2)";
 const CHART_3 = "var(--chart-3)";
@@ -186,8 +188,8 @@ const FUNNEL_DAILY_EVENTS = ["landing_viewed", "signup_started", "trial_started"
 const FUNNEL_DAILY_CONFIG: ChartConfig = {
   landing_viewed: { label: "landing viewed", color: CHART_5 },
   signup_started: { label: "signup started", color: CHART_2 },
-  trial_started: { label: "trial started", color: CHART_1 },
-  trial_converted: { label: "trial converted", color: CHART_3 },
+  trial_started: { label: "trial started", color: CHART_4 },
+  trial_converted: { label: "trial converted", color: CHART_1 },
 };
 
 /** 1. Acquisition (daily) — PostHog client funnel, one line per event. */

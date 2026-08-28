@@ -54,8 +54,11 @@
   text-decoration: none;
   transition: background 0.15s, border-color 0.15s;
 }
+/* The sidebar itself is --cream-deep, so hovering the pill TO --cream-deep
+   dissolved its fill. --cream-deeper is the one remaining step that reads
+   against both the pill's --cream rest state and the sidebar ground. */
 .teams-pill:hover {
-  background: var(--cream-deep);
+  background: var(--cream-deeper);
   border-color: var(--midnight-faint);
 }
 .teams-pill b {
@@ -284,8 +287,10 @@
   border-radius: 2px;
   background: transparent;
 }
+/* --ok, not --brass: this rail sits on the --cream-deep sidebar, where brass
+   measures 2.76:1 — under 1.4.11's 3:1 for a state indicator. */
 .agent-item[data-state="running"] .agent-item__main::before {
-  background: var(--brass);
+  background: var(--ok);
 }
 .agent-item[data-state="attention"] .agent-item__main::before {
   background: var(--err);

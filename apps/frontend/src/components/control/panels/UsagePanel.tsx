@@ -132,7 +132,7 @@ export function UsagePanel() {
               <span className="font-mono">{formatCents(row.cents)}</span>
             </div>
           ))}
-          <p className="text-[10px] text-[var(--midnight-muted)]/60">
+          <p className="text-[10px] text-midnight-muted">
             From your credits invoice — matches what you&apos;re charged.
           </p>
           <Link
@@ -168,8 +168,8 @@ export function UsagePanel() {
               </div>
             </div>
           ))}
-          <p className="text-[10px] text-[var(--midnight-muted)]/60">Included in your ChatGPT plan.</p>
-          <p className="text-[10px] text-[var(--midnight-muted)]/60">
+          <p className="text-[10px] text-midnight-muted">Included in your ChatGPT plan.</p>
+          <p className="text-[10px] text-midnight-muted">
             Rolling plan windows — separate from the monthly token totals below.
           </p>
         </div>
@@ -180,19 +180,19 @@ export function UsagePanel() {
           <h3 className="text-sm font-medium">Token Usage</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">Input</div>
+              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Input</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_input_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">Output</div>
+              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Output</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_output_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">Cache Read</div>
+              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Cache Read</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_cache_read_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">Cache Write</div>
+              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Cache Write</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_cache_write_tokens)}</div>
             </div>
           </div>
@@ -220,7 +220,7 @@ export function UsagePanel() {
                   <td className="px-4 py-2">
                     <div>{member.display_name || member.email || member.user_id}</div>
                     {member.display_name && member.email && (
-                      <div className="text-[var(--midnight-muted)]/60">{member.email}</div>
+                      <div className="text-midnight-muted">{member.email}</div>
                     )}
                   </td>
                   <td className="px-4 py-2 text-right text-[var(--midnight-muted)]">

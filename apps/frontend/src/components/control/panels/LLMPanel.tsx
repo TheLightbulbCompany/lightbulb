@@ -40,7 +40,7 @@ type UserData = {
 
 const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center flex-shrink-0";
 const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
 
 // Dot color is driven by the container's live models.authStatus, not the
 // chip label — the label states which provider is configured, the dot states

@@ -27,8 +27,8 @@ export interface EditorialListing extends EditorialIdentity {
 // caller already renders. Uses the shadcn contract tokens (not the raw
 // --midnight/--cream-deep/--edge) so a consumer rendered under `.dark`
 // (admin) still resolves fg-on-bg correctly without this file knowing about
-// grounds. Array kept the same length so paletteFor's hash/index math is
-// unchanged for existing callers.
+// grounds. The length is arbitrary now that every entry is identical:
+// paletteFor's `hash % PALETTE.length` returns the same chip for any slug.
 export const PALETTE: ReadonlyArray<{ accent: string; tint: string }> = Array(6).fill({
   accent: "var(--foreground)",
   tint: "var(--accent)",

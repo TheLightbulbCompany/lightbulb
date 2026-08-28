@@ -39,5 +39,34 @@ describe("brand tokens sweep", () => {
 
       expect(hits).toEqual([{ file, line: 1, match: "rgba(" }]);
     });
+
+    it("catches white/black on every utility, not just bg/text/border", () => {
+      // `fill-black` / `to-black` / `outline-black` are pure black; the rule
+      // used to name three utilities while the numeric-palette rule named all 16.
+      dir = mkdtempSync(join(tmpdir(), "brand-tokens-scan-"));
+      const file = join(dir, "fixture.tsx");
+      writeFileSync(file, 'className="ring-white fill-black to-black outline-black"\n');
+
+      const hits = scan([file]);
+
+      expect(hits.map((h) => h.match)).toEqual([
+        "ring-white",
+        "fill-black",
+        "to-black",
+        "outline-black",
+      ]);
+    });
+
+    it("catches 4- and 8-digit hex", () => {
+      // `#([0-9a-fA-F]{3}){1,2}\b` cannot reach #RRGGBBAA — the lookahead
+      // lands mid-literal on a word char and the match is abandoned.
+      dir = mkdtempSync(join(tmpdir(), "brand-tokens-scan-"));
+      const file = join(dir, "fixture.css");
+      writeFileSync(file, "a { color: #0F1A2BCC; border-top-color: #fff8; }\n");
+
+      const hits = scan([file]);
+
+      expect(hits.map((h) => h.match)).toEqual(["#0F1A2BCC", "#fff8"]);
+    });
   });
 });

@@ -5,7 +5,7 @@ import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
 const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
 
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 

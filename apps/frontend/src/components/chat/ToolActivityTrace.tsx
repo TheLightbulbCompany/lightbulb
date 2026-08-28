@@ -217,7 +217,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
         )}
         {/* Fixed slot so a row gaining a duration never shifts its neighbours.
             Hidden on mobile, where the width is worth more than the number. */}
-        <span className="hidden w-[38px] shrink-0 text-right text-[11px] tabular-nums text-[var(--midnight-faint)] sm:inline">
+        <span className="hidden w-[38px] shrink-0 text-right text-[11px] tabular-nums text-[var(--midnight-muted)] sm:inline">
           {showDuration ? formatDuration(durationMs!) : ""}
         </span>
       </button>
@@ -295,7 +295,7 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
         <ChevronRight aria-hidden className="h-3 w-3 shrink-0 text-[var(--midnight-faint)]" />
         {summary}
         {totalMs !== undefined && totalMs >= DURATION_FLOOR_MS && (
-          <span className="text-[11.5px] tabular-nums text-[var(--midnight-faint)]">
+          <span className="text-[11.5px] tabular-nums text-[var(--midnight-muted)]">
             {formatDuration(totalMs)}
           </span>
         )}

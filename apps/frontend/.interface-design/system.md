@@ -17,7 +17,7 @@ both; only the token values change.
 | `bg-secondary`, `bg-accent`, `bg-muted` | cream-deep | midnight 86% |
 | `text-muted-foreground` / `border-border` / `border-input` | midnight 64% / edge / edge | cream 70% / cream 14% / cream 14% |
 | `bg-primary` / `text-primary-foreground` | midnight / cream | cream / midnight |
-| `ring` | bulb | bulb — focus is the only place the light appears |
+| `ring` | midnight | bulb — on cream the bulb is 1.45:1; a ring must clear 3:1 |
 
 ## State pairs (`text-ok`, `border-warn`, …)
 `--ok` `--warn` `--err` `--info` each carry a cream value and a `-reversed` value; the
@@ -34,7 +34,10 @@ headings) · `font-mono` Geist Mono (code and terminal output only).
 
 ## The no-literal rule
 No hex, `rgb()`, `oklch()`, `hsl()`, `[#…]`, or Tailwind palette class (`zinc-*`,
-`emerald-*`, `sky-*`, `amber-*`, `red-*`, `white`, `black`, …) outside `globals.css`
-and `landing.css`. Charts use `var(--chart-1..5)` (ok, info, warn, err, brass). Enforced by
+`emerald-*`, `sky-*`, `amber-*`, `red-*`, `white`, `black`, …) outside the five files
+the scanner skips: `globals.css` and `landing.css` (the token layer),
+`components/landing/**` (marketing, its own palette), `lib/clerkAppearance.ts` (Clerk
+takes hex, not `var()`), `*Brand.ts` (vendor marks), and tests (`__tests__/`,
+`*.test.*`). Charts use `var(--chart-1..5)` (ok, info, warn, err, brass). Enforced by
 `node scripts/brand-tokens-scan.mjs src` — must print 0. Admin primitives: `StatusChip` ·
 `Tile` (`tone` border = severity) · `Card` · `MetricStat` · `ErrorBanner` · `LogRow` · `AuditRow`.

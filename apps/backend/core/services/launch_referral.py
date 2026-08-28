@@ -103,6 +103,8 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
     if int(payer_row.get("free_months_banked", 0)) <= 0:
         return
     remaining = await launch_waitlist_repo.add_counter(payer_email, "free_months_banked", -1)
+    if remaining is None:
+        return  # the decrement was refused — there is no month to spend, so nothing to put back
     sub_id = ((await billing_repo.get_by_owner_id(payer_owner)) or {}).get("stripe_subscription_id")
     try:
         applied = await grant_free_month(payer_owner, idempotency_key=f"banked_month:{sub_id}:{invoice_id}")

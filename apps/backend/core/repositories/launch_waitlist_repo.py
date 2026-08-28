@@ -171,18 +171,23 @@ async def mark_rewarded(email: str) -> bool:
         return False
 
 
-async def add_counter(email: str, field: CounterField, delta: int) -> int:
-    """Atomic ADD. A negative delta that would go below zero is refused and the
-    current value is returned unchanged."""
+async def add_counter(email: str, field: CounterField, delta: int) -> int | None:
+    """Atomic ADD on an EXISTING row. Returns the new value, or ``None`` when the
+    write was refused — a negative delta that would go below zero, or no row.
+
+    ``None`` is load-bearing on the money path: a caller that decrements a banked
+    free month must be able to tell a refused decrement from a successful one, or
+    its compensating put-back mints a month that was never spent."""
     kwargs: dict = {
         "Key": {"email": email},
         "UpdateExpression": "ADD #f :d",
+        "ConditionExpression": "attribute_exists(email)",
         "ExpressionAttributeNames": {"#f": field},
         "ExpressionAttributeValues": {":d": delta},
         "ReturnValues": "UPDATED_NEW",
     }
     if delta < 0:
-        kwargs["ConditionExpression"] = "#f >= :need"
+        kwargs["ConditionExpression"] += " AND #f >= :need"
         kwargs["ExpressionAttributeValues"][":need"] = -delta
     try:
         resp = await run_in_thread(_table().update_item, **kwargs)
@@ -190,8 +195,7 @@ async def add_counter(email: str, field: CounterField, delta: int) -> int:
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        row = await get(email)
-        return int((row or {}).get(field, 0))
+        return None
 
 
 async def list_all() -> list[dict]:

@@ -104,7 +104,13 @@ async def test_add_counter_floors_at_zero(table):
     await table.join("a@example.com", referred_by=None, source="waitlist")
     assert await table.add_counter("a@example.com", "free_months_banked", 2) == 2
     assert await table.add_counter("a@example.com", "free_months_banked", -1) == 1
-    assert await table.add_counter("a@example.com", "free_months_banked", -5) == 1  # refused, unchanged
+    assert await table.add_counter("a@example.com", "free_months_banked", -5) is None  # refused
+    assert (await table.get("a@example.com"))["free_months_banked"] == 1  # unchanged
+
+
+async def test_add_counter_never_mints_a_row(table):
+    assert await table.add_counter("nobody@example.com", "free_months_banked", 1) is None
+    assert await table.get("nobody@example.com") is None
 
 
 async def test_list_all_excludes_counter_row(table):

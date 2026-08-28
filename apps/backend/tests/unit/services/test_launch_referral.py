@@ -146,3 +146,19 @@ def test_subscription_has_discount_handles_both_shapes():
     assert ref.subscription_has_discount({"discount": {"id": "di_1"}}) is True
     assert ref.subscription_has_discount({"discounts": ["di_1"]}) is True
     assert ref.subscription_has_discount({"discount": None, "discounts": []}) is False
+
+
+async def test_refused_decrement_neither_grants_nor_puts_a_month_back(deps):
+    """A lost decrement race must not mint a month: add_counter returns None when
+    the conditional write is refused, and the drain has to stop there."""
+    payer = dict(PAYER_ROW, referred_by=None, free_months_banked=1)
+    deps["wl"].get = AsyncMock(side_effect=lambda e: {"payer@x.com": payer}.get(e))
+    deps["wl"].add_counter = AsyncMock(return_value=None)
+    deps["billing"].get_by_owner_id = AsyncMock(
+        return_value={"owner_id": "user_payer", "stripe_subscription_id": "sub_payer", "subscription_status": "active"}
+    )
+    await ref.on_invoice_paid(_invoice())
+    deps["stripe"].Subscription.modify.assert_not_called()
+    assert deps["wl"].add_counter.await_args_list == [
+        (("payer@x.com", "free_months_banked", -1), {}),
+    ]

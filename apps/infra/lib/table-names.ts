@@ -35,6 +35,19 @@ export const legacyTablePrefix = (env: string) => `isol8-${env}-`;
  */
 export const resourcePrefix = (env: string) => `lightbulb-${env}-`;
 
+/**
+ * Alert topic ARN. The topics are DEFINED in observability-stack but named by
+ * literal ARN in four other stacks, which cannot import them (that would make
+ * observability a dependency of the gate and the meter). Six call sites, so
+ * the name lives here rather than being spelled out six times.
+ */
+export const alertTopicArn = (
+  region: string,
+  account: string,
+  env: string,
+  tier: "page" | "warn",
+) => `arn:aws:sns:${region}:${account}:${resourcePrefix(env)}alerts-${tier}`;
+
 /** Log group paths are path-shaped, not prefix-shaped. */
 export const logGroupPath = (env: string, suffix: string) =>
   `/lightbulb/${env}/${suffix}`;

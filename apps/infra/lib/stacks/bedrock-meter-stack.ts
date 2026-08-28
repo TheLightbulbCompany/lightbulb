@@ -11,7 +11,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as cr from "aws-cdk-lib/custom-resources";
-import { bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
+import { alertTopicArn, bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -473,7 +473,7 @@ export class BedrockMeterStack extends cdk.Stack {
       const alarmTopic = sns.Topic.fromTopicArn(
         this,
         `MeterAlerts${idSuffix}`,
-        `arn:aws:sns:${this.region}:${this.account}:isol8-${meterEnv}-alerts-warn`,
+        alertTopicArn(this.region, this.account, meterEnv, "warn"),
       );
       const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
@@ -487,7 +487,7 @@ export class BedrockMeterStack extends cdk.Stack {
       const pageTopic = sns.Topic.fromTopicArn(
         this,
         `MeterPage${idSuffix}`,
-        `arn:aws:sns:${this.region}:${this.account}:isol8-${meterEnv}-alerts-page`,
+        alertTopicArn(this.region, this.account, meterEnv, "page"),
       );
       const pageAction = new cloudwatchActions.SnsAction(pageTopic);
       const PAGING_METRICS = new Set([

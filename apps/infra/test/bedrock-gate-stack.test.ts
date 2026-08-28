@@ -357,7 +357,7 @@ describe("BedrockGateStack", () => {
       if (/-gate-error$|-gate-hold_release_failed$/.test(name)) {
         const gateEnv = name.startsWith("isol8-dev-") ? "dev" : "prod";
         expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain(
-          `isol8-${gateEnv}-alerts-page`,
+          `lightbulb-${gateEnv}-alerts-page`,
         );
         paged++;
       }

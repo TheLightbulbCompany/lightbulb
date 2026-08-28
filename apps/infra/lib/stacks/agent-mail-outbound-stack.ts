@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import { alertTopicArn } from "../table-names";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as events from "aws-cdk-lib/aws-events";
@@ -123,7 +124,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
         sns.Topic.fromTopicArn(
           this,
           "AlertsWarn",
-          `arn:aws:sns:${this.region}:${this.account}:isol8-${envName}-alerts-warn`,
+          alertTopicArn(this.region, this.account, envName, "warn"),
         ),
       ),
     );

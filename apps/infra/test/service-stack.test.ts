@@ -675,7 +675,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(provisioning).toHaveLength(3);
     for (const alarm of provisioning as any[]) {
       expect(alarm.Properties.AlarmActions).toEqual([
-        expect.stringContaining("isol8-dev-alerts-page"),
+        expect.stringContaining("lightbulb-dev-alerts-page"),
       ]);
     }
   });

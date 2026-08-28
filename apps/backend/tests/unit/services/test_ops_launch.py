@@ -119,11 +119,14 @@ async def test_compute_counts_and_economics(deps):
 
 
 async def test_compute_is_cached_for_60s(deps):
-    await ops_launch.compute()
+    first = await ops_launch.compute()
+    assert first[1] == "ok"
     with patch.object(
         ops_launch.launch_waitlist_repo, "list_all", AsyncMock(side_effect=AssertionError("should be cached"))
     ):
-        await ops_launch.compute()
+        second = await ops_launch.compute()
+    assert second is first  # the cached tuple, not a re-read that read_source turned into UNAVAILABLE
+    assert second[1] == "ok"
 
 
 async def test_compute_unconfigured():

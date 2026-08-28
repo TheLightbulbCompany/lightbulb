@@ -51,6 +51,8 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     comped = 0
     for e, billing in zip(entries, billing_rows):
         pos = e.get("waitlist_position")
+        # Org entrants (owner_id "org_…") are never comped: comps are personal-only per the
+        # spec, and `activated` is keyed by the individual user_id, so they land in `paid`.
         is_comped = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
         comped += int(is_comped)
         baseline = int(e.get("baseline_cents", 0))

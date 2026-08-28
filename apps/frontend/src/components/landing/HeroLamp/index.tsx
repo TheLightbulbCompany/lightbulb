@@ -33,7 +33,14 @@ export function HeroLamp() {
 
   return (
     <>
+      {/* `pending` deliberately draws no lamp: swapping an SVG lamp for a 3D
+          one a frame later is a worse first impression than an unlit room the
+          lamp arrives into. Scripts off is the one case that never resolves,
+          so <noscript> gets the SVG — its effects cannot run there anyway. */}
       {mode === "scene" && <Scene />}
+      <noscript>
+        <HangingLamp />
+      </noscript>
       <button
         type="button"
         className="ld-lamp-switch"

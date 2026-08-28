@@ -1840,10 +1840,6 @@
     min-height: auto;
   }
 
-  .ld-hero-canvas {
-    opacity: 0.35;
-  }
-
   .ld-hero-topline {
     margin-bottom: 30px;
   }
@@ -2598,6 +2594,7 @@
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
 }
+/* !important: R3F writes the drawing-buffer size inline in px on the canvas. */
 .ld-hero-canvas canvas { display: block; width: 100% !important; height: 100% !important; }
 
 /* The accessible switch over the glass. Transparent, but real: keyboard focus

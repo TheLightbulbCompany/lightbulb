@@ -30,6 +30,10 @@ export function HeroLamp() {
     hydrateFromStorage();
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     setMode(!reduce && hasWebGL() ? "scene" : "fallback");
+    // The head script + the store set data-lb-theme for "/" only; other .ld-page
+    // routes must never inherit it across a soft nav. Returning to "/" re-runs
+    // hydrateFromStorage() and rewrites the current theme.
+    return () => document.documentElement.removeAttribute("data-lb-theme");
   }, []);
 
   if (mode === "fallback") return <HangingLamp />;

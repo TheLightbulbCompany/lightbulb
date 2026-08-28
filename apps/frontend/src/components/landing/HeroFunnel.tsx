@@ -20,7 +20,7 @@ import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
 import { HeroLamp } from "./HeroLamp";
-import { lightOn } from "./HeroLamp/lampStore";
+import { lightOn, setIdeaText } from "./HeroLamp/lampStore";
 
 const COPY: Record<Path, { placeholder: string; swap: string }> = {
   new: {
@@ -92,6 +92,8 @@ export function HeroFunnel() {
               // character IS the lightbulb moment. Only ever lights, never
               // darkens; the lamp itself is the toggle.
               if (next.length > 0) lightOn();
+              // …and the idea itself lands on the laptop's screen in the room.
+              setIdeaText(next);
               setInput(next);
               stash(path, next);
             }}

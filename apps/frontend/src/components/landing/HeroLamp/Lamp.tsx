@@ -147,10 +147,9 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
     const s = spot.current;
     if (!g || !s) return;
     const t = spotTarget.current;
-    // World (0, 0, -1.6): the wall behind the headline, so the pool's centre
-    // is on the canvas. Aimed 2.5 lower it sat on the masked bottom edge and
-    // only the cone's spill showed.
-    t.position.set(0, -LAMP_ANCHOR_Y, -1.6);
+    // World (0, -1.5, 0): the desk top, where the laptop is. The pool belongs
+    // on the work, not on the wall behind the headline.
+    t.position.set(0, -(LAMP_ANCHOR_Y + 1.5), 0);
     g.add(t);
     s.target = t;
     return () => {

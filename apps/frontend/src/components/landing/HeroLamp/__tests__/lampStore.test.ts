@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import {
   LAMP_STORAGE_KEY,
+  getIdeaText,
   getServerTheme,
   getTheme,
   hydrateFromStorage,
   lightOn,
+  setIdeaText,
   setTheme,
   strike,
   subscribe,
@@ -90,5 +92,17 @@ describe("lampStore", () => {
     expect(result.current).toBe("dark");
     act(() => strike());
     expect(result.current).toBe("light");
+  });
+
+  it("ideaText is stored and notifies subscribers", () => {
+    setIdeaText("");
+    let n = 0;
+    const off = subscribe(() => { n += 1; });
+    setIdeaText("A ceramics studio");
+    expect(getIdeaText()).toBe("A ceramics studio");
+    expect(n).toBe(1);
+    setIdeaText("A ceramics studio"); // same value: no notify
+    expect(n).toBe(1);
+    off();
   });
 });

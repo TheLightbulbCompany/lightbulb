@@ -97,3 +97,24 @@ export function hydrateFromStorage(): void {
 export function useLampTheme(): LampTheme {
   return useSyncExternalStore(subscribe, getTheme, getServerTheme);
 }
+
+/**
+ * The visitor's idea, mirrored onto the laptop's screen in the scene.
+ * Same store as the theme because the same keystroke writes both — and the
+ * scene subscribes once for either.
+ */
+let ideaText = "";
+
+export function getIdeaText(): string {
+  return ideaText;
+}
+
+export function setIdeaText(t: string): void {
+  if (t === ideaText) return;
+  ideaText = t;
+  listeners.forEach((cb) => cb());
+}
+
+export function useIdeaText(): string {
+  return useSyncExternalStore(subscribe, getIdeaText, () => "");
+}

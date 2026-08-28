@@ -9,8 +9,13 @@ import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
 import { Lamp, easeStrike, type LampColors } from "./Lamp";
+import { Desk } from "./Desk";
+import { Laptop } from "./Laptop";
 
 const STRIKE_MS = 700;
+// The room arriving: the laptop rises from below the frame onto the desk,
+// once, on first paint. Not the strike — a returning lit visitor sees it too.
+const APPEAR_MS = 1500;
 const CAMERA_Z = 8;
 const CAMERA_FOV = 40;
 // Studio reflections on the glass: dim in the dark, full when lit, ramped on
@@ -93,11 +98,13 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
 function Driver({
   litRef,
   leanRef,
+  appearRef,
   pendulum,
   visible,
 }: {
   litRef: React.MutableRefObject<number>;
   leanRef: React.MutableRefObject<number>;
+  appearRef: React.MutableRefObject<number>;
   pendulum: ReturnType<typeof createPendulum>;
   visible: boolean;
 }) {
@@ -107,6 +114,9 @@ function Driver({
   const target = theme === "light" ? 1 : 0;
   const startRef = React.useRef<{ from: number; at: number } | null>(null);
   const leanTarget = React.useRef(0);
+  // Stamped on the first rendered frame, not at mount: under frameloop
+  // "never" (hero off-screen) the tween would otherwise run out unseen.
+  const appearStart = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     // Already there — a returning visitor's seeded `litRef`, or a flip back
@@ -164,6 +174,11 @@ function Driver({
 
   useFrame((state, delta) => {
     let busy = false;
+    if (appearStart.current === null) appearStart.current = performance.now();
+    if (appearRef.current < 1) {
+      appearRef.current = Math.min(1, (performance.now() - appearStart.current) / APPEAR_MS);
+      busy = true;
+    }
     const s = startRef.current;
     if (s) {
       const t = Math.min(1, (performance.now() - s.at) / STRIKE_MS);
@@ -194,6 +209,7 @@ export default function Scene() {
   // theme is already "light" should not watch the strike replay on every load.
   const litRef = React.useRef(lit ? 1 : 0);
   const leanRef = React.useRef(0);
+  const appearRef = React.useRef(0);
   const pendulum = React.useMemo(() => createPendulum(), []);
   const [colors] = React.useState(readColors);
   const [quality, setQuality] = React.useState<Quality>(2);
@@ -250,7 +266,7 @@ export default function Scene() {
           }}
           flipflops={2}
         />
-        <Driver litRef={litRef} leanRef={leanRef} pendulum={pendulum} visible={visible} />
+        <Driver litRef={litRef} leanRef={leanRef} appearRef={appearRef} pendulum={pendulum} visible={visible} />
         <ambientLight color={colors.cream} intensity={0.012} />
         {/* Studio reflections, built in code — no CDN HDRI. Intensity is
             written per frame by Driver (ENV_DARK → ENV_LIT on the strike). */}
@@ -261,6 +277,12 @@ export default function Scene() {
         </Environment>
 
         <Wall litRef={litRef} colors={colors} />
+        {/* The GLB + its keyboard overlay suspend; the room is drawn without
+            them until they land, and the lamp above never waits on them. */}
+        <React.Suspense fallback={null}>
+          <Desk colors={colors} shadows={quality > 0} />
+          <Laptop litRef={litRef} appearRef={appearRef} colors={colors} shadows={quality > 0} />
+        </React.Suspense>
         <Lamp
           litRef={litRef}
           leanRef={leanRef}

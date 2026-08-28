@@ -228,6 +228,12 @@ export class Isol8Stage extends cdk.Stage {
     // rejects a send naming a configuration set that does not exist, so the
     // outbound stack has to be deployed before the service that references it.
     if (agentMailOutbound) service.addDependency(agentMailOutbound);
+    // EXPLICIT, and load-bearing. The service stack used to take a `database`
+    // prop, which gave CDK an implicit ordering. Decoupling the exports removed
+    // the prop AND that ordering — but the backend still reads every table, now
+    // BY NAME, so it must not start before the database stack has created them.
+    // Without this the generated workflow drops database from service's `needs`.
+    service.addDependency(database);
 
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,
     // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from

@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     WEBHOOK_DEDUP_TABLE: str = ""
 
     # WebSocket Configuration (API Gateway Management API)
-    WS_CONNECTIONS_TABLE: str = "isol8-websocket-connections"
+    WS_CONNECTIONS_TABLE: str = "lightbulb-dev-ws-connections"
     WS_MANAGEMENT_API_URL: str = ""  # Set by Terraform
     # Public WSS endpoint returned by POST /api/v1/desktop/pair so desktop
     # clients know which gateway to connect to. Wired by CDK service-stack from

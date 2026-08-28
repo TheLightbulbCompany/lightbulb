@@ -372,7 +372,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     }
   });
 
-  test("prod: the service stack's AGENT_EMAIL_DOMAIN + attachments-bucket env vars are set live", () => {
+  test("prod: the service stack's AGENT_EMAIL_DOMAIN is set live", () => {
     const stacks = stageStacks("prod");
     const serviceStack = stacks.find((s) => s.node.id === "isol8-prod-service");
     expect(serviceStack).toBeDefined();
@@ -382,14 +382,21 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
         Match.objectLike({
           Environment: Match.arrayWith([
             { Name: "AGENT_EMAIL_DOMAIN", Value: PLATFORM_MAIL_DOMAIN },
-            {
-              Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET",
-              Value: "isol8-prod-agent-mail-attachments",
-            },
           ]),
         }),
       ]),
     });
+  });
+
+  test("the backend is NOT handed an attachments-bucket env var", () => {
+    // AGENT_EMAIL_ATTACHMENTS_BUCKET was injected here but never read: nothing
+    // in apps/backend/ references it, and Pydantic BaseSettings silently drops
+    // unknown vars, so it was inert noise. The SES ingest Lambda uses its own
+    // ATTACHMENTS_BUCKET (ses-inbound-stack), and the backend receives
+    // attachment metadata in the webhook body instead.
+    const serviceStack = stageStacks("prod").find((s) => s.node.id === "isol8-prod-service");
+    const rendered = JSON.stringify(Template.fromStack(serviceStack!).toJSON());
+    expect(rendered).not.toContain("AGENT_EMAIL_ATTACHMENTS_BUCKET");
   });
 
   test("dev: agent email is LIVE on its own subdomain, without a stack of its own", () => {

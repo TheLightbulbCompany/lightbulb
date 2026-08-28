@@ -2226,6 +2226,7 @@ Personal owners only. Never raises — this runs inside the webhook handler.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import stripe
@@ -2286,13 +2287,18 @@ async def _reward_referrer(payer_email: str, payer_row: dict, invoice_id: str) -
     sub_id = ((await billing_repo.get_by_owner_id(referrer_owner)) or {}).get("stripe_subscription_id") if referrer_owner else None
     applied = False
     if referrer_owner:
-        applied = await grant_free_month(referrer_owner, idempotency_key=f"referral_reward:{sub_id}:{invoice_id}")
+        # Any failure after the CAS must degrade to "banked" — the CAS cannot re-fire.
+        try:
+            applied = await grant_free_month(referrer_owner, idempotency_key=f"referral_reward:{sub_id}:{invoice_id}")
+        except Exception:  # noqa: BLE001
+            logger.warning("launch_referral: grant failed for referrer %s; banking", referrer_owner, exc_info=True)
+            applied = False
     if not applied:
         await launch_waitlist_repo.add_counter(referrer["email"], "free_months_banked", 1)
     capture_product_event(
         distinct_id=referrer_owner or referrer["email"],
         event="launch_referral_rewarded",
-        properties={"applied": applied, "referred_owner_email_hash": hash(payer_email) & 0xFFFFFFFF},
+        properties={"applied": applied, "referred_owner_email_hash": hashlib.sha256(payer_email.encode()).hexdigest()[:16]},
     )
 
 
@@ -2301,8 +2307,11 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
         return
     remaining = await launch_waitlist_repo.add_counter(payer_email, "free_months_banked", -1)
     sub_id = ((await billing_repo.get_by_owner_id(payer_owner)) or {}).get("stripe_subscription_id")
-    if await grant_free_month(payer_owner, idempotency_key=f"banked_month:{sub_id}:{invoice_id}"):
-        return
+    try:
+        if await grant_free_month(payer_owner, idempotency_key=f"banked_month:{sub_id}:{invoice_id}"):
+            return
+    except Exception:  # noqa: BLE001 — put the month back rather than lose it
+        logger.warning("launch_referral: banked-month grant failed for %s; restoring", payer_owner, exc_info=True)
     await launch_waitlist_repo.add_counter(payer_email, "free_months_banked", 1)  # put it back
     logger.info("launch: banked month not applicable yet for %s (remaining=%s)", payer_owner, remaining + 1)
 

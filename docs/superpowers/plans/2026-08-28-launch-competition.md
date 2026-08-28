@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Backend: Python 3.12, ruff line-length 120, `asyncio_mode = "auto"` (pytest-asyncio); every DynamoDB call goes through `core.dynamodb.run_in_thread`; never log a Stripe key.
-- Every `/launch*` and `/ops/launch*` route returns **404** when `settings.LAUNCH_DROP_AT` is empty. Prod is inert until an owner sets it.
+- Every `/launch*` route returns **404** when `settings.LAUNCH_DROP_AT` is empty; `/ops/launch*` returns the `unavailable` envelope / `{"refreshed": 0}`. Prod is inert until an owner sets it.
 - The two new tables are read like every other core table — `core.dynamodb.get_table("launch-waitlist")` / `get_table("launch-entries")` under `DYNAMODB_TABLE_PREFIX`. (The `lightbulb-` prefix flip landed in #2102 before this branch was rebased; no full-name env vars.)
 - Stripe restricted key prefix rule: `^rk_live_` in prod; `^rk_(live|test)_` when `settings.ENVIRONMENT != "prod"`.
 - Comp/referral rewards: personal owners only (`owner_id` starting with `org_` is skipped).

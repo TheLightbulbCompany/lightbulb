@@ -94,7 +94,8 @@ Position assignment: read by email → if absent, `ADD` the counter → conditio
 | `display_name` | 2–40 chars. |
 | `public` | bool — appear on the public board. |
 | `entered_at`, `waitlist_position` (nullable), `currency` | |
-| `baseline_cents` | Net revenue in the 30 days before `competition_start_at`. Computed once at entry (recomputed if re-entering before start). |
+| `baseline_cents`, `baseline_at` | Net revenue in the 30 days before `competition_start_at`, and the instant it was read. An entry made during the activation window sums a window whose tail is still in the future, so the first refresh pass at/after `competition_start_at` recomputes and re-stamps it. |
+| `baseline_prorated_cents` | `baseline_cents` scaled to the elapsed fraction of the competition. Written by the sweep; it is what `delta_cents` and `pct` are measured against, so the live board ranks by growth rather than by baseline size. |
 | `window_cents`, `delta_cents`, `refreshed_at`, `refresh_error` | Written by the sweep. |
 
 The Stripe restricted key is stored on the BYO-key rail (`provider = "stripe-launch"`), never in DynamoDB, never logged.
@@ -122,9 +123,9 @@ On `invoice.paid` with `amount_paid > 0`:
 
 1. Resolve owner from `customer` via the `stripe-customer-index` GSI. Org owner ⇒ return (personal only).
 2. Referral payoff: owner → `users.email` → waitlist row. If `referred_by` set and `referral_rewarded_at` unset → conditional update stamping `referral_rewarded_at` (the CAS). On success: resolve referrer via the GSI, `ADD referrals_paid 1`, then **grant**:
-   - referrer has `stripe_subscription_id` and the subscription carries no discount and `STRIPE_FREE_MONTH_COUPON_ID` is set → `stripe.Subscription.modify(sub_id, discounts=[{"coupon": id}], idempotency_key=f"referral_reward:{sha256(referred_email)[:16]}")`.
+   - referrer has `stripe_subscription_id` and the subscription carries no discount and `STRIPE_FREE_MONTH_COUPON_ID` is set → `stripe.Subscription.modify(sub_id, discounts=[{"coupon": id}], idempotency_key=f"referral_reward:{referrer_subscription_id}:{invoice_id}")`.
    - otherwise → `ADD free_months_banked 1` on the referrer's row.
-3. Drain for the payer: if the payer's own row has `free_months_banked > 0` and their subscription carries no discount → conditional decrement + apply the coupon (idempotency key `banked_month:{owner_id}:{invoice_id}`).
+3. Drain for the payer: if the payer's own row has `free_months_banked > 0` and their subscription carries no discount → conditional decrement + apply the coupon (idempotency key `banked_month:{payer_subscription_id}:{invoice_id}`). A refused decrement stops the drain — there is no month to spend, so nothing is put back.
 
 Every step is best-effort and logged; a Stripe error after the CAS is retried on the next `invoice.paid` for that owner via the banked path (the CAS only guards the *credit*, the grant is idempotent by key). Product events: `launch_referral_rewarded`, `launch_free_month_applied`. Any failure after the once-only CAS — including a Stripe error mid-grant — banks the month rather than losing it.
 
@@ -146,7 +147,7 @@ logs a write failure rather than aborting the pass). Admin's
 `POST /ops/launch/refresh` calls `refresh_all(force=True)` to force a full
 pass on demand.
 
-`sum_net_revenue(key, start, end) -> (cents, currency)`: paginate `BalanceTransaction.list(created={gte,lte}, limit=100)`, sum `amount` for `type ∈ {charge, payment}` and `type ∈ {refund, payment_refund}` (negative), in the account's balance currency (the first transaction's `currency`; mixed currencies ⇒ `refresh_error = "mixed_currency"` and skip). Window = `[competition_start_at, min(now, competition_end_at)]`. `delta = window − baseline`.
+`sum_net_revenue(key, start, end) -> (cents, currency)`: paginate `BalanceTransaction.list(created={gte,lte}, limit=100)`, sum `amount` for `type ∈ {charge, payment}` and `type ∈ {refund, payment_refund}` (negative), in the account's balance currency (the first transaction's `currency`; mixed currencies ⇒ `refresh_error = "mixed_currency"` and skip). Window = `[competition_start_at, min(now, competition_end_at)]`. `delta = window − round(baseline × elapsed / total)` — the baseline is prorated to the elapsed fraction of the competition, so a full 30-day baseline is never compared against a three-day window.
 
 `# ponytail:` `_inflight`/`_last_started_at` are module-level state on the
 single backend task — a scheduled Lambda if the fleet ever runs more than one

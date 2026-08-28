@@ -47,6 +47,7 @@ description: >
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
+  - Launch competition ...... apps/backend/routers/launch.py; core/services/launch_{phase,service,referral,revenue}.py
   - Email ................... /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 

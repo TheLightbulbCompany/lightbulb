@@ -15,7 +15,7 @@
       "url": "https://u.expo.dev/2def259d-5e79-462b-9b0f-3d01d666ba66"
     },
     "ios": {
-      "bundleIdentifier": "ai.flickmeon.mobile",
+      "bundleIdentifier": "company.thelightbulb.mobile",
       "supportsTablet": false,
       "appleTeamId": "WZX4U3C22Y",
       "infoPlist": {

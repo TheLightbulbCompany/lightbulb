@@ -21,7 +21,7 @@ from core.services.webhook_dedup import WebhookDedupResult
 def _transaction(**overrides):
     base = dict(
         originalTransactionId="2000000000000001",
-        productId="ai.flickmeon.mobile.plan.monthly",
+        productId="company.thelightbulb.mobile.plan.monthly",
         expiresDate=1_800_000_000_000,
         revocationDate=None,
         # Every purchase our client makes carries this — link_purchase requires
@@ -50,7 +50,7 @@ def _notification(**overrides):
 
 @pytest.fixture(autouse=True)
 def _product_id(monkeypatch):
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "ai.flickmeon.mobile.plan.monthly")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "company.thelightbulb.mobile.plan.monthly")
 
 
 @pytest.fixture(autouse=True)
@@ -510,7 +510,7 @@ def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
     blank" is reachable — and in that window any validly-signed transaction for
     our bundle would be granted a plan. Configuration must fail instead.
     """
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "ai.flickmeon.mobile")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "company.thelightbulb.mobile")
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "/tmp/certs")
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "")
     apple_iap._verifier.cache_clear()

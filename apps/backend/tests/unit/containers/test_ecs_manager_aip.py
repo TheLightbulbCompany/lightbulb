@@ -40,7 +40,7 @@ def mock_settings():
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
-        s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
+        s.CLOUD_MAP_NAMESPACE_NAME = "lightbulb-dev.local"
         s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
         yield s

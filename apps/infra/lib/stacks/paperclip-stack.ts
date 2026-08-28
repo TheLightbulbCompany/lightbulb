@@ -46,9 +46,9 @@ const GOVERNED_AGENT_CREATION_ENVIRONMENTS = new Set<string>(["dev"]);
  *
  * Reachability: the FastAPI backend talks to Paperclip over Cloud Map
  * service discovery. The service registers as `paperclip` inside the
- * existing private DNS namespace (`isol8-${env}.local`) created by
+ * existing private DNS namespace (`lightbulb-${env}.local`) created by
  * ContainerStack — same pattern OpenClaw containers use. Backend resolves
- * `http://paperclip.isol8-${env}.local:3100/`.
+ * `http://paperclip.lightbulb-${env}.local:3100/`.
  *
  * Why Cloud Map and not an internal ALB listener?
  *  - The repo's NetworkStack only exposes a single public ALB (HTTP+HTTPS

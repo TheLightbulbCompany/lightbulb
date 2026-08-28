@@ -232,7 +232,7 @@ def mock_settings():
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
-        s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
+        s.CLOUD_MAP_NAMESPACE_NAME = "lightbulb-dev.local"
         s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
         yield s
@@ -1428,7 +1428,7 @@ class TestDiscoverIp:
 
         assert ip == "10.0.1.42"
         mock_servicediscovery_client.discover_instances.assert_called_once_with(
-            NamespaceName="isol8-dev.local",
+            NamespaceName="lightbulb-dev.local",
             ServiceName="openclaw-containers",
             QueryParameters={"ECS_SERVICE_NAME": "openclaw-abc123def4"},
             HealthStatus="HEALTHY_OR_ELSE_ALL",

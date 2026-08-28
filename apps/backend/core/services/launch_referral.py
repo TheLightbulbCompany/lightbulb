@@ -64,33 +64,62 @@ async def _email_for_owner(owner_id: str) -> str | None:
     return email.strip().lower() if email else None
 
 
+async def _safe_counter(
+    email: str, field: str, delta: int, *, code: str | None = None, owner_id: str | None = None
+) -> None:
+    """A counter write that carries money. Retried once; a second failure is logged
+    at ERROR so it can be reconciled by hand — identified by referral code and
+    owner id, NEVER by the email."""
+    for attempt in (1, 2):
+        try:
+            await launch_waitlist_repo.add_counter(email, field, delta)  # type: ignore[arg-type]
+            return
+        except Exception:  # noqa: BLE001 — losing a month is worse than a noisy log line
+            if attempt == 2:
+                logger.error(
+                    "launch_referral: counter write failed twice — reconcile by hand "
+                    "(field=%s delta=%s referral_code=%s owner_id=%s)",
+                    field,
+                    delta,
+                    code,
+                    owner_id,
+                    exc_info=True,
+                )
+
+
 async def _reward_referrer(payer_email: str, payer_row: dict, invoice_id: str) -> None:
     code = payer_row.get("referred_by")
     if not code:
         return
     if not await launch_waitlist_repo.mark_rewarded(payer_email):
         return  # already paid out for this referred person
-    referrer = await launch_waitlist_repo.get_by_referral_code(code)
-    if not referrer:
-        return
-    await launch_waitlist_repo.add_counter(referrer["email"], "referrals_paid", 1)
-    referrer_owner = referrer.get("user_id")
-    sub_id = (
-        ((await billing_repo.get_by_owner_id(referrer_owner)) or {}).get("stripe_subscription_id")
-        if referrer_owner
-        else None
-    )
+    # Past this line the once-only credit is spent. NOTHING may raise before the
+    # bank decision below, or the referrer silently loses their free month.
+    referrer: dict | None = None
+    referrer_owner: str | None = None
     applied = False
-    if referrer_owner:
-        try:
-            applied = await grant_free_month(referrer_owner, idempotency_key=f"referral_reward:{sub_id}:{invoice_id}")
-        except Exception:  # noqa: BLE001 — a Stripe failure after the CAS must still bank the reward
-            logger.warning("launch_referral: grant_free_month failed for referrer", exc_info=True)
-            applied = False
+    try:
+        referrer = await launch_waitlist_repo.get_by_referral_code(code)
+        if referrer:
+            referrer_owner = referrer.get("user_id")
+            if referrer_owner:
+                billing = await billing_repo.get_by_owner_id(referrer_owner)
+                sub_id = (billing or {}).get("stripe_subscription_id")
+                applied = await grant_free_month(
+                    referrer_owner, idempotency_key=f"referral_reward:{sub_id}:{invoice_id}"
+                )
+    except Exception:  # noqa: BLE001 — any failure after the CAS banks the month instead
+        logger.warning("launch_referral: referral grant failed after the CAS", exc_info=True)
+        applied = False
+    if referrer is None:
+        # The referrer row could not be resolved, so there is no row to credit.
+        logger.error("launch_referral: no referrer row for referral_code=%s after the CAS", code)
+        return
     if not applied:
-        await launch_waitlist_repo.add_counter(referrer["email"], "free_months_banked", 1)
+        await _safe_counter(referrer["email"], "free_months_banked", 1, code=code, owner_id=referrer_owner)
+    await _safe_counter(referrer["email"], "referrals_paid", 1, code=code, owner_id=referrer_owner)
     capture_product_event(
-        distinct_id=referrer_owner or referrer["email"],
+        distinct_id=referrer_owner or None,
         event="launch_referral_rewarded",
         properties={
             "applied": applied,
@@ -113,7 +142,9 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
         applied = False
     if applied:
         return
-    await launch_waitlist_repo.add_counter(payer_email, "free_months_banked", 1)  # put it back
+    await _safe_counter(
+        payer_email, "free_months_banked", 1, code=payer_row.get("referral_code"), owner_id=payer_owner
+    )  # put it back
     logger.info("launch: banked month not applicable yet for %s (remaining=%s)", payer_owner, remaining + 1)
 
 

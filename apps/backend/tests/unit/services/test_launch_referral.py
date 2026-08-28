@@ -162,3 +162,35 @@ async def test_refused_decrement_neither_grants_nor_puts_a_month_back(deps):
     assert deps["wl"].add_counter.await_args_list == [
         (("payer@x.com", "free_months_banked", -1), {}),
     ]
+
+
+# --- Nothing may raise past the bank decision once mark_rewarded has won ------
+
+
+async def test_referrer_lookup_failure_after_the_cas_does_not_escape(deps):
+    deps["wl"].get_by_referral_code = AsyncMock(side_effect=RuntimeError("gsi down"))
+    await ref._reward_referrer("payer@x.com", dict(PAYER_ROW), "in_1")  # no exception
+    deps["stripe"].Subscription.modify.assert_not_called()
+
+
+async def test_billing_read_failure_after_the_cas_banks_the_month(deps):
+    deps["billing"].get_by_owner_id = AsyncMock(side_effect=RuntimeError("ddb down"))
+    await ref._reward_referrer("payer@x.com", dict(PAYER_ROW), "in_1")  # no exception
+    deps["wl"].add_counter.assert_any_await("ref@x.com", "free_months_banked", 1)
+
+
+async def test_bank_write_failing_twice_logs_an_error_without_the_email(deps, caplog):
+    deps["billing"].get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+    deps["wl"].add_counter = AsyncMock(side_effect=RuntimeError("ddb down"))
+    with caplog.at_level("ERROR", logger=ref.logger.name):
+        await ref._reward_referrer("payer@x.com", dict(PAYER_ROW), "in_1")  # no exception
+    assert deps["wl"].add_counter.await_count == 4  # bank retried once, then referrals_paid the same
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("REFER123" in m and "user_ref" in m for m in errors)
+    assert not any("ref@x.com" in m or "payer@x.com" in m for m in errors)
+
+
+async def test_analytics_never_carries_an_email_as_the_distinct_id(deps):
+    deps["wl"].get_by_referral_code = AsyncMock(return_value={"email": "ref@x.com", "referral_code": "REFER123"})
+    await ref._reward_referrer("payer@x.com", dict(PAYER_ROW), "in_1")
+    assert deps["capture"].call_args.kwargs["distinct_id"] is None

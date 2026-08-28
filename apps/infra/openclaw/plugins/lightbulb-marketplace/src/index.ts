@@ -43,7 +43,7 @@ async function getJson(path: string, signal?: AbortSignal): Promise<any> {
 }
 
 export default defineToolPlugin({
-  id: "isol8-marketplace",
+  id: "lightbulb-marketplace",
   name: "Lightbulb AI Marketplace",
   description: "Discover hireable agents in the Lightbulb AI marketplace and recommend them to the owner.",
   tools: (tool) => [

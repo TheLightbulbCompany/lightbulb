@@ -33,7 +33,7 @@ def _cfg(provider_choice: str, **kwargs) -> dict:
 @pytest.mark.parametrize("provider_choice", _PROVIDER_PATHS)
 def test_marketplace_plugin_enabled_on_every_provider_path(provider_choice):
     config = _cfg(provider_choice)
-    assert config["plugins"]["entries"]["isol8-marketplace"] == {"enabled": True}
+    assert config["plugins"]["entries"]["lightbulb-marketplace"] == {"enabled": True}
 
 
 @pytest.mark.parametrize("provider_choice", _PROVIDER_PATHS)

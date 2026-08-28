@@ -540,7 +540,7 @@ RUN set -eux; \
 # ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
 # Read-only agent tools (marketplace_search, recommend_agents) so an agent can
 # name real marketplace listings instead of waving at a URL. Enabled fleet-wide
-# via plugins.entries["isol8-marketplace"] in core/containers/config.py.
+# via plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
 #
 # Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
 # (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
@@ -558,9 +558,9 @@ RUN set -eux; \
 #
 # Root-owned like every other baked plugin — the loader rejects any plugin dir
 # not owned by uid 0. Enabled fleet-wide via
-# plugins.entries["isol8-marketplace"] in core/containers/config.py.
-COPY plugins/isol8-marketplace /app/dist/extensions/isol8-marketplace
-RUN chown -R root:root /app/dist/extensions/isol8-marketplace
+# plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
+COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
+RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent

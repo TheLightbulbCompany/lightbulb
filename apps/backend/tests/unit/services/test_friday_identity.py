@@ -1411,3 +1411,109 @@ def test_legacy_grounding_section_swaps_once_and_ends_on_the_new_skill_id():
     assert healed.count(friday_identity._SELF_GROUNDING_HEADING) == 1
     assert friday_identity._LEGACY_SELF_GROUNDING_HEADING not in healed
     assert "skill isol8" not in healed
+
+
+# ---------------------------------------------------------------------------
+# Legacy "Lightbulb AI" content already on EFS
+# ---------------------------------------------------------------------------
+
+_LIGHTBULB_AI_HEADING = "## You are made of Lightbulb AI"
+
+
+def test_legacy_lightbulb_ai_grounding_section_is_swapped_not_left_stale():
+    """The trap this guards: the CURRENT heading is a strict prefix of the
+    "Lightbulb AI" one, so checking it first reads an unmigrated file as
+    already-current and the retired brand sticks to every owner forever."""
+    for legacy_section in friday_identity._LEGACY_SELF_GROUNDING_SECTIONS[:2]:
+        rel = f"workspace-{_UUID}/SOUL.md"
+        ws = _DictWorkspace({rel: "# SOUL.md - Who You Are\n\nFriday's own evolved soul.\n" + legacy_section})
+
+        assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is True
+        migrated = ws.files[rel]
+
+        assert migrated.count("## You are made of") == 1
+        assert _LIGHTBULB_AI_HEADING not in migrated
+        assert "Lightbulb AI" not in migrated
+        assert "skill isol8" not in migrated
+        assert "Friday's own evolved soul." in migrated
+
+        # Idempotent: the new heading is now the matcher.
+        assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+        assert ws.files[rel] == migrated
+
+
+def test_legacy_lightbulb_ai_grounding_heading_swapped_when_body_was_evolved():
+    rel = f"workspace-{_UUID}/SOUL.md"
+    ws = _DictWorkspace({rel: f"# SOUL\n\n{_LIGHTBULB_AI_HEADING}\n\nI rewrote this part in my own words.\n"})
+
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is True
+    migrated = ws.files[rel]
+
+    assert migrated.count("## You are made of") == 1
+    assert _LIGHTBULB_AI_HEADING not in migrated
+    assert friday_identity._SELF_GROUNDING_HEADING in migrated
+    assert "I rewrote this part in my own words." in migrated
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+
+
+def test_stale_brand_fragments_repointed_in_user_md_and_agents_md():
+    """USER.md's facts pointer and AGENTS.md's platform-mechanics line are
+    written by the PLATFORM, and no other migration is anchored on them — a
+    file seeded under the old brand keeps it with no path that heals it."""
+    user_rel = f"workspace-{_UUID}/USER.md"
+    agents_rel = f"workspace-{_UUID}/AGENTS.md"
+    ws = _DictWorkspace(
+        {
+            user_rel: (
+                "# USER.md - About You\n\n"
+                "- **Email:** a@b.co\n"
+                "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it\n"
+                "  current; trust it over anything remembered.\n\n"
+                "Owner prose mentioning Lightbulb AI in passing.\n"
+            ),
+            agents_rel: (
+                "For platform mechanics — the Integrations tab, marketplace flows, billing\n"
+                "surfaces, what agents can and cannot do on Lightbulb AI — run `skill lightbulb`.\n"
+            ),
+        }
+    )
+
+    assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is True
+
+    assert friday_identity._FACTS_POINTER_LINE_1 in ws.files[user_rel]
+    assert "Lightbulb AI keeps it" not in ws.files[user_rel]
+    # Owner prose is NOT a platform fragment — it survives verbatim.
+    assert "Owner prose mentioning Lightbulb AI in passing." in ws.files[user_rel]
+    assert "cannot do on Lightbulb — run `skill lightbulb`." in ws.files[agents_rel]
+
+    assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is False
+
+
+def test_stale_brand_fragments_repoint_the_isol8_generation_too():
+    rel = f"workspace-{_UUID}/USER.md"
+    ws = _DictWorkspace(
+        {rel: "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it\n  current;\n"}
+    )
+    assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is True
+    assert friday_identity._FACTS_POINTER_LINE_1 in ws.files[rel]
+
+
+def test_heal_migrations_leave_a_lightbulb_ai_friday_fully_current():
+    """End-to-end over the real migration list: one grounding section, one
+    brand, and no retired skill id left anywhere."""
+    soul_rel = f"workspace-{_UUID}/SOUL.md"
+    user_rel = f"workspace-{_UUID}/USER.md"
+    ws = _DictWorkspace(
+        {
+            soul_rel: "# SOUL\n\n" + friday_identity._LEGACY_SELF_GROUNDING_SECTIONS[1],
+            user_rel: "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it\n",
+        }
+    )
+
+    friday_identity._run_heal_migrations(ws, "owner_1", _UUID)
+
+    healed_soul = ws.files[soul_rel]
+    assert healed_soul.count(friday_identity._SELF_GROUNDING_HEADING) == 1
+    assert "Lightbulb AI" not in healed_soul
+    assert "skill isol8" not in healed_soul
+    assert "Lightbulb AI" not in ws.files[user_rel]

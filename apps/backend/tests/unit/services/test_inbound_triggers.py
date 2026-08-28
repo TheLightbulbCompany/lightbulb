@@ -2471,3 +2471,73 @@ async def test_a_duplicated_event_id_is_armed_and_counted_once():
     props = capture.call_args.kwargs["properties"]
     assert props["event_ids"] == ["charge.refunded"]
     assert props["event_count"] == 1
+
+
+# --- one platform block, whatever brand armed the trigger -------------------
+
+
+def test_strip_platform_blocks_removes_every_delimiter_generation():
+    from core.services.inbound_triggers import _PLATFORM_BLOCK_DELIMITERS, _strip_platform_blocks
+
+    for start, end in _PLATFORM_BLOCK_DELIMITERS:
+        desc = f"{_OWNER_WORDS}\n\n{start}\nRe-arm the watch channel weekly.\n{end}"
+        assert _strip_platform_blocks(desc).strip() == _OWNER_WORDS
+
+
+def test_strip_platform_blocks_leaves_an_unterminated_marker_alone():
+    """No end delimiter means someone edited the body. Cutting to the end of
+    the string there would delete their work; a duplicate block is cheaper."""
+    from core.services.inbound_triggers import _PLATFORM_BLOCK_START, _strip_platform_blocks
+
+    desc = f"{_OWNER_WORDS}\n\n{_PLATFORM_BLOCK_START}\nhalf a block the owner mangled"
+    assert _strip_platform_blocks(desc) == desc
+
+
+@pytest.mark.asyncio
+async def test_append_platform_block_replaces_a_legacy_brand_block():
+    """Re-arming a trigger armed before the rename must leave ONE block. The
+    retired delimiters no longer match the new ones, so without recognising
+    them the owner ends up with two sets of contradicting instructions."""
+    from core.services.inbound_triggers import (
+        _PLATFORM_BLOCK_END,
+        _PLATFORM_BLOCK_START,
+        _append_platform_block,
+    )
+
+    legacy_start = "--- Added by Lightbulb AI when this trigger was armed — leave this block in place ---"
+    legacy_end = "--- end Lightbulb AI block ---"
+    admin = MagicMock()
+    admin.get_routine = AsyncMock(
+        return_value={"description": f"{_OWNER_WORDS}\n\n{legacy_start}\nStale clause.\n{legacy_end}"}
+    )
+    admin.patch_routine = AsyncMock()
+
+    await _append_platform_block(admin, cookie="c", routine_id="rt_1", block="Fresh clause.")
+
+    written = admin.patch_routine.await_args.kwargs["body"]["description"]
+    assert written.count(_PLATFORM_BLOCK_START) == 1
+    assert written.count(_PLATFORM_BLOCK_END) == 1
+    assert legacy_start not in written
+    assert "Stale clause." not in written
+    assert "Fresh clause." in written
+    # The owner's own words survive, first and whole.
+    assert written.startswith(_OWNER_WORDS)
+
+
+@pytest.mark.asyncio
+async def test_append_platform_block_does_not_stack_its_own_block():
+    from core.services.inbound_triggers import _PLATFORM_BLOCK_START, _append_platform_block
+
+    admin = MagicMock()
+    admin.get_routine = AsyncMock(return_value={"description": _OWNER_WORDS})
+    admin.patch_routine = AsyncMock()
+
+    await _append_platform_block(admin, cookie="c", routine_id="rt_1", block="Clause.")
+    first = admin.patch_routine.await_args.kwargs["body"]["description"]
+
+    admin.get_routine = AsyncMock(return_value={"description": first})
+    await _append_platform_block(admin, cookie="c", routine_id="rt_1", block="Clause.")
+    second = admin.patch_routine.await_args.kwargs["body"]["description"]
+
+    assert second.count(_PLATFORM_BLOCK_START) == 1
+    assert second == first

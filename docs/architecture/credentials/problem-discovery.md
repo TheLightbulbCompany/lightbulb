@@ -561,7 +561,7 @@ These need to be resolved before solution selection.
 |---|---|
 | **Platform operator** | Lightbulb the company / its engineering team |
 | **Marketplace seller** | Author of a marketplace agent (Lightbulb team for seed agents, third parties later) |
-| **End customer** | The buyer of an Lightbulb agent. Non-technical assumed. |
+| **End customer** | The buyer of a Lightbulb agent. Non-technical assumed. |
 | **Agent** | An OpenClaw runtime instance dedicated to one end customer, possibly multiple per customer |
 | **Platform-internal agent** | An agent serving the Lightbulb team itself, e.g., Jarvis. Not a customer's agent. |
 | **OAuth broker** | A platform like Nango/Klavis/Composio that handles OAuth dance, stores tokens, exposes per-customer fetch API |

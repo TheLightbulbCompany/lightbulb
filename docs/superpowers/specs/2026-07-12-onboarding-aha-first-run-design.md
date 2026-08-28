@@ -320,7 +320,7 @@ railway (existing integration vs platform-provisioned build), then phase it.
 - *Railways weighed:* we already have **gog** (per-agent Google OAuth) — but gog is
   the **act-as-me** rail: it sends from the *user's* Gmail identity and requires an
   OAuth connect, exactly the "sounds sketchy" step Polsia's founder stripped from
-  onboarding. The company-identity rail must be **provisioned**: SES on an Lightbulb
+  onboarding. The company-identity rail must be **provisioned**: SES on a Lightbulb
   subdomain (`friday@{slug}.thelightbulb.company` shape — agent mail lives on the mail domain, never on `flickmeon.ai`), outbound with DKIM, inbound routed
   to Paperclip (email → issue/comment or Friday wake). Both rails coexist — they do
   different jobs (company-acts-as-itself vs agent-acts-as-me); onboarding and the

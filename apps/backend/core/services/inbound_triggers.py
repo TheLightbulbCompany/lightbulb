@@ -293,6 +293,23 @@ _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "n
 _PLATFORM_BLOCK_START = "--- Added by Lightbulb when this trigger was armed — leave this block in place ---"
 _PLATFORM_BLOCK_END = "--- end Lightbulb block ---"
 
+# Every delimiter generation, current first. Re-attaching a routine appends a
+# fresh block, so without recognising the retired brands' delimiters an owner
+# who armed a trigger before a rename ends up with two (or three) stacked
+# blocks contradicting each other. Keep the retired pairs verbatim — they are
+# matched against descriptions already stored in Paperclip.
+_PLATFORM_BLOCK_DELIMITERS: tuple[tuple[str, str], ...] = (
+    (_PLATFORM_BLOCK_START, _PLATFORM_BLOCK_END),
+    (
+        "--- Added by Lightbulb AI when this trigger was armed — leave this block in place ---",
+        "--- end Lightbulb AI block ---",
+    ),
+    (
+        "--- Added by Isol8 when this trigger was armed — leave this block in place ---",
+        "--- end Isol8 block ---",
+    ),
+)
+
 # ONE trigger can carry MANY events. A Paperclip webhook trigger has no event
 # filter (its schema is kind/signingMode/replayWindowSec — see the fork's
 # validators/routine.ts), it fires on any signed POST and hands the whole
@@ -800,17 +817,39 @@ def _trigger_id(resp: Any) -> str | None:
     return trigger.get("id") if isinstance(trigger, dict) else None
 
 
+def _strip_platform_blocks(description: str) -> str:
+    """Drop every complete platform-owned block, current or retired brand.
+
+    An UNTERMINATED start marker is left alone: the block is always appended
+    at the very end, so a start without its end means somebody edited the
+    body, and cutting to the end of the string there would delete their work.
+    A duplicate block is the cheaper failure.
+    """
+    for start, end in _PLATFORM_BLOCK_DELIMITERS:
+        while (open_at := description.find(start)) >= 0:
+            close_at = description.find(end, open_at + len(start))
+            if close_at < 0:
+                break
+            description = description[:open_at] + description[close_at + len(end) :]
+    return description
+
+
 async def _append_platform_block(admin: PaperclipAdminClient, *, cookie: str, routine_id: str, block: str) -> None:
-    """Append a delimited, platform-owned block to the END of an existing
+    """Replace the delimited, platform-owned block at the END of an existing
     routine's description, leaving every user-written word intact.
 
     Reads the CURRENT description with ``get_routine`` rather than trusting
     the list projection: the list row is not guaranteed to carry a
     description, and treating a missing one as empty would erase the very
     instructions this exists to preserve. A failed read raises, and the
-    caller unwinds — better than a patch that destroys the body."""
+    caller unwinds — better than a patch that destroys the body.
+
+    Any block already there is stripped first, across every delimiter
+    generation. Re-arming a trigger otherwise stacks blocks — silently, and
+    worst across a rename, where the old delimiters no longer match the new
+    ones and the owner is left with two sets of platform instructions."""
     detail = await admin.get_routine(session_cookie=cookie, routine_id=routine_id)
-    existing = (detail.get("description") if isinstance(detail, dict) else None) or ""
+    existing = _strip_platform_blocks((detail.get("description") if isinstance(detail, dict) else None) or "")
     appended = f"{_PLATFORM_BLOCK_START}\n{block}\n{_PLATFORM_BLOCK_END}"
     await admin.patch_routine(
         session_cookie=cookie,

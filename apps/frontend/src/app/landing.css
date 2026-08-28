@@ -160,9 +160,9 @@
 }
 
 .ld-btn:hover {
-  background: #16223a;
+  background: var(--cream-deep);
   transform: translateY(-2px);
-  box-shadow: 0 14px 34px rgba(15, 26, 43, 0.22);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--midnight) 22%, transparent);
 }
 
 .ld-btn .ld-btn-arrow {
@@ -307,7 +307,7 @@
 }
 
 .ld-hero-fine a:hover {
-  color: #16223a;
+  color: var(--cream-deep);
 }
 
 /* bottom strip: scroll cue + ticker */
@@ -427,7 +427,7 @@
 }
 
 .ld-feat-row:hover {
-  background: linear-gradient(to right, transparent, rgba(15, 26, 43, 0.025), transparent);
+  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--midnight) 2%, transparent), transparent);
 }
 
 .ld-feat-num {
@@ -587,7 +587,7 @@
   width: 62px;
   height: 62px;
   border-radius: 16px;
-  background: rgba(245, 239, 226, 0.10);
+  background: color-mix(in srgb, var(--cream) 10%, transparent);
   display: grid;
   place-items: center;
   color: var(--cream);
@@ -605,7 +605,7 @@
   font-size: 10px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: #F0C34E;
+  color: var(--brass); /* labels on a midnight band are brass (§06 Decided) */
   margin-bottom: 12px;
 }
 
@@ -620,7 +620,7 @@
 
 .ld-iso-body h3 em {
   font-style: italic;
-  color: #F0C34E; /* mint — AA contrast on the forest band */
+  color: var(--brass); /* yellow is never type; brass is the label colour on midnight */
 }
 
 .ld-iso-body p {
@@ -644,7 +644,7 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--brass);
-  border: 1px solid rgba(245, 239, 226, 0.22);
+  border: 1px solid color-mix(in srgb, var(--cream) 22%, transparent);
   padding: 11px 16px;
   border-radius: 999px;
 }
@@ -668,7 +668,7 @@
   border: 1px solid var(--edge);
   border-radius: 22px;
   background:
-    radial-gradient(ellipse at 50% 40%, rgba(15, 26, 43, 0.04), transparent 70%),
+    radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--midnight) 4%, transparent), transparent 70%),
     var(--cream);
   padding: 64px 48px 56px;
   overflow: hidden;
@@ -774,8 +774,8 @@
 .ld-const-node--agent.is-active .ld-puck {
   outline: 2px solid var(--brass);
   outline-offset: 4px;
-  border-color: rgba(15, 26, 43, 0.35);
-  box-shadow: 0 16px 38px rgba(15, 26, 43, 0.18);
+  border-color: color-mix(in srgb, var(--midnight) 35%, transparent);
+  box-shadow: 0 16px 38px color-mix(in srgb, var(--midnight) 18%, transparent);
 }
 
 .ld-const-node.is-dimmed {
@@ -811,7 +811,7 @@
   background: var(--midnight);
   border-color: var(--midnight);
   color: var(--cream);
-  box-shadow: 0 18px 44px rgba(15, 26, 43, 0.3);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--midnight) 30%, transparent);
 }
 
 .ld-puck--lead span {
@@ -852,7 +852,7 @@
   z-index: 5;
   width: min(280px, calc(100% - 28px));
   padding: 18px 18px 16px;
-  border: 1px solid rgba(15, 26, 43, 0.16);
+  border: 1px solid color-mix(in srgb, var(--midnight) 16%, transparent);
   border-radius: 16px;
   background: color-mix(in srgb, var(--cream) 96%, transparent);
   box-shadow: 0 24px 68px rgba(26, 26, 26, 0.14);
@@ -985,9 +985,9 @@
 }
 
 .ld-ib-item.is-active {
-  border-color: rgba(15, 26, 43, 0.35);
+  border-color: color-mix(in srgb, var(--midnight) 35%, transparent);
   background: var(--cream);
-  box-shadow: 0 10px 28px rgba(15, 26, 43, 0.07);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--midnight) 7%, transparent);
 }
 
 .ld-ib-id {
@@ -1046,7 +1046,7 @@
 
 .ld-ib-avatar--you {
   background: var(--cream-deep);
-  border-color: rgba(15, 26, 43, 0.2);
+  border-color: color-mix(in srgb, var(--midnight) 20%, transparent);
   color: var(--midnight);
   font-size: 8px;
   letter-spacing: 0.04em;
@@ -1267,7 +1267,7 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--midnight);
-  border-bottom: 1px solid rgba(15, 26, 43, 0.3);
+  border-bottom: 1px solid color-mix(in srgb, var(--midnight) 30%, transparent);
   padding-bottom: 4px;
   transition: border-color 0.25s ease, color 0.25s ease;
 }
@@ -1328,7 +1328,7 @@
   letter-spacing: 0.1em;
   padding: 4px 10px;
   border-radius: 99px;
-  border: 1px solid rgba(15, 26, 43, 0.3);
+  border: 1px solid color-mix(in srgb, var(--midnight) 30%, transparent);
   color: var(--midnight);
 }
 
@@ -1436,7 +1436,7 @@
 }
 
 .ld-price-card--hi:hover {
-  box-shadow: 0 26px 64px rgba(15, 26, 43, 0.32);
+  box-shadow: 0 26px 64px color-mix(in srgb, var(--midnight) 32%, transparent);
 }
 
 .ld-price-card .ld-pc-tag {
@@ -1449,7 +1449,7 @@
 }
 
 .ld-price-card--hi .ld-pc-tag {
-  color: #F0C34E;
+  color: var(--brass);
 }
 
 .ld-price-card h3 {
@@ -1472,7 +1472,7 @@
 }
 
 .ld-price-card--hi .ld-pc-sub {
-  color: rgba(250, 247, 242, 0.65);
+  color: color-mix(in srgb, var(--cream) 65%, transparent);
 }
 
 .ld-price-card ul {
@@ -1494,7 +1494,7 @@
 }
 
 .ld-price-card--hi li {
-  color: rgba(250, 247, 242, 0.85);
+  color: color-mix(in srgb, var(--cream) 85%, transparent);
 }
 
 .ld-price-card li::before {
@@ -1539,7 +1539,7 @@
 }
 
 .ld-price-card--hi .ld-pc-trial {
-  color: #F0C34E;
+  color: var(--brass);
 }
 
 .ld-teams-strip {
@@ -1708,8 +1708,8 @@
 }
 
 .ld-footer-cta h2 em {
+  /* Lora italic carries the emphasis; yellow is never type (§06). */
   font-style: italic;
-  color: #F0C34E;
 }
 
 .ld-footer-cta .ld-btn {
@@ -1740,13 +1740,13 @@
   font-size: 9.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(250, 247, 242, 0.45);
+  color: color-mix(in srgb, var(--cream) 45%, transparent);
   margin-bottom: 6px;
 }
 
 .ld-footer-col a {
   font-size: 13.5px;
-  color: rgba(250, 247, 242, 0.78);
+  color: color-mix(in srgb, var(--cream) 78%, transparent);
   transition: color 0.2s ease;
 }
 
@@ -1765,7 +1765,7 @@
   line-height: 0.78;
   letter-spacing: -0.04em;
   color: transparent;
-  -webkit-text-stroke: 1px rgba(250, 247, 242, 0.22);
+  -webkit-text-stroke: 1px color-mix(in srgb, var(--cream) 22%, transparent);
   user-select: none;
   pointer-events: none;
   /* confident bleed: the wordmark is cropped by the footer's bottom edge */
@@ -1779,7 +1779,7 @@
   justify-content: space-between;
   gap: 20px;
   flex-wrap: wrap;
-  border-top: 1px solid rgba(250, 247, 242, 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--cream) 14%, transparent);
   padding-top: 24px;
   position: relative;
   z-index: 1;
@@ -1791,7 +1791,7 @@
   font-size: 9.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(250, 247, 242, 0.45);
+  color: color-mix(in srgb, var(--cream) 45%, transparent);
 }
 
 .ld-footer-base a:hover {
@@ -2093,7 +2093,7 @@
   /* §06 "Decided": labels on cream are midnight at reduced opacity, never
      brass (2.94:1). 60% as written measures 4.40:1 — under the 4.5:1 AA
      floor — so this uses 66% (5.34:1), the nearest value that clears it. */
-  color: rgba(15, 26, 43, 0.66);
+  color: color-mix(in srgb, var(--midnight) 66%, transparent);
 }
 
 .ld-funnel-mark {
@@ -2111,7 +2111,7 @@
 
 .ld-funnel-h1 {
   font-family: var(--font-lora-serif), Georgia, serif;
-  font-weight: 600; /* §05 Lora SemiBold · display */
+  font-weight: 500; /* Lora Medium — the wordmark's weight; the owner does not want a bold display */
   font-size: clamp(38px, 5.2vw, 66px);
   line-height: 1.04;
   letter-spacing: -0.01em; /* §05 display sets tight */
@@ -2132,7 +2132,7 @@
   /* §06: never pure white. #fff was the one harsh surface on the page. */
   background: var(--cream-deep);
   border: 1px solid var(--edge);
-  box-shadow: 0 18px 44px rgba(15, 26, 43, 0.07);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--midnight) 7%, transparent);
   transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
 }
 
@@ -2155,7 +2155,7 @@
 .ld-ask input::placeholder {
   /* On the pill's --cream-deep, not --cream: 0.5 midnight measured 3.21:1
      there and --midnight-muted (4.56:1 on cream) only 4.15:1. 0.62 midnight is 4.6:1. */
-  color: rgba(15, 26, 43, 0.62);
+  color: color-mix(in srgb, var(--midnight) 62%, transparent);
 }
 
 .ld-ask input:focus {
@@ -2254,7 +2254,7 @@
 
 /* Slim hairline chrome — no mac-dots title bar. */
 .ld-demo-window {
-  border: 1px solid rgba(250, 247, 242, 0.18);
+  border: 1px solid color-mix(in srgb, var(--cream) 18%, transparent);
   border-radius: 14px;
   background: var(--cream);
   box-shadow: 0 40px 120px rgba(0, 0, 0, 0.35);
@@ -2556,15 +2556,15 @@
 }
 
 [data-lb-theme="dark"] .ld-lamp-glass {
-  fill: rgba(245, 239, 226, 0.06);
-  stroke: rgba(245, 239, 226, 0.75);
+  fill: color-mix(in srgb, var(--midnight) 6%, transparent);
+  stroke: color-mix(in srgb, var(--midnight) 75%, transparent);
 }
 [data-lb-theme="dark"] .ld-lamp-fil {
-  fill: rgba(245, 239, 226, 0.7);
-  stroke: rgba(245, 239, 226, 0.7);
+  fill: color-mix(in srgb, var(--midnight) 70%, transparent);
+  stroke: color-mix(in srgb, var(--midnight) 70%, transparent);
 }
-[data-lb-theme="dark"] .ld-lamp-collar { fill: rgba(245, 239, 226, 0.8); }
-[data-lb-theme="dark"] .ld-lamp-cord { stroke: rgba(245, 239, 226, 0.5); }
+[data-lb-theme="dark"] .ld-lamp-collar { fill: color-mix(in srgb, var(--midnight) 80%, transparent); }
+[data-lb-theme="dark"] .ld-lamp-cord { stroke: color-mix(in srgb, var(--midnight) 50%, transparent); }
 
 /* The fan is embers while the lamp is off, and blooms when it is lit. */
 /* Dark IS the lamp switched off — the glass renders unlit and the control
@@ -2663,19 +2663,19 @@
 }
 
 /* DOM side of the two states. Dark = waiting (still ≥4.5:1); lit = reading. */
-[data-lb-theme="dark"] .ld-funnel-h1 { color: rgba(245, 239, 226, 0.92); }
+[data-lb-theme="dark"] .ld-funnel-h1 { color: color-mix(in srgb, var(--midnight) 92%, transparent); }
 /* Literal cream, never var(--cream): inside the dark page that token IS
    midnight, so the label and the placeholder were painted onto their own
    background (1.05:1). */
 [data-lb-theme="dark"] .ld-ask .ld-btn {
   background: transparent;
-  color: rgba(245, 239, 226, 0.92);
+  color: color-mix(in srgb, var(--midnight) 92%, transparent);
   box-shadow: inset 0 0 0 1px var(--brass);
 }
-[data-lb-theme="dark"] .ld-ask input { color: rgba(245, 239, 226, 0.92); }
-/* 0.62, not 0.45: the pill is --cream-deep (#16223a) in the dark, where
+[data-lb-theme="dark"] .ld-ask input { color: color-mix(in srgb, var(--midnight) 92%, transparent); }
+/* 0.62, not 0.45: the pill is --cream-deep (var(--cream-deep)) in the dark, where
    0.45 cream measured 3.91:1. */
-[data-lb-theme="dark"] .ld-ask input::placeholder { color: rgba(245, 239, 226, 0.62); }
+[data-lb-theme="dark"] .ld-ask input::placeholder { color: color-mix(in srgb, var(--midnight) 62%, transparent); }
 .ld-funnel-h1, .ld-ask .ld-btn {
   transition: color 0.6s cubic-bezier(0.22, 1, 0.36, 1),
               background-color 0.6s cubic-bezier(0.22, 1, 0.36, 1),

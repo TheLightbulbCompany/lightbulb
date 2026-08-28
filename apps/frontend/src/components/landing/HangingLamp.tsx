@@ -102,9 +102,13 @@ export function HangingLamp() {
       {/* NOT aria-hidden: the glass below is the page's light switch, and
           aria-hidden on this element would strip it from the a11y tree
           along with the decoration. Decorative parts are marked instead. */}
+      <div className="ld-lamp-glow" aria-hidden="true" />
       <svg viewBox="0 0 290 300" className="ld-lamp-svg" focusable="false">
         <path className="ld-lamp-cord" d="M 145,0 L 145,120" aria-hidden="true" />
-        <g transform="translate(45 84) scale(0.55)">
+        {/* 90, not 45: the glass is drawn about local x=100, so at scale 0.55
+            a 45 offset centres it on x=100 while the cord hangs at x=145 —
+            the bulb rendered ~48px beside its own wire. 145 - 100*0.55 = 90. */}
+        <g transform="translate(90 84) scale(0.55)">
           <path
             ref={glassRef}
             className="ld-lamp-glass"

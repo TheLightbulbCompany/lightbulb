@@ -132,7 +132,16 @@
   --lamp-on: #F0C34E;
   --lamp-dim: #B68235;
   --lamp-out: rgba(15, 26, 43, 0.30);
-  --warn: #B68235;
+  /* #96501A, not brass. Brass measures 2.94:1 on cream — §06 names that
+     value a fail twice and says brass is "not a body-copy colour on any
+     light surface" — and --warn IS body copy here: 53 call sites, many of
+     them role="alert" paragraphs. #96501A is §06's own Warning-on-cream
+     value at 5.30:1, verified against this cream rather than assumed.
+     Single value, no on-midnight pair, because --warn has no dark-ground
+     call site in the app today; add the pair (#E09A55) when one appears.
+     --danger below was already §06's Error-on-cream, so this makes the
+     two consistent rather than introducing a new idea. */
+  --warn: #96501A;
   --danger: #96382B;
 
   /*

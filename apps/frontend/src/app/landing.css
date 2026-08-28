@@ -2063,13 +2063,15 @@
 /*                                                                    */
 /* The lamp hangs over the page from the top of the viewport and the  */
 /* fan sits behind the headline; both are painted by HangingLamp and  */
-/* .ld-funnel-fan. Restraint is the direction: brass hairlines, one   */
-/* ray fan, a lot of cream, and the lamp as the only theatre.         */
+/* .ld-funnel-glow. Restraint is the direction: brass hairlines, a    */
+/* lot of cream, and the lamp as the only theatre.                    */
 /* ================================================================ */
 
 .ld-funnel {
   position: relative;
-  padding: clamp(120px, 20vh, 200px) 48px 56px;
+  /* Clears the HangingLamp: the lamp is fixed to the viewport and its pull
+     chain reaches ~215px, which was sitting on top of the eyebrow. */
+  padding: clamp(210px, 27vh, 280px) 48px 56px;
   display: grid;
   place-items: center;
   text-align: center;
@@ -2090,24 +2092,16 @@
 /* The ray fan, sitting behind the headline. Barely embers while the room is
    dark; it blooms when the lamp is switched on. That differential IS the
    payoff of pulling the cord — without it the toggle reads as a colour swap. */
-.ld-funnel-fan {
-  position: absolute;
-  top: -14%;
-  left: 50%;
-  translate: -50% 0;
-  width: min(1180px, 150vw);
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.2;
-  scale: 1;
-  transition: opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1),
-    scale 0.9s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.ld-funnel-fan .brand-sunrise > path,
-.ld-funnel-fan .brand-sunrise > g:not(:first-child),
-.ld-funnel-fan .brand-sunrise > rect {
-  display: none; /* fan only — the glass, cage and platform stay in the mark */
-}
+/* The light the lamp casts. This was the sunrise mark's ray fan, decomposed
+   with `display: none` so only the needles showed — but §07 permits exactly
+   one decomposition of the logo (a single filament blade) and names the ray
+   fan among the parts that are "never broken out on their own". §01 is the
+   same rule from the other side: the product mark is the lamp with the
+   ceremony removed, and the ray fan is the ceremony.
+
+   The light now belongs to .ld-lamp (below) instead of to this section: the
+   lamp is position:fixed and a section-absolute glow slides out from under it
+   the moment the page scrolls. */
 
 .ld-funnel-eyebrow {
   margin: 0 0 22px;
@@ -2491,6 +2485,34 @@
 }
 .ld-lamp-svg { display: block; width: 100%; height: auto; overflow: visible; }
 
+/* The lamp's own light. Centred on the glass (x=145 of a 290 viewBox = 50%,
+   y≈126 where the envelope sits), so it tracks the lamp instead of the
+   section. §06: yellow is the light source — it is a gradient falling to
+   transparent, it fills nothing and it sets no type. Quiet in a lit room;
+   a real light in a dark one, which is the honest behaviour and what makes
+   the pull-chain worth pulling. */
+.ld-lamp-glow {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  translate: -50% -50%;
+  width: 780px;
+  height: 780px;
+  max-width: 190vw;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--bulb) 26%, transparent) 0%,
+    color-mix(in srgb, var(--bulb) 13%, transparent) 24%,
+    color-mix(in srgb, var(--bulb) 6%, transparent) 42%,
+    color-mix(in srgb, var(--bulb) 2%, transparent) 60%,
+    transparent 78%
+  );
+  transition: opacity 0.7s ease, filter 0.7s ease;
+}
+
 .ld-lamp-glass {
   pointer-events: auto;
   cursor: pointer;
@@ -2555,7 +2577,10 @@
 [data-lb-theme="dark"] .ld-lamp-cord { stroke: rgba(245, 239, 226, 0.5); }
 
 /* The fan is embers while the lamp is off, and blooms when it is lit. */
-[data-lb-theme="dark"] .ld-funnel-fan { opacity: 0.07; scale: 0.94; }
+/* Dark IS the lamp switched off — the glass renders unlit and the control
+   reads "Turn on the light" — so its light goes with it. A lit glow over an
+   unlit bulb is the one state that makes the toggle look broken. */
+[data-lb-theme="dark"] .ld-lamp-glow { opacity: 0.08; }
 [data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
 
 .ld-page { transition: background 0.5s cubic-bezier(0.22, 1, 0.36, 1), color 0.5s ease; }
@@ -2566,7 +2591,7 @@
    composes with it instead of being clobbered by it. */
 @media (prefers-reduced-motion: reduce) {
   .ld-lamp { transform: none !important; }
-  .ld-page, .ld-funnel-fan { transition: none; }
+  .ld-page, .ld-lamp-glow { transition: none; }
 }
 
 @media (max-width: 720px) {

@@ -16,11 +16,11 @@ export function GetStartedChecklist({ completed, onAction, onMeet, onDismiss }: 
         Lightbulb AI runs like a tiny company. <b className="text-[var(--forest)]">Friday</b> is your CEO — you talk to it, it delegates. <b className="text-[var(--forest)]">Atlas</b> recruits new agents when a job needs a skill you don’t have yet. You’re set up — now put them to work.
       </div>
       <div className="flex items-center gap-2.5 flex-wrap bg-[var(--cream-deeper)] border border-dashed border-[var(--edge)] rounded-xl px-3 py-2.5 mb-5 text-xs text-[var(--mute)]">
-        <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--forest-soft)]"><Check size={13} /> Plan & billing</span>
-        <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--forest-soft)]"><Check size={13} /> AI provider</span>
+        <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--forest)]"><Check size={13} /> Plan & billing</span>
+        <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--forest)]"><Check size={13} /> AI provider</span>
         <span>set during signup</span>
       </div>
-      <div className="flex justify-between mb-1.5"><span className="text-[13px] font-semibold">Your first wins</span><span className="text-xs font-semibold text-[var(--forest-soft)]">{done} of {STEPS.length}</span></div>
+      <div className="flex justify-between mb-1.5"><span className="text-[13px] font-semibold">Your first wins</span><span className="text-xs font-semibold text-[var(--forest)]">{done} of {STEPS.length}</span></div>
       <div className="h-[7px] rounded-full bg-[var(--cream-deepest)] overflow-hidden mb-4"><i className="block h-full rounded-full bg-gradient-to-r from-[var(--forest-soft)] to-[var(--forest)]" style={{ width: `${(done / STEPS.length) * 100}%` }} /></div>
       {STEPS.map((s: StepDef) => {
         const Icon = ICONS[s.icon];

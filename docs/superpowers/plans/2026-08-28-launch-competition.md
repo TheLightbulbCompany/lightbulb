@@ -20,7 +20,8 @@
 - Stripe calls that mutate carry a stable `idempotency_key` (repo convention — `feedback_stripe_idempotency_with_stable_keys`).
 - Frontend: tests live in `__tests__/` beside the code; public `/launch` reads use plain `fetch(BACKEND_URL + …)` (the shared client throws without a Clerk token); authed reads use `useApi()`.
 - Infra: after any `apps/infra/lib` change run `cd apps/infra && npx cdk synth` and commit `.github/workflows/deploy.yml` if it changed.
-- Do not touch `apps/frontend/src/app/page.tsx`, `components/landing/*`, `globals.css`, `landing.css`, `Logo.tsx` — owned by the in-flight brand branch.
+- Do not touch `apps/frontend/src/app/page.tsx`, `components/landing/*`, `globals.css`, `landing.css`, `Logo.tsx` — owned by the in-flight brand branches (#2090 palette/marks → #2110 three.js lamp hero, both unmerged as of 2026-08-28).
+- **Design language:** the redesign is "Quiet Room" (midnight `--forest`, cream `--cream`, brass `--gold`, Lora display). Launch components use the landing `ld-*` classes (`.ld-page`, `.ld-ask`, `.ld-btn`, `.ld-btn--ghost`, `.ld-kicker`, `.ld-h2`, `.ld-lede`, `.ld-mono`, `.ld-funnel*`, `.ld-section`) and the landing tokens; the few extra shapes live in `components/launch/launch.css`. **No Tailwind palette classes** (`zinc-*`, `amber-*`, `bg-white`) anywhere under `components/launch/` or `app/launch/`. The admin page (`app/admin/launch`) keeps the admin console's existing zinc styling — that surface is not part of the rebrand.
 - Work on branch `feat/launch-competition` in worktree `.worktrees/launch-competition`; commit after every task; never push without the owner's go.
 
 ## File Structure
@@ -2940,20 +2941,22 @@ git commit -m "feat(launch): admin ops endpoint — the economics sheet with liv
 
 ### Task 12: `/launch` competition page + the embeddable waitlist form
 
-**Where things live (owner decision):** the ROOT landing page (`/`, owned by the brand branch) is the waitlist front door during the campaign; `/launch` is the competition page. So `WaitlistForm` is a self-contained drop-in — no props, reads `?ref=` itself, fetches `/launch` itself, and **renders nothing unless the phase is `waitlist`** — so the brand team can leave it in their hero through the drop and it simply disappears. Hand them exactly this and touch none of their files:
+**Where things live (owner decision):** the ROOT landing page (`/`, owned by the brand branch `feat/hero-lamp-three` on top of `feat/lightbulb-rebrand`) is the waitlist front door during the campaign; `/launch` is the competition page. So `WaitlistForm` is a self-contained drop-in — no props, reads `?ref=` itself, fetches `/launch` itself, and **renders nothing unless the phase is `waitlist`** — so the brand team can leave it in their hero through the drop and it simply disappears. Hand them exactly this and touch none of their files:
 
 ```tsx
 import { WaitlistForm } from "@/components/launch/WaitlistForm";
-// …inside the hero, under the headline:
+// …inside .ld-funnel-in, under the headline (it renders its own .ld-ask pill):
 <WaitlistForm />
 ```
 
 `/launch` also embeds the form pre-drop so a shared `/launch` link never dead-ends.
 
+**Design language (binding):** the redesign is "Quiet Room" — midnight ground `--forest` (`#0F1A2B` after #2090), cream `--cream`, brass `--gold`, one bulb-yellow reserved for the light source. The landing sheet's `ld-*` classes are identical on `main` and the redesign branch, and #2090 repoints the token *names* rather than renaming them, so everything below is written against `ld-*` + those tokens and renders correctly before and after the lamp lands. Rules: wrap the page in `<main className="ld-page">` with `<Navbar />` / `<Footer />`; the form is an `.ld-ask` pill with an `.ld-btn`; headings use `.ld-kicker` / `.ld-h2` / `.ld-funnel-h1`; small caps use `.ld-mono`; the few shapes the landing sheet lacks (cards, stat tiles, table, fields) live in **`components/launch/launch.css`** built on the same tokens. **No Tailwind palette classes** (`zinc-*`, `amber-*`, `bg-white`) in `components/launch/`. Never edit `landing.css` or `globals.css`.
+
 **Files:**
 - Create: `apps/frontend/src/lib/launch.ts`
 - Create: `apps/frontend/src/app/launch/page.tsx`
-- Create: `apps/frontend/src/components/launch/LaunchPage.tsx`, `LaunchHero.tsx`, `WaitlistForm.tsx`, `ReferralLink.tsx`, `Leaderboard.tsx`, `useLaunchRef.ts`, placeholder `MyLaunchCard.tsx`
+- Create: `apps/frontend/src/components/launch/launch.css`, `LaunchPage.tsx`, `LaunchHero.tsx`, `WaitlistForm.tsx`, `ReferralLink.tsx`, `Leaderboard.tsx`, `useLaunchRef.ts`, placeholder `MyLaunchCard.tsx`
 - Modify: `apps/frontend/src/lib/analytics.ts` (`AnalyticsEvent` union)
 - Test: `apps/frontend/src/lib/__tests__/launch.test.ts`, `apps/frontend/src/components/launch/__tests__/WaitlistForm.test.tsx`, `LaunchPage.test.tsx`
 
@@ -2976,6 +2979,7 @@ import { WaitlistForm } from "@/components/launch/WaitlistForm";
 - `WaitlistForm()` — no props; wraps itself in `<Suspense>` (for `useSearchParams`); fetches `/launch`; renders `null` unless `phase === "waitlist"`.
 - `ReferralLink({ code, link? })` — copy-to-clipboard; default link is `${SITE_URL}/?ref=${code}`.
 - `LaunchHero({ info })`, `Leaderboard()`, `LaunchPage()` (default export; polls `/launch` every 30s; renders `<MyLaunchCard info={info} />` when signed in).
+- `launch.css` class contract (used by Tasks 12–13): `.lc-stats`, `.lc-stat`, `.lc-stat-value`, `.lc-stat-label`, `.lc-card`, `.lc-card--lit`, `.lc-table`, `.lc-field`, `.lc-field input`, `.lc-check`, `.lc-alert`, `.lc-fine`, `.lc-steps`, `.lc-row`, `.lc-actions`.
 - New analytics events: `"launch_waitlist_joined" | "launch_entered" | "launch_referral_copied"`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3078,21 +3082,24 @@ vi.mock("@/lib/launch", async (importOriginal) => ({
   fetchLaunchInfo: () => info(),
   fetchLeaderboard: () => board(),
 }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isSignedIn: false }) }));
-vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("") }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isSignedIn: false, isLoaded: true }), UserButton: () => null }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(""), usePathname: () => "/launch" }));
 vi.mock("../MyLaunchCard", () => ({ MyLaunchCard: () => <div data-testid="me" /> }));
 vi.mock("../WaitlistForm", () => ({ WaitlistForm: () => <form aria-label="Join the waitlist" /> }));
+vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => <nav /> }));
+vi.mock("@/components/landing/Footer", () => ({ Footer: () => <footer /> }));
 
 import LaunchPage from "../LaunchPage";
 
 const base = { drop_at: "2026-09-18T16:00:00+00:00", competition_start_at: "2026-09-21T16:00:00+00:00", competition_end_at: "2026-10-21T16:00:00+00:00", pot_cents: 103000, entrants: 3, waitlist_count: 40, comp_slots: 220 };
 
 describe("LaunchPage phases", () => {
-  it("waitlist: embeds the form and shows the pot", async () => {
+  it("waitlist: embeds the form and shows the pot inside .ld-page", async () => {
     info.mockResolvedValue({ ...base, phase: "waitlist" });
-    render(<LaunchPage />);
+    const { container } = render(<LaunchPage />);
     expect(await screen.findByRole("form", { name: /join the waitlist/i })).toBeInTheDocument();
     expect(screen.getByText("$1,030")).toBeInTheDocument();
+    expect(container.querySelector("main.ld-page")).not.toBeNull();
     expect(screen.queryByTestId("me")).not.toBeInTheDocument();
   });
   it("activation: sign-up CTA, no form", async () => {
@@ -3244,7 +3251,82 @@ In `apps/frontend/src/lib/analytics.ts`, inside the `AnalyticsEvent` union, add 
   | "launch_referral_copied"
 ```
 
-- [ ] **Step 5: Write `useLaunchRef.ts` and `ReferralLink.tsx`**
+- [ ] **Step 5: Write `launch.css`**
+
+Only the shapes the landing sheet lacks; every colour is a landing token so the redesign's repoint carries through.
+
+```css
+/* apps/frontend/src/components/launch/launch.css
+   Launch Competition surfaces. Built on the landing tokens (--forest, --cream,
+   --cream-deeper, --edge, --gold, --mute, --ink, --danger) so this sheet needs
+   no change when the brand repoints them. Lives beside its components —
+   landing.css is brand-owned and is never edited from here. */
+
+.lc-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 32px auto 0;
+  max-width: 720px;
+}
+@media (min-width: 640px) {
+  .lc-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.lc-stat {
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  padding: 18px 20px;
+  background: var(--cream-deeper);
+  text-align: left;
+}
+.lc-stat-value {
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 30px;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.lc-stat-label { margin-top: 6px; }
+
+.lc-card {
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  padding: 22px 24px;
+  background: var(--cream-deeper);
+  color: var(--ink);
+}
+.lc-card--lit { border-color: var(--gold); }
+
+.lc-table { width: 100%; border-collapse: collapse; font-size: 15px; color: var(--ink); }
+.lc-table th { text-align: left; padding: 0 12px 10px 0; font-weight: 500; }
+.lc-table td { padding: 10px 12px 10px 0; border-top: 1px solid var(--edge); font-variant-numeric: tabular-nums; }
+.lc-table .num { text-align: right; }
+
+.lc-field { display: block; margin-top: 16px; }
+.lc-field > span { display: block; font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.lc-field input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--edge);
+  background: var(--cream);
+  color: var(--ink);
+  font-size: 15px;
+}
+.lc-field input:focus { outline: none; border-color: var(--gold); }
+.lc-field input[data-mono] { font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 13px; }
+
+.lc-check { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; color: var(--ink); }
+.lc-alert { margin-top: 12px; font-size: 14px; color: var(--danger); }
+.lc-fine { font-size: 14px; color: var(--mute); }
+.lc-steps { margin: 8px 0 0 18px; font-size: 13px; color: var(--mute); }
+.lc-steps li + li { margin-top: 4px; }
+.lc-row { display: flex; gap: 8px; margin-top: 8px; }
+.lc-row input { flex: 1; min-width: 0; }
+.lc-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+```
+
+- [ ] **Step 6: Write `useLaunchRef.ts` and `ReferralLink.tsx`**
 
 ```ts
 // apps/frontend/src/components/launch/useLaunchRef.ts
@@ -3298,18 +3380,18 @@ export function ReferralLink({ code, link }: { code: string; link?: string }) {
     }
   };
   return (
-    <div className="mt-4">
-      <p className="text-sm font-medium">Refer a friend who subscribes → you get a month free.</p>
-      <div className="mt-2 flex gap-2">
-        <input readOnly value={href} aria-label="Your referral link" className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
-        <button type="button" onClick={copy} className="rounded-lg border border-zinc-600 px-3 py-2 text-sm">{copied ? "Copied" : "Copy"}</button>
+    <div className="lc-field">
+      <span>Refer a friend who subscribes → you get a month free.</span>
+      <div className="lc-row">
+        <input readOnly data-mono value={href} aria-label="Your referral link" onFocus={(e) => e.currentTarget.select()} />
+        <button type="button" className="ld-btn ld-btn--ghost" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
       </div>
     </div>
   );
 }
 ```
 
-- [ ] **Step 6: Write `WaitlistForm.tsx` (the drop-in)**
+- [ ] **Step 7: Write `WaitlistForm.tsx` (the drop-in)**
 
 ```tsx
 // apps/frontend/src/components/launch/WaitlistForm.tsx
@@ -3320,6 +3402,7 @@ import { capture } from "@/lib/analytics";
 import { fetchLaunchInfo, joinWaitlist, type LaunchInfo } from "@/lib/launch";
 import { ReferralLink } from "./ReferralLink";
 import { useLaunchRef } from "./useLaunchRef";
+import "./launch.css";
 
 const ERROR_COPY: Record<string, string> = {
   invalid_email: "Enter a valid email address.",
@@ -3328,10 +3411,10 @@ const ERROR_COPY: Record<string, string> = {
 };
 
 /**
- * Self-contained waitlist capture. Drop it anywhere (the brand team embeds it
- * in the root hero); it fetches its own state and renders NOTHING unless the
- * launch is configured and the phase is `waitlist`, so it can be left in
- * place through the drop.
+ * Self-contained waitlist capture, styled as the landing `.ld-ask` pill so it
+ * sits inside the brand hero unchanged. Drop it anywhere; it fetches its own
+ * state and renders NOTHING unless the launch is configured and the phase is
+ * `waitlist`, so it can be left in place through the drop.
  */
 export function WaitlistForm() {
   return (
@@ -3377,57 +3460,57 @@ function WaitlistFormInner() {
 
   if (joined) {
     return (
-      <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-5" data-testid="waitlist-joined">
-        <p className="text-2xl font-semibold">You&apos;re #{joined.position}.</p>
-        {joined.in_comp_window ? (
-          <p className="mt-1 text-sm opacity-80">
-            You&apos;re in the first {info.comp_slots} — your free competition month is yours if you finish onboarding within 3 days of the drop. Watch your inbox on drop day.
-          </p>
-        ) : (
-          <p className="mt-1 text-sm opacity-80">The first {info.comp_slots} spots are gone, but you can still compete — and every friend who subscribes earns you a month free.</p>
-        )}
+      <div className="lc-card lc-card--lit" data-testid="waitlist-joined" style={{ maxWidth: 640, margin: "36px auto 0" }}>
+        <p className="ld-funnel-h1" style={{ fontSize: 34 }}>You&apos;re #{joined.position}.</p>
+        <p className="lc-fine">
+          {joined.in_comp_window
+            ? `You're in the first ${info.comp_slots} — your free competition month is yours if you finish onboarding within 3 days of the drop. Watch your inbox on drop day.`
+            : `The first ${info.comp_slots} spots are gone, but you can still compete — and every friend who subscribes earns you a month free.`}
+        </p>
         <ReferralLink code={joined.referral_code} />
       </div>
     );
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row" aria-label="Join the waitlist">
-      <label className="sr-only" htmlFor="launch-email">Email</label>
-      <input
-        id="launch-email"
-        type="email"
-        required
-        autoComplete="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@company.com"
-        className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-base outline-none focus:border-amber-400"
-      />
-      <button type="submit" disabled={busy || email.trim().length < 3} className="rounded-lg bg-amber-400 px-5 py-3 font-semibold text-zinc-950 disabled:opacity-50">
-        {busy ? "Joining…" : "Join the waitlist"}
-      </button>
-      {error ? <p role="alert" className="text-sm text-red-400 sm:basis-full">{error}</p> : null}
-    </form>
+    <div>
+      <form className="ld-ask" onSubmit={submit} aria-label="Join the waitlist">
+        <label className="sr-only" htmlFor="launch-email">Email</label>
+        <input
+          id="launch-email"
+          type="email"
+          required
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@company.com"
+        />
+        <button type="submit" className="ld-btn" disabled={busy || email.trim().length < 3}>
+          {busy ? "Joining…" : "Join the waitlist"} <span className="ld-btn-arrow" aria-hidden="true">→</span>
+        </button>
+      </form>
+      {error ? <p role="alert" className="lc-alert" style={{ textAlign: "center" }}>{error}</p> : null}
+    </div>
   );
 }
 ```
 
-- [ ] **Step 7: Write `LaunchHero.tsx`, `Leaderboard.tsx`, `LaunchPage.tsx`, `app/launch/page.tsx`**
+- [ ] **Step 8: Write `LaunchHero.tsx`, `Leaderboard.tsx`, `LaunchPage.tsx`, `app/launch/page.tsx`**
 
 ```tsx
 // apps/frontend/src/components/launch/LaunchHero.tsx
 "use client";
 
 import * as React from "react";
+import { LogoMark } from "@/components/Logo";
 import type { LaunchInfo } from "@/lib/launch";
 import { formatMoney } from "@/lib/launch";
 
-const HEADLINE: Record<LaunchInfo["phase"], string> = {
-  waitlist: "The Lightbulb Launch Competition",
-  activation: "Lightbulb AI is live. The competition starts soon.",
-  live: "The competition is on.",
-  ended: "The competition has ended.",
+const HEADLINE: Record<LaunchInfo["phase"], React.ReactNode> = {
+  waitlist: <>The Lightbulb<br />Launch Competition.</>,
+  activation: <>Lightbulb is live.<br />The competition starts soon.</>,
+  live: <>The competition<br />is on.</>,
+  ended: <>The competition<br />has ended.</>,
 };
 
 function useCountdown(iso: string): string {
@@ -3444,34 +3527,36 @@ function useCountdown(iso: string): string {
   return d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
 }
 
-export function LaunchHero({ info }: { info: LaunchInfo }) {
+export function LaunchHero({ info, children }: { info: LaunchInfo; children?: React.ReactNode }) {
   const target = info.phase === "waitlist" ? info.drop_at : info.phase === "activation" ? info.competition_start_at : info.competition_end_at;
   const label = info.phase === "waitlist" ? "until the drop" : info.phase === "activation" ? "until the competition starts" : info.phase === "live" ? "left" : "";
   const countdown = useCountdown(target);
   return (
-    <header className="text-center">
-      <p className="text-xs uppercase tracking-[0.2em] opacity-60">Lightbulb AI</p>
-      <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">{HEADLINE[info.phase]}</h1>
-      <p className="mt-4 text-lg opacity-80">
-        Build a business with your own AI company. Biggest revenue lift over 30 days wins the pot.
-      </p>
-      <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <div className="rounded-xl border border-zinc-800 p-4">
-          <div className="text-3xl font-semibold tabular-nums">{formatMoney(info.pot_cents, "usd")}</div>
-          <div className="text-xs opacity-60">prize pot · +$10 per entrant</div>
-        </div>
-        <div className="rounded-xl border border-zinc-800 p-4">
-          <div className="text-3xl font-semibold tabular-nums">{info.phase === "waitlist" ? info.waitlist_count : info.entrants}</div>
-          <div className="text-xs opacity-60">{info.phase === "waitlist" ? "on the waitlist" : "entrants"}</div>
-        </div>
-        {info.phase !== "ended" ? (
-          <div className="col-span-2 rounded-xl border border-zinc-800 p-4 sm:col-span-1">
-            <div className="text-3xl font-semibold tabular-nums">{countdown}</div>
-            <div className="text-xs opacity-60">{label}</div>
+    <section className="ld-funnel" id="start">
+      <div className="ld-funnel-in">
+        <p className="ld-mono ld-funnel-eyebrow">Build a business with your own AI company</p>
+        <LogoMark className="ld-funnel-mark" />
+        <h1 className="ld-funnel-h1">{HEADLINE[info.phase]}</h1>
+        <p className="ld-funnel-fine">Biggest revenue lift over 30 days wins the pot. Every entrant adds $10 to it.</p>
+        {children}
+        <div className="lc-stats">
+          <div className="lc-stat">
+            <div className="lc-stat-value">{formatMoney(info.pot_cents, "usd")}</div>
+            <div className="ld-mono lc-stat-label">prize pot</div>
           </div>
-        ) : null}
+          <div className="lc-stat">
+            <div className="lc-stat-value">{info.phase === "waitlist" ? info.waitlist_count : info.entrants}</div>
+            <div className="ld-mono lc-stat-label">{info.phase === "waitlist" ? "on the waitlist" : "entrants"}</div>
+          </div>
+          {info.phase !== "ended" ? (
+            <div className="lc-stat">
+              <div className="lc-stat-value">{countdown}</div>
+              <div className="ld-mono lc-stat-label">{label}</div>
+            </div>
+          ) : null}
+        </div>
       </div>
-    </header>
+    </section>
   );
 }
 ```
@@ -3495,20 +3580,20 @@ export function Leaderboard() {
       clearInterval(t);
     };
   }, []);
-  if (rows === null) return <p className="text-sm opacity-60">Loading the board…</p>;
-  if (rows.length === 0) return <p className="text-sm opacity-60">No public entrants yet.</p>;
+  if (rows === null) return <p className="lc-fine">Loading the board…</p>;
+  if (rows.length === 0) return <p className="lc-fine">No public entrants yet.</p>;
   return (
-    <table className="w-full text-sm">
-      <thead className="text-left text-xs uppercase opacity-60">
-        <tr><th className="py-2">#</th><th>Entrant</th><th className="text-right">Revenue lift</th><th className="text-right">Growth</th></tr>
+    <table className="lc-table">
+      <thead className="ld-mono">
+        <tr><th>#</th><th>Entrant</th><th className="num">Revenue lift</th><th className="num">Growth</th></tr>
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.rank} className="border-t border-zinc-800">
-            <td className="py-2 tabular-nums">{r.rank}</td>
+          <tr key={r.rank}>
+            <td>{r.rank}</td>
             <td>{r.display_name}</td>
-            <td className="text-right tabular-nums">{formatMoney(r.delta_cents, r.currency)}</td>
-            <td className="text-right tabular-nums opacity-80">{formatPct(r.pct)}</td>
+            <td className="num">{formatMoney(r.delta_cents, r.currency)}</td>
+            <td className="num">{formatPct(r.pct)}</td>
           </tr>
         ))}
       </tbody>
@@ -3524,11 +3609,14 @@ export function Leaderboard() {
 import * as React from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
+import { Footer } from "@/components/landing/Footer";
+import { Navbar } from "@/components/landing/Navbar";
 import { fetchLaunchInfo, type LaunchInfo } from "@/lib/launch";
 import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
 import { MyLaunchCard } from "./MyLaunchCard";
 import { WaitlistForm } from "./WaitlistForm";
+import "./launch.css";
 
 const RULES = [
   "Sign up and finish onboarding — Friday's first run has to complete.",
@@ -3552,33 +3640,48 @@ export default function LaunchPage() {
     };
   }, []);
 
-  if (info === undefined) return <main className="mx-auto max-w-3xl px-6 py-24 text-center opacity-60">Loading…</main>;
-  if (info === null) return <main className="mx-auto max-w-3xl px-6 py-24 text-center opacity-60">The launch is not open yet.</main>;
-
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16 sm:py-24">
-      <LaunchHero info={info} />
-      <section className="mt-12">
-        {info.phase === "waitlist" ? <WaitlistForm /> : null}
-        {info.phase === "activation" ? (
-          <div className="text-center">
-            <Link href="/sign-up" className="inline-block rounded-lg bg-amber-400 px-6 py-3 font-semibold text-zinc-950">Sign up</Link>
-            <p className="mt-3 text-sm opacity-70">Got a code in your inbox? Finish onboarding first, then redeem it at checkout.</p>
-          </div>
-        ) : null}
-        {info.phase === "live" || info.phase === "ended" ? <Leaderboard /> : null}
-      </section>
-      {isSignedIn ? (
-        <section className="mt-12">
-          <MyLaunchCard info={info} />
-        </section>
-      ) : null}
-      <section className="mt-12">
-        <h2 className="text-lg font-semibold">How it works</h2>
-        <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm opacity-80">
-          {RULES.map((r) => <li key={r}>{r}</li>)}
-        </ol>
-      </section>
+    <main className="ld-page min-h-screen">
+      <Navbar />
+      {info === undefined ? (
+        <section className="ld-section"><p className="lc-fine">Loading…</p></section>
+      ) : info === null ? (
+        <section className="ld-section"><p className="ld-lede">The launch is not open yet.</p></section>
+      ) : (
+        <>
+          <LaunchHero info={info}>
+            {info.phase === "waitlist" ? <WaitlistForm /> : null}
+            {info.phase === "activation" ? (
+              <div className="lc-actions" style={{ justifyContent: "center" }}>
+                <Link href="/sign-up" className="ld-btn">Sign up <span className="ld-btn-arrow" aria-hidden="true">→</span></Link>
+                <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>Got a code in your inbox? Finish onboarding first, then redeem it at checkout.</p>
+              </div>
+            ) : null}
+          </LaunchHero>
+
+          {info.phase === "live" || info.phase === "ended" ? (
+            <section className="ld-section" id="board">
+              <p className="ld-kicker">The board</p>
+              <h2 className="ld-h2">Revenue lift, <em>live</em>.</h2>
+              <Leaderboard />
+            </section>
+          ) : null}
+
+          {isSignedIn ? (
+            <section className="ld-section" id="you">
+              <MyLaunchCard info={info} />
+            </section>
+          ) : null}
+
+          <section className="ld-section" id="rules">
+            <p className="ld-kicker">How it works</p>
+            <ol className="lc-steps" style={{ fontSize: 15, color: "var(--ink)" }}>
+              {RULES.map((r) => <li key={r}>{r}</li>)}
+            </ol>
+          </section>
+        </>
+      )}
+      <Footer />
     </main>
   );
 }
@@ -3607,18 +3710,18 @@ export default function Page() {
 }
 ```
 
-For this task's tests to compile, create a placeholder `MyLaunchCard.tsx` exporting `MyLaunchCard({ info }: { info: LaunchInfo })` that returns `null`; Task 13 replaces it.
+For this task's tests to compile, create a placeholder `MyLaunchCard.tsx` exporting `MyLaunchCard({ info }: { info: LaunchInfo })` that returns `null`; Task 13 replaces it. The `sr-only` utility used by the form label is Tailwind's (already in the global sheet) — it is a layout utility, not a palette class.
 
-- [ ] **Step 8: Run tests + typecheck**
+- [ ] **Step 9: Run tests + typecheck**
 
-Run: `cd apps/frontend && pnpm vitest run src/lib/__tests__/launch.test.ts src/components/launch && pnpm tsc --noEmit -p tsconfig.json && pnpm lint`
-Expected: all pass; no type or lint errors.
+Run: `cd apps/frontend && pnpm vitest run src/lib/__tests__/launch.test.ts src/components/launch && pnpm tsc --noEmit -p tsconfig.json && pnpm lint && grep -rnE "zinc-|amber-|bg-white" src/components/launch && echo "PALETTE LEAK" || echo "palette clean"`
+Expected: all pass; "palette clean".
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add apps/frontend/src/lib/launch.ts apps/frontend/src/lib/analytics.ts apps/frontend/src/app/launch apps/frontend/src/components/launch apps/frontend/src/lib/__tests__/launch.test.ts
-git commit -m "feat(launch): /launch competition page + embeddable waitlist form"
+git commit -m "feat(launch): /launch competition page + embeddable waitlist form, on the landing design language"
 ```
 
 ---
@@ -3814,26 +3917,28 @@ export function EnterForm({ onEntered }: { onEntered: () => void }) {
   };
 
   return (
-    <form onSubmit={submit} className="space-y-4" aria-label="Enter the competition">
-      <div>
-        <label htmlFor="launch-name" className="text-sm font-medium">Display name</label>
-        <input id="launch-name" required minLength={2} maxLength={40} value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2" />
-      </div>
-      <div>
-        <label htmlFor="launch-key" className="text-sm font-medium">Stripe restricted key</label>
-        <input id="launch-key" required autoComplete="off" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} placeholder="rk_live_…" className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm" />
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs opacity-70">
-          <li>Stripe Dashboard → Developers → API keys → <b>Create restricted key</b></li>
-          <li>Permissions: <b>Balance: Read</b> and <b>Charges: Read</b>. Nothing else.</li>
-          <li>Paste it here. We only ever read totals; you can delete the key in Stripe any time.</li>
-        </ol>
-      </div>
-      <label className="flex items-center gap-2 text-sm">
+    <form onSubmit={submit} aria-label="Enter the competition">
+      <label className="lc-field" htmlFor="launch-name">
+        <span>Display name</span>
+        <input id="launch-name" required minLength={2} maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label className="lc-field" htmlFor="launch-key">
+        <span>Stripe restricted key</span>
+        <input id="launch-key" data-mono required autoComplete="off" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} placeholder="rk_live_…" />
+      </label>
+      <ol className="lc-steps">
+        <li>Stripe Dashboard → Developers → API keys → <b>Create restricted key</b></li>
+        <li>Permissions: <b>Balance: Read</b> and <b>Charges: Read</b>. Nothing else.</li>
+        <li>Paste it here. We only ever read totals; you can delete the key in Stripe any time.</li>
+      </ol>
+      <label className="lc-check">
         <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />
         Show me on the public board
       </label>
-      {error ? <p role="alert" className="text-sm text-red-400">{error}</p> : null}
-      <button type="submit" disabled={busy} className="rounded-lg bg-amber-400 px-5 py-2.5 font-semibold text-zinc-950 disabled:opacity-50">{busy ? "Entering…" : "Enter the competition"}</button>
+      {error ? <p role="alert" className="lc-alert">{error}</p> : null}
+      <div className="lc-actions">
+        <button type="submit" disabled={busy} className="ld-btn">{busy ? "Entering…" : "Enter the competition"} <span className="ld-btn-arrow" aria-hidden="true">→</span></button>
+      </div>
     </form>
   );
 }
@@ -3882,41 +3987,43 @@ export function MyLaunchCard({ info }: { info: LaunchInfo }) {
       });
   }, [me, refCode, api]);
 
-  if (!me) return <div className="rounded-xl border border-zinc-800 p-5 text-sm opacity-60">Loading your status…</div>;
+  if (!me) return <div className="lc-card"><p className="lc-fine">Loading your status…</p></div>;
 
   return (
-    <div className="rounded-xl border border-zinc-800 p-5" data-testid="my-launch-card">
-      <h2 className="text-lg font-semibold">Your launch</h2>
+    <div className="lc-card" data-testid="my-launch-card">
+      <p className="ld-kicker">Your launch</p>
       {me.waitlist ? (
-        <p className="mt-1 text-sm">
+        <p className="ld-lede">
           Waitlist #{me.waitlist.position}
           {me.waitlist.in_comp_window ? ` — in the first ${info.comp_slots}. Check your inbox for your code on drop day.` : "."}
         </p>
       ) : null}
-      <p className="mt-1 text-sm opacity-80">{me.activated ? "Onboarding complete ✓" : "Onboarding not finished yet."}</p>
+      <p className="lc-fine">{me.activated ? "Onboarding complete ✓" : "Onboarding not finished yet."}</p>
 
       {me.waitlist ? (
-        <div className="mt-4 text-sm">
-          <span>{me.waitlist.referrals_signed_up} signed up</span> · <span>{me.waitlist.referrals_paid} paid</span> ·{" "}
-          <span>{me.waitlist.free_months_banked} free month{me.waitlist.free_months_banked === 1 ? "" : "s"} banked</span>
+        <div style={{ marginTop: 16 }}>
+          <p className="lc-fine">
+            <span>{me.waitlist.referrals_signed_up} signed up</span> · <span>{me.waitlist.referrals_paid} paid</span> ·{" "}
+            <span>{me.waitlist.free_months_banked} free month{me.waitlist.free_months_banked === 1 ? "" : "s"} banked</span>
+          </p>
           <ReferralLink code={me.waitlist.referral_code} link={me.waitlist.referral_link} />
         </div>
       ) : null}
 
-      <div className="mt-6 border-t border-zinc-800 pt-4">
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--edge)" }}>
         {me.entry ? (
-          <div className="text-sm">
-            <p className="font-medium">You&apos;re in as {me.entry.display_name}.</p>
-            <p className="mt-1 opacity-80">
-              Lift so far: <span className="tabular-nums">{formatMoney(me.entry.delta_cents, me.entry.currency ?? "usd")}</span>
-              {me.entry.refresh_error ? <span className="ml-2 text-red-400">— couldn&apos;t refresh ({me.entry.refresh_error}); re-enter with a fresh key.</span> : null}
+          <div>
+            <p className="ld-lede">You&apos;re in as {me.entry.display_name}.</p>
+            <p className="lc-fine">
+              Lift so far: <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--ink)" }}>{formatMoney(me.entry.delta_cents, me.entry.currency ?? "usd")}</span>
+              {me.entry.refresh_error ? <span className="lc-alert" style={{ display: "inline", marginLeft: 8 }}>— couldn&apos;t refresh ({me.entry.refresh_error}); re-enter with a fresh key.</span> : null}
             </p>
-            {me.entry.refresh_error ? <div className="mt-4"><EnterForm onEntered={() => mutate()} /></div> : null}
+            {me.entry.refresh_error ? <div style={{ marginTop: 16 }}><EnterForm onEntered={() => mutate()} /></div> : null}
           </div>
         ) : me.can_enter ? (
           <EnterForm onEntered={() => mutate()} />
         ) : (
-          <p className="text-sm opacity-80">{BLOCKED_COPY[me.reason ?? ""] ?? "You can't enter right now."}</p>
+          <p className="lc-fine">{BLOCKED_COPY[me.reason ?? ""] ?? "You can't enter right now."}</p>
         )}
       </div>
     </div>
@@ -3926,8 +4033,8 @@ export function MyLaunchCard({ info }: { info: LaunchInfo }) {
 
 - [ ] **Step 5: Run tests + typecheck**
 
-Run: `cd apps/frontend && pnpm vitest run src/components/launch && pnpm tsc --noEmit -p tsconfig.json && pnpm lint`
-Expected: all pass.
+Run: `cd apps/frontend && pnpm vitest run src/components/launch && pnpm tsc --noEmit -p tsconfig.json && pnpm lint && grep -rnE "zinc-|amber-|bg-white" src/components/launch && echo "PALETTE LEAK" || echo "palette clean"`
+Expected: all pass; "palette clean".
 
 - [ ] **Step 6: Commit**
 

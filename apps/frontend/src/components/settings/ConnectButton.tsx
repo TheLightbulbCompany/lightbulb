@@ -173,14 +173,14 @@ export function ConnectButton({
     }
 
     return (
-      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
-        <p className="text-sm font-medium text-[#1c1917]">{setupLabel}</p>
+      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-cream p-3">
+        <p className="text-sm font-medium text-midnight">{setupLabel}</p>
         {connection.byo_setup_url && (
           <Link
             href={connection.byo_setup_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-xs text-[#2d8a4e] underline underline-offset-2"
+            className="text-xs text-[var(--ok)] underline underline-offset-2"
           >
             Register an OAuth app →
           </Link>
@@ -230,7 +230,7 @@ export function ConnectButton({
         </ol>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[var(--midnight-muted)]">Authorized redirect URI to register:</span>
-          <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
+          <code className="break-all rounded bg-cream px-2 py-1 text-[11px] text-midnight border border-[var(--edge)]">
             {byoRedirectUri(provider)}
           </code>
         </div>
@@ -246,7 +246,7 @@ export function ConnectButton({
           disabled={busy || !canManage}
           placeholder="Client ID"
           onChange={(e) => setClientId(e.target.value)}
-          className="h-9 bg-white"
+          className="h-9 bg-cream"
         />
         <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[var(--midnight-muted)]">
           Client secret
@@ -260,7 +260,7 @@ export function ConnectButton({
           disabled={busy || !canManage}
           placeholder="Client secret"
           onChange={(e) => setClientSecret(e.target.value)}
-          className="h-9 bg-white"
+          className="h-9 bg-cream"
         />
         <div className="flex items-center justify-end gap-2">
           <Button size="sm" variant="outline" disabled={busy} onClick={closeByo}>
@@ -327,7 +327,7 @@ export function ConnectButton({
         </Button>
         {needsByoSetup && renderByoSetup()}
         {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
+          <p className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}
@@ -342,7 +342,7 @@ export function ConnectButton({
       <div className="flex flex-col items-end gap-1">
         {renderByoSetup()}
         {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
+          <p className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}
@@ -370,7 +370,7 @@ export function ConnectButton({
         )}
         {renderByoSetup()}
         {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
+          <p className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}
@@ -403,7 +403,7 @@ export function ConnectButton({
           {busy ? "Redirecting…" : "Connect"}
         </Button>
         {err && (
-          <p className="text-xs text-[#b63025]" role="alert">
+          <p className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}
@@ -449,7 +449,7 @@ export function ConnectButton({
               submit();
             }
           }}
-          className="h-9 w-52 bg-white"
+          className="h-9 w-52 bg-cream"
         />
         <Button
           size="sm"
@@ -477,13 +477,13 @@ export function ConnectButton({
           href={connection.token_setup_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-[#1c1917]"
+          className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-midnight"
         >
           Where do I find this?
         </a>
       )}
       {err && (
-        <p id={errorId} className="text-xs text-[#b63025]" role="alert">
+        <p id={errorId} className="text-xs text-[var(--err)]" role="alert">
           {err}
         </p>
       )}

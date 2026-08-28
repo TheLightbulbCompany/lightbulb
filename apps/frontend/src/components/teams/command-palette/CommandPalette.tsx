@@ -33,9 +33,9 @@ export interface CommandPaletteProps {
 //
 // Overlay + content are wired against the radix primitive directly (not via
 // the shadcn DialogContent wrapper) because that wrapper bakes in its own
-// DialogPortal + a dark bg-black/80 DialogOverlay. Using the wrapper here
-// would render two backdrops on top of each other and the dark one would
-// cover the editorial rgba(26,26,26,0.45) tint we want (matches the
+// DialogPortal + a heavily-darkened default DialogOverlay. Using the wrapper
+// here would render two backdrops on top of each other and the dark one
+// would cover the editorial midnight tint we want (matches the
 // NewIssueDialog backdrop).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
@@ -43,7 +43,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       <DialogPortal>
         <DialogPrimitive.Overlay
           className="fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
-          style={{ background: "rgba(26, 26, 26, 0.45)" }}
+          style={{ background: "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
         />
         <DialogPrimitive.Content
           className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg"
@@ -255,7 +255,7 @@ function Row({
       onClick={onClick}
       className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors"
       style={{
-        background: selected ? "var(--cream-deep)" : "transparent",
+        background: selected ? "var(--cream-deeper)" : "transparent",
         borderLeft: selected ? "2px solid var(--midnight)" : "2px solid transparent",
         color: "var(--midnight)",
       }}

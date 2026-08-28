@@ -189,7 +189,7 @@ function RoutineToggle({
         <span
           aria-hidden="true"
           className={cn(
-            "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform",
+            "inline-block h-3.5 w-3.5 transform rounded-full bg-cream shadow-sm transition-transform",
             enabled ? "translate-x-[18px]" : "translate-x-0.5",
           )}
         />
@@ -823,7 +823,7 @@ function SortMenu({
             className={cn(
               "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
               value === field
-                ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                 : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
             )}
           >

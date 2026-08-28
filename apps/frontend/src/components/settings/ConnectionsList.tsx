@@ -41,7 +41,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
   if (error) {
     return (
       <div className="space-y-2">
-        <p className="text-sm text-[#b63025]">Failed to load connections.</p>
+        <p className="text-sm text-[var(--err)]">Failed to load connections.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           Retry
         </Button>
@@ -73,17 +73,17 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
         return (
           <div
             key={connection.provider}
-            className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-white p-4"
+            className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-cream p-4"
           >
             <span
               className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${
-                connected ? "bg-[#2d8a4e]" : "bg-[#c5bfb6]"
+                connected ? "bg-[var(--ok)]" : "bg-[var(--midnight-faint)]"
               }`}
               aria-hidden="true"
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
+                <p className="text-sm font-medium text-midnight">{connection.display_name}</p>
                 {connection.actor && KIND_LABELS[connection.actor] && (
                   <span className="flex-shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--midnight-muted)]">
                     {KIND_LABELS[connection.actor]}
@@ -101,7 +101,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               {receipt && (
                 <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                   {connected ? "Delivered: " : unavailable ? "Would deliver: " : "Will deliver: "}
-                  <span className={connected ? "text-[#2d8a4e]" : undefined}>
+                  <span className={connected ? "text-[var(--ok)]" : undefined}>
                     {receipt.delivers}
                   </span>
                 </p>

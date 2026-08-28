@@ -308,7 +308,7 @@ function CreateAgentDialog({
           </select>
         </label>
         {err && (
-          <div className="text-[var(--err)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div className="text-[var(--err)] text-sm border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] rounded px-3 py-2">
             {err}
           </div>
         )}

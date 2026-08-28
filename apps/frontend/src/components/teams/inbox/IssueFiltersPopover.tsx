@@ -335,7 +335,7 @@ export function IssueFiltersPopover({
                             type="button"
                             className={`flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-sm ${
                               selected
-                                ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                                ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                                 : "text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
                             }`}
                             onClick={() =>

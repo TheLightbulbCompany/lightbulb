@@ -183,7 +183,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
     <div className="flex flex-col gap-1">
       <span className="text-xs text-[var(--midnight-muted)]">{label}</span>
       <div className="flex items-center gap-1">
-        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
+        <code className="flex-1 break-all rounded bg-cream px-2 py-1 text-[11px] text-midnight border border-[var(--edge)]">
           {value}
         </code>
         <Button
@@ -200,8 +200,8 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
   );
 
   return (
-    <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
-      <p className="text-sm font-medium text-[#1c1917]">Connect {display_name} (read-only)</p>
+    <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-cream p-3">
+      <p className="text-sm font-medium text-midnight">Connect {display_name} (read-only)</p>
       <p className="text-xs text-[var(--midnight-muted)]">
         Lightbulb AI will assume a role you create in your AWS account — no keys to paste.
       </p>
@@ -262,7 +262,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
               surfaced. They're only relevant for manual (e.g. Terraform) role
               creation. */}
           <details className="group">
-            <summary className="cursor-pointer text-xs text-[var(--midnight-muted)] hover:text-[#1c1917]">
+            <summary className="cursor-pointer text-xs text-[var(--midnight-muted)] hover:text-midnight">
               Advanced / manual setup
             </summary>
             <div className="mt-2 flex flex-col gap-2">
@@ -320,7 +320,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
                 void connect();
               }
             }}
-            className="h-9 bg-white"
+            className="h-9 bg-cream"
           />
         </>
       )}
@@ -354,7 +354,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
       </div>
 
       {err && (
-        <p className="text-xs text-[#b63025]" role="alert">
+        <p className="text-xs text-[var(--err)]" role="alert">
           {err}
         </p>
       )}

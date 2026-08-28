@@ -409,7 +409,7 @@ function ToolbarIconButton({
       className={cn(
         "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
         active
-          ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+          ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
           : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
       )}
     >
@@ -445,7 +445,7 @@ function MenuPopover<T extends string>({
           className={cn(
             "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
             active
-              ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+              ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
               : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
           )}
         >
@@ -461,7 +461,7 @@ function MenuPopover<T extends string>({
             className={cn(
               "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
               value === selected
-                ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                 : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
             )}
           >

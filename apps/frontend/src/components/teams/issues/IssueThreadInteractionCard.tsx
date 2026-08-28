@@ -190,21 +190,21 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
     case "accepted":
     case "answered":
       return {
-        shell: "border-emerald-400/70 bg-transparent",
+        shell: "border-ok/70 bg-transparent",
         badge:
-          "border-emerald-500/60 bg-emerald-500/10 text-emerald-900",
+          "border-ok/60 bg-ok/10 text-ok",
       };
     case "rejected":
     case "cancelled":
       return {
-        shell: "border-rose-400/70 bg-transparent",
-        badge: "border-rose-500/60 bg-rose-500/10 text-rose-900",
+        shell: "border-err/70 bg-transparent",
+        badge: "border-err/60 bg-err/10 text-err",
       };
     case "failed":
     case "expired":
       return {
-        shell: "border-amber-400/70 bg-transparent",
-        badge: "border-amber-500/60 bg-amber-500/10 text-amber-900",
+        shell: "border-warn/70 bg-transparent",
+        badge: "border-warn/60 bg-warn/10 text-warn",
       };
     default:
       // Pending — recolored from upstream `sky` to the editorial forest accent.
@@ -346,13 +346,13 @@ function TaskTreeNode({
               href={createdTaskUrl}
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, createdTaskUrl)}
-              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-500/15"
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-ok/50 bg-ok/10 px-2.5 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/15"
             >
               {createdTask.identifier ?? createdTask.issueId.slice(0, 8)}
               <ChevronRight className="h-3 w-3" />
             </Link>
           ) : isSkipped ? (
-            <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-900">
+            <span className="inline-flex shrink-0 items-center rounded-sm border border-warn/60 bg-warn/10 px-2.5 py-1 text-[11px] font-medium text-warn">
               Skipped
             </span>
           ) : null}
@@ -376,7 +376,7 @@ function TaskTreeNode({
         ) : null}
 
         {hiddenChildCount > 0 ? (
-          <div className="mt-2 flex items-center gap-2 rounded-sm border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
+          <div className="mt-2 flex items-center gap-2 rounded-sm border border-warn/60 bg-warn/10 px-3 py-2 text-xs text-warn">
             <GitBranch className="h-3.5 w-3.5 shrink-0" />
             <span>
               {hiddenChildCount === 1
@@ -549,8 +549,8 @@ function SuggestTasksCard({
       </div>
 
       {interaction.status === "accepted" ? (
-        <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+        <div className="rounded-sm border border-ok/60 bg-ok/10 px-4 py-3 text-sm text-ok">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ok">
             Resolution summary
           </div>
           <p className="mt-1 leading-6">
@@ -562,13 +562,13 @@ function SuggestTasksCard({
       ) : null}
 
       {interaction.status === "rejected" ? (
-        <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
+        <div className="rounded-sm border border-err/60 bg-err/10 px-4 py-3 text-sm text-err">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-err">
             Rejection reason
           </div>
           <p className={cn(
             "mt-1 leading-6",
-            !interaction.result?.rejectionReason && "text-rose-900/75",
+            !interaction.result?.rejectionReason && "text-err/75",
           )}>
             {interaction.result?.rejectionReason || "No reason provided."}
           </p>
@@ -693,7 +693,7 @@ function QuestionOptionButton({
       className={cn(
         "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-[var(--midnight)] focus-visible:ring-2 focus-visible:ring-[var(--midnight)]",
         selected
-          ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]"
+          ? "border-[var(--midnight)] bg-[var(--cream-deeper)] text-[var(--midnight)]"
           : "border-[var(--edge)] bg-transparent text-[var(--midnight)] hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)]",
       )}
       id={id}
@@ -999,7 +999,7 @@ function AskUserQuestionsCard({
           </div>
         </div>
       ) : interaction.status === "cancelled" ? (
-        <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950">
+        <div className="rounded-2xl border border-err/60 bg-err/85 p-4 text-sm leading-6 text-err">
           <div className="font-semibold">Question cancelled</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
@@ -1036,8 +1036,8 @@ function AskUserQuestionsCard({
           })}
 
           {interaction.result?.summaryMarkdown ? (
-            <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+            <div className="rounded-2xl border border-ok/60 bg-ok/85 p-4">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ok">
                 Submitted summary
               </div>
               <MarkdownView>{interaction.result.summaryMarkdown}</MarkdownView>
@@ -1126,7 +1126,7 @@ function ConfirmationDeclinedBlock({
         <RequestConfirmationTargetChip issueId={issueId} target={target} />
       </div>
       {result?.reason ? (
-        <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900">
+        <blockquote className="rounded-sm border-l-2 border-err/70 bg-err/10 px-3 py-2 text-sm leading-6 text-err">
           {result.reason}
         </blockquote>
       ) : null}
@@ -1148,8 +1148,8 @@ function ConfirmationExpiredBlock({
   const expiredByComment = outcome === "superseded_by_comment";
   const expiredByTargetChange = outcome === "stale_target";
   return (
-    <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+    <div className="space-y-3 rounded-sm border border-warn/60 bg-warn/10 px-4 py-3 text-sm text-warn">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-warn">
         {expiredByComment ? "Expired by comment" : "Expired by target change"}
       </div>
       <p className="leading-6">
@@ -1160,7 +1160,7 @@ function ConfirmationExpiredBlock({
       {expiredByComment && result?.commentId ? (
         <a
           href={`#comment-${result.commentId}`}
-          className="inline-flex h-7 items-center rounded-sm px-2 text-xs font-medium text-amber-950 transition-colors hover:bg-amber-500/15"
+          className="inline-flex h-7 items-center rounded-sm px-2 text-xs font-medium text-warn transition-colors hover:bg-warn/15"
         >
           Jump to comment
         </a>
@@ -1173,7 +1173,7 @@ function ConfirmationExpiredBlock({
             tone="subtle"
           />
           {staleTarget && target ? (
-            <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
+            <ChevronRight className="h-3.5 w-3.5 text-warn" />
           ) : null}
           <RequestConfirmationTargetChip issueId={issueId} target={target} />
         </div>
@@ -1526,7 +1526,7 @@ function CheckboxOptionRow({
       htmlFor={id}
       className={cn(
         "flex cursor-pointer items-start gap-2.5 border-b border-[var(--edge)] px-3 py-2 last:border-b-0 transition-colors",
-        checked ? "bg-[var(--cream-deep)]" : "hover:bg-[var(--cream-deep)]",
+        checked ? "bg-[var(--cream-deeper)]" : "hover:bg-[var(--cream-deep)]",
         disabled && "cursor-not-allowed opacity-60",
       )}
     >

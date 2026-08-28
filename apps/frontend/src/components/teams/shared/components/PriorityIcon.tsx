@@ -91,7 +91,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
               size="sm"
               className={cn(
                 "w-full justify-start gap-2 text-xs text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
-                p === priority && "bg-[var(--cream-deep)]",
+                p === priority && "bg-[var(--cream-deeper)]",
               )}
               onClick={() => {
                 onChange(p);

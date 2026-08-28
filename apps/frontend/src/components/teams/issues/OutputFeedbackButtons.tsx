@@ -26,13 +26,13 @@ export interface OutputFeedbackButtonsProps {
 }
 
 const ACTIVE_UP_STYLE = {
-  borderColor: "color-mix(in srgb, green 45%, transparent)",
-  background: "color-mix(in srgb, green 12%, transparent)",
+  borderColor: "color-mix(in srgb, var(--ok) 45%, transparent)",
+  background: "color-mix(in srgb, var(--ok) 12%, transparent)",
 } as const;
 
 const ACTIVE_DOWN_STYLE = {
-  borderColor: "color-mix(in srgb, #b45309 55%, transparent)",
-  background: "color-mix(in srgb, #b45309 12%, transparent)",
+  borderColor: "color-mix(in srgb, var(--warn) 55%, transparent)",
+  background: "color-mix(in srgb, var(--warn) 12%, transparent)",
 } as const;
 
 export function OutputFeedbackButtons({

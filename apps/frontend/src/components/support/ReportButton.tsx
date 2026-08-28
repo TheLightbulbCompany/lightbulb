@@ -28,7 +28,7 @@ export function ReportButton({
     <button
       type="button"
       onClick={() => openSupport({ category: category ?? "Bug report", error, requestId })}
-      className="shrink-0 whitespace-nowrap rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-700"
+      className="shrink-0 whitespace-nowrap rounded-md bg-midnight px-2.5 py-1 text-xs font-semibold text-cream hover:bg-[var(--midnight-soft)]"
     >
       Report
     </button>

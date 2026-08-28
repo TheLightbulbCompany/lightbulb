@@ -204,7 +204,7 @@ function AgentRunCard({
           style={{
             borderColor: "var(--edge)",
             background: "var(--cream-deep)",
-            color: active ? "var(--midnight)" : "var(--midnight)",
+            color: "var(--midnight)",
           }}
           title={issueTitle ? `${issueKey} — ${issueTitle}` : issueKey}
         >

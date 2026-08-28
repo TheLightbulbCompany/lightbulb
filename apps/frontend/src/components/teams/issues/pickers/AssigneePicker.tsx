@@ -295,7 +295,7 @@ export function AssigneePicker({
               onMouseEnter={() => setActiveIndex(0)}
               className={cn(
                 "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
-                activeIndex === 0 && "bg-[var(--cream-deep)]",
+                activeIndex === 0 && "bg-[var(--cream-deeper)]",
               )}
               style={{ color: "var(--midnight-muted)" }}
             >
@@ -329,7 +329,7 @@ export function AssigneePicker({
                   onMouseEnter={() => setActiveIndex(optionIndex)}
                   className={cn(
                     "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
-                    activeIndex === optionIndex && "bg-[var(--cream-deep)]",
+                    activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                   )}
                 >
                   {agent.name}
@@ -367,7 +367,7 @@ export function AssigneePicker({
                       onMouseEnter={() => setActiveIndex(optionIndex)}
                       className={cn(
                         "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deep)]",
-                        activeIndex === optionIndex && "bg-[var(--cream-deep)]",
+                        activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                       )}
                     >
                       <Identity

@@ -195,7 +195,7 @@ export function StatusIcon({
             size="sm"
             className={cn(
               "w-full justify-start gap-2 text-xs text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
-              s === status && "bg-[var(--cream-deep)]",
+              s === status && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {
               onChange(s);

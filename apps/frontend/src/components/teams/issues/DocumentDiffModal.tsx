@@ -73,8 +73,8 @@ export function DocumentDiffModal({
 
   const rowClass: Record<DiffRow["kind"], string> = {
     context: "",
-    removed: "bg-rose-500/10 text-rose-800 dark:text-rose-200",
-    added: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
+    removed: "bg-err/10 text-err",
+    added: "bg-ok/10 text-ok",
     truncated: "",
   };
   const marker: Record<DiffRow["kind"], string> = {
@@ -95,7 +95,7 @@ export function DocumentDiffModal({
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-rose-500">Old</span>
+            <span className="text-[10px] uppercase tracking-wider text-err">Old</span>
             <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
               <SelectTrigger className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />
@@ -110,7 +110,7 @@ export function DocumentDiffModal({
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-emerald-500">New</span>
+            <span className="text-[10px] uppercase tracking-wider text-ok">New</span>
             <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
               <SelectTrigger className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />

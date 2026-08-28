@@ -98,7 +98,7 @@ function ConnectionsPageInner() {
     <>
       <header
         className="settings-topbar"
-        style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
+        style={{ fontFamily: "var(--font-sans)" }}
       >
         <div className="settings-topbar-left">
           <Logo size="md" href="/chat" />
@@ -106,7 +106,7 @@ function ConnectionsPageInner() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <polyline points="9 18 15 12 9 6" />
             </svg>
-            <Link href="/settings" className="settings-current" style={{ textDecoration: "none", color: "#59534d", fontWeight: 500 }}>
+            <Link href="/settings" className="settings-current" style={{ textDecoration: "none", color: "var(--midnight-soft)", fontWeight: 500 }}>
               Settings
             </Link>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -129,7 +129,7 @@ function ConnectionsPageInner() {
 
       <div
         className="settings-page-wrap"
-        style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
+        style={{ fontFamily: "var(--font-sans)" }}
       >
         <div className="settings-layout">
           <SettingsNav

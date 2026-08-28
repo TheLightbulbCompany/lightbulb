@@ -109,23 +109,23 @@ export function DesktopPermissionsGate() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="desktop-permissions-title"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_45%,transparent)] px-4"
     >
-      <div className="w-full max-w-[560px] rounded-lg border border-[#ded8cc] bg-[var(--cream)] p-5 shadow-2xl">
+      <div className="w-full max-w-[560px] rounded-lg border border-edge bg-[var(--cream)] p-5 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2
               id="desktop-permissions-title"
-              className="text-[20px] font-semibold text-[#1f1b16]"
+              className="text-[20px] font-semibold text-midnight"
             >
               Connect this Mac
             </h2>
-            <p className="mt-1 text-sm leading-5 text-[#6f675c]">
+            <p className="mt-1 text-sm leading-5 text-[var(--midnight-muted)]">
               Choose what agents can use on this computer. You can adjust file
               folders later in Settings.
             </p>
           </div>
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#1f1b16] text-[var(--cream)]">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-midnight text-[var(--cream)]">
             <Check size={18} />
           </div>
         </div>
@@ -141,19 +141,19 @@ export function DesktopPermissionsGate() {
                 className={[
                   "flex w-full items-center gap-3 rounded-md border p-3 text-left transition",
                   enabled
-                    ? "border-[#1f1b16] bg-white"
-                    : "border-[#ded8cc] bg-[#f4efe7]",
+                    ? "border-midnight bg-cream"
+                    : "border-edge bg-cream-deep",
                 ].join(" ")}
                 aria-pressed={enabled}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#ded8cc] bg-[var(--cream)] text-[#1f1b16]">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-edge bg-[var(--cream)] text-midnight">
                   <Icon size={17} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium text-[#1f1b16]">
+                  <span className="block text-sm font-medium text-midnight">
                     {label}
                   </span>
-                  <span className="mt-0.5 block text-xs leading-4 text-[#6f675c]">
+                  <span className="mt-0.5 block text-xs leading-4 text-[var(--midnight-muted)]">
                     {description}
                   </span>
                 </span>
@@ -161,8 +161,8 @@ export function DesktopPermissionsGate() {
                   className={[
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
                     enabled
-                      ? "border-[#1f1b16] bg-[#1f1b16] text-white"
-                      : "border-[#b9afa1] bg-transparent",
+                      ? "border-midnight bg-midnight text-cream"
+                      : "border-[var(--midnight-faint)] bg-transparent",
                   ].join(" ")}
                   aria-hidden="true"
                 >
@@ -177,14 +177,14 @@ export function DesktopPermissionsGate() {
           <button
             type="button"
             onClick={() => save(BASIC_DESKTOP_PERMISSIONS, "basic")}
-            className="rounded-md border border-[#cfc6b8] px-4 py-2 text-sm font-medium text-[#4d463d] hover:bg-white"
+            className="rounded-md border border-edge px-4 py-2 text-sm font-medium text-[var(--midnight-soft)] hover:bg-cream"
           >
             Basic only
           </button>
           <button
             type="button"
             onClick={() => save(permissions, "custom")}
-            className="rounded-md bg-[#1f1b16] px-4 py-2 text-sm font-medium text-white hover:bg-[#383126]"
+            className="rounded-md bg-midnight px-4 py-2 text-sm font-medium text-cream hover:bg-[var(--midnight-soft)]"
           >
             Connect Mac
           </button>

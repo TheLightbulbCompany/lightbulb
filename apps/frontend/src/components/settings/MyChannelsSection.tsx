@@ -58,7 +58,7 @@ function MyChannelsSectionInner() {
   if (error) {
     return (
       <div className="p-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <p className="text-sm text-[var(--err)]">Failed to load channels.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           Retry
         </Button>
@@ -117,9 +117,9 @@ function MyChannelsSectionInner() {
                     className="flex items-center gap-3 rounded-md border border-[var(--edge)] p-3"
                   >
                     {bot.linked ? (
-                      <CheckCircle2 className="h-4 w-4 text-[#2d8a4e]" />
+                      <CheckCircle2 className="h-4 w-4 text-[var(--ok)]" />
                     ) : (
-                      <AlertCircle className="h-4 w-4 text-amber-500" />
+                      <AlertCircle className="h-4 w-4 text-[var(--warn)]" />
                     )}
                     <div className="flex-1">
                       <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
@@ -153,13 +153,13 @@ function MyChannelsSectionInner() {
 
       {wizard && (
         <div
-          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-50"
           role="dialog"
           aria-modal="true"
           onClick={() => setWizard(null)}
         >
           <div
-            className="bg-white rounded-lg shadow-xl"
+            className="bg-cream rounded-lg shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <BotSetupWizard

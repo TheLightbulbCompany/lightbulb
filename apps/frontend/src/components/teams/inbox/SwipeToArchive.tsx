@@ -163,7 +163,7 @@ export function SwipeToArchive({
         data-inbox-row-surface
         className={cn("relative will-change-transform")}
         style={{
-          background: selected ? "var(--cream-deep)" : "var(--cream)",
+          background: selected ? "var(--cream-deeper)" : "var(--cream)",
           transform: `translate3d(${offsetX}px, 0, 0)`,
           transition: isDragging ? "none" : "transform 180ms ease-out",
         }}

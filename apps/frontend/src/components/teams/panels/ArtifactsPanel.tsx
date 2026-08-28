@@ -302,7 +302,7 @@ export function ArtifactsPanel() {
               onClick={confirmDelete}
               disabled={deleting}
               className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
-              style={{ background: "var(--warn)", color: "var(--warn-ink, #fff)" }}
+              style={{ background: "var(--warn)", color: "var(--cream)" }}
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>

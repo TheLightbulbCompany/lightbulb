@@ -17,7 +17,7 @@ export function NodeStatusPill() {
   const { nodeConnected, nodeStatus } = useGateway();
   const failing = !nodeConnected && nodeStatus === "error";
   if (!nodeConnected && !failing) return null;
-  const color = nodeConnected ? "#16a34a" : "#d97706";
+  const color = nodeConnected ? "var(--ok)" : "var(--warn)";
   return (
     <div
       style={{

@@ -172,7 +172,7 @@ export function IssueRow({
         "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-[var(--cream-deep)]",
         checklistCurrentStep
-          ? "border-l-2 border-l-[var(--midnight)] bg-[var(--cream-deep)] pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]"
+          ? "border-l-2 border-l-[var(--midnight)] bg-[var(--cream-deeper)] pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]"
           : null,
         className,
       )}
@@ -266,9 +266,7 @@ export function IssueRow({
               }}
               className={cn(
                 "inline-flex h-4 w-4 items-center justify-center rounded-full !p-0 !border-0 transition-colors",
-                selected
-                  ? "hover:bg-[var(--cream-deep)]"
-                  : "hover:bg-[var(--cream-deep)]",
+                "hover:bg-[var(--cream-deep)]",
               )}
               aria-label="Mark as read"
             >

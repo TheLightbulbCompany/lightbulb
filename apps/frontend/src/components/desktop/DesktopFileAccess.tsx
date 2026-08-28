@@ -132,7 +132,7 @@ export function DesktopFileAccess() {
       </p>
 
       {defaultPath && (
-        <p style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>
+        <p style={{ fontSize: 13, color: "var(--midnight-muted)", marginBottom: 12 }}>
           Default folder: <code>{defaultPath}</code> — created automatically
           on first launch so the agent always has somewhere to drop files.
         </p>
@@ -140,7 +140,7 @@ export function DesktopFileAccess() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
         {paths.length === 0 ? (
-          <p style={{ fontSize: 13, color: "#999" }}>(no folders configured)</p>
+          <p style={{ fontSize: 13, color: "var(--midnight-faint)" }}>(no folders configured)</p>
         ) : (
           paths.map((p) => (
             <div
@@ -150,7 +150,7 @@ export function DesktopFileAccess() {
                 alignItems: "center",
                 justifyContent: "space-between",
                 padding: "8px 12px",
-                border: "1px solid #e5e5e5",
+                border: "1px solid var(--edge)",
                 borderRadius: 6,
                 fontFamily: "monospace",
                 fontSize: 13,
@@ -165,9 +165,9 @@ export function DesktopFileAccess() {
                 onClick={() => removeFolder(p)}
                 disabled={busy}
                 style={{
-                  border: "1px solid #dc2626",
+                  border: "1px solid var(--err)",
                   background: "transparent",
-                  color: "#dc2626",
+                  color: "var(--err)",
                   padding: "4px 10px",
                   borderRadius: 4,
                   cursor: busy ? "not-allowed" : "pointer",
@@ -187,10 +187,10 @@ export function DesktopFileAccess() {
         onClick={addFolder}
         disabled={busy}
         style={{
-          background: "#16a34a",
+          background: "var(--midnight)",
           border: "none",
           padding: "8px 16px",
-          color: "white",
+          color: "var(--cream)",
           borderRadius: 6,
           cursor: busy ? "not-allowed" : "pointer",
           fontSize: 14,
@@ -200,7 +200,7 @@ export function DesktopFileAccess() {
       </button>
 
       {error && (
-        <p style={{ marginTop: 12, color: "#dc2626", fontSize: 13 }}>
+        <p style={{ marginTop: 12, color: "var(--err)", fontSize: 13 }}>
           Error: {error}
         </p>
       )}

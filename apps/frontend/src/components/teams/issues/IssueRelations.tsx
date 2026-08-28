@@ -271,7 +271,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                           onClick={() => toggle(candidate.id)}
                           className={cn(
                             "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
-                            selected && "bg-[var(--cream-deep)]",
+                            selected && "bg-[var(--cream-deeper)]",
                           )}
                         >
                           <StatusIcon

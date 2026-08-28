@@ -12,8 +12,8 @@
 //     inline-hidden — once Tooltip is vendored, swap the `<>` wrapper for
 //     <Tooltip><TooltipTrigger asChild>...</TooltipTrigger><TooltipContent>
 //     ...</TooltipContent></Tooltip> and drop the title attribute.
-// Editorial retheme: the upstream amber tokens (border-amber-500/40,
-// bg-amber-500/10, text-amber-700) map onto `--warn` in the editorial
+// Editorial retheme: the upstream amber tokens (border-warn/40,
+// bg-warn/10, text-warn) map onto `--warn` in the editorial
 // palette — the badge still reads as "attention required" against the
 // cream surface, but in the right hue for the new chrome.
 

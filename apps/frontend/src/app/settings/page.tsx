@@ -62,7 +62,7 @@ type Panel =
 // Profile Panel
 // =============================================================================
 
-const DANGER = "#b63025";
+const DANGER = "var(--err)";
 
 // Self-serve account deletion (mirrors the mobile settings flow): explain
 // permanence, require the account email typed back (same guard the backend
@@ -116,7 +116,7 @@ function DeleteAccountCard() {
   if (!orgLoaded) return null;
 
   return (
-    <div className="settings-card" style={{ borderColor: "rgba(182,48,37,.25)" }}>
+    <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)" }}>
       <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
       {organization ? (
         <div className="settings-card-desc">
@@ -130,7 +130,7 @@ function DeleteAccountCard() {
           <button
             type="button"
             className="settings-btn-outline"
-            style={{ color: DANGER, borderColor: "rgba(182,48,37,.4)" }}
+            style={{ color: DANGER, borderColor: "color-mix(in srgb, var(--err) 40%, transparent)" }}
             onClick={() => setOpen(true)}
           >
             Delete account…
@@ -156,7 +156,7 @@ function DeleteAccountCard() {
             <button
               type="button"
               className="settings-btn-outline"
-              style={{ color: "#fff", background: DANGER, borderColor: DANGER }}
+              style={{ color: "var(--cream)", background: DANGER, borderColor: DANGER }}
               onClick={handleDelete}
               disabled={busy || typed.trim().toLowerCase() !== email.trim().toLowerCase()}
             >
@@ -274,7 +274,7 @@ function UltraUpgradeRow({
   if (plan === "ultra_pro") {
     return (
       <div style={{ marginTop: 14 }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "3px 10px", borderRadius: 999 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           Ultra Pro
         </span>
@@ -461,7 +461,7 @@ function BillingPanel() {
               <div className="settings-card-title">
                 Lightbulb AI plan
                 {statusChipLabel && (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     {statusChipLabel}
                   </span>
@@ -502,7 +502,7 @@ function BillingPanel() {
             <div className="settings-card-title">
               {isTrialLocal ? "Lightbulb AI — Free tier" : "Lightbulb AI — $50 / month"}
               {statusChipLabel && (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                   {statusChipLabel}
                 </span>
@@ -627,7 +627,7 @@ function MarketplaceProfileEditor() {
   }, [isLoaded, getToken]);
 
   if (loading) {
-    return <div className="text-[13px] text-[#8a8478]">Loading your profile…</div>;
+    return <div className="text-[13px] text-muted-foreground">Loading your profile…</div>;
   }
 
   return (
@@ -752,7 +752,7 @@ function SettingsPageInner() {
     <>
 
       {/* Top bar */}
-      <header className="settings-topbar" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+      <header className="settings-topbar" style={{ fontFamily: "var(--font-sans)" }}>
         <div className="settings-topbar-left">
           <Logo size="md" href="/chat" />
           <nav className="settings-topbar-breadcrumb" aria-label="Breadcrumb">
@@ -775,7 +775,7 @@ function SettingsPageInner() {
       </header>
 
       {/* Main layout */}
-      <div className="settings-page-wrap" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+      <div className="settings-page-wrap" style={{ fontFamily: "var(--font-sans)" }}>
       <div className="settings-layout">
         <SettingsNav
           mode="tabs"

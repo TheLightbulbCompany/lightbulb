@@ -137,7 +137,7 @@ export function StartRungPicker({
               className={cn(
                 "flex items-start gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
                 active
-                  ? "border-[var(--midnight)] bg-[var(--cream-deep)]"
+                  ? "border-[var(--midnight)] bg-[var(--cream-deeper)]"
                   : "border-[var(--edge)] hover:bg-[var(--cream-deep)]",
               )}
             >
@@ -694,7 +694,7 @@ function EventPicker({
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
                   values.includes(e.id)
-                    ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                    ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                     : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
                 )}
               >

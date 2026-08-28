@@ -13,7 +13,7 @@ export function WebhooksPanel() {
   if (isLoading) {
     return (
       <div className="settings-panel" id="panel-webhooks" role="tabpanel">
-        <div className="text-sm text-zinc-400">Loading…</div>
+        <div className="text-sm text-muted-foreground">Loading…</div>
       </div>
     );
   }
@@ -36,7 +36,7 @@ export function WebhooksPanel() {
   if (error || !credentials) {
     return (
       <div className="settings-panel" id="panel-webhooks" role="tabpanel">
-        <div className="text-sm text-red-400">
+        <div className="text-sm text-[var(--err)]">
           Couldn&apos;t load webhook credentials. Try again in a moment.
         </div>
       </div>
@@ -70,7 +70,7 @@ export function WebhooksPanel() {
                 type="button"
                 aria-label={revealed ? "Hide token" : "Reveal token"}
                 onClick={() => setRevealed((v) => !v)}
-                className="rounded p-1 hover:bg-zinc-800"
+                className="rounded p-1 hover:bg-accent"
               >
                 {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
@@ -78,17 +78,17 @@ export function WebhooksPanel() {
                 type="button"
                 aria-label="Copy token"
                 onClick={() => navigator.clipboard.writeText(credentials.token)}
-                className="rounded p-1 hover:bg-zinc-800"
+                className="rounded p-1 hover:bg-accent"
               >
                 <Copy size={14} />
               </button>
             </div>
           </div>
-          <div className="mt-1 rounded border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-sm">
+          <div className="mt-1 rounded border border-border bg-muted px-3 py-2 font-mono text-sm">
             {tokenDisplay}
           </div>
           {credentials.rotated_at && (
-            <p className="mt-1 text-xs text-zinc-500">
+            <p className="mt-1 text-xs text-muted-foreground">
               Last rotated: {new Date(credentials.rotated_at).toLocaleString()}
             </p>
           )}
@@ -115,12 +115,12 @@ function Field({
           type="button"
           aria-label={`Copy ${label}`}
           onClick={onCopy}
-          className="rounded p-1 hover:bg-zinc-800"
+          className="rounded p-1 hover:bg-accent"
         >
           <Copy size={14} />
         </button>
       </div>
-      <div className="mt-1 break-all rounded border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-sm">
+      <div className="mt-1 break-all rounded border border-border bg-muted px-3 py-2 font-mono text-sm">
         {value}
       </div>
     </div>

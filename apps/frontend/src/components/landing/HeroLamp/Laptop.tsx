@@ -11,7 +11,7 @@ import { DESK_TOP_Y } from "./Desk";
 
 export const LAPTOP_URL = "/models/laptop/mac-noUv.glb";
 const KEYS_URL = "/models/laptop/keyboard-overlay.png";
-const SCALE = 0.055;
+const SCALE = 0.030;
 const SCREEN: [number, number] = [29.4, 20];
 const LID_CLOSED = 0.5 * Math.PI,
   LID_OPEN = -0.2 * Math.PI; // hers
@@ -38,6 +38,15 @@ export function Laptop({
 }) {
   const { scene } = useGLTF(LAPTOP_URL);
   const invalidate = useThree((s) => s.invalidate);
+  // Under 640px the hero's copy and pill span the whole width, and the desk
+  // band has no room left. Measured at 390x844 (canvas 375x758): the desk
+  // projects 532..585, the idea card covers 433..564 across the full width
+  // (22..353 of 375), and the fine copy starts at 582 — so the only desk not
+  // behind DOM is a 21px strip, and the 22px side margins are narrower than
+  // the closed lid. Every other gap (397..433, 644..666, 710..758) is off the
+  // desk or inside the 140px bottom fade. Off the desk it would still be a
+  // shadow caster and a light — so it is not mounted at all.
+  const narrow = useThree((s) => s.size.width < 640);
   const keysTex = useTexture(KEYS_URL);
   const root = React.useRef<THREE.Group>(null);
   const lid = React.useRef<THREE.Group>(null);
@@ -66,6 +75,9 @@ export function Laptop({
   // Refresh) finds nothing and throws out of the Canvas. Clone per mount and
   // never touch the cached graph. clone(true) is enough here — no skinned
   // meshes; geometries stay shared and every material is assigned below.
+  // `dispose={null}` on the two <primitive>s below is the other half: on
+  // unmount R3F would otherwise dispose the clone's geometries, which ARE the
+  // cache's geometries.
   const model = React.useMemo(() => scene.clone(true), [scene]);
 
   // Split her model into lid (_top) and base (_bottom) groups.
@@ -139,7 +151,9 @@ export function Laptop({
     const a = 1 - Math.pow(1 - appearRef.current, 3);
     // her laptopAppearTl: from lying flat below the frame to seated on the desk
     if (root.current) {
-      root.current.rotation.x = 0.5 * Math.PI * (1 - a) + 0.05 * Math.PI * a;
+      // Ends FLAT (hers ends pitched 0.05π — she floated it): on a desk a 9°
+      // pitch sinks the front feet 0.1 world units into the top.
+      root.current.rotation.x = 0.5 * Math.PI * (1 - a);
       root.current.rotation.y = 0.2 * Math.PI * (1 - a) - 0.18 * a;
       root.current.position.y = DESK_TOP_Y - 2.2 * (1 - a);
     }
@@ -155,12 +169,21 @@ export function Laptop({
     if (light.current) light.current.intensity = SCREEN_LIGHT * s;
   });
 
-  if (!top || !bottom) return null;
+  if (narrow || !top || !bottom) return null;
 
   return (
-    <group ref={root} position={[0.55, DESK_TOP_Y, 0.4]} scale={SCALE}>
+    // x 3.0, not centred: the headline and the idea pill are DOM over the
+    // middle of the canvas down to ~77% of its height, where the desk top
+    // only starts — a centred laptop's screen is behind the headline or
+    // behind the pill. To the right of the pill (edge 320px from centre; the
+    // laptop's left edge lands 22px past it at 1280×720, 40px at 1440×900)
+    // the whole screen shows, and at 0.035 / z 1.0 its top projects 8px
+    // below the headline's descenders at 1440×900 (measured 530 vs 522),
+    // more at 1280×720. Any bigger or further forward and the base sinks
+    // into the canvas's bottom fade. Still inside the desk's ±4.
+    <group ref={root} position={[3.0, DESK_TOP_Y, -0.3]} scale={SCALE}>
       <group ref={lid} rotation={[LID_CLOSED, 0, 0]}>
-        <primitive object={top} />
+        <primitive object={top} dispose={null} />
         {/* her screen: a plane in lid space, with a dark plane behind it for
             the off state (the texture only reaches 0.96 opacity, and the lid's
             0xCECFD3 shell showing through 4% would wash the midnight out).
@@ -193,7 +216,7 @@ export function Laptop({
         />
       </group>
       <group>
-        <primitive object={bottom} />
+        <primitive object={bottom} dispose={null} />
         <mesh rotation={[-0.5 * Math.PI, 0, 0]} position={[0, 0.045, 7.21]}>
           <planeGeometry args={[27.7, 11.6]} />
           <meshBasicMaterial color={0xffffff} alphaMap={keysTex} transparent />

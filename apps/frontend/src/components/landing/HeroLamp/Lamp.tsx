@@ -289,14 +289,18 @@ export function Lamp({ litRef, anchorRef, pendulum, colors, shadows, shadowMapSi
           ref={spot}
           color={poolColor}
           intensity={0}
-          angle={0.95}
-          penumbra={0.7}
+          // 0.75/1.0: the cone lands on the desk. At 0.95 its edge crossed
+          // the wall behind the headline as a hard diagonal; with the penumbra
+          // spanning the whole cone the wall only gets the soft foot of it.
+          angle={0.75}
+          penumbra={1}
           decay={2}
           distance={0}
           castShadow={shadows}
           shadow-mapSize-width={shadowMapSize}
           shadow-mapSize-height={shadowMapSize}
           shadow-bias={-0.0004}
+          shadow-normalBias={0.02}
           shadow-camera-near={0.3}
           shadow-camera-far={12}
         />

@@ -609,8 +609,8 @@ button:focus-visible { border-radius: 999px; }
 /* The primary button inverts with the page tokens (cream fill, midnight type);
    its hover/active fills are hardcoded midnight, which would put midnight type
    on midnight. */
-[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:hover { background: #E4DCC9; }
-[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:active { background: #D4CBB6; }
+[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:hover { background: color-mix(in srgb, #F5EFE2 88%, #0F1A2B); }
+[data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:active { background: color-mix(in srgb, #F5EFE2 78%, #0F1A2B); }
 .nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: var(--mute); }
 .nav-links a {
   padding: 6px 14px; border-radius: 99px;

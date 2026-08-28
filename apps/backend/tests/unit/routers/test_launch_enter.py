@@ -8,6 +8,17 @@ from core.services import launch_service
 DROP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_state():
+    from routers import launch
+
+    launch._RATE.clear()
+    launch._RESP_CACHE.clear()
+    yield
+    launch._RATE.clear()
+    launch._RESP_CACHE.clear()
+
+
 @pytest.fixture
 def configured():
     with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", DROP):
@@ -62,3 +73,12 @@ async def test_leaderboard_read_triggers_revalidate(reval, configured, unauthent
 async def test_me_read_triggers_revalidate(reval, configured, async_client):
     await async_client.get("/api/v1/launch/me")
     reval.assert_called_once()
+
+
+@patch("routers.launch.launch_service.enter", AsyncMock(return_value={"display_name": "Ada"}))
+async def test_enter_is_rate_limited_per_ip(configured, async_client):
+    body = {"display_name": "Ada", "stripe_key": "rk_test_" + "x" * 20, "public": True}
+    for _ in range(10):
+        assert (await async_client.post("/api/v1/launch/enter", json=body)).status_code == 200
+    r = await async_client.post("/api/v1/launch/enter", json=body)
+    assert r.status_code == 429 and r.headers["retry-after"] == "60"

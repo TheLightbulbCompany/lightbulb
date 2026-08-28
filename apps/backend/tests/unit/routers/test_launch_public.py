@@ -19,8 +19,10 @@ def _fresh_bucket():
     from routers import launch
 
     launch._RATE.clear()
+    launch._RESP_CACHE.clear()
     yield
     launch._RATE.clear()
+    launch._RESP_CACHE.clear()
 
 
 async def test_launch_info_404_when_unset(unauthenticated_async_client):
@@ -81,3 +83,17 @@ async def test_join_waitlist_closed_after_drop(configured, unauthenticated_async
     with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", past):
         r = await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "a@x.com"})
     assert r.status_code == 409 and r.json()["detail"] == "waitlist_closed"
+
+
+@patch("routers.launch.launch_entries_repo")
+@patch("routers.launch.launch_waitlist_repo")
+async def test_launch_info_is_served_from_the_cache_within_the_ttl(
+    mock_wl, mock_entries, configured, unauthenticated_async_client
+):
+    """The public read is a full table scan and the client controls Cache-Control."""
+    mock_wl.count = AsyncMock(return_value=42)
+    mock_entries.count = AsyncMock(return_value=3)
+    first = await unauthenticated_async_client.get("/api/v1/launch")
+    mock_entries.count = AsyncMock(side_effect=AssertionError("should be cached"))
+    second = await unauthenticated_async_client.get("/api/v1/launch")
+    assert second.status_code == 200 and second.json() == first.json()

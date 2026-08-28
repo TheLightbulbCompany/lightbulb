@@ -54,16 +54,18 @@ export interface LaunchMe {
 export const LAUNCH_REF_KEY = "launch_ref";
 
 // Public reads use plain fetch: the shared client refuses to send without a
-// Clerk token, and these routes are meant for signed-out visitors.
+// Clerk token, and these routes are meant for signed-out visitors. No
+// `cache: "no-store"` — these routes send Cache-Control themselves, and opting
+// out of it here defeats both the browser cache and the backend's own TTL.
 export async function fetchLaunchInfo(): Promise<LaunchInfo | null> {
-  const res = await fetch(`${BACKEND_URL}/launch`, { cache: "no-store" });
+  const res = await fetch(`${BACKEND_URL}/launch`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`launch_info_${res.status}`);
   return (await res.json()) as LaunchInfo;
 }
 
 export async function fetchLeaderboard(): Promise<{ entrants: number; rows: LeaderboardRow[] }> {
-  const res = await fetch(`${BACKEND_URL}/launch/leaderboard`, { cache: "no-store" });
+  const res = await fetch(`${BACKEND_URL}/launch/leaderboard`);
   if (!res.ok) throw new Error(`leaderboard_${res.status}`);
   return (await res.json()) as { entrants: number; rows: LeaderboardRow[] };
 }

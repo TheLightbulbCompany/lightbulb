@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import { resourcePrefix } from "../table-names";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
@@ -1472,7 +1473,7 @@ export class ObservabilityStack extends cdk.Stack {
     // deploys AND replaces tasks that fail health checks, so it is split on
     // the reason text. An unknown stopCode alarms — fail loud.
     const taskStoppedFn = new lambda.Function(this, "TaskStoppedFn", {
-      functionName: `isol8-${this.envName}-task-stopped-metric`,
+      functionName: `${resourcePrefix(this.envName)}task-stopped-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.seconds(10),
@@ -1589,7 +1590,7 @@ def handler(event, context):
       },
     });
     const multiTaskFn = new lambda.Function(this, "MultiTaskFn", {
-      functionName: `isol8-${this.envName}-multi-task-metric`,
+      functionName: `${resourcePrefix(this.envName)}multi-task-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.seconds(15),

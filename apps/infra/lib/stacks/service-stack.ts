@@ -22,6 +22,7 @@ import {
   allTableArns,
   bothTableArns,
   legacyTablePrefix,
+  resourcePrefix,
   tableName,
   tablePrefix,
 } from "../table-names";
@@ -915,7 +916,7 @@ export class ServiceStack extends cdk.Stack {
     // backend's own log group ARN; never "*" — least privilege.
     //
     // Log group name matches service-stack.ts + isol8-stage.ts —
-    // `/ecs/isol8-${env}` (no /aws prefix, no
+    // `/ecs/lightbulb-${env}` (no /aws prefix, no
     // -backend suffix). The cloudwatch_logs service must use this same
     // name when constructing FilterLogEvents calls.
     this.taskRole.addToPolicy(
@@ -930,7 +931,7 @@ export class ServiceStack extends cdk.Stack {
           "logs:DescribeLogStreams",
         ],
         resources: [
-          `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/isol8-${env}:*`,
+          `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/lightbulb-${env}:*`,
         ],
       }),
     );
@@ -1293,7 +1294,7 @@ export class ServiceStack extends cdk.Stack {
     // Log Group
     // -------------------------------------------------------------------------
     const logGroup = new logs.LogGroup(this, "LogGroup", {
-      logGroupName: `/ecs/isol8-${env}`,
+      logGroupName: `/ecs/lightbulb-${env}`,
       retention: logs.RetentionDays.TWO_WEEKS,
       removalPolicy:
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
@@ -2151,7 +2152,7 @@ export class ServiceStack extends cdk.Stack {
     });
 
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
-      stateMachineName: `isol8-${env}-provision`,
+      stateMachineName: `${resourcePrefix(env)}provision`,
       definitionBody: sfn.DefinitionBody.fromChainable(initWatch),
       // 40 watch ticks (~40 min) + up to 3 x 30-min ECS attempts + retry
       // waits ~= 132 min. The old 2h ceiling would time the execution out
@@ -2185,7 +2186,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           provisionStateMachine.stateMachineArn,
           // DescribeExecution/StopExecution operate on execution ARNs.
-          `arn:aws:states:${this.region}:${this.account}:execution:isol8-${env}-provision:*`,
+          `arn:aws:states:${this.region}:${this.account}:execution:${resourcePrefix(env)}provision:*`,
         ],
       }),
     );

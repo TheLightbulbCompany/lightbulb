@@ -5,7 +5,7 @@ Two invocation modes, same code path and the same exit-code ABI:
   CHILD PROCESS of the backend task as attempt 0
   (``provision_dispatch._run_inline``), skipping the ~30s ECS task
   cold-launch entirely.
-- SFN (the durable path): executed as an ECS task by the isol8-{env}-provision
+- SFN (the durable path): executed as an ECS task by the lightbulb-{env}-provision
   Step Functions state machine — for retries after a failed inline attempt,
   and for claims the backend could not finish (crash / deploy handoff).
 

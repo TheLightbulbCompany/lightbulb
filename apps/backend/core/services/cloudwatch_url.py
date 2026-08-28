@@ -16,7 +16,7 @@ from core.config import settings
 
 def _backend_log_group() -> str:
     env = settings.ENVIRONMENT or "dev"
-    return f"/ecs/isol8-{env}"
+    return f"/ecs/lightbulb-{env}"
 
 
 def _encode_insights_param(value: str) -> str:

@@ -95,7 +95,7 @@ async def test_filter_user_logs_uses_correct_log_group(boto_logs_mock):
     await filter_user_logs(user_id="u1", level="ERROR", hours=24, limit=20)
 
     kwargs = boto_logs_mock.filter_log_events.call_args.kwargs
-    assert kwargs["logGroupName"] == "/ecs/isol8-dev"
+    assert kwargs["logGroupName"] == "/ecs/lightbulb-dev"
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { legacyTablePrefix, tablePrefix } from "../table-names";
+import { legacyTablePrefix, resourcePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
 
@@ -328,7 +328,7 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const authorizerFn = new lambda.Function(this, "WsAuthorizer", {
-      functionName: `isol8-${env}-ws-authorizer`,
+      functionName: `${resourcePrefix(env)}ws-authorizer`,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       code: lambda.Code.fromAsset(
@@ -475,7 +475,7 @@ export class ApiStack extends cdk.Stack {
     // --- ws-connect Lambda ---
     const connectFn = new lambda.Function(this, "WsConnectFn", {
       ...lambdaDefaults,
-      functionName: `isol8-${env}-ws-connect`,
+      functionName: `${resourcePrefix(env)}ws-connect`,
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-connect"),
@@ -486,7 +486,7 @@ export class ApiStack extends cdk.Stack {
     // --- ws-disconnect Lambda ---
     const disconnectFn = new lambda.Function(this, "WsDisconnectFn", {
       ...lambdaDefaults,
-      functionName: `isol8-${env}-ws-disconnect`,
+      functionName: `${resourcePrefix(env)}ws-disconnect`,
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-disconnect"),
@@ -497,7 +497,7 @@ export class ApiStack extends cdk.Stack {
     // --- ws-message Lambda ---
     const messageFn = new lambda.Function(this, "WsMessageFn", {
       ...lambdaDefaults,
-      functionName: `isol8-${env}-ws-message`,
+      functionName: `${resourcePrefix(env)}ws-message`,
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-message"),

@@ -12,6 +12,7 @@ import { Construct } from "constructs";
 import * as fs from "fs";
 import * as path from "path";
 import { ROOT_DOMAIN } from "../domains";
+import { logGroupPath } from "../table-names";
 
 // Single source of truth for the pinned (extended) Paperclip image. Bump
 // paperclip-version.json at the repo root; the overlay it patches lives at
@@ -172,7 +173,7 @@ export class PaperclipStack extends cdk.Stack {
     // Log group
     // ─────────────────────────────────────────────────────────────────
     const logGroup = new logs.LogGroup(this, "PaperclipLogs", {
-      logGroupName: `/isol8/${env}/paperclip`,
+      logGroupName: logGroupPath(env, "paperclip"),
       retention: logs.RetentionDays.TWO_WEEKS,
       removalPolicy:
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
@@ -672,7 +673,7 @@ export class PaperclipStack extends cdk.Stack {
     );
 
     const migrateLogGroup = new logs.LogGroup(this, "PaperclipMigrateLogs", {
-      logGroupName: `/isol8/${env}/paperclip-migrate`,
+      logGroupName: logGroupPath(env, "paperclip-migrate"),
       retention: logs.RetentionDays.TWO_WEEKS,
       removalPolicy:
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,

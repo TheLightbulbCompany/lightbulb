@@ -15,6 +15,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 import { openclawConfigLockRecoveryCommand } from "../openclaw-config-lock-recovery";
+import { logGroupPath } from "../table-names";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
@@ -522,7 +523,7 @@ export class ContainerStack extends cdk.Stack {
     // replacing the EFS access point for data isolation.
     const env = props.environment;
     const openclawLogGroup = new cdk.aws_logs.LogGroup(this, "OpenClawLogGroup", {
-      logGroupName: `/isol8/${env}/openclaw`,
+      logGroupName: logGroupPath(env, "openclaw"),
       retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -1146,7 +1147,7 @@ export class ContainerStack extends cdk.Stack {
       this,
       "EcsTaskEventsLogGroup",
       {
-        logGroupName: `/isol8/${env}/ecs-task-events`,
+        logGroupName: logGroupPath(env, "ecs-task-events"),
         // Three months — long enough to investigate weekly recurrences
         // without paying open-ended retention costs.
         retention: logs.RetentionDays.THREE_MONTHS,

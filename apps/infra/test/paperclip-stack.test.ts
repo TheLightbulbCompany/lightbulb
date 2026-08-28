@@ -310,7 +310,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("log group lives at /isol8/{env}/paperclip with 14d retention", () => {
     template.hasResourceProperties("AWS::Logs::LogGroup", {
-      LogGroupName: "/isol8/dev/paperclip",
+      LogGroupName: "/lightbulb/dev/paperclip",
       RetentionInDays: 14,
     });
   });
@@ -345,7 +345,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("migrate task def has its own log group at /isol8/{env}/paperclip-migrate", () => {
     template.hasResourceProperties("AWS::Logs::LogGroup", {
-      LogGroupName: "/isol8/dev/paperclip-migrate",
+      LogGroupName: "/lightbulb/dev/paperclip-migrate",
       RetentionInDays: 14,
     });
   });
@@ -447,7 +447,7 @@ describe("PaperclipStack — prod public URL", () => {
 
   test("prod log group uses RETAIN removal policy", () => {
     const logGroups = template.findResources("AWS::Logs::LogGroup", {
-      Properties: { LogGroupName: "/isol8/prod/paperclip" },
+      Properties: { LogGroupName: "/lightbulb/prod/paperclip" },
     });
     const ids = Object.keys(logGroups);
     expect(ids).toHaveLength(1);

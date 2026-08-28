@@ -1076,9 +1076,14 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
                 new_content = content.replace(legacy_section, _SELF_GROUNDING_SECTION, 1)
                 break
         else:
-            new_content = content
-            for legacy_heading in _LEGACY_SELF_GROUNDING_HEADINGS:
-                new_content = new_content.replace(legacy_heading, _SELF_GROUNDING_HEADING, 1)
+            # Line-wise, not substring: an inline mention of a retired heading
+            # earlier in the file must not be the thing that gets rewritten.
+            new_lines = content.split("\n")
+            for i, line in enumerate(new_lines):
+                if line.strip() in _LEGACY_SELF_GROUNDING_HEADINGS:
+                    new_lines[i] = _SELF_GROUNDING_HEADING
+                    break
+            new_content = "\n".join(new_lines)
         workspace.write_file(owner_id, rel_path, new_content)
         return True
     new_content = content.rstrip("\n") + "\n" + _SELF_GROUNDING_SECTION

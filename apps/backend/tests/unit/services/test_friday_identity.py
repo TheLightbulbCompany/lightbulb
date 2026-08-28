@@ -1456,6 +1456,25 @@ def test_legacy_lightbulb_ai_grounding_heading_swapped_when_body_was_evolved():
     assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
 
 
+def test_legacy_heading_replaced_on_its_own_line_not_at_an_earlier_inline_mention():
+    """An inline mention of the retired heading BEFORE the real heading must not
+    be what gets rewritten: the migration replaces the heading LINE."""
+    rel = f"workspace-{_UUID}/SOUL.md"
+    inline = f"Note to self: the seed once said {_LIGHTBULB_AI_HEADING} here."
+    ws = _DictWorkspace(
+        {rel: f"# SOUL\n\n{inline}\n\n{_LIGHTBULB_AI_HEADING}\n\nI rewrote this part in my own words.\n"}
+    )
+
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is True
+    migrated = ws.files[rel]
+
+    assert inline in migrated  # the owner's sentence is untouched
+    assert f"\n{friday_identity._SELF_GROUNDING_HEADING}\n" in migrated  # the real heading moved
+    assert f"\n{_LIGHTBULB_AI_HEADING}\n" not in migrated
+    assert "I rewrote this part in my own words." in migrated
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+
+
 def test_stale_brand_fragments_repointed_in_user_md_and_agents_md():
     """USER.md's facts pointer and AGENTS.md's platform-mechanics line are
     written by the PLATFORM, and no other migration is anchored on them — a

@@ -2485,12 +2485,67 @@ def test_strip_platform_blocks_removes_every_delimiter_generation():
 
 
 def test_strip_platform_blocks_leaves_an_unterminated_marker_alone():
-    """No end delimiter means someone edited the body. Cutting to the end of
-    the string there would delete their work; a duplicate block is cheaper."""
+    """No end delimiter means someone edited the body. Cutting from there
+    would delete their work; a duplicate block is cheaper."""
     from core.services.inbound_triggers import _PLATFORM_BLOCK_START, _strip_platform_blocks
 
     desc = f"{_OWNER_WORDS}\n\n{_PLATFORM_BLOCK_START}\nhalf a block the owner mangled"
     assert _strip_platform_blocks(desc) == desc
+
+
+def test_strip_platform_blocks_keeps_prose_between_an_orphan_start_and_a_real_block():
+    """The stacking bug this PR fixes is exactly what strands an orphaned
+    start marker mid-description. Anchoring on the FIRST start and any later
+    end would delete every owner word between the two — content `main` never
+    touches. Only the complete block may go."""
+    from core.services.inbound_triggers import (
+        _PLATFORM_BLOCK_END,
+        _PLATFORM_BLOCK_START,
+        _strip_platform_blocks,
+    )
+
+    desc = (
+        f"{_PLATFORM_BLOCK_START}\nowner deleted the end marker\n\n"
+        "Owner's second paragraph, load-bearing.\n\n"
+        f"{_PLATFORM_BLOCK_START}\nplatform clause\n{_PLATFORM_BLOCK_END}"
+    )
+    stripped = _strip_platform_blocks(desc)
+
+    assert "Owner's second paragraph, load-bearing." in stripped
+    assert "owner deleted the end marker" in stripped
+    assert "platform clause" not in stripped
+    assert _PLATFORM_BLOCK_END not in stripped
+    # The orphan survives, so exactly one start marker is left.
+    assert stripped.count(_PLATFORM_BLOCK_START) == 1
+
+
+@pytest.mark.asyncio
+async def test_append_after_an_orphan_start_leaves_one_complete_block():
+    from core.services.inbound_triggers import (
+        _PLATFORM_BLOCK_END,
+        _PLATFORM_BLOCK_START,
+        _append_platform_block,
+    )
+
+    admin = MagicMock()
+    admin.get_routine = AsyncMock(
+        return_value={
+            "description": (
+                f"{_PLATFORM_BLOCK_START}\nowner deleted the end marker\n\n"
+                "Owner's second paragraph, load-bearing.\n\n"
+                f"{_PLATFORM_BLOCK_START}\nstale clause\n{_PLATFORM_BLOCK_END}"
+            )
+        }
+    )
+    admin.patch_routine = AsyncMock()
+
+    await _append_platform_block(admin, cookie="c", routine_id="rt_1", block="Fresh clause.")
+
+    written = admin.patch_routine.await_args.kwargs["body"]["description"]
+    assert "Owner's second paragraph, load-bearing." in written
+    assert "stale clause" not in written
+    assert "Fresh clause." in written
+    assert written.count(_PLATFORM_BLOCK_END) == 1
 
 
 @pytest.mark.asyncio

@@ -892,6 +892,17 @@ _STALE_BRAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
         "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Isol8 keeps it",
         _FACTS_POINTER_LINE_1,
     ),
+    # USER.md org header. Keyed on the static tail so the owner's {org_name}
+    # is irrelevant — and so the apostrophe that starts it can never begin a
+    # match inside anything but this sentence.
+    (
+        "'s shared workspace on Lightbulb AI. The original owner is",
+        "'s shared workspace on Lightbulb. The original owner is",
+    ),
+    (
+        "'s shared workspace on Isol8. The original owner is",
+        "'s shared workspace on Lightbulb. The original owner is",
+    ),
     # AGENTS.md platform-mechanics pointer. Cut before the skill id — repairing
     # that is _migrate_retired_skill_id's job, so this needs no per-skill
     # variants of its own.
@@ -1034,24 +1045,27 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     conversations, not just UI mechanics — they answer from generic priors and
     only read the skill after the owner corrects them.
 
-    Three cases, in order: a PRE-REBRAND heading is present (rebrand in place —
-    appending here would leave the owner with two grounding sections, the stale
-    one first); the current heading is present (nothing to do); no heading at
-    all (append, the original behaviour). The whole-section swap carries the
-    body's wording across for a Friday that never edited it, and the
-    heading-only swap is the fallback for one that did — SOUL.md is Friday's
-    file to evolve, so its prose is never clobbered wholesale. Returns True
-    when a rewrite happened.
-
-    The legacy check runs FIRST for a reason that is easy to undo by accident:
-    the current heading is a strict PREFIX of the "Lightbulb AI" one, so an
-    unmigrated file reads as already-current if the order is flipped, and the
-    stale brand sticks forever.
+    Three cases, in order: the current heading is present AS A WHOLE LINE
+    (nothing to do); a PRE-REBRAND heading is present (rebrand in place —
+    appending here would leave the owner with two grounding sections, the
+    stale one first); no heading at all (append, the original behaviour). The
+    whole-section swap carries the body's wording across for a Friday that
+    never edited it, and the heading-only swap is the fallback for one that
+    did — SOUL.md is Friday's file to evolve, so its prose is never clobbered
+    wholesale. Returns True when a rewrite happened.
     """
     rel_path = f"workspace-{agent_uuid}/SOUL.md"
     try:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes the full template
+        return False
+    # Line-anchored, and FIRST: `## You are made of Lightbulb` is a strict
+    # PREFIX of the "Lightbulb AI" heading, so a substring test here reads an
+    # unmigrated file as already-current. Whole-line matching closes that
+    # structurally, and it also means a current SOUL.md that merely QUOTES a
+    # retired heading in Friday's own prose is left alone. ``splitlines`` so a
+    # file ending on the heading with no trailing newline still matches.
+    if any(line.strip() == _SELF_GROUNDING_HEADING for line in content.splitlines()):
         return False
     if any(heading in content for heading in _LEGACY_SELF_GROUNDING_HEADINGS):
         for legacy_section in _LEGACY_SELF_GROUNDING_SECTIONS:
@@ -1064,8 +1078,6 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
                 new_content = new_content.replace(legacy_heading, _SELF_GROUNDING_HEADING, 1)
         workspace.write_file(owner_id, rel_path, new_content)
         return True
-    if _SELF_GROUNDING_HEADING in content:
-        return False
     new_content = content.rstrip("\n") + "\n" + _SELF_GROUNDING_SECTION
     workspace.write_file(owner_id, rel_path, new_content)
     return True

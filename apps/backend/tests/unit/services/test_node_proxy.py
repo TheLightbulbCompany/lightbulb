@@ -681,6 +681,10 @@ async def test_reconnect_strips_every_legacy_desktop_suffix(mock_ecs, mock_pool,
         "Alice | Lightbulb Desktop",
         "Alice | Lightbulb AI Desktop",
         "Alice | Isol8 Desktop",
+        # Already compounded by the one-strip bug — the real dev fleet state.
+        "Alice | Lightbulb AI Desktop | Lightbulb Desktop",
+        "Alice | Isol8 Desktop | Lightbulb Desktop",
+        "Alice | Isol8 Desktop | Lightbulb AI Desktop | Lightbulb Desktop",
     ):
         params = {"role": "node", "client": {"id": "node-host", "displayName": stored}}
         await handle_node_connect(

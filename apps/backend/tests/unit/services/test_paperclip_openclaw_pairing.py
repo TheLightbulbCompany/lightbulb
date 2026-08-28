@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from core.config import settings
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
+from core.services.paperclip_adapter_config import desired_agent_adapter_fields
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_openclaw_pairing import (
     _PAIR_RPC_TIMEOUT_S,
@@ -29,12 +31,21 @@ def _gw_agent(
     claimed_api_key_path=None,
     config_agent_id=None,
 ):
+    # Derived, never a literal host: the gateway URL follows the environment
+    # (it moved with the domain flip), and `paperclipApiUrl` is reconciled from
+    # settings by the code under test but modelled by no test's inputs. Taking
+    # both from the same source the code reads is what makes the
+    # "already current -> no rebind" assertions test the real invariant instead
+    # of a fixture that silently drifts a field into permanent mismatch.
     cfg = {
-        "url": "wss://ws.isol8.co?token=svc&clientId=paperclip-operator",
+        "url": f"{settings.WS_GATEWAY_URL}?token=svc&clientId=paperclip-operator",
         "authToken": auth_token,
         "sessionKeyStrategy": "issue",
         "sessionKey": "user_1",
     }
+    derived = desired_agent_adapter_fields(agent_id=agent_id, gateway_token=auth_token)
+    if "paperclipApiUrl" in derived:
+        cfg["paperclipApiUrl"] = derived["paperclipApiUrl"]
     if pem is not None:
         cfg["devicePrivateKeyPem"] = pem
     if claimed_api_key_path is not None:

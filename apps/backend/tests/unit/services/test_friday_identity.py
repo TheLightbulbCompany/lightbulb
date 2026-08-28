@@ -1517,3 +1517,47 @@ def test_heal_migrations_leave_a_lightbulb_ai_friday_fully_current():
     assert "Lightbulb AI" not in healed_soul
     assert "skill isol8" not in healed_soul
     assert "Lightbulb AI" not in ws.files[user_rel]
+
+
+def test_current_soul_md_quoting_a_retired_heading_is_left_alone():
+    """The current heading is matched as a WHOLE LINE, so a Friday that quotes
+    the rename in its own prose is not dragged back through the migration and
+    left with two grounding headings."""
+    rel = f"workspace-{_UUID}/SOUL.md"
+    original = (
+        "# SOUL\n"
+        + friday_identity._SELF_GROUNDING_SECTION
+        + "\nI once wrote: ## You are made of Lightbulb AI — then the name changed.\n"
+    )
+    ws = _DictWorkspace({rel: original})
+
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+    assert ws.files[rel] == original
+    assert ws.files[rel].count(friday_identity._SELF_GROUNDING_HEADING) == 2  # heading + the quote
+
+
+def test_current_heading_matches_without_a_trailing_newline():
+    rel = f"workspace-{_UUID}/SOUL.md"
+    ws = _DictWorkspace({rel: f"# SOUL\n\n{friday_identity._SELF_GROUNDING_HEADING}"})
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+
+
+def test_stale_brand_fragments_repoint_the_org_workspace_header():
+    """Same class as the facts pointer: platform-authored, renamed by #2124,
+    and nothing else is anchored on it."""
+    rel = f"workspace-{_UUID}/USER.md"
+    for legacy in ("Lightbulb AI", "Isol8"):
+        ws = _DictWorkspace(
+            {
+                rel: (
+                    "# USER.md - About This Workspace\n\n"
+                    f"This is **Acme**'s shared workspace on {legacy}. The original owner is\n"
+                    "ada@acme.co. As more members join the org, they share this container.\n"
+                )
+            }
+        )
+        assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is True
+        migrated = ws.files[rel]
+        assert "This is **Acme**'s shared workspace on Lightbulb. The original owner is" in migrated
+        assert "ada@acme.co" in migrated
+        assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is False

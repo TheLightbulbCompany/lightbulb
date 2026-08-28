@@ -45,6 +45,11 @@ _node_count: dict[str, int] = {}
 # session_key -> nodeId (tracks which sessions have been patched with execNode)
 _patched_sessions: dict[str, str] = {}
 
+# Every brand generation of the node display-name suffix WE append, current
+# first. Matched against names already registered on live devices, so the
+# retired ones stay verbatim.
+_LEGACY_DESKTOP_SUFFIXES = (" | Lightbulb Desktop", " | Lightbulb AI Desktop", " | Isol8 Desktop")
+
 
 def get_user_cli_node(user_id: str) -> dict | None:
     """Return the CLI subprocess node info for user, or None if not connected.
@@ -134,12 +139,18 @@ async def handle_node_connect(
     if not incoming:
         incoming = display_name.strip() or "Desktop"
     # Strip any pre-existing suffix so reconnects don't compound
-    # "Alice | Lightbulb Desktop | Lightbulb Desktop". Both pre-rebrand
-    # suffixes are still on names already registered, so every generation is
-    # stripped — dropping one would let it compound forever.
-    for legacy in (" | Lightbulb Desktop", " | Lightbulb AI Desktop", " | Isol8 Desktop"):
-        if incoming.endswith(legacy):
-            incoming = incoming[: -len(legacy)]
+    # "Alice | Lightbulb Desktop | Lightbulb Desktop". Every generation is
+    # stripped, REPEATEDLY: a device that reconnected while only the current
+    # suffix was recognised already carries a compounded
+    # "Alice | Lightbulb AI Desktop | Lightbulb Desktop", and peeling one
+    # layer would strip the current suffix, re-append it, and leave the stale
+    # middle chunk there forever.
+    while True:
+        for legacy in _LEGACY_DESKTOP_SUFFIXES:
+            if incoming.endswith(legacy):
+                incoming = incoming[: -len(legacy)]
+                break
+        else:
             break
     client_params["displayName"] = f"{incoming} | Lightbulb Desktop"
     connect_params["client"] = client_params

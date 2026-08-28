@@ -822,13 +822,18 @@ def _strip_platform_blocks(description: str) -> str:
 
     An UNTERMINATED start marker is left alone: the block is always appended
     at the very end, so a start without its end means somebody edited the
-    body, and cutting to the end of the string there would delete their work.
-    A duplicate block is the cheaper failure.
+    body, and cutting from there would delete their work. A duplicate block is
+    the cheaper failure.
+
+    So the scan anchors on the END marker and takes the NEAREST PRECEDING
+    start, not the first start and any end after it. Anchoring the other way
+    round eats everything between an orphaned start and a later complete
+    block — which is exactly the owner prose the stacking bug leaves stranded.
     """
     for start, end in _PLATFORM_BLOCK_DELIMITERS:
-        while (open_at := description.find(start)) >= 0:
-            close_at = description.find(end, open_at + len(start))
-            if close_at < 0:
+        while (close_at := description.find(end)) >= 0:
+            open_at = description.rfind(start, 0, close_at)
+            if open_at < 0:
                 break
             description = description[:open_at] + description[close_at + len(end) :]
     return description

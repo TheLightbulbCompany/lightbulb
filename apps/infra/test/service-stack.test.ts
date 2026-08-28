@@ -243,7 +243,10 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Resource: "*",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "aws:RequestTag/ManagedBy": "isol8-backend",
+                // Both values during the rename migration: the legacy tag on the 39
+                // existing profiles MUST keep matching, or the backend
+                // AccessDenies on every one of them.
+                "aws:RequestTag/ManagedBy": ["isol8-backend", "lightbulb-backend"],
               }),
             }),
           }),
@@ -262,7 +265,10 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Resource: "*",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "aws:ResourceTag/ManagedBy": "isol8-backend",
+                // Both values during the rename migration: the legacy tag on the 39
+                // existing profiles MUST keep matching, or the backend
+                // AccessDenies on every one of them.
+                "aws:ResourceTag/ManagedBy": ["isol8-backend", "lightbulb-backend"],
               }),
             }),
           }),

@@ -47,7 +47,7 @@ description: >
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
-  - Email ................... /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
+  - Email ................... /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 
 # The Lightbulb AI Platform
@@ -224,10 +224,10 @@ minted the first time you ask for it, from the company's CURRENT name — so nam
 the company first (see the Paperclip section), then:
 
 ```bash
-/app/skills/isol8/scripts/isol8-mail.sh address
+/app/skills/lightbulb/scripts/lightbulb-mail.sh address
 ```
 
-(absolute path — the skill lives at /app/skills/isol8; your cwd is your workspace.)
+(absolute path — the skill lives at /app/skills/lightbulb; your cwd is your workspace.)
 If `isol8-facts.json` says `email_enabled: false`, email is off here — do not
 offer it.
 
@@ -235,7 +235,7 @@ offer it.
 you as a chat message (see below); the rest you read on demand:
 
 ```bash
-/app/skills/isol8/scripts/isol8-mail.sh inbox --limit 5
+/app/skills/lightbulb/scripts/lightbulb-mail.sh inbox --limit 5
 ```
 
 **Getting a verification code.** When you sign up for a service with your
@@ -251,9 +251,9 @@ is inbox-only.
 **Sending — one command, three recipients:**
 
 ```bash
-printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --owner --subject "<subject>"
-printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --reply "<Reply-Key>"
-printf '%s' "<body>" | /app/skills/isol8/scripts/isol8-mail.sh send --to someone@example.com --subject "<subject>"
+printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner --subject "<subject>"
+printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --reply "<Reply-Key>"
+printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to someone@example.com --subject "<subject>"
 ```
 
 - `--owner` needs no permission from your owner (it is never gated by the
@@ -394,7 +394,7 @@ Every Lightbulb AI company starts with two seeded agents:
 
   Two things derive from the name at the moment they're first created, and
   neither retroactively updates on a later rename: your **email address**
-  (`isol8-mail.sh address` mints `<you>@<company-slug>.isol8.co` from the
+  (`lightbulb-mail.sh address` mints `<you>@<company-slug>.isol8.co` from the
   name at that moment — see "Your email" below) and the board's **task-key
   prefix** (`ACM-1`, `ACM-2`, …; a rename only re-derives it while the board
   is still empty — tasks created before the rename keep keys minted from the

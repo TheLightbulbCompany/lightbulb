@@ -51,7 +51,7 @@ async def test_delivers_to_running_container(monkeypatch):
     assert "sessionKey" not in body
     # Delivery opt-out. Upstream defaults `deliver` to true and `channel` to
     # "last"; our email is not an OpenClaw channel plugin (the agent replies by
-    # invoking isol8-mail.sh send), so with it unset EVERY inbound-email run
+    # invoking lightbulb-mail.sh send), so with it unset EVERY inbound-email run
     # ended status=error "Channel is required" even when the reply was sent —
     # making a real failure indistinguishable from a success.
     assert body["deliver"] is False

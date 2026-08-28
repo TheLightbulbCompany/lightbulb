@@ -6,11 +6,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  isol8-mail.sh address
-  isol8-mail.sh inbox [--since ISO8601] [--limit N]
-  isol8-mail.sh send --owner --subject "S"            (body on stdin)
-  isol8-mail.sh send --to someone@example.com --subject "S"
-  isol8-mail.sh send --reply <Reply-Key>               (body on stdin)
+  lightbulb-mail.sh address
+  lightbulb-mail.sh inbox [--since ISO8601] [--limit N]
+  lightbulb-mail.sh send --owner --subject "S"            (body on stdin)
+  lightbulb-mail.sh send --to someone@example.com --subject "S"
+  lightbulb-mail.sh send --reply <Reply-Key>               (body on stdin)
 Options:
   --as <agent_id>   act as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
 Env (already set): OPENCLAW_HOOK_TOKEN, ISOL8_API_URL, ISOL8_OWNER_ID
@@ -82,7 +82,7 @@ case "$cmd" in
       forbidden_recipient) die 'Not sent: your owner has not allowed you to email people other than them (this includes replying to senders who are not on your wake list). Ask them to enable it in Control → Agents → Email.' ;;
       outbound_disabled) die 'Not sent: outbound email is paused for this account (a recipient reported spam). Your owner can re-enable it in Control → Agents → Email.' ;;
       rate_limited) die 'Not sent: daily email limit reached. Try tomorrow.' ;;
-      no_address) die 'Not sent: you have no address yet — name your company, then run: isol8-mail.sh address' ;;
+      no_address) die 'Not sent: you have no address yet — name your company, then run: lightbulb-mail.sh address' ;;
       bad_reply_key) die 'Not sent: that Reply-Key is not one of your messages.' ;;
       *) die "Not sent (status: $status)." ;;
     esac ;;

@@ -10,7 +10,7 @@ delivery rolls back the ingest dedup row so SES re-invokes with the same
 would mint a second row with a fresh ``received_key`` timestamp.
 
 The ``reply_key`` (``"{address}/{received_key}"``) is what the delivered chat
-message carries and what ``isol8-mail.sh send --reply`` hands back — it is
+message carries and what ``lightbulb-mail.sh send --reply`` hands back — it is
 NOT a credential: the send door checks the row's ``owner_id`` against the
 hook-token-authenticated owner before it is honoured.
 """

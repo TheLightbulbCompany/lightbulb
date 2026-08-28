@@ -1239,7 +1239,7 @@ def _soul_workspace(store):
 def test_soul_md_contains_self_grounding_section():
     soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
     assert "## You are made of Lightbulb AI" in soul_md
-    assert "skill isol8" in soul_md
+    assert "skill lightbulb" in soul_md
     # No leftover substitution placeholder in the rendered output.
     assert "{self_grounding_section}" not in soul_md
 

@@ -95,7 +95,7 @@ async def deliver_to_agent(
             **({"sessionKey": session_key} if session_key else {}),
             # Delivery opt-out. OpenClaw "channels" are transport PLUGINS
             # (slack/discord/telegram); our email is not one of them — the
-            # agent answers by invoking isol8-mail.sh send, which comes back
+            # agent answers by invoking lightbulb-mail.sh send, which comes back
             # through our own backend to SES. Upstream defaults `deliver` to
             # true (`resolveHookDeliver`: anything but false means deliver)
             # and `channel` to "last", so after the run did its work OpenClaw

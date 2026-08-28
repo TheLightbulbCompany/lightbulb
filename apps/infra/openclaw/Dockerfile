@@ -735,8 +735,8 @@ RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
 # AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
-# ---- Layer 16: bundled Isol8 platform skill ----
-# The `isol8` skill is every agent's authoritative reference for the
+# ---- Layer 16: bundled Lightbulb AI platform skill ----
+# The `lightbulb` skill is every agent's authoritative reference for the
 # platform itself — UI surfaces (incl. the Integrations tab), marketplace
 # mechanics, plans/providers, the Paperclip org model, and hard boundaries.
 # Baked (not seeded) so the WHOLE fleet — Friday, Atlas, scaffolded
@@ -747,7 +747,7 @@ COPY skills/paperclip /app/skills/paperclip
 # core/services/owner_facts.py); the skill points agents at it.
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.
-COPY skills/isol8 /app/skills/isol8
+COPY skills/lightbulb /app/skills/lightbulb
 
 # Chrome extensions, baked as Linux "external extensions" (see chrome-extensions/README.md).
 # Branded Chrome 137+ ignores --load-extension; the install path Linux Chrome still

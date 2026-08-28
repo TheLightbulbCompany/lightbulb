@@ -63,7 +63,7 @@ def test_build_delivered_message_inlines_header_and_token():
 def test_delivered_message_names_the_reply_command():
     msg = build_delivered_message(from_addr="a@b.c", subject="S", body_text="B", reply_key="a@b.c/2026#m1")
     assert "Reply-Key: a@b.c/2026#m1" in msg
-    assert "isol8-mail.sh send --reply" in msg
+    assert "lightbulb-mail.sh send --reply" in msg
 
 
 def test_build_attachment_manifest_empty_list():

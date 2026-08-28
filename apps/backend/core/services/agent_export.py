@@ -155,7 +155,7 @@ _SKIP_FILE_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
 # matched because agents suffix a run id: ``run-evidence-1a2b/``, ``run-artifacts/``.
 # This is deliberately narrow — it only names scratch families actually observed
 # in the fleet. The general answer is the ``.run/`` convention (see the paperclip
-# + isol8 SKILLs), not chasing every possible scratch name here.
+# + lightbulb SKILLs), not chasing every possible scratch name here.
 _SCRATCH_DIR_PREFIXES = ("run-evidence", "run-artifacts", "run-scratch", "github-cache")
 
 

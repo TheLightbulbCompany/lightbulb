@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
-from core.services import launch_phase, launch_service
+from core.services import launch_phase, launch_revenue, launch_service
 from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
@@ -82,6 +82,7 @@ async def join_waitlist(body: WaitlistJoinRequest, request: Request, s: Schedule
 
 @router.get("/me", operation_id="launch_me")
 async def launch_me(auth: AuthContext = Depends(get_current_user), s: Schedule = Depends(require_launch)) -> dict:
+    launch_revenue.maybe_revalidate()
     return await launch_service.me(auth, s)
 
 
@@ -122,5 +123,6 @@ async def enter(
 
 @router.get("/leaderboard", response_model=LeaderboardResponse, operation_id="launch_leaderboard")
 async def leaderboard(response: Response, s: Schedule = Depends(require_launch)) -> dict:
+    launch_revenue.maybe_revalidate()
     response.headers["Cache-Control"] = "public, max-age=60"
     return await launch_service.leaderboard()

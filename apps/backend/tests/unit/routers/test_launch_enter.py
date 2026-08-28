@@ -48,3 +48,17 @@ async def test_leaderboard_public_cached(configured, unauthenticated_async_clien
     r = await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
     assert r.status_code == 200 and r.json()["rows"][0]["rank"] == 1
     assert r.headers["cache-control"] == "public, max-age=60"
+
+
+@patch("routers.launch.launch_revenue.maybe_revalidate")
+@patch("routers.launch.launch_service.leaderboard", AsyncMock(return_value={"entrants": 0, "rows": []}))
+async def test_leaderboard_read_triggers_revalidate(reval, configured, unauthenticated_async_client):
+    await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
+    reval.assert_called_once()
+
+
+@patch("routers.launch.launch_revenue.maybe_revalidate")
+@patch("routers.launch.launch_service.me", AsyncMock(return_value={"waitlist": None}))
+async def test_me_read_triggers_revalidate(reval, configured, async_client):
+    await async_client.get("/api/v1/launch/me")
+    reval.assert_called_once()

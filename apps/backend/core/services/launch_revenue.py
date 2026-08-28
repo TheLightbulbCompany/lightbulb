@@ -10,16 +10,20 @@ a running agent cannot) and is never logged or echoed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import boto3
 import stripe
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.repositories import launch_entries_repo
 from core.secrets_manager import create_or_update_secret
+from core.services import launch_phase
+from core.services.launch_phase import Schedule
 
 logger = logging.getLogger(__name__)
 
@@ -122,3 +126,93 @@ async def delete_key(owner_id: str) -> None:
         await run_in_thread(sm.delete_secret, SecretId=secret_name(owner_id), ForceDeleteWithoutRecovery=True)
     except sm.exceptions.ResourceNotFoundException:
         return
+
+
+# --- Refresh ---------------------------------------------------------------
+
+STALE_AFTER_S = 55 * 60
+REVALIDATE_THROTTLE_S = 5 * 60
+SWEEP_GRACE_AFTER_END = timedelta(hours=24)
+_PER_OWNER_PAUSE_S = 0.2
+
+_inflight: asyncio.Task | None = None
+_last_started_at: datetime | None = None
+
+
+async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None:
+    owner_id = entry["owner_id"]
+    now = now or datetime.now(timezone.utc)
+    end = min(now, s.competition_end_at)
+    try:
+        key = await load_key(owner_id)
+        if not key:
+            await launch_entries_repo.set_refresh_error(owner_id, "missing_key")
+            return
+        window, currency = await sum_net_revenue(key, s.competition_start_at, end)
+    except KeyRejected as e:
+        await launch_entries_repo.set_refresh_error(owner_id, e.reason)
+        return
+    except MixedCurrency:
+        await launch_entries_repo.set_refresh_error(owner_id, "mixed_currency")
+        return
+    except Exception:  # noqa: BLE001 — one bad entry must not stop the pass
+        logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
+        await launch_entries_repo.set_refresh_error(owner_id, "refresh_failed")
+        return
+    delta = window - int(entry.get("baseline_cents", 0))
+    await launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency)
+
+
+def _in_refresh_window(s: Schedule, now: datetime) -> bool:
+    return s.competition_start_at <= now <= s.competition_end_at + SWEEP_GRACE_AFTER_END
+
+
+def _is_stale(entry: dict, now: datetime) -> bool:
+    raw = entry.get("refreshed_at")
+    if not raw:
+        return True
+    return (now - launch_phase.parse_iso(raw)).total_seconds() > STALE_AFTER_S
+
+
+async def refresh_all(*, force: bool = False, now: datetime | None = None) -> int:
+    s = launch_phase.schedule()
+    now = now or datetime.now(timezone.utc)
+    if s is None or not _in_refresh_window(s, now):
+        return 0
+    entries = await launch_entries_repo.list_all()
+    n = 0
+    for entry in entries:
+        if not force and not _is_stale(entry, now):
+            continue
+        await refresh_entry(entry, s, now=now)
+        n += 1
+        await asyncio.sleep(_PER_OWNER_PAUSE_S)
+    return n
+
+
+def maybe_revalidate(now: datetime | None = None) -> bool:
+    """Stale-while-revalidate for the board: called on every /launch/me and
+    /launch/leaderboard read. Returns the stored numbers to the caller (the
+    caller doesn't await this) and schedules at most one background pass.
+    ponytail: module-level in-flight/throttle state on the single backend
+    task; a scheduled Lambda if the fleet ever runs more than one instance."""
+    global _inflight, _last_started_at
+    s = launch_phase.schedule()
+    now = now or datetime.now(timezone.utc)
+    if s is None or not _in_refresh_window(s, now):
+        return False
+    if _inflight is not None and not _inflight.done():
+        return False
+    if _last_started_at is not None and (now - _last_started_at).total_seconds() < REVALIDATE_THROTTLE_S:
+        return False
+    _last_started_at = now
+
+    async def _run() -> None:
+        try:
+            n = await refresh_all(now=now)
+            logger.info("launch refresh: %d entries", n)
+        except Exception:  # noqa: BLE001
+            logger.warning("launch refresh pass failed", exc_info=True)
+
+    _inflight = asyncio.create_task(_run())
+    return True

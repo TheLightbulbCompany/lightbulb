@@ -2668,7 +2668,7 @@
 }
 [data-lb-theme="dark"] .ld-ask input { color: rgba(245, 239, 226, 0.92); }
 /* 0.62, not 0.45: the pill is --cream-deeper (#16223a) in the dark, where
-   0.45 cream measured 3.6:1. */
+   0.45 cream measured 3.91:1. */
 [data-lb-theme="dark"] .ld-ask input::placeholder { color: rgba(245, 239, 226, 0.62); }
 .ld-funnel-h1, .ld-ask .ld-btn {
   transition: color 0.6s cubic-bezier(0.22, 1, 0.36, 1),

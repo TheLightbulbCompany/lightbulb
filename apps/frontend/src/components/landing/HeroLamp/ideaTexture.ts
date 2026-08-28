@@ -20,7 +20,26 @@ export function makeIdeaTexture(midnight: string, cream: string) {
   texture.flipY = false; // her screen plane is rotated π about X
 
   function wrap(text: string, max: number): string[] {
-    const words = text.split(/\s+/).filter(Boolean);
+    const rawWords = text.split(/\s+/).filter(Boolean);
+    // At 100px Lora, a single word over ~16 characters is wider than the
+    // ~804px line itself. Break it into char chunks that each fit, then feed
+    // those chunks through the line-building loop below as ordinary words.
+    const words: string[] = [];
+    for (const w of rawWords) {
+      if (ctx.measureText(w).width <= max) {
+        words.push(w);
+        continue;
+      }
+      let chunk = "";
+      for (const ch of w) {
+        const t = chunk + ch;
+        if (ctx.measureText(t).width > max && chunk) {
+          words.push(chunk);
+          chunk = ch;
+        } else chunk = t;
+      }
+      if (chunk) words.push(chunk);
+    }
     const lines: string[] = [];
     let line = "";
     for (const w of words) {

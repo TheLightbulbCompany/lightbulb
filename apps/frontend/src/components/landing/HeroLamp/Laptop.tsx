@@ -17,7 +17,7 @@ const LID_CLOSED = 0.5 * Math.PI,
   LID_OPEN = -0.2 * Math.PI; // hers
 
 // three's WebGLLights extractRotation()s the light's world matrix, so the
-// group's 0.055 scale is normalised away and width/height are read as WORLD
+// group's 0.030 scale is normalised away and width/height are read as WORLD
 // units — they have to be pre-scaled or the emitter is four desks wide.
 // Screen-sized means ~330x less area than the unscaled one, so the intensity
 // has to come up with it for the screen to light the keyboard at all.
@@ -177,17 +177,21 @@ export function Laptop({
     // only starts — a centred laptop's screen is behind the headline or
     // behind the pill. To the right of the pill (edge 320px from centre; the
     // laptop's left edge lands 22px past it at 1280×720, 40px at 1440×900)
-    // the whole screen shows, and at 0.035 / z 1.0 its top projects 8px
-    // below the headline's descenders at 1440×900 (measured 530 vs 522),
-    // more at 1280×720. Any bigger or further forward and the base sinks
-    // into the canvas's bottom fade. Still inside the desk's ±4.
+    // the whole screen shows. At SCALE 0.030 / z −0.3 the lid top projects to
+    // 519 against the headline's last line's bottom at 522 at 1440×900 — a
+    // 3px BOX overlap with zero painted-pixel collision and ~182px
+    // horizontal separation, which the controller has explicitly accepted
+    // rather than shrink the screen further (1280×720 clears with 11px to
+    // spare). Any bigger or further forward and the base sinks into the
+    // canvas's bottom fade. Still inside the desk's ±6.5 half-width (W 13,
+    // D 2.0).
     <group ref={root} position={[3.0, DESK_TOP_Y, -0.3]} scale={SCALE}>
       <group ref={lid} rotation={[LID_CLOSED, 0, 0]}>
         <primitive object={top} dispose={null} />
         {/* her screen: a plane in lid space, with a dark plane behind it for
             the off state (the texture only reaches 0.96 opacity, and the lid's
             0xCECFD3 shell showing through 4% would wash the midnight out).
-            Hers sits 1mm back; at our 0.055 scale that is 5.5e-5 world units —
+            Hers sits 1mm back; at our 0.030 scale that is 3.0e-5 world units —
             below the depth buffer's resolution out here, and it moiréd. 0.03
             model units is still invisibly close and 30× the precision. */}
         <mesh position={[0, 10.5, -0.11]} rotation={[Math.PI, 0, 0]}>

@@ -30,11 +30,22 @@ def _write(tmp_path, monkeypatch, owner="o") -> Path:
 def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     body = (aws_dir / "config").read_text()
-    assert body == (
-        "[profile isol8-connector]\n"
+    # One section per accepted profile name. The legacy section is what keeps a
+    # container running a pre-rename image (which injects AWS_PROFILE by the old
+    # name) resolving instead of AccessDenying at its next exec.
+    from core.services.credentials.materializers.aws_cli import (
+        AWS_CONNECTOR_PROFILE,
+        LEGACY_AWS_CONNECTOR_PROFILES,
+    )
+
+    expected = "".join(
+        f"[profile {name}]\n"
         "region = us-east-1\n"
         "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/isol8-creds.mjs\n"
+        for name in (AWS_CONNECTOR_PROFILE, *LEGACY_AWS_CONNECTOR_PROFILES)
     )
+    assert body == expected
+    assert "[profile isol8-connector]" in body, "legacy profile must survive the rename"
     # The config must carry no assume-role or secret material: a profile mixing
     # role_arn with credential_process would flip botocore into assume-role mode,
     # and external_id must never touch EFS again.

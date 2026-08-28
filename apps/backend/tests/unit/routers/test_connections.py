@@ -1770,7 +1770,12 @@ class TestAwsComplete:
     owner-supplied role ARN is the confused-deputy surface, so it is validated
     BEFORE the credential is ever stored or assumed."""
 
+    # Deliberately the LEGACY role name: every happy-path case below therefore
+    # proves an owner who launched the quick-create stack BEFORE the rename can
+    # still connect. That is the whole point of the migration window -- the role
+    # lives in their account and we cannot rename it for them.
     _GOOD_ARN = "arn:aws:iam::123456789012:role/isol8-connector"
+    _NEW_ARN = "arn:aws:iam::123456789012:role/lightbulb-connector"
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1868,10 +1873,27 @@ class TestAwsComplete:
             json={"role_arn": "arn:aws:iam::123456789012:role/MyCustomRole"},
         )
         assert resp.status_code == 400
-        assert "isol8-connector" in resp.json()["detail"]
+        from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
+
+        assert CONNECTOR_ROLE_NAME in resp.json()["detail"]
         mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
+
+    def test_both_connector_role_names_are_accepted(self):
+        """The rename cannot be one-sided: the role is in the OWNER'S account.
+
+        Dropping the legacy name from the accepted set AccessDenies every owner
+        who has not relaunched the quick-create stack. This asserts the set, not
+        the current value, so narrowing it later is a deliberate edit here."""
+        from core.billing.bedrock_aip import (
+            ACCEPTED_CONNECTOR_ROLE_NAMES,
+            CONNECTOR_ROLE_NAME,
+        )
+
+        assert CONNECTOR_ROLE_NAME == "lightbulb-connector"
+        assert "isol8-connector" in ACCEPTED_CONNECTOR_ROLE_NAMES
+        assert CONNECTOR_ROLE_NAME in ACCEPTED_CONNECTOR_ROLE_NAMES
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")

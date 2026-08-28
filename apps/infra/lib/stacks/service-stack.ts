@@ -415,6 +415,7 @@ export class ServiceStack extends cdk.Stack {
         // any one silently breaks the self-account trust-pin check (GetRole
         // scoped to the old name → AccessDenied → fail-closed 400).
         resources: [
+          `arn:aws:iam::${this.account}:role/lightbulb-connector`,
           `arn:aws:iam::${this.account}:role/isol8-connector`,
         ],
       }),
@@ -1003,7 +1004,7 @@ export class ServiceStack extends cdk.Stack {
 
     // STS. GetCallerIdentity is resource-less; AssumeRole is scoped to the
     // customer connector role only (aws-connector.yaml pins
-    // RoleName=isol8-connector = bedrock_aip.CONNECTOR_ROLE_NAME, and
+    // RoleName=lightbulb-connector = bedrock_aip.CONNECTOR_ROLE_NAME, and
     // routers/connections.py is the sole assume_role caller). Unscoped
     // AssumeRole would let a compromised backend assume ANY role in ANY
     // account that trusts this principal.
@@ -1022,7 +1023,15 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "StsAssumeConnectorRole",
           actions: ["sts:AssumeRole"],
-          resources: ["arn:aws:iam::*:role/isol8-connector"],
+          // BOTH names while the rename migrates. The role lives in the
+          // OWNER'S account, so we cannot rename theirs -- anyone who
+          // launched the quick-create stack before the rename still has
+          // the legacy role. Dropping the legacy ARN here AccessDenies
+          // them at vend time. Remove it once every stack is relaunched.
+          resources: [
+            "arn:aws:iam::*:role/lightbulb-connector",
+            "arn:aws:iam::*:role/isol8-connector",
+          ],
         }),
       ],
       roles: [this.taskRole],

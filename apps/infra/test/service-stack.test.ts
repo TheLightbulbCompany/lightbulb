@@ -365,7 +365,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           Match.objectLike({
             Sid: "StsAssumeConnectorRole",
             Action: "sts:AssumeRole",
-            Resource: "arn:aws:iam::*:role/isol8-connector",
+            // Both names: the role is in the OWNER'S account, so dropping
+            // the legacy ARN AccessDenies anyone who has not relaunched.
+            Resource: [
+              "arn:aws:iam::*:role/lightbulb-connector",
+              "arn:aws:iam::*:role/isol8-connector",
+            ],
           }),
         ]),
       }),

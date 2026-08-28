@@ -44,7 +44,14 @@ OUR_ACCOUNT_ID: str = "877352799272"
 # for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
 # connections import) so the literal has a single home — aws_cfn already imports
 # bedrock_aip, so the constant can't live there without a cycle.
-CONNECTOR_ROLE_NAME = "isol8-connector"
+# The role an owner creates in THEIR OWN account. Renaming it is a two-sided
+# migration: the name is pinned by the quick-create CloudFormation template, so
+# a role that already exists in someone's account keeps the legacy name until
+# they relaunch the stack. New stacks mint the new name; both are accepted until
+# every existing role is relaunched, then LEGACY_CONNECTOR_ROLE_NAMES goes away.
+CONNECTOR_ROLE_NAME = "lightbulb-connector"
+LEGACY_CONNECTOR_ROLE_NAMES = ("isol8-connector",)
+ACCEPTED_CONNECTOR_ROLE_NAMES = (CONNECTOR_ROLE_NAME, *LEGACY_CONNECTOR_ROLE_NAMES)
 
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")

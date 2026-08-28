@@ -32,7 +32,13 @@ import json
 from core.config import settings
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
-AWS_CONNECTOR_PROFILE = "isol8-connector"
+AWS_CONNECTOR_PROFILE = "lightbulb-connector"
+# The baked aws-exec-profile plugin injects AWS_PROFILE by name, and it ships in
+# the container IMAGE -- so a container running the pre-rename image still asks
+# for the old profile. Both sections are written, pointing at the same
+# credential_process, so either name resolves. Drop the legacy section once
+# every container runs an image built after the rename.
+LEGACY_AWS_CONNECTOR_PROFILES = ("isol8-connector",)
 HELPER_FILENAME = "isol8-creds.mjs"
 TOKEN_FILENAME = "token"
 CACHE_FILENAME = "cache.json"
@@ -124,11 +130,18 @@ emit(creds);
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
-    config = (
-        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
+    # One section per accepted profile name, all pointing at the same
+    # credential_process. An agent whose image predates the rename injects
+    # AWS_PROFILE=isol8-connector and must still resolve; a fresh image asks for
+    # the new name. Writing both is what makes the rename a no-op for a running
+    # container instead of an AccessDenied at the next exec.
+    body = "".join(
+        f"[profile {name}]\n"
         f"region = {credential['region']}\n"
         f"credential_process = /usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}\n"
+        for name in (AWS_CONNECTOR_PROFILE, *LEGACY_AWS_CONNECTOR_PROFILES)
     )
+    config = body
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)
     token = json.dumps({"owner_id": owner_id, "token": credential["cli_token"]})
     atomic_write(aws_dir / "config", config.encode())

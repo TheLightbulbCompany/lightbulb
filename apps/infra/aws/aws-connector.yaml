@@ -38,7 +38,7 @@ Resources:
       # Canonical name = backend bedrock_aip.CONNECTOR_ROLE_NAME. Must stay in
       # lockstep with that constant and the service-stack iam:GetRole resource;
       # a rename here silently breaks the self-account trust-pin check.
-      RoleName: isol8-connector
+      RoleName: lightbulb-connector
       Description: >-
         Connector role assumed by Isol8's backend on behalf of this account's
         Isol8 owner. Trust is pinned to the Isol8 platform principal and gated

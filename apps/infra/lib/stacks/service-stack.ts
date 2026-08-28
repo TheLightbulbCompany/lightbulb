@@ -191,6 +191,26 @@ export interface ServiceStackProps extends cdk.StackProps {
   agentMailConfigurationSet?: string;
 }
 
+/**
+ * Tag values accepted by the owner-AIP IAM fence, during the rename migration.
+ *
+ * STEP 1 of add-before-remove. The tag `ManagedBy` gates every mutate action on
+ * an owner's Bedrock application inference profile, and all 39 prod AIPs carry
+ * `isol8-backend` today. Flipping the writer and this condition together would
+ * AccessDeny the backend from every EXISTING profile -- Bedrock inference dies
+ * fleet-wide, free tier included, while newly minted profiles keep working and
+ * mask it.
+ *
+ * So the order is: widen here (this change, purely additive -- it grants
+ * nothing that was not already granted, it only stops denying the new value)
+ * -> re-tag the existing profiles -> flip the writer -> narrow this back to the
+ * new value alone. Each step is separately deployable and separately reversible.
+ *
+ * `StringEquals` with a list is OR, so both values match while the fleet is
+ * mixed. Do not collapse this to a single value until step 4.
+ */
+const MANAGED_BY_ACCEPTED = ["isol8-backend", "lightbulb-backend"];
+
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
   public readonly taskRole: iam.Role;
@@ -454,8 +474,7 @@ export class ServiceStack extends cdk.Stack {
         }),
         // Bedrock control plane. AIP ARNs are created at runtime so cannot be
         // pre-scoped by ARN; we constrain by tag instead. The mint stamps every
-        // AIP with ManagedBy=isol8-backend (see bedrock_aip.ensure_owner_aips),
-        // so:
+        // AIP with a ManagedBy tag (see bedrock_aip.ensure_owner_aips), so:
         //   - create + tag-on-create are gated on aws:RequestTag/ManagedBy, so
         //     the backend can only mint profiles it marks as its own;
         //   - delete/get/untag/list-tags are gated on aws:ResourceTag/ManagedBy,
@@ -475,7 +494,7 @@ export class ServiceStack extends cdk.Stack {
           resources: ["*"],
           conditions: {
             StringEquals: {
-              "aws:RequestTag/ManagedBy": "isol8-backend",
+              "aws:RequestTag/ManagedBy": MANAGED_BY_ACCEPTED,
             },
           },
         }),
@@ -490,7 +509,7 @@ export class ServiceStack extends cdk.Stack {
           resources: ["*"],
           conditions: {
             StringEquals: {
-              "aws:ResourceTag/ManagedBy": "isol8-backend",
+              "aws:ResourceTag/ManagedBy": MANAGED_BY_ACCEPTED,
             },
           },
         }),

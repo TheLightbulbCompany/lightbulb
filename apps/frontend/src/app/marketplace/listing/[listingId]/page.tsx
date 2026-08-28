@@ -43,7 +43,7 @@ export default async function ListingDetail({
             &ldquo;{editorial.vibe}&rdquo;
           </p>
           <div className="mt-6 flex items-center gap-3">
-            <AgentPill tone={editorial.isFree ? "forest" : "neutral"}>{editorial.price}</AgentPill>
+            <AgentPill tone={editorial.isFree ? "neutral" : "brass"}>{editorial.price}</AgentPill>
             {listing.tags.slice(0, 3).map((tag) => (
               <AgentPill key={tag}>{tag}</AgentPill>
             ))}

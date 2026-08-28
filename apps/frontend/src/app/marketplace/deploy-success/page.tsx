@@ -279,7 +279,7 @@ function DeploySuccessInner() {
           </h1>
           <div className="mt-4 flex items-center justify-center gap-2">
             <AgentPill>{editorial.role}</AgentPill>
-            <AgentPill tone="forest">Active in your container</AgentPill>
+            <AgentPill tone="midnight">Active in your container</AgentPill>
           </div>
           <p className="mx-auto mt-6 max-w-md font-editorial-serif text-lg italic leading-8 text-[var(--midnight-soft)]">
             &ldquo;{editorial.vibe}&rdquo;

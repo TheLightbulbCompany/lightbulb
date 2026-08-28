@@ -433,12 +433,12 @@ export function PublishWizard() {
         <div
           role="region"
           aria-label="Marketplace handle required"
-          className="mb-4 rounded-2xl border border-[var(--edge)] bg-cream-deep px-3.5 py-3"
+          className="mb-4 rounded-2xl border border-[var(--warn)] px-3.5 py-3 text-[var(--warn)]"
         >
-          <div className="text-[12.5px] font-semibold text-[var(--midnight)] mb-1">
+          <div className="text-[12.5px] font-semibold text-[var(--warn)] mb-1">
             Pick a marketplace handle before publishing
           </div>
-          <p className="text-[12px] text-muted-foreground mb-3 leading-snug">
+          <p className="text-[12px] mb-3 leading-snug">
             Your handle appears on every listing byline and on (future) credibility
             surfaces. You can change it later from Settings → Marketplace.
           </p>

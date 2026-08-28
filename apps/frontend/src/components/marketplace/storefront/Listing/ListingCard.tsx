@@ -18,7 +18,7 @@ export function ListingCard({ listing }: { listing: Listing }) {
             <h3 className="font-editorial-serif text-[22px] leading-tight text-[var(--midnight)]">
               {editorial.name}
             </h3>
-            <AgentPill tone={editorial.isFree ? "forest" : "neutral"}>{editorial.price}</AgentPill>
+            <AgentPill tone={editorial.isFree ? "neutral" : "brass"}>{editorial.price}</AgentPill>
           </div>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
             {editorial.role}

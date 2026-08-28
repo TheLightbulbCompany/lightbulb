@@ -45,7 +45,7 @@ export const GLASS_CENTER_Y = 1.7;
 const NECK_OVERLAP = 0.02;
 const COLLAR_H = COLLAR_RINGS.reduce((s, r) => s + r[1], 0); // 0.14
 const GLASS_NECK_Y = GLASS_CENTER_Y + GLASS_HEIGHT / 2; // 2.25 — lathe y=0
-const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS[2][1]; // 2.19
+const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS.at(-1)![1]; // 2.19
 const COLLAR_TOP_Y = COLLAR_BOTTOM_Y + COLLAR_H; // 2.33
 const CORD_LEN = LAMP_ANCHOR_Y - COLLAR_TOP_Y; // 0.87
 const FIL_LEN = 0.55;
@@ -95,6 +95,11 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
   );
   // The React Compiler treats a memoised value as frozen, so the per-frame
   // writes go through a ref. The same effect owns the material's lifetime.
+  //
+  // Strict Mode caveat (dev only) for both dispose effects below: the double
+  // invoke disposes these and then reuses them. Three rebuilds a geometry or a
+  // material's program lazily, so it recovers today — but a disposed *texture*
+  // does not come back, so anything that grows a `map` here renders black.
   const filMat = React.useRef<THREE.MeshStandardMaterial | null>(null);
   React.useEffect(() => {
     filMat.current = filamentMaterial;
@@ -162,7 +167,10 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
         geometry={glassGeom}
         position={[0, GLASS_NECK_Y - LAMP_ANCHOR_Y, 0]}
         rotation={[Math.PI, 0, 0]}
-        castShadow={shadows}
+        // never: the shadow-casting spot sits inside this mesh, and with
+        // DoubleSide both walls would write the depth map — the lamp would
+        // occlude its own light and the pool on the wall would never land.
+        castShadow={false}
       >
         <meshPhysicalMaterial
           color={cream}
@@ -196,7 +204,9 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
         {TIE_HEIGHTS.map((f) => (
           <mesh key={f} position={[0, -FIL_LEN / 2 + FIL_LEN * f, 0]} rotation={[Math.PI / 2, 0, 0]}>
             <torusGeometry args={[0.1, 0.005, 6, 28]} />
-            <meshStandardMaterial color={brass} emissive={brass} emissiveIntensity={0.4} toneMapped={false} />
+            {/* tone-mapped, unlike the blades: this close to the point light
+                the ties would bloom as hard as the filament. */}
+            <meshStandardMaterial color={brass} emissive={brass} emissiveIntensity={0.4} />
           </mesh>
         ))}
         {/* halo — additive, tinted by --bulb, opacity driven by lit */}

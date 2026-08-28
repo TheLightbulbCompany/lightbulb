@@ -99,7 +99,7 @@ def _emit_metric(metric_name: str, value: int) -> None:
                     "Timestamp": int(time.time() * 1000),
                     "CloudWatchMetrics": [
                         {
-                            "Namespace": "Isol8/Authorizer",
+                            "Namespace": "LightbulbAI/Authorizer",
                             "Dimensions": [["FunctionName"]],
                             "Metrics": [{"Name": metric_name, "Unit": "Count"}],
                         }

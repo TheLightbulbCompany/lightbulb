@@ -26,7 +26,7 @@ from typing import Iterator
 
 from core.config import settings
 
-NAMESPACE = "Isol8"
+NAMESPACE = "LightbulbAI"
 
 # Dimensions that must NOT appear in metrics (high cardinality = cost explosion).
 # These belong in structured log fields instead.
@@ -96,7 +96,7 @@ def put_metric(
             f"high-cardinality dimension(s) {bad_keys} must not be metric dimensions; use structured log fields instead"
         )
 
-    all_dims = {"env": _get_env(), "service": "isol8-backend", **dims}
+    all_dims = {"env": _get_env(), "service": "lightbulb-backend", **dims}
     dim_keys = list(all_dims.keys())
 
     # Full set first (what an operator slices by: chat.error by reason,

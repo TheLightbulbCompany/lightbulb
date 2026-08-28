@@ -403,7 +403,7 @@ export class BedrockGateStack extends cdk.Stack {
           alarmName: `isol8-${gateEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock gate (${gateEnv}) emitted ${metricName} - the synchronous debit/hold accounting invariant broke. Investigate immediately (money/correctness).`,
           metric: new cloudwatch.Metric({
-            namespace: "Isol8/BedrockGate",
+            namespace: "LightbulbAI/BedrockGate",
             metricName,
             dimensionsMap: {
               env: gateEnv,

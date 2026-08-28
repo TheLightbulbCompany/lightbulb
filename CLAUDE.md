@@ -66,11 +66,19 @@ directory `skills/isol8/` → `skills/lightbulb/`.
 **NOT renamed — a naive `s/isol8/lightbulb/` sweep breaks every one of these:**
 
 - **Every AWS resource name**: DynamoDB prefix `isol8-{env}-*`, Secrets Manager
-  `isol8/{env}/*`, SSM `/isol8/*`, ECR `isol8/*`, log groups, the `Isol8/*`
-  CloudWatch metric namespaces, Cloud Map `isol8-{env}.local`, IAM role names, CDK
-  stack ids and the `isol8-deploy` concurrency group, the SSO start URL and the
-  `isol8-admin` CLI profile. Renaming any of them REPLACES the resource and loses
-  the data in it. They are internal and invisible to customers. Leave them.
+  `isol8/{env}/*`, SSM `/isol8/*`, ECR `isol8/*`, log groups, Cloud Map
+  `isol8-{env}.local`, IAM role names, CDK stack ids and the `isol8-deploy`
+  concurrency group, the SSO start URL and the `isol8-admin` CLI profile.
+  Renaming any of them REPLACES the resource and loses the data in it. They are
+  internal and invisible to customers. Leave them.
+- **`ManagedBy=isol8-backend`** — a resource TAG, and the one that looks most like
+  a rename candidate while being the most dangerous. All 39 prod Bedrock
+  application inference profiles carry it, and `service-stack.ts` gates AIP access
+  on `aws:ResourceTag/ManagedBy` matching it. Rename the writer and the IAM
+  condition together and the backend AccessDenies on every EXISTING owner's
+  profile — Bedrock inference dies fleet-wide, free tier included, while new
+  profiles work fine and mask it. Do not confuse it with the CloudWatch `service`
+  dimension, which is the identical string in a different role and DID move.
 - **`isol8-connector`** — the IAM role *and* the CloudFormation stack name live in
   customers' own AWS accounts, and the name is baked immutably into published
   marketplace artifacts.
@@ -86,6 +94,15 @@ directory `skills/isol8/` → `skills/lightbulb/`.
 - **The EFS lock sidecars `.isol8-guard` / `.isol8-protocol`** — renaming them is a
   once-only migration across every EFS volume with a fatal failure mode and zero
   benefit (see "Config Patching Notes").
+
+**RENAMED, deliberately, against the rule above** (owner decision 2026-08-27): the
+CloudWatch metric namespaces `Isol8` / `Isol8/BedrockGate` / `Isol8/Billing` /
+`Isol8/ECS` are now `LightbulbAI*`, and the metric `service` dimension
+`isol8-backend` is now `lightbulb-backend`. The consequence was raised and
+accepted: CloudWatch cannot backfill, so ~15 months of history is orphaned (not
+deleted — just off every dashboard) and 72 alarms restart from zero datapoints.
+They do not error while empty, they go quiet, so treat a silent dashboard in the
+days after as expected rather than as a regression.
 
 Working plan and the verified findings behind these decisions:
 `docs/superpowers/plans/2026-08-26-retire-isol8-rebrand.md` and

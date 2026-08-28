@@ -91,7 +91,7 @@ interface AlarmDef {
   metric?: cloudwatch.IMetric;
   /** Custom Isol8-namespace metric; env + service dimensions auto-injected. */
   metricName?: string;
-  namespace?: string; // default "Isol8"
+  namespace?: string; // default "LightbulbAI"
   statistic?: string; // default "Sum"
   threshold: number;
   evaluationPeriods?: number; // default 1
@@ -264,11 +264,11 @@ export class ObservabilityStack extends cdk.Stack {
    */
   private createAlarm(def: AlarmDef): cloudwatch.Alarm {
     // Auto-inject env and service dimensions for custom Isol8 namespace
-    const isCustomNamespace = !def.namespace || def.namespace === "Isol8";
+    const isCustomNamespace = !def.namespace || def.namespace === "LightbulbAI";
     const dimensions = isCustomNamespace
       ? {
           env: this.envName,
-          service: "isol8-backend",
+          service: "lightbulb-backend",
           ...(def.dimensions ?? {}),
         }
       : (def.dimensions ?? {});
@@ -276,7 +276,7 @@ export class ObservabilityStack extends cdk.Stack {
     const metric =
       def.metric ??
       new cloudwatch.Metric({
-        namespace: def.namespace ?? "Isol8",
+        namespace: def.namespace ?? "LightbulbAI",
         metricName: def.metricName!,
         statistic: def.statistic ?? "Sum",
         period: cdk.Duration.minutes(def.periodMinutes!),
@@ -333,13 +333,13 @@ export class ObservabilityStack extends cdk.Stack {
     label: string;
   }): cloudwatch.Metric {
     return new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: opts.metricName,
       statistic: "Sum",
       period: cdk.Duration.minutes(opts.periodMinutes),
       dimensionsMap: {
         env: this.envName,
-        service: "isol8-backend",
+        service: "lightbulb-backend",
         status: opts.status,
       },
       label: opts.label,
@@ -587,10 +587,10 @@ export class ObservabilityStack extends cdk.Stack {
     // samples means the backend's metrics loop is dead. Expect ~10 samples per
     // 10-min window when healthy; threshold 5 tolerates one skipped cycle.
     // Companion P13 (reaper-crash) was deleted with the reaper.
-    const reaperDims = { env: this.envName, service: "isol8-backend" };
+    const reaperDims = { env: this.envName, service: "lightbulb-backend" };
 
     const heartbeatMetric = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "gateway.running.count",
       statistic: "SampleCount",
       period: cdk.Duration.minutes(10),
@@ -651,7 +651,7 @@ export class ObservabilityStack extends cdk.Stack {
   // =========================================================================
 
   private createWarnCustomMetricAlarms(): void {
-    const dims = { env: this.envName, service: "isol8-backend" };
+    const dims = { env: this.envName, service: "lightbulb-backend" };
 
     // -- Container & gateway (W1-W8) --
 
@@ -660,14 +660,14 @@ export class ObservabilityStack extends cdk.Stack {
     // CloudWatch EMF creates separate streams per dimension set, so we must
     // query each status value explicitly and sum for the total.
     const provisionErrors = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "container.provision",
       statistic: "Sum",
       period: cdk.Duration.minutes(10),
       dimensionsMap: { ...dims, status: "error" },
     });
     const provisionOk = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "container.provision",
       statistic: "Sum",
       period: cdk.Duration.minutes(10),
@@ -744,7 +744,7 @@ export class ObservabilityStack extends cdk.Stack {
     // BREACHING config, which paged constantly on idle dev (no connections at
     // all = no samples).
     const gwOpenMetric = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "gateway.connection.open",
       statistic: "Average",
       period: cdk.Duration.minutes(5),
@@ -796,7 +796,7 @@ export class ObservabilityStack extends cdk.Stack {
     // error-count threshold on gateway.rpc.error instead.
     // TODO(observability Phase 2): emit gateway.rpc.count for a true rate.
     const rpcErrors = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "gateway.rpc.error",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
@@ -830,14 +830,14 @@ export class ObservabilityStack extends cdk.Stack {
 
     // W10: chat-error-rate (metric math)
     const chatErrors = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "chat.error",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
       dimensionsMap: dims,
     });
     const chatTotal = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "chat.message.count",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
@@ -1419,7 +1419,7 @@ export class ObservabilityStack extends cdk.Stack {
     // EventBridge rule captures ECS task state changes with STOPPED status,
     // publishes a custom metric, and we alarm on that metric.
     const taskStoppedMetric = new cloudwatch.Metric({
-      namespace: "Isol8/ECS",
+      namespace: "LightbulbAI/ECS",
       metricName: "TaskStoppedUnexpected",
       statistic: "Sum",
       period: cdk.Duration.minutes(1),
@@ -1506,7 +1506,7 @@ def handler(event, context):
         return {'statusCode': 200, 'emitted': False}
     cluster = detail.get('clusterArn', '').split('/')[-1]
     cw.put_metric_data(
-        Namespace='Isol8/ECS',
+        Namespace='LightbulbAI/ECS',
         MetricData=[{
             'MetricName': 'TaskStoppedUnexpected',
             'Dimensions': [{'Name': 'ClusterName', 'Value': cluster}],
@@ -1545,7 +1545,7 @@ def handler(event, context):
     // Sum >= 3 in 5min distinguishes a loop from a one-off. Provisional
     // threshold, baseline after observation.
     const crashLoopMetric = new cloudwatch.Metric({
-      namespace: "Isol8/ECS",
+      namespace: "LightbulbAI/ECS",
       metricName: "TaskStoppedUnexpected",
       statistic: "Sum",
       period: cdk.Duration.minutes(5),
@@ -1605,7 +1605,7 @@ def handler(event, _ctx):
     running = ecs.list_tasks(cluster=cluster_arn, serviceName=service, desiredStatus='RUNNING')
     count = len(running.get('taskArns') or [])
     if count > 1:
-        cw.put_metric_data(Namespace='Isol8/ECS', MetricData=[{
+        cw.put_metric_data(Namespace='LightbulbAI/ECS', MetricData=[{
             'MetricName': 'MultiTaskPerService',
             'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_arn.split('/')[-1]}],
             'Value': 1.0, 'Unit': 'Count',
@@ -1628,13 +1628,13 @@ def handler(event, _ctx):
       new iam.PolicyStatement({
         actions: ["cloudwatch:PutMetricData"],
         resources: ["*"],
-        conditions: { StringEquals: { "cloudwatch:namespace": "Isol8/ECS" } },
+        conditions: { StringEquals: { "cloudwatch:namespace": "LightbulbAI/ECS" } },
       }),
     );
     multiTaskRule.addTarget(new events_targets.LambdaFunction(multiTaskFn));
 
     const multiTaskMetric = new cloudwatch.Metric({
-      namespace: "Isol8/ECS",
+      namespace: "LightbulbAI/ECS",
       metricName: "MultiTaskPerService",
       statistic: "Sum",
       period: cdk.Duration.minutes(1),
@@ -2263,7 +2263,7 @@ def handler(event, _ctx):
   // =========================================================================
 
   private createDashboard(props: ObservabilityStackProps): void {
-    const dims = { env: this.envName, service: "isol8-backend" };
+    const dims = { env: this.envName, service: "lightbulb-backend" };
     const albFullName = props.alb.loadBalancerFullName;
 
     const dashboard = new cloudwatch.Dashboard(this, "OrrDashboard", {
@@ -2275,13 +2275,13 @@ def handler(event, _ctx):
       expression: "100 * (1 - errors / IF(total > 0, total, 1))",
       usingMetrics: {
         errors: new cloudwatch.Metric({
-          namespace: "Isol8",
+          namespace: "LightbulbAI",
           metricName: "chat.error",
           statistic: "Sum",
           dimensionsMap: dims,
         }),
         total: new cloudwatch.Metric({
-          namespace: "Isol8",
+          namespace: "LightbulbAI",
           metricName: "chat.message.count",
           statistic: "Sum",
           dimensionsMap: dims,
@@ -2291,7 +2291,7 @@ def handler(event, _ctx):
     });
 
     const chatP99Latency = new cloudwatch.Metric({
-      namespace: "Isol8",
+      namespace: "LightbulbAI",
       metricName: "chat.e2e.latency",
       statistic: "p99",
       period: cdk.Duration.hours(1),
@@ -2319,13 +2319,13 @@ def handler(event, _ctx):
         title: "Container provisions",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "container.provision",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "ok" },
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "container.provision",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "error" },
@@ -2338,7 +2338,7 @@ def handler(event, _ctx):
         title: "Container lifecycle latency",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "container.lifecycle.latency",
             statistic: "p99",
             dimensionsMap: dims,
@@ -2351,7 +2351,7 @@ def handler(event, _ctx):
         title: "Gateway connections (open)",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.connection.open",
             statistic: "Average",
             dimensionsMap: dims,
@@ -2364,7 +2364,7 @@ def handler(event, _ctx):
         title: "Gateway RPC errors",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.rpc.error",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2381,13 +2381,13 @@ def handler(event, _ctx):
         title: "Chat messages & errors",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "chat.message.count",
             statistic: "Sum",
             dimensionsMap: dims,
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "chat.error",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2400,13 +2400,13 @@ def handler(event, _ctx):
         title: "Chat E2E latency",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "chat.e2e.latency",
             statistic: "p50",
             dimensionsMap: dims,
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "chat.e2e.latency",
             statistic: "p99",
             dimensionsMap: dims,
@@ -2431,7 +2431,7 @@ def handler(event, _ctx):
         title: "Running containers (gauge)",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.running.count",
             statistic: "Maximum",
             dimensionsMap: dims,
@@ -2444,14 +2444,14 @@ def handler(event, _ctx):
         title: "Cold starts & latency",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.cold_start.count",
             statistic: "Sum",
             dimensionsMap: { ...dims, outcome: "ok" },
             label: "cold starts (ok)",
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.cold_start.count",
             statistic: "Sum",
             dimensionsMap: { ...dims, outcome: "error" },
@@ -2460,14 +2460,14 @@ def handler(event, _ctx):
         ],
         right: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.cold_start.latency",
             statistic: "p50",
             dimensionsMap: dims,
             label: "p50 latency",
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "gateway.cold_start.latency",
             statistic: "p99",
             dimensionsMap: dims,
@@ -2485,13 +2485,13 @@ def handler(event, _ctx):
         title: "Channel RPC by status",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "channel.rpc",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "ok" },
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "channel.rpc",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "error" },
@@ -2504,13 +2504,13 @@ def handler(event, _ctx):
         title: "Stripe webhooks",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "stripe.webhook.received",
             statistic: "Sum",
             dimensionsMap: dims,
           }),
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "stripe.webhook.sig_fail",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2523,7 +2523,7 @@ def handler(event, _ctx):
         title: "Stripe API latency",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "stripe.api.latency",
             statistic: "p99",
             dimensionsMap: dims,
@@ -2542,7 +2542,7 @@ def handler(event, _ctx):
         title: "Auth JWT failures",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "auth.jwt.fail",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2555,7 +2555,7 @@ def handler(event, _ctx):
         title: "Workspace path traversal attempts",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "workspace.path_traversal.attempt",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2568,7 +2568,7 @@ def handler(event, _ctx):
         title: "Debug endpoint prod hits",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "debug.endpoint.prod_hit",
             statistic: "Sum",
             dimensionsMap: dims,
@@ -2772,7 +2772,7 @@ def handler(event, _ctx):
         title: "Update worker heartbeat",
         left: [
           new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName: "update.scheduled_worker.heartbeat",
             statistic: "Sum",
             dimensionsMap: dims,

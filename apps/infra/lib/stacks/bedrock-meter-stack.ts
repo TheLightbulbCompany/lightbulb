@@ -562,7 +562,7 @@ export class BedrockMeterStack extends cdk.Stack {
           alarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock meter (${meterEnv}) emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
           metric: new cloudwatch.Metric({
-            namespace: "Isol8",
+            namespace: "LightbulbAI",
             metricName,
             dimensionsMap: {
               service: "isol8-bedrock-meter",

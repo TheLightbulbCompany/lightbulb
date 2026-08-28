@@ -262,7 +262,7 @@ async def test_seed_trigger_routine_posthog_onboarding_gate_prompt_names_require
     assert "properties.code" in routine["description"]
     assert "distinct_id" in routine["description"]
     assert "properties.$session_id" in routine["description"]
-    assert "Isol8/provision.gate.blocked{code, service=isol8-backend, env=prod}" in routine["description"]
+    assert "LightbulbAI/provision.gate.blocked{code, service=lightbulb-backend, env=prod}" in routine["description"]
     assert "CloudWatch" in routine["description"]
     assert "duplicate-activation-blocker" in routine["description"]
     assert "conversation data" in routine["description"]

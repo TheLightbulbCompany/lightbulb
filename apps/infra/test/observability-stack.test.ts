@@ -218,7 +218,7 @@ function isol8MetricBindings(template: Template): MetricBinding[] {
     const alarm =
       typeof props.AlarmName === "string" ? props.AlarmName : logicalId;
     const collect = (namespace: any, metricName: any, dimensions: any) => {
-      if (namespace !== "Isol8" || typeof metricName !== "string") return;
+      if (namespace !== "LightbulbAI" || typeof metricName !== "string") return;
       bindings.push({
         alarm,
         metricName,
@@ -335,7 +335,7 @@ describe("ObservabilityStack", () => {
   test("P15 pages on the inline-provision-timeout stream", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "isol8-dev-P15-provision-inline-timeout",
-      Namespace: "Isol8",
+      Namespace: "LightbulbAI",
       MetricName: "container.provision",
       Threshold: 0,
       Period: 60,
@@ -483,7 +483,7 @@ describe("ObservabilityStack", () => {
   test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       MetricName: "gateway.running.count",
-      Namespace: "Isol8",
+      Namespace: "LightbulbAI",
       Statistic: "SampleCount",
       ComparisonOperator: "LessThanThreshold",
       Threshold: 5,

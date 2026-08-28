@@ -8,11 +8,22 @@ import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
-import { Lamp, type LampColors } from "./Lamp";
+import { Lamp, easeStrike, type LampColors } from "./Lamp";
 
 const STRIKE_MS = 700;
 const CAMERA_Z = 8;
 const CAMERA_FOV = 40;
+// Studio reflections on the glass: dim in the dark, full when lit, ramped on
+// the strike's clock rather than stepped at the theme flip.
+const ENV_DARK = 0.35;
+const ENV_LIT = 1;
+// Cursor: the lamp leans toward it (±LEAN_MAX radians, ≈±4°, across the
+// viewport width) and crossing its column pushes it.
+const LEAN_MAX = 0.14;
+const LEAN_RATE = 8; // per second — the lean closes ~1/e of the gap every 125ms
+const LEAN_SETTLE = 0.0005;
+const COLUMN_HALF_W = 180;
+const POINTER_IMPULSE = 0.0002;
 
 type Quality = 2 | 1 | 0; // 2 = full, 1 = no bloom, 0 = no bloom + no shadows
 
@@ -35,8 +46,7 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
   const cream = React.useMemo(() => new THREE.Color(colors.cream), [colors.cream]);
   useFrame(() => {
     if (!mat.current) return;
-    const k = 1 - Math.pow(1 - litRef.current, 3); // same attack curve as the lamp
-    mat.current.emissive.copy(midnight).lerp(cream, k);
+    mat.current.emissive.copy(midnight).lerp(cream, easeStrike(litRef.current));
   });
   return (
     <mesh position={[0, 0, -1.6]} receiveShadow>
@@ -58,17 +68,21 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
  *  to `litRef` lands in the same frame they read it. */
 function Driver({
   litRef,
+  leanRef,
   pendulum,
   visible,
 }: {
   litRef: React.MutableRefObject<number>;
+  leanRef: React.MutableRefObject<number>;
   pendulum: ReturnType<typeof createPendulum>;
   visible: boolean;
 }) {
   const theme = useLampTheme();
   const invalidate = useThree((s) => s.invalidate);
+  const canvas = useThree((s) => s.gl.domElement);
   const target = theme === "light" ? 1 : 0;
   const startRef = React.useRef<{ from: number; at: number } | null>(null);
+  const leanTarget = React.useRef(0);
 
   React.useEffect(() => {
     // Already there — a returning visitor's seeded `litRef`, or a flip back
@@ -100,12 +114,18 @@ function Driver({
       invalidate();
     };
     const onMove = (e: PointerEvent) => {
-      const cx = window.innerWidth / 2;
-      if (Math.abs(e.clientX - cx) < 140 && e.clientY < 260) {
-        if (lastX !== null) pendulum.impulse((e.clientX - lastX) * 0.00004);
-        invalidate();
-      }
+      const w = window.innerWidth;
+      const cx = w / 2;
+      // Lean follows the cursor anywhere; the lights swing with the group,
+      // so the pool on the wall follows it too.
+      leanTarget.current = Math.max(-0.5, Math.min(0.5, (e.clientX - cx) / w)) * LEAN_MAX;
+      // Push only when crossing the lamp's column over the canvas, by the
+      // pointer's x velocity — a slow drag across builds a swing the same way.
+      const r = canvas.getBoundingClientRect();
+      const over = e.clientY >= r.top && e.clientY <= r.bottom && Math.abs(e.clientX - cx) < COLUMN_HALF_W;
+      if (over && lastX !== null) pendulum.impulse((e.clientX - lastX) * POINTER_IMPULSE);
       lastX = e.clientX;
+      invalidate();
     };
     const onResize = () => invalidate();
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -116,9 +136,9 @@ function Driver({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("resize", onResize);
     };
-  }, [pendulum, invalidate, visible]);
+  }, [pendulum, invalidate, visible, canvas]);
 
-  useFrame(() => {
+  useFrame((state, delta) => {
     let busy = false;
     const s = startRef.current;
     if (s) {
@@ -127,8 +147,18 @@ function Driver({
       if (t < 1) busy = true;
       else startRef.current = null;
     }
+    state.scene.environmentIntensity = ENV_DARK + (ENV_LIT - ENV_DARK) * easeStrike(litRef.current);
     pendulum.step();
     if (!pendulum.settled()) busy = true;
+    const d = leanTarget.current - leanRef.current;
+    if (Math.abs(d) > LEAN_SETTLE) {
+      // Time-based, so the ease is the same at any frame rate (and a long
+      // idle gap on the demand loop simply lands it).
+      leanRef.current += d * (1 - Math.exp(-LEAN_RATE * delta));
+      busy = true;
+    } else {
+      leanRef.current = leanTarget.current;
+    }
     if (busy) invalidate();
   });
   return null;
@@ -139,6 +169,7 @@ export default function Scene() {
   // Seeded, not tweened, on the first render: a returning visitor whose stored
   // theme is already "light" should not watch the strike replay on every load.
   const litRef = React.useRef(lit ? 1 : 0);
+  const leanRef = React.useRef(0);
   const pendulum = React.useMemo(() => createPendulum(), []);
   const [colors] = React.useState(readColors);
   const [quality, setQuality] = React.useState<Quality>(2);
@@ -167,7 +198,9 @@ export default function Scene() {
       <Canvas
         frameloop={visible ? "demand" : "never"}
         dpr={dpr}
-        shadows={quality > 0}
+        // "percentage" = PCFShadowMap, which is what `true` (PCFSoft) already
+        // falls back to in three r184 — minus its per-frame deprecation warning.
+        shadows={quality > 0 ? "percentage" : false}
         gl={{ antialias: false, powerPreference: "high-performance" }}
         camera={{ position: [0, 0.4, CAMERA_Z], fov: CAMERA_FOV, near: 0.1, far: 40 }}
         onCreated={(state) => {
@@ -193,12 +226,11 @@ export default function Scene() {
           }}
           flipflops={2}
         />
-        <Driver litRef={litRef} pendulum={pendulum} visible={visible} />
+        <Driver litRef={litRef} leanRef={leanRef} pendulum={pendulum} visible={visible} />
         <ambientLight color={colors.cream} intensity={0.03} />
-        {/* Studio reflections, built in code — no CDN HDRI. Dim in the dark,
-            brighter when lit; stepped on theme change, not tweened, because
-            reading the tween's ref during render is what the compiler forbids. */}
-        <Environment resolution={64} environmentIntensity={lit ? 1 : 0.35}>
+        {/* Studio reflections, built in code — no CDN HDRI. Intensity is
+            written per frame by Driver (ENV_DARK → ENV_LIT on the strike). */}
+        <Environment resolution={64}>
           <Lightformer form="rect" intensity={1.4} color={colors.cream} scale={[6, 3, 1]} position={[0, 5, 2]} target={[0, 0, 0]} />
           <Lightformer form="rect" intensity={0.5} color={colors.cream} scale={[3, 4, 1]} position={[-5, 1, 2]} target={[0, 0, 0]} />
           <Lightformer form="circle" intensity={0.3} color={colors.bulb} scale={[2, 2, 1]} position={[4, 2, 3]} target={[0, 0, 0]} />
@@ -207,6 +239,7 @@ export default function Scene() {
         <Wall litRef={litRef} colors={colors} />
         <Lamp
           litRef={litRef}
+          leanRef={leanRef}
           pendulum={pendulum}
           colors={colors}
           shadows={quality > 0}
@@ -215,7 +248,10 @@ export default function Scene() {
 
         {quality === 2 && (
           <EffectComposer multisampling={narrow ? 0 : 4}>
-            <Bloom mipmapBlur luminanceThreshold={1} intensity={1.1} radius={0.6} />
+            {/* Threshold above the lit wall's peak (~0.9 cream + ~0.35 pool):
+                the filament and halo bloom, the pool does not. At 1.0 the
+                whole pool bloomed into a haze over the headline. */}
+            <Bloom mipmapBlur luminanceThreshold={1.3} intensity={0.7} radius={0.6} />
           </EffectComposer>
         )}
       </Canvas>

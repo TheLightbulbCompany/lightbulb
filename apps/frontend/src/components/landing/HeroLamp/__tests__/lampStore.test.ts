@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import {
   LAMP_STORAGE_KEY,
@@ -17,6 +17,30 @@ describe("lampStore", () => {
     window.localStorage.clear();
     document.documentElement.removeAttribute("data-lb-theme");
     setTheme("dark");
+    document.documentElement.removeAttribute("data-lb-theming");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("marks <html> data-lb-theming for 800ms after the LAST strike", () => {
+    vi.useFakeTimers();
+    const marked = () => document.documentElement.hasAttribute("data-lb-theming");
+    strike();
+    expect(marked()).toBe(true);
+    vi.advanceTimersByTime(500);
+    strike(); // inside the window: extends it
+    vi.advanceTimersByTime(500); // 1000ms after the first, 500 after the last
+    expect(marked()).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(marked()).toBe(false);
+  });
+
+  it("hydrating a stored theme adopts it without the transition marker", () => {
+    window.localStorage.setItem(LAMP_STORAGE_KEY, "light");
+    hydrateFromStorage();
+    expect(getTheme()).toBe("light");
+    expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(false);
   });
 
   it("defaults to dark on the server and the client", () => {

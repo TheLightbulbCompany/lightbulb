@@ -31,6 +31,9 @@ export interface LampProps {
   colors: LampColors;
   shadows: boolean;
   shadowMapSize: number;
+  /** Extra tilt (radians) summed with the swing — the scene leans the lamp
+   *  toward the cursor. Same reason it is a ref as `litRef`. */
+  leanRef?: React.MutableRefObject<number>;
 }
 
 export const LAMP_ANCHOR_Y = 3.2;
@@ -49,6 +52,16 @@ const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS.at(-1)![1]; /
 const COLLAR_TOP_Y = COLLAR_BOTTOM_Y + COLLAR_H; // 2.33
 const CORD_LEN = LAMP_ANCHOR_Y - COLLAR_TOP_Y; // 0.87
 const FIL_LEN = 0.55;
+// Blade radii, top (where the three meet) → base. The glass is a lens: with
+// ior 1.5 it magnifies the filament ~1.5×, so these are thinner than they
+// look right on paper.
+const BLADE_TOP_R = 0.004;
+const BLADE_BASE_R = 0.018;
+const BLADE_SPREAD = Math.sin((Math.max(...BLADES.map((b) => Math.abs(b.tiltDeg))) * Math.PI) / 180);
+/** A tie's radius at height fraction `f` (0 = base, 1 = tip): the outer
+ *  blades' offset there plus the blade's own radius, so the ring touches. */
+const tieRadius = (f: number) =>
+  BLADE_SPREAD * FIL_LEN * (1 - f) + BLADE_BASE_R + (BLADE_TOP_R - BLADE_BASE_R) * f;
 
 /** [radius, thickness, centre y in group space], top → bottom. */
 const COLLAR_STACK = COLLAR_RINGS.map(([r, h], i) => {
@@ -56,15 +69,24 @@ const COLLAR_STACK = COLLAR_RINGS.map(([r, h], i) => {
   return [r, h, COLLAR_TOP_Y - above - h / 2 - LAMP_ANCHOR_Y] as const;
 });
 
-// Lit-state targets. Tuned by render (Task 9); these are the starting values.
-const SPOT_INTENSITY = 28;
-const POINT_INTENSITY = 9;
-const EMISSIVE_ON = 6;
-const EMISSIVE_OFF = 0.12;
+// Tuned by render. The wall is the page colour (~0.9 linear, untonemapped),
+// so anything the lights add clips to white past +0.1 — a pool on cream is a
+// white-hot centre fading to cream, and the spot only needs to add ~0.35 at
+// its centre (d≈2.3 to the wall). 28 put +1.6 on the wall and bloomed the
+// whole hero; 9 on the point light alone added +1.0 right behind the lamp.
+const SPOT_INTENSITY = 10;
+const POINT_INTENSITY = 2;
+// Filament colour = brass → --bulb, scaled: a dull ember off, hot on. The
+// blades are light-immune (see the material), so this is their whole look.
+const EMISSIVE_ON = 3.5;
+const EMISSIVE_OFF = 0.45;
+// Corona just outside the glass; at 1.0 it swallowed the glass edge.
+const HALO_OPACITY = 0.5;
+const HALO_SCALE = 1.1;
 
-const easeStrike = (t: number) => 1 - Math.pow(1 - t, 3); // fast attack, slow settle
+export const easeStrike = (t: number) => 1 - Math.pow(1 - t, 3); // fast attack, slow settle
 
-export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampProps) {
+export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef }: LampProps) {
   const group = React.useRef<THREE.Group>(null);
   const spot = React.useRef<THREE.SpotLight>(null);
   const point = React.useRef<THREE.PointLight>(null);
@@ -82,25 +104,21 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
   );
   const glowTex = React.useMemo(() => makeGlowTexture(), []);
   // One material for all three blades: three would leave two of them dark,
-  // since only one can be animated.
+  // since only one can be animated. Unlit on purpose — the point light sits
+  // millimetres from the blades and a lit material there is white at any
+  // intensity; a filament is its own light, so its colour is set directly.
   const filamentMaterial = React.useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: brass,
-        emissive: brass,
-        emissiveIntensity: EMISSIVE_OFF,
-        toneMapped: false,
-      }),
+    () => new THREE.MeshBasicMaterial({ color: brass.clone().multiplyScalar(EMISSIVE_OFF), toneMapped: false }),
     [brass],
   );
   // The React Compiler treats a memoised value as frozen, so the per-frame
   // writes go through a ref. The same effect owns the material's lifetime.
   //
-  // Strict Mode caveat (dev only) for both dispose effects below: the double
-  // invoke disposes these and then reuses them. Three rebuilds a geometry or a
-  // material's program lazily, so it recovers today — but a disposed *texture*
-  // does not come back, so anything that grows a `map` here renders black.
-  const filMat = React.useRef<THREE.MeshStandardMaterial | null>(null);
+  // Strict Mode (dev only) double-invokes both dispose effects below and then
+  // reuses what they disposed. Three rebuilds all of it lazily — geometry,
+  // program, and the halo's CanvasTexture too (a disposed texture re-uploads
+  // from its image on next use; verified by render, the halo glows in dev).
+  const filMat = React.useRef<THREE.MeshBasicMaterial | null>(null);
   React.useEffect(() => {
     filMat.current = filamentMaterial;
     return () => {
@@ -122,7 +140,10 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
     const s = spot.current;
     if (!g || !s) return;
     const t = spotTarget.current;
-    t.position.set(0, -(LAMP_ANCHOR_Y + 2.5), -1.6); // down the wall, in group space
+    // World (0, 0, -1.6): the wall behind the headline, so the pool's centre
+    // is on the canvas. Aimed 2.5 lower it sat on the masked bottom edge and
+    // only the cone's spill showed.
+    t.position.set(0, -LAMP_ANCHOR_Y, -1.6);
     g.add(t);
     s.target = t;
     return () => {
@@ -133,16 +154,18 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    g.rotation.z = pendulum.angle;
+    g.rotation.z = pendulum.angle + (leanRef?.current ?? 0);
     const k = easeStrike(litRef.current);
     if (spot.current) spot.current.intensity = SPOT_INTENSITY * k;
     if (point.current) point.current.intensity = POINT_INTENSITY * k;
     const m = filMat.current;
     if (m) {
-      m.emissive.copy(brass).lerp(bulb, k);
-      m.emissiveIntensity = EMISSIVE_OFF + (EMISSIVE_ON - EMISSIVE_OFF) * k;
+      m.color
+        .copy(brass)
+        .lerp(bulb, k)
+        .multiplyScalar(EMISSIVE_OFF + (EMISSIVE_ON - EMISSIVE_OFF) * k);
     }
-    if (glowMat.current) glowMat.current.opacity = k;
+    if (glowMat.current) glowMat.current.opacity = HALO_OPACITY * k;
   });
 
   return (
@@ -167,19 +190,26 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
         geometry={glassGeom}
         position={[0, GLASS_NECK_Y - LAMP_ANCHOR_Y, 0]}
         rotation={[Math.PI, 0, 0]}
-        // never: the shadow-casting spot sits inside this mesh, and with
-        // DoubleSide both walls would write the depth map — the lamp would
-        // occlude its own light and the pool on the wall would never land.
+        // never: the shadow-casting spot sits inside this mesh — the lamp
+        // would occlude its own light and the pool on the wall would never land.
         castShadow={false}
       >
+        {/* Front faces only. With DoubleSide, three's transmission pass draws
+            the glass's own back wall into the buffer the front wall samples,
+            and that inside wall reflects the warm environment — the bulb
+            rendered as an amber-filled blob. The neck hole is plugged by the
+            collar, so nothing needs the inside drawn. */}
         <meshPhysicalMaterial
           color={cream}
           transmission={1}
-          thickness={0.5}
+          // Thin wall. `thickness` is how far the transmission sample is
+          // pushed along the refracted ray; at 0.5 (the bulb's radius) the
+          // glass was a thick lens that magnified the blades ~3× into fat
+          // amber columns and the ties into full-width bands.
+          thickness={0.12}
           roughness={0.08}
           ior={1.5}
           envMapIntensity={1}
-          side={THREE.DoubleSide}
         />
       </mesh>
 
@@ -197,20 +227,21 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize }: LampP
               material={filamentMaterial}
             >
               {/* narrow at the top, wide at the base: a tapered blade */}
-              <cylinderGeometry args={[0.006, 0.026, FIL_LEN, 6]} />
+              <cylinderGeometry args={[BLADE_TOP_R, BLADE_BASE_R, FIL_LEN, 6]} />
             </mesh>
           );
         })}
         {TIE_HEIGHTS.map((f) => (
           <mesh key={f} position={[0, -FIL_LEN / 2 + FIL_LEN * f, 0]} rotation={[Math.PI / 2, 0, 0]}>
-            <torusGeometry args={[0.1, 0.005, 6, 28]} />
-            {/* tone-mapped, unlike the blades: this close to the point light
-                the ties would bloom as hard as the filament. */}
-            <meshStandardMaterial color={brass} emissive={brass} emissiveIntensity={0.4} />
+            <torusGeometry args={[tieRadius(f), 0.005, 6, 28]} />
+            {/* flat brass, tone-mapped: unlit for the same reason as the
+                blades, and it stays brass when they go yellow — the mark's
+                ties are its dark lines. */}
+            <meshBasicMaterial color={brass} />
           </mesh>
         ))}
         {/* halo — additive, tinted by --bulb, opacity driven by lit */}
-        <sprite scale={[1.7, 1.7, 1]}>
+        <sprite scale={[HALO_SCALE, HALO_SCALE, 1]}>
           <spriteMaterial
             ref={glowMat}
             map={glowTex}

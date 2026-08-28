@@ -16,6 +16,21 @@ export const LAMP_STORAGE_KEY = "lightbulb-theme";
 
 let theme: LampTheme = "dark";
 const listeners = new Set<() => void>();
+let themingTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Marks <html> for the strike's duration so every landing surface eases
+ * with the hero's wall (`landing.css` reads `data-lb-theming`; the theme
+ * flips custom properties, and descendants consuming them would otherwise
+ * snap). A second strike inside the window extends it rather than cutting
+ * the first transition short.
+ */
+function markTheming() {
+  if (typeof document === "undefined") return;
+  document.documentElement.setAttribute("data-lb-theming", "");
+  clearTimeout(themingTimer);
+  themingTimer = setTimeout(() => document.documentElement.removeAttribute("data-lb-theming"), 800);
+}
 
 function write(t: LampTheme) {
   if (typeof document !== "undefined") {
@@ -44,14 +59,16 @@ export function subscribe(cb: () => void): () => void {
   };
 }
 
-export function setTheme(t: LampTheme): void {
-  if (t === theme) {
-    write(t); // keep the DOM/storage in step even on a no-op set
-    return;
-  }
+function commit(t: LampTheme): boolean {
+  const changed = t !== theme;
   theme = t;
-  write(t);
-  listeners.forEach((cb) => cb());
+  write(t); // keep the DOM/storage in step even on a no-op set
+  if (changed) listeners.forEach((cb) => cb());
+  return changed;
+}
+
+export function setTheme(t: LampTheme): void {
+  if (commit(t)) markTheming();
 }
 
 export function strike(): void {
@@ -63,13 +80,18 @@ export function lightOn(): void {
 }
 
 export function hydrateFromStorage(): void {
+  let v: string | null = null;
   try {
-    const v = window.localStorage.getItem(LAMP_STORAGE_KEY);
-    if (v === "light" || v === "dark") setTheme(v);
-    else write(theme);
+    v = window.localStorage.getItem(LAMP_STORAGE_KEY);
   } catch {
-    write(theme);
+    // private mode — fall through to the default
   }
+  // A returning visitor's stored theme is adopted without the strike
+  // transition, for the same reason the scene seeds its lit state instead
+  // of replaying the strike: the page arrives in that state, it doesn't
+  // move into it.
+  if (v === "light" || v === "dark") commit(v);
+  else write(theme);
 }
 
 export function useLampTheme(): LampTheme {

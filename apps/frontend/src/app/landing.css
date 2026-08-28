@@ -2418,7 +2418,11 @@
   }
 
   .ld-funnel {
-    padding: 112px 22px 48px;
+    /* The pendant's glass spans 10.9%–30.2% of the section's height (camera
+       fov 40, lookAt tilt), and the section is ~518px of content plus this
+       padding — so P ≥ 0.302·(518+P) + 10 ⇒ 240px keeps the apex above the
+       eyebrow. At 112px the bulb sat on the eyebrow and the headline. */
+    padding: 240px 22px 48px;
   }
 
   .ld-funnel-mark {
@@ -2568,6 +2572,26 @@
 
 .ld-page { transition: background 0.5s cubic-bezier(0.22, 1, 0.36, 1), color 0.5s ease; }
 
+/* The theme flips custom properties on .ld-page; descendants that consume
+   them would otherwise snap. For the strike's duration (the store holds
+   `data-lb-theming` on <html> for 800ms) every surface on the landing page
+   eases on the same clock as the hero's wall — and only then, so component
+   hover transitions are untouched the rest of the time. The !important is
+   what lets this window beat a component's own `transition` list. */
+[data-lb-theming] .ld-page,
+[data-lb-theming] .ld-page * {
+  transition:
+    background-color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    fill 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 0.7s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+/* Never the WebGL element: its wall already tweens in-scene. */
+[data-lb-theming] .ld-hero-canvas,
+[data-lb-theming] .ld-hero-canvas * { transition: none !important; }
+
 /* The pendulum writes `transform: rotate(...)` inline on every frame, so
    nothing else may use `transform` on .ld-lamp — an inline write replaces
    the whole property. Size is expressed with the standalone `scale`, which
@@ -2575,6 +2599,7 @@
 @media (prefers-reduced-motion: reduce) {
   .ld-lamp { transform: none !important; }
   .ld-page, .ld-lamp-glow { transition: none; }
+  [data-lb-theming] .ld-page, [data-lb-theming] .ld-page * { transition: none !important; }
 }
 
 @media (max-width: 720px) {

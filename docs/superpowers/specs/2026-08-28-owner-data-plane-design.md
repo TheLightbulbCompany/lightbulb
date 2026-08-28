@@ -137,7 +137,7 @@ human step, rendered as an approval card:
 | Mail on own domain | SES identity per owner domain on the existing per-owner tenant (`agent_mail_tenant.py`) | none | DKIM/MAIL FROM/DMARC auto-published, zone is ours |
 | Hosted fallback pages | CloudFront SaaS Manager tenants (`<slug>.flickmeon.ai`, `support.<slug>.flickmeon.ai`) | none | |
 | SEO/AEO data | DataForSEO (platform key) | none | P5 |
-| Image/video | NO new vendor (decided 2026-08-28): images via the owner's existing provider path — Bedrock owners get Amazon Nova Canvas / SD3.5 through the bedrock-gate (metered + capped like inference), BYO-OpenAI owners get gpt-image-1 on their own key; "video" formats are ffmpeg compositions in the container (caption-over-clip, text-hook video, carousel) exactly as Result does — Result exposes only gpt-4o-mini + gemini-2.5-flash(-image), no video model; real generated video/avatars/voice = HeyGen / ElevenLabs / OpenRouter provisioned on the owner's identity through Projects | none | P3 |
+| Content (images/video) | **Compose in the container, zero vendors (decided 2026-08-28):** carousel slides = HTML template screenshotted by the container's Chrome over **Pexels** portrait stills (free API, commercial use, no attribution); wall-of-text reel = Pexels portrait clip + ffmpeg burned caption; green-screen = owner's selfie clip chromakeyed over a clip, captions via Amazon Transcribe ($0.006/min) or whisper.cpp; X/LinkedIn = LLM path; feedback votes → per-company format weights. Marginal cost ≈ $0/post. **Bedrock has NO active text-to-image model** (Nova Canvas Legacy, EOL 2026-09-30; Titan EOL; Stability gen models gone) — so generated imagery is opt-in on the owner's identity via Projects: Gemini 2.5 Flash Image via OpenRouter (~$0.039/img), HeyGen avatars (~$1/min), ElevenLabs voice; gpt-image-1 only for BYO-OpenAI-key owners. Remotion ($0.01/render, $100/mo floor) only if ffmpeg typography becomes the complaint | none (Pexels is platform-keyed, free) | P3 |
 | Enrichment | existing Apollo/Attio/Parallel rails | OAuth | |
 
 Not adopted: merchant-of-record (Paddle/Polar/Lemon Squeezy — 4–5% or no
@@ -321,7 +321,7 @@ async back-office jobs, one real record per card — on our cream/green brand.
 | Home | rollup | new |
 | Payments / Products / Customers | Connect reads + webhooks | new |
 | Spend | agent_budget / usage / Projects spend | reshape Usage |
-| Content | owner's LLM path + Bedrock/OpenAI image models + ffmpeg templates; feedback votes = learning loop | new |
+| Content | LLM copy + Pexels media + Chrome/ffmpeg compositions in the container; feedback votes = learning loop; generated art/avatars opt-in via Projects | new |
 | Publish | bundle.social (team per company; portal link; MCP for Friday) + Paperclip routines | new |
 | SEO & AEO | DataForSEO + Google rail | new (P5) |
 | Ads | `meta_ads` rail (+ Google Ads) | partial |
@@ -347,7 +347,7 @@ async back-office jobs, one real record per card — on our cream/green brand.
 - **P1 Money + Home** — Payments, Products, Customers, Spend, Home.
 - **P2 Knowledge + Support** — Brain UI; Support widget + hosted page +
   inbox; Library feed; redaction widening.
-- **P3 Growth** — Publish (bundle.social), Content grid (owner's provider path + ffmpeg templates), Leads, Blog;
+- **P3 Growth** — Publish (bundle.social), Content grid (in-container compositions over Pexels; Projects opt-ins), Leads, Blog;
   Growth add-on pricing fence.
 - **P4 Company** — Domain & Site, Identity (doola + Stripe Identity), Ads
   (Google Ads rail), mail on own domain.
@@ -400,7 +400,7 @@ runtime → Paperclip + OpenClaw (in production; theirs is not). Connections →
 Lightbulb MCP. Apps/db/storage/functions/auth/compute/queue/sandbox →
 Projects on the owner's identity; our container is compute. Domains/email/
 phone → §3.3. LLM/audio/voice/images/video/clips → Bedrock/OAuth/BYO have;
-images via owner's provider path P3, gen-video via Projects (HeyGen/ElevenLabs) on request; skip clips. Browser → real Chrome with owner takeover
+images/video composed in-container over Pexels P3; generated art/avatars/voice via Projects (OpenRouter/HeyGen/ElevenLabs) on request; skip clips. Browser → real Chrome with owner takeover
 (have, better). Social → bundle.social. SEO/AEO/app/travel/reviews/places/e-com
 → DataForSEO for SEO/AEO only. People/company/social data → Apollo/Parallel.
 Cards → §3.3. Trading/x402/wallet → skip. Customer billing → Connect.

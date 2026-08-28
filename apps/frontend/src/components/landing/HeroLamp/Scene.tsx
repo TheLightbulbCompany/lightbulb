@@ -36,9 +36,11 @@ const EDGE_MARGIN = 0.6;
 // Pointer y is mapped over the hero's top 70%; below that the lamp is already
 // as low as it goes.
 const POINTER_Y_SPAN = 0.7;
-// Floor for the glass centre: its bottom (0.2 − 0.55) stays clear of the
-// headline's top edge.
-const GLASS_FLOOR_Y = 0.2;
+// Floor for the glass centre: the headline's top edge projects to world
+// y ≈ 0.95 at 1440x900, and the glass bottom is 0.55 below its centre — so
+// the lamp dips 0.2 below rest at most and never hangs over the copy; the
+// cursor mostly moves it sideways.
+const GLASS_FLOOR_Y = 1.5;
 const GLASS_DROP = LAMP_ANCHOR_Y - GLASS_CENTER_Y; // 1.5 — anchor to glass centre
 // A dragged pendant trails. The impulse is the anchor's own x velocity, so it
 // fires only while the lamp is actually moving and dies with it. This REPLACES

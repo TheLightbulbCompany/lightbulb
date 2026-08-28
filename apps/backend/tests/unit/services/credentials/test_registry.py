@@ -73,7 +73,7 @@ def test_posthog_inbound_is_bearer_guided():
     assert event.starter_prompt is not None
     assert "duplicate-activation-blocker" in event.starter_prompt
     assert "CloudWatch" in event.starter_prompt
-    assert "{{code, service=isol8-backend, env=prod}}" in event.starter_prompt
+    assert "{{code, service=lightbulb-backend, env=prod}}" in event.starter_prompt
     assert "conversation data" in event.starter_prompt
     assert "{event_label}" in p.inbound.template.title
 

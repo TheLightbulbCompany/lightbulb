@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { HeroFunnel } from "../HeroFunnel";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { SIGNUP_INTENT_COOKIE } from "@/lib/signupIntent";
+import { getTheme, setTheme } from "../HeroLamp/lampStore";
 
 const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
 
@@ -95,5 +96,30 @@ describe("HeroFunnel", () => {
     expect(start).toBeDisabled();
     fireEvent.click(start);
     expect(pushMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("HeroFunnel lights the room", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setTheme("dark");
+  });
+
+  it("the first character typed turns the light on", () => {
+    render(<HeroFunnel />);
+    const input = screen.getByRole("textbox", { name: /your idea/i });
+    expect(getTheme()).toBe("dark");
+    fireEvent.change(input, { target: { value: "A" } });
+    expect(getTheme()).toBe("light");
+  });
+
+  it("typing never turns the light back off", () => {
+    render(<HeroFunnel />);
+    const input = screen.getByRole("textbox", { name: /your idea/i });
+    fireEvent.change(input, { target: { value: "A" } });
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.change(input, { target: { value: "B" } });
+    expect(getTheme()).toBe("light");
   });
 });

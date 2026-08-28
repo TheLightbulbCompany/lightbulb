@@ -30,16 +30,21 @@ export const ROOT_DOMAIN = "flickmeon.ai";
 export const PLATFORM_MAIL_DOMAIN = "thelightbulb.company";
 
 /**
- * The mail domain being retired.
+ * The mail domain being retired. EMPTY = none; the retirement is done.
  *
- * Every agent address already minted into DynamoDB is `{agent}@{slug}.isol8.co`
- * and nothing migrates them, so isol8.co keeps its records, its SES identity
- * and its receipt-rule recipients until a backfill re-mints those addresses on
- * PLATFORM_MAIL_DOMAIN. Delete this constant together with the legacy leg in
- * ses-inbound-stack.ts and the legacy identity ARN in service-stack.ts — that
- * is the retirement step, and it is not this one.
+ * This held `isol8.co` while agent addresses were still minted there. Its own
+ * precondition -- "until a backfill re-mints those addresses on
+ * PLATFORM_MAIL_DOMAIN" -- was met on 2026-08-27:
+ * `scripts/rekey_agent_email_domain.py` ran against BOTH envs (18 prod + 6 dev
+ * moved, 0 collisions), the superseded alias rows were deleted, and all three
+ * SES tenants were re-associated onto `identity/thelightbulb.company` and
+ * dissociated from `identity/isol8.co`. Zero addresses remain on the old domain.
+ *
+ * Kept as a parameter rather than deleted: it is the switch for retiring ANY
+ * mail domain, and `publishLegacy` in ses-inbound-stack.ts already reads empty
+ * as "publish nothing". Set it to a domain to run this play again.
  */
-export const LEGACY_MAIL_DOMAIN = "isol8.co";
+export const LEGACY_MAIL_DOMAIN = "";
 
 /**
  * Domain the Clerk frontend API hangs off (`clerk.{CLERK_DOMAIN}`).

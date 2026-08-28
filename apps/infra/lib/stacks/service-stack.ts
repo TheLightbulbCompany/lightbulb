@@ -201,15 +201,20 @@ export class ServiceStack extends cdk.Stack {
     const env = props.environment;
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
     const platformMailDomain = props.platformMailDomain ?? PLATFORM_MAIL_DOMAIN;
-    // Every SES identity the backend may send under. Two while the mail-domain
-    // move is in flight: `resolve_from_address` (core/services/agent_email.py)
-    // returns whatever address the DynamoDB address book holds, and every
-    // address minted before the move is still `{agent}@{slug}.isol8.co` — so
-    // dropping the legacy identity here would AccessDeny every reply from an
-    // existing agent mailbox. Collapses to one entry in the retirement PR.
+    // Every SES identity the backend may send under. This was two while the
+    // mail-domain move was in flight, because `resolve_from_address`
+    // (core/services/agent_email.py) returns whatever the DynamoDB address book
+    // holds and pre-move addresses were still on the legacy domain. The re-key
+    // has run in both envs and no address remains there, so this is now one.
+    //
+    // The filter is load-bearing, not defensive: LEGACY_MAIL_DOMAIN is now ""
+    // and an unguarded spread would emit `identity/` -- a malformed ARN in the
+    // task role's ses:SendRawEmail resource list.
     const sendIdentityArns = [
       platformMailDomain,
-      ...(LEGACY_MAIL_DOMAIN === platformMailDomain ? [] : [LEGACY_MAIL_DOMAIN]),
+      ...(LEGACY_MAIL_DOMAIN && LEGACY_MAIL_DOMAIN !== platformMailDomain
+        ? [LEGACY_MAIL_DOMAIN]
+        : []),
     ].map((d) => `arn:aws:ses:${this.region}:${this.account}:identity/${d}`);
 
     // -------------------------------------------------------------------------

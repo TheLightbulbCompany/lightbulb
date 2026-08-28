@@ -128,3 +128,32 @@ def test_rank_orders_and_computes_pct():
     assert [r["display_name"] for r in rows] == ["B", "A", "D"]
     assert rows[0] == {"rank": 1, "display_name": "B", "delta_cents": 500, "pct": None, "currency": "usd"}
     assert rows[1]["pct"] == 0.5 and rows[2]["pct"] == -0.2
+
+
+def test_rank_pct_uses_the_prorated_baseline_when_present():
+    """delta_cents is measured against the prorated baseline; pct must match, or
+    the board understates everyone's growth until the last day."""
+    rows = launch_service.rank(
+        [
+            {
+                "display_name": "A",
+                "public": True,
+                "delta_cents": 500,
+                "baseline_cents": 10_000,
+                "baseline_prorated_cents": 1_000,
+                "currency": "usd",
+                "entered_at": "1",
+            },
+            {
+                "display_name": "B",
+                "public": True,
+                "delta_cents": 100,
+                "baseline_cents": 1_000,
+                "baseline_prorated_cents": 0,
+                "currency": "usd",
+                "entered_at": "2",
+            },
+        ]
+    )
+    assert rows[0]["pct"] == 0.5  # 500 / 1_000, not 500 / 10_000
+    assert rows[1]["pct"] == 0.1  # prorated 0 ⇒ falls back to the full baseline

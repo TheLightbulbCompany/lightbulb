@@ -46,7 +46,10 @@ async def test_refresh_entry_writes_window_minus_baseline(repo):
     ):
         await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
     summer.assert_awaited_once_with("rk_test_x", S.competition_start_at, NOW)
-    repo.set_revenue.assert_awaited_once_with("u1", window_cents=12_000, delta_cents=7_000, currency="usd")
+    # NOW is 9d20h into a 30d window ⇒ 32.7…% of the 5_000 baseline has "happened".
+    repo.set_revenue.assert_awaited_once_with(
+        "u1", window_cents=12_000, delta_cents=12_000 - 1_639, currency="usd", baseline_prorated_cents=1_639
+    )
 
 
 async def test_refresh_entry_clamps_window_end_to_competition_end(repo):
@@ -154,7 +157,8 @@ async def test_refresh_entry_finalises_a_baseline_computed_before_the_window_clo
     assert repo.set_baseline.await_args.kwargs["currency"] == "usd"
     assert repo.set_baseline.await_args.kwargs["baseline_at"]
     # the recomputed baseline, not the provisional 5_000, drives this pass's delta
-    assert repo.set_revenue.await_args.kwargs["delta_cents"] == 12_000 - 9_000
+    assert repo.set_revenue.await_args.kwargs["baseline_prorated_cents"] == 2_950  # 9_000 × 9d20h/30d
+    assert repo.set_revenue.await_args.kwargs["delta_cents"] == 12_000 - 2_950
 
 
 async def test_refresh_entry_finalises_when_baseline_at_is_missing(repo):
@@ -175,3 +179,33 @@ async def test_refresh_entry_leaves_a_settled_baseline_alone(repo):
         await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
     assert summer.await_count == 1
     repo.set_baseline.assert_not_awaited()
+
+
+# --- Prorated baseline -------------------------------------------------------
+
+
+async def test_prorated_baseline_is_the_whole_baseline_at_the_finish(repo):
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(12_000, "usd"))),
+    ):
+        await rev.refresh_entry(ENTRY("u1", 5_000), S, now=S.competition_end_at)
+    assert repo.set_revenue.await_args.kwargs["baseline_prorated_cents"] == 5_000
+    assert repo.set_revenue.await_args.kwargs["delta_cents"] == 12_000 - 5_000
+
+
+async def test_prorated_baseline_scales_with_elapsed_time(repo):
+    three_days = S.competition_start_at + timedelta(days=3)  # 3 of 30 days
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(1_000, "usd"))),
+    ):
+        await rev.refresh_entry(ENTRY("u1", 5_000), S, now=three_days)
+    assert repo.set_revenue.await_args.kwargs["baseline_prorated_cents"] == 500
+    assert repo.set_revenue.await_args.kwargs["delta_cents"] == 1_000 - 500
+
+
+def test_prorated_baseline_clamps_outside_the_window():
+    assert rev.prorated_baseline(5_000, S, S.competition_start_at) == 0
+    assert rev.prorated_baseline(5_000, S, S.competition_start_at - timedelta(days=1)) == 0
+    assert rev.prorated_baseline(5_000, S, S.competition_end_at + timedelta(days=9)) == 5_000

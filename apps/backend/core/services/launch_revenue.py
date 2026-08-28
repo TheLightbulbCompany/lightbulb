@@ -161,6 +161,18 @@ def _baseline_is_provisional(entry: dict, s: Schedule) -> bool:
     return launch_phase.parse_iso(raw) < s.competition_start_at
 
 
+def prorated_baseline(baseline_cents: int, s: Schedule, end: datetime) -> int:
+    """The baseline covers a full 30 days; the live window covers only the days
+    elapsed so far. Comparing them whole ranks the board by baseline SIZE until
+    the last day — a big incumbent sits bottom no matter how fast it grows — so
+    the baseline is scaled to the elapsed fraction of the competition."""
+    total = (s.competition_end_at - s.competition_start_at).total_seconds()
+    if total <= 0:
+        return baseline_cents
+    elapsed = min(max((end - s.competition_start_at).total_seconds(), 0.0), total)
+    return round(baseline_cents * elapsed / total)
+
+
 async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None:
     owner_id = entry["owner_id"]
     now = now or datetime.now(timezone.utc)
@@ -195,9 +207,17 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
         logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
         await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "refresh_failed"))
         return
-    delta = window - baseline_cents
+    prorated = prorated_baseline(baseline_cents, s, end)
+    delta = window - prorated
     await _record(
-        owner_id, launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency)
+        owner_id,
+        launch_entries_repo.set_revenue(
+            owner_id,
+            window_cents=window,
+            delta_cents=delta,
+            currency=currency,
+            baseline_prorated_cents=prorated,
+        ),
     )
 
 

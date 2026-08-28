@@ -54,7 +54,8 @@ def deps():
             "public": True,
             "waitlist_position": 1,
             "currency": "usd",
-            "baseline_cents": 100,
+            "baseline_cents": 400,
+            "baseline_prorated_cents": 100,
             "window_cents": 300,
             "delta_cents": 200,
             "refreshed_at": "t",
@@ -110,7 +111,7 @@ async def test_compute_counts_and_economics(deps):
     assert econ["net_cents"] == econ["pnl_cents"] + 500_000
     assert (
         data["entries"][0]["owner_id"] == "u_a"
-        and data["entries"][0]["pct"] == 2.0
+        and data["entries"][0]["pct"] == 2.0  # 200 / prorated 100, not / baseline 400
         and data["entries"][0]["comp_eligible"] is True
     )
     assert data["entries"][1]["refresh_error"] == "stripe_auth"

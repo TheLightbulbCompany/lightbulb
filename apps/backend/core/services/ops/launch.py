@@ -59,6 +59,9 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         is_eligible = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
         comp_eligible += int(is_eligible)
         baseline = int(e.get("baseline_cents", 0))
+        # pct is measured against the same prorated baseline `delta_cents` was.
+        prorated = int(e.get("baseline_prorated_cents") or 0)
+        pct_baseline = prorated if prorated > 0 else baseline
         delta = int(e.get("delta_cents", 0))
         entry_rows.append(
             {
@@ -71,7 +74,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
                 "baseline_cents": baseline,
                 "window_cents": int(e.get("window_cents", 0)),
                 "delta_cents": delta,
-                "pct": round(delta / baseline, 4) if baseline > 0 else None,
+                "pct": round(delta / pct_baseline, 4) if pct_baseline > 0 else None,
                 "refreshed_at": e.get("refreshed_at"),
                 "refresh_error": e.get("refresh_error"),
                 "comp_eligible": is_eligible,

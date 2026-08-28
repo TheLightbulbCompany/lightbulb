@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
-_INT_FIELDS = ("baseline_cents", "window_cents", "delta_cents", "waitlist_position")
+_INT_FIELDS = ("baseline_cents", "baseline_prorated_cents", "window_cents", "delta_cents", "waitlist_position")
 
 
 def _table():
@@ -80,18 +80,30 @@ async def set_baseline(owner_id: str, *, baseline_cents: int, currency: str, bas
     )
 
 
-async def set_revenue(owner_id: str, *, window_cents: int, delta_cents: int, currency: str) -> None:
+async def set_revenue(
+    owner_id: str,
+    *,
+    window_cents: int,
+    delta_cents: int,
+    currency: str,
+    baseline_prorated_cents: int | None = None,
+) -> None:
+    sets = ["window_cents = :w", "delta_cents = :d", "currency = :c", "refreshed_at = :t"]
+    values: dict = {
+        ":w": int(window_cents),
+        ":d": int(delta_cents),
+        ":c": currency,
+        ":t": utc_now_iso(),
+    }
+    if baseline_prorated_cents is not None:
+        sets.append("baseline_prorated_cents = :bp")
+        values[":bp"] = int(baseline_prorated_cents)
     await run_in_thread(
         _table().update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression="SET window_cents = :w, delta_cents = :d, currency = :c, refreshed_at = :t REMOVE refresh_error",
+        UpdateExpression=f"SET {', '.join(sets)} REMOVE refresh_error",
         ConditionExpression="attribute_exists(owner_id)",
-        ExpressionAttributeValues={
-            ":w": int(window_cents),
-            ":d": int(delta_cents),
-            ":c": currency,
-            ":t": utc_now_iso(),
-        },
+        ExpressionAttributeValues=values,
     )
 
 

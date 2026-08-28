@@ -145,7 +145,10 @@ def rank(entries: list[dict]) -> list[dict]:
     visible.sort(key=lambda e: (-int(e.get("delta_cents", 0)), e.get("entered_at") or ""))
     rows = []
     for i, e in enumerate(visible, start=1):
-        baseline = int(e.get("baseline_cents", 0))
+        # The prorated baseline is what `delta_cents` was measured against; falling
+        # back to the full baseline would understate growth mid-competition.
+        prorated = int(e.get("baseline_prorated_cents") or 0)
+        baseline = prorated if prorated > 0 else int(e.get("baseline_cents", 0))
         delta = int(e.get("delta_cents", 0))
         rows.append(
             {

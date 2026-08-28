@@ -4,7 +4,7 @@
 
 **Goal:** Ship the waitlist → drop → comp → competition loop: a public `/launch` page with waitlist + referral links, an activation-aware "enter" flow that reads the entrant's own Stripe revenue through a pasted restricted key, an hourly leaderboard sweep, automatic referral free-months on the referred person's first paid invoice, and an `/admin/launch` page with the economics.
 
-**Architecture:** Two new DynamoDB tables (`launch-waitlist` keyed by email, `launch-entries` keyed by owner_id) read by full table name from env (the `isol8-`→`lightbulb-` prefix flip is mid-flight, so the new tables must not depend on `DYNAMODB_TABLE_PREFIX`). One new router (`/api/v1/launch`), four small services (phase math, service, revenue, referral), one webhook change (`handle_invoice_paid`), one lifespan loop, one ops endpoint. Frontend: one public route, one admin route, self-contained components — nothing under `components/landing/` or the brand-owned files.
+**Architecture:** Two new DynamoDB tables (`launch-waitlist` keyed by email, `launch-entries` keyed by owner_id) read by full table name from env (the `isol8-`→`lightbulb-` prefix flip is mid-flight, so the new tables must not depend on `DYNAMODB_TABLE_PREFIX`). One new router (`/api/v1/launch`), four small services (phase math, service, revenue, referral), one webhook change (`handle_invoice_paid`), one ops endpoint; revenue refreshes stale-while-revalidate on board reads — no long-running worker. Frontend: the ROOT landing page (brand-owned) is the waitlist front door and embeds a self-contained `<WaitlistForm />` (one import line, handed to the brand team); `/launch` is the competition page; one admin route. Nothing under `components/landing/` or the brand-owned files is edited here.
 
 **Tech Stack:** FastAPI + boto3 DynamoDB (moto in tests) + stripe-python ≥ 8 + Secrets Manager; AWS CDK (TypeScript, jest); Next.js 16 App Router + Tailwind + vitest/testing-library.
 
@@ -31,7 +31,7 @@
 - `core/repositories/launch_waitlist_repo.py` — waitlist rows: join (position counter), get, claim user_id, attribute referral, counters, reward CAS, banked months.
 - `core/repositories/launch_entries_repo.py` — entry rows: upsert, get, list, write revenue.
 - `core/services/launch_service.py` — `me()`, `can_enter()`, `enter()`; key validation + secret storage; pot math.
-- `core/services/launch_revenue.py` — Stripe balance-transaction summation, `refresh_entry`, `refresh_all`, `sweep_loop`.
+- `core/services/launch_revenue.py` — Stripe balance-transaction summation, `refresh_entry`, `refresh_all`, `maybe_revalidate` (stale-while-revalidate on board reads; no long-running worker).
 - `core/services/launch_referral.py` — `on_invoice_paid()`: reward the referrer, drain banked months.
 - `core/services/ops/launch.py` — admin compute.
 - `routers/launch.py`, `schemas/launch.py` — the HTTP surface.
@@ -46,7 +46,7 @@
 **Frontend (`apps/frontend/src/`)**
 - `lib/launch.ts` — types + public fetchers + `formatCents`.
 - `app/launch/page.tsx` — server shell with metadata; renders `<LaunchPage />`.
-- `components/launch/LaunchPage.tsx` (client, phase switch), `LaunchHero.tsx`, `WaitlistForm.tsx`, `Leaderboard.tsx`, `MyLaunchCard.tsx`, `EnterForm.tsx`, `useLaunchRef.ts`.
+- `components/launch/LaunchPage.tsx` (client, phase switch), `LaunchHero.tsx`, `WaitlistForm.tsx` (self-contained drop-in for the root hero — fetches its own state, renders nothing unless phase is `waitlist`), `ReferralLink.tsx`, `Leaderboard.tsx`, `MyLaunchCard.tsx`, `EnterForm.tsx`, `useLaunchRef.ts`.
 - `app/admin/launch/page.tsx`, `app/admin/launch/LaunchAdminClient.tsx`, `app/admin/_lib/api.ts` (+`getLaunchOps`, types), `app/admin/_actions/launch.ts`, `app/admin/layout.tsx` (nav link).
 - `lib/analytics.ts` — three new `AnalyticsEvent` members.
 
@@ -1300,7 +1300,7 @@ git commit -m "feat(launch): public /launch info + waitlist join"
   - `launch_service.resolve_email(auth: AuthContext) -> str | None` — `auth.email` else `users.email`.
   - `launch_service.can_enter(*, s: Schedule, billing: dict | None, onboarding: dict, now=None) -> tuple[bool, str | None]` — reasons: `phase_waitlist`, `phase_ended`, `no_subscription`, `not_activated`.
   - `launch_service.me(auth: AuthContext, s: Schedule) -> dict` — the `/launch/me` body.
-  - `launch_service.referral_link(code: str) -> str` — `f"{settings.FRONTEND_URL}/launch?ref={code}"`.
+  - `launch_service.referral_link(code: str) -> str` — `f"{settings.FRONTEND_URL}/?ref={code}"`.
   - `LIVE_FOR_ENTRY = frozenset({"active", "trialing"})`
 
 - [ ] **Step 1: Write the failing service tests**
@@ -1366,7 +1366,7 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
     wl.join.assert_awaited_once_with("me@x.com", referred_by=None, source="signup")
     wl.claim_user.assert_awaited_once_with("me@x.com", "user_1")
     assert body["waitlist"] == {"position": 300, "referral_code": "ABCD2345", "in_comp_window": False,
-                                "referral_link": "https://dev.flickmeon.ai/launch?ref=ABCD2345",
+                                "referral_link": "https://dev.flickmeon.ai/?ref=ABCD2345",
                                 "referrals_signed_up": 2, "referrals_paid": 1, "free_months_banked": 1}
     assert body["activated"] is True and body["activated_at"] == ACTIVATED["bootstrap_delivered_at"]
     assert body["entry"] is None and body["can_enter"] is True and body["reason"] is None
@@ -1465,7 +1465,7 @@ LIVE_FOR_ENTRY = frozenset({"active", "trialing"})
 
 
 def referral_link(code: str) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/launch?ref={code}"
+    return f"{settings.FRONTEND_URL.rstrip('/')}/?ref={code}"
 
 
 async def resolve_email(auth: AuthContext) -> str | None:
@@ -1552,7 +1552,7 @@ async def attribute_referral(
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
-    """Attribute a post-drop sign-up who arrived via ``/launch?ref=``.
+    """Attribute a post-drop sign-up who arrived via ``/?ref=``.
     Refused once the caller has a live subscription — attribution must
     precede the first payment, which is what pays the referrer."""
     from core.auth import resolve_owner_id
@@ -2392,21 +2392,24 @@ git commit -m "feat(launch): referral free month on the referred person's first 
 
 ---
 
-### Task 10: Hourly revenue sweep + lifespan wiring
+### Task 10: Revenue refresh — revalidate on read, no long-running sweep
 
 **Files:**
-- Modify: `apps/backend/core/services/launch_revenue.py` (append `refresh_entry`, `refresh_all`, `sweep_loop`)
-- Modify: `apps/backend/main.py` (start the loop in `lifespan`, register in `system_health.BACKGROUND_TASKS`)
-- Test: `apps/backend/tests/unit/services/test_launch_revenue_sweep.py`, extend `tests/unit/test_main_lifespan.py`
+- Modify: `apps/backend/core/services/launch_revenue.py` (append `refresh_entry`, `refresh_all`, `maybe_revalidate`)
+- Modify: `apps/backend/routers/launch.py` (`launch_me` and `leaderboard` call `maybe_revalidate()` first)
+- Test: `apps/backend/tests/unit/services/test_launch_revenue_sweep.py`, extend `tests/unit/routers/test_launch_enter.py`
 
 **Interfaces:**
-- Consumes: Task 7 `load_key/sum_net_revenue/KeyRejected/MixedCurrency`, `launch_entries_repo.list_all/set_revenue/set_refresh_error`, `launch_phase.schedule/phase`.
-- Produces: `async refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None`; `async refresh_all(*, force: bool = False, now=None) -> int` (entries refreshed); `async sweep_loop(interval_s: int = 3600) -> None`; `STALE_AFTER_S = 55 * 60`; `SWEEP_GRACE_AFTER_END = timedelta(hours=24)`.
+- Consumes: Task 7 `load_key/sum_net_revenue/KeyRejected/MixedCurrency`, `launch_entries_repo.list_all/set_revenue/set_refresh_error`, `launch_phase.schedule/phase/parse_iso`.
+- Produces: `async refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None`; `async refresh_all(*, force: bool = False, now=None) -> int` (entries refreshed; skips rows fresher than `STALE_AFTER_S` unless forced; no-op outside `[competition_start, competition_end + 24h]`); `maybe_revalidate(now: datetime | None = None) -> bool` — stale-while-revalidate: schedules ONE background `refresh_all()` when none is in flight and the last one started more than `REVALIDATE_THROTTLE_S` ago; returns whether it scheduled. Module state: `_inflight: asyncio.Task | None`, `_last_started_at: datetime | None`. Constants `STALE_AFTER_S = 55 * 60`, `REVALIDATE_THROTTLE_S = 5 * 60`, `SWEEP_GRACE_AFTER_END = timedelta(hours=24)`.
+
+Why this shape: the board only needs to be fresh while someone is looking. A read that finds stale rows returns the stored numbers immediately and kicks one refresh in the background; the throttle keeps a busy board from scanning DynamoDB on every request; `refresh_all` itself skips rows refreshed in the last 55 minutes, so a burst of reads costs one scan, not N Stripe calls. Nothing runs when nobody reads. Admin "Refresh all" (Task 11) forces it for judging.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 # apps/backend/tests/unit/services/test_launch_revenue_sweep.py
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -2425,6 +2428,15 @@ def repo():
         r.set_revenue = AsyncMock()
         r.set_refresh_error = AsyncMock()
         yield r
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_state():
+    rev._inflight = None
+    rev._last_started_at = None
+    yield
+    rev._inflight = None
+    rev._last_started_at = None
 
 
 async def test_refresh_entry_writes_window_minus_baseline(repo):
@@ -2468,44 +2480,65 @@ async def test_refresh_all_noop_outside_window(repo):
         assert await rev.refresh_all(now=DROP - timedelta(days=1)) == 0
         assert await rev.refresh_all(now=S.competition_end_at + timedelta(days=2)) == 0
         one.assert_not_awaited()
+
+
+async def test_maybe_revalidate_schedules_once_and_throttles():
+    with patch.object(rev.launch_phase, "schedule", return_value=S), patch.object(rev, "refresh_all", AsyncMock(return_value=1)) as full:
+        assert rev.maybe_revalidate(now=NOW) is True
+        assert rev.maybe_revalidate(now=NOW) is False  # in flight
+        await asyncio.sleep(0)
+        await rev._inflight
+        assert rev.maybe_revalidate(now=NOW + timedelta(minutes=1)) is False  # throttled
+        assert rev.maybe_revalidate(now=NOW + timedelta(minutes=6)) is True
+        await rev._inflight
+        assert full.await_count == 2
+
+
+async def test_maybe_revalidate_noop_when_unconfigured_or_outside_window():
+    with patch.object(rev.launch_phase, "schedule", return_value=None):
+        assert rev.maybe_revalidate(now=NOW) is False
+    with patch.object(rev.launch_phase, "schedule", return_value=S):
+        assert rev.maybe_revalidate(now=DROP - timedelta(days=1)) is False
+        assert rev.maybe_revalidate(now=S.competition_end_at + timedelta(days=2)) is False
+    assert rev._inflight is None
 ```
 
-Add to `tests/unit/test_main_lifespan.py`:
+Add to `tests/unit/routers/test_launch_enter.py`:
 
 ```python
-@pytest.mark.asyncio
-async def test_lifespan_registers_launch_sweep_when_configured():
-    """The revenue sweep is a lifespan task like running_gauges — registered in
-    BACKGROUND_TASKS so /admin/system/health can see it — only when
-    LAUNCH_DROP_AT is set."""
-    from core.services import system_health
-    from main import _start_launch_sweep
+@patch("routers.launch.launch_revenue.maybe_revalidate")
+@patch("routers.launch.launch_service.leaderboard", AsyncMock(return_value={"entrants": 0, "rows": []}))
+async def test_leaderboard_read_triggers_revalidate(reval, configured, unauthenticated_async_client):
+    await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
+    reval.assert_called_once()
 
-    with patch("main.settings.LAUNCH_DROP_AT", ""):
-        assert _start_launch_sweep() is None
-        assert "launch_sweep" not in system_health.BACKGROUND_TASKS
-    with patch("main.settings.LAUNCH_DROP_AT", "2026-09-18T16:00:00Z"), patch("core.services.launch_revenue.sweep_loop", new_callable=AsyncMock):
-        task = _start_launch_sweep()
-        assert task is system_health.BACKGROUND_TASKS["launch_sweep"]
-        task.cancel()
-        system_health.BACKGROUND_TASKS.pop("launch_sweep", None)
+
+@patch("routers.launch.launch_revenue.maybe_revalidate")
+@patch("routers.launch.launch_service.me", AsyncMock(return_value={"waitlist": None}))
+async def test_me_read_triggers_revalidate(reval, configured, async_client):
+    await async_client.get("/api/v1/launch/me")
+    reval.assert_called_once()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_launch_revenue_sweep.py tests/unit/test_main_lifespan.py -k "launch" -v`
-Expected: FAIL — `AttributeError: refresh_entry` / `ImportError: _start_launch_sweep`.
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_launch_revenue_sweep.py tests/unit/routers/test_launch_enter.py -v`
+Expected: FAIL — `AttributeError: refresh_entry` / `maybe_revalidate`.
 
-- [ ] **Step 3: Append the sweep to `launch_revenue.py`**
+- [ ] **Step 3: Append the refresh + revalidate code to `launch_revenue.py`**
 
 Add imports `import asyncio`, `from datetime import timedelta, timezone`, `from core.repositories import launch_entries_repo`, `from core.services import launch_phase`, `from core.services.launch_phase import Schedule`, then append:
 
 ```python
-# --- Sweep -----------------------------------------------------------------
+# --- Refresh ---------------------------------------------------------------
 
 STALE_AFTER_S = 55 * 60
+REVALIDATE_THROTTLE_S = 5 * 60
 SWEEP_GRACE_AFTER_END = timedelta(hours=24)
 _PER_OWNER_PAUSE_S = 0.2
+
+_inflight: asyncio.Task | None = None
+_last_started_at: datetime | None = None
 
 
 async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None:
@@ -2524,12 +2557,16 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
     except MixedCurrency:
         await launch_entries_repo.set_refresh_error(owner_id, "mixed_currency")
         return
-    except Exception:  # noqa: BLE001 — one bad entry must not stop the sweep
-        logger.warning("launch sweep: refresh failed for %s", owner_id, exc_info=True)
+    except Exception:  # noqa: BLE001 — one bad entry must not stop the pass
+        logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
         await launch_entries_repo.set_refresh_error(owner_id, "refresh_failed")
         return
     delta = window - int(entry.get("baseline_cents", 0))
     await launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency)
+
+
+def _in_refresh_window(s: Schedule, now: datetime) -> bool:
+    return s.competition_start_at <= now <= s.competition_end_at + SWEEP_GRACE_AFTER_END
 
 
 def _is_stale(entry: dict, now: datetime) -> bool:
@@ -2542,7 +2579,7 @@ def _is_stale(entry: dict, now: datetime) -> bool:
 async def refresh_all(*, force: bool = False, now: datetime | None = None) -> int:
     s = launch_phase.schedule()
     now = now or datetime.now(timezone.utc)
-    if s is None or now < s.competition_start_at or now > s.competition_end_at + SWEEP_GRACE_AFTER_END:
+    if s is None or not _in_refresh_window(s, now):
         return 0
     entries = await launch_entries_repo.list_all()
     n = 0
@@ -2555,53 +2592,52 @@ async def refresh_all(*, force: bool = False, now: datetime | None = None) -> in
     return n
 
 
-async def sweep_loop(interval_s: int = 3600) -> None:
-    """Lifespan task. ponytail: in-process on the single backend task; a
-    scheduled Lambda if the fleet ever runs more than one instance."""
-    while True:
+def maybe_revalidate(now: datetime | None = None) -> bool:
+    """Stale-while-revalidate for the board: called on every /launch/me and
+    /launch/leaderboard read. Returns the stored numbers to the caller (the
+    caller doesn't await this) and schedules at most one background pass.
+    ponytail: module-level in-flight/throttle state on the single backend
+    task; a scheduled Lambda if the fleet ever runs more than one instance."""
+    global _inflight, _last_started_at
+    s = launch_phase.schedule()
+    now = now or datetime.now(timezone.utc)
+    if s is None or not _in_refresh_window(s, now):
+        return False
+    if _inflight is not None and not _inflight.done():
+        return False
+    if _last_started_at is not None and (now - _last_started_at).total_seconds() < REVALIDATE_THROTTLE_S:
+        return False
+    _last_started_at = now
+
+    async def _run() -> None:
         try:
-            n = await refresh_all()
-            logger.info("launch sweep: refreshed %d entries", n)
+            n = await refresh_all(now=now)
+            logger.info("launch refresh: %d entries", n)
         except Exception:  # noqa: BLE001
-            logger.warning("launch sweep iteration failed", exc_info=True)
-        await asyncio.sleep(interval_s)
+            logger.warning("launch refresh pass failed", exc_info=True)
+
+    _inflight = asyncio.create_task(_run())
+    return True
 ```
 
-- [ ] **Step 4: Wire the lifespan**
+- [ ] **Step 4: Call it from the two read routes**
 
-In `main.py`, next to `_running_count_gauge_loop`, add:
+In `routers/launch.py` add `from core.services import launch_revenue` and, as the first line of both `launch_me` and `leaderboard`:
 
 ```python
-def _start_launch_sweep() -> asyncio.Task | None:
-    """Start the Launch Competition revenue sweep when the feature is configured.
-    Registered like running_gauges so /admin/system/health can see it."""
-    if not (settings.LAUNCH_DROP_AT or "").strip():
-        return None
-    from core.services import launch_revenue, system_health
-
-    task = asyncio.create_task(launch_revenue.sweep_loop())
-    system_health.BACKGROUND_TASKS["launch_sweep"] = task
-    return task
+    launch_revenue.maybe_revalidate()
 ```
-
-and in `lifespan`, right after `system_health.BACKGROUND_TASKS["running_gauges"] = gauge_task`:
-
-```python
-    _start_launch_sweep()
-```
-
-(`settings` is already imported in `main.py`; confirm with `grep -n "^from core.config import settings" main.py`.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_launch_revenue_sweep.py tests/unit/services/test_launch_revenue.py tests/unit/test_main_lifespan.py -v && uv run ruff check core/services/launch_revenue.py main.py`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_launch_revenue_sweep.py tests/unit/services/test_launch_revenue.py tests/unit/routers/test_launch_enter.py tests/unit/routers/test_launch_me.py -v && uv run ruff check core/services/launch_revenue.py routers/launch.py`
 Expected: all pass; ruff clean.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/backend/core/services/launch_revenue.py apps/backend/main.py apps/backend/tests/unit/services/test_launch_revenue_sweep.py apps/backend/tests/unit/test_main_lifespan.py
-git commit -m "feat(launch): hourly revenue sweep as a lifespan task"
+git add apps/backend/core/services/launch_revenue.py apps/backend/routers/launch.py apps/backend/tests/unit/services/test_launch_revenue_sweep.py apps/backend/tests/unit/routers/test_launch_enter.py
+git commit -m "feat(launch): revenue refresh as stale-while-revalidate on board reads"
 ```
 
 ---
@@ -2684,7 +2720,7 @@ async def test_compute_counts_and_economics(deps):
     assert data["entries"][0]["owner_id"] == "u_a" and data["entries"][0]["pct"] == 2.0 and data["entries"][0]["comped"] is True
     assert data["entries"][1]["refresh_error"] == "stripe_auth"
     row = next(r for r in data["waitlist_rows"] if r["email"] == "a@x.com")
-    assert row["referral_link"] == "https://dev.flickmeon.ai/launch?ref=AAAA2345" and row["activated"] is True
+    assert row["referral_link"] == "https://dev.flickmeon.ai/?ref=AAAA2345" and row["activated"] is True
 
 
 async def test_compute_is_cached_for_60s(deps):
@@ -2928,14 +2964,24 @@ git commit -m "feat(launch): admin ops endpoint — the economics sheet with liv
 
 ---
 
-### Task 12: Public `/launch` page — hero, waitlist form, leaderboard
+### Task 12: `/launch` competition page + the embeddable waitlist form
+
+**Where things live (owner decision):** the ROOT landing page (`/`, owned by the brand branch) is the waitlist front door during the campaign; `/launch` is the competition page. So `WaitlistForm` is a self-contained drop-in — no props, reads `?ref=` itself, fetches `/launch` itself, and **renders nothing unless the phase is `waitlist`** — so the brand team can leave it in their hero through the drop and it simply disappears. Hand them exactly this and touch none of their files:
+
+```tsx
+import { WaitlistForm } from "@/components/launch/WaitlistForm";
+// …inside the hero, under the headline:
+<WaitlistForm />
+```
+
+`/launch` also embeds the form pre-drop so a shared `/launch` link never dead-ends.
 
 **Files:**
 - Create: `apps/frontend/src/lib/launch.ts`
 - Create: `apps/frontend/src/app/launch/page.tsx`
-- Create: `apps/frontend/src/components/launch/LaunchPage.tsx`, `LaunchHero.tsx`, `WaitlistForm.tsx`, `Leaderboard.tsx`, `useLaunchRef.ts`
+- Create: `apps/frontend/src/components/launch/LaunchPage.tsx`, `LaunchHero.tsx`, `WaitlistForm.tsx`, `ReferralLink.tsx`, `Leaderboard.tsx`, `useLaunchRef.ts`, placeholder `MyLaunchCard.tsx`
 - Modify: `apps/frontend/src/lib/analytics.ts` (`AnalyticsEvent` union)
-- Test: `apps/frontend/src/components/launch/__tests__/WaitlistForm.test.tsx`, `LaunchPage.test.tsx`, `apps/frontend/src/lib/__tests__/launch.test.ts`
+- Test: `apps/frontend/src/lib/__tests__/launch.test.ts`, `apps/frontend/src/components/launch/__tests__/WaitlistForm.test.tsx`, `LaunchPage.test.tsx`
 
 **Interfaces:**
 - Produces (`lib/launch.ts`):
@@ -2943,17 +2989,19 @@ git commit -m "feat(launch): admin ops endpoint — the economics sheet with liv
   export type LaunchPhase = "waitlist" | "activation" | "live" | "ended";
   export interface LaunchInfo { phase: LaunchPhase; drop_at: string; competition_start_at: string; competition_end_at: string; pot_cents: number; entrants: number; waitlist_count: number; comp_slots: number }
   export interface LeaderboardRow { rank: number; display_name: string; delta_cents: number; pct: number | null; currency: string }
-  export interface LaunchMe { phase: LaunchPhase; waitlist: { position: number; referral_code: string; in_comp_window: boolean; referral_link: string; referrals_signed_up: number; referrals_paid: number; free_months_banked: number } | null; activated: boolean; activated_at: string | null; entry: LaunchEntry | null; can_enter: boolean; reason: string | null }
   export interface LaunchEntry { display_name: string; public: boolean; entered_at: string | null; currency: string | null; baseline_cents: number; window_cents: number; delta_cents: number; refreshed_at: string | null; refresh_error: string | null }
+  export interface LaunchMe { phase: LaunchPhase; waitlist: { position: number; referral_code: string; in_comp_window: boolean; referral_link: string; referrals_signed_up: number; referrals_paid: number; free_months_banked: number } | null; activated: boolean; activated_at: string | null; entry: LaunchEntry | null; can_enter: boolean; reason: string | null }
   export async function fetchLaunchInfo(): Promise<LaunchInfo | null>      // null on 404 (feature off)
   export async function fetchLeaderboard(): Promise<{ entrants: number; rows: LeaderboardRow[] }>
   export async function joinWaitlist(email: string, ref: string | null): Promise<{ position: number; referral_code: string; in_comp_window: boolean }>  // throws Error(detail) on 4xx
-  export function formatMoney(cents: number, currency: string): string      // "$1,234" / "€1.234"; no fractional
+  export function formatMoney(cents: number, currency: string): string      // "$1,235" / "€20"; whole units
   export function formatPct(pct: number | null): string                     // "+25%", "−4%", "new" when null
   export const LAUNCH_REF_KEY = "launch_ref";
   ```
-- `useLaunchRef.ts`: `export function useLaunchRef(): string | null` — on mount reads `?ref=` from `useSearchParams()`, stores it under `LAUNCH_REF_KEY` in `localStorage`, returns the stored value (query wins over storage).
-- `components/launch/LaunchPage.tsx`: default export client component; polls `fetchLaunchInfo` every 30s; renders `LaunchHero` + phase body; renders `<MyLaunchCard />` (Task 13) when `useAuth().isSignedIn`. Renders a "Launch is not open yet" line when `fetchLaunchInfo` returns null.
+- `useLaunchRef(): string | null` — reads `?ref=` from `useSearchParams()`, persists under `LAUNCH_REF_KEY`, query wins over storage.
+- `WaitlistForm()` — no props; wraps itself in `<Suspense>` (for `useSearchParams`); fetches `/launch`; renders `null` unless `phase === "waitlist"`.
+- `ReferralLink({ code, link? })` — copy-to-clipboard; default link is `${SITE_URL}/?ref=${code}`.
+- `LaunchHero({ info })`, `Leaderboard()`, `LaunchPage()` (default export; polls `/launch` every 30s; renders `<MyLaunchCard info={info} />` when signed in).
 - New analytics events: `"launch_waitlist_joined" | "launch_entered" | "launch_referral_copied"`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2980,44 +3028,66 @@ describe("launch formatters", () => {
 ```tsx
 // apps/frontend/src/components/launch/__tests__/WaitlistForm.test.tsx
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const joinWaitlist = vi.fn();
+const fetchLaunchInfo = vi.fn();
 vi.mock("@/lib/launch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/launch")>()),
   joinWaitlist: (...args: unknown[]) => joinWaitlist(...args),
+  fetchLaunchInfo: () => fetchLaunchInfo(),
 }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+const useLaunchRef = vi.fn<() => string | null>(() => null);
+vi.mock("../useLaunchRef", () => ({ useLaunchRef: () => useLaunchRef() }));
 
 import { WaitlistForm } from "../WaitlistForm";
 
+const info = { phase: "waitlist" as const, drop_at: "d", competition_start_at: "s", competition_end_at: "e", pot_cents: 100000, entrants: 0, waitlist_count: 12, comp_slots: 220 };
+
 describe("WaitlistForm", () => {
+  beforeEach(() => { joinWaitlist.mockReset(); fetchLaunchInfo.mockReset(); useLaunchRef.mockReturnValue(null); });
+
   it("submits the email with the stored ref and shows position + referral link", async () => {
+    fetchLaunchInfo.mockResolvedValue(info);
+    useLaunchRef.mockReturnValue("K7QX2MPP");
     joinWaitlist.mockResolvedValue({ position: 47, referral_code: "P9AB3CDE", in_comp_window: true });
-    render(<WaitlistForm compSlots={220} refCode="K7QX2MPP" />);
-    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "me@x.com" } });
+    render(<WaitlistForm />);
+    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "me@x.com" } });
     fireEvent.click(screen.getByRole("button", { name: /join/i }));
     await waitFor(() => expect(joinWaitlist).toHaveBeenCalledWith("me@x.com", "K7QX2MPP"));
     expect(await screen.findByText(/#47/)).toBeInTheDocument();
     expect(screen.getByText(/first 220/i)).toBeInTheDocument();
-    expect(screen.getByDisplayValue(/\/launch\?ref=P9AB3CDE$/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/\/\?ref=P9AB3CDE$/)).toBeInTheDocument();
   });
 
   it("tells a late joiner they are past the comp window", async () => {
+    fetchLaunchInfo.mockResolvedValue(info);
     joinWaitlist.mockResolvedValue({ position: 305, referral_code: "X", in_comp_window: false });
-    render(<WaitlistForm compSlots={220} refCode={null} />);
-    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "me@x.com" } });
+    render(<WaitlistForm />);
+    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "me@x.com" } });
     fireEvent.click(screen.getByRole("button", { name: /join/i }));
     expect(await screen.findByText(/#305/)).toBeInTheDocument();
     expect(screen.queryByText(/first 220/i)).not.toBeInTheDocument();
   });
 
   it("surfaces a backend rejection", async () => {
+    fetchLaunchInfo.mockResolvedValue(info);
     joinWaitlist.mockRejectedValue(new Error("invalid_email"));
-    render(<WaitlistForm compSlots={220} refCode={null} />);
-    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "nope@" } });
+    render(<WaitlistForm />);
+    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "nope@" } });
     fireEvent.click(screen.getByRole("button", { name: /join/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/valid email/i);
+  });
+
+  it("renders nothing once the waitlist is closed or the feature is off", async () => {
+    fetchLaunchInfo.mockResolvedValue({ ...info, phase: "activation" });
+    const { container, rerender } = render(<WaitlistForm />);
+    await waitFor(() => expect(fetchLaunchInfo).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
+    fetchLaunchInfo.mockResolvedValue(null);
+    rerender(<WaitlistForm />);
+    expect(container).toBeEmptyDOMElement();
   });
 });
 ```
@@ -3037,16 +3107,17 @@ vi.mock("@/lib/launch", async (importOriginal) => ({
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isSignedIn: false }) }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("") }));
 vi.mock("../MyLaunchCard", () => ({ MyLaunchCard: () => <div data-testid="me" /> }));
+vi.mock("../WaitlistForm", () => ({ WaitlistForm: () => <form aria-label="Join the waitlist" /> }));
 
 import LaunchPage from "../LaunchPage";
 
 const base = { drop_at: "2026-09-18T16:00:00+00:00", competition_start_at: "2026-09-21T16:00:00+00:00", competition_end_at: "2026-10-21T16:00:00+00:00", pot_cents: 103000, entrants: 3, waitlist_count: 40, comp_slots: 220 };
 
 describe("LaunchPage phases", () => {
-  it("waitlist: shows the form and the pot", async () => {
+  it("waitlist: embeds the form and shows the pot", async () => {
     info.mockResolvedValue({ ...base, phase: "waitlist" });
     render(<LaunchPage />);
-    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    expect(await screen.findByRole("form", { name: /join the waitlist/i })).toBeInTheDocument();
     expect(screen.getByText("$1,030")).toBeInTheDocument();
     expect(screen.queryByTestId("me")).not.toBeInTheDocument();
   });
@@ -3054,7 +3125,7 @@ describe("LaunchPage phases", () => {
     info.mockResolvedValue({ ...base, phase: "activation" });
     render(<LaunchPage />);
     expect(await screen.findByRole("link", { name: /sign up/i })).toHaveAttribute("href", "/sign-up");
-    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: /join the waitlist/i })).not.toBeInTheDocument();
   });
   it("live: leaderboard rows", async () => {
     info.mockResolvedValue({ ...base, phase: "live" });
@@ -3199,7 +3270,7 @@ In `apps/frontend/src/lib/analytics.ts`, inside the `AnalyticsEvent` union, add 
   | "launch_referral_copied"
 ```
 
-- [ ] **Step 5: Write `useLaunchRef.ts`**
+- [ ] **Step 5: Write `useLaunchRef.ts` and `ReferralLink.tsx`**
 
 ```ts
 // apps/frontend/src/components/launch/useLaunchRef.ts
@@ -3230,7 +3301,41 @@ export function useLaunchRef(): string | null {
 }
 ```
 
-- [ ] **Step 6: Write `WaitlistForm.tsx`**
+```tsx
+// apps/frontend/src/components/launch/ReferralLink.tsx
+"use client";
+
+import * as React from "react";
+import { capture } from "@/lib/analytics";
+import { SITE_URL } from "@/lib/domain";
+
+export function ReferralLink({ code, link }: { code: string; link?: string }) {
+  // The root landing page hosts the waitlist form, so referral links point at the root.
+  const href = link ?? `${SITE_URL}/?ref=${code}`;
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(href);
+      setCopied(true);
+      capture("launch_referral_copied", {});
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — the input is selectable */
+    }
+  };
+  return (
+    <div className="mt-4">
+      <p className="text-sm font-medium">Refer a friend who subscribes → you get a month free.</p>
+      <div className="mt-2 flex gap-2">
+        <input readOnly value={href} aria-label="Your referral link" className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
+        <button type="button" onClick={copy} className="rounded-lg border border-zinc-600 px-3 py-2 text-sm">{copied ? "Copied" : "Copy"}</button>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Write `WaitlistForm.tsx` (the drop-in)**
 
 ```tsx
 // apps/frontend/src/components/launch/WaitlistForm.tsx
@@ -3238,8 +3343,9 @@ export function useLaunchRef(): string | null {
 
 import * as React from "react";
 import { capture } from "@/lib/analytics";
-import { joinWaitlist } from "@/lib/launch";
+import { fetchLaunchInfo, joinWaitlist, type LaunchInfo } from "@/lib/launch";
 import { ReferralLink } from "./ReferralLink";
+import { useLaunchRef } from "./useLaunchRef";
 
 const ERROR_COPY: Record<string, string> = {
   invalid_email: "Enter a valid email address.",
@@ -3247,11 +3353,37 @@ const ERROR_COPY: Record<string, string> = {
   rate_limited: "Too many attempts. Try again in a minute.",
 };
 
-export function WaitlistForm({ compSlots, refCode }: { compSlots: number; refCode: string | null }) {
+/**
+ * Self-contained waitlist capture. Drop it anywhere (the brand team embeds it
+ * in the root hero); it fetches its own state and renders NOTHING unless the
+ * launch is configured and the phase is `waitlist`, so it can be left in
+ * place through the drop.
+ */
+export function WaitlistForm() {
+  return (
+    <React.Suspense fallback={null}>
+      <WaitlistFormInner />
+    </React.Suspense>
+  );
+}
+
+function WaitlistFormInner() {
+  const refCode = useLaunchRef();
+  const [info, setInfo] = React.useState<LaunchInfo | null | undefined>(undefined);
   const [email, setEmail] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [joined, setJoined] = React.useState<{ position: number; referral_code: string; in_comp_window: boolean } | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    fetchLaunchInfo().then((i) => alive && setInfo(i)).catch(() => alive && setInfo(null));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!info || info.phase !== "waitlist") return null;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3275,10 +3407,10 @@ export function WaitlistForm({ compSlots, refCode }: { compSlots: number; refCod
         <p className="text-2xl font-semibold">You&apos;re #{joined.position}.</p>
         {joined.in_comp_window ? (
           <p className="mt-1 text-sm opacity-80">
-            You&apos;re in the first {compSlots} — your free competition month is yours if you finish onboarding within 3 days of the drop. Watch your inbox on drop day.
+            You&apos;re in the first {info.comp_slots} — your free competition month is yours if you finish onboarding within 3 days of the drop. Watch your inbox on drop day.
           </p>
         ) : (
-          <p className="mt-1 text-sm opacity-80">The first {compSlots} spots are gone, but you can still compete — and every friend who subscribes earns you a month free.</p>
+          <p className="mt-1 text-sm opacity-80">The first {info.comp_slots} spots are gone, but you can still compete — and every friend who subscribes earns you a month free.</p>
         )}
         <ReferralLink code={joined.referral_code} />
       </div>
@@ -3303,41 +3435,6 @@ export function WaitlistForm({ compSlots, refCode }: { compSlots: number; refCod
       </button>
       {error ? <p role="alert" className="text-sm text-red-400 sm:basis-full">{error}</p> : null}
     </form>
-  );
-}
-```
-
-`ReferralLink` is shared with Task 13 — create it now:
-
-```tsx
-// apps/frontend/src/components/launch/ReferralLink.tsx
-"use client";
-
-import * as React from "react";
-import { capture } from "@/lib/analytics";
-import { SITE_URL } from "@/lib/domain";
-
-export function ReferralLink({ code, link }: { code: string; link?: string }) {
-  const href = link ?? `${SITE_URL}/launch?ref=${code}`;
-  const [copied, setCopied] = React.useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(href);
-      setCopied(true);
-      capture("launch_referral_copied", {});
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked — the input is selectable */
-    }
-  };
-  return (
-    <div className="mt-4">
-      <p className="text-sm font-medium">Refer a friend who subscribes → you get a month free.</p>
-      <div className="mt-2 flex gap-2">
-        <input readOnly value={href} aria-label="Your referral link" className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
-        <button type="button" onClick={copy} className="rounded-lg border border-zinc-600 px-3 py-2 text-sm">{copied ? "Copied" : "Copy"}</button>
-      </div>
-    </div>
   );
 }
 ```
@@ -3458,7 +3555,6 @@ import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
 import { MyLaunchCard } from "./MyLaunchCard";
 import { WaitlistForm } from "./WaitlistForm";
-import { useLaunchRef } from "./useLaunchRef";
 
 const RULES = [
   "Sign up and finish onboarding — Friday's first run has to complete.",
@@ -3469,7 +3565,6 @@ const RULES = [
 
 export default function LaunchPage() {
   const { isSignedIn } = useAuth();
-  const refCode = useLaunchRef();
   const [info, setInfo] = React.useState<LaunchInfo | null | undefined>(undefined);
 
   React.useEffect(() => {
@@ -3490,7 +3585,7 @@ export default function LaunchPage() {
     <main className="mx-auto max-w-3xl px-6 py-16 sm:py-24">
       <LaunchHero info={info} />
       <section className="mt-12">
-        {info.phase === "waitlist" ? <WaitlistForm compSlots={info.comp_slots} refCode={refCode} /> : null}
+        {info.phase === "waitlist" ? <WaitlistForm /> : null}
         {info.phase === "activation" ? (
           <div className="text-center">
             <Link href="/sign-up" className="inline-block rounded-lg bg-amber-400 px-6 py-3 font-semibold text-zinc-950">Sign up</Link>
@@ -3501,7 +3596,7 @@ export default function LaunchPage() {
       </section>
       {isSignedIn ? (
         <section className="mt-12">
-          <MyLaunchCard info={info} refCode={refCode} />
+          <MyLaunchCard info={info} />
         </section>
       ) : null}
       <section className="mt-12">
@@ -3524,12 +3619,12 @@ import { pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
   title: "Lightbulb Launch Competition",
-  description: "Join the waitlist, build a business with your own AI company, and compete for the pot on revenue lift.",
+  description: "Build a business with your own AI company and compete for the pot on revenue lift.",
   path: "/launch",
 });
 
 export default function Page() {
-  // useSearchParams (inside useLaunchRef) needs a Suspense boundary for static rendering.
+  // useSearchParams (inside the waitlist form / card) needs a Suspense boundary for static rendering.
   return (
     <Suspense fallback={null}>
       <LaunchPage />
@@ -3538,7 +3633,7 @@ export default function Page() {
 }
 ```
 
-For Task 12's tests to compile, create a placeholder `MyLaunchCard.tsx` exporting `MyLaunchCard({ info, refCode }: { info: LaunchInfo; refCode: string | null })` that returns `null`; Task 13 replaces it.
+For this task's tests to compile, create a placeholder `MyLaunchCard.tsx` exporting `MyLaunchCard({ info }: { info: LaunchInfo })` that returns `null`; Task 13 replaces it.
 
 - [ ] **Step 8: Run tests + typecheck**
 
@@ -3549,7 +3644,7 @@ Expected: all pass; no type or lint errors.
 
 ```bash
 git add apps/frontend/src/lib/launch.ts apps/frontend/src/lib/analytics.ts apps/frontend/src/app/launch apps/frontend/src/components/launch apps/frontend/src/lib/__tests__/launch.test.ts
-git commit -m "feat(launch): public /launch page — hero, waitlist form, leaderboard"
+git commit -m "feat(launch): /launch competition page + embeddable waitlist form"
 ```
 
 ---
@@ -3563,7 +3658,7 @@ git commit -m "feat(launch): public /launch page — hero, waitlist form, leader
 
 **Interfaces:**
 - Consumes: `useApi()` (`get`, `post`), `LaunchMe`/`LaunchEntry` types, `ReferralLink`, `LAUNCH_REF_KEY`, `formatMoney`, `capture`.
-- Produces: `MyLaunchCard({ info, refCode })` — loads `GET /launch/me` with SWR (key `"/launch/me"`); on mount, if `refCode` and `me.waitlist` and no live entry, `POST /launch/referral {ref}` once then `localStorage.removeItem(LAUNCH_REF_KEY)`; renders position/comp copy, activation state, referral stats + link, and either the entry summary or `<EnterForm onEntered={mutate} />` when `can_enter`, else the reason copy. `EnterForm({ onEntered })` — display name, public toggle, key field with client-side prefix check, posts `POST /launch/enter`, maps `detail` reasons to copy, never puts the key in analytics.
+- Produces: `MyLaunchCard({ info })` — reads the stored ref via `useLaunchRef()`; loads `GET /launch/me` with SWR (key `"/launch/me"`); on mount, if a ref is stored and `me.waitlist` and no live entry, `POST /launch/referral {ref}` once then `localStorage.removeItem(LAUNCH_REF_KEY)`; renders position/comp copy, activation state, referral stats + link, and either the entry summary or `<EnterForm onEntered={mutate} />` when `can_enter`, else the reason copy. `EnterForm({ onEntered })` — display name, public toggle, key field with client-side prefix check, posts `POST /launch/enter`, maps `detail` reasons to copy, never puts the key in analytics.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3578,6 +3673,8 @@ const post = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get, post, put: vi.fn(), del: vi.fn() }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../EnterForm", () => ({ EnterForm: () => <div data-testid="enter-form" /> }));
+const useLaunchRef = vi.fn<() => string | null>(() => null);
+vi.mock("../useLaunchRef", () => ({ useLaunchRef: () => useLaunchRef() }));
 
 import { LAUNCH_REF_KEY, type LaunchMe } from "@/lib/launch";
 import { MyLaunchCard } from "../MyLaunchCard";
@@ -3585,16 +3682,17 @@ import { MyLaunchCard } from "../MyLaunchCard";
 const info = { phase: "live" as const, drop_at: "", competition_start_at: "", competition_end_at: "", pot_cents: 0, entrants: 0, waitlist_count: 0, comp_slots: 220 };
 const me = (over: Partial<LaunchMe>): LaunchMe => ({
   phase: "live",
-  waitlist: { position: 47, referral_code: "P9AB3CDE", in_comp_window: true, referral_link: "https://flickmeon.ai/launch?ref=P9AB3CDE", referrals_signed_up: 3, referrals_paid: 1, free_months_banked: 1 },
+  waitlist: { position: 47, referral_code: "P9AB3CDE", in_comp_window: true, referral_link: "https://flickmeon.ai/?ref=P9AB3CDE", referrals_signed_up: 3, referrals_paid: 1, free_months_banked: 1 },
   activated: true, activated_at: "2026-09-19T00:00:00Z", entry: null, can_enter: true, reason: null, ...over,
 });
 
 function mount(refCode: string | null = null) {
-  return render(<SWRConfig value={{ provider: () => new Map() }}><MyLaunchCard info={info} refCode={refCode} /></SWRConfig>);
+  useLaunchRef.mockReturnValue(refCode);
+  return render(<SWRConfig value={{ provider: () => new Map() }}><MyLaunchCard info={info} /></SWRConfig>);
 }
 
 describe("MyLaunchCard", () => {
-  beforeEach(() => { get.mockReset(); post.mockReset(); });
+  beforeEach(() => { get.mockReset(); post.mockReset(); useLaunchRef.mockReturnValue(null); });
 
   it("renders position, referral stats and the enter form when eligible", async () => {
     get.mockResolvedValue(me({}));
@@ -3779,6 +3877,7 @@ import { useApi } from "@/lib/api";
 import { LAUNCH_REF_KEY, formatMoney, type LaunchInfo, type LaunchMe } from "@/lib/launch";
 import { EnterForm } from "./EnterForm";
 import { ReferralLink } from "./ReferralLink";
+import { useLaunchRef } from "./useLaunchRef";
 
 const BLOCKED_COPY: Record<string, string> = {
   phase_waitlist: "Entries open on drop day.",
@@ -3787,8 +3886,9 @@ const BLOCKED_COPY: Record<string, string> = {
   not_activated: "Finish onboarding — Friday's first run has to complete — and come back.",
 };
 
-export function MyLaunchCard({ info, refCode }: { info: LaunchInfo; refCode: string | null }) {
+export function MyLaunchCard({ info }: { info: LaunchInfo }) {
   const api = useApi();
+  const refCode = useLaunchRef();
   const { data: me, mutate } = useSWR<LaunchMe>("/launch/me", (k: string) => api.get(k) as Promise<LaunchMe>);
   const attributed = React.useRef(false);
 
@@ -3901,7 +4001,7 @@ const data: LaunchOpsData = {
   referrals: { signed_up: 50, paid: 12, months_banked: 3 },
   economics: { paid_profit_cents: 66000, comp_cost_cents: 28000, referral_cost_cents: 33600, pnl_cents: 4400, aws_credits_cents: 500000, net_cents: 504400 },
   entries: [{ owner_id: "u1", display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null, comped: true }],
-  waitlist_rows: [{ email: "a@x.com", position: 1, referral_link: "https://flickmeon.ai/launch?ref=A", created_at: "t", user_id: "u1", activated: true, referred_by: null, referrals_signed_up: 0, referrals_paid: 0, free_months_banked: 0 }],
+  waitlist_rows: [{ email: "a@x.com", position: 1, referral_link: "https://flickmeon.ai/?ref=A", created_at: "t", user_id: "u1", activated: true, referred_by: null, referrals_signed_up: 0, referrals_paid: 0, free_months_banked: 0 }],
 };
 
 describe("LaunchAdminClient", () => {
@@ -4229,13 +4329,14 @@ The Lightbulb Launch Competition loop — spec: `docs/superpowers/specs/2026-08-
 - Public `/launch`: waitlist (uncapped, positions, referral links), phase-aware (waitlist → activation → live → ended), pot counter, leaderboard.
 - Signed-in card: position + comp copy, activation state (reads the existing `bootstrap.state`), referral stats, **Enter** with a pasted Stripe *restricted* key (`rk_live_` only in prod; stored on the BYO-key rail, never in DDB or logs).
 - Referral free month: applied from `invoice.paid` (`amount_paid > 0`) via the console-created coupon, once per referred person (conditional write), banked when it can't apply.
-- Hourly revenue sweep (lifespan task, like running_gauges): net charges − refunds vs a 30-day baseline; `$ delta` ranks, `%` shown.
+- Revenue refresh is stale-while-revalidate on board reads (no long-running worker): net charges − refunds vs a 30-day baseline; `$ delta` ranks, `%` shown.
+- The root landing page (brand-owned) embeds `<WaitlistForm />` as the waitlist front door; `/launch` is the competition page.
 - `/admin/launch`: the owner's economics sheet with live inputs, force refresh, CSV export for the launch email.
 - Two new tables `lightbulb-{env}-launch-waitlist` / `-launch-entries`, read by full name (prefix flip is mid-flight).
 
 ## Inert until configured
 
-`LAUNCH_DROP_AT` is empty in both envs → every `/launch*` route 404s and the sweep never starts. Setting it (dev first) is the go-live.
+`LAUNCH_DROP_AT` is empty in both envs → every `/launch*` route 404s and no refresh ever runs. Setting it (dev first) is the go-live.
 
 ## Drop-day runbook
 
@@ -4257,7 +4358,8 @@ Run: `gh pr checks --repo Isol8AI/isol8 feat/launch-competition --watch` and con
 
 ## Self-review (done while writing)
 
-- **Spec coverage:** decisions table → Tasks 1 (phases), 5 (waitlist), 6 (attribution, `/me`), 7–8 (restricted key, baseline, entry, leaderboard), 9 (referral on first paid invoice, banking, personal-only), 10 (sweep), 11/14 (admin + CSV), 12–13 (page + card + rules copy), 2 (tables/env), 15 (runbook lives in the spec; skill anchor). Soft activation gate = no code, by design.
+- **Spec coverage:** decisions table → Tasks 1 (phases), 5 (waitlist), 6 (attribution, `/me`), 7–8 (restricted key, baseline, entry, leaderboard), 9 (referral on first paid invoice, banking, personal-only), 10 (revalidate-on-read refresh — replaces the spec's hourly loop; owner decision 2026-08-28), 11/14 (admin + CSV), 12–13 (competition page + embeddable waitlist form + card + rules copy; root landing hosts the form — owner decision 2026-08-28), 2 (tables/env), 15 (runbook lives in the spec; skill anchor). Soft activation gate = no code, by design.
 - **Placeholders:** none; every step carries its code.
-- **Name consistency:** `require_launch`, `launch_service.me/enter/can_enter/rank/leaderboard/resolve_email/referral_link/LIVE_FOR_ENTRY/EnterRefused`, `launch_revenue.validate_key/sum_net_revenue/store_key/load_key/delete_key/KeyRejected/MixedCurrency/refresh_entry/refresh_all/sweep_loop`, `launch_referral.on_invoice_paid/grant_free_month/subscription_has_discount`, `launch_waitlist_repo.join/get/get_by_referral_code/claim_user/attribute/mark_rewarded/add_counter/list_all/count/normalize_email`, `launch_entries_repo.upsert/get/list_all/count/set_revenue/set_refresh_error/delete`, `ops.launch.compute/_cache`, frontend `fetchLaunchInfo/fetchLeaderboard/joinWaitlist/formatMoney/formatPct/LAUNCH_REF_KEY`, `getLaunchOps/refreshLaunch/LaunchAdminClient` — used with the same names everywhere above.
-- **Known approximations, stated in code comments:** admin "comped" is position+activation-derived, not the $0 first invoice; the sweep is in-process; positions may have gaps under a same-email race; `count()` on entries is a scan.
+- **Name consistency:** `require_launch`, `launch_service.me/enter/can_enter/rank/leaderboard/resolve_email/referral_link/LIVE_FOR_ENTRY/EnterRefused`, `launch_revenue.validate_key/sum_net_revenue/store_key/load_key/delete_key/KeyRejected/MixedCurrency/refresh_entry/refresh_all/maybe_revalidate`, `launch_referral.on_invoice_paid/grant_free_month/subscription_has_discount`, `launch_waitlist_repo.join/get/get_by_referral_code/claim_user/attribute/mark_rewarded/add_counter/list_all/count/normalize_email`, `launch_entries_repo.upsert/get/list_all/count/set_revenue/set_refresh_error/delete`, `ops.launch.compute/_cache`, frontend `fetchLaunchInfo/fetchLeaderboard/joinWaitlist/formatMoney/formatPct/LAUNCH_REF_KEY`, `getLaunchOps/refreshLaunch/LaunchAdminClient` — used with the same names everywhere above.
+- **Known approximations, stated in code comments:** admin "comped" is position+activation-derived, not the $0 first invoice; the revalidate state is in-process on the single backend task; positions may have gaps under a same-email race; `count()` on entries is a scan.
+- **Spec drift to reconcile in Task 15:** the spec's "Revenue sweep" section (hourly lifespan loop) → revalidate-on-read; the spec's Frontend section (`/launch` hosts the waitlist) → root landing hosts the form, `/launch` is the competition page; referral links are `/?ref=`.

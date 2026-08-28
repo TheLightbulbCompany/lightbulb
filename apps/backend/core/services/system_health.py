@@ -74,8 +74,7 @@ async def _probe_ddb() -> dict:
     started = time.monotonic()
     try:
         client = boto3.client("dynamodb", region_name=settings.AWS_REGION)
-        env = settings.ENVIRONMENT or "dev"
-        table_name = f"isol8-{env}-admin-actions"
+        table_name = f"{settings.DYNAMODB_TABLE_PREFIX}admin-actions"
         await asyncio.to_thread(client.describe_table, TableName=table_name)
         return {"status": "ok", "latency_ms": int((time.monotonic() - started) * 1000)}
     except Exception as e:  # noqa: BLE001

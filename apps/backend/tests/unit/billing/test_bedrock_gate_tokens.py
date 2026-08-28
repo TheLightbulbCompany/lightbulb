@@ -1535,12 +1535,22 @@ class TestTableName:
         monkeypatch.setenv("BEDROCK_GATE_TOKENS_TABLE", "custom-tokens")
         assert mod._tokens_table_name() == "custom-tokens"
 
-    def test_constructs_per_env_name_by_convention(self, monkeypatch):
+    def test_constructs_name_from_the_shared_table_prefix(self, monkeypatch):
         monkeypatch.delenv("BEDROCK_GATE_TOKENS_TABLE", raising=False)
-        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "prod", raising=False)
-        assert mod._tokens_table_name() == "isol8-prod-bedrock-gate-tokens"
+        monkeypatch.setattr(mod.settings, "DYNAMODB_TABLE_PREFIX", "lightbulb-prod-", raising=False)
+        assert mod._tokens_table_name() == "lightbulb-prod-bedrock-gate-tokens"
 
-    def test_defaults_env_to_dev_when_unset(self, monkeypatch):
+    def test_environment_no_longer_participates(self, monkeypatch):
+        """ENVIRONMENT used to build this name directly, which let it drift from
+        the prefix CDK actually deploys. It must not influence the name now."""
         monkeypatch.delenv("BEDROCK_GATE_TOKENS_TABLE", raising=False)
-        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "", raising=False)
-        assert mod._tokens_table_name() == "isol8-dev-bedrock-gate-tokens"
+        monkeypatch.setattr(mod.settings, "DYNAMODB_TABLE_PREFIX", "lightbulb-dev-", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "prod", raising=False)
+        assert mod._tokens_table_name() == "lightbulb-dev-bedrock-gate-tokens"
+
+
+def test_tokens_table_name_env_override_still_wins(monkeypatch):
+    from core.billing import bedrock_gate_tokens
+
+    monkeypatch.setenv("BEDROCK_GATE_TOKENS_TABLE", "explicit-table")
+    assert bedrock_gate_tokens._tokens_table_name() == "explicit-table"

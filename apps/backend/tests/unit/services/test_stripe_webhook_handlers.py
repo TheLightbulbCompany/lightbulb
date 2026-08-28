@@ -1875,3 +1875,15 @@ async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_contain
     fields = mock_container_repo.update_conversion_fields.await_args.args[1]
     assert "conversion_pending" not in fields
     assert "conversion_started_at" not in fields
+
+
+class TestInvoicePaidDelegatesToLaunchReferral:
+    async def test_invoice_paid_calls_launch_referral(self):
+        event = {
+            "id": "evt_i",
+            "type": "invoice.paid",
+            "data": {"object": {"id": "in_1", "customer": "cus_1", "amount_paid": 5000}},
+        }
+        with patch("core.services.launch_referral.on_invoice_paid", new_callable=AsyncMock) as hook:
+            await handlers.handle_invoice_paid(event, MagicMock())
+        hook.assert_awaited_once_with(event["data"]["object"])

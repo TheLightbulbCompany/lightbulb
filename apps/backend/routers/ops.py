@@ -43,3 +43,23 @@ async def get_growth(_auth: AuthContext = Depends(require_platform_admin)):
 
     data, state, errors = await growth.compute()
     return env.envelope(data, source_state=state, errors=errors)
+
+
+@router.get("/launch")
+async def get_launch(_auth: AuthContext = Depends(require_platform_admin)):
+    """Launch Competition — the economics sheet with live inputs, 60s cache."""
+    from core.services.ops import launch as launch_ops
+
+    data, state, errors = await launch_ops.compute()
+    return env.envelope(data, source_state=state, errors=errors)
+
+
+@router.post("/launch/refresh")
+async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
+    """Force-refresh every entrant's revenue now (judging day)."""
+    from core.services import launch_revenue
+    from core.services.ops import launch as launch_ops
+
+    n = await launch_revenue.refresh_all(force=True)
+    launch_ops._cache.clear()
+    return {"refreshed": n}

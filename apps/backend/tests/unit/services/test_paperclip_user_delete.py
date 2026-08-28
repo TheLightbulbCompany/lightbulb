@@ -108,3 +108,25 @@ class TestDeletePaperclipUser:
             await mod.delete_paperclip_user(paperclip_user_id="pc_user_x", email="member4@example.com", env="dev")
 
         rds.execute_statement.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "email",
+    [
+        "admin@isol8.co",
+        "admin+paperclip@isol8.co",
+        "admin@thelightbulb.company",
+        "admin+paperclip@thelightbulb.company",
+        "  Admin+Paperclip@TheLightbulb.Company  ",
+    ],
+)
+async def test_refuses_every_bootstrap_address_across_both_mail_domains(email):
+    """Regression: the guard is keyed on the email, but the address it must match
+    lives in the paperclip_admin_credentials secret. When that secret moved to
+    thelightbulb.company the guard still listed only the isol8.co pair, so the
+    account owning every Paperclip company was deletable by an ordinary wipe."""
+    from core.services import paperclip_user_delete as mod
+
+    with pytest.raises(mod.BootstrapUserProtectedError):
+        await mod.delete_paperclip_user(paperclip_user_id="u_1", email=email, env="prod")

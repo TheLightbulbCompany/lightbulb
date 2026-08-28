@@ -31,6 +31,8 @@ const RULES = [
   { re: new RegExp(`\\b(${UTIL})-(${PALETTE})-\\d{2,3}\\b`, "g"), skipComments: false },
   { re: /\b(bg|text|border)-(white|black)\b/g, skipComments: false },
   { re: /\[#[0-9a-fA-F]{3,8}\]/g, skipComments: false },
+  // named CSS colours in attributes / declarations (fill="white", color: red)
+  { re: /(?:\b(?:fill|stroke|color|background(?:-color)?|border(?:-color)?)\s*[:=]\s*["']?\s*)(white|black|red|green|blue|gray|grey|orange|yellow|purple|pink|silver|navy|teal|lime|maroon)(?![\w-])/g, skipComments: true },
 ];
 
 const isComment = (line) => /^\s*(\/\/|\/\*|\*)/.test(line);
@@ -57,7 +59,8 @@ for (const root of roots) {
   const base = statSync(root).isDirectory() ? root : null;
   const files = base ? walk(base) : [root];
   for (const file of files) {
-    const rel = relative(root, file).split(sep).join("/");
+    const posix = relative(ROOT, file).split(sep).join("/");
+    const rel = posix.replace(/^(.*\/)?src\//, ""); // skip list is src-relative whatever root was passed
     if (SKIP(rel)) continue;
     const lines = readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {

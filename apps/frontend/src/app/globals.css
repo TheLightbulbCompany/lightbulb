@@ -99,7 +99,7 @@
      4.42:1, under the AA floor for text — and a label is text. 61% is the
      lowest step that clears it (4.55:1). */
   --midnight-label: color-mix(in srgb, var(--midnight) 61%, var(--cream));
-  --midnight-faint: color-mix(in srgb, var(--midnight) 40%, var(--cream));  /* disabled; else non-text */
+  --midnight-faint: color-mix(in srgb, var(--midnight) 50%, var(--cream));  /* disabled text; also status dots, diagram strokes — 3.37:1, clears the 3:1 non-text bar (40% was 2.47) */
 
   /* §06 state pairs — the second value is for the reversed ground. */
   --ok: #3A6B45;    --ok-reversed: #7FB58D;
@@ -129,7 +129,7 @@
   --border: var(--edge);
   --input: var(--edge);
   /* The one place the bulb appears in product chrome: focus is where the light is. */
-  --ring: var(--bulb);
+  --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1; the bulb rings only on midnight */
 
   /* Growth-dashboard series. Semantic: 1 = autonomous/healthy, 2 = human-
      initiated, 3 = nightly CEO, 4 = alert, 5 = secondary. */

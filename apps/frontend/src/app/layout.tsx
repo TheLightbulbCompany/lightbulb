@@ -69,6 +69,17 @@ export const metadata: Metadata = {
   },
 };
 
+// The landing room paints midnight; every other `.ld-page` route (/blog,
+// /docs, /[seoSlug]) paints cream. INLINE and blocking so `data-lb-theme` is
+// on <html> before the first stylesheet paints — a deferred script flashes.
+// SCOPED to "/" because only the home page has a lamp to strike; writing the
+// attribute anywhere else painted those routes midnight forever. The CSP is
+// report-only today AND allows 'unsafe-inline' (next.config.ts); enforcing a
+// nonce-based policy means giving this tag the same nonce.
+const THEME_SCRIPT =
+  "if(location.pathname==='/'){var t=null;try{t=localStorage.getItem('lightbulb-theme')}catch(e){}" +
+  "document.documentElement.setAttribute('data-lb-theme',t==='light'?'light':'dark')}";
+
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -81,7 +92,12 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider>
-      <html lang="en">
+      {/* suppressHydrationWarning: the script above writes an attribute onto
+          <html> that the server-rendered markup does not carry. */}
+      <html lang="en" suppressHydrationWarning>
+        <head>
+          <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        </head>
         <body
           className={`${geistSans.variable} ${geistMono.variable} ${hostGrotesk.variable} ${dmSans.variable} ${lora.variable} ${epilogue.variable} antialiased`}
         >

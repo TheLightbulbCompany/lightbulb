@@ -8,51 +8,34 @@
  * real pendulum: it has mass, it damps, and scrolling nudges it. Clicking the
  * glass (or pulling the brass bead) strikes the filament and floods the room.
  *
- * Scope: the toggle writes `data-lb-theme` on <html> and persists to
- * localStorage. Only `.ld-page` reads it, so this cannot leak into /chat —
- * the app has its own surface contract and is not themed by this control.
+ * Scope: the shared store (`./HeroLamp/lampStore`) writes `data-lb-theme` on
+ * <html> and persists to localStorage; this component only reads it. Only
+ * `.ld-page` reads the attribute, so this cannot leak into /chat — the app
+ * has its own surface contract and is not themed by this control.
  *
  * prefers-reduced-motion: no pendulum, no scroll nudge, no circular flood.
  * The theme still toggles; it just cross-fades.
+ *
+ * Initial state is dark — the room starts unlit; typing an idea or clicking
+ * the glass lights it.
  */
 
 import * as React from "react";
+import { hydrateFromStorage, strike, useLampTheme } from "./HeroLamp/lampStore";
+import { SCROLL_IMPULSE, createPendulum } from "./HeroLamp/pendulum";
 
-const STORAGE_KEY = "lightbulb-theme";
 const GLASS = "M 86,150 L 72,132 L 72,76 A 28,32 0 0 1 128,76 L 128,132 L 114,150 Z";
-
-type Theme = "light" | "dark";
-
-function readStored(): Theme | null {
-  try {
-    const v = window.localStorage.getItem(STORAGE_KEY);
-    return v === "light" || v === "dark" ? v : null;
-  } catch {
-    return null; // private mode — fall back to the default, never throw
-  }
-}
 
 export function HangingLamp() {
   const hostRef = React.useRef<HTMLDivElement>(null);
   const glassRef = React.useRef<SVGPathElement>(null);
-  const [theme, setTheme] = React.useState<Theme>("light");
+  const theme = useLampTheme();
 
-  // Paint from storage on mount. The server renders the light default, so
-  // reading storage during render would desync hydration.
+  // Adopt a stored choice after hydration. The server renders dark — the
+  // room starts unlit — so storage is never read during render.
   React.useEffect(() => {
-    const stored = readStored();
-    if (stored) setTheme(stored);
+    hydrateFromStorage();
   }, []);
-
-  React.useEffect(() => {
-    document.documentElement.setAttribute("data-lb-theme", theme);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, theme);
-    } catch {
-      // Storage unavailable — the toggle still works for this page view.
-    }
-    return () => document.documentElement.removeAttribute("data-lb-theme");
-  }, [theme]);
 
   // Pendulum. transform only — never a layout property.
   React.useEffect(() => {
@@ -60,30 +43,25 @@ export function HangingLamp() {
     if (!host) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-    let angle = 0;
-    let velocity = 0;
+    const pendulum = createPendulum();
     let raf = 0;
     let lastY = window.scrollY;
-    const STIFFNESS = 0.014;
-    const DAMPING = 0.986;
 
+    // Parks at rest instead of burning 60fps forever. This is the no-WebGL
+    // path — the weakest machines on the site — and scroll is the only thing
+    // that moves it, so the scroll handler restarts the loop.
     const frame = () => {
-      velocity += -STIFFNESS * Math.sin(angle);
-      velocity *= DAMPING;
-      angle += velocity;
-      if (Math.abs(angle) < 0.0004 && Math.abs(velocity) < 0.0004) {
-        angle = 0;
-        velocity = 0;
-      }
-      host.style.transform = `rotate(${angle}rad)`;
-      raf = requestAnimationFrame(frame);
+      pendulum.step();
+      host.style.transform = `rotate(${pendulum.angle}rad)`;
+      raf = pendulum.settled() ? 0 : requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
 
     const onScroll = () => {
       const delta = window.scrollY - lastY;
       lastY = window.scrollY;
-      velocity += Math.max(-0.006, Math.min(0.006, delta * 0.00016));
+      pendulum.impulse(delta * SCROLL_IMPULSE);
+      if (!raf) raf = requestAnimationFrame(frame);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
 
@@ -91,10 +69,6 @@ export function HangingLamp() {
       cancelAnimationFrame(raf);
       window.removeEventListener("scroll", onScroll);
     };
-  }, []);
-
-  const strike = React.useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
 
   return (

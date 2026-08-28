@@ -34,6 +34,23 @@ class MockResizeObserver {
 }
 global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
+// matchMedia for jsdom (not implemented there either). Components read
+// prefers-reduced-motion on mount, so without this any test rendering one
+// throws "window.matchMedia is not a function". Default is "nothing matches";
+// a test that needs a query to match assigns its own implementation.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+}
+
 // JSDOM polyfills for Radix UI primitives (Select, Dropdown, etc.).
 // These methods aren't implemented in JSDOM but Radix calls them on pointer
 // events, so user-event interaction with a Radix Select trigger throws

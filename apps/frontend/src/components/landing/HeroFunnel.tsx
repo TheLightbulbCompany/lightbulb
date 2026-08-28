@@ -19,6 +19,8 @@ import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
+import { HeroLamp } from "./HeroLamp";
+import { lightOn } from "./HeroLamp/lampStore";
 
 const COPY: Record<Path, { placeholder: string; swap: string }> = {
   new: {
@@ -69,6 +71,7 @@ export function HeroFunnel() {
 
   return (
     <section className="ld-funnel" id="start">
+      <HeroLamp />
       <div className="ld-funnel-in">
         <p className="ld-mono ld-funnel-eyebrow">
           The Integrated Management Environment
@@ -84,8 +87,13 @@ export function HeroFunnel() {
             maxLength={2000}
             value={input}
             onChange={(e) => {
-              setInput(e.target.value);
-              stash(path, e.target.value);
+              const next = e.target.value;
+              // "Type an idea. Watch it become a company." — the first
+              // character IS the lightbulb moment. Only ever lights, never
+              // darkens; the lamp itself is the toggle.
+              if (next.length > 0) lightOn();
+              setInput(next);
+              stash(path, next);
             }}
             placeholder={COPY[path].placeholder}
             aria-label={

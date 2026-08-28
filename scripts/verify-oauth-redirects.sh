@@ -31,14 +31,20 @@ echo
 # --- Google -------------------------------------------------------------
 # Unregistered -> 302 to /signin/oauth/error with a base64 authError blob that
 # decodes to "redirect_uri_mismatch". Registered -> 302 into the sign-in flow.
-redirect=$(curl -sS -o /dev/null -w '%{redirect_url}' -G \
+redirect=$(curl -sS --connect-timeout 10 --max-time 30 \
+  -o /dev/null -w '%{redirect_url}' -G \
   "https://accounts.google.com/o/oauth2/v2/auth" \
   --data-urlencode "client_id=${GOOGLE_CLIENT_ID}" \
   --data-urlencode "redirect_uri=${CALLBACK}" \
   --data-urlencode "response_type=code" \
-  --data-urlencode "scope=openid email profile")
+  --data-urlencode "scope=openid email profile") || redirect=""
 
-if [[ "$redirect" == *"/signin/oauth/error"* ]]; then
+# Fail CLOSED. Google signals a bad redirect_uri two ways: its own error page,
+# and -- when the client/callback pair is otherwise valid -- an OAuth error
+# bounced back to the callback itself with `error=` in the query. The second
+# lands on a non-empty URL that is not the error page, so a naive "did it
+# redirect somewhere" check calls a broken config healthy.
+if [[ "$redirect" == *"/signin/oauth/error"* || "$redirect" == *"error="* ]]; then
   echo "Google: NOT REGISTERED (redirect_uri_mismatch)"
   echo "  fix: console.cloud.google.com/apis/credentials -> client ${GOOGLE_CLIENT_ID%%.*}"
   echo "       add '${CALLBACK}' to Authorized redirect URIs"
@@ -54,20 +60,29 @@ fi
 # THE TRAP: Apple returns HTTP 200 whether or not the return URL is registered.
 # Only the BODY differs, so a status-code check reports a broken config as healthy.
 # Unregistered -> a short page carrying "Invalid web redirect" / "invalid_request".
-body=$(curl -sS -G "https://appleid.apple.com/auth/authorize" \
+apple_status=$(curl -sS --connect-timeout 10 --max-time 30 \
+  -o /tmp/.apple-probe.$$ -w '%{http_code}' -G \
+  "https://appleid.apple.com/auth/authorize" \
   --data-urlencode "client_id=${APPLE_SERVICES_ID}" \
   --data-urlencode "redirect_uri=${CALLBACK}" \
   --data-urlencode "response_type=code" \
   --data-urlencode "response_mode=form_post" \
-  --data-urlencode "scope=name email")
+  --data-urlencode "scope=name email") || apple_status="000"
+body=$(cat /tmp/.apple-probe.$$ 2>/dev/null || true)
+rm -f /tmp/.apple-probe.$$
 
-if grep -qi "Invalid web redirect\|invalid_request" <<<"$body"; then
+if [[ "$apple_status" != "200" ]]; then
+  echo "Apple: INCONCLUSIVE (HTTP ${apple_status}, expected 200)"
+  rc=1
+elif grep -qi "Invalid web redirect\|invalid_request\|unauthorized_client\|invalid_client" <<<"$body"; then
   echo "Apple: NOT REGISTERED (invalid web redirect)"
   echo "  fix: developer.apple.com -> Identifiers -> Services IDs -> ${APPLE_SERVICES_ID} -> Configure"
   echo "       Domains: clerk.${DOMAIN}   Return URLs: ${CALLBACK}"
   rc=1
-elif [[ ${#body} -lt 20000 ]]; then
-  echo "Apple: INCONCLUSIVE (unexpectedly short response, ${#body} bytes)"
+elif ! grep -qi "appleid.apple.com\|Sign in to Apple\|<title>" <<<"$body" || [[ ${#body} -lt 20000 ]]; then
+  # Unknown shape stays non-zero rather than optimistic: the size check alone
+  # is a heuristic, so a positive marker has to be present too.
+  echo "Apple: INCONCLUSIVE (no sign-in marker, ${#body} bytes)"
   rc=1
 else
   echo "Apple: OK (real sign-in page, ${#body} bytes)"

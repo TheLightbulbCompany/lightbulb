@@ -37,21 +37,21 @@ async function getJson(path: string, signal?: AbortSignal): Promise<any> {
     signal,
   });
   if (!res.ok) {
-    throw new Error(`Lightbulb AI API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new Error(`Lightbulb API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   return res.json();
 }
 
 export default defineToolPlugin({
   id: "lightbulb-marketplace",
-  name: "Lightbulb AI Marketplace",
-  description: "Discover hireable agents in the Lightbulb AI marketplace and recommend them to the owner.",
+  name: "Lightbulb Marketplace",
+  description: "Discover hireable agents in the Lightbulb marketplace and recommend them to the owner.",
   tools: (tool) => [
     tool({
       name: "marketplace_search",
-      label: "Search the Lightbulb AI marketplace",
+      label: "Search the Lightbulb marketplace",
       description:
-        "Search published Lightbulb AI marketplace agents the owner could add to their team. " +
+        "Search published Lightbulb marketplace agents the owner could add to their team. " +
         "Use whenever a task needs a capability nobody on the roster has — check here " +
         "BEFORE asking Atlas to build one, since an existing agent is ready immediately " +
         "and costs nothing to add.",

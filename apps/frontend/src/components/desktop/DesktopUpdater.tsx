@@ -157,12 +157,12 @@ export function DesktopUpdater({
   }, [tauri, state]);
 
   if (!tauri) {
-    return <div className="version-text">Lightbulb AI v{version}</div>;
+    return <div className="version-text">Lightbulb v{version}</div>;
   }
 
   return (
     <div className="version-text" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span>Lightbulb AI v{version}</span>
+      <span>Lightbulb v{version}</span>
       {state.kind === "idle" && (
         <button
           type="button"

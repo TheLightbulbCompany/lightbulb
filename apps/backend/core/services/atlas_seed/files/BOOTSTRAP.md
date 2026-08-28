@@ -24,7 +24,7 @@ The bridge endpoint `build.lobster` curls to register a built agent:
   the platform assigns their ids. If the bridge errors, report it verbatim and
   stop — never install a build into the container by hand.
 
-LLM provider/model selection is handled by the Lightbulb AI platform; the agent loop
+LLM provider/model selection is handled by the Lightbulb platform; the agent loop
 drains queued LLM intents and lets the platform route. The agent does not read
 user-account or billing config.
 

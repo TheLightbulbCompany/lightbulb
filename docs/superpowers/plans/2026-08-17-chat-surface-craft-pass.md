@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Lightbulb AI agent surfaces readable and beautiful — plain-language activity narration in place of raw tool names, and the Beautiful UI patterns that genuinely fit, retokenized into the existing editorial system.
+**Goal:** Make the Lightbulb agent surfaces readable and beautiful — plain-language activity narration in place of raw tool names, and the Beautiful UI patterns that genuinely fit, retokenized into the existing editorial system.
 
 **Architecture:** Beautiful UI ships no package, no repo, and no registry — its components exist only as copy-paste text on a marketing page, and **17 of its 20 components accept zero props** (the other three take only `variant`/`fill`/`resettable`). So "adopt the library" is not available at any price. What *is* available, and what this plan does: **lift the markup and CSS, delete the module-level demo data and fake timers, and feed the same JSX from our own state.** Roughly half of each component's line count is canned data; the other half is layout worth having. Nothing enters `package.json`.
 

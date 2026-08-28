@@ -15,7 +15,7 @@ from core.services import email_service
 
 logger = logging.getLogger(__name__)
 
-_SUBJECT = "Welcome to Lightbulb AI \U0001f44b"
+_SUBJECT = "Welcome to Lightbulb \U0001f44b"
 
 
 def _render_welcome_html(first_name: str | None, base_url: str) -> str:
@@ -25,7 +25,7 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     return f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:#1a1a1a;max-width:520px;margin:0 auto">
   <p>{greeting}</p>
-  <p>Thanks for signing up to <strong>Lightbulb AI</strong> — and welcome.</p>
+  <p>Thanks for signing up to <strong>Lightbulb</strong> — and welcome.</p>
   <p>
     You now have your own private AI team, running in a container that belongs
     only to you. Nothing is shared with anyone else.
@@ -59,7 +59,7 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     questions. Or just reply to this email — it reaches a real person (and a few
     of our own agents).
   </p>
-  <p style="color:#999;font-size:13px">— The Lightbulb AI team</p>
+  <p style="color:#999;font-size:13px">— The Lightbulb team</p>
 </div>"""
 
 
@@ -72,7 +72,7 @@ def _render_welcome_text(first_name: str | None, base_url: str) -> str:
     return f"""\
 {greeting}
 
-Thanks for signing up to Lightbulb AI — and welcome.
+Thanks for signing up to Lightbulb — and welcome.
 
 You now have your own private AI team, running in a container that belongs
 only to you. Nothing is shared with anyone else.
@@ -100,7 +100,7 @@ work ({base_url}/blog), and the FAQ handles the common questions
 ({base_url}/#faq). Or just reply to this email — it reaches a real person
 (and a few of our own agents).
 
-— The Lightbulb AI team"""
+— The Lightbulb team"""
 
 
 async def send_welcome_email(*, to_email: str, first_name: str | None = None) -> str | None:

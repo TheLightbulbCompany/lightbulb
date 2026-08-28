@@ -29,7 +29,7 @@ export default async function DeploysPage() {
       <Card>
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            {degraded ? "Deploy data unavailable." : "No Lightbulb AI stacks found."}
+            {degraded ? "Deploy data unavailable." : "No Lightbulb stacks found."}
           </p>
         ) : (
           <div className="space-y-2">

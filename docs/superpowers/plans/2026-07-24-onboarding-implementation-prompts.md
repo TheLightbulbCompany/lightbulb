@@ -36,7 +36,7 @@ Each block below is one Claude Code session. **Prepend the shared preamble** to 
 ## SHARED PREAMBLE (prepend to every prompt)
 
 ```
-You are implementing one PR of the Lightbulb AI onboarding rebuild (GitHub #1406). Before writing code, read in full:
+You are implementing one PR of the Lightbulb onboarding rebuild (GitHub #1406). Before writing code, read in full:
 - docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md (the architecture)
 - docs/superpowers/research/2026-07-24-onboarding-current-state.md (why; file:line current-state)
 Rules: NO feature flags — your code is active on merge; validate in dev; rollback is git revert. Red-first/TDD for behavior changes. Small, reviewable PR scoped to ONLY the task below. Match surrounding code style. Keep exactly one owner per fact — do not add a second store or a client-side reconciliation for durable truth. When you touch a compensation layer the spec marks for deletion, delete it in this PR (don't leave it dark). Commit signed, push to a feature branch, open a PR that references #1406 and states what it deletes. Uphold the spec's invariants (INV-1..INV-12); if your change would violate one, stop and flag it.

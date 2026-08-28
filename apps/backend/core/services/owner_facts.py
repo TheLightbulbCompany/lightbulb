@@ -35,7 +35,7 @@ def format_provider_label(provider_choice: str | None, byo_provider: str | None)
     if provider_choice == "chatgpt_oauth":
         return "ChatGPT (their own OpenAI account)"
     if provider_choice == "bedrock_claude":
-        return "Bedrock (Claude, Lightbulb AI-managed credits)"
+        return "Bedrock (Claude, Lightbulb-managed credits)"
     if provider_choice == "bedrock_trial":
         return "Bedrock (Claude Sonnet, free trial — $3/day)"
     if provider_choice == "byo_key":

@@ -207,7 +207,7 @@ export class ContainerStack extends cdk.Stack {
       {
         name: `lightbulb-${props.environment}.local`,
         vpc: props.vpc,
-        description: `Lightbulb AI ${props.environment} service discovery namespace`,
+        description: `Lightbulb ${props.environment} service discovery namespace`,
       },
     );
 
@@ -216,7 +216,7 @@ export class ContainerStack extends cdk.Stack {
       {
         dnsRecordType: servicediscovery.DnsRecordType.A,
         dnsTtl: cdk.Duration.seconds(10),
-        description: `Lightbulb AI ${props.environment} container service discovery`,
+        description: `Lightbulb ${props.environment} container service discovery`,
       },
     );
 

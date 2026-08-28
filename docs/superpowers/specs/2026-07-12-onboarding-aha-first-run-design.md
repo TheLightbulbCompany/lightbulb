@@ -15,7 +15,7 @@ doc replaces that direction with a stronger one, proven by Polsia ($1M ARR ~1 mo
 after launch, same core proposition as us):
 
 > **The aha moment is not a demo the user watches. It is an autonomous first-run the
-> user receives.** Between signup and first chat, Lightbulb AI turns one line of input into a
+> user receives.** Between signup and first chat, Lightbulb turns one line of input into a
 > researched, operating company: the user watches Friday come online and do real work
 > on *their* business — research, a mission document, a populated task board — before
 > they have paid anything or connected anything.
@@ -320,7 +320,7 @@ railway (existing integration vs platform-provisioned build), then phase it.
 - *Railways weighed:* we already have **gog** (per-agent Google OAuth) — but gog is
   the **act-as-me** rail: it sends from the *user's* Gmail identity and requires an
   OAuth connect, exactly the "sounds sketchy" step Polsia's founder stripped from
-  onboarding. The company-identity rail must be **provisioned**: SES on an Lightbulb AI
+  onboarding. The company-identity rail must be **provisioned**: SES on an Lightbulb
   subdomain (`friday@{slug}.thelightbulb.company` shape — agent mail lives on the mail domain, never on `flickmeon.ai`), outbound with DKIM, inbound routed
   to Paperclip (email → issue/comment or Friday wake). Both rails coexist — they do
   different jobs (company-acts-as-itself vs agent-acts-as-me); onboarding and the

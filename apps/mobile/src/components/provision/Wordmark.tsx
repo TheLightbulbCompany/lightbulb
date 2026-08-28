@@ -18,7 +18,7 @@ export function Wordmark() {
     <Text
       style={styles.wordmark}
       accessibilityRole="header"
-      accessibilityLabel="Lightbulb AI"
+      accessibilityLabel="Lightbulb"
     >
       ISOL8
     </Text>

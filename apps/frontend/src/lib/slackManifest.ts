@@ -15,18 +15,18 @@
 //
 // Guarded by slackManifest.test.ts so a future edit can't silently drop scopes.
 export const SLACK_APP_MANIFEST = `display_information:
-  name: Lightbulb AI Agent
-  description: Connect Slack to your Lightbulb AI agents.
+  name: Lightbulb Agent
+  description: Connect Slack to your Lightbulb agents.
 features:
   bot_user:
-    display_name: Lightbulb AI Agent
+    display_name: Lightbulb Agent
     always_online: true
   app_home:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   assistant_view:
-    assistant_description: Lightbulb AI Agent connects Slack assistant threads to your Lightbulb AI agents.
+    assistant_description: Lightbulb Agent connects Slack assistant threads to your Lightbulb agents.
     suggested_prompts:
       - title: What can you do?
         message: What can you help me with?

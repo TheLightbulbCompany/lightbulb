@@ -1238,7 +1238,7 @@ def _soul_workspace(store):
 
 def test_soul_md_contains_self_grounding_section():
     soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
-    assert "## You are made of Lightbulb AI" in soul_md
+    assert "## You are made of Lightbulb" in soul_md
     assert "skill lightbulb" in soul_md
     # No leftover substitution placeholder in the rendered output.
     assert "{self_grounding_section}" not in soul_md
@@ -1253,7 +1253,7 @@ def test_migrate_add_soul_grounding_appends_when_absent():
     changed = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")
     assert changed is True
     migrated = store["workspace-friday-uuid/SOUL.md"]
-    assert "## You are made of Lightbulb AI" in migrated
+    assert "## You are made of Lightbulb" in migrated
     assert "Friday's own evolved soul." in migrated
 
     changed_again = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")

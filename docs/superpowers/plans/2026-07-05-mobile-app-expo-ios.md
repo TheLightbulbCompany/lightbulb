@@ -1,4 +1,4 @@
-# Lightbulb AI iOS Mobile App (Expo / React Native) — Implementation Plan
+# Lightbulb iOS Mobile App (Expo / React Native) — Implementation Plan
 
 **Status:** Phases 0–6 shipped — full end-user parity (auth, chat with
 history/sessions, settings/billing, all control panels, teams inbox,
@@ -163,7 +163,7 @@ see the dev-build note).
 
 **Exit gate:** merged-to-main mobile changes produce an EAS build; tagged releases auto-submit to TestFlight; App Store submission checklist complete.
 
-- [ ] **Task 1: EAS project setup.** `eas.json` with `development` / `preview` (dev API, internal distribution) / `production` profiles; EAS-managed Apple signing under the Lightbulb AI Apple Developer team; `EXPO_TOKEN` + Apple credentials in GH secrets (never in repo).
+- [ ] **Task 1: EAS project setup.** `eas.json` with `development` / `preview` (dev API, internal distribution) / `production` profiles; EAS-managed Apple signing under the Lightbulb Apple Developer team; `EXPO_TOKEN` + Apple credentials in GH secrets (never in repo).
 - [ ] **Task 2: `mobile-build.yml`.** Path-filtered on `apps/mobile/**` + `packages/shared/**`. PR: lint/typecheck/vitest only (no build). Main: `eas build --profile preview --non-interactive`. Tag `mobile-v*`: production build + `eas submit` to TestFlight. Runs on `ubuntu-latest` — EAS's hosted macOS fleet does the native build, so **no self-hosted mac runner needed** (unlike `desktop-build.yml`).
 - [ ] **Task 3: OTA updates.** Wire `eas update` for JS-only hotfixes on the production channel; document the "native change ⇒ store build, JS change ⇒ OTA" rule in `apps/mobile/README.md`.
 - [ ] **Task 4: Store submission.** App Store Connect listing (screenshots, privacy nutrition labels — Clerk/PostHog data flows disclosed), demo account for review (NOT the reserved `isol8-e2e-testing@mailsac.com` account (the mailsac prefix is not renamed)), review notes covering the D1 billing posture.

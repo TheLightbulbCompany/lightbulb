@@ -2,7 +2,7 @@
 title: "How to give an AI agent its own persistent workspace"
 description: "Most AI agents forget everything the moment a session ends. Here's what a persistent workspace actually is, why it changes what an agent can do, and how to give one to your own agent."
 date: "2026-07-15"
-author: "The Lightbulb AI team"
+author: "The Lightbulb team"
 tags: ["ai-agents","architecture","memory"]
 ---
 
@@ -43,9 +43,9 @@ This matters for two reasons:
 
 The strong version of this is a dedicated container per agent-owner: its own filesystem, its own memory store, its own compute — reachable only by you.
 
-## How Lightbulb AI does it
+## How Lightbulb does it
 
-[Lightbulb AI](/) is built on this model. When you start, you get your **own isolated container** — a private box that is yours and only yours. Inside it:
+[Lightbulb](/) is built on this model. When you start, you get your **own isolated container** — a private box that is yours and only yours. Inside it:
 
 - Your agents share a **persistent workspace on durable storage**, so files and project state survive restarts and redeploys.
 - Memory is **built in**: agents accumulate a searchable memory of past work instead of resetting each session.
@@ -55,10 +55,10 @@ Because the container is isolated, that persistent state is genuinely yours: no 
 
 ## Try it without setting anything up
 
-The fastest way to feel the difference between a stateless chatbot and an agent with a real home is to use one. Lightbulb AI has a **free tier with no credit card required** — you sign up, a private pod provisions itself, and you're talking to Friday in your own persistent workspace within a minute.
+The fastest way to feel the difference between a stateless chatbot and an agent with a real home is to use one. Lightbulb has a **free tier with no credit card required** — you sign up, a private pod provisions itself, and you're talking to Friday in your own persistent workspace within a minute.
 
 [Start your pod →](/chat)
 
 ---
 
-*Lightbulb AI gives you a private, isolated AI pod with persistent memory and a team of agents — built on [OpenClaw](https://github.com/openclaw/openclaw).*
+*Lightbulb gives you a private, isolated AI pod with persistent memory and a team of agents — built on [OpenClaw](https://github.com/openclaw/openclaw).*

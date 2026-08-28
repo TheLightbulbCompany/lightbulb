@@ -124,7 +124,7 @@ function main() {
     violations: trueViolations,
     denylist_version: 'v1',
     refusal_message: trueViolations.length === 0 ? null :
-      "This skill is on Lightbulb AI's ClawHavoc avoidance list — install from official source via skill-vetter, then re-attempt publish."
+      "This skill is on Lightbulb's ClawHavoc avoidance list — install from official source via skill-vetter, then re-attempt publish."
   };
 
   process.stdout.write(JSON.stringify(out));

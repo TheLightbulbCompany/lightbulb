@@ -214,10 +214,10 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
 
 ## Skills For A New Agent
 
-Do not call Paperclip's `/agents` or `/agent-hires` endpoints in Lightbulb AI. Put
+Do not call Paperclip's `/agents` or `/agent-hires` endpoints in Lightbulb. Put
 the required company skill keys in the role specification that you delegate
 to Atlas, or select a marketplace listing that already carries the skills.
-The owner's governed Lightbulb AI deploy or approval flow creates the agent and
+The owner's governed Lightbulb deploy or approval flow creates the agent and
 attaches its approved skill set.
 
 ## Notes

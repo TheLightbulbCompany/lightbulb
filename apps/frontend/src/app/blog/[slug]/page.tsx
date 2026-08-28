@@ -22,11 +22,11 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const post = getPostBySlug(slug);
-  if (!post) return { title: "Not found — Lightbulb AI" };
+  if (!post) return { title: "Not found — Lightbulb" };
 
   const url = `/blog/${post.slug}`;
   return {
-    title: `${post.title} — Lightbulb AI`,
+    title: `${post.title} — Lightbulb`,
     description: post.description,
     alternates: { canonical: url },
     openGraph: {
@@ -37,7 +37,7 @@ export async function generateMetadata({
       publishedTime: post.date,
       authors: [post.author],
       tags: post.tags,
-      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb AI" }],
+      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb" }],
     },
     twitter: {
       card: "summary_large_image",
@@ -67,7 +67,7 @@ export default async function BlogPostPage({
     author: { "@type": "Organization", name: post.author },
     publisher: {
       "@type": "Organization",
-      name: "Lightbulb AI",
+      name: "Lightbulb",
       logo: { "@type": "ImageObject", url: `${SITE_URL}/og-image.png` },
     },
     mainEntityOfPage: { "@type": "WebPage", "@id": `${SITE_URL}/blog/${post.slug}` },

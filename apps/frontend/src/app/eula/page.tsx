@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "End User License Agreement — Lightbulb AI",
+  title: "End User License Agreement — Lightbulb",
   alternates: { canonical: absoluteUrl("/eula") },
-  description: "The license terms for the Lightbulb AI desktop application.",
+  description: "The license terms for the Lightbulb desktop application.",
 };
 
 export default function EulaPage() {

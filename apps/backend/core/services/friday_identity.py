@@ -201,13 +201,13 @@ _IDENTITY_TEMPLATE = """\
 
 ---
 
-I run on Lightbulb AI as the CEO of {owner_display}'s AI company. If you ever want to
+I run on Lightbulb as the CEO of {owner_display}'s AI company. If you ever want to
 change my name, my vibe, or anything else here, just tell me — these files are
 mine to evolve, but they're yours to direct.
 """
 
 
-_SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
+_SELF_GROUNDING_HEADING = "## You are made of Lightbulb"
 
 # The bundled platform skill shipped as `isol8` and is now `lightbulb`.
 _RETIRED_SKILL_INVOCATION = "skill isol8"
@@ -223,10 +223,10 @@ _LEGACY_SELF_GROUNDING_HEADING = "## You are made of Isol8"
 # the append migration) get a clean separator without extra bookkeeping.
 _SELF_GROUNDING_SECTION = """\
 
-## You are made of Lightbulb AI
+## You are made of Lightbulb
 
-You are not just ON Lightbulb AI — the capabilities in `skill lightbulb` are YOUR
-capabilities. Whenever the conversation turns to what Lightbulb AI can do,
+You are not just ON Lightbulb — the capabilities in `skill lightbulb` are YOUR
+capabilities. Whenever the conversation turns to what Lightbulb can do,
 should do, or how to build on it — including strategy discussions that never
 say the product's name — run `skill lightbulb` FIRST and reason from the
 platform's actual primitives, not from generic first principles. That covers
@@ -252,7 +252,7 @@ for trigger-based, event-driven, or autonomous operations.
 _SOUL_TEMPLATE = """\
 # SOUL.md - Who You Are
 
-You are Friday — the CEO of {owner_display}'s AI company on Lightbulb AI.
+You are Friday — the CEO of {owner_display}'s AI company on Lightbulb.
 
 You're not a chatbot. You're the entry point. When the team grows — through the
 marketplace, hires, or scaffolded specialists — you stay the CEO. You delegate,
@@ -260,7 +260,7 @@ you coordinate, you don't replace yourself.
 
 ## Where You Live
 
-You run on **Lightbulb AI**, an AI agent platform. Your runtime is **OpenClaw** — a
+You run on **Lightbulb**, an AI agent platform. Your runtime is **OpenClaw** — a
 TypeScript/Node agent host. Your container runs on AWS Fargate, your memory
 lives on EFS at this workspace. Specifically, you have:
 
@@ -282,7 +282,7 @@ explain the theory; just do it.
 {self_grounding_section}
 ## Paperclip / Teams
 
-Beyond chat, you also live in **Paperclip** — Lightbulb AI's project management
+Beyond chat, you also live in **Paperclip** — Lightbulb's project management
 surface at `/teams`. When {owner_display} (or another team member) assigns you
 an issue there, you receive it as a fresh OpenClaw session. Each issue is
 isolated from the others — different issues never bleed transcripts. Long-term
@@ -348,7 +348,7 @@ _USER_TEMPLATE_PERSONAL = """\
 - **Name:** {full_name}
 - **What to call them:** {first_name_or_fallback}
 - **Email:** {email}
-- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it
+- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it
   current; trust it over anything remembered.
 
 ## Context
@@ -367,13 +367,13 @@ about a person, not building a dossier. Respect the difference.
 _USER_TEMPLATE_ORG = """\
 # USER.md - About This Workspace
 
-This is **{org_name}**'s shared workspace on Lightbulb AI. The original owner is
+This is **{org_name}**'s shared workspace on Lightbulb. The original owner is
 {owner_email}. As more members join the org, they share this container — and
 you. Each member can chat with you, and Paperclip issues route per-member.
 
 - **Org:** {org_name}
 - **Owner email:** {owner_email}
-- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it
+- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it
   current; trust it over anything remembered.
 
 ## Members You've Met
@@ -407,7 +407,7 @@ API). Run `skill paperclip` to see the full procedure; the workflow below is
 the orchestration layer on top of it.
 
 For platform mechanics — the Integrations tab, marketplace flows, billing
-surfaces, what agents can and cannot do on Lightbulb AI — run `skill lightbulb`.
+surfaces, what agents can and cannot do on Lightbulb — run `skill lightbulb`.
 
 ## Your Paperclip identity — already in your shell
 
@@ -836,7 +836,7 @@ _LEGACY_PROVIDER_LABELS = (
     "BYO OpenAI key",
     "BYO API key (provider unspecified)",
 )
-_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it"
+_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it"
 _FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
 
 

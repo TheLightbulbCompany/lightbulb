@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Cookie Policy — Lightbulb AI",
+  title: "Cookie Policy — Lightbulb",
   alternates: { canonical: absoluteUrl("/cookies") },
-  description: "How Lightbulb AI uses cookies and similar tracking technologies.",
+  description: "How Lightbulb uses cookies and similar tracking technologies.",
 };
 
 export default function CookiesPage() {

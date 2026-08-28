@@ -7,8 +7,8 @@ import { SectionLabel } from "@/components/agents/AgentIdentity";
 import { JsonLd, absoluteUrl, breadcrumbJsonLd, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "AI Agent Marketplace for Autonomous Business | Lightbulb AI",
-  description: "Discover curated AI agents for support, sales, finance, operations, and research that deploy into Lightbulb AI workspaces.",
+  title: "AI Agent Marketplace for Autonomous Business | Lightbulb",
+  description: "Discover curated AI agents for support, sales, finance, operations, and research that deploy into Lightbulb workspaces.",
   path: "/marketplace",
 });
 
@@ -23,7 +23,7 @@ export default async function Home() {
 
   return (
     <main className="mx-auto max-w-6xl px-6">
-      <JsonLd data={{ ...softwareApplicationJsonLd, name: "Lightbulb AI AI Agent Marketplace", url: absoluteUrl("/marketplace") }} />
+      <JsonLd data={{ ...softwareApplicationJsonLd, name: "Lightbulb Agent Marketplace", url: absoluteUrl("/marketplace") }} />
       <JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Marketplace", path: "/marketplace" }])} />
       <section className="border-b border-[var(--edge)] py-16 md:py-24">
         <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
@@ -35,7 +35,7 @@ export default async function Home() {
           <em className="text-[var(--midnight)]">Keep your job.</em>
         </h1>
         <p className="mt-6 max-w-xl text-base leading-7 text-[var(--midnight-soft)]">
-          Curated AI agents you can deploy into your Lightbulb AI container in one click.
+          Curated AI agents you can deploy into your Lightbulb container in one click.
           Browse, install, and start delegating.
         </p>
         <div className="mt-8 flex items-center gap-4">

@@ -25,7 +25,7 @@ import { DEEP_LINK_SCHEME } from "@/lib/domain";
  */
 
 export const metadata: Metadata = {
-  title: "Checkout — Lightbulb AI",
+  title: "Checkout — Lightbulb",
   // Nothing here should ever be indexed: these URLs are per-transaction
   // return targets, not content.
   robots: { index: false, follow: false },
@@ -34,22 +34,22 @@ export const metadata: Metadata = {
 const COPY: Record<string, { heading: string; body: string }> = {
   success: {
     heading: "You're subscribed.",
-    body: "Payment received. Your plan is active — head back to the Lightbulb AI app and your agents will pick it up within a few seconds.",
+    body: "Payment received. Your plan is active — head back to the Lightbulb app and your agents will pick it up within a few seconds.",
   },
   cancel: {
     heading: "Checkout cancelled.",
-    body: "Nothing was charged. You can head back to the Lightbulb AI app and start again whenever you like.",
+    body: "Nothing was charged. You can head back to the Lightbulb app and start again whenever you like.",
   },
 
   portal: {
     heading: "Billing updated.",
-    body: "Any changes you made have been saved. Head back to the Lightbulb AI app — your plan will reflect them within a few seconds.",
+    body: "Any changes you made have been saved. Head back to the Lightbulb app — your plan will reflect them within a few seconds.",
   },
 };
 
 const FALLBACK = {
   heading: "Checkout complete.",
-  body: "You can head back to the Lightbulb AI app.",
+  body: "You can head back to the Lightbulb app.",
 };
 
 export default async function CheckoutRedirectPage({
@@ -69,7 +69,7 @@ export default async function CheckoutRedirectPage({
             can fail to open the app. Harmless on desktop, where it simply
             does nothing. */}
         <p>
-          <a href={`${DEEP_LINK_SCHEME}://`}>Open the Lightbulb AI app</a>
+          <a href={`${DEEP_LINK_SCHEME}://`}>Open the Lightbulb app</a>
         </p>
       </main>
     </div>

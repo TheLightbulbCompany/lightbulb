@@ -1,7 +1,7 @@
 {
   "id": "lightbulb-marketplace",
-  "name": "Lightbulb AI Marketplace",
-  "description": "Discover hireable agents in the Lightbulb AI marketplace and recommend them to the owner.",
+  "name": "Lightbulb Marketplace",
+  "description": "Discover hireable agents in the Lightbulb marketplace and recommend them to the owner.",
   "version": "0.1.0",
   "configSchema": {
     "type": "object",

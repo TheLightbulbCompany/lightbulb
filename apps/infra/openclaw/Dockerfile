@@ -735,7 +735,7 @@ RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
 # AGENT_ID from that file itself; they are NOT container-wide task env.
 COPY skills/paperclip /app/skills/paperclip
 
-# ---- Layer 16: bundled Lightbulb AI platform skill ----
+# ---- Layer 16: bundled Lightbulb platform skill ----
 # The `lightbulb` skill is every agent's authoritative reference for the
 # platform itself — UI surfaces (incl. the Integrations tab), marketplace
 # mechanics, plans/providers, the Paperclip org model, and hard boundaries.

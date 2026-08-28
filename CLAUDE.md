@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb AI (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
-Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb AI marketplace** for other users to deploy — see the "Marketplace" section.
+Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
 
 The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/isol8ai/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
 - `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/isol8ai/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
@@ -19,7 +19,7 @@ This repo does not vendor OpenClaw source. The base image is built from the **Is
 
 Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
 
-## Rebrand in flight — Isol8 → Lightbulb AI
+## Rebrand in flight — Isol8 → Lightbulb
 
 **Read this before trusting any hostname, brand string, or identifier below.** The
 `isol8` brand is being retired. The migration is live and only partly shipped, so
@@ -28,7 +28,7 @@ which environment.
 
 | | old | new |
 |---|---|---|
-| Product name | Isol8 | **Lightbulb AI** |
+| Product name | Isol8 | **Lightbulb** |
 | Product domain | `isol8.co` | **`flickmeon.ai`** — same prefixes (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, `company.`, and Clerk's `clerk.`/`accounts.`/`clkmail.`) |
 | Mail — humans, vendor logins, platform sender | `isol8.co` | **`thelightbulb.company`** (`hello@ support@ tickets@ admin@`) |
 | Agent mail | `{agent}@{slug}.isol8.co` | **`{agent}@{slug}.thelightbulb.company`** |
@@ -186,7 +186,7 @@ Frontend E2E: `cd apps/frontend && pnpm run test:e2e`
 When you change `openclaw.json` config, existing containers keep the old config on EFS. Re-provision:
 
 ```javascript
-// Browser console (any Lightbulb AI page with Clerk loaded):
+// Browser console (any Lightbulb page with Clerk loaded):
 // PATCH -- wholesale-rewrites openclaw.json via write_user_configs + redeploys (preserves container).
 // Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing Friday/Atlas ids;
 // it cannot CREATE the Paperclip company or agents (see Provisioning Flow).
@@ -906,7 +906,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 
 ## Desktop App
 
-Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop` — becomes `ai.flickmeon.desktop` at the flag-day flip (a fresh install; the device re-pairs). Product name: `Isol8` → `Lightbulb AI` with the brand swap.
+Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop` — becomes `ai.flickmeon.desktop` at the flag-day flip (a fresh install; the device re-pairs). Product name: `Isol8` → `Lightbulb` with the brand swap.
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://isol8.co/chat`** (and the updater endpoint) at build time in `desktop-build.yml` — that prod URL becomes `https://flickmeon.ai/chat` at the flag-day flip

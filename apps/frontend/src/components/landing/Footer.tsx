@@ -49,7 +49,7 @@ export function Footer() {
         </div>
 
         <span className="ld-footer-word" aria-hidden="true">
-          Lightbulb AI
+          Lightbulb
         </span>
       </div>
     </footer>

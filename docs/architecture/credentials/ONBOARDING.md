@@ -1,10 +1,10 @@
-# Lightbulb AI Credential Layer — Onboarding for a fresh Claude Code session
+# Lightbulb Credential Layer — Onboarding for a fresh Claude Code session
 
 You (Claude) are picking up an in-progress design workstream. This file is the entire context dump. Read it once and you have everything actionable — there is no prior conversation transcript you need to recover.
 
 ## What this project is
 
-**Lightbulb AI** is a multi-tenant managed-agent SaaS built on top of **OpenClaw** (real, MIT-licensed personal-agent runtime — github.com/openclaw/openclaw, cloned locally at `~/Desktop/openclaw`, HEAD `510628ca6f` as of 2026-05-21). This repo (`~/Desktop/isol8.nosync`) is the Lightbulb AI platform itself. Each Lightbulb AI customer gets a dedicated ECS Fargate container running OpenClaw + an EFS workspace. The platform ships seed agents (Friday = CEO/orchestrator, Atlas = recruiter) and has a marketplace where buyers one-click deploy pre-built agents into their own container. The platform team also has its own internal engineering agent ("Jarvis") with email `admin@isol8.co`.
+**Lightbulb** is a multi-tenant managed-agent SaaS built on top of **OpenClaw** (real, MIT-licensed personal-agent runtime — github.com/openclaw/openclaw, cloned locally at `~/Desktop/openclaw`, HEAD `510628ca6f` as of 2026-05-21). This repo (`~/Desktop/isol8.nosync`) is the Lightbulb platform itself. Each Lightbulb customer gets a dedicated ECS Fargate container running OpenClaw + an EFS workspace. The platform ships seed agents (Friday = CEO/orchestrator, Atlas = recruiter) and has a marketplace where buyers one-click deploy pre-built agents into their own container. The platform team also has its own internal engineering agent ("Jarvis") with email `admin@isol8.co`.
 
 **The active design workstream** is the credential management layer: how third-party SaaS tokens (Slack, Salesforce, GitHub, PostHog, Vercel, Google), agent-identity credentials (Jarvis's GitHub PAT, AWS keys), and platform-operator credentials get provisioned, stored, refreshed, and delivered to running agents.
 
@@ -37,7 +37,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
 - **Nango catalog coverage (verified against `packages/providers/providers.yaml` on master, 812 providers):**
   - **Works cleanly:** Slack, HubSpot, Notion, Linear, Asana, Calendly, Monday, ClickUp, Stripe Connect, and all of Google (Gmail/Calendar/Drive/Sheets/Docs/Workspace Admin/Ads/Analytics/YouTube).
   - **Variant-trap providers** (works but pick the right variant): Vercel (OAuth only for MCP product; REST API is `API_KEY` only — upstream limit), GitHub (4 variants — `github-app` recommended for production), PostHog (now has real OAuth at `oauth.posthog.com`), Salesforce (hostname regex rejects `lightning.force.com` URLs), Greenhouse (Harvest variant is Basic auth not OAuth), Stripe (Connect vs api-key).
-  - **Out of scope for Nango:** AWS account access via cross-account IAM roles / STS — needs a separate solution (customer-deployed CFN stack with cross-account role + Lightbulb AI calls `sts:AssumeRole`).
+  - **Out of scope for Nango:** AWS account access via cross-account IAM roles / STS — needs a separate solution (customer-deployed CFN stack with cross-account role + Lightbulb calls `sts:AssumeRole`).
 - **Nango doesn't have community/experimental tiers.** All 812 providers in providers.yaml are first-party-maintained. The earlier brief's framing of "verified vs experimental" was wrong.
 - **The Jarvis bootstrap problem ≠ the customer-deploy problem.** Conflating them caused confusion in the original brief. Jarvis is a platform-internal agent that needs persistent identity credentials (its own Google for `admin@isol8.co`, its own GitHub, its own AWS role). End-customer agents (Atlas, Friday at a customer site) need *delegated* credentials (the customer's Slack, the customer's Greenhouse). Different lifecycle, different storage, different vendor shape.
 
@@ -49,7 +49,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
 | Agent-identity secrets (tier 2) | **Infisical, MIT** — ships an ECS sidecar pattern with AWS IAM auth on machine identities. Production reference: Hugging Face. | Researched. Not yet in the solution brief. The user expressed interest in Infisical's "agent vault." |
 | Platform-operator secrets (tier 1) | **AWS Secrets Manager** (existing). One-time human bootstrap per provider. | No change from current. |
 | Runtime credential delivery to MCP/CLI/plugin/skill | **`isol8-tool` wrapper shim** (sources env file at exec time). Avoids the MCP `getDefaultEnvironment()` trap. | Designed in §2.3 of the stale brief. Verified to work against the MCP spawn code. |
-| **AWS cross-account roles** (new — not yet in any doc) | Customer-deployed CFN template creating a role with external ID + Lightbulb AI calls `sts:AssumeRole`. Standard pattern. | **Open task** — add as fourth solution category to discovery doc §10. |
+| **AWS cross-account roles** (new — not yet in any doc) | Customer-deployed CFN template creating a role with external ID + Lightbulb calls `sts:AssumeRole`. Standard pattern. | **Open task** — add as fourth solution category to discovery doc §10. |
 | CLI standardization | **Don't adopt Printing Press or OpenCLI.** Printing Press is a build-time CLI generator (wrong layer); OpenCLI explicitly excludes auth from scope. Wrapper shim covers it. | Researched. Decision documented in stale brief. |
 
 ## Open work items, prioritized
@@ -60,7 +60,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
    - (b) Write a fresh vendor-selection brief from scratch using the discovery doc's §7 acceptance criteria as the rubric, retire the old brief.
    The user has not chosen between these. Ask, or recommend (b) — the stale brief's scope mistake is structural enough that surgery may take longer than a rewrite.
 3. **Resolve the 10 open questions in discovery doc §11** before vendor selection finalizes. Notably:
-   - Does Lightbulb AI want BYO OAuth clients per customer (Pipedream pattern) in v1 or defer to v2? Recommendation: defer.
+   - Does Lightbulb want BYO OAuth clients per customer (Pipedream pattern) in v1 or defer to v2? Recommendation: defer.
    - Marketplace manifest schema — needs an RFC. Not started.
    - Multi-account-per-provider (Gumloop pattern) — v1 or v2? Recommendation: v2.
 
@@ -71,7 +71,7 @@ These were verified against source/docs/the OpenClaw clone. Don't waste cycles r
 - The user pushes back hard and correctly on over-engineering, premature vendor selection, and writing-before-thinking. Match that posture.
 - When you don't know something, look at the actual OpenClaw source instead of inferring. The clone is right there.
 - Be skeptical of any claim in the stale brief — it predates the discovery report and was written under partly wrong assumptions about MCP env inheritance.
-- The repo has a root `CLAUDE.md` with Lightbulb AI-specific conventions; read that before touching code if your task involves code changes.
+- The repo has a root `CLAUDE.md` with Lightbulb-specific conventions; read that before touching code if your task involves code changes.
 
 ## What success looks like for the next session
 

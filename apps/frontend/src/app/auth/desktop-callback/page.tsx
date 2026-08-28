@@ -39,7 +39,7 @@ export default function DesktopCallback() {
         const data = await resp.json();
 
         // Redirect to the desktop app with the sign-in token
-        setStatus("Opening Lightbulb AI desktop app...");
+        setStatus("Opening Lightbulb desktop app...");
         window.location.href = `${DEEP_LINK_SCHEME}://auth?ticket=${encodeURIComponent(data.token)}`;
       } catch (err) {
         console.error("Desktop callback error:", err);

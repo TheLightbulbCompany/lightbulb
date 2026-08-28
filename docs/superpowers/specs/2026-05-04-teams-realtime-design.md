@@ -259,5 +259,5 @@ In all three, the user observes "panels refresh automatically about 1-2 seconds 
 - Live agent run progress visualization (uses `heartbeat.run.event` log stream for a streaming transcript view). Scoped into sub-project #2 (Dashboard charts) and #3 (Inbox depth) where the data is actually rendered.
 - `teams.stream.degraded` user-facing banner. Add only if reconnect failures hit real users.
 - Caching the per-user Paperclip session cookie. Optional optimization for reconnect storms.
-- Multi-region (not relevant — Lightbulb AI is single-region).
+- Multi-region (not relevant — Lightbulb is single-region).
 - Browser-pushed events (subscribe filters, "mark read" via the channel). Mutations stay on REST.

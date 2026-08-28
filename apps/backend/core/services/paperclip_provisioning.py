@@ -564,7 +564,7 @@ class PaperclipProvisioning:
                 try:
                     company = await self._admin.create_company(
                         name=company_name,
-                        description="Lightbulb AI Teams workspace",
+                        description="Lightbulb Teams workspace",
                         session_cookie=admin_cookie,
                         idempotency_key=owner_user_id,
                     )
@@ -575,7 +575,7 @@ class PaperclipProvisioning:
                         admin_cookie = await get_admin_session_cookie(self._admin._http)
                         company = await self._admin.create_company(
                             name=company_name,
-                            description="Lightbulb AI Teams workspace",
+                            description="Lightbulb Teams workspace",
                             session_cookie=admin_cookie,
                             idempotency_key=owner_user_id,
                         )

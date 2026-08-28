@@ -289,7 +289,7 @@ so every launch logs a node-start error forever. Old installs also never revoke 
 
 **The plan records no decision here, and one option expires.** Either (a) accept it and tell
 the team in Slack, or (b) before P3 step 5, publish one last `desktop-v0.4.N` to the OLD
-identity whose window URL is a static "install Lightbulb AI" page. **(b) is impossible
+identity whose window URL is a static "install Lightbulb" page. **(b) is impossible
 after step 5 runs.**
 
 ### C17 — L174's brand-swap list is missing the highest-blast-radius frontend surfaces
@@ -299,7 +299,7 @@ after step 5 runs.**
   `8` — *that glyph IS the mark*. A text-only swap leaves an orphan `8` beside the new name.
 - `Footer.tsx:52` — the giant decorative wordmark. **[V]** styled at
   `landing.css:1767-1784` `clamp(110px, 21vw, 320px)`, tuned for 5 characters;
-  "Lightbulb AI" (12) overflows horizontally at every viewport. This is a **layout change**,
+  "Lightbulb" (12) overflows horizontally at every viewport. This is a **layout change**,
   not a text swap.
 - `LegalDocument.tsx:35` — `© {year} isol8 Inc.` on **all seven** Termly pages. The plan
   names 2 of 9 © surfaces (`Footer.tsx:47`, `support/page.tsx:119`).
@@ -362,7 +362,7 @@ sentinel check `:922`; append `:924`. The plan and the sweep both said `:906/:91
 ($50/mo flat-fee)"` and `:806` `"Bedrock (Claude, Isol8-managed credits)"` (inside
 `_LEGACY_PROVIDER_LABELS`) are **match-the-old-bytes keys** for `_migrate_legacy_user_md`,
 which hard-gates at `:837` (`if _LEGACY_PLAN_LINE not in content: return False`). A
-mechanical `Isol8`→`Lightbulb AI` over this file silently kills that migration for every
+mechanical `Isol8`→`Lightbulb` over this file silently kills that migration for every
 owner it has not yet reached. `:806` is a byte-identical copy of `owner_facts.py:38`, which
 the plan **does** rename — so the two must be split: rename `owner_facts.py:38`, **add** the
 new label to `_LEGACY_PROVIDER_LABELS`, never swap it.
@@ -999,22 +999,22 @@ vercel:team domain                     | `vercel domains add flickmeon.ai --scop
 ### P3 — prod flag day
 
 ```
-apps/mobile/app.json:3,4,5,9,18,23,29,48        | name/slug/owner/scheme/bundleIdentifier/2 usage strings/applinks | →Lightbulb AI / lightbulb-ai-mobile / renamed Expo acct / lightbulbai / ai.flickmeon.mobile / applinks:flickmeon.ai | user-visible | H | C14 — the flip ships flickmeon env inside a co.isol8.mobile binary
+apps/mobile/app.json:3,4,5,9,18,23,29,48        | name/slug/owner/scheme/bundleIdentifier/2 usage strings/applinks | →Lightbulb / lightbulb-ai-mobile / renamed Expo acct / lightbulbai / ai.flickmeon.mobile / applinks:flickmeon.ai | user-visible | H | C14 — the flip ships flickmeon env inside a co.isol8.mobile binary
 apps/infra/lib/stacks/service-stack.ts:1370,1374,1378 | APPLE_IAP_{BUNDLE_ID,PRODUCT_ID,APP_APPLE_ID} — LIVE in prod today | →ai.flickmeon.mobile{,.plan.monthly} + the NEW numeric ASC id | user-visible | H | C13; :1378 fails verification SILENTLY as an ordinary rejection
 apps/mobile/eas.json:45                          | ascAppId "6788944100" | →new ASC app id | internal | H | `eas submit` uploads the new-bundle IPA against the OLD record; Apple rejects after a full local build
 vendor:Apple new App ID                          | Push Notifications + Sign in with Apple capabilities | enable both | user-visible | H | EAS provisioning fails at build, or SIWA ships silently broken — the exact guideline-4.8 requirement that got 0.1.0 rejected
 vendor:Clerk                                     | native redirect allowlist `isol8://oauth-native-callback` (sign-in.tsx:87-90) + Apple SSO NATIVE bundle-id registration | add lightbulbai:// + ai.flickmeon.mobile | user-visible | H | Google/Apple SSO from the iOS app dead-ends with no error path
 apps/frontend/public/.well-known/apple-app-site-association:6 | "WZX4U3C22Y.co.isol8.mobile" | →<TeamID>.ai.flickmeon.mobile | user-visible | H | Universal Links fail SILENTLY (Safari just opens the web page). Apple's CDN caches it — must be right BEFORE submission (next.config.ts:82-83 supplies the application/json override; :77-81 documents the silent-failure mode)
-.github/workflows/desktop-build.yml:183,186,195,196,199,201,372,375,384,385,388,390 | Isol8.app / Isol8_*.dmg / isol8_rw.dmg / isol8_dmgmnt / -volname "Isol8" | follow tauri.conf.json:3 productName | internal | H | `ditto`/`hdiutil` fail under `set -euo pipefail` AFTER a ~90-min build and a completed notarization. productName "Lightbulb AI" (locked, L89) is SAFE for the updater (route.ts:83 suffix match) but every $APP/$DMG/$MNT shell path must be quoted
+.github/workflows/desktop-build.yml:183,186,195,196,199,201,372,375,384,385,388,390 | Isol8.app / Isol8_*.dmg / isol8_rw.dmg / isol8_dmgmnt / -volname "Isol8" | follow tauri.conf.json:3 productName | internal | H | `ditto`/`hdiutil` fail under `set -euo pipefail` AFTER a ~90-min build and a completed notarization. productName "Lightbulb" (locked, L89) is SAFE for the updater (route.ts:83 suffix match) but every $APP/$DMG/$MNT shell path must be quoted
 apps/desktop/src-tauri/{src/lib.rs:338,450 · src/file_access.rs:73-82 · scripts/vendor-sidecars.sh:120} | app-support dir has THREE writers: app_data_dir() FOLLOWS `identifier`; file_access.rs store_dir() and the generated openclaw shim are HARDCODED "co.isol8.desktop" | all three in one commit | internal | H | pair_state.json moves to the new dir while file_access.json and OPENCLAW_HOME stay in the old one, in the same running app
 apps/desktop/src-tauri/src/file_access.rs:6,91,95,127,142 | ~/Isol8/ seeded into the file-access allowlist on first run | decide (rename or keep) | user-visible | M | the user's existing ~/Isol8/ drops out of the allowlist and the agent can no longer read files already there
 apps/infra/lambda/bedrock-gate/errors.mjs:31,33,35,37,41,43,45,52-58,62,64 | TEN "isol8: " messages surfaced verbatim to the agent/Claude Code; :56 embeds "contact support@isol8.co" | →brand + new support address | user-visible | H | :56 is a MAIL-move item, not just a brand string; the plan's P3 list excludes apps/infra/lambda/** entirely
 core/services/seller_display.py:34,35 | CURATOR_HANDLE="isol8" → CURATOR_BYLINE="@isol8" | →@lightbulb | user-visible | M | every curated/featured listing shows @isol8 after the rebrand
-core/services/node_proxy.py:136-140 | strip-then-append " | Isol8 Desktop" (the comment at :137 says the strip exists to prevent compounding) | strip BOTH old and new; append only new | user-visible | M | a blind replace yields "Alice | Isol8 Desktop | Lightbulb AI Desktop"
+core/services/node_proxy.py:136-140 | strip-then-append " | Isol8 Desktop" (the comment at :137 says the strip exists to prevent compounding) | strip BOTH old and new; append only new | user-visible | M | a blind replace yields "Alice | Isol8 Desktop | Lightbulb Desktop"
 core/services/inbound_triggers.py:293,294 | _PLATFORM_BLOCK_START/_END markers written INTO third-party webhook descriptions | keep the old string in the matcher | user-visible | H | same matcher-vs-writer trap as C20; renaming orphans every already-armed trigger's block
-core/services/openclaw_backup_import.py:838,841,861 | import-wizard warnings shown to the user ("reconnect channels in Isol8", "your Isol8 provider and model", "Isol8 runs {fleet_version}") | →Lightbulb AI | user-visible | L | filed as "comments only" by the sweep; they are UI copy
+core/services/openclaw_backup_import.py:838,841,861 | import-wizard warnings shown to the user ("reconnect channels in Isol8", "your Isol8 provider and model", "Isol8 runs {fleet_version}") | →Lightbulb | user-visible | L | filed as "comments only" by the sweep; they are UI copy
 routers/orgs.py:80 | HTTPException detail "…already has an active personal Isol8 subscription…" rendered verbatim in the org-invite UI | →brand | user-visible | L |
-routers/paperclip_proxy.py:133,140 | _BRAND_REWRITES: b"<title>Isol8 Teams</title>", og:site_name | →Lightbulb AI | user-visible | L | the Teams page title
+routers/paperclip_proxy.py:133,140 | _BRAND_REWRITES: b"<title>Isol8 Teams</title>", og:site_name | →Lightbulb | user-visible | L | the Teams page title
 core/billing/metronome_funding.py:93,185 | "isol8 top-up owner=…" / "isol8 checkout top-up…" written to the Metronome COMMIT LEDGER | →brand | internal | L | historical, no backfill. TRAP: idempotent replay needs a byte-identical body — changing it mid-flight on a retried top-up yields a 409
 vendor:Metronome webhook destination | https://api.isol8.co/api/v1/webhooks/metronome (metronome_webhook.py:99) — absent from the plan entirely | →api.flickmeon.ai, AFTER step 3 | user-visible | H | low-balance alerts fire ONCE per threshold crossing (:127-132), so a missed delivery is permanently lost even after the URL is fixed → the fast-gate flag never sets → paid owners spend past a depleted balance
 vendor:Stripe Customer Portal configuration | account-default ToS + Privacy URLs (billing_service.py:229 passes no configuration=) | → | user-visible | M | a paying customer opens the portal and both legal links 404
@@ -1674,7 +1674,7 @@ D13, E4, E5, S1, and everything in §5's KEEP rows.
 
 **A3 — `companies.description = 'Isol8 Teams workspace'`**
 - Writers: `paperclip_provisioning.py:551` and `:562` (both call sites).
-- `UPDATE companies SET description = 'Lightbulb AI Teams workspace' WHERE description = 'Isol8 Teams workspace'`
+- `UPDATE companies SET description = 'Lightbulb Teams workspace' WHERE description = 'Isol8 Teams workspace'`
 - Proof: `SELECT count(*) FROM companies WHERE description LIKE '%Isol8%'` → 0.
 - **Also live and user-visible:** the prod Paperclip company is literally **named `Isol8`**
   (`admin-gtm-dashboards.md:114`). `companies.name` needs the same treatment — the company
@@ -1934,7 +1934,7 @@ build-openclaw-image.yml:94      | path arg to smoke-test.sh (isol8-local-sqlite
 build-openclaw-image.yml:109     | runs-on: [self-hosted, isol8-wsl]                | →lightbulb-wsl        | P6 (queues forever)
 build-openclaw-image.yml:123,126 | TAG derived from upstream.split(':')[1]          | see B10               | P6
 build-openclaw-image.yml:137     | role/isol8-openclaw-image-builder                | →                     | P6
-build-openclaw-image.yml:142     | comment "Isol8 OpenClaw fork"                    | →Lightbulb AI         | P6
+build-openclaw-image.yml:142     | comment "Isol8 OpenClaw fork"                    | →Lightbulb         | P6
 build-openclaw-image.yml:22,33   | push path filters skills/** plugins/**           | (mechanism, B11)      | —
 build-paperclip-image.yml:73     | role/isol8-openclaw-image-builder                | →                     | P6
 build-paperclip-image.yml:78     | comment "Isol8 Paperclip fork"                   | →                     | P6
@@ -2562,7 +2562,7 @@ env-name contract; `aws-exec-profile/index.test.mjs:29` and
 6. `ses-inbound-stack.test.ts` — a during-cutover case (4-element recipients) and a
    post-cutover case (the legacy pair is gone).
 7. Desktop route tests — one case with a space-bearing bundle name
-   (`"Lightbulb AI_0.4.1_aarch64.app.tar.gz"`) proving the suffix match and URL construction
+   (`"Lightbulb_0.4.1_aarch64.app.tar.gz"`) proving the suffix match and URL construction
    still hold.
 8. `deepLink.test.ts` — re-anchored lookalikes (`https://flickmeon.ai.evil.com/…` → null).
 9. `test_support_ticket.py` — one assertion that `_admin_user_url("user_x")` contains the

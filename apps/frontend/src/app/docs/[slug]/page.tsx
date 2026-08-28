@@ -18,7 +18,7 @@ export async function generateMetadata({ params }: DocRouteProps): Promise<Metad
   const doc = getDocBySlug(slug);
   if (!doc) return {};
   return pageMetadata({
-    title: `${doc.title} — Lightbulb AI Docs`,
+    title: `${doc.title} — Lightbulb Docs`,
     description: doc.description,
     path: `/docs/${doc.slug}`,
   });

@@ -60,6 +60,18 @@ async def test_refresh_entry_records_errors_instead_of_raising(repo):
     repo.set_refresh_error.assert_awaited_with("u2", "missing_key")
 
 
+async def test_refresh_entry_swallows_repo_write_failures(repo):
+    repo.set_revenue = AsyncMock(side_effect=RuntimeError("row gone"))
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(5, "usd"))),
+    ):
+        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=NOW)  # no exception
+    repo.set_refresh_error = AsyncMock(side_effect=RuntimeError("row gone"))
+    with patch.object(rev, "load_key", AsyncMock(return_value=None)):
+        await rev.refresh_entry({"owner_id": "u2", "baseline_cents": 0}, S, now=NOW)  # no exception
+
+
 async def test_refresh_all_skips_fresh_rows_unless_forced(repo):
     fresh = (NOW - timedelta(minutes=10)).isoformat()
     stale = (NOW - timedelta(minutes=70)).isoformat()

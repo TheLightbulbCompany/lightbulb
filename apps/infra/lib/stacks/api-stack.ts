@@ -316,7 +316,19 @@ export class ApiStack extends cdk.Stack {
       nonKeyAttributes: ["userId", "connectionType"],
     });
 
-    this.connectionsTableName = connectionsTable.tableName;
+    // The NAME as a literal, not connectionsTable.tableName. A construct ref
+    // exports `api:ExportsOutputRefConnectionsTable…`, which service and
+    // observability import — and an imported export cannot have its value
+    // changed, so it would block renaming ws-connections exactly the way the
+    // database stack's exports blocked the other 22.
+    this.connectionsTableName = `${legacyTablePrefix(env)}ws-connections`;
+
+    // Pin the outgoing export for this deploy: dropping the consumers' imports
+    // makes CDK stop emitting it, and CloudFormation would then try to DELETE
+    // it while service/observability still import it. Remove with the other
+    // pins once list-imports is empty.
+    this.exportValue(connectionsTable.tableName);
+    this.exportValue(connectionsTable.tableArn);
 
     // =========================================================================
     // Lambda Authorizer (Clerk JWT validation for WebSocket $connect)

@@ -7,6 +7,7 @@ import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
@@ -87,7 +88,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
+    <ClerkProvider appearance={clerkAppearance}>
       {/* suppressHydrationWarning: the script above writes an attribute onto
           <html> that the server-rendered markup does not carry. */}
       <html

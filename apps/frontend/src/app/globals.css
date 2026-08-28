@@ -319,7 +319,7 @@
   align-items: center;
   gap: 4px;
   border-radius: 6px;
-  background: #f0ebe0;
+  background: var(--cream-deep);
   color: var(--midnight-muted);
   padding: 3px 7px;
   font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
@@ -334,13 +334,22 @@
   color: var(--midnight);
 }
 
+/* brass = the detail colour: paid, price, a small mark — never a fill */
+.agent-pill--brass {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--brass);
+  color: var(--brass);
+}
+
 .agent-pill--err {
-  background: rgba(179, 36, 36, 0.1);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--err);
   color: var(--err);
 }
 
 .agent-pill--warn {
-  background: rgba(176, 138, 42, 0.12);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--warn);
   color: var(--warn);
 }
 

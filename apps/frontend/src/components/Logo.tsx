@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-type LogoTone = "ink" | "cream";
+type LogoTone = "midnight" | "cream";
 type LogoSize = "sm" | "md" | "lg";
 
 type LogoProps = {
@@ -112,7 +112,7 @@ export function SunriseMark({ className }: { className?: string }) {
 }
 
 export function Logo({
-  tone = "ink",
+  tone = "midnight",
   size = "md",
   href = "/",
   className,

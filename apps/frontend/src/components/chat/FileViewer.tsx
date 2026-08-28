@@ -161,7 +161,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("workspace")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "workspace"
-                ? "bg-cream text-[var(--midnight)] shadow-sm font-medium"
+                ? "bg-cream-deeper text-[var(--midnight)] shadow-sm font-medium"
                 : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
             }`}
           >
@@ -175,7 +175,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("config")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "config"
-                ? "bg-cream text-[var(--midnight)] shadow-sm font-medium"
+                ? "bg-cream-deeper text-[var(--midnight)] shadow-sm font-medium"
                 : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
             }`}
           >

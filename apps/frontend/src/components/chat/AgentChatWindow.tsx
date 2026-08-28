@@ -154,9 +154,9 @@ function UpdateBanner() {
   // During apply -- show spinner state
   if (applying) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-cream border border-ok rounded-lg flex items-center gap-3">
-        <Loader2 className="h-4 w-4 text-ok shrink-0 animate-spin" />
-        <p className="text-sm text-ok flex-1">Updating your agent...</p>
+      <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg flex items-center gap-3">
+        <Loader2 className="h-4 w-4 text-info shrink-0 animate-spin" />
+        <p className="text-sm text-info flex-1">Updating your agent...</p>
       </div>
     );
   }
@@ -164,14 +164,14 @@ function UpdateBanner() {
   // Org member (non-admin) -- info only
   if (isOrg && !isOrgAdmin) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-cream border border-ok rounded-lg flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-ok shrink-0" />
-        <p className="text-sm text-ok flex-1">
+      <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-info shrink-0" />
+        <p className="text-sm text-info flex-1">
           An update is available. Your admin can apply it.
         </p>
         <button
           onClick={() => setDismissed(true)}
-          className="text-ok hover:text-ok shrink-0"
+          className="text-info hover:text-info shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -181,11 +181,11 @@ function UpdateBanner() {
   }
 
   return (
-    <div className="mx-4 mb-2 p-3 bg-cream border border-ok rounded-lg">
+    <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg">
       <div className="flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-ok shrink-0" />
+        <RefreshCw className="h-4 w-4 text-info shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-ok">
+          <p className="text-sm text-info">
             Update available: {description}
           </p>
           <p className="text-xs text-[var(--midnight-soft)] mt-0.5">
@@ -194,7 +194,7 @@ function UpdateBanner() {
         </div>
         <button
           onClick={() => setDismissed(true)}
-          className="text-ok hover:text-ok shrink-0"
+          className="text-info hover:text-info shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -204,7 +204,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-ok text-ok hover:bg-[var(--cream-deep)]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleApplyNow(firstUpdate.update_id)}
         >
           <RefreshCw className="h-3 w-3 mr-1" />
@@ -213,7 +213,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-ok text-ok hover:bg-[var(--cream-deep)]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleScheduleTonight(firstUpdate.update_id)}
         >
           <Clock className="h-3 w-3 mr-1" />
@@ -222,7 +222,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-ok text-ok hover:bg-[var(--cream-deep)]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleRemindLater(firstUpdate.update_id)}
         >
           Remind Me Later

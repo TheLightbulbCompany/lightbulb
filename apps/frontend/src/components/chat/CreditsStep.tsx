@@ -47,7 +47,7 @@ const PRIMARY_BUTTON =
   "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
 
 const TEXT_INPUT =
-  "rounded-lg border border-[var(--edge)] bg-cream px-3 py-2.5 text-sm text-[var(--midnight)] " +
+  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)] " +
   "focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring";
 
 /**

@@ -292,7 +292,7 @@ export function ModelSelector({
                               className={cn(
                                 "w-full flex items-center justify-between pl-9 pr-3 py-1.5 text-sm transition-colors group",
                                 isSelected
-                                  ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                                  ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                                   : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
                               )}
                             >

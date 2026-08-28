@@ -14,14 +14,14 @@ export function GallerySection() {
         <button
           type="button"
           onClick={() => open({ view: "browse" })}
-          className="flex-1 px-2.5 py-2 text-[12.5px] font-medium text-[var(--midnight)] border border-[var(--edge)] rounded-[10px] hover:border-[var(--midnight)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors"
+          className="flex-1 px-2.5 py-2 text-[12.5px] font-medium text-[var(--midnight)] border border-[var(--edge)] rounded-[10px] hover:border-[var(--midnight)] hover:text-[var(--midnight)] hover:bg-cream transition-colors"
         >
           Browse
         </button>
         <button
           type="button"
           onClick={() => open({ view: "publish" })}
-          className="flex-1 px-2.5 py-2 text-[12.5px] font-medium text-[var(--midnight)] border border-[var(--edge)] rounded-[10px] hover:border-[var(--midnight)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors inline-flex items-center justify-center gap-1.5"
+          className="flex-1 px-2.5 py-2 text-[12.5px] font-medium text-[var(--midnight)] border border-[var(--edge)] rounded-[10px] hover:border-[var(--midnight)] hover:text-[var(--midnight)] hover:bg-cream transition-colors inline-flex items-center justify-center gap-1.5"
         >
           <Plus className="w-3 h-3" />
           Publish

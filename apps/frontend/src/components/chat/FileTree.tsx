@@ -74,7 +74,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       onClick={() => onSelect(entry.path)}
       className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm rounded transition-colors ${
         isSelected
-          ? "bg-cream text-[var(--midnight)] shadow-sm"
+          ? "bg-cream-deeper text-[var(--midnight)] shadow-sm"
           : isMissing
             ? "text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)]"
             : "text-[var(--midnight)] hover:bg-[var(--cream-deep)]"

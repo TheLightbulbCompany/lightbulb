@@ -527,7 +527,7 @@ export function ChatInput({
             {suggestedMessage && !input && (
               <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-[15px] leading-6 text-[var(--midnight-muted)]">
                 {suggestedMessage}
-                <span className="ml-2 text-xs text-[var(--midnight-faint)]">[Tab]</span>
+                <span className="ml-2 text-xs text-[var(--midnight-muted)]">[Tab]</span>
               </div>
             )}
             <textarea

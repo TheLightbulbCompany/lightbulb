@@ -303,7 +303,7 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
         <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-err" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-tight">{title}</p>
-          <p className="mt-1 text-sm leading-snug whitespace-pre-wrap break-words">{description}</p>
+          <p className="mt-1 text-sm leading-snug whitespace-pre-wrap break-words text-[var(--midnight-soft)]">{description}</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {action && (
               <Button

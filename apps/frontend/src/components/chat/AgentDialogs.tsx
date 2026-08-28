@@ -129,7 +129,7 @@ export function AgentCreateDialog({ open, existingNames, onCancel, onCreate }: C
             }}
             placeholder="e.g. Research Assistant"
             disabled={submitting}
-            className="w-full rounded-md border border-[var(--edge)] bg-cream px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            className="w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
           />
           {(clientError || error) && (
             <p className="text-xs text-err">{clientError || error}</p>
@@ -200,7 +200,7 @@ export function AgentRenameDialog({ agent, onCancel, onRename }: RenameProps) {
               if (e.key === "Escape" && !submitting) onCancel();
             }}
             disabled={submitting}
-            className="w-full rounded-md border border-[var(--edge)] bg-cream px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            className="w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
           />
           {error && <p className="text-xs text-err">{error}</p>}
         </div>

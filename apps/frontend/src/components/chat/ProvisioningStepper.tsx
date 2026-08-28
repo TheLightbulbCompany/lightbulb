@@ -1624,7 +1624,7 @@ export function ProvisioningStepper({
         .provision-free-banner {
           margin-top: 24px;
           padding: 12px 16px;
-          background: transparent;
+          background: var(--cream);
           border: 1px solid var(--ok);
           border-radius: 12px;
           font-size: 13px;
@@ -1981,7 +1981,7 @@ function StepperDisplay({
                     ? "text-sm text-[var(--midnight)]"
                     : isCurrent
                       ? "text-sm text-[var(--midnight)] font-medium"
-                      : "text-sm text-[var(--midnight-faint)]"
+                      : "text-sm text-[var(--midnight-muted)]"
               }
             >
               {isCurrent && !error ? step.activeLabel : step.label}
@@ -2116,7 +2116,7 @@ function StarterCreditsPicker({
           aria-label="Starter Claude credits in dollars"
           onChange={(e) => setDraft(e.target.value)}
           onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-cream px-2 py-1 text-xs text-[var(--midnight)] focus:border-[var(--midnight)] focus:outline-none disabled:opacity-50"
+          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] focus:border-[var(--midnight)] focus:outline-none disabled:opacity-50"
         />
       </label>
     </div>

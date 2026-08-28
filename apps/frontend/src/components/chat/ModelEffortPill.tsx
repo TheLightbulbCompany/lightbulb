@@ -141,7 +141,7 @@ export function ModelEffortPill({
                   className={cn(
                     "w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-sm transition-colors",
                     isSel
-                      ? "bg-[var(--cream-deep)] text-[var(--midnight)] font-medium"
+                      ? "bg-[var(--cream-deeper)] text-[var(--midnight)] font-medium"
                       : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]",
                     (isStreaming || denied) && "opacity-40 cursor-not-allowed",
                   )}

@@ -1422,11 +1422,11 @@ export class ServiceStack extends cdk.Stack {
       // vars, not secrets: the bundle/product/app ids are public (they ship in
       // the binary and the App Store listing), and the actual trust anchor is
       // the certificate directory below.
-      APPLE_IAP_BUNDLE_ID: "co.isol8.mobile",
+      APPLE_IAP_BUNDLE_ID: "ai.flickmeon.mobile",
       // Must match the product created in App Store Connect EXACTLY, and the
       // SKU the app requests (EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID in eas.json). A
       // transaction naming anything else is refused rather than granted.
-      APPLE_IAP_PRODUCT_ID: "co.isol8.mobile.plan.monthly",
+      APPLE_IAP_PRODUCT_ID: "ai.flickmeon.mobile.plan.monthly",
       // Numeric App Store app id — the same ascAppId eas.json submits against.
       // Apple compares it numerically; the backend converts and rejects a
       // non-numeric value as misconfiguration.

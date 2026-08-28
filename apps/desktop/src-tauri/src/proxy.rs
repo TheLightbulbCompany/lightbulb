@@ -53,7 +53,7 @@ pub struct ProxyHandle {
 
 impl ProxyHandle {
     /// The 127.0.0.1 port the proxy is listening on. Hand this to the
-    /// openclaw subprocess via `ISOL8_PROXY_PORT`.
+    /// openclaw subprocess via `LIGHTBULB_PROXY_PORT`.
     pub fn local_port(&self) -> u16 {
         self.port
     }

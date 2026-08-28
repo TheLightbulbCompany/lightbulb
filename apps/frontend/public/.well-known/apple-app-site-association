@@ -3,7 +3,7 @@
     "apps": [],
     "details": [
       {
-        "appIDs": ["WZX4U3C22Y.co.isol8.mobile"],
+        "appIDs": ["WZX4U3C22Y.ai.flickmeon.mobile"],
         "components": [
           {
             "/": "/checkout_redirect/*",

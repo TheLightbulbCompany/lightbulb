@@ -65,7 +65,7 @@ jobs:
       # Absent, APPLE_SUBSCRIPTION_SKU is "" and APPLE_IAP_AVAILABLE is false,
       # so the paywall renders no StoreKit purchase at all — the exact condition
       # App Review rejected 0.1.0 (17) for under guideline 3.1.1.
-      EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID: co.isol8.mobile.plan.monthly
+      EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID: ai.flickmeon.mobile.plan.monthly
     steps:
       - name: Checkout
         uses: actions/checkout@v4

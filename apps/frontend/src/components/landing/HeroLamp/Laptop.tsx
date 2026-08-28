@@ -1,56 +1,65 @@
 "use client";
 
 /**
- * The laptop on the desk. "her"/"hers" throughout this file means Ksenia
- * Kondrashova, whose CodePen `gOEgyaj` this model and its open/screen-on
- * timelines come from: the code is MIT under CodePen's terms, and the GLB is
- * her own unlicensed personal asset, self-hosted here at the owner's explicit
- * ruling. Deviations from hers are called out where they happen.
+ * The laptop on the desk — v3: it IS the stage. "her"/"hers" throughout this
+ * file means Ksenia Kondrashova, whose CodePen `gOEgyaj` this model and its
+ * rise-in timeline come from: the code is MIT under CodePen's terms, and the
+ * GLB is her own unlicensed personal asset, self-hosted here at the owner's
+ * explicit ruling. Deviations from hers are called out where they happen.
+ *
+ * Her open/screen-on timelines are GONE. The lid never closes (the hero's copy
+ * lives on the screen), so there is nothing to choreograph on the strike: the
+ * lid is fixed at LID_OPEN and the screen is lit from the first frame. Only her
+ * rise-in survives.
  */
 import * as React from "react";
 import * as THREE from "three";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import { useGLTF, useTexture } from "@react-three/drei";
 import { RectAreaLightUniformsLib } from "three/examples/jsm/lights/RectAreaLightUniformsLib.js";
-import { makeIdeaTexture } from "./ideaTexture";
-import { getIdeaText, subscribe } from "./lampStore";
-import { easeStrike, type LampColors } from "./Lamp";
+import type { LampColors } from "./Lamp";
 import { DESK_TOP_Y } from "./Desk";
 
 export const LAPTOP_URL = "/models/laptop/mac-noUv.glb";
 const KEYS_URL = "/models/laptop/keyboard-overlay.png";
-const SCALE = 0.030;
-const SCREEN: [number, number] = [29.4, 20];
-const LID_CLOSED = 0.5 * Math.PI,
-  LID_OPEN = -0.2 * Math.PI; // hers
 
+// ── Framing (tuned by render at 1440x900 and 1280x720; see Scene.tsx) ───────
+// The model measures 30.5 wide x 21.5 deep in the base and 21 tall in the lid,
+// so at 0.34 the laptop is 10.4 x 7.3 x 7.1 WORLD units — far bigger than the
+// room it used to sit in, which is why the desk and the wall moved with it
+// (Desk.tsx). The screen plane then projects 62.0% of the viewport width at
+// 1440x900 and 66.2% at 1280x720; the GLB's black screen-frame overlaps its
+// edges, so the LIT area measures ~2 points less — 60.1% and 64.1%, read off
+// the rendered pixels just above the screen's bottom edge. Both readings are
+// inside the spec's 60-70%, which is why this is 0.34 and not 0.33: at 0.33
+// the lit area fell to 58.3% at 1440x900.
+const SCALE = 0.34;
+// Front-to-back seat on the desk: the hinge at z 1.0 puts the lid's top edge at
+// z -3.49 (0.41 clear of the wall at -3.9) and the base's front lip at z 8.29,
+// 0.41 short of the desk's front edge.
+const LAPTOP_Z = 1.0;
+const SCREEN: [number, number] = [29.4, 20];
+const LID_OPEN = -0.2 * Math.PI; // hers
 // three's WebGLLights extractRotation()s the light's world matrix, so the
-// group's 0.030 scale is normalised away and width/height are read as WORLD
-// units — they have to be pre-scaled or the emitter is four desks wide.
-// Screen-sized means ~330x less area than the unscaled one, so the intensity
-// has to come up with it for the screen to light the keyboard at all.
-const SCREEN_LIGHT = 8;
+// group's scale is normalised away and width/height are read as WORLD units —
+// they have to be pre-scaled or the emitter is four desks wide. Constant now:
+// the screen is never off, so there is nothing to tween.
+const SCREEN_LIGHT = 6;
 
 let rectInit = false;
 
 export function Laptop({
-  litRef,
   appearRef,
   colors,
   shadows,
 }: {
-  litRef: React.MutableRefObject<number>;
   appearRef: React.MutableRefObject<number>;
   colors: LampColors;
   shadows: boolean;
 }) {
   const { scene } = useGLTF(LAPTOP_URL);
-  const invalidate = useThree((s) => s.invalidate);
   const keysTex = useTexture(KEYS_URL);
   const root = React.useRef<THREE.Group>(null);
-  const lid = React.useRef<THREE.Group>(null);
-  const screenMat = React.useRef<THREE.MeshBasicMaterial>(null);
-  const light = React.useRef<THREE.RectAreaLight>(null);
 
   // Owner's exception: her materials, her hex. The only hex in the scene
   // besides the keyboard overlay's 0xffffff below — that one is an alpha
@@ -63,10 +72,6 @@ export function Laptop({
       logo: new THREE.MeshBasicMaterial({ color: 0xffffff }),
     }),
     [],
-  );
-  const idea = React.useMemo(
-    () => makeIdeaTexture(colors.midnight, colors.cream),
-    [colors.midnight, colors.cream],
   );
 
   // drei's useGLTF cache is module-global and has no lifespan: every mount
@@ -128,93 +133,45 @@ export function Laptop({
       RectAreaLightUniformsLib.init();
       rectInit = true;
     }
-    // Redraw the screen only when the idea changes; first paint after Lora is
-    // ready. The repaint has to ask for a frame of its own: nothing else moves
-    // when the idea changes (the lamp is already lit by the first keystroke),
-    // and under frameloop="demand" a new texture is drawn by nobody.
-    let live = true;
-    // The string actually on the screen. One store carries the idea AND the
-    // theme, so every strike notifies this listener too — repainting a 1024x700
-    // canvas and asking for a frame to redraw identical text is pure waste.
-    let painted: string | null = null;
-    const redraw = () => {
-      if (!live) return; // fonts.ready can land after unmount
-      const text = getIdeaText();
-      if (text === painted) return;
-      painted = text;
-      idea.draw(text);
-      invalidate();
-    };
-    const off = subscribe(redraw);
-    // Lora landing changes the GLYPHS, not the string, so this one repaint has
-    // to defeat the cache above.
-    document.fonts?.ready.then(() => {
-      painted = null;
-      redraw();
-    });
     return () => {
-      live = false;
-      off();
-      idea.texture.dispose();
       Object.values(mats).forEach((m) => m.dispose());
     };
-  }, [idea, mats, invalidate]);
+  }, [mats]);
 
+  // her laptopAppearTl: from lying flat below the frame to seated on the desk.
+  // The only thing left moving in this file. Driver owns the clock AND the
+  // demand loop's `busy` flag while `appearRef` is under 1, so this never has
+  // to ask for a frame of its own.
   useFrame(() => {
-    const k = easeStrike(litRef.current);
     const a = 1 - Math.pow(1 - appearRef.current, 3);
-    // her laptopAppearTl: from lying flat below the frame to seated on the desk
-    if (root.current) {
-      // Ends FLAT (hers ends pitched 0.05π — she floated it): on a desk a 9°
-      // pitch sinks the front feet 0.1 world units into the top.
-      root.current.rotation.x = 0.5 * Math.PI * (1 - a);
-      root.current.rotation.y = 0.2 * Math.PI * (1 - a) - 0.18 * a;
-      root.current.position.y = DESK_TOP_Y - 2.2 * (1 - a);
-    }
-    // her laptopOpeningTl over the first 80% of the strike
-    const o = Math.min(1, k / 0.8);
-    if (lid.current) {
-      lid.current.rotation.x = LID_CLOSED + (LID_OPEN - LID_CLOSED) * o;
-      lid.current.position.z = 0.5 * (1 - o);
-    }
-    // her screenOnTl at 5% of the opening
-    const s = THREE.MathUtils.clamp((o - 0.05) / 0.06, 0, 1);
-    if (screenMat.current) screenMat.current.opacity = 0.96 * s;
-    if (light.current) light.current.intensity = SCREEN_LIGHT * s;
+    if (!root.current) return;
+    // Ends FLAT and face-on (hers ends pitched 0.05π — she floated it): on a
+    // desk a 9° pitch sinks the front feet into the top, and the copy now
+    // lives ON the screen, so any residual yaw skews it.
+    root.current.rotation.x = 0.5 * Math.PI * (1 - a);
+    root.current.rotation.y = 0.2 * Math.PI * (1 - a);
+    root.current.position.y = DESK_TOP_Y - 2.2 * (1 - a);
   });
 
   if (!top || !bottom) return null;
 
   return (
-    // x 3.0, not centred: the headline and the idea pill are DOM over the
-    // middle of the canvas down to ~77% of its height, where the desk top
-    // only starts — a centred laptop's screen is behind the headline or
-    // behind the pill. To the right of the pill (edge 320px from centre; the
-    // laptop's left edge lands 22px past it at 1280×720, 40px at 1440×900)
-    // the whole screen shows. At SCALE 0.030 / z −0.3 the lid top projects to
-    // 519 against the headline's last line's bottom at 522 at 1440×900 — a
-    // 3px BOX overlap with zero painted-pixel collision and ~182px
-    // horizontal separation, which the controller has explicitly accepted
-    // rather than shrink the screen further (1280×720 clears with 11px to
-    // spare). Any bigger or further forward and the base sinks into the
-    // canvas's bottom fade. Still inside the desk's ±6.5 half-width (W 13,
-    // D 2.0).
-    <group ref={root} position={[3.0, DESK_TOP_Y, -0.3]} scale={SCALE}>
-      <group ref={lid} rotation={[LID_CLOSED, 0, 0]}>
+    <group ref={root} position={[0, DESK_TOP_Y, LAPTOP_Z]} scale={SCALE}>
+      <group rotation={[LID_OPEN, 0, 0]}>
         <primitive object={top} />
-        {/* her screen: a plane in lid space, with a dark plane behind it for
-            the off state (the texture only reaches 0.96 opacity, and the lid's
-            0xCECFD3 shell showing through 4% would wash the midnight out).
-            Hers sits 1mm back; at our 0.030 scale that is 3.0e-5 world units —
-            below the depth buffer's resolution out here, and it moiréd. 0.03
-            model units is still invisibly close and 30× the precision. */}
+        {/* The glass the DOM copy will sit on (Task 16): a midnight plane that
+            emits its own colour, untonemapped, so cream type on it reads the
+            same in both rooms. A dark plane sits behind it for the same reason
+            hers did — the lid's 0xCECFD3 shell must never show through.
+            Hers sits 1mm back; at our scale that is 3e-4 world units — below
+            the depth buffer's resolution out here, and it moiréd. 0.03 model
+            units is still invisibly close and 100x the precision. */}
         <mesh position={[0, 10.5, -0.11]} rotation={[Math.PI, 0, 0]}>
           <planeGeometry args={SCREEN} />
-          <meshBasicMaterial
-            ref={screenMat}
-            map={idea.texture}
-            transparent
-            opacity={0}
+          <meshStandardMaterial
+            color={colors.midnight}
+            emissive={colors.midnight}
+            emissiveIntensity={1}
             side={THREE.BackSide}
             toneMapped={false}
           />
@@ -224,9 +181,8 @@ export function Laptop({
           <primitive object={mats.dark} attach="material" />
         </mesh>
         <rectAreaLight
-          ref={light}
           color={colors.cream}
-          intensity={0}
+          intensity={SCREEN_LIGHT}
           width={SCREEN[0] * SCALE}
           height={SCREEN[1] * SCALE}
           position={[0, 10.5, 0]}

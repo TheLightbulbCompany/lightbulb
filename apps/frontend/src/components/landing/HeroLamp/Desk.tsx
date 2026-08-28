@@ -4,21 +4,25 @@ import * as THREE from "three";
 import type { LampColors } from "./Lamp";
 
 const TOP_Y = -1.5,
-  // 13, not 8: with D shortened the desk's near end no longer fans past the
-  // frame, so at W 8 both ends sat inside it and it read as a floating plank.
-  // The widest the frame gets is the back edge, half-width 6.25 at 1440x900
-  // and 5.84 at 1280x720 — 13 runs the desk off both sides at either size.
-  W = 13,
-  // 2.0, not 4.1. The desk's FRONT edge is what decides legibility, not its
-  // height: at D 4.1 the top swallowed .ld-funnel-fine and .ld-funnel-swap,
-  // and no TOP_Y clears them (the projection puts the back edge below the
-  // swap button only at y = -3.13, where the whole desk is inside the
-  // canvas's 140px bottom fade). At D 2.0 the front edge projects to 615 of
-  // 797 at 1440x900 and 584 of 757 at 1280x720, above both blocks (633 and
-  // 593) at the two sizes the rulings name.
-  D = 2.0,
+  // 22, not 13. The room got deeper for the v3 laptop (below), and a deeper
+  // desk is a wider one on screen: at the back edge the frame is 9.8 world
+  // units half-wide at 1440x900, so at W 13 the desk's own side edges came
+  // inside the frame and it read as a plank. 22 runs it off both sides at
+  // every depth the camera sees.
+  W = 22,
+  // 12.6, not 2.0. The laptop is the stage in v3 and its BASE is 7.3 world
+  // units deep at SCALE 0.34 — three and a half times the old desk. A desk it
+  // overhangs is not a desk, so the room grew around it: the back edge went
+  // from -1.6 to ROOM_BACK_Z (clearing the open lid, which leans back to
+  // z -3.49), and the front edge sits at 8.7, 0.41 past the base's front lip.
+  // It projects to 756 of 797 at 1440x900 and 718 of 757 at 1280x720 — inside
+  // the canvas's 140px bottom fade, which is where a desk running out of frame
+  // belongs now that the hero's copy is leaving the page for the screen.
+  D = 12.6,
   T = 0.12,
-  Z_BACK = -1.6;
+  /** Where the room ends. The wall is drawn here too (Scene.tsx) — the desk's
+   *  back edge is flush with it, so neither shows an end. */
+  Z_BACK = -3.9;
 
 export function Desk({ colors, shadows }: { colors: LampColors; shadows: boolean }) {
   const brass = React.useMemo(() => new THREE.Color(colors.brass), [colors.brass]);
@@ -47,3 +51,4 @@ export function Desk({ colors, shadows }: { colors: LampColors; shadows: boolean
   );
 }
 export const DESK_TOP_Y = TOP_Y;
+export const ROOM_BACK_Z = Z_BACK;

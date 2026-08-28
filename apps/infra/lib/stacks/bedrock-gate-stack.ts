@@ -122,7 +122,7 @@ export class BedrockGateStack extends cdk.Stack {
       // AWS-owned encryption is sufficient (no cross-stage CMK to reference).
       // RETAIN + PITR: a lost token row silently breaks an owner's inference.
       const tokensTable = new dynamodb.Table(this, `GateTokensTable${idSuffix}`, {
-        tableName: `${legacyTablePrefix(gateEnv)}bedrock-gate-tokens`,
+        tableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
         partitionKey: {
           name: "token_hash",
           type: dynamodb.AttributeType.STRING,

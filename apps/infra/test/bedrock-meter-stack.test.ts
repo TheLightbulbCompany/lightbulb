@@ -68,7 +68,7 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::DynamoDB::Table", 2);
     for (const meterEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${legacyTablePrefix(meterEnv)}bedrock-invocation-dedup`,
+        TableName: `${tablePrefix(meterEnv)}bedrock-invocation-dedup`,
         KeySchema: [{ AttributeName: "request_id", KeyType: "HASH" }],
         BillingMode: "PAY_PER_REQUEST",
         TimeToLiveSpecification: { AttributeName: "ttl", Enabled: true },

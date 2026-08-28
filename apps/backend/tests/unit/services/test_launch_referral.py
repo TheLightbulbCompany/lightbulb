@@ -17,6 +17,7 @@ def _invoice(**over):
 @pytest.fixture
 def deps():
     with (
+        patch.object(ref.launch_phase, "schedule", return_value=object()),
         patch.object(ref, "billing_repo") as billing,
         patch.object(ref, "user_repo") as users,
         patch.object(ref, "launch_waitlist_repo") as wl,
@@ -194,3 +195,9 @@ async def test_analytics_never_carries_an_email_as_the_distinct_id(deps):
     deps["wl"].get_by_referral_code = AsyncMock(return_value={"email": "ref@x.com", "referral_code": "REFER123"})
     await ref._reward_referrer("payer@x.com", dict(PAYER_ROW), "in_1")
     assert deps["capture"].call_args.kwargs["distinct_id"] is None
+
+
+async def test_unconfigured_launch_reads_nothing(deps):
+    with patch.object(ref.launch_phase, "schedule", return_value=None):
+        await ref.on_invoice_paid(_invoice())
+    deps["billing"].list_by_stripe_customer_id.assert_not_awaited()

@@ -82,3 +82,18 @@ async def test_enter_is_rate_limited_per_ip(configured, async_client):
         assert (await async_client.post("/api/v1/launch/enter", json=body)).status_code == 200
     r = await async_client.post("/api/v1/launch/enter", json=body)
     assert r.status_code == 429 and r.headers["retry-after"] == "60"
+
+
+async def test_enter_refused_for_an_org_member(configured, async_client_org_member):
+    r = await async_client_org_member.post(
+        "/api/v1/launch/enter", json={"display_name": "Ada", "stripe_key": "rk_test_" + "x" * 20, "public": True}
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
+
+
+@patch("routers.launch.launch_service.enter", AsyncMock(return_value={"display_name": "Ada"}))
+async def test_enter_allowed_for_an_org_admin(configured, async_client_org_admin):
+    r = await async_client_org_admin.post(
+        "/api/v1/launch/enter", json={"display_name": "Ada", "stripe_key": "rk_test_" + "x" * 20, "public": True}
+    )
+    assert r.status_code == 200

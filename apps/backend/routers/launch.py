@@ -137,6 +137,10 @@ async def enter(
     s: Schedule = Depends(require_launch),
 ) -> dict:
     _rate_limit(request, "enter")
+    # One entry (and one stored key) per owner: an org member entering would
+    # overwrite the org's row and its key with their own.
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="org_admin_required")
     try:
         return await launch_service.enter(
             auth, s, display_name=body.display_name, stripe_key=body.stripe_key.strip(), public=body.public

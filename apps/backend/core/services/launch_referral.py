@@ -20,6 +20,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, launch_waitlist_repo, user_repo
+from core.services import launch_phase
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +66,19 @@ async def _email_for_owner(owner_id: str) -> str | None:
 
 
 async def _safe_counter(
-    email: str, field: str, delta: int, *, code: str | None = None, owner_id: str | None = None
+    email: str,
+    field: launch_waitlist_repo.CounterField,
+    delta: int,
+    *,
+    code: str | None = None,
+    owner_id: str | None = None,
 ) -> None:
     """A counter write that carries money. Retried once; a second failure is logged
     at ERROR so it can be reconciled by hand — identified by referral code and
     owner id, NEVER by the email."""
     for attempt in (1, 2):
         try:
-            await launch_waitlist_repo.add_counter(email, field, delta)  # type: ignore[arg-type]
+            await launch_waitlist_repo.add_counter(email, field, delta)
             return
         except Exception:  # noqa: BLE001 — losing a month is worse than a noisy log line
             if attempt == 2:
@@ -149,6 +155,8 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
 
 
 async def on_invoice_paid(invoice: dict) -> None:
+    if launch_phase.schedule() is None:
+        return  # the competition is not configured — the webhook does no launch reads at all
     try:
         if int(invoice.get("amount_paid") or 0) <= 0:
             return

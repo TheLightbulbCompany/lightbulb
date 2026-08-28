@@ -18,7 +18,13 @@ import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
-import { bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
+import {
+  allTableArns,
+  bothTableArns,
+  legacyTablePrefix,
+  tableName,
+  tablePrefix,
+} from "../table-names";
 import { Construct } from "constructs";
 import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
@@ -119,26 +125,11 @@ export interface ServiceStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
-  database: {
-    usersTable: dynamodb.Table;
-    containersTable: dynamodb.Table;
-    billingTable: dynamodb.Table;
-    usageCountersTable: dynamodb.Table;
-    pendingUpdatesTable: dynamodb.Table;
-    channelLinksTable: dynamodb.Table;
-    companySlugsTable: dynamodb.Table;
-    agentEmailAddressesTable: dynamodb.Table;
-    agentMailInboxTable: dynamodb.Table;
-    adminActionsTable: dynamodb.Table;
-    oauthTokensTable: dynamodb.Table;
-    webhookDedupTable: dynamodb.Table;
-    paperclipCompaniesTable: dynamodb.Table;
-    marketplaceListingsTable: dynamodb.Table;
-    marketplacePurchasesTable: dynamodb.Table;
-    marketplacePayoutAccountsTable: dynamodb.Table;
-    marketplaceTakedownsTable: dynamodb.Table;
-    marketplaceSellersTable: dynamodb.Table;
-  };
+    // NOTE: this stack deliberately takes NO database table constructs.
+    // Every table is reached by NAME (see the DynamoDbOwnedTables statement and
+    // the tableName() helper). Taking a construct would create a cross-stack
+    // Export, and CloudFormation cannot change an exported value while anything
+    // imports it — the deadlock that blocked the table rename.
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
   /** Pass as string ARN to avoid cross-stack dependency cycle. */
@@ -720,14 +711,51 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // DynamoDB tables
-    props.database.usersTable.grantReadWriteData(this.taskRole);
-    props.database.containersTable.grantReadWriteData(this.taskRole);
-    props.database.billingTable.grantReadWriteData(this.taskRole);
-    props.database.usageCountersTable.grantReadWriteData(this.taskRole);
-    props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
-    props.database.channelLinksTable.grantReadWriteData(this.taskRole);
-    props.database.adminActionsTable.grantReadWriteData(this.taskRole);
-    props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
+    // Local handle for the Step Functions DynamoDB tasks below. fromTableName
+    // resolves a NAME into an ITable without touching the database stack's
+    // construct, so it creates no cross-stack export — passing
+    // props.database.containersTable directly would reintroduce exactly the
+    // coupling this decouple removes.
+    const containersTableRef = dynamodb.Table.fromTableName(
+      this,
+      "ContainersTableByName",
+      tableName(env, "containers"),
+    );
+
+    // DynamoDB tables — granted by NAME across the env-prefixed namespace,
+    // NOT via grantReadWriteData. Same decouple the credential tables already
+    // had (credential-export-decouple.test.ts, "the 2026-05-31 incident"),
+    // applied to the rest: grant*() on another stack's table creates a
+    // cross-stack Export, and CloudFormation cannot change an exported value
+    // while anything imports it —
+    //
+    //   Cannot update export isol8-dev-database:ExportsOutputRefUsageCounters…
+    //   as it is in use by isol8-dev-observability
+    //
+    // which is precisely how the first table-rename attempt failed. No export,
+    // no coupling, and the tables become renameable.
+    //
+    // One wildcard pair rather than 22 enumerated tables because the policy is
+    // size-bound: ~8.9KB of IAM's 10,240-byte inline limit, and enumerating
+    // would overrun it. See allTableArns.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "DynamoDbOwnedTables",
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:DescribeTable",
+        ],
+        resources: allTableArns(this.region, this.account, env),
+      }),
+    );
     // The credential-layer integration tables are granted by NAME, not via
     // grantReadWriteData. grantReadWriteData would export each table's ARN from
     // the database stack and import it here, creating a cross-stack export. An
@@ -780,23 +808,16 @@ export class ServiceStack extends cdk.Stack {
     );
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
-    props.database.webhookDedupTable.grantWriteData(this.taskRole);
     // Paperclip integration: the proxy router (paperclip_proxy.py:388,
     // routers/webhooks.py:146) and the daily purge worker
     // (services/update_service.py:198) all read/write this table to look up
     // each user's Paperclip company row and decrypt the per-user Better Auth
     // password. Without this grant the proxy 500s on every Teams click with
     // an AccessDeniedException, even when Clerk auth succeeds.
-    props.database.paperclipCompaniesTable.grantReadWriteData(this.taskRole);
 
     // Marketplace tables — backend needs read/write on listings, purchases,
     // payout-accounts, takedowns. Browse + search are served by the in-process
     // search service (60s-TTL DDB scan), so the same listings grant covers it.
-    props.database.marketplaceListingsTable.grantReadWriteData(this.taskRole);
-    props.database.marketplacePurchasesTable.grantReadWriteData(this.taskRole);
-    props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
-    props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
-    props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -854,17 +875,14 @@ export class ServiceStack extends cdk.Stack {
     // overflow lands on the new grant instead, leaving already-tested
     // statements' packing undisturbed. Functionally identical either way —
     // an overflow ManagedPolicy still attaches to the same role.
-    props.database.companySlugsTable.grantReadWriteData(this.taskRole);
 
     // Provisioned agent email addresses (agent-email-foundation Task 3).
     // Placed immediately after companySlugsTable per the overflow-packing
     // rationale in the comment above — any new IAM-size overflow should land
     // on this grant, not push an earlier, already-tested statement into the
     // TaskRoleOverflowPolicy.
-    props.database.agentEmailAddressesTable.grantReadWriteData(this.taskRole);
 
     // Stored inbound agent mail — read by the inbox route, written by ses_inbound.
-    props.database.agentMailInboxTable.grantReadWriteData(this.taskRole);
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -1317,7 +1335,7 @@ export class ServiceStack extends cdk.Stack {
       // unauthenticated WebSocket-impersonation hole on the public HTTP
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
-      WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
+      WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
           ? `https://${rootDomain},https://www.${rootDomain}`
@@ -1459,7 +1477,7 @@ export class ServiceStack extends cdk.Stack {
       CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
       CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
       DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
-      OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
+      OAUTH_TOKENS_TABLE: tableName(env, "oauth-tokens"),
       // Metronome lifecycle + gating settings. Metronome is the ONLY
       // billing ledger: the backend provisions Metronome customers, funds
       // payment-gated top-up commits, handles the low-balance webhook,
@@ -1525,15 +1543,15 @@ export class ServiceStack extends cdk.Stack {
       // env vars via core.config.settings; empty defaults keep the app
       // booting in non-marketplace contexts (unit tests, smoke tests).
       MARKETPLACE_LISTINGS_TABLE:
-        props.database.marketplaceListingsTable.tableName,
+        tableName(env, "marketplace-listings"),
       MARKETPLACE_PURCHASES_TABLE:
-        props.database.marketplacePurchasesTable.tableName,
+        tableName(env, "marketplace-purchases"),
       MARKETPLACE_PAYOUT_ACCOUNTS_TABLE:
-        props.database.marketplacePayoutAccountsTable.tableName,
+        tableName(env, "marketplace-payout-accounts"),
       MARKETPLACE_TAKEDOWNS_TABLE:
-        props.database.marketplaceTakedownsTable.tableName,
+        tableName(env, "marketplace-takedowns"),
       MARKETPLACE_SELLERS_TABLE:
-        props.database.marketplaceSellersTable.tableName,
+        tableName(env, "marketplace-sellers"),
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
       // Deterministic public S3 URL of the hosted AWS connector
       // CloudFormation template. The connections aws-setup endpoint feeds this
@@ -1829,7 +1847,7 @@ export class ServiceStack extends cdk.Stack {
     // claim, are never touched (routes to Superseded via the catch below).
     const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) => {
       const write = new tasks.DynamoUpdateItem(this, id, {
-        table: props.database.containersTable,
+        table: containersTableRef,
         key: {
           owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
         },
@@ -2019,7 +2037,7 @@ export class ServiceStack extends cdk.Stack {
       },
     });
     const getRow = new tasks.DynamoGetItem(this, "GetContainerRow", {
-      table: props.database.containersTable,
+      table: containersTableRef,
       key: {
         owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
       },

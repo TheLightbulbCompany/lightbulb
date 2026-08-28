@@ -61,7 +61,11 @@ Changing a date is a CDK env change + deploy. No flag machinery.
 
 ## Data
 
-Two DynamoDB tables in `database-stack.ts`, following the current table-prefix convention.
+Two DynamoDB tables in `database-stack.ts`, `launch-waitlist` and `launch-entries`,
+following the current table-prefix convention: `get_table("launch-waitlist")` /
+`get_table("launch-entries")` are read through the standard
+`DYNAMODB_TABLE_PREFIX` (`lightbulb-{env}-`), like every other repository — no
+dedicated `LAUNCH_WAITLIST_TABLE` / `LAUNCH_ENTRIES_TABLE` env var.
 
 ### `launch-waitlist` — PK `email` (lowercased, trimmed)
 
@@ -76,6 +80,8 @@ Two DynamoDB tables in `database-stack.ts`, following the current table-prefix c
 | `referrals_paid` | N counter, `ADD` when a referred person's first payment rewards this row. |
 | `free_months_banked` | N. Earned rewards not yet applied to a subscription. |
 | `referral_rewarded_at` | ISO. Stamped on the **referred** person's row by the reward CAS — the once-only guard. |
+| `user_id` | S. Stamped on the first authed `/launch/me` (`claim_user`), so admin can resolve activation without an email index on `users`. |
+| `claimed_at` | ISO. Stamped alongside `user_id` by the same `claim_user` conditional update. |
 
 Position assignment: read by email → if absent, `ADD` the counter → conditional put
 (`attribute_not_exists(email)`) → on condition failure re-read and return the existing row.
@@ -106,8 +112,9 @@ All 404 when `LAUNCH_DROP_AT` is unset.
 | `POST /launch/enter {display_name, stripe_key, public}` | user | Requires `phase ∈ {activation, live}`, `subscription_status ∈ {active, trialing}` (`trial_local` cannot enter), `bootstrap_state == "delivered"`, key matches `^rk_live_` (`^rk_(live|test)_` when `ENVIRONMENT != "prod"`), and one `stripe.BalanceTransaction.list(limit=1, api_key=key)` succeeds. Stores key, computes baseline, upserts the row. Re-entering replaces key/name. 400 with a specific `reason` on every failure; the key is never echoed. |
 | `GET /launch/leaderboard` | public, `max-age=60` | Public entries ordered by `delta_cents` desc, top 50: `{rank, display_name, delta_cents, pct (null when baseline == 0), currency}` + `entrants`. |
 | `GET /ops/launch` | admin | Envelope: waitlist total, top-220 activated, comped (subscriptions whose first invoice paid $0), entrants (paid/comped), pot, referrals signed-up/paid, months granted/banked, projected P&L vs `LAUNCH_AWS_CREDITS_CENTS` (constant 500000 in `ops/launch.py`), full entries table. |
-| `GET /ops/launch/waitlist.csv` | admin | `email,position,referral_link,created_at` ordered by position. The drop-day export. |
 | `POST /ops/launch/refresh` | admin | Force-refresh every entry now. |
+
+CSV is built client-side on `/admin/launch` from `waitlist_rows` in `GET /ops/launch`.
 
 ## Webhook change — `handle_invoice_paid`
 
@@ -119,24 +126,65 @@ On `invoice.paid` with `amount_paid > 0`:
    - otherwise → `ADD free_months_banked 1` on the referrer's row.
 3. Drain for the payer: if the payer's own row has `free_months_banked > 0` and their subscription carries no discount → conditional decrement + apply the coupon (idempotency key `banked_month:{owner_id}:{invoice_id}`).
 
-Every step is best-effort and logged; a Stripe error after the CAS is retried on the next `invoice.paid` for that owner via the banked path (the CAS only guards the *credit*, the grant is idempotent by key). Product events: `launch_referral_rewarded`, `launch_free_month_applied`.
+Every step is best-effort and logged; a Stripe error after the CAS is retried on the next `invoice.paid` for that owner via the banked path (the CAS only guards the *credit*, the grant is idempotent by key). Product events: `launch_referral_rewarded`, `launch_free_month_applied`. Any failure after the once-only CAS — including a Stripe error mid-grant — banks the month rather than losing it.
 
-## Revenue sweep
+## Revenue refresh (stale-while-revalidate)
 
-`core/services/launch_revenue.py`. An `asyncio` loop started in the lifespan when `LAUNCH_DROP_AT` is set and `phase ∈ {activation, live}` or within 24h after end: every 60 min, refresh entries with `refreshed_at` older than 55 min, spread with a small sleep between owners.
+`core/services/launch_revenue.py`. There is **no lifespan task and no hourly
+loop** (owner decision 2026-08-28) — the spec's original hourly sweep was
+replaced by stale-while-revalidate on read. `maybe_revalidate()` runs at the
+top of `GET /launch/me` and `GET /launch/leaderboard`; it schedules at most
+one background `refresh_all()` pass (an in-flight guard plus a 5-minute
+throttle keep concurrent reads from stacking passes) and no-ops outside
+`[competition_start_at, competition_end_at + 24h]`. `refresh_all()` skips
+entries whose `refreshed_at` is younger than 55 minutes unless called with
+`force=True`. `refresh_entry()` records `refresh_error` as `missing_key`, the
+key-rejection reason (`stripe_auth` / `stripe_permission` / `stripe_error`),
+or `mixed_currency`, and — for any other failure — `refresh_failed`; it never
+raises, and the repo writes it makes are guarded too (`_record()` swallows and
+logs a write failure rather than aborting the pass). Admin's
+`POST /ops/launch/refresh` calls `refresh_all(force=True)` to force a full
+pass on demand.
 
 `sum_net_revenue(key, start, end) -> (cents, currency)`: paginate `BalanceTransaction.list(created={gte,lte}, limit=100)`, sum `amount` for `type ∈ {charge, payment}` and `type ∈ {refund, payment_refund}` (negative), in the account's balance currency (the first transaction's `currency`; mixed currencies ⇒ `refresh_error = "mixed_currency"` and skip). Window = `[competition_start_at, min(now, competition_end_at)]`. `delta = window − baseline`.
 
-`# ponytail:` in-process hourly loop on the single backend task; move to a scheduled Lambda if the fleet ever outgrows one instance.
+`# ponytail:` `_inflight`/`_last_started_at` are module-level state on the
+single backend task — a scheduled Lambda if the fleet ever runs more than one
+instance.
 
 ## Frontend
 
-- **`app/launch/page.tsx`** — public route (add to the Clerk middleware public list if needed). Components under `components/launch/`: `LaunchHero` (pot + countdown + phase copy), `WaitlistForm`, `MyLaunchCard`, `EnterForm`, `Leaderboard`. Reads `GET /launch`; signed-in users also read `GET /launch/me`.
-- Phase rendering: **waitlist** → form + pot + countdown-to-drop, post-join state shows position + referral link; **activation** → sign-up CTA, rules, countdown-to-start; **live** → leaderboard + Enter CTA; **ended** → final board.
-- `?ref=` → `localStorage["launch_ref"]`. When signed in and a stored ref exists → `POST /launch/referral` once, then clear.
-- `EnterForm`: display name, public toggle, restricted-key field with the four-step instructions (*Dashboard → Developers → API keys → Create restricted key → Balance: Read, Charges: Read*). Client-side prefix check mirrors the server's.
-- **`app/admin/launch/page.tsx`** + nav link: KPI tiles, entries table, Refresh all, Export CSV.
-- The brand team points the hero CTA at `/launch` (their branch; one link).
+The waitlist front door and the competition page are two different routes, split
+between the brand-owned root and a dedicated `/launch` page (owner decision
+2026-08-28 — the spec's original single `/launch`-hosts-everything design did
+not survive contact with the in-flight brand branch owning `app/page.tsx`):
+
+- **The root landing page** (`app/page.tsx`, brand-owned) hosts the waitlist via
+  a self-contained `<WaitlistForm />` (`components/launch/WaitlistForm.tsx`):
+  it takes no props, fetches its own `GET /launch` state, and renders nothing
+  unless the launch is configured and `phase === "waitlist"` — so it can sit
+  in the hero unchanged through the drop. The brand team's integration is one
+  import line: `import { WaitlistForm } from "@/components/launch/WaitlistForm"`.
+- **`app/launch/page.tsx`** is the competition page (`components/launch/LaunchPage.tsx`):
+  `ld-page` layout with the landing `Navbar`/`Footer`, a hero (pot + countdown +
+  phase copy via `LaunchHero`) that shows the waitlist form pre-drop and a
+  sign-up CTA during activation, a `Leaderboard` when `phase ∈ {live, ended}`,
+  and — signed in — a `MyLaunchCard` with the `EnterForm`. Reads `GET /launch`
+  on a 30s poll; signed-in users also read `GET /launch/me`.
+- `?ref=` is captured by `useLaunchRef` into `localStorage`. When signed in and
+  a stored ref exists → `POST /launch/referral` once, then clear. Referral
+  links are rendered as `flickmeon.ai/?ref=CODE` (`ReferralLink.tsx`) — the
+  root domain, not `/launch`, since that's where the waitlist form lives.
+- `EnterForm`: display name, public toggle, restricted-key field with the
+  four-step instructions (*Dashboard → Developers → API keys → Create
+  restricted key → Balance: Read, Charges: Read*). Client-side prefix check
+  mirrors the server's.
+- Components are written on the landing page's `ld-*` classes and tokens, with
+  launch-specific extras in `components/launch/launch.css`.
+- **`app/admin/launch/page.tsx`** + nav link: KPI tiles, sheet lines, a full
+  entries table, Refresh all, and client-side CSV export (`LaunchAdminClient.tsx`
+  builds the CSV from `GET /ops/launch`'s `waitlist_rows` — no server export
+  endpoint).
 
 ## Drop-day runbook
 

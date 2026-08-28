@@ -156,9 +156,10 @@ export function Lamp({ litRef, anchorRef, pendulum, colors, shadows, shadowMapSi
     const s = spot.current;
     if (!g || !s) return;
     const t = spotTarget.current;
-    // World (0, -1.5, 0): the desk top, where the laptop is. The pool belongs
-    // on the work, not on the wall behind the headline.
-    t.position.set(0, -(LAMP_ANCHOR_Y + 1.5), 0);
+    // World (0, 0, -1.6): the wall behind the headline, so the pool's centre
+    // is on the canvas. Aimed 2.5 lower it sat on the masked bottom edge and
+    // only the cone's spill showed.
+    t.position.set(0, -LAMP_ANCHOR_Y, -1.6);
     g.add(t);
     s.target = t;
     return () => {
@@ -289,9 +290,9 @@ export function Lamp({ litRef, anchorRef, pendulum, colors, shadows, shadowMapSi
           ref={spot}
           color={poolColor}
           intensity={0}
-          // 0.75/1.0: the cone lands on the desk. At 0.95 its edge crossed
-          // the wall behind the headline as a hard diagonal; with the penumbra
-          // spanning the whole cone the wall only gets the soft foot of it.
+          // 0.75/1.0: at 0.95 the cone's edge crossed the wall behind the
+          // headline as a hard diagonal; with the penumbra spanning the whole
+          // cone the wall only gets the soft foot of it.
           angle={0.75}
           penumbra={1}
           decay={2}

@@ -22,8 +22,8 @@ CERTS_DIR = Path(__file__).resolve().parents[3] / "certs" / "apple"
 
 # Mirrors apps/infra/lib/stacks/service-stack.ts. Wrong values here are not a
 # test problem — they are the deployed configuration being wrong.
-BUNDLE_ID = "co.isol8.mobile"
-PRODUCT_ID = "co.isol8.mobile.plan.monthly"
+BUNDLE_ID = "company.thelightbulb.mobile"
+PRODUCT_ID = "company.thelightbulb.mobile.plan.monthly"
 APP_APPLE_ID = "6788944100"
 
 

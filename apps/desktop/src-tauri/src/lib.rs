@@ -382,25 +382,25 @@ async fn run_bootstrap(
     Ok(())
 }
 
-/// Resolve the launcher shim registered as `bin/isol8-browser-service` in
+/// Resolve the launcher shim registered as `bin/lightbulb-browser-service` in
 /// `tauri.conf.json` (externalBin). Tauri's bundler finds
-/// `bin/isol8-browser-service-<target-triple>` at build time, strips the
+/// `bin/lightbulb-browser-service-<target-triple>` at build time, strips the
 /// triple, and places the file in the `.app` at
-/// `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
+/// `Contents/MacOS/lightbulb-browser-service` — alongside the main Tauri
 /// executable. Dev builds replicate the layout next to
 /// `target/debug/<exe>`. So we resolve via current_exe().parent().
 ///
-/// `isol8-browser-service` reads `ISOL8_PROXY_PORT` and dials loopback
+/// `lightbulb-browser-service` reads `LIGHTBULB_PROXY_PORT` and dials loopback
 /// plaintext WS — what `spawn_subprocess` is designed to talk to.
 fn resolve_node_host_binary() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let parent = exe
         .parent()
         .ok_or_else(|| "current_exe has no parent".to_string())?;
-    let binary = parent.join("isol8-browser-service");
+    let binary = parent.join("lightbulb-browser-service");
     if !binary.exists() {
         return Err(format!(
-            "isol8-browser-service shim not found at {}",
+            "lightbulb-browser-service shim not found at {}",
             binary.display()
         ));
     }

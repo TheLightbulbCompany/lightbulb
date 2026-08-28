@@ -50,3 +50,41 @@ export const bothTableArns = (
   `arn:aws:dynamodb:${region}:${account}:table/*-${env}-${suffix}`,
   `arn:aws:dynamodb:${region}:${account}:table/*-${env}-${suffix}/index/*`,
 ];
+
+/**
+ * ARNs for EVERY table under a prefix, as a single wildcard pair.
+ *
+ * This replaces ~18 `grantReadWriteData` calls, and the reason is structural
+ * rather than stylistic. `grant*()` on another stack's table creates a
+ * cross-stack Export, and CloudFormation REFUSES TO CHANGE AN EXPORTED VALUE
+ * WHILE ANYTHING IMPORTS IT:
+ *
+ *     Cannot update export isol8-dev-database:ExportsOutputRefUsageCountersTable…
+ *     as it is in use by isol8-dev-observability
+ *
+ * which is exactly how the first attempt at the table rename failed. The repo
+ * has been here before -- see credential-export-decouple.test.ts and "the
+ * 2026-05-31 incident" it names. Granting by NAME creates no export, so the
+ * tables become renameable.
+ *
+ * Enumerating all 22 tables instead is not an option: the backend task role's
+ * inline policy is already 8,913 of IAM's 10,240-byte limit, and 22 tables x 2
+ * ARNs would overrun it by ~1.5KB. One wildcard pair costs 2 entries and frees
+ * roughly 2.9KB.
+ *
+ * The widening is small and bounded: the backend already held individual grants
+ * on 22 of the 25 tables in this account, and nothing but us creates tables
+ * here. It is scoped to the env-prefixed namespace, not `table/*`.
+ */
+export const allTableArns = (
+  region: string,
+  account: string,
+  env: string,
+): string[] => [
+  `arn:aws:dynamodb:${region}:${account}:table/*-${env}-*`,
+  `arn:aws:dynamodb:${region}:${account}:table/*-${env}-*/index/*`,
+];
+
+/** A table's name under the current prefix — for env vars and by-name grants. */
+export const tableName = (env: string, suffix: string) =>
+  `${tablePrefix(env)}${suffix}`;

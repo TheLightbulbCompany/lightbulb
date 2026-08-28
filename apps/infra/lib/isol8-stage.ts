@@ -14,6 +14,7 @@ import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
+import { tableName } from "./table-names";
 
 export interface Isol8StageProps extends cdk.StageProps {
   environment: string;
@@ -154,7 +155,7 @@ export class Isol8Stage extends cdk.Stage {
       paperclipKmsKeyArn: auth.kmsKey.keyArn,
       wsInternalSecretSecretName: auth.wsInternalSecret.secretName,
       // Authorizer reads paired_devices[deviceId].publicKey for device-key auth.
-      containersTable: database.containersTable,
+      containersTableName: tableName(env, "containers"),
     });
 
     // ServiceStack replaces ComputeStack
@@ -166,26 +167,6 @@ export class Isol8Stage extends cdk.Stage {
       vpc: network.vpc,
       targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
-      database: {
-        usersTable: database.usersTable,
-        containersTable: database.containersTable,
-        billingTable: database.billingTable,
-        usageCountersTable: database.usageCountersTable,
-        pendingUpdatesTable: database.pendingUpdatesTable,
-        channelLinksTable: database.channelLinksTable,
-        companySlugsTable: database.companySlugsTable,
-        agentEmailAddressesTable: database.agentEmailAddressesTable,
-        agentMailInboxTable: database.agentMailInboxTable,
-        adminActionsTable: database.adminActionsTable,
-        oauthTokensTable: database.oauthTokensTable,
-        webhookDedupTable: database.webhookDedupTable,
-        paperclipCompaniesTable: database.paperclipCompaniesTable,
-        marketplaceListingsTable: database.marketplaceListingsTable,
-        marketplacePurchasesTable: database.marketplacePurchasesTable,
-        marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
-        marketplaceTakedownsTable: database.marketplaceTakedownsTable,
-        marketplaceSellersTable: database.marketplaceSellersTable,
-      },
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
       secretNames: {
@@ -247,6 +228,12 @@ export class Isol8Stage extends cdk.Stage {
     // rejects a send naming a configuration set that does not exist, so the
     // outbound stack has to be deployed before the service that references it.
     if (agentMailOutbound) service.addDependency(agentMailOutbound);
+    // EXPLICIT, and load-bearing. The service stack used to take a `database`
+    // prop, which gave CDK an implicit ordering. Decoupling the exports removed
+    // the prop AND that ordering — but the backend still reads every table, now
+    // BY NAME, so it must not start before the database stack has created them.
+    // Without this the generated workflow drops database from service's `needs`.
+    service.addDependency(database);
 
     // PaperclipStack — runs the pinned Paperclip image (extended overlay,
     // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from
@@ -291,14 +278,14 @@ export class Isol8Stage extends cdk.Stage {
         cluster: container.cluster,
         efsFileSystem: container.efsFileSystem,
         databaseTables: {
-          usersTable: database.usersTable,
-          containersTable: database.containersTable,
-          billingTable: database.billingTable,
-          usageCountersTable: database.usageCountersTable,
-          pendingUpdatesTable: database.pendingUpdatesTable,
-          channelLinksTable: database.channelLinksTable,
-          companySlugsTable: database.companySlugsTable,
-          agentEmailAddressesTable: database.agentEmailAddressesTable,
+          usersTable: tableName(env, "users"),
+          containersTable: tableName(env, "containers"),
+          billingTable: tableName(env, "billing-accounts"),
+          usageCountersTable: tableName(env, "usage-counters"),
+          pendingUpdatesTable: tableName(env, "pending-updates"),
+          channelLinksTable: tableName(env, "channel-links"),
+          companySlugsTable: tableName(env, "company-slugs"),
+          agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
         },
         connectionsTableName: api.connectionsTableName,
         authorizerFunctionName: `isol8-${env}-ws-authorizer`,

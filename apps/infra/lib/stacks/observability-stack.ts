@@ -59,16 +59,23 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   // Container stack references
   cluster: ecs.ICluster;
   efsFileSystem: efs.IFileSystem;
-  // Database tables (for DynamoDB alarms)
+  // Database table NAMES (for DynamoDB alarms).
+  //
+  // Names, not ITable: taking the construct creates a cross-stack Export from
+  // the database stack, and CloudFormation cannot change an exported value
+  // while anything imports it — which is exactly what blocked the table rename
+  // ("Cannot update export ...UsageCountersTable... as it is in use by
+  // isol8-dev-observability"). These are only ever used as CloudWatch dimension
+  // strings, so the construct was never needed.
   databaseTables: {
-    usersTable: dynamodb.ITable;
-    containersTable: dynamodb.ITable;
-    billingTable: dynamodb.ITable;
-    usageCountersTable: dynamodb.ITable;
-    pendingUpdatesTable: dynamodb.ITable;
-    channelLinksTable: dynamodb.ITable;
-    companySlugsTable: dynamodb.ITable;
-    agentEmailAddressesTable: dynamodb.ITable;
+    usersTable: string;
+    containersTable: string;
+    billingTable: string;
+    usageCountersTable: string;
+    pendingUpdatesTable: string;
+    channelLinksTable: string;
+    companySlugsTable: string;
+    agentEmailAddressesTable: string;
   };
   connectionsTableName: string;
   // Lambda authorizer function name (for Lambda alarms)
@@ -477,7 +484,7 @@ export class ObservabilityStack extends cdk.Stack {
     // without any backend change. ThrottledRequests is per-table, so we sum
     // across the same table set W40/W41/W42 enumerate (account-wide math sum is
     // the acceptable fallback when a table set isn't available).
-    const ddbThrottleTables: [string, dynamodb.ITable][] = [
+    const ddbThrottleTables: [string, string][] = [
       ["users", props.databaseTables.usersTable],
       ["containers", props.databaseTables.containersTable],
       ["billing", props.databaseTables.billingTable],
@@ -494,7 +501,7 @@ export class ObservabilityStack extends cdk.Stack {
         metricName: "ThrottledRequests",
         statistic: "Sum",
         period: cdk.Duration.minutes(1),
-        dimensionsMap: { TableName: table.tableName },
+        dimensionsMap: { TableName: table },
       });
     }
     const ddbThrottleTotal = new cloudwatch.MathExpression({
@@ -1651,7 +1658,7 @@ def handler(event, _ctx):
 
     // -- DynamoDB (W40-W42) --
     // Create alarms for each table
-    const allTables: [string, dynamodb.ITable][] = [
+    const allTables: [string, string][] = [
       ["users", props.databaseTables.usersTable],
       ["containers", props.databaseTables.containersTable],
       ["billing", props.databaseTables.billingTable],
@@ -1676,7 +1683,7 @@ def handler(event, _ctx):
             metricName: "ConsumedReadCapacityUnits",
             statistic: "Sum",
             period: cdk.Duration.minutes(5),
-            dimensionsMap: { TableName: table.tableName },
+            dimensionsMap: { TableName: table },
           }),
           // High threshold for on-demand — alert on sustained high usage
           threshold: 1000,
@@ -1704,7 +1711,7 @@ def handler(event, _ctx):
             metricName: "ConsumedWriteCapacityUnits",
             statistic: "Sum",
             period: cdk.Duration.minutes(5),
-            dimensionsMap: { TableName: table.tableName },
+            dimensionsMap: { TableName: table },
           }),
           threshold: 1000,
           evaluationPeriods: 3,
@@ -1731,7 +1738,7 @@ def handler(event, _ctx):
             metricName: "SystemErrors",
             statistic: "Sum",
             period: cdk.Duration.minutes(1),
-            dimensionsMap: { TableName: table.tableName },
+            dimensionsMap: { TableName: table },
           }),
           threshold: 0,
           evaluationPeriods: 1,
@@ -2733,7 +2740,7 @@ def handler(event, _ctx):
             metricName: "ThrottledRequests",
             statistic: "Sum",
             dimensionsMap: {
-              TableName: props.databaseTables.usersTable.tableName,
+              TableName: props.databaseTables.usersTable,
             },
             label: "users",
           }),
@@ -2742,7 +2749,7 @@ def handler(event, _ctx):
             metricName: "ThrottledRequests",
             statistic: "Sum",
             dimensionsMap: {
-              TableName: props.databaseTables.containersTable.tableName,
+              TableName: props.databaseTables.containersTable,
             },
             label: "containers",
           }),
@@ -2751,7 +2758,7 @@ def handler(event, _ctx):
             metricName: "ThrottledRequests",
             statistic: "Sum",
             dimensionsMap: {
-              TableName: props.databaseTables.billingTable.tableName,
+              TableName: props.databaseTables.billingTable,
             },
             label: "billing",
           }),
@@ -2760,7 +2767,7 @@ def handler(event, _ctx):
             metricName: "ThrottledRequests",
             statistic: "Sum",
             dimensionsMap: {
-              TableName: props.databaseTables.usageCountersTable.tableName,
+              TableName: props.databaseTables.usageCountersTable,
             },
             label: "usage-counters",
           }),

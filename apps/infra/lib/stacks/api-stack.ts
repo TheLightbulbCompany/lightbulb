@@ -71,7 +71,14 @@ export interface ApiStackProps extends cdk.StackProps {
    * `paired_devices[deviceId].publicKey` off the owner row to verify desktop
    * device-key WS-upgrade tokens (EdDSA proof-of-possession). Read-only grant.
    */
-  containersTable: dynamodb.ITable;
+  /**
+   * Containers table NAME, not the construct. Taking the ITable creates a
+   * cross-stack Export from the database stack, and CloudFormation cannot
+   * change an exported value while anything imports it — the deadlock that
+   * blocked the table rename. The authorizer only needs the name and a
+   * by-name grant.
+   */
+  containersTableName: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -372,13 +379,22 @@ export class ApiStack extends cdk.Stack {
         // Owner row holding paired_devices[deviceId].publicKey for device-key
         // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
         // same shape as the Secrets Manager call the authorizer already makes).
-        CONTAINERS_TABLE: props.containersTable.tableName,
+        CONTAINERS_TABLE: props.containersTableName,
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
 
     // Read-only access to the containers row for device-token pubkey lookup.
-    props.containersTable.grantReadData(authorizerFn);
+    authorizerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ContainersTableRead",
+        actions: ["dynamodb:GetItem", "dynamodb:Query"],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}/index/*`,
+        ],
+      }),
+    );
 
     // --- Paperclip service-token signing key for the WS authorizer ---
     // The Lambda fetches this secret value at cold-start (via boto3) and

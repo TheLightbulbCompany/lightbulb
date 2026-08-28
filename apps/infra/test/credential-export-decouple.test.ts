@@ -107,7 +107,7 @@ function build(environment: "dev" | "prod"): {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -137,7 +137,7 @@ describe.each(["dev", "prod"] as const)(
 
       const connectionsResources = database.findResources(
         "AWS::DynamoDB::Table",
-        { Properties: { TableName: `${legacyTablePrefix(environment)}connections` } },
+        { Properties: { TableName: `${tablePrefix(environment)}connections` } },
       );
       expect(Object.keys(connectionsResources)).toEqual([]);
     });
@@ -155,7 +155,7 @@ describe.each(["dev", "prod"] as const)(
       // a stable literal (`<stack>-oauth-state-table`), not a GetAtt auto-export,
       // so it never created the rename-blocking coupling.
       database.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${legacyTablePrefix(environment)}oauth-state`,
+        TableName: `${tablePrefix(environment)}oauth-state`,
       });
       database.hasOutput("*", {
         Export: { Name: `isol8-${environment}-database-oauth-state-table` },

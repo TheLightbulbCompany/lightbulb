@@ -209,7 +209,7 @@ export class BedrockMeterStack extends cdk.Stack {
       // AlreadyExists. This is 48h-ephemeral replay state, not a system of
       // record.
       const dedupTable = new dynamodb.Table(this, `MeterDedupTable${idSuffix}`, {
-        tableName: `${legacyTablePrefix(meterEnv)}bedrock-invocation-dedup`,
+        tableName: `${tablePrefix(meterEnv)}bedrock-invocation-dedup`,
         partitionKey: {
           name: "request_id",
           type: dynamodb.AttributeType.STRING,

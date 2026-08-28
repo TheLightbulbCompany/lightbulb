@@ -99,7 +99,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -112,7 +112,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("creates marketplace-listings table with composite key", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-listings",
+      TableName: "lightbulb-dev-marketplace-listings",
       KeySchema: [
         { AttributeName: "listing_id", KeyType: "HASH" },
         { AttributeName: "version", KeyType: "RANGE" },
@@ -123,7 +123,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("marketplace-listings has the expected GSIs", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-listings",
+      TableName: "lightbulb-dev-marketplace-listings",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "seller-created-index" }),
         Match.objectLike({ IndexName: "status-published-index" }),
@@ -133,14 +133,14 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("dev environment uses DESTROY removal policy for marketplace tables", () => {
     template.hasResource("AWS::DynamoDB::Table", {
-      Properties: { TableName: "isol8-dev-marketplace-listings" },
+      Properties: { TableName: "lightbulb-dev-marketplace-listings" },
       DeletionPolicy: "Delete",
     });
   });
 
   test("creates marketplace-purchases table with buyer_id PK", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-purchases",
+      TableName: "lightbulb-dev-marketplace-purchases",
       KeySchema: [
         { AttributeName: "buyer_id", KeyType: "HASH" },
         { AttributeName: "purchase_id", KeyType: "RANGE" },
@@ -150,7 +150,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("marketplace-purchases has all 3 expected GSIs", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-purchases",
+      TableName: "lightbulb-dev-marketplace-purchases",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "listing-created-index" }),
         Match.objectLike({ IndexName: "license-key-index" }),
@@ -161,14 +161,14 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("creates marketplace-payout-accounts table with seller_id PK", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-payout-accounts",
+      TableName: "lightbulb-dev-marketplace-payout-accounts",
       KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
     });
   });
 
   test("creates marketplace-takedowns table with composite key", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-marketplace-takedowns",
+      TableName: "lightbulb-dev-marketplace-takedowns",
       KeySchema: [
         { AttributeName: "listing_id", KeyType: "HASH" },
         { AttributeName: "takedown_id", KeyType: "RANGE" },

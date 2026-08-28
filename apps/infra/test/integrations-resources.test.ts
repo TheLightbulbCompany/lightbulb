@@ -100,7 +100,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -113,7 +113,7 @@ describe("DatabaseStack — integrations status table", () => {
 
   test("creates isol8-dev-integrations table with owner_id/provider composite key + PAY_PER_REQUEST", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-integrations",
+      TableName: "lightbulb-dev-integrations",
       KeySchema: [
         { AttributeName: "owner_id", KeyType: "HASH" },
         { AttributeName: "provider", KeyType: "RANGE" },
@@ -126,7 +126,7 @@ describe("DatabaseStack — integrations status table", () => {
     // A regression dropping CMK or PITR (e.g. swapping to AWS-managed or
     // removing point-in-time recovery) on the status index must fail here.
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-integrations",
+      TableName: "lightbulb-dev-integrations",
       SSESpecification: Match.objectLike({ SSEEnabled: true, SSEType: "KMS" }),
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });

@@ -83,7 +83,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
     agentMailConfigurationSet: "isol8-test-agent-mail",

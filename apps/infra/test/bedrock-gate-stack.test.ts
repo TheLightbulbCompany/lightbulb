@@ -159,7 +159,7 @@ describe("BedrockGateStack", () => {
     template.resourceCountIs("AWS::DynamoDB::Table", 2);
     for (const gateEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${legacyTablePrefix(gateEnv)}bedrock-gate-tokens`,
+        TableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
         KeySchema: [{ AttributeName: "token_hash", KeyType: "HASH" }],
         BillingMode: "PAY_PER_REQUEST",
         PointInTimeRecoverySpecification: {
@@ -169,7 +169,7 @@ describe("BedrockGateStack", () => {
     }
     template.hasResource("AWS::DynamoDB::Table", {
       Properties: Match.objectLike({
-        TableName: "isol8-prod-bedrock-gate-tokens",
+        TableName: "lightbulb-prod-bedrock-gate-tokens",
       }),
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",

@@ -270,7 +270,7 @@ export function SessionsPanel() {
 
       {/* Store path */}
       {storePath && (
-        <p className="text-[11px] text-[var(--midnight-muted)]/50">Store: {storePath}</p>
+        <p className="text-[11px] text-midnight-muted">Store: {storePath}</p>
       )}
 
       {/* Table */}
@@ -345,7 +345,7 @@ function SessionRow({
       <td className="py-2 pr-3 font-mono text-[11px] max-w-[180px]">
         <div className="truncate">{s.key}</div>
         {displayName && (
-          <div className="text-[10px] text-[var(--midnight-muted)]/50 truncate">{displayName}</div>
+          <div className="text-[10px] text-midnight-muted truncate">{displayName}</div>
         )}
       </td>
 

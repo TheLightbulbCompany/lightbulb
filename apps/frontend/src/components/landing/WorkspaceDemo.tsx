@@ -322,7 +322,7 @@ export function WorkspaceDemo() {
             <button
               type="submit"
               aria-label="Send"
-              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--midnight)] text-white transition-colors hover:bg-[#0a5c3e]"
+              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--midnight)] text-white transition-colors hover:bg-midnight-soft"
             >
               <ArrowUp className="h-4 w-4" />
             </button>
@@ -637,7 +637,7 @@ export function WorkspaceDemo() {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 px-3 py-2 text-xs text-[var(--midnight-muted)]">
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-[#2d8a4e]" />
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--ok)]" />
                   Connected
                 </div>
                 <div className="create-pill" role="group" aria-label="Create">

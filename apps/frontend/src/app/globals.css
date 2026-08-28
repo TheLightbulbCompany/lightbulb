@@ -71,7 +71,7 @@
  *     --midnight       #0F1A2B  15.24:1   --midnight-soft   #3D4550  8.51:1
  *     --midnight-muted #62676D   5.00:1   --midnight-label  #696D72  4.55:1
  *     --ok 5.44:1   --warn 5.30:1   --err 6.33:1   --info 6.76:1
- *     --midnight-faint #999A99   2.47:1  disabled + non-text only (1.4.3 exempt)
+ *     --midnight-faint #82858A   3.37:1  disabled + non-text only (1.4.3 exempt)
  *     --brass           2.94:1  NEVER body copy on cream (§06 names this a fail)
  *     --bulb            1.45:1  never type, never a page fill
  *   reversed (.dark) on --midnight #0F1A2B, --card #212B3A:
@@ -128,16 +128,18 @@
   --destructive-foreground: var(--cream);
   --border: var(--edge);
   --input: var(--edge);
-  /* The one place the bulb appears in product chrome: focus is where the light is. */
-  --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1; the bulb rings only on midnight */
+  --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1, so cream rings midnight */
 
-  /* Growth-dashboard series. Semantic: 1 = autonomous/healthy, 2 = human-
-     initiated, 3 = nightly CEO, 4 = alert, 5 = secondary. */
+  /* Growth-dashboard series: 1 ok, 2 info, 3 warn, 4 err, 5 neutral. Semantic:
+     1 = autonomous/healthy, 2 = human-initiated, 3 = nightly CEO, 4 = alert,
+     5 = secondary/unknown. The fifth is deliberately NOT a state colour — a
+     state colour only ever means state, and it was brass, a second warm gold
+     that no reader could separate from warn in one chart. */
   --chart-1: var(--ok);
   --chart-2: var(--info);
   --chart-3: var(--warn);
   --chart-4: var(--err);
-  --chart-5: var(--brass);
+  --chart-5: var(--midnight-muted);
 }
 
 /*
@@ -164,6 +166,8 @@
   --destructive-foreground: var(--midnight);
   --border: color-mix(in srgb, var(--cream) 14%, var(--midnight));
   --input: color-mix(in srgb, var(--cream) 14%, var(--midnight));
+  /* The one place the bulb appears in product chrome: focus is where the
+     light is — and on midnight it clears 3:1, which it cannot do on cream. */
   --ring: var(--bulb);
 
   /* The state tokens flip here, so no component ever names a -reversed token. */
@@ -176,7 +180,9 @@
   --chart-2: var(--info);
   --chart-3: var(--warn);
   --chart-4: var(--err);
-  --chart-5: var(--brass);
+  /* = --muted-foreground on this ground; --midnight-muted is a cream-ground
+     mix and would compute to a near-invisible grey on midnight. */
+  --chart-5: color-mix(in srgb, var(--cream) 70%, var(--midnight));
 }
 
 @layer base {
@@ -899,7 +905,6 @@ button:focus-visible { border-radius: 999px; }
 .section-inner { max-width: 1152px; margin: 0 auto; }
 .section-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--midnight); margin-bottom: 16px; }
 .section-h2 { font-family: var(--font-serif); font-size: clamp(32px, 4vw, 48px); font-weight: 400; line-height: 1.15; letter-spacing: -.02em; color: var(--midnight); margin-bottom: 64px; max-width: 480px; }
-.section-h2 em { font-style: italic; color: var(--midnight); }
 .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--edge); border-radius: 16px; overflow: hidden; border: 1px solid var(--edge); }
 .feat-card { background: var(--cream); padding: 40px 32px; transition: transform .25s ease, box-shadow .25s ease; }
 .feat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(0,0,0,.06); }
@@ -1489,7 +1494,6 @@ button:focus-visible { border-radius: 999px; }
 .brand-logo--sm { font-size: 15px; }
 .brand-logo--md { font-size: 18px; }
 .brand-logo--lg { font-size: 24px; }
-.brand-logo-link:hover .brand-logo--midnight { color: var(--midnight); }
 .brand-logo-link:hover .brand-logo--cream { color: var(--bulb); }
 
 /* ── TEAM (formerly Orchestration) ── */
@@ -1555,7 +1559,6 @@ button:focus-visible { border-radius: 999px; }
   font-family: var(--font-serif), Georgia, serif; font-size: 22px;
   font-weight: 400; color: var(--midnight); margin: 0 0 8px; line-height: 1.15;
 }
-.skills-strip-lede h3 em { font-style: italic; color: var(--midnight); }
 .skills-strip-lede p { font-size: 14px; color: #777; line-height: 1.65; margin: 0 0 14px; }
 .skills-strip-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;

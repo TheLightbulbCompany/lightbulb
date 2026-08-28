@@ -223,7 +223,7 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
                   />
                 ))}
               </ul>
-              {/* --midnight-faint is non-text-only (3.44:1 on cream), so this
+              {/* --midnight-faint is non-text-only (3.37:1 on cream), so this
                   reuses --midnight-muted rather than the mock's literal token. */}
               <div className="mt-1.5 text-[11.5px] italic text-[var(--midnight-muted)]">
                 Picking one promotes it to Recommended. It does not deploy.

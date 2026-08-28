@@ -518,8 +518,8 @@ function SummaryCard({
       )}
     >
       <div className="flex items-center justify-center gap-1.5 mb-1">
-        <Icon className="h-3 w-3 text-[var(--midnight-muted)]/60" />
-        <span className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">
+        <Icon className="h-3 w-3 text-midnight-label" />
+        <span className="text-[10px] uppercase tracking-wider text-midnight-label">
           {label}
         </span>
       </div>
@@ -532,7 +532,7 @@ function SummaryCard({
               ? "text-err"
               : subLabelTone === "amber"
                 ? "text-warn"
-                : "text-[var(--midnight-muted)]/60",
+                : "text-midnight-muted",
           )}
         >
           {subLabel}

@@ -18,7 +18,7 @@ function valueClass(variant: ReturnType<typeof formatValue>["variant"]): string 
   if (variant === "yes") return "text-ok font-medium";
   if (variant === "no") return "text-[var(--midnight-muted)]";
   if (variant === "error") return "text-err";
-  if (variant === "muted") return "text-[var(--midnight-muted)]/60";
+  if (variant === "muted") return "text-midnight-muted";
   return "text-[var(--midnight)]";
 }
 
@@ -29,7 +29,7 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
         <span className="text-sm font-medium text-[var(--midnight)]">
           {account.name || account.accountId}
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">
+        <span className="text-[10px] uppercase tracking-wider text-midnight-label">
           {account.accountId}
         </span>
       </div>
@@ -109,7 +109,7 @@ export function ChannelsStatusPanel() {
         </div>
       ) : channelOrder.length === 0 ? (
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center">
-          <Radio className="h-5 w-5 mx-auto mb-2 text-[var(--midnight-muted)]/50" />
+          <Radio className="h-5 w-5 mx-auto mb-2 text-midnight-muted" />
           <p className="text-sm text-[var(--midnight-muted)]">
             No channels configured. Link a channel from Settings to see status here.
           </p>
@@ -124,7 +124,7 @@ export function ChannelsStatusPanel() {
                   {data?.channelLabels?.[channelId] ?? channelId}
                 </h3>
                 {accounts.length === 0 ? (
-                  <p className="text-xs text-[var(--midnight-muted)]/70 pl-1">No accounts linked.</p>
+                  <p className="text-xs text-midnight-muted pl-1">No accounts linked.</p>
                 ) : (
                   <div className="space-y-2">
                     {accounts.map((account) => (

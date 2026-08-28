@@ -32,18 +32,20 @@ export const DEMO_COMPANY_NAME = "Northwind Ceramics";
 export const DEMO_MODEL_NAME = "Claude Sonnet 4.6";
 
 /**
- * Fixed pastel identities for the roster monograms (the real sidebar hashes
- * agent ids through lib/agentDesign's PALETTE; canned ids hash to whatever,
- * so the demo pins the swatches instead — same palette entries).
+ * Roster monograms. Agents are not colour-coded — lib/agentDesign's PALETTE is
+ * one neutral chip repeated, so the demo shows the same chip the product does
+ * and lets the monogram carry the identity.
  */
+const NEUTRAL_CHIP = { accent: "var(--foreground)", tint: "var(--accent)" };
+
 export const DEMO_AGENT_LOOKS: Record<
   string,
   { monogram: string; accent: string; tint: string }
 > = {
-  [FRIDAY_ID]: { monogram: "Fr", accent: "#3a4a8a", tint: "#e8eaf3" },
-  [ATLAS_ID]: { monogram: "At", accent: "#2d6b4e", tint: "#e3eee7" },
-  [STITCH_ID]: { monogram: "St", accent: "#a35d1f", tint: "#f3ebe0" },
-  [TALLY_ID]: { monogram: "Ta", accent: "#7a3a5a", tint: "#f1e6ec" },
+  [FRIDAY_ID]: { monogram: "Fr", ...NEUTRAL_CHIP },
+  [ATLAS_ID]: { monogram: "At", ...NEUTRAL_CHIP },
+  [STITCH_ID]: { monogram: "St", ...NEUTRAL_CHIP },
+  [TALLY_ID]: { monogram: "Ta", ...NEUTRAL_CHIP },
 };
 
 export const DEMO_AGENTS: CompanyAgent[] = [

@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
  * Brand-token scanner. Fails on any colour literal outside the files that are
- * allowed to hold one (globals.css, landing.css, clerkAppearance.ts, and
- * `*Brand.ts` vendor-mark files), plus retired font CSS vars outside the
- * landing.
+ * allowed to hold one, plus retired font CSS vars outside the landing.
+ *
+ * The exemptions (SKIP below) are deliberate, and all five are documented in
+ * CLAUDE.md and .interface-design/system.md: `app/globals.css` and
+ * `app/landing.css` (the token layer itself), `lib/clerkAppearance.ts` (Clerk
+ * takes hex, not var()), `*Brand.ts` (vendor marks, off-palette by
+ * definition), `components/landing/**` (marketing, its own palette), and
+ * tests (`__tests__/`, `*.test.*`) which hold literals as fixtures.
  *
  * Usage: node scripts/brand-tokens-scan.mjs [paths...]   (default: src)
  * Exit 1 if anything matched. `--count` prints only the total.
@@ -33,10 +38,14 @@ const UTIL =
 const RETIRED_FONTS = "dm-sans|geist-sans|host-grotesk|epilogue|lora-serif";
 
 const RULES = [
-  { re: /#([0-9a-fA-F]{3}){1,2}\b(?![\w-])/g, skipComments: true },
+  // 3/4/6/8 digits — an 8-digit #RRGGBBAA is the realistic CSS miss: a plain
+  // `{3}){1,2}` cannot reach it, and its own \b lookahead hides it.
+  { re: /#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b(?![\w-])/g, skipComments: true },
   { re: /(?<![A-Za-z0-9-])(rgba?|oklch|hsla?)\(/g, skipComments: false }, // not \b/\w: `_rgba(` inside a Tailwind arbitrary value (e.g. shadow-[0_2px_8px_rgba(...)]) must still match — \w includes `_`
   { re: new RegExp(`\\b(${UTIL})-(${PALETTE})-\\d{2,3}\\b`, "g"), skipComments: false },
-  { re: /\b(bg|text|border)-(white|black)\b/g, skipComments: false },
+  // every utility, not just bg/text/border: `fill-black`, `to-black` and
+  // `outline-black` are pure black and used to land silently.
+  { re: new RegExp(`\\b(${UTIL})-(white|black)\\b`, "g"), skipComments: false },
   { re: /\[#[0-9a-fA-F]{3,8}\]/g, skipComments: false },
   // named CSS colours in attributes / declarations (fill="white", color: red)
   { re: /(?:\b(?:fill|stroke|color|background(?:-color)?|border(?:-color)?)\s*[:=]\s*["']?\s*)(white|black|red|green|blue|gray|grey|orange|yellow|purple|pink|silver|navy|teal|lime|maroon)(?![\w-])/g, skipComments: true },

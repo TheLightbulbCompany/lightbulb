@@ -131,11 +131,10 @@ export function ClawHubSearch({
   if (!trimmed) return null;
 
   return (
-    <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
+    <div className="rounded-xl border border-[var(--edge)] bg-cream p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p
-          className="text-sm text-[#5a5549]"
-          style={{ fontFamily: "'DM Sans', sans-serif" }}
+          className="text-sm text-[var(--midnight-soft)]"
         >
           Not in your list? Search the{" "}
           <strong className="text-[var(--midnight)]">ClawHub</strong> registry.
@@ -144,8 +143,7 @@ export function ClawHubSearch({
           size="sm"
           onClick={runSearch}
           disabled={loading}
-          className="text-xs bg-[var(--midnight)] hover:bg-[#052f20] text-white shrink-0"
-          style={{ fontFamily: "'DM Sans', sans-serif" }}
+          className="text-xs bg-[var(--midnight)] hover:opacity-90 text-cream shrink-0"
         >
           {loading ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -163,7 +161,7 @@ export function ClawHubSearch({
       )}
 
       {results && results.length === 0 && (
-        <p className="text-xs text-[var(--midnight-muted)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+        <p className="text-xs text-[var(--midnight-muted)]">
           No skills on ClawHub match &ldquo;{searchedFor}&rdquo;.
         </p>
       )}
@@ -185,13 +183,12 @@ export function ClawHubSearch({
                     <div className="flex items-center gap-2">
                       <h4
                         className="text-sm font-semibold text-[var(--midnight)] truncate"
-                        style={{ fontFamily: "'DM Sans', sans-serif" }}
                       >
                         {r.displayName || r.slug}
                       </h4>
                       <span className="text-[11px] text-[var(--midnight-muted)] font-mono shrink-0">{r.slug}</span>
                       {r.version && (
-                        <span className="text-[10px] text-[#b5ae9e] shrink-0">v{r.version}</span>
+                        <span className="text-[10px] text-[var(--midnight-muted)] shrink-0">v{r.version}</span>
                       )}
                     </div>
                     {r.summary && (
@@ -205,10 +202,9 @@ export function ClawHubSearch({
                     onClick={() => install(r.slug, false)}
                     className={
                       isInstalled
-                        ? "text-xs border-[var(--edge)] text-[#2d8a4e] shrink-0"
-                        : "text-xs bg-[var(--midnight)] hover:bg-[#052f20] text-white shrink-0"
+                        ? "text-xs border-[var(--edge)] text-ok shrink-0"
+                        : "text-xs bg-[var(--midnight)] hover:opacity-90 text-cream shrink-0"
                     }
-                    style={{ fontFamily: "'DM Sans', sans-serif" }}
                   >
                     {isBusy ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -228,7 +224,7 @@ export function ClawHubSearch({
                   <p
                     className={
                       rowMsg.kind === "ok"
-                        ? "text-xs text-[#2d8a4e]"
+                        ? "text-xs text-ok"
                         : "text-xs text-destructive"
                     }
                     role={rowMsg.kind === "err" ? "alert" : undefined}
@@ -246,8 +242,7 @@ export function ClawHubSearch({
                     variant="outline"
                     disabled={isBusy}
                     onClick={() => install(r.slug, true)}
-                    className="text-xs border-[#d9a441] text-[#a9791f] hover:bg-[#fbf3e2]"
-                    style={{ fontFamily: "'DM Sans', sans-serif" }}
+                    className="text-xs border-warn text-warn hover:bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))]"
                   >
                     <AlertTriangle className="h-3.5 w-3.5 mr-1.5" /> Install anyway — I understand the risk
                   </Button>
@@ -263,7 +258,6 @@ export function ClawHubSearch({
         target="_blank"
         rel="noopener noreferrer"
         className="inline-flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
-        style={{ fontFamily: "'DM Sans', sans-serif" }}
       >
         Browse the full registry on ClawHub
         <ExternalLink className="h-3 w-3" />

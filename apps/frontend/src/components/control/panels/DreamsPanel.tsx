@@ -63,7 +63,7 @@ export function DreamsPanel() {
         </div>
         {agents.length > 1 && (
           <select
-            className="text-sm border rounded-md px-2 py-1 bg-white"
+            className="text-sm border rounded-md px-2 py-1 bg-cream-deep"
             value={agentId ?? ""}
             onChange={(e) => setAgentId(e.target.value || undefined)}
           >
@@ -118,7 +118,7 @@ function SceneTab({
       <div className="flex items-center gap-2 text-sm">
         <Sparkles className="h-4 w-4 text-[var(--midnight-muted)]" />
         <span className="font-medium">Dreaming</span>
-        <span className={dreaming.enabled ? "text-emerald-600" : "text-[var(--midnight-muted)]"}>
+        <span className={dreaming.enabled ? "text-ok" : "text-[var(--midnight-muted)]"}>
           {dreaming.enabled ? "active" : "idle"}
         </span>
         {dreaming.timezone && <span className="text-[var(--midnight-muted)]">· {dreaming.timezone}</span>}
@@ -179,12 +179,12 @@ function PhaseToggles({
         {PHASE_ORDER.map((key) => {
           const on = dreaming?.phases?.[key]?.enabled ?? false;
           return (
-            <div key={key} className="flex items-center justify-between rounded-lg border bg-white px-3 py-2">
+            <div key={key} className="flex items-center justify-between rounded-lg border bg-cream px-3 py-2">
               <div className="flex items-center gap-2 text-sm">
-                <span className={`h-2 w-2 rounded-full ${on ? "bg-emerald-500" : "bg-[#d4d0c4]"}`} />
+                <span className={`h-2 w-2 rounded-full ${on ? "bg-ok" : "bg-[var(--edge)]"}`} />
                 {key === "light" ? <Sun className="h-3.5 w-3.5 text-[var(--midnight-muted)]" /> : <Moon className="h-3.5 w-3.5 text-[var(--midnight-muted)]" />}
                 <span>{PHASE_LABEL[key]}</span>
-                {key === "deep" && <span className="text-xs text-amber-600">requires 6.6 image</span>}
+                {key === "deep" && <span className="text-xs text-warn">requires 6.6 image</span>}
               </div>
               <Button
                 variant="outline"
@@ -206,7 +206,7 @@ function PhaseToggles({
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border bg-white p-3">
+    <div className="rounded-lg border bg-cream p-3">
       <p className="text-2xl font-semibold text-[var(--midnight)]">{value}</p>
       <p className="text-xs text-[var(--midnight-muted)]">{label}</p>
     </div>
@@ -238,7 +238,7 @@ function DiaryTab({ params }: { params: Record<string, unknown> }) {
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
         </Button>
       </div>
-      <pre className="whitespace-pre-wrap text-sm bg-white border rounded-lg p-4 max-h-[60vh] overflow-auto">
+      <pre className="whitespace-pre-wrap text-sm bg-cream border rounded-lg p-4 max-h-[60vh] overflow-auto">
         {data.content}
       </pre>
     </div>

@@ -241,7 +241,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
               Skill Store
             </h2>
-            <p className="text-sm text-[var(--midnight-muted)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
               Discover and install skills for your agent
             </p>
           </div>
@@ -255,7 +255,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               }}
               aria-expanded={showCreate}
               className="text-xs border-[var(--edge)]"
-              style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               + Create custom skill
             </Button>
@@ -267,12 +266,12 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* Create-custom-skill helper */}
         {showCreate && (
-          <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
-            <p className="text-sm text-[var(--midnight)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <div className="rounded-xl border border-[var(--edge)] bg-cream p-4 space-y-3">
+            <p className="text-sm text-[var(--midnight)]">
               Your agent writes custom skills itself — it has a built-in <strong>skill-creator</strong> skill.
               Describe what you want in chat; the new skill appears here once it&apos;s written.
             </p>
-            <pre className="text-xs text-[#5a5549] bg-[var(--cream)] border border-[var(--edge)] rounded-md p-3 whitespace-pre-wrap">
+            <pre className="text-xs text-[var(--midnight-soft)] bg-[var(--cream)] border border-[var(--edge)] rounded-md p-3 whitespace-pre-wrap">
               {CREATE_SKILL_PROMPT}
             </pre>
             <Button
@@ -293,8 +292,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--midnight-muted)]" />
           <Input
             placeholder="Search skills..."
-            className="pl-10 h-10 text-sm bg-white border-[var(--edge)] rounded-lg"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
+            className="pl-10 h-10 text-sm bg-cream-deep border-[var(--edge)] rounded-lg"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
@@ -312,10 +310,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               className={cn(
                 "px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors border",
                 activeCategory === cat
-                  ? "bg-[var(--midnight)] text-white border-[var(--midnight)]"
-                  : "bg-white text-[#5a5549] border-[var(--edge)] hover:border-[#c5c0b6]",
+                  ? "bg-[var(--midnight)] text-cream border-[var(--midnight)]"
+                  : "bg-cream text-[var(--midnight-soft)] border-[var(--edge)] hover:border-[var(--midnight-faint)]",
               )}
-              style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               {cat}
               {cat === "Installed" && ` (${skills.filter((s) => getSkillState(s) === "installed").length})`}
@@ -325,7 +322,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* No results */}
         {filtered.length === 0 && (
-          <p className="text-sm text-[var(--midnight-muted)] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <p className="text-sm text-[var(--midnight-muted)] text-center py-8">
             No skills found.
           </p>
         )}
@@ -396,7 +393,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           <div className="space-y-3">
             <button
               onClick={() => setUnsupportedCollapsed(!unsupportedCollapsed)}
-              className="flex items-center gap-2 text-sm font-semibold text-[#b5ae9e] hover:text-[var(--midnight-muted)] transition-colors w-full text-left"
+              className="flex items-center gap-2 text-sm font-semibold text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors w-full text-left"
               style={{ fontFamily: "'Lora', serif" }}
             >
               <ChevronDown
@@ -410,8 +407,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             {!unsupportedCollapsed && (
               <>
                 <p
-                  className="text-xs text-[#b5ae9e] pl-5"
-                  style={{ fontFamily: "'DM Sans', sans-serif" }}
+                  className="text-xs text-[var(--midnight-muted)] pl-5"
                 >
                   These skills require tools that aren&apos;t available in cloud
                   containers. They work when running OpenClaw locally on your Mac
@@ -421,7 +417,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   {unsupportedSkills.map((skill) => (
                     <div
                       key={skill.skillKey || skill.name}
-                      className="rounded-xl border border-[var(--edge)] bg-white/60 p-3 opacity-60"
+                      className="rounded-xl border border-[var(--edge)] bg-cream/60 p-3 opacity-60"
                     >
                       <div className="flex items-center gap-3">
                         <span className="text-lg flex-shrink-0 grayscale">
@@ -431,17 +427,16 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                           <div className="flex items-center gap-2">
                             <h3
                               className="text-xs font-semibold text-[var(--midnight-muted)] truncate"
-                              style={{ fontFamily: "'DM Sans', sans-serif" }}
                             >
                               {skill.name}
                             </h3>
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--midnight-muted)] flex-shrink-0">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
                               <Monitor className="h-2.5 w-2.5" />
                               Desktop Only
                             </span>
                           </div>
                           {(skill.missing?.bins?.length ?? 0) > 0 && (
-                            <p className="text-[11px] text-[#b5ae9e] mt-0.5">
+                            <p className="text-[11px] text-[var(--midnight-muted)] mt-0.5">
                               Requires: {skill.missing.bins.join(", ")}
                             </p>
                           )}
@@ -472,8 +467,7 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   return (
     <Link
       href="/chat?panel=integrations"
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#5a5549] hover:text-[var(--midnight)] flex-shrink-0"
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] flex-shrink-0"
       title="Connect this account under Integrations"
     >
       works with {integration.label}
@@ -549,7 +543,7 @@ function SkillCard({
 
   if (variant === "installed") {
     return (
-      <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
+      <div className="rounded-xl border border-[var(--edge)] bg-cream p-4 space-y-3">
         {/* Top row: icon + info + badge + actions */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
@@ -558,18 +552,16 @@ function SkillCard({
               <div className="flex items-center gap-2">
                 <h3
                   className="text-sm font-semibold text-[var(--midnight)] truncate"
-                  style={{ fontFamily: "'DM Sans', sans-serif" }}
                 >
                   {skill.name}
                 </h3>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#e8f5e9] text-[#2d8a4e] flex-shrink-0">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-ok/10 text-ok flex-shrink-0">
                   Installed
                 </span>
                 <IntegrationChip skillName={skill.name} />
               </div>
               <p
                 className="text-xs text-[var(--midnight-muted)] mt-0.5 line-clamp-2"
-                style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 {friendlyDesc}
               </p>
@@ -581,9 +573,8 @@ function SkillCard({
               // Managed/required skills have no toggle. Explain why, so it doesn't
               // read as "I can't modify this and don't know why".
               <span
-                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--midnight-muted)] cursor-help"
+                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] cursor-help"
                 title="This skill is always on — it's managed by Lightbulb AI and can't be turned off."
-                style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 Always on
               </span>
@@ -591,8 +582,7 @@ function SkillCard({
               <button
                 onClick={handleToggle}
                 disabled={toggleLoading}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:border-[#c5c0b6] transition-colors"
-                style={{ fontFamily: "'DM Sans', sans-serif" }}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:border-[var(--midnight-faint)] transition-colors"
               >
                 {toggleLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Disable"}
               </button>
@@ -602,7 +592,7 @@ function SkillCard({
 
         {/* Action error — surfaced instead of being swallowed */}
         {actionError && (
-          <div className="flex items-start gap-1.5 text-xs text-red-600">
+          <div className="flex items-start gap-1.5 text-xs text-err">
             <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
             <span>{actionError}</span>
           </div>
@@ -612,19 +602,19 @@ function SkillCard({
         {hasMissing && (
           <div className="space-y-1">
             {(skill.missing?.bins?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-orange-500">
+              <div className="flex items-center gap-1.5 text-xs text-warn">
                 <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                 <span>Missing: {skill.missing.bins.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.env?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-orange-500">
+              <div className="flex items-center gap-1.5 text-xs text-warn">
                 <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                 <span>Missing env: {skill.missing.env.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.config?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-orange-500">
+              <div className="flex items-center gap-1.5 text-xs text-warn">
                 <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                 <span>Missing config: {skill.missing.config.join(", ")}</span>
               </div>
@@ -662,7 +652,7 @@ function SkillCard({
 
   // --- Available (disabled) skill card ---
   return (
-    <div className="rounded-xl border border-[var(--edge)] bg-white p-4">
+    <div className="rounded-xl border border-[var(--edge)] bg-cream p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0 flex-1">
           <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
@@ -670,7 +660,6 @@ function SkillCard({
             <div className="flex items-center gap-2">
               <h3
                 className="text-sm font-semibold text-[var(--midnight)] truncate"
-                style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 {skill.name}
               </h3>
@@ -678,7 +667,6 @@ function SkillCard({
             </div>
             <p
               className="text-xs text-[var(--midnight-muted)] mt-0.5 line-clamp-2"
-              style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               {friendlyDesc}
             </p>
@@ -687,13 +675,13 @@ function SkillCard({
             {hasMissing && (
               <div className="mt-2 space-y-0.5">
                 {(skill.missing?.bins?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-[11px] text-orange-500">
+                  <div className="flex items-center gap-1 text-[11px] text-warn">
                     <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />
                     <span>Needs: {skill.missing.bins.join(", ")}</span>
                   </div>
                 )}
                 {(skill.missing?.env?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-[11px] text-orange-500">
+                  <div className="flex items-center gap-1 text-[11px] text-warn">
                     <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />
                     <span>Needs env: {skill.missing.env.join(", ")}</span>
                   </div>
@@ -714,8 +702,7 @@ function SkillCard({
                     key={spec.id}
                     onClick={() => handleInstall(spec)}
                     disabled={installLoading !== null}
-                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-[#ffe0b2] text-[#8a6a22] bg-[#fff8e1] hover:bg-[#fff3cc] transition-colors"
-                    style={{ fontFamily: "'DM Sans', sans-serif" }}
+                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-warn text-warn bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] hover:bg-[color-mix(in_srgb,var(--warn)_16%,var(--cream))] transition-colors"
                   >
                     {installLoading === spec.id ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
@@ -731,8 +718,7 @@ function SkillCard({
           <button
             onClick={handleToggle}
             disabled={toggleLoading || skill.always}
-            className="px-4 py-1.5 rounded-full text-xs font-medium bg-[#2d8a4e] text-white hover:bg-[#247a42] transition-colors disabled:opacity-50"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
+            className="px-4 py-1.5 rounded-full text-xs font-medium bg-[var(--midnight)] text-cream hover:opacity-90 transition-colors disabled:opacity-50"
           >
             {toggleLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Install"}
           </button>
@@ -741,7 +727,7 @@ function SkillCard({
 
       {/* Action error — surfaced instead of being swallowed */}
       {actionError && (
-        <div className="mt-2 flex items-start gap-1.5 text-xs text-red-600">
+        <div className="mt-2 flex items-start gap-1.5 text-xs text-err">
           <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
           <span>{actionError}</span>
         </div>

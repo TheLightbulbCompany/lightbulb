@@ -68,7 +68,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
     setAnyone(anyoneFromRow);
   }, [agentId, row?.address, sendersFromRow, anyoneFromRow]);
 
-  if (error && !data) return <div className="p-4 text-sm text-[#dc2626]">Failed to load email settings.</div>;
+  if (error && !data) return <div className="p-4 text-sm text-err">Failed to load email settings.</div>;
   if (isLoading || !data) return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading email…</div>;
 
   const save = async () => {
@@ -116,7 +116,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           )}
         </div>
         {row?.outbound_disabled && (
-          <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+          <div role="alert" className="rounded-md border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] p-2 text-xs">
             Outbound email is paused: a recipient reported a message as spam.
             <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
               Re-enable
@@ -138,7 +138,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
           Let this agent email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
-        {err && <p className="text-xs text-[#dc2626]">{err}</p>}
+        {err && <p className="text-xs text-err">{err}</p>}
         <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
       </div>
     </div>

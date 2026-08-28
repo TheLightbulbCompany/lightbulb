@@ -10,9 +10,7 @@ export function GetStartedLauncher({ done, total, pulse, onClick }: {
       className="fixed right-5 bottom-5 z-40 flex items-center gap-2.5 h-[46px] pl-2 pr-4 rounded-full bg-[var(--midnight)] text-[var(--cream)] shadow-[0_10px_26px_-8px_rgba(6,64,43,.5)] hover:brightness-110 transition">
       <span className="relative w-[30px] h-[30px]">
         <svg width="30" height="30" className="-rotate-90">
-          <circle cx="15" cy="15" r="12" stroke="rgba(255,255,255,.25)" strokeWidth="3" fill="none" />
-          {/* SVG presentation attributes don't reliably accept var(), so the
-              brand gold (--brass) stays a literal hex here. */}
+          <circle cx="15" cy="15" r="12" stroke="color-mix(in srgb, var(--cream) 25%, transparent)" strokeWidth="3" fill="none" />
           <circle cx="15" cy="15" r="12" stroke="var(--brass)" strokeWidth="3" fill="none" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={offset} />
         </svg>
         <span className="absolute inset-0 grid place-items-center text-[9px] font-bold">{done}/{total}</span>

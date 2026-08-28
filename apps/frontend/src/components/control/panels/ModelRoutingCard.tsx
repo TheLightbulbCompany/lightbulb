@@ -14,10 +14,10 @@ import {
 
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
-const CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
+const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
 const SELECT_CLS =
-  "rounded-md border border-[var(--edge)] bg-white px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50 w-full";
+  "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50 w-full";
 
 /**
  * Owner-level model routing: the default model every agent inherits, and

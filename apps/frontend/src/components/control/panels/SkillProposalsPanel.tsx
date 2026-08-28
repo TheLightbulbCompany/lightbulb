@@ -52,7 +52,7 @@ export function SkillProposalsPanel() {
       ) : (
         <div className="space-y-2">
           {proposals.map((p) => (
-            <div key={p.id} className="rounded-lg border bg-white">
+            <div key={p.id} className="rounded-lg border bg-cream">
               <button
                 className="w-full text-left p-3 flex items-center justify-between"
                 onClick={() => setSelected(selected === p.id ? null : p.id)}
@@ -62,9 +62,9 @@ export function SkillProposalsPanel() {
                   <p className="text-xs text-[var(--midnight-muted)]">{p.skillName} · {p.kind} · scan: {p.scanState}</p>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
-                  p.status === "pending" ? "bg-amber-100 text-amber-700" :
-                  p.status === "applied" ? "bg-emerald-100 text-emerald-700" :
-                  "bg-[#eee] text-[var(--midnight-muted)]"
+                  p.status === "pending" ? "bg-warn/10 text-warn" :
+                  p.status === "applied" ? "bg-ok/10 text-ok" :
+                  "bg-cream-deep text-[var(--midnight-muted)]"
                 }`}>{p.status}</span>
               </button>
               {selected === p.id && <ProposalDetail proposalId={p.id} onResolved={() => mutate()} />}
@@ -107,7 +107,7 @@ function ProposalDetail({ proposalId, onResolved }: { proposalId: string; onReso
   return (
     <div className="border-t p-3 space-y-3">
       {data?.record.goal && <p className="text-xs text-[var(--midnight-muted)]"><span className="font-medium">Goal:</span> {data.record.goal}</p>}
-      <pre className="whitespace-pre-wrap text-sm bg-[#faf9f6] border rounded-md p-3 max-h-[40vh] overflow-auto">
+      <pre className="whitespace-pre-wrap text-sm bg-cream-deep border rounded-md p-3 max-h-[40vh] overflow-auto">
         {data?.content ?? ""}
       </pre>
       {pending && (

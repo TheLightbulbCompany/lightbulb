@@ -21,15 +21,15 @@ export type Mode = "idea" | "noIdea";
 const PERSISTENT_FAILURE_THRESHOLD = 3;
 
 // Brand-primary recipe used across the app (see ProviderPicker / landing
-// .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
+// .ld-btn): midnight fill, cream text, pill, hover eases opacity (no new colour).
 const CHOICE_BTN =
-  "w-full rounded-full bg-[var(--midnight)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
+  "w-full rounded-full bg-[var(--midnight)] hover:opacity-90 text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
 const INPUT =
-  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)]";
+  "w-full rounded-xl border border-[var(--edge)] bg-cream-deep p-3 text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)]";
 // Outline, not filled: this is the escape hatch for the undecided, and it
 // should not compete with Continue for the user who already has an idea.
 const SECONDARY_BTN =
-  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--midnight)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
+  "w-full rounded-full border border-edge bg-transparent hover:bg-cream-deep text-[var(--midnight)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 const QUIET_LINK =
   "text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors";

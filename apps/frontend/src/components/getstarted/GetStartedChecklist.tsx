@@ -26,7 +26,7 @@ export function GetStartedChecklist({ completed, onAction, onMeet, onDismiss }: 
         const Icon = ICONS[s.icon];
         const isDone = completed[s.id];
         return (
-          <div key={s.id} className={`flex gap-3 p-3 border rounded-xl mb-2.5 ${isDone ? "bg-[var(--cream-deep)] border-[var(--edge)]" : "bg-white border-[var(--edge)] hover:border-[var(--brass)]"}`}>
+          <div key={s.id} className={`flex gap-3 p-3 border rounded-xl mb-2.5 ${isDone ? "bg-[var(--cream-deep)] border-[var(--edge)]" : "bg-[var(--cream)] border-[var(--edge)] hover:border-[var(--brass)]"}`}>
             <span className={`flex-none w-[22px] h-[22px] rounded-full grid place-items-center mt-0.5 ${isDone ? "bg-[var(--midnight)]" : "border-2 border-[var(--midnight-muted)]"}`}>{isDone && <Check size={12} className="text-[var(--cream)]" />}</span>
             <span className="flex-none w-[34px] h-[34px] rounded-lg bg-[var(--cream-deep)] grid place-items-center text-[var(--midnight)]"><Icon size={18} /></span>
             <div className="flex-1 min-w-0">

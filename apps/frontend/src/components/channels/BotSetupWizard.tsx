@@ -101,7 +101,7 @@ function StepIndicator({ current, total }: { current: number; total: number }) {
           className={
             "h-1.5 rounded-full transition-all " +
             (i < current
-              ? "w-4 bg-[#2d8a4e]"
+              ? "w-4 bg-ok"
               : i === current
                 ? "w-6 bg-[var(--midnight)]"
                 : "w-4 bg-[var(--edge)]")
@@ -124,7 +124,7 @@ function ExternalLinkButton({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--edge)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors cursor-pointer"
+      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--edge)] bg-cream px-3 py-1.5 text-xs font-medium text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors cursor-pointer"
     >
       {children}
       <ExternalLink className="h-3 w-3" />
@@ -147,7 +147,7 @@ function InlineLink({ href, children }: { href: string; children: React.ReactNod
 
 function InstructionsList({ items }: { items: React.ReactNode[] }) {
   return (
-    <ol className="space-y-2 text-sm text-[#3a3a3a]">
+    <ol className="space-y-2 text-sm text-[var(--midnight-soft)]">
       {items.map((item, i) => (
         <li key={i} className="flex gap-2.5">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--cream-deep)] text-[10px] font-semibold text-[var(--midnight-muted)]">
@@ -162,7 +162,7 @@ function InstructionsList({ items }: { items: React.ReactNode[] }) {
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-md bg-[#fef2f2] border border-[#fecaca] p-3 text-xs text-[#991b1b]">
+    <div className="flex items-start gap-2 rounded-md bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] border border-[color-mix(in_srgb,var(--err)_35%,var(--cream))] p-3 text-xs text-err">
       <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
       <span>{message}</span>
     </div>
@@ -171,7 +171,7 @@ function ErrorBanner({ message }: { message: string }) {
 
 function InfoCallout({ title, body }: { title: string; body: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+    <div className="rounded-md border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] p-3 text-xs text-warn space-y-1">
       <p className="font-semibold">{title}</p>
       <div>{body}</div>
     </div>
@@ -629,7 +629,7 @@ export function BotSetupWizard({
           </>,
         ]}
       />
-      <div className="rounded-md border border-[var(--edge)] bg-white">
+      <div className="rounded-md border border-[var(--edge)] bg-cream">
         <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--edge)]">
           <span className="text-xs font-semibold text-[var(--midnight)]">App manifest</span>
           <button
@@ -689,7 +689,7 @@ export function BotSetupWizard({
                 clearError();
               }}
               placeholder="xapp-1-A..."
-              className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
+              className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
               aria-label="App-Level Token"
               autoComplete="off"
               spellCheck={false}
@@ -706,7 +706,7 @@ export function BotSetupWizard({
               clearError();
             }}
             placeholder={placeholder}
-            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
             aria-label={labelText}
             autoComplete="off"
             spellCheck={false}
@@ -797,7 +797,7 @@ export function BotSetupWizard({
             This lets the bot recognize you as an authorized user. Codes expire after 1 hour.
           </p>
         </div>
-        <p className="text-sm text-[#3a3a3a]">{dmInstructions[provider]}</p>
+        <p className="text-sm text-[var(--midnight-soft)]">{dmInstructions[provider]}</p>
         <label className="block">
           <span className="text-xs font-semibold text-[var(--midnight)]">Pairing code</span>
           <input
@@ -809,7 +809,7 @@ export function BotSetupWizard({
             }}
             placeholder="ABC12345"
             maxLength={8}
-            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-lg font-mono tracking-widest uppercase focus:border-[var(--midnight)] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-lg font-mono tracking-widest uppercase focus:border-[var(--midnight)] focus:outline-none"
             aria-label="Pairing code"
             autoComplete="off"
             spellCheck={false}
@@ -822,8 +822,8 @@ export function BotSetupWizard({
 
   const renderDone = () => (
     <div className="py-8 flex flex-col items-center justify-center gap-3 text-center">
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#e8f5e9]">
-        <Check className="h-5 w-5 text-[#2d8a4e]" />
+      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--ok)_14%,var(--cream))]">
+        <Check className="h-5 w-5 text-ok" />
       </div>
       <div>
         <p className="text-sm font-semibold text-[var(--midnight)]">Linked</p>

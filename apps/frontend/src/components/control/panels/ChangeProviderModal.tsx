@@ -267,8 +267,8 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
             className={
               "rounded-xl border p-4 text-left transition-colors " +
               (current
-                ? "border-[#7cc6a3]/60 bg-[#7cc6a3]/10"
-                : "border-[var(--edge)] bg-white hover:bg-[var(--cream-deep)]")
+                ? "border-ok/60 bg-ok/10"
+                : "border-[var(--edge)] bg-cream hover:bg-[var(--cream-deep)]")
             }
           >
             <div className="flex items-start justify-between gap-2">
@@ -277,7 +277,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
                 <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[var(--midnight)]">
+                <span className="rounded-full border border-ok px-2 py-0.5 text-[10px] font-medium text-ok">
                   Current
                 </span>
               )}
@@ -428,7 +428,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
             value="openai"
             checked={provider === "openai"}
             onChange={() => setProvider("openai")}
-            className="accent-[#7cc6a3]"
+            className="accent-[var(--midnight)]"
           />
           OpenAI
         </label>
@@ -438,7 +438,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
             value="anthropic"
             checked={provider === "anthropic"}
             onChange={() => setProvider("anthropic")}
-            className="accent-[#7cc6a3]"
+            className="accent-[var(--midnight)]"
           />
           Anthropic
         </label>
@@ -452,7 +452,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[#7cc6a3]/60 focus:outline-none"
+        className="w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--bulb)] focus:outline-none"
       />
 
       <p className="text-xs text-[var(--midnight-muted)]">

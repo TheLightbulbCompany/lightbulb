@@ -39,16 +39,16 @@ type UserData = {
 };
 
 const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center flex-shrink-0";
-const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
+const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
 
 // Dot color is driven by the container's live models.authStatus, not the
 // chip label — the label states which provider is configured, the dot states
 // whether its auth is currently usable.
 const DOT_CLASS: Record<DotColor, string> = {
-  green: "bg-[#2d8a4e]",
-  amber: "bg-amber-500",
-  red: "bg-red-500",
+  green: "bg-ok",
+  amber: "bg-warn",
+  red: "bg-err",
   neutral: "bg-[var(--midnight-muted)]",
 };
 
@@ -79,7 +79,7 @@ function HeroCard({
   dotColor: DotColor;
 }) {
   return (
-    <div className="rounded-xl border border-[var(--edge)] bg-white p-6 flex items-center gap-4">
+    <div className="rounded-xl border border-[var(--edge)] bg-cream p-6 flex items-center gap-4">
       <div className={HERO_TILE}>{icon}</div>
       <div className="flex-1 min-w-0">
         <h3 className="font-medium text-[var(--midnight)]">{title}</h3>
@@ -362,7 +362,7 @@ function ProviderChoiceCards({
               type="button"
               onClick={() => onPick(card.id)}
               disabled={committing !== null}
-              className="rounded-xl border border-[var(--edge)] bg-white p-4 text-left transition-colors hover:border-[var(--midnight)]/40 hover:bg-[var(--cream-deep)]/60 disabled:opacity-60 disabled:hover:bg-white"
+              className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)]/40 hover:bg-[var(--cream-deep)]/60 disabled:opacity-60 disabled:hover:bg-cream"
             >
               {/* Icon sits beside the copy on narrow widths (stacked cards
                   would otherwise be needlessly tall) and above it once the
@@ -384,7 +384,7 @@ function ProviderChoiceCards({
           );
         })}
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-err">{error}</p>}
     </div>
   );
 }
@@ -427,7 +427,7 @@ function EmptyStateCard({
       <p className="text-sm text-[var(--midnight)]">{prompt}</p>
       <Link
         href="/onboarding"
-        className="inline-flex rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
+        className="inline-flex rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm"
       >
         Re-onboard →
       </Link>
@@ -658,7 +658,7 @@ function ReplaceKeyForm({
         <button
           type="submit"
           disabled={submitting || !apiKey}
-          className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+          className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50"
         >
           Save
         </button>

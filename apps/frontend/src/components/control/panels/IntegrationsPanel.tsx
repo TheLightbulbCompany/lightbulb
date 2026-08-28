@@ -76,22 +76,22 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
 
         <div className="space-y-5">
           <div className="space-y-2">
-            <h3 className="text-sm font-medium text-[var(--midnight)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <h3 className="text-sm font-medium text-[var(--midnight)]">
               Add your own MCP servers
             </h3>
-            <div className="rounded-md border border-[var(--edge)] bg-white">
+            <div className="rounded-md border border-[var(--edge)] bg-cream">
               <McpServersTab />
             </div>
           </div>
 
-          <div className="rounded-md border border-[var(--edge)] bg-white">
+          <div className="rounded-md border border-[var(--edge)] bg-cream">
             <button
               type="button"
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((v) => !v)}
               className="flex w-full items-center justify-between p-4 text-left"
             >
-              <span className="text-sm font-medium text-[var(--midnight)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              <span className="text-sm font-medium text-[var(--midnight)]">
                 Advanced — plugins
               </span>
               <ChevronDown className={cn("h-4 w-4 text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
@@ -116,7 +116,6 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
           </h2>
           <p
             className="text-sm text-[var(--midnight-muted)] mt-0.5"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
           >
             Connect third-party tools so your agents can act on your behalf. API-key
             integrations take a token you paste; OAuth integrations send you to the provider
@@ -125,7 +124,7 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
         </div>
 
         {!canManage && (
-          <div className="rounded-md border border-[var(--edge)] bg-white p-4 text-sm text-[var(--midnight-muted)]">
+          <div className="rounded-md border border-[var(--edge)] bg-cream p-4 text-sm text-[var(--midnight-muted)]">
             Only organization admins can manage integrations.
           </div>
         )}
@@ -144,10 +143,10 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
             Curated integrations above write the same mcp.servers config; this is
             the manual rail. McpServersTab self-gates non-admins (403). */}
         <div className="space-y-2">
-          <h3 className="text-sm font-medium text-[var(--midnight)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <h3 className="text-sm font-medium text-[var(--midnight)]">
             Add your own MCP servers
           </h3>
-          <div className="rounded-md border border-[var(--edge)] bg-white">
+          <div className="rounded-md border border-[var(--edge)] bg-cream">
             <McpServersTab />
           </div>
         </div>
@@ -155,14 +154,14 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
         {/* Advanced: plugin enable/disable switches. Plugins run in-process with
             the agent, which is why this — unlike MCP — keeps a wall. Channel and
             provider plugins get real homes elsewhere (Channels / Model & Credits). */}
-        <div className="rounded-md border border-[var(--edge)] bg-white">
+        <div className="rounded-md border border-[var(--edge)] bg-cream">
           <button
             type="button"
             aria-expanded={advancedOpen}
             onClick={() => setAdvancedOpen((v) => !v)}
             className="flex w-full items-center justify-between p-4 text-left"
           >
-            <span className="text-sm font-medium text-[var(--midnight)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <span className="text-sm font-medium text-[var(--midnight)]">
               Advanced — plugins
             </span>
             <ChevronDown className={cn("h-4 w-4 text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />

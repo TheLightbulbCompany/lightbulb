@@ -263,7 +263,7 @@ export function SessionsPanel() {
 
       {/* Error */}
       {error && (
-        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+        <div className="rounded-md border border-[color-mix(in_srgb,var(--err)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] p-3 text-sm text-err">
           {error.message}
         </div>
       )}
@@ -374,9 +374,9 @@ function SessionRow({
         <span
           className={cn(
             "inline-block px-1.5 py-0.5 rounded text-[10px] font-medium",
-            s.kind === "direct" && "bg-[#e8f5e9] text-[#2d8a4e]",
-            s.kind === "group" && "bg-blue-50 text-[var(--midnight)]",
-            s.kind === "global" && "bg-amber-50 text-amber-700",
+            s.kind === "direct" && "bg-ok/10 text-ok",
+            s.kind === "group" && "bg-info/10 text-[var(--midnight)]",
+            s.kind === "global" && "bg-warn/10 text-warn",
             (!s.kind || s.kind === "unknown") && "bg-[var(--cream-deep)] text-[var(--midnight-muted)]",
           )}
         >
@@ -397,7 +397,7 @@ function SessionRow({
       {/* Thinking */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={thinking}
           disabled={disabled}
           onChange={(e) => {
@@ -418,7 +418,7 @@ function SessionRow({
       {/* Verbose */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={verbose}
           disabled={disabled}
           onChange={(e) => {
@@ -436,7 +436,7 @@ function SessionRow({
       {/* Reasoning */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={reasoning}
           disabled={disabled}
           onChange={(e) => {
@@ -456,7 +456,7 @@ function SessionRow({
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 px-2 text-[var(--midnight-muted)] hover:text-red-600"
+          className="h-6 px-2 text-[var(--midnight-muted)] hover:text-err"
           disabled={disabled}
           onClick={() => onDelete(s.key)}
         >

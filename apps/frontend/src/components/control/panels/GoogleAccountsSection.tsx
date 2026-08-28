@@ -98,7 +98,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
     <section
       id="google-accounts"
       aria-labelledby="google-accounts-heading"
-      className="overflow-hidden rounded-md border border-[var(--edge)] bg-white"
+      className="overflow-hidden rounded-md border border-[var(--edge)] bg-cream"
     >
       <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[var(--edge)] px-5 py-4">
         <div className="min-w-0 flex-1">
@@ -231,7 +231,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                         onChange={(e) =>
                           onAssignmentChange(agent.id, e.target.value)
                         }
-                        className="h-9 w-56 rounded-md border border-[var(--edge)] bg-white px-2 text-sm text-[var(--midnight)] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="h-9 w-56 rounded-md border border-[var(--edge)] bg-cream-deep px-2 text-sm text-[var(--midnight)] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <option value={DEFAULT_OPTION}>Default</option>
                         {accounts.map((account) => (

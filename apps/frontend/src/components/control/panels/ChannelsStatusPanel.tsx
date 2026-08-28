@@ -15,16 +15,16 @@ import {
 // Color the value text by formatValue's variant so a "No"/error reads as a
 // warning at a glance — the snapshot has no severity of its own.
 function valueClass(variant: ReturnType<typeof formatValue>["variant"]): string {
-  if (variant === "yes") return "text-[#2d8a4e] font-medium";
+  if (variant === "yes") return "text-ok font-medium";
   if (variant === "no") return "text-[var(--midnight-muted)]";
-  if (variant === "error") return "text-red-600";
+  if (variant === "error") return "text-err";
   if (variant === "muted") return "text-[var(--midnight-muted)]/60";
   return "text-[var(--midnight)]";
 }
 
 function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
   return (
-    <div className="rounded-lg border border-[var(--edge)] bg-white p-3 space-y-2">
+    <div className="rounded-lg border border-[var(--edge)] bg-cream p-3 space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-[var(--midnight)]">
           {account.name || account.accountId}
@@ -91,9 +91,9 @@ export function ChannelsStatusPanel() {
         // failure this panel exists to investigate.
         <div
           data-testid="channels-status-unavailable"
-          className="rounded-lg border border-[var(--edge)] bg-white p-6 text-center"
+          className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center"
         >
-          <AlertTriangle className="h-5 w-5 mx-auto mb-2 text-amber-500" />
+          <AlertTriangle className="h-5 w-5 mx-auto mb-2 text-warn" />
           <p className="text-sm text-[var(--midnight-muted)]">
             Couldn&apos;t reach the container to probe channel status.
           </p>
@@ -108,7 +108,7 @@ export function ChannelsStatusPanel() {
           </Button>
         </div>
       ) : channelOrder.length === 0 ? (
-        <div className="rounded-lg border border-[var(--edge)] bg-white p-6 text-center">
+        <div className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center">
           <Radio className="h-5 w-5 mx-auto mb-2 text-[var(--midnight-muted)]/50" />
           <p className="text-sm text-[var(--midnight-muted)]">
             No channels configured. Link a channel from Settings to see status here.

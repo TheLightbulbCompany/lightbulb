@@ -51,7 +51,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   if (error && !data) {
     return (
       <div className="p-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <p className="text-sm text-err">Failed to load channels.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           Retry
         </Button>
@@ -97,9 +97,9 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
               bots.map((bot) => (
                 <div key={bot.agent_id} className="flex items-center gap-2 text-sm">
                   {bot.linked ? (
-                    <CheckCircle2 className="h-4 w-4 text-[#2d8a4e]" />
+                    <CheckCircle2 className="h-4 w-4 text-ok" />
                   ) : (
-                    <AlertCircle className="h-4 w-4 text-amber-500" />
+                    <AlertCircle className="h-4 w-4 text-warn" />
                   )}
                   <span className="font-mono">{formatBotHandle(provider, bot.bot_username)}</span>
                   <div className="flex-1" />
@@ -143,13 +143,13 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
 
       {wizardFor && (
         <div
-          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-50"
           role="dialog"
           aria-modal="true"
           onClick={() => setWizardFor(null)}
         >
           <div
-            className="bg-white rounded-lg shadow-xl"
+            className="bg-cream rounded-lg shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <BotSetupWizard

@@ -108,7 +108,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   if (error) {
     return (
       <div className="p-4 space-y-3">
-        <p className="text-sm text-[#dc2626]">{error.message}</p>
+        <p className="text-sm text-err">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -170,7 +170,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               className={cn(
                 "w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors group",
                 selectedAgent === agent.id
-                  ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                  ? "bg-cream-deep text-[var(--midnight)]"
                   : "hover:bg-[var(--cream-deep)]",
               )}
               onClick={() => {
@@ -187,7 +187,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               </span>
               {agent.id !== defaultId && (
                 <button
-                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-[#dc2626]"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-err"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleDelete(agent.id);
@@ -227,7 +227,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                       className={cn(
                         "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
                         activeTab === tab.id
-                          ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                          ? "bg-cream-deep text-[var(--midnight)]"
                           : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
                       )}
                       onClick={() => setActiveTab(tab.id)}

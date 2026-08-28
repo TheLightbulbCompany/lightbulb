@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
-const CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
+const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
 const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
 
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
@@ -138,9 +138,9 @@ export function CreditsSection() {
             </span>
           </label>
         )}
-        {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
+        {topUpError && <p className="text-sm text-err">{topUpError}</p>}
         {topUpRequested !== null && (
-          <p className="text-sm text-[#2d8a4e]">
+          <p className="text-sm text-ok">
             Top-up of ${topUpRequested / 100} requested — your card on file will be
             charged and credits can take a few minutes to land.
           </p>
@@ -153,7 +153,7 @@ export function CreditsSection() {
               topUpRequested !== null ||
               topUpAmount < 500
             }
-            className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+            className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50"
           >
             {topUpSubmitting
               ? "Loading…"
@@ -165,7 +165,7 @@ export function CreditsSection() {
           <button
             onClick={handleCheckout}
             disabled={topUpSubmitting || topUpAmount < 500}
-            className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+            className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50"
           >
             {topUpSubmitting ? "Redirecting…" : `Continue to payment — $${topUpAmount / 100}`}
           </button>

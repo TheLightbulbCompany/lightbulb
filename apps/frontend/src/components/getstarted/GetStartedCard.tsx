@@ -49,7 +49,7 @@ export function GetStartedCard({ gs, onAction }: {
           <div>
             {ARTICLES.map((a) => (
               <button key={a.id} type="button" onClick={() => gs.openArticle(a.id)}
-                className="w-full flex gap-3 items-center text-left p-3.5 border border-[var(--edge)] rounded-xl bg-white mb-2.5 hover:border-[var(--brass)]">
+                className="w-full flex gap-3 items-center text-left p-3.5 border border-[var(--edge)] rounded-xl bg-[var(--cream)] mb-2.5 hover:border-[var(--brass)]">
                 <div className="flex-1"><div className="text-sm font-semibold">{a.title}</div><div className="text-xs text-[var(--midnight-muted)]">{a.tag}</div></div>
                 <ArrowRight size={16} className="text-[var(--midnight-muted)]" />
               </button>
@@ -59,7 +59,7 @@ export function GetStartedCard({ gs, onAction }: {
         {gs.tab === "learn" && article && (
           <div>
             <button type="button" onClick={gs.backToLearn} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--midnight)] mb-4"><ChevronLeft size={15} /> All concepts</button>
-            <div className="text-[11px] tracking-wider uppercase font-bold text-[rgba(15,26,43,0.66)] mb-1.5">{article.tag}</div>
+            <div className="text-[11px] tracking-wider uppercase font-bold text-[var(--midnight-muted)] mb-1.5">{article.tag}</div>
             {/* h2, not h1: this is a floating dialog, not the page's top-level
                 heading — nests under the card's "Get started" header. */}
             <h2 className="font-editorial-serif text-[22px] font-semibold leading-tight mb-3">{article.title}</h2>

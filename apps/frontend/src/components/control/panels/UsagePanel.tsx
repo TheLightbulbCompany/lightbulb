@@ -82,9 +82,9 @@ export function UsagePanel() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-red-50 border border-red-200">
-          <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0" />
-          <span className="text-xs text-red-600">{error}</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] border border-[color-mix(in_srgb,var(--err)_35%,var(--cream))]">
+          <AlertCircle className="h-3.5 w-3.5 text-err flex-shrink-0" />
+          <span className="text-xs text-err">{error}</span>
           <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={handleRefresh}>
             Retry
           </Button>

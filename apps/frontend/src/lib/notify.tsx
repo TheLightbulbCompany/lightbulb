@@ -135,7 +135,7 @@ function UpgradeLink({ toastId }: { toastId: string }) {
     <Link
       href="/settings?panel=billing"
       onClick={() => toast.dismiss(toastId)}
-      className="shrink-0 whitespace-nowrap rounded-md bg-[var(--midnight)] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0a5c3e]"
+      className="shrink-0 whitespace-nowrap rounded-md bg-midnight px-2.5 py-1 text-xs font-semibold text-cream hover:bg-[var(--midnight-soft)]"
     >
       Upgrade
     </Link>

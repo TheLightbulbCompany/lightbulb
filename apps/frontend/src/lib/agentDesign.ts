@@ -19,18 +19,20 @@ export interface EditorialListing extends EditorialIdentity {
   tags: string[];
 }
 
-const PALETTE: ReadonlyArray<{ accent: string; tint: string }> = [
-  { accent: "var(--midnight)", tint: "var(--cream-deep)" },
-  { accent: "#3a4a8a", tint: "#e8eaf3" },
-  { accent: "#8a3a3a", tint: "#f3e8e8" },
-  { accent: "#a35d1f", tint: "#f3ebe0" },
-  { accent: "#1f5a7a", tint: "#e0ecf1" },
-  { accent: "#7a3a5a", tint: "#f1e6ec" },
-  { accent: "#2d6b4e", tint: "#e3eee7" },
-  { accent: "#5a3a8a", tint: "#ebe6f3" },
-  { accent: "#4a4a4a", tint: "#ececec" },
-  { accent: "#5a2a2a", tint: "#efe2e2" },
-];
+// Agents are NOT colour-coded. §06: a state colour doubling as decoration
+// "makes every real alert weaker" — an avatar in --ok or --err reads as a
+// status. §07 ("Not yet drawn") is explicit that until real agent icons
+// exist, agents are told apart by name/initials in type, not decoration. So
+// every slot is the SAME neutral chip; identity comes from the monogram the
+// caller already renders. Uses the shadcn contract tokens (not the raw
+// --midnight/--cream-deep/--edge) so a consumer rendered under `.dark`
+// (admin) still resolves fg-on-bg correctly without this file knowing about
+// grounds. Array kept the same length so paletteFor's hash/index math is
+// unchanged for existing callers.
+export const PALETTE: ReadonlyArray<{ accent: string; tint: string }> = Array(6).fill({
+  accent: "var(--foreground)",
+  tint: "var(--accent)",
+});
 
 export function initialsFor(value: string): string {
   const parts = value.trim().split(/\s+/).filter(Boolean);

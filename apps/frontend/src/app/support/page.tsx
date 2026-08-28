@@ -37,7 +37,7 @@ export default function SupportPage() {
         {isLoaded && isSignedIn ? (
           // Signed-in: real form that POSTs an enriched ticket to the backend.
           <div className="support-form">
-            <p style={{ marginBottom: "1rem", color: "var(--muted, #666)" }}>
+            <p className="mb-4 text-muted-foreground">
               Submitting while signed in attaches your account + diagnostics automatically, so we can help faster.
             </p>
             <button type="button" className="support-submit" onClick={() => openSupport()}>

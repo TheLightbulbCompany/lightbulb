@@ -78,8 +78,8 @@ const SPOT_INTENSITY = 10;
 const POINT_INTENSITY = 2;
 // Filament colour = brass → --bulb, scaled: a dull ember off, hot on. The
 // blades are light-immune (see the material), so this is their whole look.
-const EMISSIVE_ON = 3.5;
-const EMISSIVE_OFF = 0.45;
+const FILAMENT_ON = 3.5;
+const FILAMENT_OFF = 0.45;
 // Corona just outside the glass; at 1.0 it swallowed the glass edge.
 const HALO_OPACITY = 0.5;
 const HALO_SCALE = 1.1;
@@ -94,6 +94,13 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
   const glowMat = React.useRef<THREE.SpriteMaterial>(null);
 
   const bulb = React.useMemo(() => new THREE.Color(colors.bulb), [colors.bulb]);
+  // What the lights throw. --bulb alone read yellow-green on the wall; pulled
+  // 40% toward cream it is the warm pool a tungsten bulb actually casts. The
+  // filament and the halo keep the pure --bulb — that is the source itself.
+  const poolColor = React.useMemo(
+    () => new THREE.Color(colors.bulb).lerp(new THREE.Color(colors.cream), 0.4),
+    [colors.bulb, colors.cream],
+  );
   const brass = React.useMemo(() => new THREE.Color(colors.brass), [colors.brass]);
   const midnight = React.useMemo(() => new THREE.Color(colors.midnight), [colors.midnight]);
   const cream = React.useMemo(() => new THREE.Color(colors.cream), [colors.cream]);
@@ -108,7 +115,7 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
   // millimetres from the blades and a lit material there is white at any
   // intensity; a filament is its own light, so its colour is set directly.
   const filamentMaterial = React.useMemo(
-    () => new THREE.MeshBasicMaterial({ color: brass.clone().multiplyScalar(EMISSIVE_OFF), toneMapped: false }),
+    () => new THREE.MeshBasicMaterial({ color: brass.clone().multiplyScalar(FILAMENT_OFF), toneMapped: false }),
     [brass],
   );
   // The React Compiler treats a memoised value as frozen, so the per-frame
@@ -163,7 +170,7 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
       m.color
         .copy(brass)
         .lerp(bulb, k)
-        .multiplyScalar(EMISSIVE_OFF + (EMISSIVE_ON - EMISSIVE_OFF) * k);
+        .multiplyScalar(FILAMENT_OFF + (FILAMENT_ON - FILAMENT_OFF) * k);
     }
     if (glowMat.current) glowMat.current.opacity = HALO_OPACITY * k;
   });
@@ -256,7 +263,7 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
         {/* the lights live where the filament is */}
         <spotLight
           ref={spot}
-          color={bulb}
+          color={poolColor}
           intensity={0}
           angle={0.95}
           penumbra={0.7}
@@ -269,7 +276,7 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
           shadow-camera-near={0.3}
           shadow-camera-far={12}
         />
-        <pointLight ref={point} color={bulb} intensity={0} decay={2} distance={7} />
+        <pointLight ref={point} color={poolColor} intensity={0} decay={2} distance={7} />
       </group>
     </group>
   );

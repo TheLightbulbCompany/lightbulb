@@ -40,23 +40,47 @@ function readColors(): LampColors {
  *  canvas's bottom mask blends into the page. The lights add the pool. */
 function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colors: LampColors }) {
   const mat = React.useRef<THREE.MeshStandardMaterial>(null);
+  const scene = useThree((s) => s.scene);
   // Allocated once: `lerp` writes into the material's own colour, never into
   // a fresh one, so the frame loop stays allocation-free.
   const midnight = React.useMemo(() => new THREE.Color(colors.midnight), [colors.midnight]);
   const cream = React.useMemo(() => new THREE.Color(colors.cream), [colors.cream]);
   useFrame(() => {
     if (!mat.current) return;
-    mat.current.emissive.copy(midnight).lerp(cream, easeStrike(litRef.current));
+    // `envMapIntensity={0}` alone does NOT opt a material out of a scene
+    // environment: three r184 (WebGLRenderer.js, "material.envMap === null &&
+    // scene.environment !== null") OVERWRITES the uniform with
+    // scene.environmentIntensity for exactly the materials that have no envMap
+    // of their own. Measured: the lit wall sat 8/255 above the page colour with
+    // the 0 set. Pointing the wall at the scene's own environment makes its
+    // envMap non-null, so its own 0 is the value that ships. Assigned here
+    // rather than in an effect because drei's <Environment> fills
+    // scene.environment asynchronously; it changes once, so this recompiles
+    // the program once.
+    if (mat.current.envMap !== scene.environment) {
+      mat.current.envMap = scene.environment;
+      mat.current.needsUpdate = true;
+    }
+    const k = easeStrike(litRef.current);
+    mat.current.emissive.copy(midnight).lerp(cream, k);
+    // The albedo follows the theme too. Whatever light still reaches the wall
+    // reflects off THIS colour, and a cream albedo in the dark room lifted the
+    // midnight rectangle to grey.
+    mat.current.color.copy(midnight).lerp(cream, k);
   });
   return (
     <mesh position={[0, 0, -1.6]} receiveShadow>
       <planeGeometry args={[60, 40]} />
       <meshStandardMaterial
         ref={mat}
-        color={colors.cream}
+        color={colors.midnight}
         emissive={colors.midnight}
         emissiveIntensity={1}
         roughness={0.96}
+        // The studio env is for the glass. On the wall it laid a sheen over
+        // the exact page colour — the lighter rectangle in the lit room. Only
+        // honoured because useFrame gives the material its own envMap; see there.
+        envMapIntensity={0}
         toneMapped={false}
       />
     </mesh>
@@ -227,7 +251,7 @@ export default function Scene() {
           flipflops={2}
         />
         <Driver litRef={litRef} leanRef={leanRef} pendulum={pendulum} visible={visible} />
-        <ambientLight color={colors.cream} intensity={0.03} />
+        <ambientLight color={colors.cream} intensity={0.012} />
         {/* Studio reflections, built in code — no CDN HDRI. Intensity is
             written per frame by Driver (ENV_DARK → ENV_LIT on the strike). */}
         <Environment resolution={64}>

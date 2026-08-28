@@ -185,7 +185,7 @@ export function ConnectButton({
             Register an OAuth app →
           </Link>
         )}
-        <ol className="list-decimal pl-4 text-xs text-[var(--mute)] space-y-0.5">
+        <ol className="list-decimal pl-4 text-xs text-[var(--midnight-muted)] space-y-0.5">
           {provider !== "x" && (
             <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
           )}
@@ -229,12 +229,12 @@ export function ConnectButton({
           )}
         </ol>
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-[var(--mute)]">Authorized redirect URI to register:</span>
+          <span className="text-xs text-[var(--midnight-muted)]">Authorized redirect URI to register:</span>
           <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
             {byoRedirectUri(provider)}
           </code>
         </div>
-        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[var(--mute)]">
+        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[var(--midnight-muted)]">
           Client ID
         </label>
         <Input
@@ -248,7 +248,7 @@ export function ConnectButton({
           onChange={(e) => setClientId(e.target.value)}
           className="h-9 bg-white"
         />
-        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[var(--mute)]">
+        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[var(--midnight-muted)]">
           Client secret
         </label>
         <Input
@@ -464,7 +464,7 @@ export function ConnectButton({
           narrow to show the whole shape anyway, so a field wanting two values has
           to state the format somewhere that stays put. */}
       {connection.token_paste_hint && (
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Paste both values as{" "}
           <code className="font-mono">{connection.token_paste_hint}</code>
         </p>
@@ -477,7 +477,7 @@ export function ConnectButton({
           href={connection.token_setup_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs text-[var(--mute)] underline underline-offset-2 hover:text-[#1c1917]"
+          className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-[#1c1917]"
         >
           Where do I find this?
         </a>

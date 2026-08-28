@@ -149,7 +149,7 @@ export function DocumentAnnotationPanel({
         className="flex items-center justify-between px-3 py-1.5"
         style={{ borderBottom: "1px solid var(--edge)" }}
       >
-        <span className="text-xs font-medium" style={{ color: "var(--ink)" }}>
+        <span className="text-xs font-medium" style={{ color: "var(--midnight)" }}>
           Comments {visibleThreads.length > 0 ? `(${visibleThreads.length})` : ""}
         </span>
         <button
@@ -157,14 +157,14 @@ export function DocumentAnnotationPanel({
           onClick={onClose}
           aria-label="Close comments panel"
           className="rounded p-1"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           <X className="h-4 w-4" />
         </button>
       </div>
 
       {newCommentDisabled && newCommentDisabledReason ? (
-        <p className="px-3 py-1.5 text-[11px]" style={{ color: "var(--mute)" }}>
+        <p className="px-3 py-1.5 text-[11px]" style={{ color: "var(--midnight-muted)" }}>
           {newCommentDisabledReason}
         </p>
       ) : null}
@@ -172,7 +172,7 @@ export function DocumentAnnotationPanel({
         <p
           data-testid="document-annotation-error"
           className="px-3 py-1.5 text-[11px]"
-          style={{ color: "var(--danger)" }}
+          style={{ color: "var(--err)" }}
         >
           {error}
         </p>
@@ -180,7 +180,7 @@ export function DocumentAnnotationPanel({
 
       <div className="flex max-h-96 flex-col gap-2 overflow-y-auto px-3 py-2">
         {visibleThreads.length === 0 ? (
-          <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+          <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
             No comments yet. Select text in the document to add one.
           </p>
         ) : (
@@ -204,14 +204,14 @@ export function DocumentAnnotationPanel({
                     data-testid={`document-annotation-orphaned-${thread.id}`}
                     title="The text this comment was anchored to was edited or removed, so it can't be highlighted in the document."
                     className="mx-3 mt-2 inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
-                    style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+                    style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
                   >
                     <Unlink className="h-2.5 w-2.5" /> Anchor lost
                   </span>
                 ) : null}
                 <blockquote
                   className="mx-3 mt-2 rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
-                  style={{ background: "var(--edge)", color: "var(--mute)" }}
+                  style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
                 >
                   {truncate(thread.selectedText, 119)}
                 </blockquote>
@@ -224,10 +224,10 @@ export function DocumentAnnotationPanel({
                         style={{ border: "1px solid var(--edge)" }}
                       >
                         <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
-                          <span className="font-medium" style={{ color: "var(--ink)" }}>
+                          <span className="font-medium" style={{ color: "var(--midnight)" }}>
                             {commentAuthor(comment, agents)}
                           </span>
-                          <span style={{ color: "var(--mute)" }}>{timeAgo(comment.createdAt)}</span>
+                          <span style={{ color: "var(--midnight-muted)" }}>{timeAgo(comment.createdAt)}</span>
                         </div>
                         <div className="text-sm">
                           <MarkdownView>{comment.body}</MarkdownView>
@@ -251,7 +251,7 @@ export function DocumentAnnotationPanel({
                         onClick={() => toggleResolve(thread)}
                         disabled={busy}
                         className="flex items-center gap-1 rounded px-2 py-1 text-xs disabled:opacity-50"
-                        style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+                        style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
                       >
                         {thread.status === "resolved" ? (
                           <>
@@ -268,15 +268,15 @@ export function DocumentAnnotationPanel({
                         onClick={() => submitReply(thread.id)}
                         disabled={busy || !(replyDrafts[thread.id] ?? "").trim()}
                         className="rounded px-2 py-1 text-xs disabled:opacity-50"
-                        style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+                        style={{ background: "var(--midnight)", color: "var(--cream)" }}
                       >
                         Reply
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <p className="px-3 py-2 text-xs" style={{ color: "var(--mute)" }}>
-                    <span style={{ color: "var(--ink)" }}>
+                  <p className="px-3 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+                    <span style={{ color: "var(--midnight)" }}>
                       {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
                     </span>
                     {latest ? ` · ${truncate(latest.body, 99)}` : ""}
@@ -292,7 +292,7 @@ export function DocumentAnnotationPanel({
         <div className="flex flex-col gap-2 px-3 py-2" style={{ borderTop: "1px solid var(--edge)" }}>
           <blockquote
             className="rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
-            style={{ background: "var(--edge)", color: "var(--mute)" }}
+            style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
           >
             {truncate(pendingAnchor.selectedText, 159)}
           </blockquote>
@@ -314,7 +314,7 @@ export function DocumentAnnotationPanel({
                 setComposer("");
               }}
               className="rounded px-2 py-1 text-xs"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               Cancel
             </button>
@@ -323,7 +323,7 @@ export function DocumentAnnotationPanel({
               onClick={createThread}
               disabled={busy || !composer.trim() || newCommentDisabled || !baseRevisionId}
               className="rounded px-2 py-1 text-xs disabled:opacity-50"
-              style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+              style={{ background: "var(--midnight)", color: "var(--cream)" }}
             >
               {busy ? "Posting…" : "Comment"}
             </button>

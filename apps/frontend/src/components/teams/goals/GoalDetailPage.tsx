@@ -122,7 +122,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
           fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          color: "var(--midnight-muted)",
         }}
       >
         Loading…
@@ -135,11 +135,11 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
       <div
         role="alert"
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
-        style={{ color: "var(--danger)" }}
+        style={{ color: "var(--err)" }}
       >
         <p>Failed to load goal.</p>
         {error?.message && (
-          <p className="mt-1" style={{ color: "var(--mute)" }}>
+          <p className="mt-1" style={{ color: "var(--midnight-muted)" }}>
             {error.message}
           </p>
         )}
@@ -153,7 +153,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
           fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          color: "var(--midnight-muted)",
         }}
       >
         Goal not found.
@@ -170,12 +170,12 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   return (
     <div
       className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
-      style={{ background: "var(--cream)", color: "var(--ink)" }}
+      style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
       <main className="flex flex-col gap-6 min-w-0">
         <nav
           className="flex items-center gap-1 text-xs"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
           aria-label="Breadcrumb"
         >
           <Link
@@ -187,7 +187,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             Goals
           </Link>
           <ChevronRight className="h-3 w-3" />
-          <span className="truncate" style={{ color: "var(--ink-soft)" }}>
+          <span className="truncate" style={{ color: "var(--midnight-soft)" }}>
             {goal.title}
           </span>
         </nav>
@@ -208,8 +208,8 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)]"
-                style={{ color: "var(--mute)" }}
+                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)]"
+                style={{ color: "var(--midnight-muted)" }}
                 aria-label="Goal actions"
               >
                 <MoreHorizontal className="h-4 w-4" />
@@ -235,7 +235,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             className="text-sm whitespace-pre-wrap pl-3"
             style={{
               borderLeft: "2px solid var(--edge)",
-              color: "var(--ink-soft)",
+              color: "var(--midnight-soft)",
             }}
           >
             {goal.description}
@@ -247,7 +247,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <b>Sub-goals ({childGoals.length})</b>
           </h2>
           {childGoals.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
               No sub-goals.
             </p>
           ) : (
@@ -267,18 +267,18 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     onClick={(e) =>
                       handleShellLinkClick(e, teamsDetailUrl("goal", child.id))
                     }
-                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
+                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deep)]"
                   >
                     <GoalStatusIcon status={child.status} />
                     <span
                       className="min-w-0 flex-1 truncate text-sm"
-                      style={{ color: "var(--ink)" }}
+                      style={{ color: "var(--midnight)" }}
                     >
                       {child.title}
                     </span>
                     <span
                       className="text-[10px] uppercase tracking-wide shrink-0"
-                      style={{ color: "var(--mute)" }}
+                      style={{ color: "var(--midnight-muted)" }}
                     >
                       {child.level}
                     </span>
@@ -298,7 +298,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             // single-row goal fetch, and an unresolved fetch normalizes to []
             // — so without this the section asserts "No tasks" for a goal that
             // has plenty, until the list arrives.
-            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
               {issuesLoading
                 ? "Loading…"
                 : "No tasks. Link one from its Goal row on the task page."}
@@ -320,20 +320,20 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     onClick={(e) =>
                       handleShellLinkClick(e, teamsDetailUrl("issue", task.id))
                     }
-                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
+                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deep)]"
                   >
                     <StatusIcon status={task.status} />
                     {task.identifier && (
                       <span
                         className="shrink-0 text-xs tabular-nums"
-                        style={{ color: "var(--mute)" }}
+                        style={{ color: "var(--midnight-muted)" }}
                       >
                         {task.identifier}
                       </span>
                     )}
                     <span
                       className="min-w-0 flex-1 truncate text-sm"
-                      style={{ color: "var(--ink)" }}
+                      style={{ color: "var(--midnight)" }}
                     >
                       {task.title}
                     </span>
@@ -349,7 +349,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <b>Linked projects ({linkedProjects.length})</b>
           </h2>
           {linkedProjects.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
               No linked projects.
             </p>
           ) : (
@@ -369,22 +369,22 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     onClick={(e) =>
                       handleShellLinkClick(e, teamsDetailUrl("project", project.id))
                     }
-                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
+                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deep)]"
                   >
                     <Target
                       className="h-4 w-4 shrink-0"
-                      style={{ color: "var(--mute)" }}
+                      style={{ color: "var(--midnight-muted)" }}
                     />
                     <span
                       className="min-w-0 flex-1 truncate text-sm"
-                      style={{ color: "var(--ink)" }}
+                      style={{ color: "var(--midnight)" }}
                     >
                       {project.name}
                     </span>
                     {project.status && (
                       <span
                         className="text-[10px] uppercase tracking-wide shrink-0"
-                        style={{ color: "var(--mute)" }}
+                        style={{ color: "var(--midnight-muted)" }}
                       >
                         {project.status}
                       </span>

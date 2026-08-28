@@ -56,8 +56,8 @@ function RemovableRelationChip({
         className="group inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2 text-xs"
         style={{
           border: "1px solid var(--edge)",
-          background: "var(--cream-deeper)",
-          color: "var(--ink-soft)",
+          background: "var(--cream-deep)",
+          color: "var(--midnight-soft)",
         }}
         title={issue.title}
         aria-label={`Issue ${issueLabel}: ${issue.title}`}
@@ -65,7 +65,7 @@ function RemovableRelationChip({
         <button
           type="button"
           className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
           aria-label={removeLabel}
           title={removeLabel}
           onClick={(e) => {
@@ -139,8 +139,8 @@ function RelationChip({ issue }: { issue: IssueRelationIssueSummary }) {
       className="inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs no-underline hover:underline"
       style={{
         border: "1px solid var(--edge)",
-        background: "var(--cream-deeper)",
-        color: "var(--ink-soft)",
+        background: "var(--cream-deep)",
+        color: "var(--midnight-soft)",
       }}
       title={issue.title}
       aria-label={`Issue ${issueLabel}: ${issue.title}`}
@@ -208,7 +208,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
     <>
       <div
         className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
-        style={{ color: "var(--ink-soft)", borderBottom: "1px solid var(--edge)" }}
+        style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
       >
         <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
           <b>Blocked by</b>
@@ -233,7 +233,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition-colors hover:underline"
-                  style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+                  style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
                 >
                   <Plus className="h-3 w-3" />
                   Add blocker
@@ -245,7 +245,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                 style={{
                   background: "var(--cream)",
                   border: "1px solid var(--edge)",
-                  color: "var(--ink)",
+                  color: "var(--midnight)",
                 }}
               >
                 <input
@@ -253,7 +253,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search issues..."
-                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
                   style={{ borderBottom: "1px solid var(--edge)" }}
                   aria-label="Search issues to add as blockers"
                 />
@@ -270,8 +270,8 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                           type="button"
                           onClick={() => toggle(candidate.id)}
                           className={cn(
-                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deeper)]",
-                            selected && "bg-[var(--cream-deeper)]",
+                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
+                            selected && "bg-[var(--cream-deep)]",
                           )}
                         >
                           <StatusIcon
@@ -293,7 +293,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                     );
                   })}
                   {candidates.length === 0 && (
-                    <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
+                    <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
                       No matching issues.
                     </li>
                   )}
@@ -306,7 +306,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
 
       <div
         className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
-        style={{ color: "var(--ink-soft)", borderBottom: "1px solid var(--edge)" }}
+        style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
       >
         <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
           <b>Blocking</b>
@@ -319,7 +319,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
               ))}
             </span>
           ) : (
-            <span data-empty="true" style={{ color: "var(--mute)" }}>
+            <span data-empty="true" style={{ color: "var(--midnight-muted)" }}>
               —
             </span>
           )}

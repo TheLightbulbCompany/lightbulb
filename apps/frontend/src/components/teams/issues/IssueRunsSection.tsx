@@ -23,12 +23,12 @@ function isLiveStatus(status: string | null | undefined): boolean {
 
 function statusColor(status: string | null | undefined): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "succeeded" || s === "done" || s === "completed") return "var(--forest)";
-  if (s === "failed" || s === "error" || s === "cancelled") return "var(--danger)";
+  if (s === "succeeded" || s === "done" || s === "completed") return "var(--midnight)";
+  if (s === "failed" || s === "error" || s === "cancelled") return "var(--err)";
   // In-flight runs read as live (forest), not the neutral grey they fell
   // through to before — so a running/queued run has a visible affordance.
-  if (isLiveStatus(s)) return "var(--forest)";
-  return "var(--mute)";
+  if (isLiveStatus(s)) return "var(--midnight)";
+  return "var(--midnight-muted)";
 }
 
 function runTime(r: IssueRun): number {
@@ -71,12 +71,12 @@ export function IssueRunsSection({
     <section className="flex flex-col gap-3 pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
       <h2 className="section-label"><b>Runs</b></h2>
       {error && (
-        <p className="text-xs" style={{ color: "var(--danger)" }}>
+        <p className="text-xs" style={{ color: "var(--err)" }}>
           Couldn&apos;t load runs.
         </p>
       )}
       {isLoading && runs.length === 0 && !error && (
-        <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
           Loading runs…
         </p>
       )}
@@ -103,14 +103,14 @@ export function IssueRunsSection({
                 ) : null}
                 {r.status}
               </span>
-              <span className="flex-1 truncate text-[var(--ink)]">{agentName(r.agentId)}</span>
-              {when && <span className="text-xs text-[var(--mute)]">{timeAgo(when)}</span>}
+              <span className="flex-1 truncate text-[var(--midnight)]">{agentName(r.agentId)}</span>
+              {when && <span className="text-xs text-[var(--midnight-muted)]">{timeAgo(when)}</span>}
               <a
                 href={teamsDetailUrl("run", r.runId)}
                 onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", r.runId))}
                 aria-label={`View run ${r.runId}`}
                 className="text-xs hover:underline"
-                style={{ color: "var(--forest)" }}
+                style={{ color: "var(--midnight)" }}
               >
                 View run
               </a>

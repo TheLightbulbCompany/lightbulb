@@ -188,10 +188,10 @@ export function DocumentAnnotationLayer({
             width: rect.width,
             height: rect.height,
             background: rect.focused
-              ? "color-mix(in srgb, var(--forest) 38%, transparent)"
+              ? "color-mix(in srgb, var(--midnight) 38%, transparent)"
               : rect.resolved
-                ? "color-mix(in srgb, var(--mute) 22%, transparent)"
-                : "color-mix(in srgb, var(--forest) 20%, transparent)",
+                ? "color-mix(in srgb, var(--midnight-muted) 22%, transparent)"
+                : "color-mix(in srgb, var(--midnight) 20%, transparent)",
           }}
           onMouseDown={(event) => {
             event.preventDefault();
@@ -216,7 +216,7 @@ export function DocumentAnnotationLayer({
           <button
             type="button"
             className="flex h-7 items-center gap-1 rounded px-2 text-xs disabled:opacity-50"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
             disabled={newCommentDisabled}
             title={newCommentDisabled ? newCommentDisabledReason ?? undefined : "Comment on selection"}
             onClick={() => {

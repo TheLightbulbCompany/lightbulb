@@ -52,7 +52,7 @@ export function ProjectPicker({
             "inline-flex items-center gap-2 text-sm hover:underline",
             className,
           )}
-          style={{ color: selected ? "var(--ink)" : "var(--mute)" }}
+          style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
         >
           <Folder className="h-3.5 w-3.5" />
           <span>{triggerLabel}</span>
@@ -64,7 +64,7 @@ export function ProjectPicker({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         <input
@@ -72,7 +72,7 @@ export function ProjectPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -80,8 +80,8 @@ export function ProjectPicker({
             <button
               type="button"
               onClick={() => handleSelect(null)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
-              style={{ color: "var(--mute)" }}
+              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+              style={{ color: "var(--midnight-muted)" }}
             >
               Clear project
             </button>
@@ -95,7 +95,7 @@ export function ProjectPicker({
               <button
                 type="button"
                 onClick={() => handleSelect(project.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
+                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
               >
                 {project.name}
               </button>
@@ -104,7 +104,7 @@ export function ProjectPicker({
           {visibleProjects.length === 0 && (
             <li
               className="px-2 py-2 text-xs"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               No matches
             </li>

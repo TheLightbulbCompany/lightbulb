@@ -242,7 +242,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
       role="tablist"
       aria-label="Inbox tabs"
       className="inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-md p-0.5"
-      style={{ background: "var(--cream-deeper)" }}
+      style={{ background: "var(--cream-deep)" }}
     >
       {TABS.map((t) => {
         const isActive = tab === t.value;
@@ -260,10 +260,10 @@ export function InboxToolbar(props: InboxToolbarProps) {
             style={
               isActive
                 ? {
-                    background: "var(--forest-tint)",
-                    color: "var(--forest)",
+                    background: "var(--cream-deep)",
+                    color: "var(--midnight)",
                   }
-                : { color: "var(--mute)" }
+                : { color: "var(--midnight-muted)" }
             }
           >
             {t.label}
@@ -273,7 +273,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
                 // urgency of an individual decision is carried by its age in
                 // the list, not by shouting on the tab.
                 className="rounded-full px-1.5 text-[10px] font-semibold leading-4 tabular-nums"
-                style={{ background: "var(--forest)", color: "var(--cream)" }}
+                style={{ background: "var(--midnight)", color: "var(--cream)" }}
               >
                 {badge}
               </span>

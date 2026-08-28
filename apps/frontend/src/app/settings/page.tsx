@@ -274,7 +274,7 @@ function UltraUpgradeRow({
   if (plan === "ultra_pro") {
     return (
       <div style={{ marginTop: 14 }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--forest)", background: "rgba(6,64,43,.08)", padding: "3px 10px", borderRadius: 999 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "3px 10px", borderRadius: 999 }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           Ultra Pro
         </span>
@@ -461,7 +461,7 @@ function BillingPanel() {
               <div className="settings-card-title">
                 Lightbulb AI plan
                 {statusChipLabel && (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--forest)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     {statusChipLabel}
                   </span>
@@ -502,7 +502,7 @@ function BillingPanel() {
             <div className="settings-card-title">
               {isTrialLocal ? "Lightbulb AI — Free tier" : "Lightbulb AI — $50 / month"}
               {statusChipLabel && (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--forest)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                   {statusChipLabel}
                 </span>

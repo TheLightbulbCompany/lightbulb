@@ -49,7 +49,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
       }`}
     >
       {company.min_plan === "ultra_pro" && (
-        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--forest)] font-bold">
+        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--midnight)] font-bold">
           ULTRA PRO
         </span>
       )}
@@ -57,7 +57,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
         href={`/marketplace/listing/${listing.listing_id}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-editorial-serif text-lg leading-tight text-[var(--ink)] no-underline hover:underline"
+        className="font-editorial-serif text-lg leading-tight text-[var(--midnight)] no-underline hover:underline"
       >
         {company.name}
       </Link>
@@ -67,7 +67,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
           {company.agent_count} agents · {company.skill_count} skills
         </span>
         {phase === "started" ? (
-          <span className="text-[12px] font-semibold text-[var(--forest)]" role="status">
+          <span className="text-[12px] font-semibold text-[var(--midnight)]" role="status">
             Deploying — check Teams
           </span>
         ) : (
@@ -75,14 +75,14 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
             type="button"
             onClick={deploy}
             disabled={phase === "deploying"}
-            className="text-white bg-[var(--forest)] border border-[var(--forest)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:opacity-90 transition disabled:opacity-60"
+            className="text-white bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:opacity-90 transition disabled:opacity-60"
           >
             {phase === "deploying" ? "Deploying…" : "Deploy company"}
           </button>
         )}
       </div>
       {error && (
-        <p className="text-[12px] text-[var(--danger)]" role="alert">
+        <p className="text-[12px] text-[var(--err)]" role="alert">
           {error}{" "}
           {/Ultra Pro/i.test(error) && (
             <Link href="/settings" className="font-bold underline hover:opacity-80">

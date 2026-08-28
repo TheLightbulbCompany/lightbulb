@@ -63,7 +63,7 @@ export function HighlightedText({ text, highlights, className }: HighlightedText
           <mark
             key={segment.key}
             className={cn("rounded-sm px-0.5")}
-            style={{ background: "var(--highlight, #fde68a)", color: "var(--ink)" }}
+            style={{ background: "var(--highlight, #fde68a)", color: "var(--midnight)" }}
           >
             {segment.text}
           </mark>

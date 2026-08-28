@@ -75,7 +75,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
 
   if (state.status === "loading") {
     return (
-      <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
         Loading attachment…
       </p>
     );
@@ -119,7 +119,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
       href={state.url}
       download={artifact.title || "attachment"}
       className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm"
-      style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+      style={{ background: "var(--midnight)", color: "var(--cream)" }}
     >
       <Download className="h-4 w-4" />
       Download {artifact.title}
@@ -149,7 +149,7 @@ function DocumentBody({
   }
   if (isLoading && !data) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
         Loading document…
       </p>
     );
@@ -164,7 +164,7 @@ function DocumentBody({
   const body = data?.body?.trim();
   if (!body) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
         (empty document)
       </p>
     );
@@ -204,7 +204,7 @@ function WorkProductBody({
   // a cached miss is not confirmation the output is gone. Keep showing loading.
   if (!wp && (isLoading || isValidating)) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
         Loading output…
       </p>
     );
@@ -222,7 +222,7 @@ function WorkProductBody({
       {wp.summary?.trim() ? (
         <MarkdownView>{wp.summary}</MarkdownView>
       ) : (
-        <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+        <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
           No summary provided.
         </p>
       )}
@@ -232,7 +232,7 @@ function WorkProductBody({
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 text-sm underline"
-          style={{ color: "var(--forest)" }}
+          style={{ color: "var(--midnight)" }}
         >
           <ExternalLink className="h-3.5 w-3.5" />
           {wp.url}
@@ -287,7 +287,7 @@ export function ArtifactViewerDialog({
               href={taskUrl}
               onClick={openTask}
               className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm"
-              style={{ background: "var(--edge)", color: "var(--ink)" }}
+              style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               <ExternalLink className="h-4 w-4" />
               Open task

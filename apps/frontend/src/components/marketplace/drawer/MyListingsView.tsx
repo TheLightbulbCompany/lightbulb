@@ -149,7 +149,7 @@ export function MyListingsView() {
   }
 
   if (!listings || !dashboard) {
-    return <p className="font-editorial-serif italic text-[var(--mute)]">Loading…</p>;
+    return <p className="font-editorial-serif italic text-[var(--midnight-muted)]">Loading…</p>;
   }
 
   const activeCount = grouped.filter((g) => g.live.status === "published").length;
@@ -188,7 +188,7 @@ export function MyListingsView() {
     <div>
       <div className="flex items-end justify-between gap-3.5 flex-wrap mb-4">
         <div>
-          <h3 className="font-editorial-serif text-2xl text-[var(--ink)]">My listings</h3>
+          <h3 className="font-editorial-serif text-2xl text-[var(--midnight)]">My listings</h3>
           <div className="flex gap-6 mt-2 text-[13px] text-[#5b5b5b]">
             <Stat label="active listings" value={activeCount.toString()} />
             <Stat label="total installs" value={totalInstalls.toLocaleString()} />
@@ -205,7 +205,7 @@ export function MyListingsView() {
         <button
           type="button"
           onClick={() => setView("publish")}
-          className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+          className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
         >
           + New listing
         </button>
@@ -220,7 +220,7 @@ export function MyListingsView() {
           <button
             type="button"
             onClick={() => setView("publish")}
-            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold"
+            className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold"
           >
             + Publish your agent
           </button>
@@ -258,14 +258,14 @@ function Stat({
 }) {
   return (
     <div>
-      <strong className="block font-editorial-serif text-lg text-[var(--ink)]">{value}</strong>
+      <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">{value}</strong>
       <span>{label}</span>
       {action && (
         <button
           type="button"
           onClick={onAction}
           disabled={disabled}
-          className="block text-[12px] font-semibold text-[var(--forest)] hover:underline disabled:opacity-60 mt-1"
+          className="block text-[12px] font-semibold text-[var(--midnight)] hover:underline disabled:opacity-60 mt-1"
         >
           {action}
         </button>
@@ -327,7 +327,7 @@ function ListingRow({
     : pending?.status === "review"
       ? "bg-[#fef4e3] text-[#a07520]"
       : live.status === "published"
-        ? "bg-[#e3efe6] text-[var(--forest)]"
+        ? "bg-[#e3efe6] text-[var(--midnight)]"
         : live.status === "review"
           ? "bg-[#fef4e3] text-[#a07520]"
           : liveWasRejected
@@ -349,7 +349,7 @@ function ListingRow({
         <div className="flex gap-3 text-[12.5px] text-[#5b5b5b] mt-0.5">
           <span>Updated {new Date(live.created_at).toLocaleDateString()}</span>
           <span>{installCount} installs</span>
-          <span className="font-semibold text-[var(--forest)]">
+          <span className="font-semibold text-[var(--midnight)]">
             {live.price_cents === 0 ? "Free" : "Premium tier"}
           </span>
         </div>

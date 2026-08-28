@@ -172,11 +172,11 @@ export function NewIssueDialog({
     }
   };
 
-  const labelStyle = { color: "var(--mute)" } as const;
+  const labelStyle = { color: "var(--midnight-muted)" } as const;
   const selectStyle = {
-    background: "var(--cream-deeper)",
+    background: "var(--cream-deep)",
     border: "1px solid var(--edge)",
-    color: "var(--ink)",
+    color: "var(--midnight)",
   } as const;
 
   return (
@@ -207,8 +207,8 @@ export function NewIssueDialog({
     >
       <div className="flex flex-col gap-3">
         {parentId && (
-          <p className="text-sm" style={{ color: "var(--mute)" }}>
-            Parent: <span style={{ color: "var(--ink)" }}>{parentLabel ?? parentId}</span>
+          <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>
+            Parent: <span style={{ color: "var(--midnight)" }}>{parentLabel ?? parentId}</span>
           </p>
         )}
         <div>
@@ -325,8 +325,8 @@ export function NewIssueDialog({
                   disabled={submitting}
                   className="flex-1 rounded px-3 py-1.5 text-sm font-medium transition-colors"
                   style={{
-                    background: active ? "var(--forest)" : "transparent",
-                    color: active ? "var(--cream)" : "var(--ink)",
+                    background: active ? "var(--midnight)" : "transparent",
+                    color: active ? "var(--cream)" : "var(--midnight)",
                   }}
                 >
                   {opt.label}
@@ -428,7 +428,7 @@ export function NewIssueDialog({
           <p
             role="alert"
             className="text-sm"
-            style={{ color: "var(--danger)" }}
+            style={{ color: "var(--err)" }}
           >
             {error}
           </p>

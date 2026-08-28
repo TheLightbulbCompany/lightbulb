@@ -59,19 +59,19 @@ export default async function SeoLandingPage({ params }: SeoRouteProps) {
       />
       <Navbar />
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
-        <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--mute)]">
+        <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
           {page.kicker}
         </p>
-        <h1 className="mt-5 font-editorial-serif text-5xl leading-[0.98] text-[var(--ink)] md:text-7xl">
+        <h1 className="mt-5 font-editorial-serif text-5xl leading-[0.98] text-[var(--midnight)] md:text-7xl">
           {page.h1}
         </h1>
-        <p className="mt-6 max-w-3xl text-lg leading-8 text-[var(--ink-soft)]">
+        <p className="mt-6 max-w-3xl text-lg leading-8 text-[var(--midnight-soft)]">
           {page.primary}
         </p>
         <div className="mt-10 grid gap-4 md:grid-cols-3">
           {page.bullets.map((bullet) => (
-            <div key={bullet} className="editorial-card p-5 text-sm leading-6 text-[var(--ink-soft)]">
-              <strong className="block font-editorial-serif text-xl font-normal text-[var(--ink)]">
+            <div key={bullet} className="editorial-card p-5 text-sm leading-6 text-[var(--midnight-soft)]">
+              <strong className="block font-editorial-serif text-xl font-normal text-[var(--midnight)]">
                 {bullet}
               </strong>
             </div>

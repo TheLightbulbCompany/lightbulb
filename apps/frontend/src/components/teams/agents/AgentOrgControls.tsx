@@ -63,10 +63,10 @@ export function AgentOrgControls({
   return (
     <div className="flex flex-col gap-6">
       <section className="editorial-card p-4 flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-[var(--mute)]">Origin</span>
-        <span className="text-sm font-medium text-[var(--ink)]">{agent.origin ?? "Custom"}</span>
+        <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">Origin</span>
+        <span className="text-sm font-medium text-[var(--midnight)]">{agent.origin ?? "Custom"}</span>
         {marketplaceLabel ? (
-          <span className="text-xs text-[var(--mute)]" title={`Listing ${agent.marketplace?.listingId}`}>
+          <span className="text-xs text-[var(--midnight-muted)]" title={`Listing ${agent.marketplace?.listingId}`}>
             {marketplaceLabel}
           </span>
         ) : null}
@@ -117,7 +117,7 @@ export function AgentOrgControls({
         ) : null}
         {!seeded && confirmDelete ? (
           <>
-            <span className="text-sm text-[var(--danger)]">Delete {agent.name}?</span>
+            <span className="text-sm text-[var(--err)]">Delete {agent.name}?</span>
             <EditorialButton
               size="sm"
               disabled={busy}
@@ -149,7 +149,7 @@ export function AgentOrgControls({
           Neither dispatches an inference run, so no spend gate applies. */}
       <section className="editorial-card p-4 flex flex-col gap-2">
         <h3 className="font-editorial-serif text-lg">Recovery</h3>
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Get a stuck agent unstuck without deleting it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
@@ -174,7 +174,7 @@ export function AgentOrgControls({
             </EditorialButton>
           ) : (
             <>
-              <span className="text-sm text-[var(--ink-soft)]">
+              <span className="text-sm text-[var(--midnight-soft)]">
                 Reset {agent.name}&apos;s session?
               </span>
               <EditorialButton

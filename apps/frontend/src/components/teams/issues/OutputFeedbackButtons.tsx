@@ -118,9 +118,9 @@ export function OutputFeedbackButtons({
       {collectingDownvoteReason ? (
         <div
           className="rounded-md p-3"
-          style={{ border: "1px solid var(--edge)", background: "var(--cream-deeper)" }}
+          style={{ border: "1px solid var(--edge)", background: "var(--cream-deep)" }}
         >
-          <div className="mb-2 text-sm font-medium" style={{ color: "var(--ink)" }}>
+          <div className="mb-2 text-sm font-medium" style={{ color: "var(--midnight)" }}>
             What could have been better?
           </div>
           <Textarea
@@ -132,7 +132,7 @@ export function OutputFeedbackButtons({
             style={{
               background: "var(--cream)",
               border: "1px solid var(--edge)",
-              color: "var(--ink)",
+              color: "var(--midnight)",
             }}
           />
           <div className="mt-3 flex items-center justify-end gap-2">

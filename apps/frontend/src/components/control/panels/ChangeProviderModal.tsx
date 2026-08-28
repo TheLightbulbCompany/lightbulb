@@ -212,7 +212,7 @@ function ChangeProviderBody({
       )}
 
       {stage.kind === "submitting" && (
-        <div className="flex items-center justify-center gap-3 py-12 text-sm text-[var(--mute)]">
+        <div className="flex items-center justify-center gap-3 py-12 text-sm text-[var(--midnight-muted)]">
           <Loader2 className="h-4 w-4 animate-spin" />
           Switching to {readableProvider(stage.choice, stage.byo)}…
         </div>
@@ -220,11 +220,11 @@ function ChangeProviderBody({
 
       {stage.kind === "error" && (
         <div className="space-y-4 py-6">
-          <p className="text-sm text-[var(--danger)]">{stage.message}</p>
+          <p className="text-sm text-[var(--err)]">{stage.message}</p>
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-[var(--edge)] bg-transparent text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+              className="border-[var(--edge)] bg-transparent text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
               onClick={() => setStage({ kind: "picker" })}
             >
               Back
@@ -268,22 +268,22 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
               "rounded-xl border p-4 text-left transition-colors " +
               (current
                 ? "border-[#7cc6a3]/60 bg-[#7cc6a3]/10"
-                : "border-[var(--edge)] bg-white hover:bg-[var(--cream-deeper)]")
+                : "border-[var(--edge)] bg-white hover:bg-[var(--cream-deep)]")
             }
           >
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="font-medium text-[var(--ink)]">{card.title}</h3>
-                <p className="mt-1 text-xs text-[var(--mute)]">{card.subtitle}</p>
+                <h3 className="font-medium text-[var(--midnight)]">{card.title}</h3>
+                <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[var(--forest)]">
+                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[var(--midnight)]">
                   Current
                 </span>
               )}
             </div>
             {card.id === "byo_key" && current && currentByoProvider && (
-              <p className="mt-2 text-[11px] text-[var(--mute)]">
+              <p className="mt-2 text-[11px] text-[var(--midnight-muted)]">
                 Active sub-provider: {currentByoProvider === "openai" ? "OpenAI" : "Anthropic"}
               </p>
             )}
@@ -313,21 +313,21 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
   return (
     <div className="space-y-4 py-4">
       {state.status === "idle" && (
-        <div className="flex flex-col items-center gap-3 py-6 text-sm text-[var(--mute)]">
+        <div className="flex flex-col items-center gap-3 py-6 text-sm text-[var(--midnight-muted)]">
           <Loader2 className="h-5 w-5 animate-spin" />
           Starting ChatGPT sign-in…
         </div>
       )}
 
       {state.status === "pending" && (
-        <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--ink)] marker:text-[var(--mute)]">
+        <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--midnight)] marker:text-[var(--midnight-muted)]">
           <li>
             Open{" "}
             <a
               href={state.verificationUri}
               target="_blank"
               rel="noreferrer"
-              className="text-[var(--forest)] underline underline-offset-2 hover:text-[var(--ink)]"
+              className="text-[var(--midnight)] underline underline-offset-2 hover:text-[var(--midnight)]"
             >
               {state.verificationUri}
             </a>{" "}
@@ -336,12 +336,12 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           <li>
             Enter this code:
             <div className="mt-2">
-              <code className="rounded bg-[var(--cream-deeper)] px-3 py-2 font-mono text-lg tracking-widest text-[var(--ink)]">
+              <code className="rounded bg-[var(--cream-deep)] px-3 py-2 font-mono text-lg tracking-widest text-[var(--midnight)]">
                 {state.userCode}
               </code>
             </div>
           </li>
-          <li className="text-xs text-[var(--mute)]">
+          <li className="text-xs text-[var(--midnight-muted)]">
             We&apos;ll switch you over automatically once you finish sign-in.
           </li>
         </ol>
@@ -349,10 +349,10 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
 
       {state.status === "error" && (
         <div className="space-y-3 py-4">
-          <p className="text-sm text-[var(--danger)]">Connection failed: {state.message}</p>
+          <p className="text-sm text-[var(--err)]">Connection failed: {state.message}</p>
           <Button
             variant="outline"
-            className="border-[var(--edge)] bg-transparent text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+            className="border-[var(--edge)] bg-transparent text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
             onClick={start}
           >
             Try again
@@ -361,7 +361,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
       )}
 
       {state.status === "completed" && (
-        <div className="flex items-center justify-center py-6 text-sm text-[var(--forest)]">
+        <div className="flex items-center justify-center py-6 text-sm text-[var(--midnight)]">
           ✓ Connected — committing switch…
         </div>
       )}
@@ -373,7 +373,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
         <DialogFooter>
           <Button
             variant="ghost"
-            className="text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+            className="text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
             onClick={onCancel}
           >
             Back
@@ -422,7 +422,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
   return (
     <form onSubmit={submit} className="space-y-4 py-4">
       <fieldset className="flex gap-4">
-        <label className="flex items-center gap-2 text-sm text-[var(--ink)]">
+        <label className="flex items-center gap-2 text-sm text-[var(--midnight)]">
           <input
             type="radio"
             value="openai"
@@ -432,7 +432,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
           />
           OpenAI
         </label>
-        <label className="flex items-center gap-2 text-sm text-[var(--ink)]">
+        <label className="flex items-center gap-2 text-sm text-[var(--midnight)]">
           <input
             type="radio"
             value="anthropic"
@@ -452,21 +452,21 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--ink)] placeholder:text-[var(--mute)] focus:border-[#7cc6a3]/60 focus:outline-none"
+        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[#7cc6a3]/60 focus:outline-none"
       />
 
-      <p className="text-xs text-[var(--mute)]">
+      <p className="text-xs text-[var(--midnight-muted)]">
         Stored encrypted in AWS Secrets Manager. We validate the key against the
         provider before saving — invalid keys are rejected here, not at chat time.
       </p>
 
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+      {error && <p className="text-sm text-[var(--err)]">{error}</p>}
 
       <DialogFooter>
         <Button
           type="button"
           variant="ghost"
-          className="text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+          className="text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
           onClick={onCancel}
           disabled={submitting}
         >

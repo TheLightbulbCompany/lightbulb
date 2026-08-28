@@ -119,7 +119,7 @@ describe("RoutineDetailPanel", () => {
   it("shows a retry as its own row, preserving the run it retried", () => {
     // Task 7: Run history used to carry its OWN status vocabulary (no
     // running/queued/scheduled_retry handling — everything but
-    // succeeded/failed fell through to --mute). A retry firing after a
+    // succeeded/failed fell through to --midnight-muted). A retry firing after a
     // failure must read as a NEW row with its own outcome, never a rewrite
     // of the failed row it followed.
     reads["/routines/r1"] = {
@@ -151,7 +151,7 @@ describe("RoutineDetailPanel", () => {
   it("colors a timed-out run as a failure, not the default mute", () => {
     // Regression: the deleted local runStatusColor only recognized
     // failed/error/cancelled as a failure — a timed-out run (a real failure
-    // mode in RunDetailPanel's own vocabulary) fell through to --mute,
+    // mode in RunDetailPanel's own vocabulary) fell through to --midnight-muted,
     // reading as neutral instead of red.
     reads["/routines/r1"] = {
       data: { id: "r1", title: "Nightly digest", status: "active" },
@@ -164,7 +164,7 @@ describe("RoutineDetailPanel", () => {
       error: undefined,
     };
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText("timed out")).toHaveStyle({ color: "var(--danger)" });
+    expect(screen.getByText("timed out")).toHaveStyle({ color: "var(--err)" });
   });
 
   it("names each webhook trigger so its destructive controls are distinguishable", () => {

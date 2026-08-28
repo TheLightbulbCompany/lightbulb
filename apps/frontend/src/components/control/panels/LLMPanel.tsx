@@ -38,9 +38,9 @@ type UserData = {
   byo_provider?: ByoProvider | null;
 };
 
-const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deeper)] flex items-center justify-center flex-shrink-0";
+const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center flex-shrink-0";
 const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--mute)]/60";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
 
 // Dot color is driven by the container's live models.authStatus, not the
 // chip label — the label states which provider is configured, the dot states
@@ -49,12 +49,12 @@ const DOT_CLASS: Record<DotColor, string> = {
   green: "bg-[#2d8a4e]",
   amber: "bg-amber-500",
   red: "bg-red-500",
-  neutral: "bg-[var(--mute)]",
+  neutral: "bg-[var(--midnight-muted)]",
 };
 
 function StatusChip({ label, dotColor }: { label: string; dotColor: DotColor }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--forest)]/10 text-[var(--forest)] px-2 py-0.5 text-xs font-medium">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--midnight)]/10 text-[var(--midnight)] px-2 py-0.5 text-xs font-medium">
       <span
         data-testid="provider-health-dot"
         data-color={dotColor}
@@ -82,8 +82,8 @@ function HeroCard({
     <div className="rounded-xl border border-[var(--edge)] bg-white p-6 flex items-center gap-4">
       <div className={HERO_TILE}>{icon}</div>
       <div className="flex-1 min-w-0">
-        <h3 className="font-medium text-[var(--ink)]">{title}</h3>
-        <p className="text-sm text-[var(--mute)] truncate">{subtitle}</p>
+        <h3 className="font-medium text-[var(--midnight)]">{title}</h3>
+        <p className="text-sm text-[var(--midnight-muted)] truncate">{subtitle}</p>
       </div>
       <StatusChip label={status} dotColor={dotColor} />
     </div>
@@ -123,18 +123,18 @@ function ChatGPTOAuthBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Account</span>
-        <p className="text-sm text-[var(--ink)]">Connected via OAuth</p>
+        <p className="text-sm text-[var(--midnight)]">Connected via OAuth</p>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={onChangeProvider}
-            className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+            className="rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
           >
             Change provider
           </button>
           <button
             onClick={handleDisconnect}
             disabled={busy}
-            className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm disabled:opacity-50"
           >
             {busy ? "Disconnecting…" : "Disconnect"}
           </button>
@@ -180,14 +180,14 @@ function CodingHarnessBlock() {
       <span className={EYEBROW}>Coding harness</span>
       {state.status === "completed" && (
         <>
-          <p className="text-sm text-[var(--ink)]">
+          <p className="text-sm text-[var(--midnight)]">
             OpenCode is connected. Your agents can delegate coding work using
             your ChatGPT subscription.
           </p>
           <button
             onClick={handleDisconnect}
             disabled={busy}
-            className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm disabled:opacity-50"
+            className="self-start rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm disabled:opacity-50"
           >
             {busy ? "Disconnecting…" : "Disconnect"}
           </button>
@@ -195,7 +195,7 @@ function CodingHarnessBlock() {
       )}
       {state.status === "pending" && (
         <>
-          <p className="text-sm text-[var(--ink)]">
+          <p className="text-sm text-[var(--midnight)]">
             Open{" "}
             <a
               href={state.verificationUri}
@@ -207,21 +207,21 @@ function CodingHarnessBlock() {
             </a>{" "}
             and enter this code:
           </p>
-          <p className="font-mono text-lg tracking-widest text-[var(--ink)]">{state.userCode}</p>
+          <p className="font-mono text-lg tracking-widest text-[var(--midnight)]">{state.userCode}</p>
           {state.expiresAt - now <= 0 ? (
             <>
-              <p className="text-xs text-[var(--danger)]">
+              <p className="text-xs text-[var(--err)]">
                 This code expired. Get a new one to finish connecting.
               </p>
               <button
                 onClick={() => void start()}
-                className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+                className="self-start rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
               >
                 Get a new code
               </button>
             </>
           ) : (
-            <p className="text-xs text-[var(--mute)]">
+            <p className="text-xs text-[var(--midnight-muted)]">
               Waiting for you to finish signing in — this updates automatically.
             </p>
           )}
@@ -229,18 +229,18 @@ function CodingHarnessBlock() {
       )}
       {(state.status === "idle" || state.status === "error") && (
         <>
-          <p className="text-sm text-[var(--mute)]">
+          <p className="text-sm text-[var(--midnight-muted)]">
             Let your agents write code with OpenCode, powered by the ChatGPT
             subscription you already have. Requires one extra sign-in: the
             harness keeps its own credential so it never interferes with your
             main connection.
           </p>
           {state.status === "error" && (
-            <p className="text-sm text-[var(--danger)]">{state.message}</p>
+            <p className="text-sm text-[var(--err)]">{state.message}</p>
           )}
           <button
             onClick={() => void start()}
-            className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+            className="self-start rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
           >
             {state.status === "error" ? "Try again" : "Connect coding harness"}
           </button>
@@ -276,13 +276,13 @@ function ByoKeyBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>API key</span>
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Stored encrypted in AWS Secrets Manager. Paste a new key to rotate.
         </p>
         <ReplaceKeyForm currentProvider={byoProvider} onReplaced={onReplaced} />
         <button
           onClick={onChangeProvider}
-          className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
         >
           Change provider
         </button>
@@ -309,12 +309,12 @@ function BedrockBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Provider</span>
-        <p className="text-sm text-[var(--ink)]">
+        <p className="text-sm text-[var(--midnight)]">
           Credits and auto-reload are managed below.
         </p>
         <button
           onClick={onChangeProvider}
-          className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
         >
           Change provider
         </button>
@@ -328,7 +328,7 @@ function BedrockBlock({
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
   bedrock_claude: <AnthropicIcon size={24} />,
   chatgpt_oauth: <OpenAIIcon size={24} />,
-  byo_key: <KeyRound size={22} className="text-[var(--mute)]" />,
+  byo_key: <KeyRound size={22} className="text-[var(--midnight-muted)]" />,
 };
 
 /**
@@ -362,7 +362,7 @@ function ProviderChoiceCards({
               type="button"
               onClick={() => onPick(card.id)}
               disabled={committing !== null}
-              className="rounded-xl border border-[var(--edge)] bg-white p-4 text-left transition-colors hover:border-[var(--forest)]/40 hover:bg-[var(--cream-deeper)]/60 disabled:opacity-60 disabled:hover:bg-white"
+              className="rounded-xl border border-[var(--edge)] bg-white p-4 text-left transition-colors hover:border-[var(--midnight)]/40 hover:bg-[var(--cream-deep)]/60 disabled:opacity-60 disabled:hover:bg-white"
             >
               {/* Icon sits beside the copy on narrow widths (stacked cards
                   would otherwise be needlessly tall) and above it once the
@@ -370,10 +370,10 @@ function ProviderChoiceCards({
               <div className="flex items-start gap-3 sm:block">
                 <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[card.id]}</div>
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium text-[var(--ink)]">{card.title}</h3>
-                  <p className="mt-1 text-xs text-[var(--mute)]">{card.subtitle}</p>
+                  <h3 className="text-sm font-medium text-[var(--midnight)]">{card.title}</h3>
+                  <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
                   {busy && (
-                    <p className="mt-2 flex items-center gap-1.5 text-xs text-[var(--forest)]">
+                    <p className="mt-2 flex items-center gap-1.5 text-xs text-[var(--midnight)]">
                       <Loader2 className="h-3 w-3 animate-spin" />
                       Setting up…
                     </p>
@@ -412,7 +412,7 @@ function EmptyStateCard({
   if (onPick) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-[var(--ink)]">{prompt}</p>
+        <p className="text-sm text-[var(--midnight)]">{prompt}</p>
         <ProviderChoiceCards
           onPick={onPick}
           committing={committing ?? null}
@@ -424,10 +424,10 @@ function EmptyStateCard({
 
   return (
     <div className={ACTION_CARD}>
-      <p className="text-sm text-[var(--ink)]">{prompt}</p>
+      <p className="text-sm text-[var(--midnight)]">{prompt}</p>
       <Link
         href="/onboarding"
-        className="inline-flex rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
+        className="inline-flex rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
       >
         Re-onboard →
       </Link>
@@ -542,7 +542,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
               revalidateAuthStatus(),
             )
           }
-          className="rounded-md border border-[var(--edge)] text-[var(--mute)] hover:bg-[var(--cream-deeper)] px-2.5 py-1 text-xs"
+          className="rounded-md border border-[var(--edge)] text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)] px-2.5 py-1 text-xs"
         >
           Refresh status
         </button>
@@ -658,7 +658,7 @@ function ReplaceKeyForm({
         <button
           type="submit"
           disabled={submitting || !apiKey}
-          className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+          className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
         >
           Save
         </button>

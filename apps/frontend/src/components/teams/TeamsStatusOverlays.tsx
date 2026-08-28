@@ -17,10 +17,10 @@ function OverlayShell({ children }: { children: React.ReactNode }) {
 export function ProvisioningOverlay() {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">
+      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
         <em className="italic">Setting up</em> your Teams workspace.
       </h1>
-      <p className="mt-3 text-sm text-[var(--ink-soft)]">
+      <p className="mt-3 text-sm text-[var(--midnight-soft)]">
         This usually takes about 30 seconds. The page will refresh automatically.
       </p>
     </OverlayShell>
@@ -30,10 +30,10 @@ export function ProvisioningOverlay() {
 export function SubscribeOverlay() {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">
+      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
         <em className="italic">Subscribe</em> to enable Teams.
       </h1>
-      <p className="mt-3 text-sm text-[var(--ink-soft)]">
+      <p className="mt-3 text-sm text-[var(--midnight-soft)]">
         Teams runs on top of your agent container. Start a subscription from the
         chat page first, then come back.
       </p>
@@ -44,11 +44,11 @@ export function SubscribeOverlay() {
 export function ErrorOverlay({ error }: { error: Error }) {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--ink)]">
+      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
         <em className="italic">Something</em> went wrong.
       </h1>
       <p
-        className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]"
+        className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--err)]"
         role="alert"
       >
         {String(error.message ?? error)}

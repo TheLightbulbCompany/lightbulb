@@ -131,15 +131,15 @@ export function DocumentDiffModal({
           style={{ border: "1px solid var(--edge)" }}
         >
           {!data ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--mute)" }}>
+            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
               Loading revisions…
             </div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--mute)" }}>
+            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
               Select two revisions to compare.
             </div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--mute)" }}>
+            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
               Both sides are the same revision.
             </div>
           ) : (
@@ -150,7 +150,7 @@ export function DocumentDiffModal({
                     key={`truncated-${index}`}
                     data-testid="document-diff-truncated"
                     className="px-4 py-3 text-center text-xs"
-                    style={{ color: "var(--mute)", borderTop: "1px solid var(--edge)" }}
+                    style={{ color: "var(--midnight-muted)", borderTop: "1px solid var(--edge)" }}
                   >
                     {row.text}
                   </div>
@@ -160,13 +160,13 @@ export function DocumentDiffModal({
                     data-testid="document-diff-row"
                     className={`grid grid-cols-[3rem_3rem_1rem_1fr] px-2 ${rowClass[row.kind]}`}
                   >
-                    <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
+                    <span className="select-none pr-2 text-right" style={{ color: "var(--midnight-muted)" }}>
                       {row.oldLineNumber ?? ""}
                     </span>
-                    <span className="select-none pr-2 text-right" style={{ color: "var(--mute)" }}>
+                    <span className="select-none pr-2 text-right" style={{ color: "var(--midnight-muted)" }}>
                       {row.newLineNumber ?? ""}
                     </span>
-                    <span className="select-none text-center" style={{ color: "var(--mute)" }}>
+                    <span className="select-none text-center" style={{ color: "var(--midnight-muted)" }}>
                       {marker[row.kind]}
                     </span>
                     <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 text-inherit">

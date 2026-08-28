@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 
 const DOT_STYLES: Record<HealthState, string> = {
   HEALTHY: "bg-[#2d8a4e]",
-  PARKED: "bg-[var(--mute-soft)]",
+  PARKED: "bg-[var(--midnight-faint)]",
   STARTING: "bg-yellow-500 animate-pulse",
   RECOVERING: "bg-yellow-500 animate-pulse",
   // GATEWAY_BUSY = parked backend WS, agent still working. Calm yellow with
@@ -19,8 +19,8 @@ const DOT_STYLES: Record<HealthState, string> = {
 };
 
 const LABEL_STYLES: Record<HealthState, string> = {
-  HEALTHY: "text-[var(--mute)]",
-  PARKED: "text-[var(--mute)]",
+  HEALTHY: "text-[var(--midnight-muted)]",
+  PARKED: "text-[var(--midnight-muted)]",
   STARTING: "text-yellow-600",
   RECOVERING: "text-yellow-600",
   GATEWAY_BUSY: "text-yellow-600",
@@ -78,7 +78,7 @@ export function HealthIndicator({
 
       {/* Action button */}
       {isRecovering ? (
-        <Loader2 className="h-3 w-3 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-3 w-3 animate-spin text-[var(--midnight-muted)]" />
       ) : canRecover && actionLabel ? (
         <Button
           variant="ghost"

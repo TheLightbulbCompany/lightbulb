@@ -469,14 +469,14 @@ export function AgentChatWindow({
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--ink)", lineHeight: 1 }}>8</span>
+              <span style={{ fontFamily: "var(--font-serif), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--midnight)", lineHeight: 1 }}>8</span>
             </div>
-            <h1 className="text-3xl mb-3 text-[var(--ink)] tracking-tight font-lora">
+            <h1 className="text-3xl mb-3 text-[var(--midnight)] tracking-tight font-lora">
               {agentId
                 ? agentDisplayName(activeAgent ?? { id: agentId })
                 : "Select an agent"}
             </h1>
-            <p className="text-[var(--mute)] text-base">
+            <p className="text-[var(--midnight-muted)] text-base">
               Start a conversation with your agent
             </p>
           </div>
@@ -508,7 +508,7 @@ export function AgentChatWindow({
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
       {historyTruncated && (
-        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--mute)] bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
+        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--midnight-muted)] bg-[var(--cream-deep)] border-b border-[var(--edge)]">
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}

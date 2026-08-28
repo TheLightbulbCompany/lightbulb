@@ -18,7 +18,7 @@ export default function Page() {
 
         /* ── LEFT PANEL ── */
         .auth-brand {
-          background: var(--forest);
+          background: var(--midnight);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
@@ -67,7 +67,7 @@ export default function Page() {
           font-weight: 700;
           letter-spacing: 4px;
           text-transform: uppercase;
-          color: var(--forest-soft);
+          color: var(--brass);
           margin-bottom: 20px;
         }
         .auth-tagline {
@@ -179,7 +179,7 @@ export default function Page() {
           line-height: 1.5;
         }
         .auth-footer-links a {
-          color: var(--forest);
+          color: var(--midnight);
           font-weight: 600;
           text-decoration: none;
           transition: color 200ms ease-out;
@@ -199,7 +199,7 @@ export default function Page() {
           text-decoration: none;
           transition: color 200ms ease-out;
         }
-        .auth-legal-links a:hover { color: var(--forest); }
+        .auth-legal-links a:hover { color: var(--midnight); }
 
         /* ── MOBILE ── */
         @media (max-width: 767px) {

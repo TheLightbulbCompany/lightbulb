@@ -43,7 +43,7 @@ const DAY_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
 const DEFAULT_SCHEDULE: Schedule = { freq: "daily", hour: 9, minute: 0, day: 1 };
 
 const INPUT_CLASS =
-  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]";
+  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]";
 
 function toTimeValue(s: Schedule): string {
   return `${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}`;
@@ -69,7 +69,7 @@ export function ScheduleField({
   if (advanced) {
     return (
       <div className="block">
-        <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+        <span className="text-sm text-[var(--midnight-soft)]">Schedule</span>
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -80,7 +80,7 @@ export function ScheduleField({
         <div className="flex items-center justify-between gap-2">
           {/* describeCron echoes the expression back when it can't read it —
               show the field's purpose instead of the same string twice. */}
-          <span className="text-xs text-[var(--mute)]">
+          <span className="text-xs text-[var(--midnight-muted)]">
             {describeCron(value) === value.trim()
               ? "Cron expression — when the automation fires."
               : describeCron(value)}
@@ -94,7 +94,7 @@ export function ScheduleField({
               if (parseCron(value) === null) onChange(buildCron(DEFAULT_SCHEDULE));
               setAdvanced(false);
             }}
-            className="shrink-0 text-xs text-[var(--forest)] hover:underline"
+            className="shrink-0 text-xs text-[var(--midnight)] hover:underline"
           >
             Use the picker
           </button>
@@ -105,7 +105,7 @@ export function ScheduleField({
 
   return (
     <div className="block">
-      <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+      <span className="text-sm text-[var(--midnight-soft)]">Schedule</span>
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <EditorialSelect
           className="w-[150px]"
@@ -129,15 +129,15 @@ export function ScheduleField({
             const [h, m] = e.target.value.split(":").map(Number);
             if (Number.isFinite(h) && Number.isFinite(m)) update({ hour: h, minute: m });
           }}
-          className="w-[120px] border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]"
+          className="w-[120px] border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]"
         />
       </div>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-[var(--mute)]">{describeCron(value)}</span>
+        <span className="text-xs text-[var(--midnight-muted)]">{describeCron(value)}</span>
         <button
           type="button"
           onClick={() => setAdvanced(true)}
-          className="shrink-0 text-xs text-[var(--forest)] hover:underline"
+          className="shrink-0 text-xs text-[var(--midnight)] hover:underline"
         >
           Use a cron expression
         </button>

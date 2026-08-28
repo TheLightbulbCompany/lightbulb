@@ -80,7 +80,7 @@ export function ProjectDescription({
         style={{
           border: "1px solid var(--edge)",
           background: "var(--cream)",
-          color: "var(--ink-soft)",
+          color: "var(--midnight-soft)",
         }}
       />
     );
@@ -93,10 +93,10 @@ export function ProjectDescription({
       className="text-left text-sm whitespace-pre-wrap pl-3 rounded transition-colors"
       style={{
         borderLeft: "2px solid var(--edge)",
-        color: description ? "var(--ink-soft)" : "var(--mute)",
+        color: description ? "var(--midnight-soft)" : "var(--midnight-muted)",
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.background = "var(--cream-deeper)";
+        e.currentTarget.style.background = "var(--cream-deep)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "transparent";

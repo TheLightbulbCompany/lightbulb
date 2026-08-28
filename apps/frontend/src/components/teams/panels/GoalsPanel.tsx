@@ -75,8 +75,8 @@ function buildTree(goals: Goal[]): GoalNode[] {
 
 function goalStatusColor(status?: string): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "active" || s === "achieved") return "var(--forest)";
-  return "var(--mute)";
+  if (s === "active" || s === "achieved") return "var(--midnight)";
+  return "var(--midnight-muted)";
 }
 
 function GoalRow({
@@ -101,10 +101,10 @@ function GoalRow({
         <button
           type="button"
           onClick={() => onOpen(node.id)}
-          className="flex-1 min-w-0 text-left rounded px-1 -mx-1 transition-colors hover:bg-[var(--cream-deeper)]"
+          className="flex-1 min-w-0 text-left rounded px-1 -mx-1 transition-colors hover:bg-[var(--cream-deep)]"
         >
           <div className="flex items-center gap-2">
-            <span className="font-medium text-[var(--ink)]">{node.title}</span>
+            <span className="font-medium text-[var(--midnight)]">{node.title}</span>
             {node.status && (
               <span
                 className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded flex-shrink-0"
@@ -115,15 +115,15 @@ function GoalRow({
             )}
           </div>
           {node.description && (
-            <div className="text-xs text-[var(--mute)] mt-0.5">{node.description}</div>
+            <div className="text-xs text-[var(--midnight-muted)] mt-0.5">{node.description}</div>
           )}
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)]"
-              style={{ color: "var(--mute)" }}
+              className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)]"
+              style={{ color: "var(--midnight-muted)" }}
               aria-label="Goal actions"
             >
               <MoreHorizontal className="h-4 w-4" />
@@ -199,7 +199,7 @@ export function GoalsPanel() {
 
   if (error)
     return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
+      <div className="editorial-page p-8 text-[var(--err)]">
         Error: {String(error)}
       </div>
     );
@@ -217,7 +217,7 @@ export function GoalsPanel() {
       />
 
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : tree.length === 0 ? (
@@ -341,19 +341,19 @@ function CreateGoalDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Title</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Description</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
             rows={3}
           />
         </label>
@@ -361,7 +361,7 @@ function CreateGoalDialog({
             — resolves from the existing /goals list (mirrors the issues
             AssigneePicker/ProjectPicker idiom). */}
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Parent goal</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Parent goal</span>
           <div className="mt-1">
             <GoalPicker
               goals={goals}
@@ -373,11 +373,11 @@ function CreateGoalDialog({
         </div>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-sm text-[var(--ink-soft)]">Level</span>
+            <span className="text-sm text-[var(--midnight-soft)]">Level</span>
             <select
               value={level}
               onChange={(e) => setLevel(e.target.value as GoalLevel)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)] capitalize"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)] capitalize"
             >
               {GOAL_LEVELS.map((l) => (
                 <option key={l} value={l}>
@@ -387,11 +387,11 @@ function CreateGoalDialog({
             </select>
           </label>
           <label className="block">
-            <span className="text-sm text-[var(--ink-soft)]">Status</span>
+            <span className="text-sm text-[var(--midnight-soft)]">Status</span>
             <select
               value={status}
               onChange={(e) => setStatus(e.target.value as GoalStatus)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)] capitalize"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)] capitalize"
             >
               {GOAL_STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -403,12 +403,12 @@ function CreateGoalDialog({
         </div>
         {err && (
           <div
-            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
               background:
-                "color-mix(in srgb, var(--danger) 6%, transparent)",
+                "color-mix(in srgb, var(--err) 6%, transparent)",
             }}
           >
             {err}
@@ -463,28 +463,28 @@ function EditGoalDialog({
     <EditorialDialog open onOpenChange={(o) => !o && onClose()} title="Edit goal">
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Title</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Description</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
             rows={3}
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Status</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Status</span>
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             {GOAL_STATUSES.map((s) => (
               <option key={s} value={s}>{s}</option>
@@ -493,12 +493,12 @@ function EditGoalDialog({
         </label>
         {err && (
           <div
-            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
               background:
-                "color-mix(in srgb, var(--danger) 6%, transparent)",
+                "color-mix(in srgb, var(--err) 6%, transparent)",
             }}
           >
             {err}

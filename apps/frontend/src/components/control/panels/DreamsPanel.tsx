@@ -37,7 +37,7 @@ export function DreamsPanel() {
   if (isLoading && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -58,8 +58,8 @@ export function DreamsPanel() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Moon className="h-5 w-5 text-[var(--mute)]" />
-          <h2 className="text-lg font-medium text-[var(--ink)]">Dreams</h2>
+          <Moon className="h-5 w-5 text-[var(--midnight-muted)]" />
+          <h2 className="text-lg font-medium text-[var(--midnight)]">Dreams</h2>
         </div>
         {agents.length > 1 && (
           <select
@@ -81,7 +81,7 @@ export function DreamsPanel() {
             key={t}
             onClick={() => setTab(t)}
             className={`px-3 py-1.5 text-sm capitalize border-b-2 -mb-px ${
-              tab === t ? "border-[var(--ink)] text-[var(--ink)]" : "border-transparent text-[var(--mute)]"
+              tab === t ? "border-[var(--midnight)] text-[var(--midnight)]" : "border-transparent text-[var(--midnight-muted)]"
             }`}
           >
             {t}
@@ -107,7 +107,7 @@ function SceneTab({
 }) {
   if (!dreaming) {
     return (
-      <p className="text-sm text-[var(--mute)]">
+      <p className="text-sm text-[var(--midnight-muted)]">
         No dreaming status for this agent yet. Embedding store:{" "}
         {status?.embedding?.ok ? "ok" : status?.embedding?.error || "unavailable"}.
       </p>
@@ -116,12 +116,12 @@ function SceneTab({
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2 text-sm">
-        <Sparkles className="h-4 w-4 text-[var(--mute)]" />
+        <Sparkles className="h-4 w-4 text-[var(--midnight-muted)]" />
         <span className="font-medium">Dreaming</span>
-        <span className={dreaming.enabled ? "text-emerald-600" : "text-[var(--mute)]"}>
+        <span className={dreaming.enabled ? "text-emerald-600" : "text-[var(--midnight-muted)]"}>
           {dreaming.enabled ? "active" : "idle"}
         </span>
-        {dreaming.timezone && <span className="text-[var(--mute)]">· {dreaming.timezone}</span>}
+        {dreaming.timezone && <span className="text-[var(--midnight-muted)]">· {dreaming.timezone}</span>}
       </div>
 
       <div className="grid grid-cols-3 gap-4">
@@ -174,7 +174,7 @@ function PhaseToggles({
 
   return (
     <div>
-      <p className="text-xs uppercase tracking-wide text-[var(--mute)] mb-2">Sleep phases</p>
+      <p className="text-xs uppercase tracking-wide text-[var(--midnight-muted)] mb-2">Sleep phases</p>
       <div className="space-y-2">
         {PHASE_ORDER.map((key) => {
           const on = dreaming?.phases?.[key]?.enabled ?? false;
@@ -182,7 +182,7 @@ function PhaseToggles({
             <div key={key} className="flex items-center justify-between rounded-lg border bg-white px-3 py-2">
               <div className="flex items-center gap-2 text-sm">
                 <span className={`h-2 w-2 rounded-full ${on ? "bg-emerald-500" : "bg-[#d4d0c4]"}`} />
-                {key === "light" ? <Sun className="h-3.5 w-3.5 text-[var(--mute)]" /> : <Moon className="h-3.5 w-3.5 text-[var(--mute)]" />}
+                {key === "light" ? <Sun className="h-3.5 w-3.5 text-[var(--midnight-muted)]" /> : <Moon className="h-3.5 w-3.5 text-[var(--midnight-muted)]" />}
                 <span>{PHASE_LABEL[key]}</span>
                 {key === "deep" && <span className="text-xs text-amber-600">requires 6.6 image</span>}
               </div>
@@ -207,8 +207,8 @@ function PhaseToggles({
 function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border bg-white p-3">
-      <p className="text-2xl font-semibold text-[var(--ink)]">{value}</p>
-      <p className="text-xs text-[var(--mute)]">{label}</p>
+      <p className="text-2xl font-semibold text-[var(--midnight)]">{value}</p>
+      <p className="text-xs text-[var(--midnight-muted)]">{label}</p>
     </div>
   );
 }
@@ -218,12 +218,12 @@ function DiaryTab({ params }: { params: Record<string, unknown> }) {
     "doctor.memory.dreamDiary",
     params,
   );
-  if (isLoading && !data) return <Loader2 className="h-4 w-4 animate-spin text-[var(--mute)]" />;
+  if (isLoading && !data) return <Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)]" />;
   if (error && !data) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!data?.found || !data.content) {
     return (
       <div className="space-y-2">
-        <p className="text-sm text-[var(--mute)]">No DREAMS.md yet — REM/deep phases populate it nightly.</p>
+        <p className="text-sm text-[var(--midnight-muted)]">No DREAMS.md yet — REM/deep phases populate it nightly.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
         </Button>
@@ -233,7 +233,7 @@ function DiaryTab({ params }: { params: Record<string, unknown> }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-[var(--mute)]">{data.path}</p>
+        <p className="text-xs text-[var(--midnight-muted)]">{data.path}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
         </Button>
@@ -300,7 +300,7 @@ function AdvancedTab({
           </Button>
         ))}
       </div>
-      {msg && <p className="text-sm text-[var(--mute)]">{msg}</p>}
+      {msg && <p className="text-sm text-[var(--midnight-muted)]">{msg}</p>}
     </div>
   );
 }

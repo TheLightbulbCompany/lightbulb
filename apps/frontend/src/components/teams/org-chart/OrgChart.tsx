@@ -57,7 +57,7 @@ export function OrgChart({ agents, className }: OrgChartProps) {
       <div className={className}>
         <div
           className="flex flex-col items-center justify-center py-12 text-sm"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           No agents yet.
         </div>

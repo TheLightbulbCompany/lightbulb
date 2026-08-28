@@ -188,7 +188,7 @@ export function SessionsPanel() {
   if (isLoading && !rawData) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -200,8 +200,8 @@ export function SessionsPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-[var(--ink)]">Sessions</h2>
-          <p className="text-xs text-[var(--mute)]">
+          <h2 className="text-lg font-semibold text-[var(--midnight)]">Sessions</h2>
+          <p className="text-xs text-[var(--midnight-muted)]">
             Active session keys and per-session overrides.
           </p>
         </div>
@@ -222,7 +222,7 @@ export function SessionsPanel() {
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
-          <label className="text-[11px] text-[var(--mute)]">Active within (min)</label>
+          <label className="text-[11px] text-[var(--midnight-muted)]">Active within (min)</label>
           <Input
             type="number"
             className="h-8 w-28 text-xs"
@@ -232,7 +232,7 @@ export function SessionsPanel() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-[11px] text-[var(--mute)]">Limit</label>
+          <label className="text-[11px] text-[var(--midnight-muted)]">Limit</label>
           <Input
             type="number"
             className="h-8 w-28 text-xs"
@@ -241,21 +241,21 @@ export function SessionsPanel() {
             onChange={(e) => setLimit(e.target.value)}
           />
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-[var(--mute)] cursor-pointer pb-1">
+        <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
           <input
             type="checkbox"
             checked={includeGlobal}
             onChange={(e) => setIncludeGlobal(e.target.checked)}
-            className="accent-[var(--forest)]"
+            className="accent-[var(--midnight)]"
           />
           Include global
         </label>
-        <label className="flex items-center gap-1.5 text-xs text-[var(--mute)] cursor-pointer pb-1">
+        <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] cursor-pointer pb-1">
           <input
             type="checkbox"
             checked={includeUnknown}
             onChange={(e) => setIncludeUnknown(e.target.checked)}
-            className="accent-[var(--forest)]"
+            className="accent-[var(--midnight)]"
           />
           Include unknown
         </label>
@@ -270,17 +270,17 @@ export function SessionsPanel() {
 
       {/* Store path */}
       {storePath && (
-        <p className="text-[11px] text-[var(--mute)]/50">Store: {storePath}</p>
+        <p className="text-[11px] text-[var(--midnight-muted)]/50">Store: {storePath}</p>
       )}
 
       {/* Table */}
       {sessions.length === 0 ? (
-        <p className="text-sm text-[var(--mute)]">No sessions found.</p>
+        <p className="text-sm text-[var(--midnight-muted)]">No sessions found.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-collapse">
             <thead>
-              <tr className="border-b border-[var(--edge)] text-left text-[var(--mute)]">
+              <tr className="border-b border-[var(--edge)] text-left text-[var(--midnight-muted)]">
                 <th className="py-2 pr-3 font-medium">Key</th>
                 <th className="py-2 pr-3 font-medium">Label</th>
                 <th className="py-2 pr-3 font-medium">Kind</th>
@@ -340,19 +340,19 @@ function SessionRow({
       : null;
 
   return (
-    <tr className="border-b border-[var(--edge)]/50 hover:bg-[var(--cream-deeper)]/50 transition-colors">
+    <tr className="border-b border-[var(--edge)]/50 hover:bg-[var(--cream-deep)]/50 transition-colors">
       {/* Key */}
       <td className="py-2 pr-3 font-mono text-[11px] max-w-[180px]">
         <div className="truncate">{s.key}</div>
         {displayName && (
-          <div className="text-[10px] text-[var(--mute)]/50 truncate">{displayName}</div>
+          <div className="text-[10px] text-[var(--midnight-muted)]/50 truncate">{displayName}</div>
         )}
       </td>
 
       {/* Label (editable) */}
       <td className="py-2 pr-3">
         <input
-          className="bg-transparent border-b border-transparent hover:border-[var(--edge)] focus:border-[var(--forest)] outline-none text-xs w-24 py-0.5 transition-colors text-[var(--ink)]"
+          className="bg-transparent border-b border-transparent hover:border-[var(--edge)] focus:border-[var(--midnight)] outline-none text-xs w-24 py-0.5 transition-colors text-[var(--midnight)]"
           defaultValue={s.label ?? ""}
           placeholder="(optional)"
           disabled={disabled}
@@ -375,9 +375,9 @@ function SessionRow({
           className={cn(
             "inline-block px-1.5 py-0.5 rounded text-[10px] font-medium",
             s.kind === "direct" && "bg-[#e8f5e9] text-[#2d8a4e]",
-            s.kind === "group" && "bg-blue-50 text-[var(--forest)]",
+            s.kind === "group" && "bg-blue-50 text-[var(--midnight)]",
             s.kind === "global" && "bg-amber-50 text-amber-700",
-            (!s.kind || s.kind === "unknown") && "bg-[var(--cream-deeper)] text-[var(--mute)]",
+            (!s.kind || s.kind === "unknown") && "bg-[var(--cream-deep)] text-[var(--midnight-muted)]",
           )}
         >
           {s.kind || "unknown"}
@@ -385,19 +385,19 @@ function SessionRow({
       </td>
 
       {/* Updated */}
-      <td className="py-2 pr-3 text-[var(--mute)] whitespace-nowrap">
+      <td className="py-2 pr-3 text-[var(--midnight-muted)] whitespace-nowrap">
         {formatRelativeTime(s.updatedAt)}
       </td>
 
       {/* Tokens */}
-      <td className="py-2 pr-3 font-mono text-[var(--mute)] whitespace-nowrap">
+      <td className="py-2 pr-3 font-mono text-[var(--midnight-muted)] whitespace-nowrap">
         {formatTokens(s)}
       </td>
 
       {/* Thinking */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--forest)] cursor-pointer text-[var(--ink)]"
+          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={thinking}
           disabled={disabled}
           onChange={(e) => {
@@ -418,7 +418,7 @@ function SessionRow({
       {/* Verbose */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--forest)] cursor-pointer text-[var(--ink)]"
+          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={verbose}
           disabled={disabled}
           onChange={(e) => {
@@ -436,7 +436,7 @@ function SessionRow({
       {/* Reasoning */}
       <td className="py-2 pr-3">
         <select
-          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--forest)] cursor-pointer text-[var(--ink)]"
+          className="bg-white border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
           value={reasoning}
           disabled={disabled}
           onChange={(e) => {
@@ -456,7 +456,7 @@ function SessionRow({
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 px-2 text-[var(--mute)] hover:text-red-600"
+          className="h-6 px-2 text-[var(--midnight-muted)] hover:text-red-600"
           disabled={disabled}
           onClick={() => onDelete(s.key)}
         >

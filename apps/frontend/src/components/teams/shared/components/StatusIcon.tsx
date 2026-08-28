@@ -26,27 +26,27 @@ export type {
 // `paperclip/ui/src/lib/status-colors.ts`, retheme-mapped onto the editorial
 // palette. Each status resolves to a single CSS-variable color (used for both
 // `color` and `borderColor`) so the swatch matches the rest of the Teams UI.
-//   backlog / cancelled        -> --mute       (inactive / muted)
+//   backlog / cancelled        -> --midnight-muted       (inactive / muted)
 //   todo / in_progress         -> --warn       (attention / pending amber)
-//   in_review                  -> --ink-soft   (neutral info)
-//   done                       -> --forest     (success)
-//   blocked                    -> --danger     (error)
+//   in_review                  -> --midnight-soft   (neutral info)
+//   done                       -> --midnight     (success)
+//   blocked                    -> --err     (error)
 const issueStatusColor: Record<string, string> = {
-  backlog: "var(--mute)",
+  backlog: "var(--midnight-muted)",
   todo: "var(--warn)",
   in_progress: "var(--warn)",
-  in_review: "var(--ink-soft)",
-  done: "var(--forest)",
-  cancelled: "var(--mute)",
-  blocked: "var(--danger)",
+  in_review: "var(--midnight-soft)",
+  done: "var(--midnight)",
+  cancelled: "var(--midnight-muted)",
+  blocked: "var(--err)",
 };
 
-const issueStatusColorDefault = "var(--mute)";
+const issueStatusColorDefault = "var(--midnight-muted)";
 
 // Blocked-state augmentations: covered (active dependency picking up the
 // slack) reads as a softer forest signal; stalled (review without next step)
 // reads as warning amber.
-const blockedCoveredColor = "var(--forest-soft)";
+const blockedCoveredColor = "var(--brass)";
 const blockedStalledColor = "var(--warn)";
 
 const allStatuses = [
@@ -176,7 +176,7 @@ export function StatusIcon({
     );
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--ink)] hover:bg-[var(--cream-deeper)] rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded px-1 -mx-1 py-0.5 transition-colors">
       {circle}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
@@ -194,8 +194,8 @@ export function StatusIcon({
             variant="ghost"
             size="sm"
             className={cn(
-              "w-full justify-start gap-2 text-xs text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
-              s === status && "bg-[var(--forest-tint)]",
+              "w-full justify-start gap-2 text-xs text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
+              s === status && "bg-[var(--cream-deep)]",
             )}
             onClick={() => {
               onChange(s);

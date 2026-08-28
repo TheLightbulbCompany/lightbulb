@@ -23,16 +23,16 @@ const PERSISTENT_FAILURE_THRESHOLD = 3;
 // Brand-primary recipe used across the app (see ProviderPicker / landing
 // .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
 const CHOICE_BTN =
-  "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
+  "w-full rounded-full bg-[var(--midnight)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
 const INPUT =
-  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--ink)] placeholder:text-[var(--mute)] focus:outline-none focus:border-[var(--forest)]";
+  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)]";
 // Outline, not filled: this is the escape hatch for the undecided, and it
 // should not compete with Continue for the user who already has an idea.
 const SECONDARY_BTN =
-  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--ink)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
+  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--midnight)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 const QUIET_LINK =
-  "text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors";
+  "text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors";
 
 export interface FirstRunStepsProps {
   path: Path | null;
@@ -75,10 +75,10 @@ export function FirstRunSteps({
     return (
       <div className="space-y-8 text-center">
         <div className="space-y-2">
-          <h1 className="text-3xl font-semibold tracking-tight text-[var(--ink)] font-lora">
+          <h1 className="text-3xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
             Let&apos;s get started.
           </h1>
-          <p className="text-sm text-[var(--mute)]">
+          <p className="text-sm text-[var(--midnight-muted)]">
             Tell your CEO about your business — she&apos;ll research it and lay out your next moves.
           </p>
         </div>
@@ -87,13 +87,13 @@ export function FirstRunSteps({
             <button className={CHOICE_BTN} onClick={() => onSetPath("new")}>
               Start something new
             </button>
-            <p className="text-xs italic text-[var(--mute)]">Start from scratch</p>
+            <p className="text-xs italic text-[var(--midnight-muted)]">Start from scratch</p>
           </div>
           <div className="space-y-1.5">
             <button className={CHOICE_BTN} onClick={() => onSetPath("grow")}>
               Grow my business
             </button>
-            <p className="text-xs italic text-[var(--mute)]">Already have a business</p>
+            <p className="text-xs italic text-[var(--midnight-muted)]">Already have a business</p>
           </div>
         </div>
       </div>
@@ -107,7 +107,7 @@ export function FirstRunSteps({
           ← Back
         </button>
       )}
-      <h1 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
+      <h1 className="text-2xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
         {activePath === "new" ? "What's your idea?" : "What's your company's website?"}
       </h1>
       {activePath === "new" ? (
@@ -162,7 +162,7 @@ export function FirstRunSteps({
                 ? "Setting things up…"
                 : "I don’t know yet — you pick"}
             </button>
-            <p className="text-xs italic text-center text-[var(--mute)]">
+            <p className="text-xs italic text-center text-[var(--midnight-muted)]">
               Friday will look you up and choose something
             </p>
           </div>
@@ -173,9 +173,9 @@ export function FirstRunSteps({
           // Persistent failure: the same upstream error N times in a
           // row is not transient — stop implying a retry will fix it.
           // Show the upstream detail and route to support instead.
-          <div className="space-y-1.5 text-sm text-[var(--danger)]">
+          <div className="space-y-1.5 text-sm text-[var(--err)]">
             <p>We couldn&apos;t save your brief.</p>
-            <p className="break-words text-xs text-[var(--mute)]">{error.detail}</p>
+            <p className="break-words text-xs text-[var(--midnight-muted)]">{error.detail}</p>
             <p>
               Please{" "}
               <a className="underline" href="mailto:support@isol8.co">
@@ -185,7 +185,7 @@ export function FirstRunSteps({
             </p>
           </div>
         ) : (
-          <p className="text-sm text-[var(--danger)]">
+          <p className="text-sm text-[var(--err)]">
             Couldn&apos;t save that just yet.{" "}
             <button className="underline" onClick={() => onSubmit(mode)}>
               Retry

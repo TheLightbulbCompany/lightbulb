@@ -123,7 +123,7 @@ function CommentRow({
     >
       <div
         className="flex items-baseline gap-2 text-xs"
-        style={{ color: "var(--mute)" }}
+        style={{ color: "var(--midnight-muted)" }}
       >
         <span>{authorLabel(comment, agents, currentUserId)}</span>
         <span aria-hidden="true">·</span>
@@ -131,7 +131,7 @@ function CommentRow({
           {timeAgo(comment.createdAt)}
         </time>
       </div>
-      <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
+      <div className="text-sm" style={{ color: "var(--midnight-soft)" }}>
         <MarkdownView>{comment.body}</MarkdownView>
       </div>
       {showFeedback ? (
@@ -188,7 +188,7 @@ export function IssueComments({
           className="text-sm italic"
           style={{
             fontFamily: "var(--font-lora-serif), serif",
-            color: "var(--mute)",
+            color: "var(--midnight-muted)",
           }}
         >
           Loading comments…
@@ -198,7 +198,7 @@ export function IssueComments({
           className="text-sm italic"
           style={{
             fontFamily: "var(--font-lora-serif), serif",
-            color: "var(--mute)",
+            color: "var(--midnight-muted)",
           }}
         >
           No comments yet.
@@ -250,9 +250,9 @@ export function IssueComments({
           }}
           disabled={submitting}
           style={{
-            background: "var(--cream-deeper)",
+            background: "var(--cream-deep)",
             border: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
         />
         <div className="flex justify-end gap-2">

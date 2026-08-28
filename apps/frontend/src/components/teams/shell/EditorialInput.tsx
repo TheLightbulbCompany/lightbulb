@@ -22,7 +22,7 @@ export const EditorialInput = forwardRef<HTMLInputElement, EditorialInputProps>(
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor={inputId}
-          className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]"
+          className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--midnight-muted)]"
         >
           {label}
         </label>
@@ -34,20 +34,20 @@ export const EditorialInput = forwardRef<HTMLInputElement, EditorialInputProps>(
           className={cn(
             "rounded-md border px-3 py-2 text-[13px] outline-none transition-colors",
             "border-[var(--edge)]",
-            "focus:ring-2 focus:ring-[var(--forest)]/20 focus:border-[var(--forest)]",
-            error && "border-[var(--danger)] focus:ring-[var(--danger)]/20 focus:border-[var(--danger)]",
-            "bg-[var(--cream)] text-[var(--ink)]",
+            "focus:ring-2 focus:ring-[var(--midnight)]/20 focus:border-[var(--midnight)]",
+            error && "border-[var(--err)] focus:ring-[var(--err)]/20 focus:border-[var(--err)]",
+            "bg-[var(--cream)] text-[var(--midnight)]",
             className,
           )}
           {...rest}
         />
         {helpText && !error && (
-          <p id={helpId} className="text-[11px] text-[var(--mute)]">
+          <p id={helpId} className="text-[11px] text-[var(--midnight-muted)]">
             {helpText}
           </p>
         )}
         {error && (
-          <p id={errorId} role="alert" className="text-[11px] text-[var(--danger)]">
+          <p id={errorId} role="alert" className="text-[11px] text-[var(--err)]">
             {error}
           </p>
         )}

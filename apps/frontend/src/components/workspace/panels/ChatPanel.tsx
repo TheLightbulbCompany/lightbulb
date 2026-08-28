@@ -76,10 +76,10 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   if (agentGone) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--mute)]">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--midnight-muted)]">
         <p>This agent no longer exists.</p>
         <button
-          className="rounded border border-[var(--edge)] px-3 py-1 hover:bg-[var(--cream-deeper)]"
+          className="rounded border border-[var(--edge)] px-3 py-1 hover:bg-[var(--cream-deep)]"
           onClick={() => props.api.close()}
         >
           <X size={14} className="mr-1 inline" /> Close panel

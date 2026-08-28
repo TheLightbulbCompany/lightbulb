@@ -67,7 +67,7 @@ function MyChannelsSectionInner() {
   }
 
   if (isLoading || !data) {
-    return <div className="p-4 text-sm text-[var(--mute)]">Loading channels…</div>;
+    return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading channels…</div>;
   }
 
   const performUnlink = async () => {
@@ -86,7 +86,7 @@ function MyChannelsSectionInner() {
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold">My Channels</h2>
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Link your Telegram, Discord, and Slack identities to your organization&apos;s bots.
         </p>
       </div>
@@ -95,11 +95,11 @@ function MyChannelsSectionInner() {
         const bots = data[provider];
         return (
           <div key={provider} className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--mute)]">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">
               {PROVIDER_LABELS[provider]}
             </h3>
             {bots.length === 0 ? (
-              <div className="rounded-md border border-[var(--edge)] p-3 text-xs text-[var(--mute)]">
+              <div className="rounded-md border border-[var(--edge)] p-3 text-xs text-[var(--midnight-muted)]">
                 {!isSubscribed ? (
                   <>Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.</>
                 ) : (
@@ -123,7 +123,7 @@ function MyChannelsSectionInner() {
                     )}
                     <div className="flex-1">
                       <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
-                      <p className="text-xs text-[var(--mute)]">{bot.agent_id}</p>
+                      <p className="text-xs text-[var(--midnight-muted)]">{bot.agent_id}</p>
                     </div>
                     {bot.linked ? (
                       <Button

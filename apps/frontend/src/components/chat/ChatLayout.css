@@ -14,7 +14,7 @@
   min-width: 0;
 }
 .cream-sidebar {
-  background: var(--cream-deeper);
+  background: var(--cream-deep);
   border-right: 1px solid var(--edge);
   display: flex;
   flex-direction: column;
@@ -47,7 +47,7 @@
   border: 1px solid var(--edge);
   border-radius: 999px;
   background: var(--cream);
-  color: var(--forest);
+  color: var(--midnight);
   padding: 5px 10px;
   font-size: 11px;
   font-weight: 700;
@@ -65,19 +65,19 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: var(--forest);
+  background: var(--midnight);
   color: #fff;
   font-size: 9px;
   line-height: 1;
 }
 .sidebar-settings-link {
-  color: var(--mute);
+  color: var(--midnight-muted);
   transition: color 0.15s;
   display: flex;
   align-items: center;
 }
 .sidebar-settings-link:hover {
-  color: var(--ink);
+  color: var(--midnight);
 }
 .tab-switcher {
   display: flex;
@@ -97,15 +97,15 @@
   cursor: pointer;
   transition: all 0.15s;
   background: transparent;
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 .tab-btn.active {
   background: #fff;
-  color: var(--ink);
+  color: var(--midnight);
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 .tab-btn:not(.active):hover {
-  color: var(--ink);
+  color: var(--midnight);
 }
 /* Co-equal create pill: two first-class create actions (agent | task) in one
    forest control, reusing the primary-button treatment (same forest #06402B,
@@ -116,9 +116,9 @@
   display: flex;
   align-items: stretch;
   margin: 4px 16px 8px;
-  border: 1.5px solid var(--forest);
+  border: 1.5px solid var(--midnight);
   border-radius: 8px;
-  background: var(--forest);
+  background: var(--midnight);
   overflow: hidden;
 }
 .create-pill__seg {
@@ -178,7 +178,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 4px 6px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -192,11 +192,11 @@
 /* The headline states, when there is news to report. Same mono/caps type as
    the label itself — this is the label speaking, not a badge bolted onto it. */
 .agent-section-label__working {
-  color: var(--forest);
+  color: var(--midnight);
   font-weight: 600;
 }
 .agent-section-label__attention {
-  color: var(--danger);
+  color: var(--err);
   font-weight: 600;
 }
 .agent-item {
@@ -257,7 +257,7 @@
   cursor: pointer;
 }
 .agent-item__main:focus-visible {
-  outline: 2px solid var(--forest);
+  outline: 2px solid var(--midnight);
   outline-offset: 3px;
   border-radius: 6px;
 }
@@ -285,13 +285,13 @@
   background: transparent;
 }
 .agent-item[data-state="running"] .agent-item__main::before {
-  background: var(--forest-soft);
+  background: var(--brass);
 }
 .agent-item[data-state="attention"] .agent-item__main::before {
-  background: var(--danger);
+  background: var(--err);
 }
 .agent-item[data-state="paused"] .agent-item__main::before {
-  background: var(--mute-soft);
+  background: var(--midnight-faint);
 }
 /* `terminated` gets NO rail at all, and that absence IS the distinction from
    paused. A paused agent is a live teammate you switched off and can switch
@@ -303,7 +303,7 @@
   opacity: 0.4;
 }
 .agent-item[data-state="terminated"] .agent-name {
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 
 /* A paused/terminated agent is switched off on purpose — recede it rather
@@ -338,7 +338,7 @@
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.1em;
-  color: var(--forest);
+  color: var(--midnight);
   opacity: 0.75;
 }
 
@@ -356,17 +356,17 @@
   overflow: hidden;
 }
 .agent-state--running {
-  color: var(--forest);
+  color: var(--midnight);
 }
 .agent-state--attention {
-  color: var(--danger);
+  color: var(--err);
 }
 .agent-state--paused,
 .agent-state--terminated,
 /* An unrecognised status prints verbatim in the neutral tone — we are showing
    the owner what the backend said, not claiming to know what it means. */
 .agent-state--unknown {
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 /* Quiet states get a plain dot; `running` uses the shared LiveRunDot (the
    forest ping every other Teams surface uses for a live run) so the roster
@@ -421,7 +421,7 @@
 .agent-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--ink);
+  color: var(--midnight);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -443,7 +443,7 @@
 }
 .agent-model {
   font-size: 11px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -479,16 +479,16 @@
   height: 22px;
   border: 0;
   background: transparent;
-  color: var(--mute);
+  color: var(--midnight-muted);
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .agent-row-action:hover {
   background: rgba(0, 0, 0, 0.06);
-  color: var(--ink);
+  color: var(--midnight);
 }
-.agent-row-action--danger:hover {
+.agent-row-action--err:hover {
   color: #dc2626;
 }
 /* Nested per-agent session list — rendered under the active agent row. Mounted
@@ -527,11 +527,11 @@
 }
 .session-item:hover {
   background: rgba(255, 255, 255, 0.9);
-  color: var(--ink);
+  color: var(--midnight);
 }
 .session-item.active {
   background: rgba(45, 138, 78, 0.1);
-  color: var(--ink);
+  color: var(--midnight);
   font-weight: 500;
 }
 .session-label {
@@ -558,7 +558,7 @@
   border: 0;
   background: transparent;
   border-radius: 6px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   cursor: pointer;
 }
 .session-row:hover .session-rename,
@@ -570,7 +570,7 @@
   color: #2d8a4e;
 }
 /* Shares .session-rename's base + hover-reveal; only the hover intent color
-   differs (destructive red, matching .agent-row-action--danger). The
+   differs (destructive red, matching .agent-row-action--err). The
    .session-row ancestor isn't scoping — it lifts specificity above
    .session-rename:hover so red wins even if these rules get reordered. */
 .session-row .session-delete:hover {
@@ -584,7 +584,7 @@
   border: 1px solid #c8e6c9;
   border-radius: 7px;
   background: #fff;
-  color: var(--ink);
+  color: var(--midnight);
   font-size: 12px;
   outline: none;
 }
@@ -598,7 +598,7 @@
   border: 0;
   background: transparent;
   border-radius: 7px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   font-size: 12px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -636,7 +636,7 @@
 .user-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--ink);
+  color: var(--midnight);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -649,7 +649,7 @@
   padding: 1px 6px;
   border-radius: 4px;
   background: #e8e3d9;
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 .version-text {
   text-align: center;
@@ -699,11 +699,11 @@
   cursor: pointer;
   padding: 10px;
   margin: -6px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   transition: color 0.15s;
 }
 .mobile-hamburger:hover {
-  color: var(--ink);
+  color: var(--midnight);
 }
 .sidebar-backdrop {
   display: none;

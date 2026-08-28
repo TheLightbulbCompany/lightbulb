@@ -110,7 +110,7 @@ export function PluginsTab() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -134,12 +134,12 @@ export function PluginsTab() {
             <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
               Plugins
             </h2>
-            <p className="text-sm text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <p className="text-sm text-[var(--midnight-muted)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               OpenClaw plugins loaded in your container. A plugin bundles tools, skills,
               providers and channels. Lightbulb AI-managed plugins are locked.
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--mute)] hover:text-[var(--ink)]">
+          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -151,7 +151,7 @@ export function PluginsTab() {
         )}
 
         {rows.length === 0 && (
-          <p className="text-sm text-[var(--mute)] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <p className="text-sm text-[var(--midnight-muted)] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
             No plugins configured.
           </p>
         )}
@@ -161,16 +161,16 @@ export function PluginsTab() {
             <div key={row.id} className="rounded-xl border border-[var(--edge)] bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <Package className="h-5 w-5 text-[var(--mute)] flex-shrink-0 mt-0.5" />
+                  <Package className="h-5 w-5 text-[var(--midnight-muted)] flex-shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3
-                        className="text-sm font-semibold text-[var(--ink)] truncate"
+                        className="text-sm font-semibold text-[var(--midnight)] truncate"
                         style={{ fontFamily: "'DM Sans', sans-serif" }}
                       >
                         {row.id}
                       </h3>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--mute)] flex-shrink-0">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--midnight-muted)] flex-shrink-0">
                         {row.kind}
                       </span>
                       {row.locked && (
@@ -179,7 +179,7 @@ export function PluginsTab() {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                    <p className="text-xs text-[var(--midnight-muted)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
                       {row.toolCount > 0
                         ? `Provides ${row.toolCount} tool${row.toolCount === 1 ? "" : "s"}`
                         : "No tools contributed"}
@@ -195,7 +195,7 @@ export function PluginsTab() {
                     <button
                       onClick={() => handleToggle(row)}
                       disabled={busyId !== null}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[#c5c0b6] transition-colors disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:border-[#c5c0b6] transition-colors disabled:opacity-50"
                       style={{ fontFamily: "'DM Sans', sans-serif" }}
                     >
                       {busyId === row.id ? (
@@ -213,7 +213,7 @@ export function PluginsTab() {
           ))}
         </div>
 
-        <p className="text-xs text-[var(--mute)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+        <p className="text-xs text-[var(--midnight-muted)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
           Channel plugins (Slack, Discord, Telegram…) are managed in the Channels panel.
         </p>
       </div>

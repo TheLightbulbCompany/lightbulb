@@ -6,7 +6,7 @@ import {
   statusDotColor,
 } from "@/components/teams/org-chart/statusColors";
 
-const DEFAULT_COLOR = "var(--mute)";
+const DEFAULT_COLOR = "var(--midnight-muted)";
 const DEFAULT_CLASS = "";
 
 test("statusDotClass returns the idle class for 'idle'", () => {
@@ -19,16 +19,16 @@ test("statusDotClass marks 'running' with the pulsing animation class", () => {
 });
 
 test("statusDotColor maps 'running' to the editorial forest token", () => {
-  expect(statusDotColor("running")).toBe("var(--forest)");
+  expect(statusDotColor("running")).toBe("var(--midnight)");
 });
 
 test("statusDotColor maps 'error' to the editorial danger token", () => {
-  expect(statusDotColor("error")).toBe("var(--danger)");
+  expect(statusDotColor("error")).toBe("var(--err)");
 });
 
 test("statusDotColor maps 'idle' / 'paused' to the mute token", () => {
-  expect(statusDotColor("idle")).toBe("var(--mute)");
-  expect(statusDotColor("paused")).toBe("var(--mute)");
+  expect(statusDotColor("idle")).toBe("var(--midnight-muted)");
+  expect(statusDotColor("paused")).toBe("var(--midnight-muted)");
 });
 
 test("statusDotColor maps 'thinking' to the warn token", () => {
@@ -36,7 +36,7 @@ test("statusDotColor maps 'thinking' to the warn token", () => {
 });
 
 test("statusDotColor maps 'covered' to forest-soft and 'stalled' to warn", () => {
-  expect(statusDotColor("covered")).toBe("var(--forest-soft)");
+  expect(statusDotColor("covered")).toBe("var(--brass)");
   expect(statusDotColor("stalled")).toBe("var(--warn)");
 });
 

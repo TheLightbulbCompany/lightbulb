@@ -75,8 +75,8 @@ import type {
 // Shared chip styling for label pills, lifted from IssueProperties' Labels
 // row so the trailing label chips read identically to the detail rail.
 const LABEL_CHIP_STYLE = {
-  background: "var(--cream-deeper)",
-  color: "var(--ink-soft)",
+  background: "var(--cream-deep)",
+  color: "var(--midnight-soft)",
   border: "1px solid var(--edge)",
 } as const;
 
@@ -360,8 +360,8 @@ function ViewModeToggle({
     cn(
       "inline-flex h-7 w-7 items-center justify-center transition-colors",
       active
-        ? "bg-[var(--forest)] text-[var(--cream)]"
-        : "text-[var(--mute)] hover:text-[var(--ink)]",
+        ? "bg-[var(--midnight)] text-[var(--cream)]"
+        : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
     );
   return (
     <div className="flex items-center overflow-hidden rounded-md border border-[var(--edge)]">
@@ -409,8 +409,8 @@ function ToolbarIconButton({
       className={cn(
         "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
         active
-          ? "bg-[var(--forest-tint)] text-[var(--ink)]"
-          : "text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
+          ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+          : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
       )}
     >
       {children}
@@ -445,8 +445,8 @@ function MenuPopover<T extends string>({
           className={cn(
             "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
             active
-              ? "bg-[var(--forest-tint)] text-[var(--ink)]"
-              : "text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
+              ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+              : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
           )}
         >
           {icon}
@@ -461,8 +461,8 @@ function MenuPopover<T extends string>({
             className={cn(
               "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
               value === selected
-                ? "bg-[var(--cream-deeper)] text-[var(--ink)]"
-                : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+                ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
+                : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
             )}
           >
             <span>{label}</span>
@@ -481,10 +481,10 @@ function MenuPopover<T extends string>({
 function GroupHeader({ label, count }: { label: string; count: number }) {
   return (
     <div className="flex items-center gap-2 px-1 pb-1.5 pt-3">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--mute)]">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--midnight-muted)]">
         {label}
       </span>
-      <span className="text-[11px] tabular-nums text-[var(--mute)]">
+      <span className="text-[11px] tabular-nums text-[var(--midnight-muted)]">
         {count}
       </span>
     </div>
@@ -572,9 +572,9 @@ function TaskRow({
       prefetch={false}
       onClick={handleClick}
       draggable={false}
-      className="group flex items-center gap-2 border-b border-[var(--edge)] py-2.5 pr-2 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deeper)]"
+      className="group flex items-center gap-2 border-b border-[var(--edge)] py-2.5 pr-2 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deep)]"
       style={{
-        color: "var(--ink)",
+        color: "var(--midnight)",
         paddingLeft: depth > 0 ? `${8 + depth * 18}px` : "8px",
       }}
     >
@@ -588,7 +588,7 @@ function TaskRow({
           }}
           aria-label={expanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
           aria-expanded={expanded}
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--mute)] hover:text-[var(--ink)]"
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
           <ChevronRight
             className={cn(
@@ -611,7 +611,7 @@ function TaskRow({
       </span>
 
       {/* ISO-N identifier */}
-      <span className="shrink-0 font-mono text-xs text-[var(--mute)]">
+      <span className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]">
         {identifier}
       </span>
 
@@ -623,7 +623,7 @@ function TaskRow({
       <span className="min-w-0 flex-1 truncate">
         {issue.title}
         {hasChildren && !expanded && descendantCount > 0 ? (
-          <span className="ml-1.5 text-xs text-[var(--mute)]">
+          <span className="ml-1.5 text-xs text-[var(--midnight-muted)]">
             ({descendantCount} sub-task{descendantCount !== 1 ? "s" : ""})
           </span>
         ) : null}
@@ -644,7 +644,7 @@ function TaskRow({
             </span>
           ))}
           {labels.length > 2 ? (
-            <span className="text-[11px] text-[var(--mute)]">
+            <span className="text-[11px] text-[var(--midnight-muted)]">
               +{labels.length - 2}
             </span>
           ) : null}
@@ -668,13 +668,13 @@ function TaskRow({
           />
         </span>
       ) : (
-        <span className="hidden shrink-0 text-xs text-[var(--mute)] lg:inline">
+        <span className="hidden shrink-0 text-xs text-[var(--midnight-muted)] lg:inline">
           Unassigned
         </span>
       )}
 
       {/* Relative activity timestamp */}
-      <span className="shrink-0 text-xs text-[var(--mute)]">{updatedLabel}</span>
+      <span className="shrink-0 text-xs text-[var(--midnight-muted)]">{updatedLabel}</span>
 
       {/* Row-level overflow menu — revealed on row hover. Like the status
           circle, every handler stops propagation so opening the menu or
@@ -689,7 +689,7 @@ function TaskRow({
               type="button"
               onClick={stop}
               aria-label="Task actions"
-              className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--mute)] transition-colors hover:bg-[var(--cream)] hover:text-[var(--ink)]"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream)] hover:text-[var(--midnight)]"
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
@@ -907,7 +907,7 @@ export function TasksList({
               options={SORT_OPTIONS}
               selected={sortField}
               trailing={() => (
-                <span className="text-xs text-[var(--mute)]">
+                <span className="text-xs text-[var(--midnight-muted)]">
                   {sortDir === "asc" ? "↑" : "↓"}
                 </span>
               )}
@@ -935,7 +935,7 @@ export function TasksList({
 
       {/* Body */}
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : filtered.length === 0 && (filtersActive || searchActive) ? (

@@ -157,7 +157,7 @@ export function IssuesPanel({
 
   if (error)
     return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
+      <div className="editorial-page p-8 text-[var(--err)]">
         Error: {String(error)}
       </div>
     );
@@ -185,13 +185,13 @@ export function IssuesPanel({
             aria-checked={showRoutineTasks}
             onClick={() => setShowRoutineTasks((v) => !v)}
             title="Tasks filed automatically by a routine on each run"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
             style={{
               border: "1px solid var(--edge)",
               background: showRoutineTasks
-                ? "var(--cream-deeper)"
+                ? "var(--cream-deep)"
                 : "transparent",
-              color: showRoutineTasks ? "var(--ink)" : "var(--mute)",
+              color: showRoutineTasks ? "var(--midnight)" : "var(--midnight-muted)",
             }}
           >
             <Repeat className="h-3 w-3" aria-hidden="true" />
@@ -205,8 +205,8 @@ export function IssuesPanel({
             className="inline-flex items-center gap-1.5 rounded-full py-0.5 pl-3 pr-1.5 text-xs"
             style={{
               border: "1px solid var(--edge)",
-              background: "var(--cream-deeper)",
-              color: "var(--ink-soft)",
+              background: "var(--cream-deep)",
+              color: "var(--midnight-soft)",
             }}
           >
             Filtered to {agentFilterName}
@@ -215,8 +215,8 @@ export function IssuesPanel({
               onClick={clearAgentFilter}
               aria-label="Clear agent filter"
               title="Clear agent filter"
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
-              style={{ color: "var(--mute)" }}
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+              style={{ color: "var(--midnight-muted)" }}
             >
               <X className="h-3 w-3" />
             </button>

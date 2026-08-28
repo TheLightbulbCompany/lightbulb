@@ -40,10 +40,10 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex items-center gap-2">
-        <ShieldQuestion className="h-4 w-4 flex-shrink-0" style={{ color: "var(--forest)" }} />
-        <span className="flex-1 truncate text-[var(--ink)]">{title}</span>
+        <ShieldQuestion className="h-4 w-4 flex-shrink-0" style={{ color: "var(--midnight)" }} />
+        <span className="flex-1 truncate text-[var(--midnight)]">{title}</span>
         {approval.createdAt && (
-          <span className="text-xs text-[var(--mute)]">{timeAgo(approval.createdAt)}</span>
+          <span className="text-xs text-[var(--midnight-muted)]">{timeAgo(approval.createdAt)}</span>
         )}
         {isActionable && !rejecting && (
           <div className="flex gap-2">
@@ -56,7 +56,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           </div>
         )}
         {!isActionable && (
-          <span className="text-xs capitalize text-[var(--mute)]">{approval.status}</span>
+          <span className="text-xs capitalize text-[var(--midnight-muted)]">{approval.status}</span>
         )}
       </div>
       {isActionable && rejecting && (
@@ -81,7 +81,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
             className="flex-1 min-w-0 bg-transparent outline-none"
             style={{
               borderBottom: "1px solid var(--edge)",
-              color: "var(--ink)",
+              color: "var(--midnight)",
             }}
           />
           <EditorialButton

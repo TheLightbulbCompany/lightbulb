@@ -82,9 +82,9 @@ export function NeedsAttentionBand({
         role="alert"
         className="mb-4 rounded-md border px-3 py-2 text-sm"
         style={{
-          borderColor: "color-mix(in srgb, var(--danger) 25%, transparent)",
-          background: "color-mix(in srgb, var(--danger) 6%, transparent)",
-          color: "var(--danger)",
+          borderColor: "color-mix(in srgb, var(--err) 25%, transparent)",
+          background: "color-mix(in srgb, var(--err) 6%, transparent)",
+          color: "var(--err)",
         }}
       >
         Couldn&apos;t load recent agent failures. Try refreshing.
@@ -104,11 +104,11 @@ export function NeedsAttentionBand({
         <div className="flex items-center gap-2 px-3 py-2">
           <span
             aria-hidden="true"
-            className="block h-3 w-3 animate-pulse rounded bg-[var(--cream-deeper)]"
+            className="block h-3 w-3 animate-pulse rounded bg-[var(--cream-deep)]"
           />
           <span
             aria-hidden="true"
-            className="block h-3 w-32 animate-pulse rounded bg-[var(--cream-deeper)]"
+            className="block h-3 w-32 animate-pulse rounded bg-[var(--cream-deep)]"
           />
         </div>
       </section>
@@ -141,8 +141,8 @@ export function NeedsAttentionBand({
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        <span className="font-medium text-[var(--ink)]">Agent failures</span>
-        <span className="text-xs text-[var(--mute)]">{count}</span>
+        <span className="font-medium text-[var(--midnight)]">Agent failures</span>
+        <span className="text-xs text-[var(--midnight-muted)]">{count}</span>
       </button>
       {!collapsed && (
         <ul className="divide-y" style={{ borderColor: "var(--edge)" }}>

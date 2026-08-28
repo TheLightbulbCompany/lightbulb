@@ -136,7 +136,7 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
   if (!match) {
     // Inline code
     return (
-      <code className="bg-[var(--cream-deepest)] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
+      <code className="bg-[var(--cream-deeper)] rounded px-1.5 py-0.5 text-sm text-[var(--midnight)]" {...props}>
         {children}
       </code>
     );
@@ -167,14 +167,14 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
   // Fenced code block
   return (
     <div className="relative group/code my-4 rounded-lg overflow-hidden border border-[var(--edge)]">
-      <div className="flex items-center justify-between px-4 py-2 bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
-        <span className="text-xs text-[var(--mute)]">{match[1]}</span>
+      <div className="flex items-center justify-between px-4 py-2 bg-[var(--cream-deep)] border-b border-[var(--edge)]">
+        <span className="text-xs text-[var(--midnight-muted)]">{match[1]}</span>
         <button
           onClick={handleCopy}
           aria-label={copied ? "Copied" : "Copy code"}
           className={cn(
             "chat-code-copy-btn text-xs transition-colors flex items-center gap-1",
-            copied ? "text-[var(--forest)]" : "text-[var(--mute)] hover:text-[var(--ink)]",
+            copied ? "text-[var(--midnight)]" : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
           )}
         >
           {/* Icon swaps Copy -> Check; the "Copy" label never changes text,
@@ -228,7 +228,7 @@ const MarkdownContent = React.memo(function MarkdownContent({
             return (
               <button
                 onClick={() => onOpenFile(filePath)}
-                className="text-[var(--forest)] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
+                className="text-[var(--midnight)] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
               >
                 {children}
               </button>
@@ -236,7 +236,7 @@ const MarkdownContent = React.memo(function MarkdownContent({
           }
           const isSafe = !href?.match(/^(javascript|data|vbscript):/i);
           return (
-            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--forest)] hover:underline">
+            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--midnight)] hover:underline">
               {children}
             </a>
           );
@@ -245,17 +245,17 @@ const MarkdownContent = React.memo(function MarkdownContent({
         ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
         li: ({ children }) => <li className="ml-2">{children}</li>,
         blockquote: ({ children }) => (
-          <blockquote className="border-l-2 border-[var(--edge)] pl-4 text-[var(--mute)] my-3">{children}</blockquote>
+          <blockquote className="border-l-2 border-[var(--edge)] pl-4 text-[var(--midnight-muted)] my-3">{children}</blockquote>
         ),
         table: ({ children }) => (
           <div className="overflow-x-auto my-4">
             <table className="w-full border-collapse border border-[var(--edge)] text-sm">{children}</table>
           </div>
         ),
-        thead: ({ children }) => <thead className="bg-[var(--cream-deeper)]">{children}</thead>,
+        thead: ({ children }) => <thead className="bg-[var(--cream-deep)]">{children}</thead>,
         th: ({ children }) => <th className="border border-[var(--edge)] px-3 py-2 text-left font-medium">{children}</th>,
         td: ({ children }) => <td className="border border-[var(--edge)] px-3 py-2">{children}</td>,
-        tr: ({ children }) => <tr className="even:bg-[var(--cream-deeper)]">{children}</tr>,
+        tr: ({ children }) => <tr className="even:bg-[var(--cream-deep)]">{children}</tr>,
         hr: () => <hr className="border-[var(--edge)] my-4" />,
         pre: ({ children }) => <>{children}</>,
       }}
@@ -408,7 +408,7 @@ export function ThinkingBlock({
           userToggledRef.current = true;
           setIsExpanded(!isExpanded);
         }}
-        className="chat-thinking-trigger flex items-center gap-1.5 text-left text-[var(--mute)] hover:text-[var(--ink-soft)] transition-colors"
+        className="chat-thinking-trigger flex items-center gap-1.5 text-left text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] transition-colors"
       >
         {isExpanded ? (
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />
@@ -418,7 +418,7 @@ export function ThinkingBlock({
         <span className="text-sm italic">{label}</span>
       </button>
       {isExpanded && (
-        <div className="mt-1.5 pl-5 border-l border-[var(--edge-soft)] text-sm text-[var(--mute)]">
+        <div className="mt-1.5 pl-5 border-l border-[var(--edge-soft)] text-sm text-[var(--midnight-muted)]">
           {streaming ? (
             <StreamingMarkdownContent content={text} />
           ) : (
@@ -511,7 +511,7 @@ export function AgentHead({
     const settled = !streaming;
     return (
         <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-semibold text-[var(--ink)] tracking-tight">
+            <span className="text-xs font-semibold text-[var(--midnight)] tracking-tight">
                 {name}
             </span>
             <span className="inline-flex items-center justify-center w-5 h-5">
@@ -535,7 +535,7 @@ export function AgentHead({
                                 // Clipboard write failed — no success state to reset.
                             }
                         }}
-                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                        className="chat-action-btn h-6 w-6 text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
                     >
                         <Copy className="h-3 w-3" />
                     </Button>
@@ -560,7 +560,7 @@ export function AgentHead({
                                 // Clipboard write failed — no success state to reset.
                             }
                         }}
-                        className="chat-action-btn h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
+                        className="chat-action-btn h-6 w-6 text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
                     >
                         <Share2 className="h-3 w-3" />
                     </Button>
@@ -732,7 +732,7 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <div className="relative text-sm leading-7 bg-[var(--cream-deeper)] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
+        <div className="relative text-sm leading-7 bg-[var(--cream-deep)] text-[var(--midnight)] rounded-2xl rounded-br-md px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
       </div>
@@ -792,7 +792,7 @@ const ItemRenderer = React.memo(
   }) {
     if (item.kind === "divider") {
       return (
-        <div className="my-3 flex items-center gap-2 text-[11px] text-[var(--mute)]">
+        <div className="my-3 flex items-center gap-2 text-[11px] text-[var(--midnight-muted)]">
           <span className="flex-1 h-px bg-[var(--edge)]" />
           <span className="uppercase tracking-wide">{item.label}</span>
           <span className="flex-1 h-px bg-[var(--edge)]" />
@@ -828,7 +828,7 @@ const ItemRenderer = React.memo(
  * A `/btw` (detached side-channel) answer rendered as a distinct, non-thread
  * side card — labeled "BTW · not saved" (it is never written to the transcript
  * / history), the question in muted text, the answer as the body. Error styling
- * reuses the existing chat error tokens (var(--danger) text/border, a low-alpha danger tint fill). Mirrors
+ * reuses the existing chat error tokens (var(--err) text/border, a low-alpha danger tint fill). Mirrors
  * OpenClaw's "Not saved to chat history" side card.
  */
 function BtwSideCard({
@@ -847,22 +847,22 @@ function BtwSideCard({
       data-testid="btw-card"
       className={cn(
         "rounded-lg border px-3 py-2.5 text-sm",
-        isError ? "border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
+        isError ? "border-[var(--err)] bg-[color-mix(in_srgb,var(--err)_6%,var(--cream))]" : "border-[var(--edge)] bg-[var(--cream-deep)]",
       )}
     >
       <div className="flex items-center gap-1.5 mb-1.5">
         <span
           className={cn(
             "text-[11px] font-semibold uppercase tracking-wide",
-            isError ? "text-[var(--danger)]" : "text-[var(--forest)]",
+            isError ? "text-[var(--err)]" : "text-[var(--midnight)]",
           )}
         >
           BTW
         </span>
-        <span className="text-[11px] text-[var(--mute)]">· not saved</span>
+        <span className="text-[11px] text-[var(--midnight-muted)]">· not saved</span>
       </div>
-      {question && <div className="text-xs text-[var(--mute)] mb-1.5">{question}</div>}
-      <div className={cn("leading-7", isError ? "text-[var(--danger)]" : "text-[var(--ink-soft)]")}>
+      {question && <div className="text-xs text-[var(--midnight-muted)] mb-1.5">{question}</div>}
+      <div className={cn("leading-7", isError ? "text-[var(--err)]" : "text-[var(--midnight-soft)]")}>
         <MarkdownContent content={text} onOpenFile={onOpenFile} />
       </div>
     </div>
@@ -1073,7 +1073,7 @@ function BubbleGroupImpl({
           streaming={Boolean(isStreaming && isLastAssistantGroup)}
           messageText={groupCopyText(group)}
         />
-        <div className="relative text-sm leading-7 text-[var(--ink-soft)] w-full">
+        <div className="relative text-sm leading-7 text-[var(--midnight-soft)] w-full">
           {renderables.map((entry) =>
             entry.kind === "tool-run" ? (
               <ToolActivityTrace key={entry.key} calls={entry.calls} />
@@ -1320,7 +1320,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[var(--mute)] hover:text-[var(--ink-soft)] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
+                className="text-[11px] text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

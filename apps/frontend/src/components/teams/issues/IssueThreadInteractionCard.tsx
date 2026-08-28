@@ -11,10 +11,10 @@
 //   - shadcn Button         -> EditorialButton (default/cta -> primary,
 //                              outline -> secondary, ghost -> ghost)
 //   - Tooltip on the header  dropped; created-by / date render bare
-//   - `sky` selection accent recolored to --forest / --forest-tint
+//   - `sky` selection accent recolored to --midnight / --cream-deep
 //   - emerald / rose / amber status hues kept (they read fine on cream)
 //   - semantic shadcn tokens (foreground/background/border/muted) mapped to
-//     editorial CSS vars (--ink / --cream-deeper / --edge / --mute …)
+//     editorial CSS vars (--midnight / --cream-deep / --edge / --midnight-muted …)
 //   - Link -> next/link via createIssueDetailPath for created-task links;
 //     confirmation-target chips that point at in-issue document anchors (no
 //     Teams route) render as bare spans rather than dead links.
@@ -209,9 +209,9 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
     default:
       // Pending — recolored from upstream `sky` to the editorial forest accent.
       return {
-        shell: "border-[var(--forest)] bg-transparent",
+        shell: "border-[var(--midnight)] bg-transparent",
         badge:
-          "border-[var(--forest)] bg-[var(--forest-tint)] text-[var(--forest)]",
+          "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]",
       };
   }
 }
@@ -230,8 +230,8 @@ function TaskField({
       className={cn(
         "inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
         tone === "default"
-          ? "border-[var(--edge)] bg-transparent text-[var(--ink)]"
-          : "border-[var(--edge)] bg-transparent text-[var(--mute)]",
+          ? "border-[var(--edge)] bg-transparent text-[var(--midnight)]"
+          : "border-[var(--edge)] bg-transparent text-[var(--midnight-muted)]",
       )}
     >
       {label}: {value}
@@ -312,7 +312,7 @@ function TaskTreeNode({
                   checked={isSelected}
                   onCheckedChange={(checked) => onToggleSelection?.(node, checked === true)}
                   aria-label={`Include ${node.task.title}`}
-                  className="mt-0.5 border-[var(--edge)] data-[state=checked]:border-[var(--forest)] data-[state=checked]:bg-[var(--forest)] data-[state=checked]:text-[var(--cream)]"
+                  className="mt-0.5 border-[var(--edge)] data-[state=checked]:border-[var(--midnight)] data-[state=checked]:bg-[var(--midnight)] data-[state=checked]:text-[var(--cream)]"
                 />
               ) : null}
               <div className="min-w-0 flex-1">
@@ -323,17 +323,17 @@ function TaskTreeNode({
                       className="mt-px"
                     />
                   ) : null}
-                  <div className="min-w-0 truncate text-sm font-medium text-[var(--ink)]">
+                  <div className="min-w-0 truncate text-sm font-medium text-[var(--midnight)]">
                     {node.task.title}
                   </div>
                 </div>
                 {depth > 0 ? (
-                  <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--mute)]">
+                  <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
                     Child task
                   </div>
                 ) : null}
                 {node.task.description ? (
-                  <p className="mt-0.5 text-sm leading-5 text-[var(--mute)]">
+                  <p className="mt-0.5 text-sm leading-5 text-[var(--midnight-muted)]">
                     {node.task.description}
                   </p>
                 ) : null}
@@ -525,7 +525,7 @@ function SuggestTasksCard({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--mute)]">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
         <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
         {interaction.payload.defaultParentId ? (
           <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
@@ -578,7 +578,7 @@ function SuggestTasksCard({
       {interaction.status === "pending" ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--mute)]">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
               <span>
                 {selectedCount === totalTasks
                   ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
@@ -639,9 +639,9 @@ function SuggestTasksCard({
                 placeholder="Add a short reason for rejecting this suggestion"
                 className="min-h-24 text-sm"
                 style={{
-                  background: "var(--cream-deeper)",
+                  background: "var(--cream-deep)",
                   border: "1px solid var(--edge)",
-                  color: "var(--ink)",
+                  color: "var(--midnight)",
                 }}
               />
               <div className="flex justify-end">
@@ -691,10 +691,10 @@ function QuestionOptionButton({
       role={selectionMode === "single" ? "radio" : "checkbox"}
       aria-checked={selected}
       className={cn(
-        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-[var(--forest)] focus-visible:ring-2 focus-visible:ring-[var(--forest)]",
+        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-[var(--midnight)] focus-visible:ring-2 focus-visible:ring-[var(--midnight)]",
         selected
-          ? "border-[var(--forest)] bg-[var(--forest-tint)] text-[var(--ink)]"
-          : "border-[var(--edge)] bg-transparent text-[var(--ink)] hover:border-[var(--forest)] hover:bg-[var(--forest-tint)]",
+          ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]"
+          : "border-[var(--edge)] bg-transparent text-[var(--midnight)] hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)]",
       )}
       id={id}
       onClick={onClick}
@@ -702,7 +702,7 @@ function QuestionOptionButton({
       <div
         className={cn(
           "text-sm font-medium",
-          selected ? "text-[var(--ink)]" : "text-[var(--ink)]",
+          selected ? "text-[var(--midnight)]" : "text-[var(--midnight)]",
         )}
       >
         {label}
@@ -711,7 +711,7 @@ function QuestionOptionButton({
         <div
           className={cn(
             "mt-1 text-sm leading-6",
-            selected ? "text-[var(--ink-soft)]" : "text-[var(--mute)]",
+            selected ? "text-[var(--midnight-soft)]" : "text-[var(--midnight-muted)]",
           )}
         >
           {description}
@@ -857,8 +857,8 @@ function AskUserQuestionsCard({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--mute)]">
-        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)] px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
+        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-[var(--midnight-soft)]">
           <MessageSquareQuote className="h-3 w-3" />
           Ask user questions
         </span>
@@ -874,21 +874,21 @@ function AskUserQuestionsCard({
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deeper)] p-4"
+              className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--mute)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--midnight-muted)]">
                     Question {index + 1}
                   </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
-                    className="mt-1 text-sm font-semibold text-[var(--ink)]"
+                    className="mt-1 text-sm font-semibold text-[var(--midnight)]"
                   >
                     {question.prompt}
                   </div>
                   {question.helpText ? (
-                    <p className="mt-1 text-sm leading-6 text-[var(--mute)]">
+                    <p className="mt-1 text-sm leading-6 text-[var(--midnight-muted)]">
                       {question.helpText}
                     </p>
                   ) : null}
@@ -924,10 +924,10 @@ function AskUserQuestionsCard({
                   id={`${interaction.id}-${question.id}-other`}
                   aria-expanded={otherActiveQuestions[question.id] === true}
                   className={cn(
-                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--forest)]",
+                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)]",
                     otherActiveQuestions[question.id]
-                      ? "text-[var(--forest)] hover:text-[var(--forest)]"
-                      : "text-[var(--mute)] hover:text-[var(--ink)]",
+                      ? "text-[var(--midnight)] hover:text-[var(--midnight)]"
+                      : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
                   )}
                   onClick={() =>
                     toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
@@ -946,9 +946,9 @@ function AskUserQuestionsCard({
                     placeholder="Type your answer"
                     className="min-h-24 text-sm"
                     style={{
-                      background: "var(--cream-deeper)",
+                      background: "var(--cream-deep)",
                       border: "1px solid var(--edge)",
-                      color: "var(--ink)",
+                      color: "var(--midnight)",
                     }}
                   />
                 ) : null}
@@ -956,8 +956,8 @@ function AskUserQuestionsCard({
             </div>
           ))}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--edge)] bg-[var(--cream-deeper)] p-4">
-            <div className="text-sm text-[var(--mute)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
+            <div className="text-sm text-[var(--midnight-muted)]">
               Submit once after you finish the full form.
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1017,9 +1017,9 @@ function AskUserQuestionsCard({
             return (
               <div
                 key={question.id}
-                className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deeper)] p-4"
+                className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
               >
-                <div className="text-sm font-semibold text-[var(--ink)]">
+                <div className="text-sm font-semibold text-[var(--midnight)]">
                   {question.prompt}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -1028,7 +1028,7 @@ function AskUserQuestionsCard({
                       <TaskField key={label} label="Answer" value={label} />
                     ))
                   ) : (
-                    <span className="text-sm text-[var(--mute)]">No answer recorded.</span>
+                    <span className="text-sm text-[var(--midnight-muted)]">No answer recorded.</span>
                   )}
                 </div>
               </div>
@@ -1078,10 +1078,10 @@ function RequestConfirmationTargetChip({
   const className = cn(
     "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
     tone === "default"
-      ? "border-[var(--edge)] bg-transparent text-[var(--ink)]"
-      : "border-[var(--edge)] bg-transparent text-[var(--mute)]",
+      ? "border-[var(--edge)] bg-transparent text-[var(--midnight)]"
+      : "border-[var(--edge)] bg-transparent text-[var(--midnight-muted)]",
     (isExternal || isInPageAnchor)
-      && "transition-colors hover:border-[var(--forest)] hover:bg-[var(--forest-tint)]",
+      && "transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)]",
   );
   const content = (
     <>
@@ -1121,7 +1121,7 @@ function ConfirmationDeclinedBlock({
 }) {
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--ink)]">
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
         <span className="font-medium">Declined</span>
         <RequestConfirmationTargetChip issueId={issueId} target={target} />
       </div>
@@ -1184,7 +1184,7 @@ function ConfirmationExpiredBlock({
 
 function ConfirmationFailedBlock() {
   return (
-    <p className="text-sm leading-6 text-[var(--mute)]">
+    <p className="text-sm leading-6 text-[var(--midnight-muted)]">
       This request could not be resolved. Try again or create a new request.
     </p>
   );
@@ -1199,7 +1199,7 @@ function RequestConfirmationResolution({
 
   if (interaction.status === "accepted") {
     return (
-      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--ink)]">
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
         <span className="font-medium">Confirmed</span>
         <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
       </div>
@@ -1304,8 +1304,8 @@ function RequestConfirmationCard({
   return (
     <div className="space-y-4">
       {interaction.status === "pending" ? (
-        <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deeper)] p-4">
-          <div className="text-sm leading-6 text-[var(--ink)]">
+        <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
+          <div className="text-sm leading-6 text-[var(--midnight)]">
             {interaction.payload.prompt}
           </div>
           {interaction.payload.detailsMarkdown ? (
@@ -1358,7 +1358,7 @@ function RequestConfirmationCard({
           </div>
 
           {rejecting ? (
-            <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deeper)] p-3">
+            <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-3">
               <Textarea
                 value={rejectReason}
                 onChange={(event) => setRejectReason(event.target.value)}
@@ -1366,13 +1366,13 @@ function RequestConfirmationCard({
                 aria-invalid={rejectAttempted && declineReasonInvalid}
                 className="min-h-24 text-sm"
                 style={{
-                  background: "var(--cream-deeper)",
-                  border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--danger)" : "var(--edge)"}`,
-                  color: "var(--ink)",
+                  background: "var(--cream-deep)",
+                  border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--err)" : "var(--edge)"}`,
+                  color: "var(--midnight)",
                 }}
               />
               {rejectAttempted && declineReasonInvalid ? (
-                <p className="text-xs text-[var(--danger)]">A decline reason is required.</p>
+                <p className="text-xs text-[var(--err)]">A decline reason is required.</p>
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <EditorialButton
@@ -1408,7 +1408,7 @@ function RequestConfirmationCard({
           ) : null}
 
           {actionError ? (
-            <div className="rounded-sm border border-[var(--danger)] bg-[var(--cream-deeper)] px-3 py-2 text-sm text-[var(--danger)]">
+            <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-sm text-[var(--err)]">
               {actionError}
             </div>
           ) : null}
@@ -1443,11 +1443,11 @@ function RequestCheckboxConfirmationResolution({
     const hiddenCount = selectedLabels.length - CHECKBOX_SUMMARY_LABEL_LIMIT;
     const hasHiddenLabels = hiddenCount > 0;
     const chipClassName =
-      "inline-flex items-center rounded-sm border border-[var(--edge)] bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--mute)]";
+      "inline-flex items-center rounded-sm border border-[var(--edge)] bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--midnight-muted)]";
 
     return (
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--ink)]">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
           <span className="font-medium">
             {selectedCount === 0
               ? "Confirmed with no options selected"
@@ -1466,7 +1466,7 @@ function RequestCheckboxConfirmationResolution({
                 onClick={() => setExpanded((current) => !current)}
                 className={cn(
                   chipClassName,
-                  "cursor-pointer transition-colors hover:border-[var(--edge)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--forest)] focus-visible:ring-offset-1",
+                  "cursor-pointer transition-colors hover:border-[var(--edge)] hover:text-[var(--midnight)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)] focus-visible:ring-offset-1",
                 )}
                 aria-expanded={expanded}
               >
@@ -1526,7 +1526,7 @@ function CheckboxOptionRow({
       htmlFor={id}
       className={cn(
         "flex cursor-pointer items-start gap-2.5 border-b border-[var(--edge)] px-3 py-2 last:border-b-0 transition-colors",
-        checked ? "bg-[var(--forest-tint)]" : "hover:bg-[var(--forest-tint)]",
+        checked ? "bg-[var(--cream-deep)]" : "hover:bg-[var(--cream-deep)]",
         disabled && "cursor-not-allowed opacity-60",
       )}
     >
@@ -1536,12 +1536,12 @@ function CheckboxOptionRow({
         disabled={disabled}
         onCheckedChange={(value) => onToggle(value === true)}
         aria-label={label}
-        className="mt-0.5 border-[var(--edge)] data-[state=checked]:border-[var(--forest)] data-[state=checked]:bg-[var(--forest)] data-[state=checked]:text-[var(--cream)]"
+        className="mt-0.5 border-[var(--edge)] data-[state=checked]:border-[var(--midnight)] data-[state=checked]:bg-[var(--midnight)] data-[state=checked]:text-[var(--cream)]"
       />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium leading-5 text-[var(--ink)]">{label}</div>
+        <div className="text-sm font-medium leading-5 text-[var(--midnight)]">{label}</div>
         {description ? (
-          <p className="mt-0.5 text-sm leading-5 text-[var(--mute)]">{description}</p>
+          <p className="mt-0.5 text-sm leading-5 text-[var(--midnight-muted)]">{description}</p>
         ) : null}
       </div>
     </label>
@@ -1694,8 +1694,8 @@ function RequestCheckboxConfirmationCard({
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deeper)] p-4">
-        <div className="text-sm leading-6 text-[var(--ink)]">{interaction.payload.prompt}</div>
+      <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
+        <div className="text-sm leading-6 text-[var(--midnight)]">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-[var(--edge)] pt-3 text-sm">
             <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
@@ -1709,7 +1709,7 @@ function RequestCheckboxConfirmationCard({
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--mute)]">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
             <span>{selectionSummary}</span>
             {boundsHint ? <span>{boundsHint}</span> : null}
           </div>
@@ -1757,7 +1757,7 @@ function RequestCheckboxConfirmationCard({
         </div>
 
         {acceptAttempted && validationMessage ? (
-          <p className="text-xs text-[var(--danger)]">{validationMessage}</p>
+          <p className="text-xs text-[var(--err)]">{validationMessage}</p>
         ) : null}
 
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1796,7 +1796,7 @@ function RequestCheckboxConfirmationCard({
         </div>
 
         {rejecting ? (
-          <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deeper)] p-3">
+          <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-3">
             <Textarea
               value={rejectReason}
               onChange={(event) => setRejectReason(event.target.value)}
@@ -1804,13 +1804,13 @@ function RequestCheckboxConfirmationCard({
               aria-invalid={rejectAttempted && declineReasonInvalid}
               className="min-h-24 text-sm"
               style={{
-                background: "var(--cream-deeper)",
-                border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--danger)" : "var(--edge)"}`,
-                color: "var(--ink)",
+                background: "var(--cream-deep)",
+                border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--err)" : "var(--edge)"}`,
+                color: "var(--midnight)",
               }}
             />
             {rejectAttempted && declineReasonInvalid ? (
-              <p className="text-xs text-[var(--danger)]">A reason is required.</p>
+              <p className="text-xs text-[var(--err)]">A reason is required.</p>
             ) : null}
             <div className="flex flex-wrap justify-end gap-2">
               <EditorialButton
@@ -1846,7 +1846,7 @@ function RequestCheckboxConfirmationCard({
         ) : null}
 
         {actionError ? (
-          <div className="rounded-sm border border-[var(--danger)] bg-[var(--cream-deeper)] px-3 py-2 text-sm text-[var(--danger)]">
+          <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-sm text-[var(--err)]">
             {actionError}
           </div>
         ) : null}
@@ -1898,7 +1898,7 @@ export function IssueThreadInteractionCard({
             </span>
             {interaction.continuationPolicy === "wake_assignee"
               || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
-              <span className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+              <span className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--midnight-soft)]">
                 <ListChecks className="h-3.5 w-3.5" />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
                   ? "Wakes on confirm"
@@ -1907,7 +1907,7 @@ export function IssueThreadInteractionCard({
             ) : null}
           </div>
 
-          <div className="mt-3 text-lg font-bold text-[var(--ink)]">
+          <div className="mt-3 text-lg font-bold text-[var(--midnight)]">
             {interaction.title
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"
@@ -1918,15 +1918,15 @@ export function IssueThreadInteractionCard({
                     : "Confirmation requested")}
           </div>
           {interaction.summary ? (
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--mute)]">
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--midnight-muted)]">
               {interaction.summary}
             </p>
           ) : null}
         </div>
 
         {/* Tooltip dropped in the editorial port — created-by / date render bare. */}
-        <div className="rounded-sm border border-[var(--edge)] bg-transparent px-3 py-2 text-right text-xs text-[var(--mute)]">
-          <div className="font-medium text-[var(--ink)]">{formatShortDate(interaction.createdAt)}</div>
+        <div className="rounded-sm border border-[var(--edge)] bg-transparent px-3 py-2 text-right text-xs text-[var(--midnight-muted)]">
+          <div className="font-medium text-[var(--midnight)]">{formatShortDate(interaction.createdAt)}</div>
           <div>proposed by {createdByLabel}</div>
         </div>
       </div>
@@ -1962,8 +1962,8 @@ export function IssueThreadInteractionCard({
       </div>
 
       {resolvedByLabel ? (
-        <div className="mt-4 border-t border-[var(--edge)] pt-3 text-xs text-[var(--mute)]">
-          Resolved by <span className="font-medium text-[var(--ink)]">{resolvedByLabel}</span>
+        <div className="mt-4 border-t border-[var(--edge)] pt-3 text-xs text-[var(--midnight-muted)]">
+          Resolved by <span className="font-medium text-[var(--midnight)]">{resolvedByLabel}</span>
           {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>
       ) : null}

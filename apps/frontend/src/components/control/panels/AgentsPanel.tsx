@@ -92,7 +92,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -123,7 +123,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--edge)]">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold">Agents</h2>
-          <span className="text-xs text-[var(--mute)]">{agents.length}</span>
+          <span className="text-xs text-[var(--midnight-muted)]">{agents.length}</span>
         </div>
         <div className="flex items-center gap-1">
           <Button variant="outline" size="sm" onClick={() => setCreateStep("choose")}>
@@ -171,7 +171,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                 "w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors group",
                 selectedAgent === agent.id
                   ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                  : "hover:bg-[var(--cream-deeper)]",
+                  : "hover:bg-[var(--cream-deep)]",
               )}
               onClick={() => {
                 setSelectedAgent(agent.id);
@@ -182,7 +182,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               <span className="truncate flex-1">
                 {agent.name || agent.id}
                 {agent.id === defaultId && (
-                  <span className="text-[10px] text-[var(--mute)] ml-1">(default)</span>
+                  <span className="text-[10px] text-[var(--midnight-muted)] ml-1">(default)</span>
                 )}
               </span>
               {agent.id !== defaultId && (
@@ -228,7 +228,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                         "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
                         activeTab === tab.id
                           ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                          : "text-[var(--mute)] hover:text-[var(--ink)]",
+                          : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
                       )}
                       onClick={() => setActiveTab(tab.id)}
                     >
@@ -253,7 +253,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               )}
             </>
           ) : (
-            <div className="flex items-center justify-center py-12 text-sm text-[var(--mute)]">
+            <div className="flex items-center justify-center py-12 text-sm text-[var(--midnight-muted)]">
               Select an agent to view details
             </div>
           )}

@@ -36,13 +36,13 @@ import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/s
  *   < 50%       -> ink        (dark, somber)
  */
 const COLOR = {
-  succeeded: "var(--forest)",
+  succeeded: "var(--midnight)",
   failed: "var(--warn)",
-  other: "var(--mute)",
+  other: "var(--midnight-muted)",
   emptyBar: "var(--edge-soft)",
-  rateHigh: "var(--forest)",
+  rateHigh: "var(--midnight)",
   rateMid: "var(--warn)",
-  rateLow: "var(--ink)",
+  rateLow: "var(--midnight)",
 } as const;
 
 /* ---- Utilities ---- */
@@ -73,7 +73,7 @@ function DateLabels({ days }: { days: string[] }) {
           {(i === 0 || i === 6 || i === 13) ? (
             <span
               className="text-[9px] tabular-nums font-mono"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               {formatDayLabel(day)}
             </span>
@@ -91,7 +91,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
         <span
           key={item.label}
           className="flex items-center gap-1.5 text-[10px]"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           <span
             className="h-1.5 w-1.5 rounded-full shrink-0"
@@ -110,14 +110,14 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
       <div className="flex items-baseline justify-between gap-2">
         <h3
           className="font-editorial-serif text-2xl"
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
         >
           {title}
         </h3>
         {subtitle && (
           <span
             className="text-[10px] tabular-nums"
-            style={{ color: "var(--mute)" }}
+            style={{ color: "var(--midnight-muted)" }}
           >
             {subtitle}
           </span>
@@ -162,7 +162,7 @@ function EmptyChartCopy({ children }: { children: React.ReactNode }) {
   return (
     <p
       className="font-editorial-serif text-base italic"
-      style={{ color: "var(--mute)" }}
+      style={{ color: "var(--midnight-muted)" }}
     >
       {children}
     </p>
@@ -189,7 +189,7 @@ export function RunActivityChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} runs`}
             >
               {total > 0 ? (
@@ -230,9 +230,9 @@ export function RunActivityChart(props: RunChartProps) {
 
 const priorityColors: Record<string, string> = {
   critical: "var(--warn)",
-  high: "var(--forest)",
-  medium: "var(--mute)",
-  low: "var(--mute-soft)",
+  high: "var(--midnight)",
+  medium: "var(--midnight-muted)",
+  low: "var(--midnight-faint)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -263,7 +263,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
@@ -289,12 +289,12 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "var(--mute-soft)",
-  in_progress: "var(--forest-soft)",
-  in_review: "var(--ink-soft)",
-  done: "var(--forest)",
+  todo: "var(--midnight-faint)",
+  in_progress: "var(--brass)",
+  in_review: "var(--midnight-soft)",
+  done: "var(--midnight)",
   blocked: "var(--warn)",
-  cancelled: "var(--mute)",
+  cancelled: "var(--midnight-muted)",
   backlog: "var(--edge)",
 };
 
@@ -337,13 +337,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--mute)" }} />
+                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--midnight-muted)" }} />
                   ) : null)}
                 </div>
               ) : (
@@ -357,7 +357,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--mute)", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--midnight-muted)", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }
@@ -380,7 +380,7 @@ export function SuccessRateChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}
             >
               {entry.total > 0 ? (

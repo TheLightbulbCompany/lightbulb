@@ -60,7 +60,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   }
 
   if (isLoading || !data) {
-    return <div className="p-4 text-sm text-[var(--mute)]">Loading channels…</div>;
+    return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading channels…</div>;
   }
 
   const performDelete = async () => {
@@ -83,16 +83,16 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
         return (
           <div key={provider} className="rounded-md border border-[var(--edge)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--mute)]">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">
                 {PROVIDER_LABELS[provider]}
               </span>
             </div>
             {!isSubscribed ? (
-              <p className="text-xs text-[var(--mute)]">
+              <p className="text-xs text-[var(--midnight-muted)]">
                 Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.
               </p>
             ) : bots.length === 0 ? (
-              <p className="text-xs text-[var(--mute)]">No bot configured</p>
+              <p className="text-xs text-[var(--midnight-muted)]">No bot configured</p>
             ) : (
               bots.map((bot) => (
                 <div key={bot.agent_id} className="flex items-center gap-2 text-sm">

@@ -43,7 +43,7 @@ export function MarketplaceDrawer() {
                 <button
                   type="button"
                   onClick={() => open({ view: "publish" })}
-                  className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
+                  className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Publish your agent
@@ -52,7 +52,7 @@ export function MarketplaceDrawer() {
                   href="/marketplace"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--ink)] inline-flex items-center gap-1"
+                  className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--midnight)] inline-flex items-center gap-1"
                 >
                   Open in full page <ExternalLink className="w-3 h-3" />
                 </Link>
@@ -62,7 +62,7 @@ export function MarketplaceDrawer() {
               type="button"
               onClick={close}
               aria-label="Close drawer"
-              className="w-8 h-8 rounded-full border border-[var(--edge)] bg-white text-[#5b5b5b] hover:text-[var(--ink)] flex items-center justify-center"
+              className="w-8 h-8 rounded-full border border-[var(--edge)] bg-white text-[#5b5b5b] hover:text-[var(--midnight)] flex items-center justify-center"
             >
               <X className="w-4 h-4" />
             </button>
@@ -92,7 +92,7 @@ function DefaultHeader() {
           onClick={() => setView("browse")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "browse"
-              ? "bg-white text-[var(--ink)] shadow-sm"
+              ? "bg-white text-[var(--midnight)] shadow-sm"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -103,7 +103,7 @@ function DefaultHeader() {
           onClick={() => setView("mine")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "mine"
-              ? "bg-white text-[var(--ink)] shadow-sm"
+              ? "bg-white text-[var(--midnight)] shadow-sm"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -123,7 +123,7 @@ function PublishHeader() {
       <button
         type="button"
         onClick={() => setView(previous)}
-        className="inline-flex items-center gap-1.5 text-[13px] text-[#5b5b5b] hover:text-[var(--ink)] hover:bg-[#f3eee5] rounded-full px-2.5 py-1.5"
+        className="inline-flex items-center gap-1.5 text-[13px] text-[#5b5b5b] hover:text-[var(--midnight)] hover:bg-[#f3eee5] rounded-full px-2.5 py-1.5"
       >
         <ChevronLeft className="w-3.5 h-3.5" />
         Marketplace
@@ -154,7 +154,7 @@ function DetailBody() {
       <button
         type="button"
         onClick={() => setView("mine")}
-        className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline mb-3"
+        className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline mb-3"
       >
         ← Back to my listings
       </button>

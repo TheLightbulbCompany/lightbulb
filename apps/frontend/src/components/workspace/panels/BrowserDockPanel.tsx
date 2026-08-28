@@ -129,18 +129,18 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
 
       {state !== "connected" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
-          <Chrome size={28} className="text-[var(--mute)]" />
+          <Chrome size={28} className="text-[var(--midnight-muted)]" />
           {state === "connecting" ? (
-            <p className="text-sm text-[var(--mute)]">Connecting to your agents&rsquo; browser…</p>
+            <p className="text-sm text-[var(--midnight-muted)]">Connecting to your agents&rsquo; browser…</p>
           ) : (
             <>
-              <p className="max-w-xs text-sm text-[var(--mute)]">
+              <p className="max-w-xs text-sm text-[var(--midnight-muted)]">
                 Browser view isn&rsquo;t reachable. Your agents may be asleep, or the container is
                 still starting — Retry once it&rsquo;s awake.
               </p>
               <button
                 onClick={retry}
-                className="flex items-center gap-1.5 rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover)]"
+                className="flex items-center gap-1.5 rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--midnight)] transition-colors hover:bg-[var(--hover)]"
               >
                 <RotateCcw size={14} />
                 Retry

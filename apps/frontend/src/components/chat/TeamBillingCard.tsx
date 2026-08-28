@@ -88,18 +88,18 @@ export function TeamBillingCard({
       className="w-full max-w-[440px] rounded-2xl border border-[var(--edge)] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
       {/*
-        Body copy used to hardcode #6b655e because --mute was #8a8578, only
+        Body copy used to hardcode #6b655e because --midnight-muted was #8a8578, only
         ~3.7:1 on this white card and under WCAG AA — and this paragraph
-        carries the price the owner is about to be charged. --mute is now
+        carries the price the owner is about to be charged. --midnight-muted is now
         #767061, measured 4.93:1 on white, so the workaround is retired and
         this uses the token like everything around it.
       */}
-      <div className="text-base font-semibold leading-[1.4] text-[var(--ink)]">Teams billing</div>
-      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--mute)]">
+      <div className="text-base font-semibold leading-[1.4] text-[var(--midnight)]">Teams billing</div>
+      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--midnight-muted)]">
         {seatsKnown ? (
           <>
             ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
-            <strong className="font-semibold text-[var(--ink)]">${total}/mo</strong>. Everyone
+            <strong className="font-semibold text-[var(--midnight)]">${total}/mo</strong>. Everyone
             you invite is a seat, from the moment you invite them.
           </>
         ) : (
@@ -110,7 +110,7 @@ export function TeamBillingCard({
       {error && (
         <div
           role="alert"
-          className="mt-3 rounded-[10px] border border-[rgba(182,48,37,0.2)] bg-[rgba(182,48,37,0.05)] px-3.5 py-2.5 text-[13px] leading-[1.5] text-[var(--danger)]"
+          className="mt-3 rounded-[10px] border border-[rgba(182,48,37,0.2)] bg-[rgba(182,48,37,0.05)] px-3.5 py-2.5 text-[13px] leading-[1.5] text-[var(--err)]"
         >
           {error}
         </div>
@@ -118,7 +118,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--mute)]">
+          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--midnight-muted)]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>
@@ -127,7 +127,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onManage)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[rgba(6,64,43,0.2)] px-[18px] py-2.5 text-[13px] font-semibold text-[var(--forest)] transition-colors hover:border-[rgba(6,64,43,0.35)] hover:bg-[rgba(6,64,43,0.05)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[rgba(6,64,43,0.2)] px-[18px] py-2.5 text-[13px] font-semibold text-[var(--midnight)] transition-colors hover:border-[rgba(6,64,43,0.35)] hover:bg-[rgba(6,64,43,0.05)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Manage billing
           </button>
@@ -136,7 +136,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onSubscribe)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--forest)] px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#054d33] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#054d33] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? "Starting checkout…" : "Subscribe your team"}
           </button>

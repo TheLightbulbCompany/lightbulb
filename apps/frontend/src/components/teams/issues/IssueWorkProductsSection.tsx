@@ -21,7 +21,7 @@ import type {
 
 /** Icon per work-product type. Falls back to a generic file glyph. */
 function TypeIcon({ type }: { type: string }) {
-  const common = { size: 14, className: "flex-shrink-0", style: { color: "var(--mute)" } };
+  const common = { size: 14, className: "flex-shrink-0", style: { color: "var(--midnight-muted)" } };
   switch (type) {
     case "preview_url":
       return <Globe {...common} />;
@@ -60,10 +60,10 @@ function Pill({
     tone === "attention"
       ? "var(--warn)"
       : tone === "positive"
-        ? "var(--forest)"
+        ? "var(--midnight)"
         : tone === "danger"
-          ? "var(--danger)"
-          : "var(--ink-soft)";
+          ? "var(--err)"
+          : "var(--midnight-soft)";
   return (
     <span
       className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded flex-shrink-0"
@@ -118,7 +118,7 @@ function WorkProductRow({
       <div className="flex items-center gap-2">
         <TypeIcon type={wp.type} />
         {wp.isPrimary ? <Pill tone="attention">Primary</Pill> : null}
-        <span className="flex-1 truncate text-sm text-[var(--ink)]" title={wp.title}>
+        <span className="flex-1 truncate text-sm text-[var(--midnight)]" title={wp.title}>
           {wp.title}
         </span>
         {openUrl ? (
@@ -127,8 +127,8 @@ function WorkProductRow({
             target="_blank"
             rel="noreferrer"
             aria-label={`Open ${wp.title}`}
-            className="inline-flex items-center gap-1 text-xs flex-shrink-0 rounded px-1.5 py-1 transition-colors hover:bg-[var(--cream-deeper)]"
-            style={{ color: "var(--forest)" }}
+            className="inline-flex items-center gap-1 text-xs flex-shrink-0 rounded px-1.5 py-1 transition-colors hover:bg-[var(--cream-deep)]"
+            style={{ color: "var(--midnight)" }}
           >
             <ExternalLink size={13} />
             Open
@@ -143,7 +143,7 @@ function WorkProductRow({
           </Pill>
         ) : null}
         {when ? (
-          <span className="text-xs" style={{ color: "var(--mute)" }}>
+          <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(when)}
           </span>
         ) : null}
@@ -155,7 +155,7 @@ function WorkProductRow({
             onClick={() => void act("approved")}
             disabled={busy !== null}
             className="rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
-            style={{ background: "var(--forest)", color: "var(--cream)" }}
+            style={{ background: "var(--midnight)", color: "var(--cream)" }}
           >
             {busy === "approved" ? "Approving…" : "Approve"}
           </button>
@@ -164,7 +164,7 @@ function WorkProductRow({
             onClick={() => void act("changes_requested")}
             disabled={busy !== null}
             className="rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
-            style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+            style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
           >
             {busy === "changes_requested" ? "Requesting…" : "Request changes"}
           </button>
@@ -194,12 +194,12 @@ export function IssueWorkProductsSection({ issueId }: { issueId: string }) {
         <b>Output</b>
       </h2>
       {isError && (
-        <p className="text-xs" style={{ color: "var(--danger)" }}>
+        <p className="text-xs" style={{ color: "var(--err)" }}>
           Couldn&apos;t load deliverables.
         </p>
       )}
       {isLoading && workProducts.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
           Loading deliverables…
         </p>
       )}

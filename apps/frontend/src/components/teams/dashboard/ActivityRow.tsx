@@ -76,13 +76,13 @@ function entityLink(entityType: string | null | undefined, entityId: string | nu
  */
 function entityDotColor(entityType: string | null | undefined): string {
   switch (entityType) {
-    case "issue":      return "var(--forest-soft)";
-    case "agent":      return "var(--forest)";
+    case "issue":      return "var(--brass)";
+    case "agent":      return "var(--midnight)";
     case "approval":   return "var(--warn)";
-    case "project":    return "var(--ink-soft)";
-    case "goal":       return "var(--mute)";
-    case "heartbeat":  return "var(--forest-soft)";
-    default:           return "var(--mute-soft)";
+    case "project":    return "var(--midnight-soft)";
+    case "goal":       return "var(--midnight-muted)";
+    case "heartbeat":  return "var(--brass)";
+    default:           return "var(--midnight-faint)";
   }
 }
 
@@ -148,20 +148,20 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
         style={{ backgroundColor: dotColor }}
         aria-hidden
       />
-      <p className="flex-1 min-w-0 truncate leading-relaxed" style={{ color: "var(--ink)" }}>
+      <p className="flex-1 min-w-0 truncate leading-relaxed" style={{ color: "var(--midnight)" }}>
         <Identity name={actorName} size="xs" className="align-middle" />
-        <span className="ml-1" style={{ color: "var(--mute)" }}>{verb}</span>
+        <span className="ml-1" style={{ color: "var(--midnight-muted)" }}>{verb}</span>
         {/* Entity reference. Agent entities resolve to a roster name (passed
             down from DashboardPanel's /agents read); other entity types have
             no name source wired yet, so they keep the "{type}: {shortId}"
             form rather than dumping a full raw UUID. */}
         {event.entityType && event.entityId && (
-          <span className="font-medium ml-1" style={{ color: "var(--ink)" }}>
+          <span className="font-medium ml-1" style={{ color: "var(--midnight)" }}>
             {entityName ? (
               entityName
             ) : (
               <>
-                <span style={{ color: "var(--mute)" }}>{event.entityType}:</span>
+                <span style={{ color: "var(--midnight-muted)" }}>{event.entityType}:</span>
                 <span className="font-mono text-[0.85em] tracking-tight">
                   {shortenId(event.entityId)}
                 </span>
@@ -172,7 +172,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
       </p>
       <span
         className="text-[11px] shrink-0 pt-[3px] tabular-nums font-mono"
-        style={{ color: "var(--mute)" }}
+        style={{ color: "var(--midnight-muted)" }}
       >
         {timeAgo(event.createdAt)}
       </span>
@@ -181,7 +181,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
 
   const classes = cn(
     "px-4 py-2.5 text-sm transition-colors",
-    link && "cursor-pointer hover:bg-[color:var(--cream-deeper)]",
+    link && "cursor-pointer hover:bg-[color:var(--cream-deep)]",
     className,
   );
 

@@ -132,7 +132,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
 
   if (!live) {
     return (
-      <p className="font-editorial-serif italic text-[var(--mute)]">Loading…</p>
+      <p className="font-editorial-serif italic text-[var(--midnight-muted)]">Loading…</p>
     );
   }
 
@@ -259,14 +259,14 @@ function Header({
   return (
     <header className="mb-6 flex items-start justify-between gap-3 flex-wrap">
       <div>
-        <h2 className="font-editorial-serif text-3xl text-[var(--ink)]">
+        <h2 className="font-editorial-serif text-3xl text-[var(--midnight)]">
           {live.name}
         </h2>
         <p className="text-[12.5px] text-[#5b5b5b] mt-1">{live.slug}</p>
         <span
           className={`inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full ${
             live.status === "published"
-              ? "bg-[#e3efe6] text-[var(--forest)]"
+              ? "bg-[#e3efe6] text-[var(--midnight)]"
               : live.status === "review"
                 ? "bg-[#fef4e3] text-[#a07520]"
                 : live.status === "draft" && live.rejection_notes
@@ -292,7 +292,7 @@ function Header({
             type="button"
             onClick={handleContinueEdit}
             disabled={busy}
-            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
           >
             {continueEditLabel}
           </button>
@@ -302,7 +302,7 @@ function Header({
             onClick={handleRepublish}
             disabled={!canRepublish || busy}
             title={republishDisabledReason}
-            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
           >
             Republish with updates
           </button>
@@ -319,7 +319,7 @@ function Header({
         )}
         <a
           href={`/marketplace/listing/${live.listing_id}`}
-          className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline"
+          className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline"
         >
           View on marketplace →
         </a>
@@ -333,19 +333,19 @@ function Stats({ live }: { live: Listing }) {
   return (
     <div className="flex gap-6 mb-6 text-[13px] text-[#5b5b5b]">
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           {installs.toLocaleString()}
         </strong>
         <span>installs</span>
       </div>
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           ${(live.price_cents / 100).toFixed(2)}
         </strong>
         <span>price</span>
       </div>
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           v{live.version}
         </strong>
         <span>current version</span>
@@ -406,7 +406,7 @@ function TabBtn({
       onClick={() => setTab(name)}
       className={`pb-2 text-[13px] font-semibold ${
         active
-          ? "text-[var(--forest)] border-b-2 border-[var(--forest)]"
+          ? "text-[var(--midnight)] border-b-2 border-[var(--midnight)]"
           : "text-[#5b5b5b]"
       }`}
     >
@@ -461,7 +461,7 @@ function BundleTab({ listing }: { listing: Listing }) {
         </h3>
         <ul className="text-[13px] space-y-1">
           {mcps.length === 0 ? (
-            <li className="text-[var(--mute)] italic">None</li>
+            <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
             mcps.map((m) => <li key={m}>{m}</li>)
           )}
@@ -473,7 +473,7 @@ function BundleTab({ listing }: { listing: Listing }) {
         </h3>
         <ul className="text-[13px] space-y-1">
           {skills.length === 0 ? (
-            <li className="text-[var(--mute)] italic">None</li>
+            <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
             skills.map((s) => <li key={s}>{s}</li>)
           )}
@@ -515,7 +515,7 @@ function PendingTab({ pending }: { pending: Listing }) {
       <button
         type="button"
         onClick={() => startEditListing(pending)}
-        className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+        className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
       >
         {wasRejected ? "Revise & resubmit →" : "Continue editing →"}
       </button>
@@ -543,7 +543,7 @@ function versionStatusLabel(l: Listing): string {
 function versionStatusCls(status: string): string {
   switch (status) {
     case "published":
-      return "bg-[#e3efe6] text-[var(--forest)]";
+      return "bg-[#e3efe6] text-[var(--midnight)]";
     case "review":
       return "bg-[#fef4e3] text-[#a07520]";
     case "draft":
@@ -552,7 +552,7 @@ function versionStatusCls(status: string): string {
       return "bg-[#fbe9e7] text-[#8a3a2a]";
     default:
       // retired + any future status — neutral grey
-      return "bg-[#f3eee5] text-[var(--mute)]";
+      return "bg-[#f3eee5] text-[var(--midnight-muted)]";
   }
 }
 
@@ -579,7 +579,7 @@ function VersionHistoryTab({
             }`}
           >
             <div className="flex items-center gap-3">
-              <span className="font-editorial-serif text-base text-[var(--ink)]">
+              <span className="font-editorial-serif text-base text-[var(--midnight)]">
                 v{v.version}
               </span>
               <span

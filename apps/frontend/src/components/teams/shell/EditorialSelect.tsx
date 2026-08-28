@@ -35,8 +35,8 @@ export function EditorialSelect({
     <Select value={value} onValueChange={onValueChange} disabled={disabled}>
       <SelectTrigger
         className={cn(
-          "border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)]",
-          "focus:ring-[var(--forest)]/20 focus:border-[var(--forest)]",
+          "border-[var(--edge)] bg-[var(--cream)] text-[var(--midnight)]",
+          "focus:ring-[var(--midnight)]/20 focus:border-[var(--midnight)]",
           className,
         )}
       >
@@ -47,7 +47,7 @@ export function EditorialSelect({
           <SelectItem
             key={opt.value}
             value={opt.value}
-            className="text-[var(--ink)] focus:bg-[var(--edge)] focus:text-[var(--ink)]"
+            className="text-[var(--midnight)] focus:bg-[var(--edge)] focus:text-[var(--midnight)]"
           >
             {opt.label}
           </SelectItem>

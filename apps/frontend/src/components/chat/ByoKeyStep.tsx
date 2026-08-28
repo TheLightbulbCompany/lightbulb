@@ -115,14 +115,14 @@ const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
 // Tailwind orders the bare `hover:` variant after `checked:`.
 const PROVIDER_PILL =
   "block cursor-pointer rounded-full border px-4 py-2 text-sm transition-colors " +
-  "border-[var(--edge)] bg-white text-[var(--ink)] hover:bg-[var(--cream-deeper)] " +
-  "peer-checked:border-[var(--forest)] peer-checked:bg-[var(--forest)] peer-checked:text-white " +
-  "peer-checked:hover:bg-[var(--forest)] " +
+  "border-[var(--edge)] bg-white text-[var(--midnight)] hover:bg-[var(--cream-deep)] " +
+  "peer-checked:border-[var(--midnight)] peer-checked:bg-[var(--midnight)] peer-checked:text-white " +
+  "peer-checked:hover:bg-[var(--midnight)] " +
   "peer-focus-visible:ring-2 peer-focus-visible:ring-[rgba(6,64,43,0.25)]";
 
 const PRIMARY_BUTTON =
-  "rounded-full bg-[var(--forest)] px-6 py-2.5 text-sm font-medium text-white " +
-  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[var(--forest)]";
+  "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-white " +
+  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
 
 export function ByoKeyStep({ onComplete }: Props) {
   const api = useApi();
@@ -189,10 +189,10 @@ export function ByoKeyStep({ onComplete }: Props) {
       className="flex flex-col gap-4 py-8 max-w-md mx-auto"
       style={SANS_FONT}
     >
-      <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
+      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Bring your own API key
       </h3>
-      <p className="text-sm text-[var(--mute)]">
+      <p className="text-sm text-[var(--midnight-muted)]">
         Use your own OpenAI or Anthropic account. We never see your key
         after you save it &mdash; it&apos;s stored encrypted in AWS Secrets
         Manager and injected into your container at runtime.
@@ -233,10 +233,10 @@ export function ByoKeyStep({ onComplete }: Props) {
         required
         autoComplete="off"
         spellCheck={false}
-        className="rounded-lg border border-[var(--edge)] bg-white px-3 py-2.5 font-mono text-sm text-[var(--ink)] placeholder:text-[#b5ae9e] focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]"
+        className="rounded-lg border border-[var(--edge)] bg-white px-3 py-2.5 font-mono text-sm text-[var(--midnight)] placeholder:text-[#b5ae9e] focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]"
       />
 
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+      {error && <p className="text-sm text-[var(--err)]">{error}</p>}
 
       <button
         type="submit"
@@ -251,7 +251,7 @@ export function ByoKeyStep({ onComplete }: Props) {
         type="button"
         onClick={chooseDifferentProvider}
         disabled={submitting}
-        className="text-xs text-[var(--mute)] underline hover:text-[var(--ink)] disabled:opacity-50"
+        className="text-xs text-[var(--midnight-muted)] underline hover:text-[var(--midnight)] disabled:opacity-50"
         style={SANS_FONT}
       >
         Choose a different provider

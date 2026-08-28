@@ -55,7 +55,7 @@ function CommandWithSpans({
     cursor = s.endIndex;
   }
   if (accepted.length === 0) {
-    return <div className="font-mono text-[var(--ink)] break-all">{command}</div>;
+    return <div className="font-mono text-[var(--midnight)] break-all">{command}</div>;
   }
   const parts: React.ReactNode[] = [];
   cursor = 0;
@@ -64,7 +64,7 @@ function CommandWithSpans({
       parts.push(<span key={`p${i}`}>{command.slice(cursor, s.startIndex)}</span>);
     }
     parts.push(
-      <mark key={`m${i}`} className="bg-[#f5e3b3] text-[var(--ink)] rounded px-0.5">
+      <mark key={`m${i}`} className="bg-[#f5e3b3] text-[var(--midnight)] rounded px-0.5">
         {command.slice(s.startIndex, s.endIndex)}
       </mark>,
     );
@@ -73,7 +73,7 @@ function CommandWithSpans({
   if (cursor < command.length) {
     parts.push(<span key="tail">{command.slice(cursor)}</span>);
   }
-  return <div className="font-mono text-[var(--ink)] break-all">{parts}</div>;
+  return <div className="font-mono text-[var(--midnight)] break-all">{parts}</div>;
 }
 
 /** One label/value meta row. `path` opt compacts home dirs to ~. Ported
@@ -90,7 +90,7 @@ function MetaRow({
   if (!value) return null;
   return (
     <div className="flex justify-between gap-3">
-      <span className="text-[var(--mute)]">{label}</span>
+      <span className="text-[var(--midnight-muted)]">{label}</span>
       <span className="font-mono text-right break-all">
         {path ? formatApprovalDisplayPath(value) : value}
       </span>
@@ -167,7 +167,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
       {pending.kind === "plugin" ? (
         <>
           <div className="flex items-start justify-between gap-2">
-            <div className="font-semibold text-[var(--ink)] break-all">
+            <div className="font-semibold text-[var(--midnight)] break-all">
               {pending.pluginTitle}
             </div>
           </div>
@@ -194,7 +194,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
               <MetaRow label="argv" value={JSON.stringify(pending.commandArgv)} />
             )}
             {allowsAlways && (
-              <div className="text-[var(--mute)] pt-1">{trustScopeLine}</div>
+              <div className="text-[var(--midnight-muted)] pt-1">{trustScopeLine}</div>
             )}
           </div>
         </>

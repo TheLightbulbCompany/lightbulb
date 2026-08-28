@@ -18,7 +18,7 @@ export interface PageSkeletonProps {
  * IssueRow (status-icon + identifier-pill + title + trailing time) so the
  * shimmer doesn't reflow when real content arrives.
  *
- * Uses editorial palette tokens (`--cream-deeper`, `--cream-deepest`,
+ * Uses editorial palette tokens (`--cream-deep`, `--cream-deeper`,
  * `--edge`) so the placeholder reads as paper rather than gray on the cream
  * surface.
  */
@@ -35,11 +35,11 @@ export function PageSkeleton({
       <div className="flex items-center justify-between">
         <div
           className="h-6 w-40 rounded"
-          style={{ backgroundColor: "var(--cream-deepest)" }}
+          style={{ backgroundColor: "var(--cream-deeper)" }}
         />
         <div
           className="h-6 w-24 rounded"
-          style={{ backgroundColor: "var(--cream-deeper)" }}
+          style={{ backgroundColor: "var(--cream-deep)" }}
         />
       </div>
 
@@ -55,22 +55,22 @@ export function PageSkeleton({
             {/* status-icon placeholder */}
             <div
               className="h-4 w-4 shrink-0 rounded-full"
-              style={{ backgroundColor: "var(--cream-deepest)" }}
+              style={{ backgroundColor: "var(--cream-deeper)" }}
             />
             {/* identifier-pill placeholder */}
             <div
               className="h-3 w-12 shrink-0 rounded"
-              style={{ backgroundColor: "var(--cream-deeper)" }}
+              style={{ backgroundColor: "var(--cream-deep)" }}
             />
             {/* title bar — flex-grow */}
             <div
               className="h-3 flex-1 rounded"
-              style={{ backgroundColor: "var(--cream-deepest)" }}
+              style={{ backgroundColor: "var(--cream-deeper)" }}
             />
             {/* trailing time placeholder */}
             <div
               className="h-3 w-10 shrink-0 rounded"
-              style={{ backgroundColor: "var(--cream-deeper)" }}
+              style={{ backgroundColor: "var(--cream-deep)" }}
             />
           </div>
         ))}

@@ -198,7 +198,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
         {(phase === "pick" || phase === "uploading" || phase === "scanning") && tauriInvoke && (
           <button type="button" onClick={() => void importFromThisMac()} disabled={busy}
-            className="w-full rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+            className="w-full rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
             Import from this Mac
           </button>
         )}
@@ -214,7 +214,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
         {preview && (phase === "preview" || phase === "confirming") && (
           <div className="max-h-[60vh] space-y-3 overflow-y-auto text-[13px]">
             <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
-              <p className="text-[15px] font-medium text-[var(--ink)]">{preview.name}</p>
+              <p className="text-[15px] font-medium text-[var(--midnight)]">{preview.name}</p>
               {preview.description && <p className="text-[#5b5b5b]">{preview.description}</p>}
               {claude ? (
                 <p className="mt-1 text-[#5b5b5b]">
@@ -231,7 +231,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                   <span className="text-[12px] text-[#5b5b5b]">Apply to agent</span>
                   <select aria-label="Target agent" value={target} disabled={busy || !!claudeItems}
                     onChange={(e) => setTarget(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-white px-3 py-2 text-[13px] text-[var(--ink)] disabled:opacity-60">
+                    className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-white px-3 py-2 text-[13px] text-[var(--midnight)] disabled:opacity-60">
                     <option value="">Choose an agent…</option>
                     {rosterAgents.map((a) => (
                       <option key={a.id} value={a.id}>{a.name}{a.role === "ceo" ? " — CEO" : a.title ? ` — ${a.title}` : ""}</option>
@@ -260,7 +260,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 )}
                 {claudeItems && (
                   <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
-                    <p className="font-medium text-[var(--ink)]">Imported</p>
+                    <p className="font-medium text-[var(--midnight)]">Imported</p>
                     <ul className="mt-1 space-y-0.5">
                       {claudeItems.map((i) => (
                         <li key={i.item} className="font-mono text-[11.5px] text-[#5b5b5b]">{i.item} — {i.status === "applied" ? "applied" : "already exists, skipped"}</li>
@@ -360,13 +360,13 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           <button type="button" onClick={cancel} disabled={busy} className="rounded-full px-4 py-2 text-[13px] text-[#5b5b5b] hover:bg-black/5">Cancel</button>
           {partial && (
             <button type="button" onClick={continueWithPartial} disabled={busy}
-              className="rounded-full border border-[var(--edge)] px-4 py-2 text-[13px] font-medium text-[var(--ink)] hover:bg-black/5">
+              className="rounded-full border border-[var(--edge)] px-4 py-2 text-[13px] font-medium text-[var(--midnight)] hover:bg-black/5">
               Continue with {partial.okIds.length} imported
             </button>
           )}
           {preview && (claudeItems ? (
             <button type="button" onClick={() => { onImported(target); onOpenChange(false); reset(); }}
-              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white">
+              className="rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-white">
               Done
             </button>
           ) : (
@@ -377,7 +377,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 // the staging behind an empty success.
                 ? !target || (claudeCols.size === 0 && skills.size === 0 && !claude.has_user_memory)
                 : agents.size === 0 || needsUltra)}
-              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+              className="rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
               {phase === "confirming" ? "Adding…" : claude ? "Import context" : partial ? "Retry" : "Add to my team"}
             </button>
           ))}

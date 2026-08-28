@@ -18,7 +18,7 @@ export function SkillProposalsPanel() {
   if (isLoading && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -39,8 +39,8 @@ export function SkillProposalsPanel() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <FileCheck className="h-5 w-5 text-[var(--mute)]" />
-          <h2 className="text-lg font-medium text-[var(--ink)]">Skill Proposals</h2>
+          <FileCheck className="h-5 w-5 text-[var(--midnight-muted)]" />
+          <h2 className="text-lg font-medium text-[var(--midnight)]">Skill Proposals</h2>
         </div>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
@@ -48,7 +48,7 @@ export function SkillProposalsPanel() {
       </div>
 
       {proposals.length === 0 ? (
-        <p className="text-sm text-[var(--mute)]">No skill proposals. Agents create these via the skill_workshop tool.</p>
+        <p className="text-sm text-[var(--midnight-muted)]">No skill proposals. Agents create these via the skill_workshop tool.</p>
       ) : (
         <div className="space-y-2">
           {proposals.map((p) => (
@@ -58,13 +58,13 @@ export function SkillProposalsPanel() {
                 onClick={() => setSelected(selected === p.id ? null : p.id)}
               >
                 <div>
-                  <p className="text-sm font-medium text-[var(--ink)]">{p.title}</p>
-                  <p className="text-xs text-[var(--mute)]">{p.skillName} · {p.kind} · scan: {p.scanState}</p>
+                  <p className="text-sm font-medium text-[var(--midnight)]">{p.title}</p>
+                  <p className="text-xs text-[var(--midnight-muted)]">{p.skillName} · {p.kind} · scan: {p.scanState}</p>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
                   p.status === "pending" ? "bg-amber-100 text-amber-700" :
                   p.status === "applied" ? "bg-emerald-100 text-emerald-700" :
-                  "bg-[#eee] text-[var(--mute)]"
+                  "bg-[#eee] text-[var(--midnight-muted)]"
                 }`}>{p.status}</span>
               </button>
               {selected === p.id && <ProposalDetail proposalId={p.id} onResolved={() => mutate()} />}
@@ -99,14 +99,14 @@ function ProposalDetail({ proposalId, onResolved }: { proposalId: string; onReso
     }
   };
 
-  if (isLoading && !data) return <div className="p-3"><Loader2 className="h-4 w-4 animate-spin text-[var(--mute)]" /></div>;
+  if (isLoading && !data) return <div className="p-3"><Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)]" /></div>;
   if (error && !data) return <p className="p-3 text-sm text-destructive">{error.message}</p>;
 
   const pending = data?.record.status === "pending";
 
   return (
     <div className="border-t p-3 space-y-3">
-      {data?.record.goal && <p className="text-xs text-[var(--mute)]"><span className="font-medium">Goal:</span> {data.record.goal}</p>}
+      {data?.record.goal && <p className="text-xs text-[var(--midnight-muted)]"><span className="font-medium">Goal:</span> {data.record.goal}</p>}
       <pre className="whitespace-pre-wrap text-sm bg-[#faf9f6] border rounded-md p-3 max-h-[40vh] overflow-auto">
         {data?.content ?? ""}
       </pre>

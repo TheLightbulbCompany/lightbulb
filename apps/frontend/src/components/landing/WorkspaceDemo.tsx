@@ -125,8 +125,8 @@ function NavRow({
       onClick={onClick}
       className={`flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-sm transition-colors ${
         active
-          ? "bg-[var(--cream)] text-[var(--forest)]"
-          : "text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+          ? "bg-[var(--cream)] text-[var(--midnight)]"
+          : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
       }`}
     >
       <Icon size={16} />
@@ -267,14 +267,14 @@ export function WorkspaceDemo() {
   const chatPanel = (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--edge)] px-3">
-        <span className="truncate text-sm font-medium text-[var(--ink)]">
+        <span className="truncate text-sm font-medium text-[var(--midnight)]">
           {selectedAgent.name}
         </span>
         {selectedAgent.status === "running" && <LiveRunDot />}
         <div className="flex-1" />
         {/* Agent quick actions — visual parity with ChatPanel's header cluster;
             the real ones open the inspector / tasks / pause the agent. */}
-        <span className="flex items-center gap-1 text-[var(--mute)]" aria-hidden="true">
+        <span className="flex items-center gap-1 text-[var(--midnight-muted)]" aria-hidden="true">
           <SlidersHorizontal size={16} className="p-px" />
           <ListTodo size={16} className="p-px" />
           <Pause size={16} className="p-px" />
@@ -286,7 +286,7 @@ export function WorkspaceDemo() {
           agentName={selectedAgent.name}
         />
       ) : (
-        <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-[var(--mute)]">
+        <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-[var(--midnight-muted)]">
           {selectedAgent.name} is {selectedAgent.status ?? "idle"} — nothing in
           this chat yet.
         </div>
@@ -300,29 +300,29 @@ export function WorkspaceDemo() {
           router.push("/sign-up");
         }}
       >
-        <div className="flex flex-col rounded-2xl border border-[var(--edge)] bg-white shadow-[0_1px_2px_rgba(26,26,26,0.03),0_4px_16px_rgba(26,26,26,0.05)] transition-[border-color] focus-within:border-[var(--forest)]/25">
+        <div className="flex flex-col rounded-2xl border border-[var(--edge)] bg-white shadow-[0_1px_2px_rgba(26,26,26,0.03),0_4px_16px_rgba(26,26,26,0.05)] transition-[border-color] focus-within:border-[var(--midnight)]/25">
           <input
             value={composerDraft}
             onChange={(e) => setComposerDraft(e.target.value)}
             placeholder="Ask anything"
             aria-label={`Message ${selectedAgent.name}`}
-            className="w-full bg-transparent px-4 pt-3 text-[15px] leading-6 text-[var(--ink)] placeholder:text-[#b5ae9e] focus:outline-none"
+            className="w-full bg-transparent px-4 pt-3 text-[15px] leading-6 text-[var(--midnight)] placeholder:text-[#b5ae9e] focus:outline-none"
           />
           <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
             <span
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--mute)]"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--midnight-muted)]"
               aria-hidden="true"
             >
               <Plus className="h-4 w-4" />
             </span>
-            <span className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-[var(--mute)]">
+            <span className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-[var(--midnight-muted)]">
               {DEMO_MODEL_NAME}
               <ChevronDown className="h-3 w-3" aria-hidden="true" />
             </span>
             <button
               type="submit"
               aria-label="Send"
-              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--forest)] text-white transition-colors hover:bg-[#0a5c3e]"
+              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--midnight)] text-white transition-colors hover:bg-[#0a5c3e]"
             >
               <ArrowUp className="h-4 w-4" />
             </button>
@@ -361,7 +361,7 @@ export function WorkspaceDemo() {
       <div className="min-w-0 flex-1 overflow-y-auto p-5 sm:p-6">
         <button
           type="button"
-          className="mb-4 text-xs text-[var(--mute)] transition-colors hover:text-[var(--ink)]"
+          className="mb-4 text-xs text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
           onClick={() => setDetailIssueId(null)}
         >
           ← Back
@@ -371,7 +371,7 @@ export function WorkspaceDemo() {
           onTitleSave={async (title) => updateIssue(detailIssue.id, { title })}
         />
         {detailIssue.description ? (
-          <div className="mt-4 text-sm text-[var(--ink-soft)]">
+          <div className="mt-4 text-sm text-[var(--midnight-soft)]">
             <MarkdownView>{detailIssue.description}</MarkdownView>
           </div>
         ) : null}
@@ -405,7 +405,7 @@ export function WorkspaceDemo() {
     <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
       <PanelMasthead as="h2" overline="Operations" title="Dashboard" meta="Last 14 days" />
       <section aria-label="Active agents" className="mt-4 min-w-0">
-        <h2 className="mb-2 font-editorial-serif text-2xl text-[var(--ink)]">
+        <h2 className="mb-2 font-editorial-serif text-2xl text-[var(--midnight)]">
           Agents
         </h2>
         {/* Active-run card lookalike (the real ActiveAgentsPanel polls the
@@ -413,9 +413,9 @@ export function WorkspaceDemo() {
         <div
           className="editorial-card flex flex-col gap-2 overflow-hidden p-3"
           style={{
-            borderColor: "color-mix(in srgb, var(--forest) 35%, var(--edge))",
+            borderColor: "color-mix(in srgb, var(--midnight) 35%, var(--edge))",
             background:
-              "color-mix(in srgb, var(--forest-tint) 55%, var(--cream))",
+              "color-mix(in srgb, var(--cream-deep) 55%, var(--cream))",
           }}
         >
           <div className="flex items-start justify-between gap-2">
@@ -423,16 +423,16 @@ export function WorkspaceDemo() {
               <LiveRunDot />
               <Identity name="Friday" size="sm" />
             </div>
-            <span className="shrink-0 text-[11px] text-[var(--mute)]">
+            <span className="shrink-0 text-[11px] text-[var(--midnight-muted)]">
               Details
             </span>
           </div>
-          <div className="text-[11px] text-[var(--mute)]">Live now</div>
+          <div className="text-[11px] text-[var(--midnight-muted)]">Live now</div>
           {namingIssue ? (
             <button
               type="button"
               onClick={() => setDetailIssueId(namingIssue.id)}
-              className="block rounded-lg border border-[var(--edge)] bg-[var(--cream-deeper)] px-2.5 py-2 text-left text-xs text-[var(--forest)] transition-opacity hover:opacity-80"
+              className="block rounded-lg border border-[var(--edge)] bg-[var(--cream-deep)] px-2.5 py-2 text-left text-xs text-[var(--midnight)] transition-opacity hover:opacity-80"
             >
               <span className="line-clamp-2">
                 <span className="font-medium">{namingIssue.identifier}</span>
@@ -443,8 +443,8 @@ export function WorkspaceDemo() {
           <div
             className="rounded-lg px-2.5 py-2 font-mono text-[10px] leading-relaxed"
             style={{
-              background: "var(--cream-deepest)",
-              color: "var(--ink-soft)",
+              background: "var(--cream-deeper)",
+              color: "var(--midnight-soft)",
               borderTop: "1px solid var(--edge)",
             }}
             aria-label="Live agent activity"
@@ -488,7 +488,7 @@ export function WorkspaceDemo() {
         <div
           role="tablist"
           aria-label="Inbox tabs"
-          className="inline-flex items-center gap-1 rounded-md bg-[var(--cream-deeper)] p-0.5"
+          className="inline-flex items-center gap-1 rounded-md bg-[var(--cream-deep)] p-0.5"
         >
           {INBOX_TABS.map((t) => {
             const isActive = inboxTab === t.value;
@@ -502,8 +502,8 @@ export function WorkspaceDemo() {
                 className="h-7 rounded-sm px-3 text-xs font-medium transition-colors"
                 style={
                   isActive
-                    ? { background: "var(--forest-tint)", color: "var(--forest)" }
-                    : { color: "var(--mute)" }
+                    ? { background: "var(--cream-deep)", color: "var(--midnight)" }
+                    : { color: "var(--midnight-muted)" }
                 }
               >
                 {t.label}
@@ -593,7 +593,7 @@ export function WorkspaceDemo() {
           onMarkRead={(id) => updateIssue(id, { unread: false })}
           archivingIds={EMPTY_SET}
           statusMenu={(issue) => (
-            <span className="flex items-center gap-1.5 text-xs text-[var(--mute)]">
+            <span className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)]">
               <StatusIcon status={issue.status} />
             </span>
           )}
@@ -636,7 +636,7 @@ export function WorkspaceDemo() {
                     <Settings size={16} />
                   </span>
                 </div>
-                <div className="flex items-center gap-2 px-3 py-2 text-xs text-[var(--mute)]">
+                <div className="flex items-center gap-2 px-3 py-2 text-xs text-[var(--midnight-muted)]">
                   <span className="h-2 w-2 shrink-0 rounded-full bg-[#2d8a4e]" />
                   Connected
                 </div>
@@ -747,7 +747,7 @@ export function WorkspaceDemo() {
                       active={view === "inbox"}
                       trailing={
                         unreadCount > 0 ? (
-                          <span className="rounded-full bg-[var(--forest)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                          <span className="rounded-full bg-[var(--midnight)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
                             {unreadCount}
                           </span>
                         ) : undefined

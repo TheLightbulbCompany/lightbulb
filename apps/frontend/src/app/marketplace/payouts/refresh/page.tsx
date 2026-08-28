@@ -75,14 +75,14 @@ export default function PayoutsRefreshPage() {
     <main className="max-w-md mx-auto px-6 py-16 text-center">
       <h1 className="font-editorial-serif text-2xl mb-4">Refreshing Stripe onboarding…</h1>
       {status === "refreshing" && (
-        <p className="text-[var(--mute)]">
+        <p className="text-[var(--midnight-muted)]">
           Generating a fresh onboarding link, hold tight.
         </p>
       )}
       {status === "error" && (
         <div className="rounded border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] p-4 text-left">
-          <p className="text-[var(--danger)] font-medium">Couldn&apos;t refresh onboarding.</p>
-          {errorMsg && <p className="text-[var(--mute)] text-sm mt-2">{errorMsg}</p>}
+          <p className="text-[var(--err)] font-medium">Couldn&apos;t refresh onboarding.</p>
+          {errorMsg && <p className="text-[var(--midnight-muted)] text-sm mt-2">{errorMsg}</p>}
         </div>
       )}
     </main>

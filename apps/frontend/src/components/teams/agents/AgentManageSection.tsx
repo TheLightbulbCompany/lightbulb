@@ -13,8 +13,8 @@ export { isSeededAgent } from "@/components/teams/agents/AgentOrgControls";
 function MetaRow({ label, value }: { label: string; value?: string | null }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-xs uppercase tracking-wide text-[var(--mute)]">{label}</span>
-      <span className="text-[var(--ink)]">{value?.trim() ? value : "—"}</span>
+      <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">{label}</span>
+      <span className="text-[var(--midnight)]">{value?.trim() ? value : "—"}</span>
     </div>
   );
 }
@@ -41,7 +41,7 @@ export function AgentManageSection({
             href={`/chat?panel=agents&agent=${agent.id}`}
             onClick={(e) => handleShellLinkClick(e, `/chat?panel=agents&agent=${agent.id}`)}
             className="text-sm hover:underline"
-            style={{ color: "var(--forest)" }}
+            style={{ color: "var(--midnight)" }}
           >
             Edit in control panel →
           </a>
@@ -53,7 +53,7 @@ export function AgentManageSection({
           <MetaRow label="Status" value={agent.status} />
         </div>
         <MetaRow label="Capabilities" value={agent.capabilities} />
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Role, title, capabilities and icon are managed in the agent&apos;s control panel.
         </p>
       </section>

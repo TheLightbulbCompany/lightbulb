@@ -62,7 +62,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (isLoading) {
     return (
-      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--mute)]">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--midnight-muted)]">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
         Loading file...
       </div>
@@ -79,7 +79,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (!file) {
     return (
-      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--mute)] text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--midnight-muted)] text-sm">
         Select a file to view its contents.
       </div>
     );
@@ -101,7 +101,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   // Binary file (read-only)
   if (file.binary || file.content === null) {
     return (
-      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--mute)] text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-[var(--midnight-muted)] text-sm">
         Binary file — preview not available.
       </div>
     );
@@ -115,14 +115,14 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   const isLobster = file.name.endsWith(".lobster");
   const editor = (
     <div ref={isLobster ? undefined : rootRef} className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deeper)] border-b border-[var(--edge)] flex-shrink-0">
-        <span className="text-xs text-[var(--mute)]">{file.name}</span>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
+        <span className="text-xs text-[var(--midnight-muted)]">{file.name}</span>
         <div className="flex items-center gap-2">
           {dirty && <span className="text-[10px] text-amber-500 font-medium">unsaved</span>}
           <button
             onClick={handleSave}
             disabled={!dirty || saving || !onSave}
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--forest)] text-white hover:bg-[#0a5c3e] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-white hover:bg-[#0a5c3e] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
             Save
@@ -133,7 +133,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         ref={textareaRef}
         value={editContent}
         onChange={(e) => setEditContent(e.target.value)}
-        className="flex-1 w-full p-4 text-sm font-mono bg-white text-[var(--ink)] resize-none focus:outline-none"
+        className="flex-1 w-full p-4 text-sm font-mono bg-white text-[var(--midnight)] resize-none focus:outline-none"
         spellCheck={false}
       />
     </div>
@@ -164,7 +164,7 @@ function LobsterTabbedViewer({
           of the viewer's header band; active state is a flat green underline. */}
       <TabsList
         variant="line"
-        className="flex-shrink-0 w-full justify-start gap-1 bg-[var(--cream-deeper)] border-b border-[var(--edge)] px-2 py-1"
+        className="flex-shrink-0 w-full justify-start gap-1 bg-[var(--cream-deep)] border-b border-[var(--edge)] px-2 py-1"
       >
         {/* Radix activates a trigger on pointer-down, not on a bare click;
             the explicit onClick keeps switching reliable under both real
@@ -172,14 +172,14 @@ function LobsterTabbedViewer({
         <TabsTrigger
           value="graph"
           onClick={() => setTab("graph")}
-          className="flex-none text-xs text-[var(--mute)] data-[state=active]:text-[var(--forest)] data-[state=active]:after:bg-[var(--forest)]"
+          className="flex-none text-xs text-[var(--midnight-muted)] data-[state=active]:text-[var(--midnight)] data-[state=active]:after:bg-[var(--midnight)]"
         >
           Graph
         </TabsTrigger>
         <TabsTrigger
           value="code"
           onClick={() => setTab("code")}
-          className="flex-none text-xs text-[var(--mute)] data-[state=active]:text-[var(--forest)] data-[state=active]:after:bg-[var(--forest)]"
+          className="flex-none text-xs text-[var(--midnight-muted)] data-[state=active]:text-[var(--midnight)] data-[state=active]:after:bg-[var(--midnight)]"
         >
           Code
         </TabsTrigger>

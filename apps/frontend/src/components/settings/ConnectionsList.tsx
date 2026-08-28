@@ -50,12 +50,12 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
   }
 
   if (isLoading) {
-    return <div className="text-sm text-[var(--mute)]">Loading connections…</div>;
+    return <div className="text-sm text-[var(--midnight-muted)]">Loading connections…</div>;
   }
 
   if (connections.length === 0) {
     return (
-      <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--mute)]">
+      <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--midnight-muted)]">
         No integrations are available yet.
       </div>
     );
@@ -85,12 +85,12 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
                 {connection.actor && KIND_LABELS[connection.actor] && (
-                  <span className="flex-shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--mute)]">
+                  <span className="flex-shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--midnight-muted)]">
                     {KIND_LABELS[connection.actor]}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-[var(--mute)]">
+              <p className="text-xs text-[var(--midnight-muted)]">
                 {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
                 {connection.acquisition === "direct_oauth"
                   ? " · OAuth"
@@ -99,7 +99,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                     : " · API key"}
               </p>
               {receipt && (
-                <p className="text-xs text-[var(--mute)] mt-0.5">
+                <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                   {connected ? "Delivered: " : unavailable ? "Would deliver: " : "Will deliver: "}
                   <span className={connected ? "text-[#2d8a4e]" : undefined}>
                     {receipt.delivers}
@@ -107,7 +107,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                 </p>
               )}
               {connection.can_trigger && connection.can_trigger.length > 0 && (
-                <p className="text-xs text-[var(--mute)] mt-0.5">
+                <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                   {/* Providers carry full event catalogs now (Stripe ~265) —
                       show the curated leaders (the registry orders those
                       first) and count the rest. */}
@@ -117,7 +117,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                 </p>
               )}
               {connection.actor === "cli" && (
-                <p className="text-xs text-[var(--mute)] mt-0.5">
+                <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                   Works through the agent&apos;s command line — it won&apos;t appear in the
                   agent&apos;s tool list.
                 </p>

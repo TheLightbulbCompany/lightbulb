@@ -53,7 +53,7 @@ export default function Page() {
 
         /* ── LEFT PANEL: branding ── */
         .auth-brand {
-          background: var(--forest);
+          background: var(--midnight);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
@@ -189,7 +189,7 @@ export default function Page() {
           font-family: var(--font-lora-serif), serif;
           font-size: 28px;
           font-weight: 400;
-          color: var(--ink);
+          color: var(--midnight);
           margin: 0 0 8px 0;
         }
         .auth-subtitle {
@@ -209,7 +209,7 @@ export default function Page() {
           margin-top: 24px;
         }
         .auth-footer a {
-          color: var(--forest);
+          color: var(--midnight);
           font-weight: 600;
           padding: 4px 2px;
           text-decoration: none;
@@ -219,7 +219,7 @@ export default function Page() {
           color: #0a5c3e;
         }
         .auth-footer a:focus-visible {
-          outline: 2px solid var(--forest);
+          outline: 2px solid var(--midnight);
           outline-offset: 2px;
           border-radius: 4px;
         }

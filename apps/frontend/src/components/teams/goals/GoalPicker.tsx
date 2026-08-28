@@ -70,7 +70,7 @@ export function GoalPicker({
             "inline-flex items-center gap-2 text-sm hover:underline",
             className,
           )}
-          style={{ color: selected ? "var(--ink)" : "var(--mute)" }}
+          style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
         >
           <Target className="h-3.5 w-3.5" />
           <span className="truncate">{triggerLabel}</span>
@@ -82,7 +82,7 @@ export function GoalPicker({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         <input
@@ -98,8 +98,8 @@ export function GoalPicker({
             <button
               type="button"
               onClick={() => handleSelect(null)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
-              style={{ color: "var(--mute)" }}
+              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+              style={{ color: "var(--midnight-muted)" }}
             >
               {emptyLabel}
             </button>
@@ -113,14 +113,14 @@ export function GoalPicker({
               <button
                 type="button"
                 onClick={() => handleSelect(goal.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
+                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
               >
                 {goal.title}
               </button>
             </li>
           ))}
           {visibleGoals.length === 0 && (
-            <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
+            <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
               No matches
             </li>
           )}

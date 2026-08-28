@@ -180,20 +180,20 @@ export function DocumentRow({
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <Chevron size={14} className="flex-shrink-0" style={{ color: "var(--mute)" }} />
+          <Chevron size={14} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
           <span
             className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
-            style={{ background: "var(--edge)", color: "var(--ink)" }}
+            style={{ background: "var(--edge)", color: "var(--midnight)" }}
           >
             {doc.key}
           </span>
           {titleShown ? (
-            <span className="flex-1 truncate text-[var(--ink)]">{titleShown}</span>
+            <span className="flex-1 truncate text-[var(--midnight)]">{titleShown}</span>
           ) : (
             <span className="flex-1" />
           )}
           {when && (
-            <span className="text-xs text-[var(--mute)] flex-shrink-0">
+            <span className="text-xs text-[var(--midnight-muted)] flex-shrink-0">
               updated {timeAgo(when)}
               {agentName ? ` · ${agentName}` : ""}
             </span>
@@ -217,7 +217,7 @@ export function DocumentRow({
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
               style={{
                 border: "1px solid var(--edge)",
-                color: openCount > 0 ? "var(--ink)" : "var(--mute)",
+                color: openCount > 0 ? "var(--midnight)" : "var(--midnight-muted)",
                 background: panelOpen ? "var(--edge)" : "transparent",
               }}
             >
@@ -236,7 +236,7 @@ export function DocumentRow({
             ) : latestRevisionNumber > 0 ? (
               <span
                 className="rounded px-1.5 py-0.5 text-[10px] tabular-nums"
-                style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+                style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
               >
                 rev {latestRevisionNumber}
               </span>
@@ -253,7 +253,7 @@ export function DocumentRow({
           {historicalPreview ? (
             <div
               className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs"
-              style={{ background: "var(--edge)", color: "var(--ink)" }}
+              style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               <span>
                 Previewing rev {selectedRevision?.revisionNumber ?? "?"} (read-only)
@@ -263,7 +263,7 @@ export function DocumentRow({
                 onClick={restoreRevision}
                 disabled={restoring}
                 className="flex items-center gap-1 rounded px-2 py-0.5 disabled:opacity-50"
-                style={{ background: "var(--forest)", color: "var(--forest-ink, #fff)" }}
+                style={{ background: "var(--midnight)", color: "var(--cream)" }}
               >
                 <RotateCcw className="h-3 w-3" />
                 {restoring ? "Restoring…" : "Restore this revision"}
@@ -272,7 +272,7 @@ export function DocumentRow({
           ) : null}
 
           <div className="flex flex-col gap-3 @3xl:flex-row">
-            <div className="relative min-w-0 flex-1 max-w-none text-[var(--ink)]">
+            <div className="relative min-w-0 flex-1 max-w-none text-[var(--midnight)]">
               {/* `bodyRef` wraps ONLY the rendered markdown so the annotation
                   layer's text-node walk + selection offsets aren't polluted by
                   the overlay's own chrome (which is a sibling below). */}
@@ -280,7 +280,7 @@ export function DocumentRow({
                 {shownBody && shownBody.trim() ? (
                   <MarkdownView>{shownBody}</MarkdownView>
                 ) : (
-                  <p className="pt-2 text-xs text-[var(--mute)]">(empty document)</p>
+                  <p className="pt-2 text-xs text-[var(--midnight-muted)]">(empty document)</p>
                 )}
               </div>
               {reviewEnabled && !historicalPreview && latestRevisionId ? (

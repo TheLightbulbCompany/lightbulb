@@ -78,10 +78,10 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
   if (children === null || children === undefined || children === "") return null;
   return (
     <div className="flex flex-col gap-0.5 px-3 py-2" style={{ borderBottom: "1px solid var(--edge)" }}>
-      <dt className="text-[10px] uppercase tracking-wide" style={{ color: "var(--mute)" }}>
+      <dt className="text-[10px] uppercase tracking-wide" style={{ color: "var(--midnight-muted)" }}>
         {label}
       </dt>
-      <dd className="text-sm break-words text-[var(--ink)]">{children}</dd>
+      <dd className="text-sm break-words text-[var(--midnight)]">{children}</dd>
     </div>
   );
 }
@@ -155,7 +155,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     return (
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
-        style={{ fontFamily: "var(--font-lora-serif), serif", color: "var(--mute)" }}
+        style={{ fontFamily: "var(--font-lora-serif), serif", color: "var(--midnight-muted)" }}
       >
         Loading…
       </div>
@@ -167,7 +167,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
       <div
         role="alert"
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
-        style={{ color: "var(--danger)" }}
+        style={{ color: "var(--err)" }}
       >
         <p>Failed to load run.</p>
       </div>
@@ -258,11 +258,11 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   return (
     <div
       className="editorial-page grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
-      style={{ background: "var(--cream)", color: "var(--ink)" }}
+      style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
       <main className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-col gap-2">
-          <h1 className="font-editorial-serif text-2xl font-medium leading-tight text-[var(--ink)]">
+          <h1 className="font-editorial-serif text-2xl font-medium leading-tight text-[var(--midnight)]">
             Run — {agentName}
           </h1>
           <div className="flex items-center gap-2 text-sm">
@@ -282,7 +282,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               {statusLabel}
             </span>
             {run.startedAt && (
-              <span className="text-xs" style={{ color: "var(--mute)" }}>
+              <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
                 started {timeAgo(run.startedAt)}
               </span>
             )}
@@ -305,7 +305,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             )}
           </div>
           {actionError && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
+            <p className="text-xs" style={{ color: "var(--err)" }}>
               {actionError}
             </p>
           )}
@@ -315,14 +315,14 @@ export function RunDetailPanel({ runId }: { runId: string }) {
           <section
             className="flex flex-col gap-2 rounded px-3 py-2 text-sm"
             style={{
-              border: `1px solid color-mix(in srgb, ${silenceLevel === "critical" ? "var(--danger)" : "var(--warn)"} 35%, var(--edge))`,
-              background: `color-mix(in srgb, ${silenceLevel === "critical" ? "var(--danger)" : "var(--warn)"} 8%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${silenceLevel === "critical" ? "var(--err)" : "var(--warn)"} 35%, var(--edge))`,
+              background: `color-mix(in srgb, ${silenceLevel === "critical" ? "var(--err)" : "var(--warn)"} 8%, transparent)`,
             }}
           >
             <p className="font-medium">
               {silenceLevel === "critical" ? "Stale-run watchdog alert" : "Output silence warning"}
             </p>
-            <p className="text-xs" style={{ color: "var(--mute)" }}>
+            <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               This run has been silent for {formatSilenceAgeMs(silence?.silenceAgeMs ?? null) ?? "an extended period"}.
             </p>
             <div className="flex flex-wrap items-center gap-2">
@@ -343,16 +343,16 @@ export function RunDetailPanel({ runId }: { runId: string }) {
           <section
             className="flex flex-col gap-1 rounded px-3 py-2 text-sm"
             style={{
-              border: "1px solid color-mix(in srgb, var(--danger) 35%, var(--edge))",
-              background: "color-mix(in srgb, var(--danger) 8%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--err) 35%, var(--edge))",
+              background: "color-mix(in srgb, var(--err) 8%, transparent)",
             }}
           >
-            {run.error && <p style={{ color: "var(--danger)" }}>{run.error}</p>}
+            {run.error && <p style={{ color: "var(--err)" }}>{run.error}</p>}
             {run.retryExhaustedReason && (
-              <p style={{ color: "var(--danger)" }}>{run.retryExhaustedReason}</p>
+              <p style={{ color: "var(--err)" }}>{run.retryExhaustedReason}</p>
             )}
             {run.stderrExcerpt && (
-              <pre className="whitespace-pre-wrap text-xs" style={{ color: "var(--mute)" }}>
+              <pre className="whitespace-pre-wrap text-xs" style={{ color: "var(--midnight-muted)" }}>
                 {run.stderrExcerpt}
               </pre>
             )}
@@ -362,12 +362,12 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         <section className="flex flex-col gap-3">
           <h2 className="section-label"><b>Transcript</b></h2>
           {transcript.truncated && (
-            <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+            <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
               Log is larger than one read — showing the last 256 KiB.
             </p>
           )}
           {renderGroups.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
               {transcript.isLoading ? "Loading transcript…" : "No transcript captured."}
             </p>
           ) : (
@@ -390,12 +390,12 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         <section className="flex flex-col gap-3">
           <h2 className="section-label"><b>Events</b></h2>
           {events.length >= RUN_EVENTS_LIMIT && (
-            <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+            <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
               Showing the first 1,000 events.
             </p>
           )}
           {events.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
               No events recorded.
             </p>
           ) : (
@@ -408,13 +408,13 @@ export function RunDetailPanel({ runId }: { runId: string }) {
                 >
                   <span
                     className="flex-shrink-0 uppercase tracking-wide"
-                    style={{ color: e.level === "error" ? "var(--danger)" : e.level === "warn" ? "var(--warn)" : "var(--mute)" }}
+                    style={{ color: e.level === "error" ? "var(--err)" : e.level === "warn" ? "var(--warn)" : "var(--midnight-muted)" }}
                   >
                     {e.eventType ?? "event"}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[var(--ink)]">{e.message ?? ""}</span>
+                  <span className="min-w-0 flex-1 truncate text-[var(--midnight)]">{e.message ?? ""}</span>
                   {e.createdAt && (
-                    <span className="flex-shrink-0" style={{ color: "var(--mute)" }}>
+                    <span className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }}>
                       {timeAgo(e.createdAt)}
                     </span>
                   )}

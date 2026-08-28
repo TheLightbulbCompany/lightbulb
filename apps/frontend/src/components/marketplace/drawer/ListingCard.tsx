@@ -52,7 +52,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       }`}
     >
       {installed && (
-        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--forest)] font-bold">
+        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--midnight)] font-bold">
           INSTALLED
         </span>
       )}
@@ -60,7 +60,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
         href={`/marketplace/listing/${listing.listing_id}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-editorial-serif text-lg leading-tight text-[var(--ink)] no-underline hover:underline"
+        className="font-editorial-serif text-lg leading-tight text-[var(--midnight)] no-underline hover:underline"
       >
         {listing.name}
       </Link>
@@ -76,7 +76,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
             type="button"
             data-testid="manage-listing"
             onClick={() => openListingDetail(listing.listing_id)}
-            className="text-[var(--forest)] border border-[var(--forest)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--forest)] hover:text-white transition"
+            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--midnight)] hover:text-white transition"
           >
             Manage
           </button>
@@ -84,7 +84,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           <button
             type="button"
             disabled
-            className="text-[var(--forest)] border border-[var(--forest)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold opacity-70"
+            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold opacity-70"
           >
             Hired ✓
           </button>
@@ -103,7 +103,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
             type="button"
             onClick={() => setShowHire(true)}
             disabled={isHiring}
-            className="bg-[var(--forest)] text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
+            className="bg-[var(--midnight)] text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
           >
             Hire
           </button>

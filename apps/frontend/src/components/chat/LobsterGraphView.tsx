@@ -39,12 +39,12 @@ let mermaidInitialized = false;
 
 function Fallback({ message, onViewCode }: { message: string; onViewCode?: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-3 text-sm text-[var(--mute)]">
+    <div className="flex flex-col items-center justify-center h-full gap-3 text-sm text-[var(--midnight-muted)]">
       <p>{message}</p>
       {onViewCode ? (
         <button
           onClick={onViewCode}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--edge)] hover:bg-[var(--cream-deeper)] transition-colors"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--edge)] hover:bg-[var(--cream-deep)] transition-colors"
         >
           <FileText className="h-3 w-3" /> View as code
         </button>
@@ -94,11 +94,11 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
   }
 
   const iconBtn =
-    "p-1 rounded text-[var(--mute)] hover:bg-[var(--edge)] transition-colors disabled:opacity-40";
+    "p-1 rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors disabled:opacity-40";
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1 px-3 py-1.5 bg-[var(--cream-deeper)] border-b border-[var(--edge)] flex-shrink-0">
+      <div className="flex items-center gap-1 px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
         <button className={iconBtn} title="Zoom in" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(s + 0.2, 3))}>
           <ZoomIn className="h-4 w-4" />
         </button>
@@ -108,9 +108,9 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
         <button className={iconBtn} title="Reset zoom" aria-label="Reset zoom" onClick={() => setScale(1)}>
           <RotateCcw className="h-4 w-4" />
         </button>
-        <span className="text-[10px] text-[var(--mute)] ml-1">{Math.round(scale * 100)}%</span>
+        <span className="text-[10px] text-[var(--midnight-muted)] ml-1">{Math.round(scale * 100)}%</span>
         <button
-          className="ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded text-[var(--mute)] hover:bg-[var(--edge)] transition-colors"
+          className="ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors"
           title="Copy mermaid source"
           onClick={() => navigator.clipboard?.writeText(result.mermaid)}
         >
@@ -121,12 +121,12 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
         {renderError ? (
           <div className="text-sm">
             <p className="text-red-500 mb-2">Couldn&apos;t render the diagram.</p>
-            <pre className="text-xs bg-[var(--cream-deeper)] p-3 rounded overflow-auto whitespace-pre-wrap">
+            <pre className="text-xs bg-[var(--cream-deep)] p-3 rounded overflow-auto whitespace-pre-wrap">
               {result.mermaid}
             </pre>
           </div>
         ) : svg === null ? (
-          <div className="flex items-center justify-center h-full text-[var(--mute)] text-sm">
+          <div className="flex items-center justify-center h-full text-[var(--midnight-muted)] text-sm">
             <Loader2 className="h-5 w-5 animate-spin mr-2" /> Rendering graph…
           </div>
         ) : (

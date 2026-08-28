@@ -202,7 +202,7 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
         }
       >
         {totals && (
-          <p className="text-sm" style={{ color: "var(--ink-soft)" }}>
+          <p className="text-sm" style={{ color: "var(--midnight-soft)" }}>
             Affects {totals.affectedIssues} of {totals.totalIssues} task
             {totals.totalIssues === 1 ? "" : "s"}, interrupting {totals.activeRuns}{" "}
             active and {totals.queuedRuns} queued run
@@ -218,13 +218,13 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
           aria-label="Subtree control reason"
           disabled={busy}
           style={{
-            background: "var(--cream-deeper)",
+            background: "var(--cream-deep)",
             border: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
         />
         {actionError && (
-          <p className="text-xs" style={{ color: "var(--danger)" }}>
+          <p className="text-xs" style={{ color: "var(--err)" }}>
             {actionError}
           </p>
         )}

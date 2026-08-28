@@ -14,18 +14,18 @@ import { Button } from "@/components/ui/button";
 import { GOAL_STATUSES, type GoalStatus } from "@/components/teams/shared/types";
 
 // Retheme-mapped onto the editorial palette (mirrors StatusIcon.tsx):
-//   planned    -> --mute        (not started — muted)
+//   planned    -> --midnight-muted        (not started — muted)
 //   active     -> --warn        (in flight — attention amber)
-//   achieved   -> --forest      (success)
-//   cancelled  -> --mute        (abandoned — muted)
+//   achieved   -> --midnight      (success)
+//   cancelled  -> --midnight-muted        (abandoned — muted)
 const goalStatusColor: Record<GoalStatus, string> = {
-  planned: "var(--mute)",
+  planned: "var(--midnight-muted)",
   active: "var(--warn)",
-  achieved: "var(--forest)",
-  cancelled: "var(--mute)",
+  achieved: "var(--midnight)",
+  cancelled: "var(--midnight-muted)",
 };
 
-const goalStatusColorDefault = "var(--mute)";
+const goalStatusColorDefault = "var(--midnight-muted)";
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -77,7 +77,7 @@ export function GoalStatusIcon({
     );
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-[var(--cream-deeper)] rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-[var(--cream-deep)] rounded px-1 -mx-1 py-0.5 transition-colors">
       {circle}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
@@ -94,7 +94,7 @@ export function GoalStatusIcon({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         {GOAL_STATUSES.map((s) => (
@@ -104,7 +104,7 @@ export function GoalStatusIcon({
             size="sm"
             className={cn(
               "w-full justify-start gap-2 text-xs",
-              s === status && "bg-[var(--cream-deeper)]",
+              s === status && "bg-[var(--cream-deep)]",
             )}
             onClick={() => {
               onChange(s);

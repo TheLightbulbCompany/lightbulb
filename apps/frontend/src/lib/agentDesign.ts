@@ -20,7 +20,7 @@ export interface EditorialListing extends EditorialIdentity {
 }
 
 const PALETTE: ReadonlyArray<{ accent: string; tint: string }> = [
-  { accent: "var(--forest)", tint: "var(--forest-tint)" },
+  { accent: "var(--midnight)", tint: "var(--cream-deep)" },
   { accent: "#3a4a8a", tint: "#e8eaf3" },
   { accent: "#8a3a3a", tint: "#f3e8e8" },
   { accent: "#a35d1f", tint: "#f3ebe0" },

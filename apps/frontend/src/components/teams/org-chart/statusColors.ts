@@ -3,30 +3,30 @@
 // Status -> editorial color tokens for the agent status dot.
 //
 // Mapping uses the same editorial palette as T16's StatusIcon:
-//   active / online / running -> --forest        (success / live)
+//   active / online / running -> --midnight        (success / live)
 //   thinking                  -> --warn          (attention amber)
-//   paused / idle             -> --mute          (neutral idle)
-//   error / failed / terminated -> --danger      (error red) for "error",
-//                                  --mute for "terminated" (cleanly stopped)
-//   covered                   -> --forest-soft   (covered by active dependency)
+//   paused / idle             -> --midnight-muted          (neutral idle)
+//   error / failed / terminated -> --err      (error red) for "error",
+//                                  --midnight-muted for "terminated" (cleanly stopped)
+//   covered                   -> --brass   (covered by active dependency)
 //   stalled                   -> --warn          (review stalled)
 
 // CSS-variable color per status. Used for inline `backgroundColor` style.
 export const STATUS_DOT_COLOR: Record<string, string> = {
-  active: "var(--forest)",
-  online: "var(--forest)",
-  running: "var(--forest)",
+  active: "var(--midnight)",
+  online: "var(--midnight)",
+  running: "var(--midnight)",
   thinking: "var(--warn)",
-  idle: "var(--mute)",
-  paused: "var(--mute)",
-  terminated: "var(--mute)",
-  error: "var(--danger)",
-  failed: "var(--danger)",
-  covered: "var(--forest-soft)",
+  idle: "var(--midnight-muted)",
+  paused: "var(--midnight-muted)",
+  terminated: "var(--midnight-muted)",
+  error: "var(--err)",
+  failed: "var(--err)",
+  covered: "var(--brass)",
   stalled: "var(--warn)",
 };
 
-const DEFAULT_COLOR = "var(--mute)";
+const DEFAULT_COLOR = "var(--midnight-muted)";
 
 // Tailwind className per status — controls size/pulse animation only.
 // Active states pulse to indicate live activity. Color is applied via

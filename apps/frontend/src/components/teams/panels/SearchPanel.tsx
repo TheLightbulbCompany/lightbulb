@@ -154,7 +154,7 @@ export function SearchPanel() {
             <span
               key={`${pill.key}-${pill.value}-${i}`}
               className="rounded-full border px-2 py-0.5 text-[11px] font-mono"
-              style={{ borderColor: "var(--edge)", color: "var(--ink-soft)" }}
+              style={{ borderColor: "var(--edge)", color: "var(--midnight-soft)" }}
             >
               {pill.label}
             </span>
@@ -173,11 +173,11 @@ export function SearchPanel() {
       <section aria-label="Search results" className="min-w-0">
         {!active ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <SearchIcon size={28} style={{ color: "var(--mute)" }} />
-            <p className="font-editorial-serif text-base italic" style={{ color: "var(--mute)" }}>
+            <SearchIcon size={28} style={{ color: "var(--midnight-muted)" }} />
+            <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               Search across tasks, comments, docs, artifacts, agents, and projects.
             </p>
-            <p className="text-xs" style={{ color: "var(--mute)" }}>
+            <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               Use operators like{" "}
               <code className="font-mono">status:todo</code>,{" "}
               <code className="font-mono">assignee:me</code>,{" "}
@@ -186,7 +186,7 @@ export function SearchPanel() {
             </p>
           </div>
         ) : isLoading && results.length === 0 ? (
-          <p className="font-editorial-serif text-base italic" style={{ color: "var(--mute)" }}>
+          <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
             Searching…
           </p>
         ) : error ? (
@@ -199,17 +199,17 @@ export function SearchPanel() {
           </p>
         ) : results.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <p className="font-editorial-serif text-base italic" style={{ color: "var(--mute)" }}>
+            <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               No matches for this search.
             </p>
             {data?.zeroResults && data.zeroResults.unfilteredTotal > 0 ? (
-              <p className="text-xs" style={{ color: "var(--mute)" }}>
+              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
                 {data.zeroResults.unfilteredTotal} result
                 {data.zeroResults.unfilteredTotal === 1 ? "" : "s"} match the text without the
                 active filters — loosen a filter to see them.
               </p>
             ) : (
-              <p className="text-xs" style={{ color: "var(--mute)" }}>
+              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
                 Try a different term or fewer filters.
               </p>
             )}
@@ -220,7 +220,7 @@ export function SearchPanel() {
               <SearchResultRow key={result.id} result={result} agentsById={agentsById} />
             ))}
             {data?.hasMore ? (
-              <p className="pt-2 text-center text-xs" style={{ color: "var(--mute)" }}>
+              <p className="pt-2 text-center text-xs" style={{ color: "var(--midnight-muted)" }}>
                 Showing the top {results.length} matches — refine your search to narrow further.
               </p>
             ) : null}

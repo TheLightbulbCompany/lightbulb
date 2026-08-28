@@ -44,9 +44,9 @@ function AttachmentRow({
       className="flex items-center gap-2 px-3 py-2"
       style={{ border: "1px solid var(--edge)", borderRadius: 6 }}
     >
-      <Paperclip size={14} className="flex-shrink-0" style={{ color: "var(--mute)" }} />
-      <span className="flex-1 truncate text-sm text-[var(--ink)]">{name}</span>
-      <span className="text-xs flex-shrink-0" style={{ color: "var(--mute)" }}>
+      <Paperclip size={14} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
+      <span className="flex-1 truncate text-sm text-[var(--midnight)]">{name}</span>
+      <span className="text-xs flex-shrink-0" style={{ color: "var(--midnight-muted)" }}>
         {formatBytes(attachment.byteSize)}
         {attachment.createdAt ? ` · ${timeAgo(attachment.createdAt)}` : ""}
       </span>
@@ -55,8 +55,8 @@ function AttachmentRow({
         onClick={() => void download()}
         disabled={busy !== null}
         aria-label={`Download ${name}`}
-        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)] disabled:opacity-50"
-        style={{ color: "var(--mute)" }}
+        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
+        style={{ color: "var(--midnight-muted)" }}
       >
         <Download size={14} />
       </button>
@@ -65,8 +65,8 @@ function AttachmentRow({
         onClick={() => void remove()}
         disabled={busy !== null}
         aria-label={`Delete ${name}`}
-        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)] disabled:opacity-50"
-        style={{ color: "var(--danger)" }}
+        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
+        style={{ color: "var(--err)" }}
       >
         <Trash2 size={14} />
       </button>
@@ -132,8 +132,8 @@ export function IssueAttachmentsSection({ issueId }: { issueId: string }) {
         className="flex flex-col items-center justify-center gap-1 rounded px-3 py-5 text-sm transition-colors disabled:opacity-60"
         style={{
           border: "1px dashed var(--edge)",
-          background: dragOver ? "var(--cream-deeper)" : "transparent",
-          color: "var(--mute)",
+          background: dragOver ? "var(--cream-deep)" : "transparent",
+          color: "var(--midnight-muted)",
         }}
       >
         <Upload size={16} />
@@ -141,22 +141,22 @@ export function IssueAttachmentsSection({ issueId }: { issueId: string }) {
       </button>
 
       {uploadError && (
-        <p className="text-xs" style={{ color: "var(--danger)" }} role="alert">
+        <p className="text-xs" style={{ color: "var(--err)" }} role="alert">
           {uploadError}
         </p>
       )}
       {isError && (
-        <p className="text-xs" style={{ color: "var(--danger)" }}>
+        <p className="text-xs" style={{ color: "var(--err)" }}>
           Couldn&apos;t load attachments.
         </p>
       )}
       {isLoading && attachments.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
           Loading attachments…
         </p>
       )}
       {!isLoading && attachments.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--mute)" }}>
+        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
           No attachments yet.
         </p>
       )}

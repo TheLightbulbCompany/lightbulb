@@ -66,7 +66,7 @@ function StatusPicker({
         <button
           type="button"
           className="cursor-pointer hover:opacity-80 transition-opacity"
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
         >
           {statusLabel(status)}
         </button>
@@ -77,7 +77,7 @@ function StatusPicker({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         {PROJECT_STATUSES.map((s) => (
@@ -87,7 +87,7 @@ function StatusPicker({
             size="sm"
             className={cn(
               "w-full justify-start text-xs",
-              s === status && "bg-[var(--cream-deeper)]",
+              s === status && "bg-[var(--cream-deep)]",
             )}
             onClick={() => {
               onChange(s);
@@ -171,7 +171,7 @@ function GoalsEditor({
           key={goal.id}
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
           style={{
-            background: "var(--cream-deeper)",
+            background: "var(--cream-deep)",
             border: "1px solid var(--edge)",
           }}
         >
@@ -180,7 +180,7 @@ function GoalsEditor({
             prefetch={false}
             onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("goal", goal.id))}
             className="min-w-0 truncate hover:underline"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
           >
             {goal.title}
           </Link>
@@ -190,7 +190,7 @@ function GoalsEditor({
               onClick={() => removeGoal(goal.id)}
               aria-label={`Remove goal ${goal.title}`}
               className="shrink-0 hover:opacity-70"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               <X className="h-3 w-3" />
             </button>
@@ -206,7 +206,7 @@ function GoalsEditor({
               className={cn(
                 "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed",
               )}
-              style={{ color: "var(--ink-soft)", border: "1px solid var(--edge)" }}
+              style={{ color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
             >
               <Target className="h-3 w-3" />
               Goal
@@ -218,7 +218,7 @@ function GoalsEditor({
             style={{
               background: "var(--cream)",
               border: "1px solid var(--edge)",
-              color: "var(--ink)",
+              color: "var(--midnight)",
             }}
           >
             <input
@@ -235,14 +235,14 @@ function GoalsEditor({
                   <button
                     type="button"
                     onClick={() => addGoal(goal.id)}
-                    className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--cream-deeper)]"
+                    className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--cream-deep)]"
                   >
                     {goal.title}
                   </button>
                 </li>
               ))}
               {visible.length === 0 && (
-                <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
+                <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
                   {availableGoals.length === 0 ? "All goals linked." : "No matches"}
                 </li>
               )}
@@ -279,7 +279,7 @@ function PropertyRow({
     <div
       className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
       style={{
-        color: "var(--ink-soft)",
+        color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",
       }}
     >
@@ -291,7 +291,7 @@ function PropertyRow({
   );
 }
 
-const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
+const EMPTY_DASH_STYLE = { color: "var(--midnight-muted)" } as const;
 
 export function ProjectProperties({
   project,
@@ -327,13 +327,13 @@ export function ProjectProperties({
         />
       </PropertyRow>
       <PropertyRow label="Issues">
-        <span className="tabular-nums" style={{ color: "var(--ink)" }}>
+        <span className="tabular-nums" style={{ color: "var(--midnight)" }}>
           {issueCount}
         </span>
       </PropertyRow>
       <PropertyRow label="Created">
         {project.createdAt ? (
-          <time dateTime={project.createdAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={project.createdAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(project.createdAt)}
           </time>
         ) : (
@@ -344,7 +344,7 @@ export function ProjectProperties({
       </PropertyRow>
       <PropertyRow label="Updated">
         {project.updatedAt ? (
-          <time dateTime={project.updatedAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={project.updatedAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(project.updatedAt)}
           </time>
         ) : (

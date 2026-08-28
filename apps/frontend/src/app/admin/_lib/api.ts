@@ -674,3 +674,55 @@ export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> 
 export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> | null> {
   return adminFetch<OpsEnvelope<GrowthData>>(token, "/ops/growth");
 }
+
+export interface LaunchOpsEntry {
+  owner_id: string;
+  display_name: string | null;
+  public: boolean;
+  waitlist_position: number | null;
+  currency: string | null;
+  baseline_cents: number;
+  window_cents: number;
+  delta_cents: number;
+  pct: number | null;
+  refreshed_at: string | null;
+  refresh_error: string | null;
+  comped: boolean;
+}
+
+export interface LaunchOpsWaitlistRow {
+  email: string;
+  position: number;
+  referral_link: string;
+  created_at: string | null;
+  user_id: string | null;
+  activated: boolean;
+  referred_by: string | null;
+  referrals_signed_up: number;
+  referrals_paid: number;
+  free_months_banked: number;
+}
+
+export interface LaunchOpsData {
+  generated_at: string;
+  phase: "waitlist" | "activation" | "live" | "ended";
+  schedule: { drop_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
+  waitlist: { total: number; top_slots_activated: number; top_slots_claimed: number };
+  entrants: { total: number; paid: number; comped: number; public: number };
+  pot_cents: number;
+  referrals: { signed_up: number; paid: number; months_banked: number };
+  economics: {
+    paid_profit_cents: number;
+    comp_cost_cents: number;
+    referral_cost_cents: number;
+    pnl_cents: number;
+    aws_credits_cents: number;
+    net_cents: number;
+  };
+  entries: LaunchOpsEntry[];
+  waitlist_rows: LaunchOpsWaitlistRow[];
+}
+
+export async function getLaunchOps(token: string): Promise<OpsEnvelope<LaunchOpsData> | null> {
+  return adminFetch<OpsEnvelope<LaunchOpsData>>(token, "/ops/launch");
+}

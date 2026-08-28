@@ -154,27 +154,28 @@ describe("SuccessRateChart", () => {
     expect(screen.getByText(/no runs yet/i)).toBeInTheDocument();
   });
 
-  test("computes success rate per day and uses forest token for >= 80%", () => {
+  test("computes success rate per day and uses the ok token for >= 80%", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 8, failed: 2, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    // 80% rate -> forest token
-    const forestBar = container.querySelector('[style*="var(--midnight)"]');
-    expect(forestBar).not.toBeNull();
+    // 80% rate -> ok token
+    const okBar = container.querySelector('[style*="var(--ok)"]');
+    expect(okBar).not.toBeNull();
     // tooltip should encode the percentage
     const tooltipNode = container.querySelector('[title*="80%"]');
     expect(tooltipNode).not.toBeNull();
   });
 
-  test("uses ink token for low success rate (< 50%)", () => {
+  test("uses the err token for low success rate (< 50%)", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 1, failed: 9, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    const lowBar = container.querySelector('[style*="var(--midnight)"]');
+    const lowBar = container.querySelector('[style*="var(--err)"]');
     expect(lowBar).not.toBeNull();
+    expect(container.querySelector('[style*="var(--ok)"]')).toBeNull();
   });
 });

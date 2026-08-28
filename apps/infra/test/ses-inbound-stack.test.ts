@@ -32,11 +32,20 @@ function synthSesInboundStack(
   return Template.fromStack(stack);
 }
 
+// LEGACY_MAIL_DOMAIN is now "" — the retirement shipped. The legacy leg is
+// still a supported mechanism (it is how ANY mail domain gets retired), so it
+// keeps its coverage here via an explicit prop rather than the constant.
+const RETIRED_MAIL_DOMAIN = "isol8.co";
+
 describe("SesInboundStack", () => {
   let template: Template;
+  let legacyTemplate: Template;
 
   beforeAll(() => {
     template = synthSesInboundStack();
+    legacyTemplate = synthSesInboundStack({
+      legacyMailDomain: RETIRED_MAIL_DOMAIN,
+    });
   });
 
   test("catch-all rule matches the apex AND every subdomain mailbox, on BOTH mail domains", () => {
@@ -50,14 +59,14 @@ describe("SesInboundStack", () => {
     // The legacy pair is equally load-bearing right now: every address already
     // in the DynamoDB address book is `{agent}@{slug}.isol8.co`, and dropping
     // it here would stop delivering to all of them.
-    template.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
-    template.hasResourceProperties("AWS::SES::ReceiptRule", {
+    legacyTemplate.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
+    legacyTemplate.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
         Recipients: [
           PLATFORM_MAIL_DOMAIN,
           `.${PLATFORM_MAIL_DOMAIN}`,
-          LEGACY_MAIL_DOMAIN,
-          `.${LEGACY_MAIL_DOMAIN}`,
+          RETIRED_MAIL_DOMAIN,
+          `.${RETIRED_MAIL_DOMAIN}`,
         ],
         ScanEnabled: true,
         Enabled: true,
@@ -90,8 +99,8 @@ describe("SesInboundStack", () => {
     // Each apex carries its OWN token. Handing one domain the other's would
     // un-verify both — the new domain because its token vanished from the set,
     // the old one because the token it was handed does not belong to it.
-    template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: `${LEGACY_MAIL_DOMAIN}.`,
+    legacyTemplate.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `${RETIRED_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: [
         '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
@@ -106,7 +115,9 @@ describe("SesInboundStack", () => {
     //   but it already exists
     // CloudFormation's Route53 CREATE does not upsert, and a TXT set already
     // existed at BOTH apexes outside CFN. This cost one failed prod deploy.
-    template.resourceCountIs("Custom::DeleteExistingRecordSet", 2);
+    legacyTemplate.resourceCountIs("Custom::DeleteExistingRecordSet", 2);
+    // Retired: one apex left, so one delete-existing.
+    template.resourceCountIs("Custom::DeleteExistingRecordSet", 1);
   });
 
   test("the legacy mail domain is published UNCHANGED alongside the new one", () => {
@@ -115,20 +126,20 @@ describe("SesInboundStack", () => {
     // of adding new ones would replace them — deleting the `*.isol8.co` MX
     // (inbound dies for every existing mailbox) and the isol8.co apex TXT set
     // (taking its Workspace verification token with it).
-    template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: `*.${LEGACY_MAIL_DOMAIN}.`,
+    legacyTemplate.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `*.${RETIRED_MAIL_DOMAIN}.`,
       Type: "MX",
       ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
     });
-    template.hasResourceProperties("AWS::Route53::RecordSet", {
-      Name: `_dmarc.${LEGACY_MAIL_DOMAIN}.`,
+    legacyTemplate.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: `_dmarc.${RETIRED_MAIL_DOMAIN}.`,
       Type: "TXT",
       ResourceRecords: [
-        `"v=DMARC1; p=none; rua=mailto:admin@${LEGACY_MAIL_DOMAIN}; fo=1"`,
+        `"v=DMARC1; p=none; rua=mailto:admin@${RETIRED_MAIL_DOMAIN}; fo=1"`,
       ],
     });
-    template.hasResourceProperties("AWS::SES::EmailIdentity", {
-      EmailIdentity: LEGACY_MAIL_DOMAIN,
+    legacyTemplate.hasResourceProperties("AWS::SES::EmailIdentity", {
+      EmailIdentity: RETIRED_MAIL_DOMAIN,
     });
   });
 
@@ -229,15 +240,18 @@ describe("SesInboundStack", () => {
   });
 
   test("verifies the domain identity (DKIM via the hosted zone)", () => {
-    // TWO identities while the move is in flight — the new one, and the one
-    // being retired, which must NOT be torn down before the address backfill.
-    template.resourceCountIs("AWS::SES::EmailIdentity", 2);
+    // ONE identity now. It was two while the move was in flight; the address
+    // backfill that gated the teardown has run in both envs, so the legacy
+    // identity is gone. The legacy leg still synths two — asserted below.
+    template.resourceCountIs("AWS::SES::EmailIdentity", 1);
+    legacyTemplate.resourceCountIs("AWS::SES::EmailIdentity", 2);
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
       EmailIdentity: PLATFORM_MAIL_DOMAIN,
     });
     // Per domain: 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit
-    // _dmarc TXT + apex SPF TXT = 7, twice.
-    template.resourceCountIs("AWS::Route53::RecordSet", 14);
+    // _dmarc TXT + apex SPF TXT = 7. One domain now; the legacy leg doubles it.
+    template.resourceCountIs("AWS::Route53::RecordSet", 7);
+    legacyTemplate.resourceCountIs("AWS::Route53::RecordSet", 14);
   });
 
   test("creates the raw-mail and attachments S3 buckets, both private", () => {
@@ -333,8 +347,8 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
     const t = Template.fromStack(sesStack!);
     t.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
-    // The live mail domain + the one being retired.
-    t.resourceCountIs("AWS::SES::EmailIdentity", 2);
+    // ONE identity: the legacy leg is retired (LEGACY_MAIL_DOMAIN === "").
+    t.resourceCountIs("AWS::SES::EmailIdentity", 1);
     t.resourceCountIs("AWS::S3::Bucket", 2);
   });
 
@@ -430,12 +444,10 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     );
     expect(fns.length).toBe(1);
     const env = (fns[0] as any).Properties.Environment.Variables;
-    // BOTH dev suffixes: `dev.isol8.co` addresses already exist in the dev
-    // address book, and routing them to the PROD backend would silently drop
-    // every one of them.
-    expect(env.DEV_MAIL_SUFFIX).toBe(
-      `dev.${PLATFORM_MAIL_DOMAIN},dev.${LEGACY_MAIL_DOMAIN}`,
-    );
+    // ONE dev suffix now. This carried `dev.isol8.co` too while dev addresses
+    // still lived there; the re-key moved all 6 and the leg was retired, so a
+    // second entry here would be `dev.` — a suffix matching everything.
+    expect(env.DEV_MAIL_SUFFIX).toBe(`dev.${PLATFORM_MAIL_DOMAIN}`);
     // DEV_ROOT_DOMAIN, not ROOT_DOMAIN: this stack is PROD-ONLY, so `rootDomain`
     // is prod's. Deriving the dev ingest URL from it pointed dev inbound mail at
     // prod's apex - the same string until the two envs are on different domains,

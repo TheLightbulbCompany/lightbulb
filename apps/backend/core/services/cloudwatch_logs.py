@@ -9,7 +9,7 @@ The IAM permission lives on the backend ECS task role
 (see apps/infra/lib/stacks/service-stack.ts: CloudWatchLogsReadForAdmin).
 
 Log group naming matches service-stack.ts + isol8-stage.ts —
-`/ecs/isol8-${env}` (no /aws prefix, no -backend suffix). Keep this
+`/ecs/lightbulb-${env}` (no /aws prefix, no -backend suffix). Keep this
 module's IAM scope in sync with the resolved log group ARN.
 """
 
@@ -38,7 +38,7 @@ def _get_client():
 
 def _backend_log_group() -> str:
     env = settings.ENVIRONMENT or "dev"
-    return f"/ecs/isol8-{env}"
+    return f"/ecs/lightbulb-{env}"
 
 
 def _parse_event(raw: dict) -> dict:

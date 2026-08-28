@@ -50,7 +50,7 @@ describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
   ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
     template.hasResourceProperties("AWS::Lambda::Function", {
-      FunctionName: `isol8-${envName}-ws-authorizer`,
+      FunctionName: `lightbulb-${envName}-ws-authorizer`,
       Environment: {
         Variables: Match.objectLike({
           CLERK_AUTHORIZED_PARTIES: parties,

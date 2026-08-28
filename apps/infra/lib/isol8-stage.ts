@@ -14,7 +14,7 @@ import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
-import { tableName } from "./table-names";
+import { resourcePrefix, tableName } from "./table-names";
 
 export interface Isol8StageProps extends cdk.StageProps {
   environment: string;
@@ -271,7 +271,7 @@ export class Isol8Stage extends cdk.Stage {
         rootDomain,
         platformMailDomain,
         backendService: service.service,
-        backendLogGroupName: `/ecs/isol8-${env}`,
+        backendLogGroupName: `/ecs/lightbulb-${env}`,
         alb: network.alb,
         targetGroup: network.targetGroup,
         wsApiId: api.wsApiId,
@@ -288,7 +288,7 @@ export class Isol8Stage extends cdk.Stage {
           agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
         },
         connectionsTableName: api.connectionsTableName,
-        authorizerFunctionName: `isol8-${env}-ws-authorizer`,
+        authorizerFunctionName: `${resourcePrefix(env)}ws-authorizer`,
         paperclipDbCluster: database.paperclipDbCluster,
         paperclipService: paperclip.service,
       },

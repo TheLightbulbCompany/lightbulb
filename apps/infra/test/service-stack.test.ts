@@ -643,7 +643,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
           typeof s.Resource[0]?.Ref === "string" &&
           s.Resource[0].Ref.startsWith("ProvisionStateMachine") &&
           s.Resource[1] ===
-            "arn:aws:states:us-east-1:877352799272:execution:isol8-dev-provision:*",
+            "arn:aws:states:us-east-1:877352799272:execution:lightbulb-dev-provision:*",
       );
 
     const inline = Object.values(

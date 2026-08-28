@@ -24,6 +24,22 @@ export const tablePrefix = (env: string) => `lightbulb-${env}-`;
 export const legacyTablePrefix = (env: string) => `isol8-${env}-`;
 
 /**
+ * Non-table AWS resource names carry the same brand prefix as tables.
+ *
+ * Kept beside the table helpers on purpose: a rename has to move ONE literal,
+ * not the 147 scattered across the stacks. Spelling a renamed resource's name
+ * out by hand in a second stack is what orphaned the bedrock-gate's pointer at
+ * the invocation-dedup table -- the meter renamed the table via a helper, the
+ * gate still named the old one as a string, and nothing failed until a trial
+ * settle hit a table that no longer existed.
+ */
+export const resourcePrefix = (env: string) => `lightbulb-${env}-`;
+
+/** Log group paths are path-shaped, not prefix-shaped. */
+export const logGroupPath = (env: string, suffix: string) =>
+  `/lightbulb/${env}/${suffix}`;
+
+/**
  * A table's ARNs spanning BOTH prefixes, for IAM statements that must survive
  * the migration window.
  *

@@ -1408,7 +1408,7 @@ export class ServiceStack extends cdk.Stack {
           : `https://${env}.company.${rootDomain}`,
       // Cloud Map A record published by PaperclipStack at:
       //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
-      // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
+      // Namespace name is `lightbulb-${env}.local` (ContainerStack). Reading
       // it off the namespace handle keeps this string in lockstep with
       // ContainerStack rather than hard-coding the env suffix here.
       PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,

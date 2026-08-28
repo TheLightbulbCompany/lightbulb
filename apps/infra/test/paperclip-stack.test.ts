@@ -69,7 +69,7 @@ function buildStackInstance(environment: "dev" | "prod") {
   const namespace = new servicediscovery.PrivateDnsNamespace(
     supportStack,
     "Namespace",
-    { name: `isol8-${environment}.local`, vpc },
+    { name: `lightbulb-${environment}.local`, vpc },
   );
 
   const dbSg = new ec2.SecurityGroup(supportStack, "PaperclipDbSg", {
@@ -303,7 +303,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("exposes internal URL output for FastAPI proxy router (T14)", () => {
     template.hasOutput("PaperclipInternalUrl", {
-      Value: "http://paperclip.isol8-dev.local:3100",
+      Value: "http://paperclip.lightbulb-dev.local:3100",
       Export: { Name: "isol8-dev-paperclip-internal-url" },
     });
   });

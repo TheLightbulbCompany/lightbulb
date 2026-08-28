@@ -123,13 +123,13 @@ def test_synthesize_pins_paperclip_api_url_to_internal_host(monkeypatch):
     ``paperclipApiUrl`` override so the agent's wake run curls the in-VPC host
     instead of Paperclip's default origin(PAPERCLIP_PUBLIC_URL) — which is the
     public auth origin, unreachable from inside the VPC."""
-    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.isol8-prod.local:3100")
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.lightbulb-prod.local:3100")
     cfg = synthesize_openclaw_adapter(
         gateway_url=f"wss://ws.{APEX}",
         service_token="t" * 40,
         user_id="user_abc",
     )
-    assert cfg["paperclipApiUrl"] == "http://paperclip.isol8-prod.local:3100"
+    assert cfg["paperclipApiUrl"] == "http://paperclip.lightbulb-prod.local:3100"
 
 
 def test_synthesize_rejects_bad_url():

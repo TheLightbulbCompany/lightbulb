@@ -134,9 +134,21 @@ export class ContainerStack extends cdk.Stack {
       this,
       "Namespace",
       {
-        name: `isol8-${props.environment}.local`,
+        // REPLACEMENT: `name` is create-only, so changing it destroys the old
+        // namespace and its child service and creates new ones. Two consequences
+        // that the deploy will NOT warn you about:
+        //
+        //  1. CloudFormation cannot delete a Cloud Map service that still has
+        //     registered instances, so every running per-user task must be
+        //     drained BEFORE this deploys or the stack update fails ResourceInUse.
+        //  2. Existing per-user ECS services are backend-created, so CFN does not
+        //     know about them -- they keep the OLD registry ARN in
+        //     serviceRegistries, which no longer resolves. Re-point them with
+        //     scripts/migrate_cloud_map_registry.py after the deploy; the
+        //     provision path re-asserts the registry from then on.
+        name: `lightbulb-${props.environment}.local`,
         vpc: props.vpc,
-        description: `Isol8 ${props.environment} service discovery namespace`,
+        description: `Lightbulb AI ${props.environment} service discovery namespace`,
       },
     );
 
@@ -146,7 +158,7 @@ export class ContainerStack extends cdk.Stack {
       {
         dnsRecordType: servicediscovery.DnsRecordType.A,
         dnsTtl: cdk.Duration.seconds(10),
-        description: `Isol8 ${props.environment} container service discovery`,
+        description: `Lightbulb AI ${props.environment} container service discovery`,
       },
     );
 

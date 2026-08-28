@@ -15,7 +15,7 @@ const FULL = {
   token: "pcp_deadbeef",
   agentId: "62749da9-5bca-4f41-a001-e4ae31d178af",
   companyId: "6ad4c23a-e709-401f-90b5-3b45e10f543f",
-  apiUrl: "http://paperclip.isol8-dev.local:3100",
+  apiUrl: "http://paperclip.lightbulb-dev.local:3100",
 };
 const EXPECTED = {
   PAPERCLIP_API_KEY: FULL.token,

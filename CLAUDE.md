@@ -71,14 +71,6 @@ directory `skills/isol8/` → `skills/lightbulb/`.
   concurrency group, the SSO start URL and the `isol8-admin` CLI profile.
   Renaming any of them REPLACES the resource and loses the data in it. They are
   internal and invisible to customers. Leave them.
-- **`ManagedBy=isol8-backend`** — a resource TAG, and the one that looks most like
-  a rename candidate while being the most dangerous. All 39 prod Bedrock
-  application inference profiles carry it, and `service-stack.ts` gates AIP access
-  on `aws:ResourceTag/ManagedBy` matching it. Rename the writer and the IAM
-  condition together and the backend AccessDenies on every EXISTING owner's
-  profile — Bedrock inference dies fleet-wide, free tier included, while new
-  profiles work fine and mask it. Do not confuse it with the CloudWatch `service`
-  dimension, which is the identical string in a different role and DID move.
 - **`isol8-connector`** — the IAM role *and* the CloudFormation stack name live in
   customers' own AWS accounts, and the name is baked immutably into published
   marketplace artifacts.
@@ -103,6 +95,21 @@ accepted: CloudWatch cannot backfill, so ~15 months of history is orphaned (not
 deleted — just off every dashboard) and 72 alarms restart from zero datapoints.
 They do not error while empty, they go quiet, so treat a silent dashboard in the
 days after as expected rather than as a regression.
+
+**`ManagedBy` — MIGRATED, via add-before-remove.** The tag gates every mutate
+action on an owner's Bedrock application inference profile
+(`service-stack.ts` → `aws:ResourceTag/ManagedBy`), so flipping the writer and
+the IAM condition *together* would AccessDeny the backend from every EXISTING
+profile — inference dies fleet-wide, free tier included, while newly minted
+profiles keep working and mask it. That is why it moved in four separately
+reversible steps, not one: widen the condition to accept both values → re-tag
+the existing profiles → flip the writer → narrow back to the new value alone.
+Steps 1–3 are DONE (2026-08-28: all 37 owner profiles across both envs carry
+`lightbulb-backend`; the 2 untagged idempotency probes are expected). **Step 4
+is still pending** — `MANAGED_BY_ACCEPTED` in `service-stack.ts` still lists
+both values, and must not be collapsed until you have re-verified that no
+resource still carries `isol8-backend`. Do not confuse this tag with the
+CloudWatch `service` dimension, the identical string in a different role.
 
 Working plan and the verified findings behind these decisions:
 `docs/superpowers/plans/2026-08-26-retire-isol8-rebrand.md` and

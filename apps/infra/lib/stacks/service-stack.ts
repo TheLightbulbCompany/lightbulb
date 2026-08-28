@@ -193,10 +193,15 @@ export interface ServiceStackProps extends cdk.StackProps {
  * fleet-wide, free tier included, while newly minted profiles keep working and
  * mask it.
  *
- * So the order is: widen here (this change, purely additive -- it grants
- * nothing that was not already granted, it only stops denying the new value)
- * -> re-tag the existing profiles -> flip the writer -> narrow this back to the
- * new value alone. Each step is separately deployable and separately reversible.
+ * So the order is: widen here (purely additive -- it grants nothing that was
+ * not already granted, it only stops denying the new value) -> re-tag the
+ * existing profiles -> flip the writer -> narrow this back to the new value
+ * alone. Each step is separately deployable and separately reversible.
+ *
+ * STEPS 1-3 ARE DONE (2026-08-28). All 37 owner profiles across both envs now
+ * carry `lightbulb-backend`, and the backend writer emits it. This list is the
+ * only thing still spanning both values; collapsing it is step 4, and it must
+ * wait until nothing carries `isol8-backend` -- re-verify before you do.
  *
  * `StringEquals` with a list is OR, so both values match while the fleet is
  * mixed. Do not collapse this to a single value until step 4.

@@ -308,7 +308,7 @@ Append to `apps/infra/test/service-stack.test.ts` inside an existing `describe` 
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd apps/infra && npx jest test/database-stack.test.ts test/service-stack.test.ts`
+Run: `cd apps/infra && npx vitest run test/database-stack.test.ts test/service-stack.test.ts`
 Expected: the three new tests FAIL (no such table / env).
 
 - [ ] **Step 3: Add the tables**
@@ -383,7 +383,7 @@ In `isol8-stage.ts`, inside the `database: { … }` object passed to `ServiceSta
 
 - [ ] **Step 5: Run infra tests + synth**
 
-Run: `cd apps/infra && npx jest && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml`
+Run: `cd apps/infra && npx vitest run && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml`
 Expected: all tests pass; `deploy.yml` unchanged (no pipeline-level env was added). If it shows as modified, commit it in the same commit.
 
 - [ ] **Step 6: Commit**
@@ -4391,7 +4391,7 @@ Expected: green.
 
 - [ ] **Step 5: Infra**
 
-Run: `cd apps/infra && npx jest && npx cdk synth > /dev/null && git status --short`
+Run: `cd apps/infra && npx vitest run && npx cdk synth > /dev/null && git status --short`
 Expected: tests green; no untracked `deploy.yml` drift (or it is already committed).
 
 - [ ] **Step 6: Rebase on `origin/main`, push, open the PR — ONLY after the owner says push**

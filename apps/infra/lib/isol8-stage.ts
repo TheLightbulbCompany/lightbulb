@@ -188,8 +188,11 @@ export class Isol8Stage extends cdk.Stage {
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {
         cluster: container.cluster,
-        cloudMapNamespace: container.cloudMapNamespace,
-        cloudMapService: container.cloudMapService,
+        // The V2 pair: the rebrand's replacement namespace. ServiceStack takes
+        // these as props and is agnostic about which pair it gets, so the
+        // whole cutover is this one wiring change plus the Paperclip one below.
+        cloudMapNamespace: container.cloudMapNamespaceV2,
+        cloudMapService: container.cloudMapServiceV2,
         efsFileSystem: container.efsFileSystem,
         efsSecurityGroup: container.efsSecurityGroup,
         containerSecurityGroup: container.containerSecurityGroup,
@@ -242,7 +245,11 @@ export class Isol8Stage extends cdk.Stage {
       rootDomain,
       vpc: network.vpc,
       cluster: container.cluster,
-      cloudMapNamespace: container.cloudMapNamespace,
+      // Same V2 pair as ServiceStack above. Paperclip registers as
+      // `paperclip.<namespace>`, and PAPERCLIP_INTERNAL_URL is derived from
+      // namespaceName, so both move together or the backend resolves a host
+      // Paperclip is not registered under.
+      cloudMapNamespace: container.cloudMapNamespaceV2,
       paperclipDbCluster: database.paperclipDbCluster,
       paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
       paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,

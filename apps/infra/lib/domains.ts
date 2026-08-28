@@ -81,8 +81,14 @@ export const DEV_ROOT_DOMAIN = "flickmeon.ai";
 // the two can diverge again for a future migration without re-threading props.)
 
 /**
- * The domain being retired. `WildcardCert` in DnsStack stays pinned to this so
- * its cross-stack Export never changes while the network + api stacks import
- * it — see the DnsStack docstring. Remove only once nothing imports that export.
+ * The product domain that was retired. EMPTY = none; the migration is done.
+ *
+ * This held `isol8.co` to pin `WildcardCert`'s cross-stack Export while the
+ * network + api stacks still imported it. They now import
+ * `ProductWildcardCert`, the legacy export has no importers in either env, and
+ * the legacy certificate is gone from DnsStack — so nothing reads this.
+ *
+ * It is NOT a statement about the isol8.co hosted zone, which still exists and
+ * must: GooseTown serves 9 records out of it.
  */
-export const LEGACY_ROOT_DOMAIN = "isol8.co";
+export const LEGACY_ROOT_DOMAIN = "";

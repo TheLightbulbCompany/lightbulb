@@ -29,7 +29,7 @@ export default async function UserLayout({ children, params }: UserLayoutProps) 
             Users
           </Link>
           <span className="mx-2 text-muted-foreground">/</span>
-          <span className="font-mono text-muted-foreground">{id}</span>
+          <span className="font-mono text-foreground">{id}</span>
         </div>
         <h1 className="font-mono text-lg text-foreground" title={id}>
           {id}

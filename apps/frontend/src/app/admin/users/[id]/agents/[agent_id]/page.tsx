@@ -281,7 +281,7 @@ function Header({
             Agents
           </Link>
           <span className="mx-2 text-muted-foreground">/</span>
-          <span className="font-mono text-muted-foreground">{agentId}</span>
+          <span className="font-mono text-foreground">{agentId}</span>
         </p>
         <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
         {subtitle ? (
@@ -292,7 +292,7 @@ function Header({
         {lastActive ? (
           <>
             <span className="block uppercase tracking-wide">Last active</span>
-            <span className="font-mono text-muted-foreground" title={when.iso ?? undefined}>
+            <span className="font-mono text-foreground" title={when.iso ?? undefined}>
               {when.label}
             </span>
           </>

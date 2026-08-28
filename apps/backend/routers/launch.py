@@ -18,9 +18,9 @@ from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
 from schemas.launch import (
-    EnterRequest,  # noqa: F401
+    EnterRequest,
     LaunchInfo,
-    LeaderboardResponse,  # noqa: F401
+    LeaderboardResponse,
     ReferralAttributeRequest,
     WaitlistJoinRequest,
     WaitlistJoinResponse,
@@ -105,3 +105,22 @@ async def attribute_referral(
     await launch_waitlist_repo.join(email, referred_by=None, source="signup")
     wrote = await launch_waitlist_repo.attribute(email, body.ref.strip().upper())
     return {"attributed": bool(wrote)}
+
+
+@router.post("/enter", operation_id="launch_enter")
+async def enter(
+    body: EnterRequest, auth: AuthContext = Depends(get_current_user), s: Schedule = Depends(require_launch)
+) -> dict:
+    try:
+        return await launch_service.enter(
+            auth, s, display_name=body.display_name, stripe_key=body.stripe_key.strip(), public=body.public
+        )
+    except launch_service.EnterRefused as e:
+        # The reason is a short enum; the key is never part of any response or log.
+        raise HTTPException(status_code=400, detail=e.reason)
+
+
+@router.get("/leaderboard", response_model=LeaderboardResponse, operation_id="launch_leaderboard")
+async def leaderboard(response: Response, s: Schedule = Depends(require_launch)) -> dict:
+    response.headers["Cache-Control"] = "public, max-age=60"
+    return await launch_service.leaderboard()

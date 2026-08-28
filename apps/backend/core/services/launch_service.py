@@ -8,12 +8,12 @@ stores it on the BYO-key rail, computes the baseline and writes the entry.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo, user_repo
-from core.services import readiness_state
+from core.services import launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
 
 logger = logging.getLogger(__name__)
@@ -95,3 +95,73 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "can_enter": ok,
         "reason": reason,
     }
+
+
+class EnterRefused(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+BASELINE_DAYS = 30
+
+
+async def enter(auth: AuthContext, s: Schedule, *, display_name: str, stripe_key: str, public: bool) -> dict:
+    owner_id = resolve_owner_id(auth)
+    billing = await billing_repo.get_by_owner_id(owner_id)
+    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+    ok, reason = can_enter(s=s, billing=billing, onboarding=onboarding)
+    if not ok:
+        raise EnterRefused(reason or "refused")
+    try:
+        await launch_revenue.validate_key(stripe_key)
+    except launch_revenue.KeyRejected as e:
+        raise EnterRefused(e.reason) from None
+    baseline_end = s.competition_start_at
+    baseline_start = baseline_end - timedelta(days=BASELINE_DAYS)
+    try:
+        baseline_cents, currency = await launch_revenue.sum_net_revenue(stripe_key, baseline_start, baseline_end)
+    except launch_revenue.MixedCurrency:
+        raise EnterRefused("mixed_currency") from None
+    except launch_revenue.KeyRejected as e:
+        raise EnterRefused(e.reason) from None
+    await launch_revenue.store_key(owner_id, stripe_key)
+    position = None
+    email = await resolve_email(auth)
+    if email:
+        row = await launch_waitlist_repo.get(email)
+        position = int(row["position"]) if row else None
+    entry = await launch_entries_repo.upsert(
+        owner_id,
+        display_name=display_name.strip(),
+        public=public,
+        waitlist_position=position,
+        currency=currency,
+        baseline_cents=baseline_cents,
+    )
+    logger.info("launch: %s entered (position=%s baseline=%s %s)", owner_id, position, baseline_cents, currency)
+    return _public_entry(entry)
+
+
+def rank(entries: list[dict]) -> list[dict]:
+    visible = [e for e in entries if e.get("public", True)]
+    visible.sort(key=lambda e: (-int(e.get("delta_cents", 0)), e.get("entered_at") or ""))
+    rows = []
+    for i, e in enumerate(visible, start=1):
+        baseline = int(e.get("baseline_cents", 0))
+        delta = int(e.get("delta_cents", 0))
+        rows.append(
+            {
+                "rank": i,
+                "display_name": e["display_name"],
+                "delta_cents": delta,
+                "pct": round(delta / baseline, 4) if baseline > 0 else None,
+                "currency": e.get("currency") or "usd",
+            }
+        )
+    return rows
+
+
+async def leaderboard(limit: int = 50) -> dict:
+    entries = await launch_entries_repo.list_all()
+    return {"entrants": len(entries), "rows": rank(entries)[:limit]}

@@ -16,6 +16,13 @@ const SCREEN: [number, number] = [29.4, 20];
 const LID_CLOSED = 0.5 * Math.PI,
   LID_OPEN = -0.2 * Math.PI; // hers
 
+// three's WebGLLights extractRotation()s the light's world matrix, so the
+// group's 0.055 scale is normalised away and width/height are read as WORLD
+// units — they have to be pre-scaled or the emitter is four desks wide.
+// Screen-sized means ~330x less area than the unscaled one, so the intensity
+// has to come up with it for the screen to light the keyboard at all.
+const SCREEN_LIGHT = 8;
+
 let rectInit = false;
 
 export function Laptop({
@@ -29,7 +36,7 @@ export function Laptop({
   colors: LampColors;
   shadows: boolean;
 }) {
-  const { scene: model } = useGLTF(LAPTOP_URL);
+  const { scene } = useGLTF(LAPTOP_URL);
   const invalidate = useThree((s) => s.invalidate);
   const keysTex = useTexture(KEYS_URL);
   const root = React.useRef<THREE.Group>(null);
@@ -52,21 +59,36 @@ export function Laptop({
     [colors.midnight, colors.cream],
   );
 
+  // drei's useGLTF cache is module-global and has no lifespan: every mount
+  // gets the SAME gltf.scene. <primitive object={...}> REPARENTS what it is
+  // handed, so mounting _top/_bottom straight from the cache empties the
+  // cached scene, and the next mount (a client-side nav back to /, or Fast
+  // Refresh) finds nothing and throws out of the Canvas. Clone per mount and
+  // never touch the cached graph. clone(true) is enough here — no skinned
+  // meshes; geometries stay shared and every material is assigned below.
+  const model = React.useMemo(() => scene.clone(true), [scene]);
+
   // Split her model into lid (_top) and base (_bottom) groups.
   const parts = React.useMemo(
     () => ({
-      top: model.getObjectByName("_top") as THREE.Group,
-      bottom: model.getObjectByName("_bottom") as THREE.Group,
+      top: model.getObjectByName("_top"),
+      bottom: model.getObjectByName("_bottom"),
     }),
     [model],
   );
+  const { top, bottom } = parts;
 
   // Materials are assigned by mesh NAME, in a layout effect rather than in
-  // the memo above: the GLB scene is drei's module-global cache, so mutating
-  // it is a side effect and belongs after the commit, not during render (the
-  // GLB itself ships no materials). Swapping the model later is a model
-  // change only — this table is the whole binding.
+  // the memo above: painting the graph is a side effect and belongs after the
+  // commit, not during a render that may be discarded (the GLB itself ships
+  // no materials). useLayoutEffect, not useEffect, so no frame can be drawn
+  // with the GLB's defaults. Swapping the model later is a model change only
+  // — this table is the whole binding.
   React.useLayoutEffect(() => {
+    if (!top || !bottom) {
+      console.warn(`[Laptop] ${LAPTOP_URL} has no _top/_bottom node — laptop skipped.`);
+      return;
+    }
     const byName: Record<string, THREE.Material> = {
       lid: mats.metal,
       base: mats.metal,
@@ -77,7 +99,7 @@ export function Laptop({
       keyboard: mats.dark,
       inner: mats.dark,
     };
-    for (const g of [parts.top, parts.bottom])
+    for (const g of [top, bottom])
       g.traverse((o) => {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
@@ -85,7 +107,7 @@ export function Laptop({
         m.castShadow = shadows;
         m.receiveShadow = m.name === "base";
       });
-  }, [parts, mats, shadows]);
+  }, [top, bottom, mats, shadows]);
 
   React.useEffect(() => {
     if (!rectInit) {
@@ -96,13 +118,16 @@ export function Laptop({
     // ready. The repaint has to ask for a frame of its own: nothing else moves
     // when the idea changes (the lamp is already lit by the first keystroke),
     // and under frameloop="demand" a new texture is drawn by nobody.
+    let live = true;
     const redraw = () => {
+      if (!live) return; // fonts.ready can land after unmount
       idea.draw(getIdeaText());
       invalidate();
     };
     const off = subscribe(redraw);
     document.fonts?.ready.then(redraw);
     return () => {
+      live = false;
       off();
       idea.texture.dispose();
       Object.values(mats).forEach((m) => m.dispose());
@@ -127,13 +152,15 @@ export function Laptop({
     // her screenOnTl at 5% of the opening
     const s = THREE.MathUtils.clamp((o - 0.05) / 0.06, 0, 1);
     if (screenMat.current) screenMat.current.opacity = 0.96 * s;
-    if (light.current) light.current.intensity = 1.5 * s;
+    if (light.current) light.current.intensity = SCREEN_LIGHT * s;
   });
+
+  if (!top || !bottom) return null;
 
   return (
     <group ref={root} position={[0.55, DESK_TOP_Y, 0.4]} scale={SCALE}>
       <group ref={lid} rotation={[LID_CLOSED, 0, 0]}>
-        <primitive object={parts.top} />
+        <primitive object={top} />
         {/* her screen: a plane in lid space, with a dark plane behind it for
             the off state (the texture only reaches 0.96 opacity, and the lid's
             0xCECFD3 shell showing through 4% would wash the midnight out).
@@ -159,14 +186,14 @@ export function Laptop({
           ref={light}
           color={colors.cream}
           intensity={0}
-          width={SCREEN[0]}
-          height={SCREEN[1]}
+          width={SCREEN[0] * SCALE}
+          height={SCREEN[1] * SCALE}
           position={[0, 10.5, 0]}
           rotation={[Math.PI, 0, 0]}
         />
       </group>
       <group>
-        <primitive object={parts.bottom} />
+        <primitive object={bottom} />
         <mesh rotation={[-0.5 * Math.PI, 0, 0]} position={[0, 0.045, 7.21]}>
           <planeGeometry args={[27.7, 11.6]} />
           <meshBasicMaterial color={0xffffff} alphaMap={keysTex} transparent />

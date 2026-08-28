@@ -1456,9 +1456,60 @@ class TestDiscoverIp:
 
     def test_namespace_not_configured_returns_none(self, manager, mock_servicediscovery_client):
         """Missing Cloud Map names -> None, no SDK call."""
-        manager._cloud_map_namespace_name = ""
+        manager._cloud_map_lookups = []
         assert manager.discover_ip("openclaw-abc123def4") is None
         mock_servicediscovery_client.discover_instances.assert_not_called()
+
+    def test_falls_back_to_the_legacy_namespace(self, manager, mock_servicediscovery_client):
+        """During the namespace rename an owner may still be registered in the
+        OLD registry. An empty result from the current namespace must fall
+        through rather than report the container unreachable."""
+        manager._cloud_map_lookups = [("new.local", "svc-new"), ("old.local", "svc-old")]
+        mock_servicediscovery_client.discover_instances.side_effect = [
+            {"Instances": []},
+            {
+                "Instances": [
+                    {
+                        "Attributes": {
+                            "ECS_SERVICE_NAME": "openclaw-abc123def4",
+                            "AWS_INSTANCE_IPV4": "10.0.4.4",
+                        }
+                    }
+                ]
+            },
+        ]
+        assert manager.discover_ip("openclaw-abc123def4") == "10.0.4.4"
+        assert mock_servicediscovery_client.discover_instances.call_count == 2
+
+    def test_prefers_the_current_namespace_over_the_legacy_one(self, manager, mock_servicediscovery_client):
+        """A hit in the current namespace is authoritative and must short-circuit:
+        a legacy-first order could hand back a task ECS is draining out of the
+        old registry mid-cutover."""
+        manager._cloud_map_lookups = [("new.local", "svc-new"), ("old.local", "svc-old")]
+        mock_servicediscovery_client.discover_instances.return_value = {
+            "Instances": [{"Attributes": {"ECS_SERVICE_NAME": "openclaw-abc123def4", "AWS_INSTANCE_IPV4": "10.0.1.1"}}]
+        }
+        assert manager.discover_ip("openclaw-abc123def4") == "10.0.1.1"
+        mock_servicediscovery_client.discover_instances.assert_called_once()
+
+    def test_a_broken_namespace_does_not_block_the_other(self, manager, mock_servicediscovery_client):
+        """A raise from one lookup (e.g. NamespaceNotFound while the new
+        namespace is still deploying) must not swallow the other's answer."""
+        manager._cloud_map_lookups = [("new.local", "svc-new"), ("old.local", "svc-old")]
+        mock_servicediscovery_client.discover_instances.side_effect = [
+            Exception("NamespaceNotFound"),
+            {
+                "Instances": [
+                    {
+                        "Attributes": {
+                            "ECS_SERVICE_NAME": "openclaw-abc123def4",
+                            "AWS_INSTANCE_IPV4": "10.0.5.5",
+                        }
+                    }
+                ]
+            },
+        ]
+        assert manager.discover_ip("openclaw-abc123def4") == "10.0.5.5"
 
 
 # ---------------------------------------------------------------------------

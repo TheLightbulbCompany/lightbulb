@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     CLOUD_MAP_SERVICE_ARN: str = ""
     CLOUD_MAP_NAMESPACE_NAME: str = ""
     CLOUD_MAP_SERVICE_NAME: str = ""
+    # TRANSITIONAL, set by CDK only while the Cloud Map namespace rename is in
+    # flight. Unset => discover_ip does exactly one lookup, as it always has.
+    # Remove these (and the legacy pair in _cloud_map_lookups) once no ECS
+    # service references the old registry -- the runbook's verification query.
+    CLOUD_MAP_LEGACY_NAMESPACE_NAME: str = ""
+    CLOUD_MAP_LEGACY_SERVICE_NAME: str = ""
 
     # --- EFS ---
     EFS_MOUNT_PATH: str = "/mnt/efs/users"

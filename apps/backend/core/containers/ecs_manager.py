@@ -329,6 +329,18 @@ class EcsManager:
         self._servicediscovery = boto3.client("servicediscovery", region_name=settings.AWS_REGION)
         self._cloud_map_namespace_name = settings.CLOUD_MAP_NAMESPACE_NAME
         self._cloud_map_service_name = settings.CLOUD_MAP_SERVICE_NAME
+        # Ordered (namespace, service) pairs discover_ip tries in turn. The
+        # legacy pair is populated only during the namespace rename and drops
+        # out of the list the moment CDK stops setting it -- so with it unset
+        # this is a one-element list and behaviour is byte-identical to before.
+        self._cloud_map_lookups = [
+            (namespace, service)
+            for namespace, service in (
+                (settings.CLOUD_MAP_NAMESPACE_NAME, settings.CLOUD_MAP_SERVICE_NAME),
+                (settings.CLOUD_MAP_LEGACY_NAMESPACE_NAME, settings.CLOUD_MAP_LEGACY_SERVICE_NAME),
+            )
+            if namespace and service
+        ]
         self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
 
     def _service_name(self, user_id: str) -> str:
@@ -2286,7 +2298,7 @@ class EcsManager:
         Returns:
             The current task's private IPv4 address, or None.
         """
-        if not self._cloud_map_namespace_name or not self._cloud_map_service_name:
+        if not self._cloud_map_lookups:
             logger.error(
                 "Cloud Map names not configured (namespace=%r service=%r); cannot discover %s",
                 self._cloud_map_namespace_name,
@@ -2294,20 +2306,32 @@ class EcsManager:
                 service_name,
             )
             return None
-        try:
-            resp = self._servicediscovery.discover_instances(
-                NamespaceName=self._cloud_map_namespace_name,
-                ServiceName=self._cloud_map_service_name,
-                QueryParameters={"ECS_SERVICE_NAME": service_name},
-                HealthStatus="HEALTHY_OR_ELSE_ALL",
-            )
-        except Exception as e:
-            logger.error("Cloud Map discovery failed for %s: %s", service_name, e)
-            return None
-        for inst in resp.get("Instances", []):
-            attrs = inst.get("Attributes", {})
-            if attrs.get("ECS_SERVICE_NAME") == service_name and attrs.get("AWS_INSTANCE_IPV4"):
-                return attrs["AWS_INSTANCE_IPV4"]
+        # Current namespace FIRST. A task lives in exactly one registry, so the
+        # first hit is authoritative; a legacy-first order could hand back the
+        # address of a task ECS is draining out of the old registry during a
+        # cutover. An empty result and a missing namespace both just fall
+        # through to the next pair -- neither is fatal on its own, and only
+        # exhausting every pair yields None, the same answer as before.
+        for namespace_name, cloud_map_service in self._cloud_map_lookups:
+            try:
+                resp = self._servicediscovery.discover_instances(
+                    NamespaceName=namespace_name,
+                    ServiceName=cloud_map_service,
+                    QueryParameters={"ECS_SERVICE_NAME": service_name},
+                    HealthStatus="HEALTHY_OR_ELSE_ALL",
+                )
+            except Exception as e:
+                logger.error(
+                    "Cloud Map discovery failed in %s for %s: %s",
+                    namespace_name,
+                    service_name,
+                    e,
+                )
+                continue
+            for inst in resp.get("Instances", []):
+                attrs = inst.get("Attributes", {})
+                if attrs.get("ECS_SERVICE_NAME") == service_name and attrs.get("AWS_INSTANCE_IPV4"):
+                    return attrs["AWS_INSTANCE_IPV4"]
         return None
 
     def is_healthy(self, ip: str) -> bool:

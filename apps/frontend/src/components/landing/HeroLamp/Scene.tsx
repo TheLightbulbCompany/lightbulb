@@ -78,10 +78,13 @@ function Driver({
     invalidate();
   }, [target, invalidate, litRef]);
 
-  // Scroll + pointer nudge the pendulum; both request frames. Unsubscribed
-  // while the hero is off-screen: `invalidate` is inert under
-  // frameloop="never", so impulses taken then would only pile up unswung
-  // velocity to unleash on the way back.
+  // Scroll + pointer nudge the pendulum; both request frames. Resize only
+  // asks for a repaint: fiber's size/dpr subscription calls setPixelRatio +
+  // setSize, which clears the drawing buffer and does NOT invalidate, so the
+  // hero goes blank until something else asks for a frame.
+  // All three are unsubscribed while the hero is off-screen: `invalidate` is
+  // inert under frameloop="never", so impulses taken then would only pile up
+  // unswung velocity to unleash on the way back.
   React.useEffect(() => {
     if (!visible) return;
     // Coming back on-screen: nothing in the scene graph changed, so no commit
@@ -104,11 +107,14 @@ function Driver({
       }
       lastX = e.clientX;
     };
+    const onResize = () => invalidate();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pointermove", onMove, { passive: true });
+    window.addEventListener("resize", onResize, { passive: true });
     return () => {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("resize", onResize);
     };
   }, [pendulum, invalidate, visible]);
 
@@ -139,13 +145,19 @@ export default function Scene() {
   const [dpr, setDpr] = React.useState<[number, number]>([1, 1.5]);
   const [visible, setVisible] = React.useState(true);
   const host = React.useRef<HTMLDivElement>(null);
+  // The monitor's handlers live out here, outside the Canvas, so they cannot
+  // call useThree. `onCreated` hands us the same invalidate Driver uses.
+  const invalidate = React.useRef<((frames?: number) => void) | null>(null);
   const narrow = typeof window !== "undefined" && window.innerWidth < 640;
 
   // Pause rendering entirely when the hero is off-screen.
   React.useEffect(() => {
     const el = host.current;
     if (!el) return;
-    const io = new IntersectionObserver(([e]) => setVisible(e.isIntersecting), { threshold: 0 });
+    const io = new IntersectionObserver((entries) => {
+      const e = entries.at(-1); // batched — only the last one is current
+      if (e) setVisible(e.isIntersecting);
+    }, { threshold: 0 });
     io.observe(el);
     return () => io.disconnect();
   }, []);
@@ -158,16 +170,27 @@ export default function Scene() {
         shadows={quality > 0}
         gl={{ antialias: false, powerPreference: "high-performance" }}
         camera={{ position: [0, 0.4, CAMERA_Z], fov: CAMERA_FOV, near: 0.1, far: 40 }}
-        onCreated={({ gl }) => {
-          gl.toneMapping = THREE.ACESFilmicToneMapping;
+        onCreated={(state) => {
+          invalidate.current = state.invalidate;
         }}
       >
         <PerformanceMonitor
-          onDecline={() => {
-            setDpr(([lo]) => [lo, 1]);
-            setQuality((q) => (q > 0 ? ((q - 1) as Quality) : q));
+          onDecline={(api) => {
+            // The demand loop poisons the monitor: drei times raw
+            // performance.now() gaps with no frameloop awareness, so the first
+            // frame after an idle reads as a couple of fps and a burst that
+            // settles inside its 250ms window never samples at all. A GPU
+            // genuinely struggling with this scene sits at 20-40.
+            if (api.fps < 20) return;
+            // One rung per decline: dpr to 1, then bloom off, then shadows off.
+            if (dpr[1] > 1) setDpr(([lo]) => [lo, 1]);
+            else setQuality((q) => (q > 0 ? ((q - 1) as Quality) : q));
+            invalidate.current?.();
           }}
-          onIncline={() => setDpr([1, 1.5])}
+          onIncline={() => {
+            setDpr([1, 1.5]);
+            invalidate.current?.(); // dpr change alone clears the buffer
+          }}
           flipflops={2}
         />
         <Driver litRef={litRef} pendulum={pendulum} visible={visible} />

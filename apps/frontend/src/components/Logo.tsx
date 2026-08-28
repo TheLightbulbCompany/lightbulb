@@ -43,7 +43,7 @@ export function Logo({
   const content = (
     <span className={classes}>
       {withMark && <LogoMark />}
-      ISOL8
+      LIGHTBULB
     </span>
   );
 

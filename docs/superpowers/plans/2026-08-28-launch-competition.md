@@ -4,7 +4,7 @@
 
 **Goal:** Ship the waitlist → drop → comp → competition loop: a public `/launch` page with waitlist + referral links, an activation-aware "enter" flow that reads the entrant's own Stripe revenue through a pasted restricted key, an hourly leaderboard sweep, automatic referral free-months on the referred person's first paid invoice, and an `/admin/launch` page with the economics.
 
-**Architecture:** Two new DynamoDB tables (`launch-waitlist` keyed by email, `launch-entries` keyed by owner_id) read by full table name from env (the `isol8-`→`lightbulb-` prefix flip is mid-flight, so the new tables must not depend on `DYNAMODB_TABLE_PREFIX`). One new router (`/api/v1/launch`), four small services (phase math, service, revenue, referral), one webhook change (`handle_invoice_paid`), one ops endpoint; revenue refreshes stale-while-revalidate on board reads — no long-running worker. Frontend: the ROOT landing page (brand-owned) is the waitlist front door and embeds a self-contained `<WaitlistForm />` (one import line, handed to the brand team); `/launch` is the competition page; one admin route. Nothing under `components/landing/` or the brand-owned files is edited here.
+**Architecture:** Two new DynamoDB tables (`launch-waitlist` keyed by email, `launch-entries` keyed by owner_id) under the standard `DYNAMODB_TABLE_PREFIX`. One new router (`/api/v1/launch`), four small services (phase math, service, revenue, referral), one webhook change (`handle_invoice_paid`), one ops endpoint; revenue refreshes stale-while-revalidate on board reads — no long-running worker. Frontend: the ROOT landing page (brand-owned) is the waitlist front door and embeds a self-contained `<WaitlistForm />` (one import line, handed to the brand team); `/launch` is the competition page; one admin route. Nothing under `components/landing/` or the brand-owned files is edited here.
 
 **Tech Stack:** FastAPI + boto3 DynamoDB (moto in tests) + stripe-python ≥ 8 + Secrets Manager; AWS CDK (TypeScript, jest); Next.js 16 App Router + Tailwind + vitest/testing-library.
 
@@ -14,7 +14,7 @@
 
 - Backend: Python 3.12, ruff line-length 120, `asyncio_mode = "auto"` (pytest-asyncio); every DynamoDB call goes through `core.dynamodb.run_in_thread`; never log a Stripe key.
 - Every `/launch*` and `/ops/launch*` route returns **404** when `settings.LAUNCH_DROP_AT` is empty. Prod is inert until an owner sets it.
-- Table access for the two new tables is by **full name** from `settings.LAUNCH_WAITLIST_TABLE` / `settings.LAUNCH_ENTRIES_TABLE` (same pattern as `MARKETPLACE_LISTINGS_TABLE`), never via `get_table(short_name)`.
+- The two new tables are read like every other core table — `core.dynamodb.get_table("launch-waitlist")` / `get_table("launch-entries")` under `DYNAMODB_TABLE_PREFIX`. (The `lightbulb-` prefix flip landed in #2102 before this branch was rebased; no full-name env vars.)
 - Stripe restricted key prefix rule: `^rk_live_` in prod; `^rk_(live|test)_` when `settings.ENVIRONMENT != "prod"`.
 - Comp/referral rewards: personal owners only (`owner_id` starting with `org_` is skipped).
 - Stripe calls that mutate carry a stable `idempotency_key` (repo convention — `feedback_stripe_idempotency_with_stable_keys`).
@@ -26,7 +26,7 @@
 ## File Structure
 
 **Backend (`apps/backend/`)**
-- `core/config.py` — add `LAUNCH_*`, `STRIPE_FREE_MONTH_COUPON_ID`, `LAUNCH_WAITLIST_TABLE`, `LAUNCH_ENTRIES_TABLE`.
+- `core/config.py` — add `LAUNCH_*`, `STRIPE_FREE_MONTH_COUPON_ID`.
 - `core/services/launch_phase.py` — pure schedule/phase math from settings. No I/O.
 - `core/repositories/launch_waitlist_repo.py` — waitlist rows: join (position counter), get, claim user_id, attribute referral, counters, reward CAS, banked months.
 - `core/repositories/launch_entries_repo.py` — entry rows: upsert, get, list, write revenue.
@@ -155,11 +155,6 @@ In `apps/backend/core/config.py`, directly after the `STRIPE_ULTRA_PRICE_ID: str
     # referral reward uses it (the waitlist comp is a promotion code redeemed at
     # checkout). Empty ⇒ rewards are banked on the row, never applied.
     STRIPE_FREE_MONTH_COUPON_ID: str = ""
-    # Full table names (CDK-wired). Read by full name, NOT via
-    # DYNAMODB_TABLE_PREFIX: the prefix flip is mid-flight and these tables
-    # only ever exist on the new prefix.
-    LAUNCH_WAITLIST_TABLE: str = ""
-    LAUNCH_ENTRIES_TABLE: str = ""
 ```
 
 - [ ] **Step 4: Write the phase module**
@@ -257,7 +252,7 @@ git commit -m "feat(launch): settings + phase math for the Launch Competition"
 - Test: `apps/infra/test/database-stack.test.ts`, `apps/infra/test/service-stack.test.ts`
 
 **Interfaces:**
-- Produces: tables `lightbulb-{env}-launch-waitlist` (PK `email` S; GSI `referral-code-index` on `referral_code` S) and `lightbulb-{env}-launch-entries` (PK `owner_id` S); backend env `LAUNCH_WAITLIST_TABLE`, `LAUNCH_ENTRIES_TABLE`, `LAUNCH_DROP_AT`, `LAUNCH_COMP_SLOTS`, `LAUNCH_ACTIVATION_WINDOW_HOURS`, `LAUNCH_COMPETITION_DAYS`, `LAUNCH_PRIZE_FRONT_CENTS`, `LAUNCH_POT_PER_ENTRANT_CENTS`, `STRIPE_FREE_MONTH_COUPON_ID`.
+- Produces: tables `lightbulb-{env}-launch-waitlist` (PK `email` S; GSI `referral-code-index` on `referral_code` S) and `lightbulb-{env}-launch-entries` (PK `owner_id` S); backend env `LAUNCH_DROP_AT`, `LAUNCH_COMP_SLOTS`, `LAUNCH_ACTIVATION_WINDOW_HOURS`, `LAUNCH_COMPETITION_DAYS`, `LAUNCH_PRIZE_FRONT_CENTS`, `LAUNCH_POT_PER_ENTRANT_CENTS`, `STRIPE_FREE_MONTH_COUPON_ID`.
 
 - [ ] **Step 1: Write the failing infra tests**
 
@@ -296,14 +291,13 @@ describe("DatabaseStack — launch competition tables", () => {
 Append to `apps/infra/test/service-stack.test.ts` inside an existing `describe` that has a synthesized service-stack `template` for dev (reuse the file's existing builder — look for the `describe` block that asserts `MARKETPLACE_LISTINGS_TABLE` around line 724 and add a sibling test):
 
 ```ts
-  test("backend task env carries the launch table names and an EMPTY drop date", () => {
+  test("backend task env carries an EMPTY launch drop date — the feature is inert until an owner sets it", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({ Name: "LAUNCH_WAITLIST_TABLE", Value: Match.anyValue() }),
-            Match.objectLike({ Name: "LAUNCH_ENTRIES_TABLE", Value: Match.anyValue() }),
             Match.objectLike({ Name: "LAUNCH_DROP_AT", Value: "" }),
+            Match.objectLike({ Name: "LAUNCH_COMP_SLOTS", Value: "220" }),
           ]),
         }),
       ]),
@@ -356,8 +350,7 @@ In `service-stack.ts` `database` props interface add:
 After `props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);` add:
 
 ```ts
-    // Launch Competition tables — read by FULL NAME from env (below), so they
-    // do not ride the DYNAMODB_TABLE_PREFIX flip.
+    // Launch Competition tables — read via DYNAMODB_TABLE_PREFIX like the rest.
     props.database.launchWaitlistTable.grantReadWriteData(this.taskRole);
     props.database.launchEntriesTable.grantReadWriteData(this.taskRole);
 ```
@@ -368,8 +361,6 @@ After the `MARKETPLACE_*` env entries add:
       // Launch Competition. LAUNCH_DROP_AT EMPTY keeps the feature inert
       // (every /launch route 404s). Set the ISO instant per env when the
       // waitlist opens; the other values are the sheet's assumptions.
-      LAUNCH_WAITLIST_TABLE: props.database.launchWaitlistTable.tableName,
-      LAUNCH_ENTRIES_TABLE: props.database.launchEntriesTable.tableName,
       LAUNCH_DROP_AT: "",
       LAUNCH_COMP_SLOTS: "220",
       LAUNCH_ACTIVATION_WINDOW_HOURS: "72",
@@ -463,7 +454,7 @@ def table():
         t.meta.client.get_waiter("table_exists").wait(TableName=TABLE)
         from core.repositories import launch_waitlist_repo as repo
 
-        with patch.object(repo.settings, "LAUNCH_WAITLIST_TABLE", TABLE), patch.object(repo, "_resource", lambda: ddb):
+        with patch("core.dynamodb._table_prefix", "test-"), patch("core.dynamodb._dynamodb_resource", ddb):
             yield repo
 
 
@@ -562,10 +553,6 @@ Keyed by lowercased email because the waitlist exists before any account
 does; the join to a Clerk user is ``users.email`` (written by the
 ``user.created`` webhook) and is stamped onto the row as ``user_id`` on the
 first authed read (``claim_user``).
-
-Table name comes from ``settings.LAUNCH_WAITLIST_TABLE`` (full name), not
-``DYNAMODB_TABLE_PREFIX`` — the prefix flip is mid-flight and this table
-only exists on the new prefix.
 """
 
 from __future__ import annotations
@@ -573,11 +560,9 @@ from __future__ import annotations
 import secrets
 from typing import Literal
 
-import boto3
 from botocore.exceptions import ClientError
 
-from core.config import settings
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 COUNTER_KEY = "__counter__"
 REFERRAL_CODE_INDEX = "referral-code-index"
@@ -588,12 +573,8 @@ _CODE_LEN = 8
 CounterField = Literal["referrals_signed_up", "referrals_paid", "free_months_banked"]
 
 
-def _resource():
-    return boto3.resource("dynamodb")
-
-
 def _table():
-    return _resource().Table(settings.LAUNCH_WAITLIST_TABLE)
+    return get_table("launch-waitlist")
 
 
 def normalize_email(raw: str) -> str:
@@ -838,7 +819,7 @@ def table():
         t.meta.client.get_waiter("table_exists").wait(TableName=TABLE)
         from core.repositories import launch_entries_repo as repo
 
-        with patch.object(repo.settings, "LAUNCH_ENTRIES_TABLE", TABLE), patch.object(repo, "_resource", lambda: ddb):
+        with patch("core.dynamodb._table_prefix", "test-"), patch("core.dynamodb._dynamodb_resource", ddb):
             yield repo
 
 
@@ -889,20 +870,13 @@ written by the hourly sweep (core.services.launch_revenue).
 
 from __future__ import annotations
 
-import boto3
-
-from core.config import settings
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 _INT_FIELDS = ("baseline_cents", "window_cents", "delta_cents", "waitlist_position")
 
 
-def _resource():
-    return boto3.resource("dynamodb")
-
-
 def _table():
-    return _resource().Table(settings.LAUNCH_ENTRIES_TABLE)
+    return get_table("launch-entries")
 
 
 def _plain(item: dict | None) -> dict | None:
@@ -4332,7 +4306,7 @@ The Lightbulb Launch Competition loop — spec: `docs/superpowers/specs/2026-08-
 - Revenue refresh is stale-while-revalidate on board reads (no long-running worker): net charges − refunds vs a 30-day baseline; `$ delta` ranks, `%` shown.
 - The root landing page (brand-owned) embeds `<WaitlistForm />` as the waitlist front door; `/launch` is the competition page.
 - `/admin/launch`: the owner's economics sheet with live inputs, force refresh, CSV export for the launch email.
-- Two new tables `lightbulb-{env}-launch-waitlist` / `-launch-entries`, read by full name (prefix flip is mid-flight).
+- Two new tables `lightbulb-{env}-launch-waitlist` / `-launch-entries` under the standard prefix.
 
 ## Inert until configured
 

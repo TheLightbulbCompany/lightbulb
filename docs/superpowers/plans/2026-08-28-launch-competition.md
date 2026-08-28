@@ -3076,7 +3076,8 @@ describe("WaitlistForm", () => {
     fetchLaunchInfo.mockResolvedValue(info);
     joinWaitlist.mockRejectedValue(new Error("invalid_email"));
     render(<WaitlistForm />);
-    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "nope@" } });
+    // Well-formed so native type="email" validation lets the submit reach the (mocked, rejecting) backend.
+    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "nope@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /join/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/valid email/i);
   });
@@ -3488,7 +3489,7 @@ function WaitlistFormInner() {
         <p className="lc-fine">
           {joined.in_comp_window
             ? `You're in the first ${info.comp_slots} — your free competition month is yours if you finish onboarding within 3 days of the drop. Watch your inbox on drop day.`
-            : `The first ${info.comp_slots} spots are gone, but you can still compete — and every friend who subscribes earns you a month free.`}
+            : `The comped spots are taken, but you can still compete — and every friend who subscribes earns you a month free.`}
         </p>
         <ReferralLink code={joined.referral_code} />
       </div>

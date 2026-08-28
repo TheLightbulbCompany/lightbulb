@@ -63,11 +63,11 @@ describe("SLACK_APP_MANIFEST", () => {
     }
   });
 
-  it("enables socket mode + App Home + assistant view and stays Lightbulb AI-branded", () => {
+  it("enables socket mode + App Home + assistant view and stays Lightbulb-branded", () => {
     expect(SLACK_APP_MANIFEST).toContain("socket_mode_enabled: true");
     expect(SLACK_APP_MANIFEST).toContain("app_home:");
     expect(SLACK_APP_MANIFEST).toContain("assistant_view:");
-    expect(SLACK_APP_MANIFEST).toContain("name: Lightbulb AI Agent");
+    expect(SLACK_APP_MANIFEST).toContain("name: Lightbulb Agent");
     expect(SLACK_APP_MANIFEST).not.toMatch(/OpenClaw/);
   });
 

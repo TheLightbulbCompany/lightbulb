@@ -459,7 +459,7 @@ function BillingPanel() {
           <div className="settings-card-header">
             <div>
               <div className="settings-card-title">
-                Lightbulb AI plan
+                Lightbulb plan
                 {statusChipLabel && (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -500,7 +500,7 @@ function BillingPanel() {
         <div className="settings-card-header">
           <div>
             <div className="settings-card-title">
-              {isTrialLocal ? "Lightbulb AI — Free tier" : "Lightbulb AI — $50 / month"}
+              {isTrialLocal ? "Lightbulb — Free tier" : "Lightbulb — $50 / month"}
               {statusChipLabel && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

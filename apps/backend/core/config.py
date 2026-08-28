@@ -491,7 +491,7 @@ class Settings(BaseSettings):
     # wire all three (service-stack.ts, off lib/domains.ts PLATFORM_MAIL_DOMAIN),
     # so these defaults only apply to local dev — keep them in step with the
     # mail domain anyway, or a local run sends as a domain SES will refuse.
-    EMAIL_FROM_WELCOME: str = "Lightbulb AI <hello@thelightbulb.company>"
+    EMAIL_FROM_WELCOME: str = "Lightbulb <hello@thelightbulb.company>"
     # The Google Workspace support mailbox. Used as Reply-To on the welcome
     # email (a plain reply lands in the inbox the agent watches) and (Plan 2)
     # as the ticket destination.
@@ -499,7 +499,7 @@ class Settings(BaseSettings):
     # Sender identity for support-ticket delivery emails. Lands in the
     # EMAIL_SUPPORT_ADDRESS inbox; distinct from welcome's hello@ so a Gmail
     # filter / the agent can tell app-generated tickets from direct customer mail.
-    EMAIL_FROM_TICKETS: str = "Lightbulb AI Support <tickets@thelightbulb.company>"
+    EMAIL_FROM_TICKETS: str = "Lightbulb Support <tickets@thelightbulb.company>"
 
     @field_validator("CLERK_ISSUER")
     @classmethod

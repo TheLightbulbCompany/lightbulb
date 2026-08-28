@@ -1,8 +1,8 @@
 ---
 title: "Webhook event reference: 480 verified triggers across 10 providers"
-description: "A source-backed reference for Lightbulb AI webhook triggers: 480 verified event types across 10 inbound-trigger providers, plus the five connected providers that do not currently expose inbound trigger blocks."
+description: "A source-backed reference for Lightbulb webhook triggers: 480 verified event types across 10 inbound-trigger providers, plus the five connected providers that do not currently expose inbound trigger blocks."
 date: "2026-08-20"
-author: "The Lightbulb AI team"
+author: "The Lightbulb team"
 tags: ["webhooks","integrations","automation","providers"]
 ---
 
@@ -10,7 +10,7 @@ tags: ["webhooks","integrations","automation","providers"]
 
 ## What changed
 
-Lightbulb AI agents can now subscribe to a registry-backed set of webhook triggers instead of hand-rolled one-off callbacks. This reference is generated from the same provider registry that powers connection setup, so the public list and product wiring stay aligned.
+Lightbulb agents can now subscribe to a registry-backed set of webhook triggers instead of hand-rolled one-off callbacks. This reference is generated from the same provider registry that powers connection setup, so the public list and product wiring stay aligned.
 
 ## Source of truth
 

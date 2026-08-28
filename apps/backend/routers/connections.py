@@ -661,7 +661,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
         # arbitrary our-account role (account takeover). No owner-id allowlist.
         # Any failure -> reject.
         if not await _self_account_role_is_pinned(role_arn, owner_id, external_id):
-            raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Lightbulb AI's")
+            raise HTTPException(status_code=400, detail="role must be in your own AWS account, not Lightbulb's")
 
     # Mint the container's bearer token for the credential_process endpoint.
     # Only its hash is retained (SM readers must never gain a usable bearer);

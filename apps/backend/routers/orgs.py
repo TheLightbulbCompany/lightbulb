@@ -77,7 +77,7 @@ async def create_invitation(
                     # human-readable message; invitee_email (above) is lowercased
                     # for the Clerk lookup itself.
                     "message": (
-                        f"{body.email} already has an active personal Lightbulb AI "
+                        f"{body.email} already has an active personal Lightbulb "
                         "subscription. They must cancel it before they can "
                         "be invited to an organization."
                     ),

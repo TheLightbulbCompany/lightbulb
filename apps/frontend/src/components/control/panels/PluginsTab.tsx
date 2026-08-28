@@ -136,7 +136,7 @@ export function PluginsTab() {
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
               OpenClaw plugins loaded in your container. A plugin bundles tools, skills,
-              providers and channels. Lightbulb AI-managed plugins are locked.
+              providers and channels. Lightbulb-managed plugins are locked.
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]">

@@ -10,7 +10,7 @@ stronger read — see "Why A first" below.
 
 Apple's own text for 3.1.3(f) names the exemption class: *"Free apps acting as
 a stand-alone companion to a paid web based tool (i.e. VoIP, Cloud Storage,
-Email Services, Web Hosting)."* Lightbulb AI sells a private cloud container that runs
+Email Services, Web Hosting)."* Lightbulb sells a private cloud container that runs
 continuously on our servers — it is hosting. The subscription does not unlock
 anything inside the iOS binary; it keeps a server process always-on and raises
 a usage allowance. The app is free, has no IAP, no storefront, and no paywalled
@@ -38,7 +38,7 @@ The risk: Apple may hold that we are the primary client rather than a
 > information about the digital content and services in the app, as invited in
 > your message.
 >
-> **What the subscription pays for.** Lightbulb AI is a hosted infrastructure service.
+> **What the subscription pays for.** Lightbulb is a hosted infrastructure service.
 > Each customer gets a private Linux container that runs on our servers
 > continuously, independently of any device. A paid plan keeps that container
 > always-on and raises the monthly compute allowance. It does not unlock any
@@ -48,7 +48,7 @@ The risk: Apple may hold that we are the primary client rather than a
 >
 > **Why we believe guideline 3.1.3(f) applies.** The guideline covers free apps
 > acting as a stand-alone companion to a paid web-based tool, naming Cloud
-> Storage and Web Hosting as examples. That is precisely what Lightbulb AI sells:
+> Storage and Web Hosting as examples. That is precisely what Lightbulb sells:
 > server-side compute and storage, provisioned and billed per account on our
 > website, reachable from a web app, a macOS app, and this iOS app. What the
 > customer buys is a running server, not digital content consumed in the app.

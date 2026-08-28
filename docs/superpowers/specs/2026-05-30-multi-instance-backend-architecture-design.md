@@ -9,7 +9,7 @@
 
 ## Summary (read this first)
 
-Today the Lightbulb AI backend runs as **one process** (`desiredCount: 1`). Everything about a live
+Today the Lightbulb backend runs as **one process** (`desiredCount: 1`). Everything about a live
 session — which browser tabs/devices belong to an owner, and the persistent WebSocket to each
 owner's OpenClaw container — lives in that one process's **memory**. That's correct at one instance
 but blocks running a second: a second copy wouldn't know about connections the first holds, and the

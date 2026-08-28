@@ -43,7 +43,7 @@ const lora = Lora({
   style: ["normal", "italic"],
 });
 
-const SITE_TITLE = "Lightbulb AI — AI Agents for Autonomous Businesses";
+const SITE_TITLE = "Lightbulb — AI Agents for Autonomous Businesses";
 const SITE_DESCRIPTION =
   "Point agents at the business you already run — sales, support, finance — and let it run itself. Always-on, cloud-isolated, and yours.";
 
@@ -55,9 +55,9 @@ export const metadata: Metadata = {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     url: SITE_URL,
-    siteName: "Lightbulb AI",
+    siteName: "Lightbulb",
     type: "website",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb AI" }],
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb" }],
   },
   twitter: {
     card: "summary_large_image",

@@ -84,7 +84,7 @@ export function InviteTeammatesStep({
         <Mail className="h-10 w-10 mx-auto mb-3 text-primary" />
         <h1 className="text-2xl font-bold">Invite your teammates</h1>
         <p className="text-muted-foreground mt-2">
-          They&apos;ll get an email to join your organization on Lightbulb AI.
+          They&apos;ll get an email to join your organization on Lightbulb.
         </p>
       </div>
 

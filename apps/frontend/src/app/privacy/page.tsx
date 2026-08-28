@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — Lightbulb AI",
+  title: "Privacy Policy — Lightbulb",
   alternates: { canonical: absoluteUrl("/privacy") },
-  description: "How Lightbulb AI collects, uses, stores, and protects your personal information.",
+  description: "How Lightbulb collects, uses, stores, and protects your personal information.",
 };
 
 export default function PrivacyPage() {

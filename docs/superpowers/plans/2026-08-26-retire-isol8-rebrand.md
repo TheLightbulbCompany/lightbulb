@@ -1,4 +1,4 @@
-# Retire isol8 → Lightbulb AI (flickmeon.ai) — Program Plan
+# Retire isol8 → Lightbulb (flickmeon.ai) — Program Plan
 
 > **For agentic workers:** this is the PROGRAM plan (phases, inventory, vendor
 > checklists, runbooks). Each phase gets its own bite-sized implementation plan
@@ -7,7 +7,7 @@
 > Working doc — DELETE when the retirement ships (git history is the record).
 
 **Goal:** Retire the `isol8` brand, domain and identity completely. Product
-= **Lightbulb AI** at **`flickmeon.ai`**; company = **The Lightbulb
+= **Lightbulb** at **`flickmeon.ai`**; company = **The Lightbulb
 Companies** at **`thelightbulb.company`** (humans, vendor logins,
 platform sender/support mail). No dual-domain window: hard cutover, then
 tear down everything `isol8`.
@@ -43,7 +43,7 @@ identifiers, each with its migration cost decided explicitly.
 | Topic | Decision |
 |---|---|
 | Product domain | `flickmeon.ai` (Route53 zone `Z03529981ZCUW1R3FM806`, currently NS/SOA only) |
-| Product name | Lightbulb AI |
+| Product name | Lightbulb |
 | Company domain | `thelightbulb.company` — humans, vendor logins (Aden, Google Workspace), platform sender + support mail |
 | Legal name | The Lightbulb Companies (rename of the existing entity) |
 | Dual domain | NO. Hard cutover. |
@@ -85,17 +85,17 @@ prod on `isol8.co`, not a new design:
 - `AGENT_EMAIL_DOMAIN` = `thelightbulb.company` (prod) / `dev.thelightbulb.company` (dev)
 - DMARC rua → `admin@thelightbulb.company`. Platform-admin gate domain → `@thelightbulb.company`.
 
-**Brand strings:** `Isol8`/`isol8` → `Lightbulb AI`; `isol8 Inc.` →
+**Brand strings:** `Isol8`/`isol8` → `Lightbulb`; `isol8 Inc.` →
 `The Lightbulb Companies` (interim: "Isol8 Inc., doing business as Lightbulb AI"
-until the amendment is effective); Slack manifest `Isol8 Agent` → `Lightbulb AI
-Agent`; DCR `client_name` → `Lightbulb AI`; SES sender display names.
+until the amendment is effective); Slack manifest `Isol8 Agent` → `Lightbulb
+Agent`; DCR `client_name` → `Lightbulb`; SES sender display names.
 
 **Native/app ids:** `co.isol8.mobile`→`ai.flickmeon.mobile`, `co.isol8.desktop`→
 `ai.flickmeon.desktop`, `co.isol8.mobile.plan.monthly`→`ai.flickmeon.mobile.plan.monthly`,
-scheme `isol8://`→`lightbulbai://`, Expo `name` Lightbulb AI / `slug`
+scheme `isol8://`→`lightbulbai://`, Expo `name` Lightbulb / `slug`
 `lightbulb-ai-mobile` / `owner` (rename Expo account; `projectId` + `updates.url`
-unchanged), Tauri `productName` Lightbulb AI, sidecar `isol8-browser-service`→
-`lightbulb-browser-service`, `Isol8.app`→`Lightbulb AI.app`, app-support dir follows
+unchanged), Tauri `productName` Lightbulb, sidecar `isol8-browser-service`→
+`lightbulb-browser-service`, `Isol8.app`→`Lightbulb.app`, app-support dir follows
 bundle id, keychain service follows bundle id, `/tmp/isol8-desktop.log`.
 
 **Internal (P6, each cost-scoped):** `@isol8/*` packages, `isol8-desktop` crate,
@@ -131,7 +131,7 @@ metric namespace `Isol8/*`, Cloudflare Zero Trust team, Mailsac prefix.
 - [ ] Aden: inventory what the `isol8.co` Workspace holds (users / groups / aliases / delegated mailboxes / shared drives) before retiring it, and say which of `hello@ support@ tickets@ admin@` are mailboxes vs groups (it changes how we configure SES sending). **No mailboxes on `flickmeon.ai`** — that domain is product-only and carries no mail records at all (superseded 2026-08-27: agent mail is `{agent}@{slug}.thelightbulb.company` via SES, and the platform sender is on `thelightbulb.company` too — see Mail above).
 - [ ] Apple: keep the in-flight individual→company migration going. **Confirm in App Store Connect that no IAP product exists and no TestFlight tester holds an installed build** before committing to a new bundle id (see the Apple IAP correction — the rail is live in prod, contrary to CLAUDE.md).
 - [ ] Meta: plan re-review for both apps (`1049347507456011`, `2080424579211211`).
-- [ ] Termly: prepare "Isol8 Inc. d/b/a Lightbulb AI" edits for the 7 docs.
+- [ ] Termly: prepare "Isol8 Inc. d/b/a Lightbulb" edits for the 7 docs.
 - [ ] Decide + record the **brand residue we accept** (see Done criteria): customer Slack apps named "Isol8 Agent", `isol8-connector` CFN stacks in customer AWS accounts, `isol8.co` strings inside litestream SQLite replicas and frozen marketplace artifacts.
 - [ ] Produce the **per-owner comms matrix** (computable today from `integrations`, `oauth-tokens`, `channel-links`, trigger rows across 22 owners / 4 paid).
 
@@ -254,7 +254,7 @@ Pre-stage, flip order, and teardown as in the earlier draft, WITH these correcti
 
 ## Phase 4 — Visual rebrand (after logo / brand manual)
 
-- [ ] **The logo IS the numeral 8** (`globals.css:1525`, animated `landing.css:2077`, rendered live by `Logo.tsx:20-29`). A text-only swap leaves an orphan "8" beside "Lightbulb AI" — so P4 is not fully optional after P3.
+- [ ] **The logo IS the numeral 8** (`globals.css:1525`, animated `landing.css:2077`, rendered live by `Logo.tsx:20-29`). A text-only swap leaves an orphan "8" beside "Lightbulb" — so P4 is not fully optional after P3.
 - [ ] Asset inventory (nobody had one): `public/og-image.png`, `src/app/favicon.ico` (277KB — regenerate anyway), `src/app/icon.png`, `apps/desktop/src-tauri/icons/**` (50 files), `apps/mobile/assets/images/*`. Delete-don't-rebrand: `public/goosetown-preview.png` (1.1MB, shipped every deploy), `public/goosetown/*`, unreferenced `public/logos/*`.
 - [ ] Three greppable `alt: "isol8"` strings missed by every sweep: `layout.tsx:67`, `blog/page.tsx:22`, `blog/[slug]/page.tsx:41`.
 - [ ] Vendor-side visual: Clerk email templates + account portal, Stripe Checkout/portal branding, Meta app icons, App Store screenshots.
@@ -700,7 +700,7 @@ dashboard edits, not one:
 | prod | `ins_38duYVCNiumxSyegmw2BVyBnEjm` |
 
 **Owner action, and independent of the Clerk domain change** — the application name can be
-renamed to "Lightbulb AI" at any time, today, without touching the domain, the publishable key,
+renamed to "Lightbulb" at any time, today, without touching the domain, the publishable key,
 or anyone's session. Worth doing early: it is the single most visible remaining "Isol8" string,
 shown to every user on every sign-in.
 

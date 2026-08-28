@@ -835,10 +835,10 @@ def materialize_staging(
         if vibe:
             entry["description"] = vibe
     if "channels" in entry:
-        warnings.append("channel bindings are not imported — reconnect channels in Lightbulb AI after the agent lands")
+        warnings.append("channel bindings are not imported — reconnect channels in Lightbulb after the agent lands")
     if isinstance(entry.get("model"), str) and entry["model"]:
         warnings.append(
-            f"model {entry['model']!r} is not carried over — the agent runs on your Lightbulb AI provider and model"
+            f"model {entry['model']!r} is not carried over — the agent runs on your Lightbulb provider and model"
         )
     _sanitized, dropped = sanitize_agent_entry_for_schema(strip_user_specific_fields(entry))
     if dropped:
@@ -858,7 +858,7 @@ def materialize_staging(
     src_version = meta.get("lastTouchedVersion")
     if isinstance(src_version, str) and src_version and src_version.split("-", 1)[0] != fleet_version.split("-", 1)[0]:
         warnings.append(
-            f"backup was written by OpenClaw {src_version}; Lightbulb AI runs {fleet_version} — unsupported config keys are dropped, not failed"
+            f"backup was written by OpenClaw {src_version}; Lightbulb runs {fleet_version} — unsupported config keys are dropped, not failed"
         )
 
     persisted_entry = {"id": agent.id, **_sanitized}

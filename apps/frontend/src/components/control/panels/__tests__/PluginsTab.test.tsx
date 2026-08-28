@@ -50,7 +50,7 @@ describe("PluginsTab", () => {
     expect(screen.getByText("Disabled")).toBeInTheDocument();
   });
 
-  it("locks Lightbulb AI-managed plugins (Managed badge, no toggle button)", () => {
+  it("locks Lightbulb-managed plugins (Managed badge, no toggle button)", () => {
     mockConfig.mockReturnValue({
       config: { plugins: { entries: { lobster: { enabled: true } } }, agents: { list: [] } },
     });

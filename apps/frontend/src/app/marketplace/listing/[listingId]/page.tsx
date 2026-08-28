@@ -76,7 +76,7 @@ export default async function ListingDetail({
           <section className="mt-8 editorial-card p-6">
             <SectionLabel label="After purchase" />
             <p className="text-sm leading-7 text-[var(--midnight-soft)]">
-              After Stripe Checkout completes, your purchased agent deploys to your Lightbulb AI container
+              After Stripe Checkout completes, your purchased agent deploys to your Lightbulb container
               automatically. You&apos;ll be redirected to a confirmation page with a deep link to
               open it in chat.
             </p>
@@ -112,7 +112,7 @@ const REQUIREMENT_GROUPS: Array<{
   },
   {
     disposition: "unavailable",
-    label: "Not available on Lightbulb AI",
+    label: "Not available on Lightbulb",
     hint: "Referenced by the agent but not supported here.",
   },
 ];

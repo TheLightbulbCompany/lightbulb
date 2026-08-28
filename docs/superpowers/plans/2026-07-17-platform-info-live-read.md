@@ -148,7 +148,7 @@ BEFORE (lines 55-59):
 ## Integrations (connecting external services)
 
 The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
-connects external services — each connection is an MCP server that Lightbulb AI
+connects external services — each connection is an MCP server that Lightbulb
 wires into this container's config automatically.
 ```
 AFTER:
@@ -156,7 +156,7 @@ AFTER:
 ## Integrations and channels (connecting external services)
 
 The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
-connects external services — each connection is an MCP server that Lightbulb AI
+connects external services — each connection is an MCP server that Lightbulb
 wires into this container's config automatically. **Channels** (chat surfaces
 like Telegram/Discord/Slack) connect the same way, in the Channels tab.
 
@@ -180,7 +180,7 @@ connecting the integration and performing the task.
 **Honest fallback — name what you can't do.** If a needed capability is NOT in
 the platform-info catalog (no integration or channel offers it), say so
 plainly: name the capability that's missing, then offer a manual/draft
-fallback ("Lightbulb AI has no <X> integration today, so I can't post it directly —
+fallback ("Lightbulb has no <X> integration today, so I can't post it directly —
 here's the draft for you to publish yourself"). Never imply you did something
 the platform can't do.
 ```

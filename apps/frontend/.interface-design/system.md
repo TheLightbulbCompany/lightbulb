@@ -1,5 +1,5 @@
 <!-- apps/frontend/.interface-design/system.md -->
-# Lightbulb AI — Design System
+# Lightbulb — Design System
 
 Brand Identity Manual v1.0 (§05 Typography, §06 Colour, §07 Icons) is the source of truth.
 Tokens live in `src/app/globals.css`; nothing else defines a colour. Operator direction:

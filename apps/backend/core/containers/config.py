@@ -2062,7 +2062,7 @@ def build_openclaw_config_dict(
                 # Enables the keyless parallel-free provider that
                 # tools.web.search.provider selects above.
                 "parallel": {"enabled": True},
-                # First-party Lightbulb AI marketplace tools (marketplace_search,
+                # First-party Lightbulb marketplace tools (marketplace_search,
                 # recommend_agents), baked root-owned at
                 # /app/dist/extensions/lightbulb-marketplace. READ-ONLY: neither
                 # tool mutates the roster — hiring always ends at a human

@@ -290,8 +290,8 @@ _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "n
 # survives, and the owner can see exactly what the platform added. Refusing
 # instead (the shape this replaced) left the owner at a dead end with a
 # capability the machinery already supports.
-_PLATFORM_BLOCK_START = "--- Added by Lightbulb AI when this trigger was armed — leave this block in place ---"
-_PLATFORM_BLOCK_END = "--- end Lightbulb AI block ---"
+_PLATFORM_BLOCK_START = "--- Added by Lightbulb when this trigger was armed — leave this block in place ---"
+_PLATFORM_BLOCK_END = "--- end Lightbulb block ---"
 
 # ONE trigger can carry MANY events. A Paperclip webhook trigger has no event
 # filter (its schema is kind/signingMode/replayWindowSec — see the fork's
@@ -523,7 +523,7 @@ async def _create_github_hook(*, token: str, resource: str, proxy_url: str, even
     # administer it, so both map to the same caller-facing message.
     if resp.status_code in (403, 404):
         raise ValueError(
-            f"Lightbulb AI couldn't create the webhook on {resource} — you need admin access to the repository"
+            f"Lightbulb couldn't create the webhook on {resource} — you need admin access to the repository"
         )
     resp.raise_for_status()
 
@@ -572,7 +572,7 @@ async def _create_vercel_webhook(*, token: str, resource: str, proxy_url: str, e
         )
     if resp.status_code == 403:
         raise ValueError(
-            "Lightbulb AI couldn't create the Vercel webhook — your Vercel plan or token can't create webhooks "
+            "Lightbulb couldn't create the Vercel webhook — your Vercel plan or token can't create webhooks "
             "(a full-access token on a Pro or Enterprise team is required)"
         )
     resp.raise_for_status()
@@ -711,8 +711,8 @@ async def _subscribe_meta_asset(asset: dict[str, str], fields: list[str]) -> Non
         )
     if resp.status_code in (400, 403):
         raise ValueError(
-            f"Lightbulb AI couldn't subscribe to {asset['label']} — the connected Meta account must administer it, "
-            "and the Lightbulb AI Meta app must hold the webhook permission for it"
+            f"Lightbulb couldn't subscribe to {asset['label']} — the connected Meta account must administer it, "
+            "and the Lightbulb Meta app must hold the webhook permission for it"
         )
     resp.raise_for_status()
     # Graph answers 200 {"success": true}. A 200 that doesn't say so means the
@@ -1328,7 +1328,7 @@ async def _seed_trigger_routine(
                 instructions = (
                     f"In your {provider.display_name} dashboard, add a webhook endpoint "
                     f"pointed at {proxy_url} listening for the '{event_label_text}' {noun} "
-                    f"({event_id_text}). Paste the signing secret it gives you back into Lightbulb AI "
+                    f"({event_id_text}). Paste the signing secret it gives you back into Lightbulb "
                     "to finish arming this automation."
                 )
             return {

@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: 'Chat - Lightbulb AI',
+  title: 'Chat - Lightbulb',
   description: 'AI agent chat',
 }
 

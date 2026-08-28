@@ -607,7 +607,7 @@ export function WorkspaceDemo() {
     <section className="ld-demo" id="workspace">
       <div className="ld-demo-stage">
         <InlineTeamsNavProvider value={nav}>
-          <div className="ld-demo-window" aria-label="Lightbulb AI workspace demo">
+          <div className="ld-demo-window" aria-label="Lightbulb workspace demo">
             {/* ≤720px the sidebar is hidden — this strip is then the only
                 way to switch panels, so it must mirror openView exactly. */}
             <div className="ld-demo-mobilenav" role="tablist" aria-label="Workspace demo views">
@@ -811,7 +811,7 @@ export function WorkspaceDemo() {
                     </div>
                     <span className="plan-badge">Free Tier</span>
                   </div>
-                  <div className="version-text">Lightbulb AI v0.1</div>
+                  <div className="version-text">Lightbulb v0.1</div>
                 </div>
               </aside>
 

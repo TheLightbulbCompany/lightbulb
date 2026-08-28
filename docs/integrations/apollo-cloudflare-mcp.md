@@ -1,6 +1,6 @@
 # Apollo and Cloudflare MCP integrations
 
-Lightbulb AI exposes Apollo and Cloudflare through hosted remote MCP servers, using the
+Lightbulb exposes Apollo and Cloudflare through hosted remote MCP servers, using the
 same `mcp_oauth` credential rail as Attio, Stripe, Notion, Linear, Sentry, and
 Intercom. The provider registry is the source of truth for the catalog and the
 runtime materializer.
@@ -19,7 +19,7 @@ runtime materializer.
   unless a separate product/security review explicitly asks for them.
 
 Apollo MCP was chosen over a CLI/API wrapper because Apollo publishes a hosted
-MCP server for search/prospecting/enrichment/contact workflows and Lightbulb AI already
+MCP server for search/prospecting/enrichment/contact workflows and Lightbulb already
 has native hosted-MCP connection, tool discovery, and mcporter vault seeding.
 
 Safe verification: connect a dev/test Apollo account, confirm the MCP server is
@@ -62,7 +62,7 @@ human-send-gated.
   - Dynamic client registration endpoint: `https://mcp.cloudflare.com/register`
 
 Cloudflare's hosted MCP was chosen over local npm/third-party wrappers because it
-is Cloudflare-owned, OAuth-protected, and fits Lightbulb AI's existing hosted-MCP rail.
+is Cloudflare-owned, OAuth-protected, and fits Lightbulb's existing hosted-MCP rail.
 
 Safe verification: connect only a dev/test Cloudflare account or a token/account
 with read-oriented permissions. Limit smoke tests to discovery/account/zone read

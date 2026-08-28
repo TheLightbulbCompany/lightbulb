@@ -4,9 +4,9 @@ import { LegalDocument } from "@/components/legal/LegalDocument";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Terms & Conditions — Lightbulb AI",
+  title: "Terms & Conditions — Lightbulb",
   alternates: { canonical: absoluteUrl("/terms") },
-  description: "The terms and conditions governing your use of Lightbulb AI.",
+  description: "The terms and conditions governing your use of Lightbulb.",
 };
 
 export default function TermsPage() {

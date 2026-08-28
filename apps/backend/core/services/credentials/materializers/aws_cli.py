@@ -81,7 +81,7 @@ if (msLeft(cached) > REFRESH_MARGIN_MS) {
 
 const tok = readJson(join(DIR, "token"));
 if (!tok || !tok.token) {
-  console.error("isol8: AWS connection token missing — reconnect AWS in Lightbulb AI settings");
+  console.error("isol8: AWS connection token missing — reconnect AWS in Lightbulb settings");
   process.exit(1);
 }
 
@@ -115,7 +115,7 @@ if (!creds) {
     emit(cached); // stale-but-valid cache beats failing the CLI call
     process.exit(0);
   }
-  console.error("isol8: no valid AWS credentials — Lightbulb AI credential service unavailable");
+  console.error("isol8: no valid AWS credentials — Lightbulb credential service unavailable");
   process.exit(1);
 }
 

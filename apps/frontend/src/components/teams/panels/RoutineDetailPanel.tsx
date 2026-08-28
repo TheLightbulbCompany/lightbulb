@@ -1626,7 +1626,7 @@ function TriggerDialog({
                 ))}
               </select>
               <span className="text-xs text-[var(--midnight-muted)]">
-                The external app signs each request with this secret; Lightbulb AI
+                The external app signs each request with this secret; Lightbulb
                 verifies it.
               </span>
             </label>

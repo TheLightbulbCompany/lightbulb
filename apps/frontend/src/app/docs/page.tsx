@@ -5,9 +5,9 @@ import { docsFaq, getAllDocs } from "@/content/docs";
 import { JsonLd, absoluteUrl, pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "Lightbulb AI Docs — Get started, use cases, automations, connectors, and approvals",
+  title: "Lightbulb Docs — Get started, use cases, automations, connectors, and approvals",
   description:
-    "How Lightbulb AI works: sign up and brief your CEO, the loops teams run, skills and automations, connectors and the browser, and the approvals that keep humans in control.",
+    "How Lightbulb works: sign up and brief your CEO, the loops teams run, skills and automations, connectors and the browser, and the approvals that keep humans in control.",
   path: "/docs",
 });
 
@@ -27,7 +27,7 @@ export default function DocsPage() {
   const collectionJsonLd = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
-    name: "Lightbulb AI product documentation",
+    name: "Lightbulb product documentation",
     description: metadata.description,
     url: absoluteUrl("/docs"),
     hasPart: docs.map((doc) => ({
@@ -45,7 +45,7 @@ export default function DocsPage() {
 
       <header className="blog-header docs-hero">
         <p className="blog-eyebrow">docs</p>
-        <h1 className="blog-title">How Lightbulb AI works</h1>
+        <h1 className="blog-title">How Lightbulb works</h1>
         <p className="blog-lede">
           A private AI company: your own workspace, persistent memory, and a team that starts
           with Friday and Atlas. Five short pages cover everything from sign-up to the approval

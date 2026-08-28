@@ -1,4 +1,4 @@
-# Lightbulb AI Codebase Audit — Synthesis
+# Lightbulb Codebase Audit — Synthesis
 
 **Date:** 2026-05-04
 **Method:** Three parallel agents, read-only sweep across backend, frontend, and infra/desktop/misc, scored against The Pragmatic Programmer's six relevant lenses (DRY, orthogonality, tracer bullets, design by contract, broken windows, reversibility).

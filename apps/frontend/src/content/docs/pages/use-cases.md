@@ -1,10 +1,10 @@
 ---
 title: "Use cases"
-description: "The loops Lightbulb AI teams run today — each one a trigger, an owner agent, connected tools, and a human gate."
+description: "The loops Lightbulb teams run today — each one a trigger, an owner agent, connected tools, and a human gate."
 order: 2
 ---
 
-The highest-leverage use of Lightbulb AI isn't one-off prompting. It's a loop: something happens, an agent owns the response, it uses real tools, and it asks you before anything sensitive. Every loop below has the same four parts — **trigger → agent → tools → gate**.
+The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: something happens, an agent owns the response, it uses real tools, and it asks you before anything sensitive. Every loop below has the same four parts — **trigger → agent → tools → gate**.
 
 ## Inbound lead triage
 
@@ -28,7 +28,7 @@ The highest-leverage use of Lightbulb AI isn't one-off prompting. It's a loop: s
 
 ## Engineering triage
 
-- **Trigger:** a GitHub issue or pull request (Lightbulb AI registers the webhook for you), or a Sentry alert.
+- **Trigger:** a GitHub issue or pull request (Lightbulb registers the webhook for you), or a Sentry alert.
 - **Agent:** an engineering agent using the coding harness.
 - **Tools:** `gh`, Linear, Sentry, Vercel.
 - **Gate:** the agent opens the pull request; merge and deploy stay behind an approval card.

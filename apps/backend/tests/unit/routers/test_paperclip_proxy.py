@@ -59,7 +59,7 @@ COOKIE_APEX = apex_domain(url_host(settings.FRONTEND_URL))
 
 def test_brand_rewrite_replaces_title():
     out = _brand_rewrite_html(b"<html><head><title>Paperclip</title></head></html>")
-    assert b"<title>Lightbulb AI Teams</title>" in out
+    assert b"<title>Lightbulb Teams</title>" in out
     assert b"<title>Paperclip</title>" not in out
 
 
@@ -67,19 +67,19 @@ def test_brand_rewrite_replaces_title_case_insensitive():
     out = _brand_rewrite_html(b"<TITLE>PaperClip</TITLE>")
     # Case-insensitive flag should match the tag name regardless of
     # case; replacement is the canonical lowercase form.
-    assert b"<title>Lightbulb AI Teams</title>" in out
+    assert b"<title>Lightbulb Teams</title>" in out
 
 
 def test_brand_rewrite_replaces_og_site_name_double_quotes():
     src = b'<meta property="og:site_name" content="Paperclip">'
     out = _brand_rewrite_html(src)
-    assert b'content="Lightbulb AI"' in out
+    assert b'content="Lightbulb"' in out
 
 
 def test_brand_rewrite_replaces_og_site_name_single_quotes():
     src = b"<meta property='og:site_name' content='Paperclip'>"
     out = _brand_rewrite_html(src)
-    assert b"content='Lightbulb AI'" in out
+    assert b"content='Lightbulb'" in out
 
 
 def test_brand_rewrite_passes_non_html_unchanged():

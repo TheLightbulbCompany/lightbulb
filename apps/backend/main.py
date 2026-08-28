@@ -540,7 +540,7 @@ openapi_tags = [
 ]
 
 app = FastAPI(
-    title="Lightbulb AI API",
+    title="Lightbulb API",
     description=(
         "AI agent platform powered by OpenClaw. Personal agents with persistent memory and streaming LLM inference."
     ),
@@ -969,7 +969,7 @@ app.include_router(marketplace_sellers.router)
     tags=["health"],
 )
 async def root():
-    return {"message": "Welcome to Lightbulb AI API"}
+    return {"message": "Welcome to Lightbulb API"}
 
 
 @app.get(

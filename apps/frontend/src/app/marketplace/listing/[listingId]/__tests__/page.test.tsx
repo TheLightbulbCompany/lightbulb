@@ -87,7 +87,7 @@ describe("<ManifestSummary>", () => {
     expect(screen.getByText("Web Search")).toBeInTheDocument();
     expect(screen.getByText("Connect an integration")).toBeInTheDocument();
     expect(screen.getByText("Slack")).toBeInTheDocument();
-    expect(screen.getByText("Not available on Lightbulb AI")).toBeInTheDocument();
+    expect(screen.getByText("Not available on Lightbulb")).toBeInTheDocument();
     expect(screen.getByText("Exotic API")).toBeInTheDocument();
     // A disposition with no rows must not render a group.
     expect(screen.queryByText("Bring your own key")).toBeNull();

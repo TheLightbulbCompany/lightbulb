@@ -216,7 +216,7 @@ The fallback test
 confirms the inheritance: secondary agents read `agents/main/agent/auth-profiles.json`
 when their own is missing or refresh fails.
 
-In Lightbulb AI's flat-fee model every container has one provider (Bedrock,
+In Lightbulb's flat-fee model every container has one provider (Bedrock,
 ChatGPT OAuth, or BYOK), so it makes sense to write the credential
 once at the container-wide fallback path and let every paired agent
 inherit. Relocating the file to Friday's directory would break the
@@ -246,7 +246,7 @@ Deferred to follow-up work:
   (`/chat`-initiated deletes) is handled by the existing interception
   at `apps/backend/routers/websocket_chat.py` `agents.delete` path.
 - **Adapter config refresh on token rotation.** Each Paperclip agent's
-  `adapterConfig` carries an Lightbulb AI-minted service token. When that
+  `adapterConfig` carries an Lightbulb-minted service token. When that
   token rotates, existing agents keep stale tokens until manually
   re-paired. Tracked separately.
 - **Removing the legacy `"main"` agent fallback in OpenClaw upstream.**

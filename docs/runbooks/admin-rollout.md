@@ -21,7 +21,7 @@ the `isol8-frontend-*` Vercel project names are NOT renamed.
 
 1. **DNS + Vercel domain alias:** `admin.dev.flickmeon.ai` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` (→ `admin.flickmeon.ai` at the flag-day flip) → `isol8-frontend-prod`. Verify with `dig admin.dev.flickmeon.ai CNAME`.
 2. **Backend secrets** (one Secrets Manager entry per value, consistent with existing `isol8/{env}/clerk_issuer`, `isol8/{env}/stripe_secret_key`, etc.):
-   - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Lightbulb AI team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
+   - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Lightbulb team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
    - `isol8/{env}/posthog_project_api_key` — PostHog personal API key with scopes `person:read`, `events:read`, `session_recording:read`. Wired as `POSTHOG_PROJECT_API_KEY`. Optional; the Activity tab stubs gracefully when absent.
 
    `POSTHOG_HOST` and `POSTHOG_PROJECT_ID` are plaintext env vars on the backend task definition (not secrets — project ID is public in every PostHog URL).

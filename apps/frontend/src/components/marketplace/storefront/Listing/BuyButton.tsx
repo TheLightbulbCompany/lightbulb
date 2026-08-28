@@ -133,7 +133,7 @@ function FreeDeployButton({
         disabled={loading}
         className="editorial-btn editorial-btn--primary h-12 px-6 text-sm"
       >
-        {loading ? "Deploying…" : "Deploy to my Lightbulb AI container"}
+        {loading ? "Deploying…" : "Deploy to my Lightbulb container"}
       </button>
       {error && (
         <p className="mt-3 rounded-lg border border-[var(--err)] px-3 py-2 text-sm text-[var(--err)]" role="alert">

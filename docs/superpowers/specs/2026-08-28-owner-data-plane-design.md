@@ -85,6 +85,18 @@ Friday raises it the first time a task needs money or infrastructure (or in
 the first-run brief on paid plans). The card renders in Inbox, pushes to
 mobile/desktop, and opens in whichever surface the owner is in.
 
+**Trigger split (owner decision 2026-08-28) — applies to every rail:**
+
+| Who | Does what | When |
+|---|---|---|
+| Platform | silently creates what needs no human: the bundle.social team, the Projects project shell, minting Stripe/portal links | on upgrade to paid / on click |
+| Friday (skill) | knows every door and its rules, raises the card, never signs up in the browser, reads `isol8-facts.json` so she never asks twice; does the work once the door is open | when a task needs it; pre-staged as one sentence in the first-run brief when the stated business goal implies selling or posting |
+| Owner | one click per account: Stripe's hosted form, the social portal, a provider's terms | when they're ready |
+
+First run stays "type an idea, watch it become a company" — never a setup
+checklist. Trial owners see the same sentence framed as what upgrading
+unlocks (the paywall inversion in the growth doc).
+
 ### 3.2 Provisioning door (Stripe Projects)
 
 Behind an interface with two implementations:

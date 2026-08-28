@@ -362,6 +362,37 @@ function Driver({
   return null;
 }
 
+/** Sizes the canvas from its host and asks for frames. On a fresh production
+ *  load the Canvas came up at the browser's default 300x150 — the measure
+ *  never landed — and nothing was drawn until a window resize forced one, so
+ *  the host is measured here directly (mount, fonts ready, every host resize)
+ *  and a frame requested each time. Mounted last inside the Canvas. */
+function FirstFrames() {
+  const invalidate = useThree((s) => s.invalidate);
+  const setSize = useThree((s) => s.setSize);
+  const gl = useThree((s) => s.gl);
+  React.useEffect(() => {
+    const host = gl.domElement.parentElement;
+    const fit = () => {
+      if (host) {
+        const r = host.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) setSize(r.width, r.height);
+      }
+      invalidate();
+    };
+    fit();
+    const ids = [120, 400, 1200].map((ms) => window.setTimeout(fit, ms));
+    document.fonts?.ready.then(fit).catch(() => {});
+    const ro = host && typeof ResizeObserver !== "undefined" ? new ResizeObserver(fit) : null;
+    if (ro && host) ro.observe(host);
+    return () => {
+      ids.forEach((id) => window.clearTimeout(id));
+      ro?.disconnect();
+    };
+  }, [gl, setSize, invalidate]);
+  return null;
+}
+
 export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLButtonElement | null> }) {
   const lit = useLampTheme() === "light";
   // Seeded, not tweened, on the first render: a returning visitor whose stored
@@ -374,6 +405,16 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
   const [quality, setQuality] = React.useState<Quality>(2);
   const [dpr, setDpr] = React.useState<[number, number]>([1, 1.5]);
   const [visible, setVisible] = React.useState(true);
+  // The first 1.5 s run "always": a fresh production load otherwise painted a
+  // transparent canvas until the pointer moved — the environment cubemap,
+  // the composer and the lamp settle a few frames after creation, and under
+  // "demand" nothing asked for those frames. After that the demand loop and
+  // its 0-fps-at-rest contract take over.
+  const [warm, setWarm] = React.useState(true);
+  React.useEffect(() => {
+    const id = window.setTimeout(() => setWarm(false), 1500);
+    return () => window.clearTimeout(id);
+  }, []);
   const host = React.useRef<HTMLDivElement>(null);
   // The monitor's handlers live out here, outside the Canvas, so they cannot
   // call useThree. `onCreated` hands us the same invalidate Driver uses.
@@ -392,10 +433,31 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
     return () => io.disconnect();
   }, []);
 
+  // Coming back into view flips the frameloop from "never" to "demand", and
+  // that flip alone draws nothing — under "never" every invalidate() was a
+  // no-op, so ask for the frame here or the canvas stays transparent until
+  // the pointer moves.
+  React.useEffect(() => {
+    if (visible) invalidate.current?.();
+  }, [visible]);
+
+  // Workaround, root cause open. In the production bundle the Canvas's own
+  // first measurement never reaches the renderer: its wrapper is sized, the
+  // canvas stays at the browser's 300x150 default, and R3F mounts none of the
+  // scene until it has a size — so nothing paints until a window resize makes
+  // react-use-measure re-measure. That is the one path that demonstrably
+  // works, so a few are dispatched after mount (harmless to the rest of the
+  // page: the listeners re-measure and return).
+  React.useEffect(() => {
+    const kick = () => window.dispatchEvent(new Event("resize"));
+    const ids = [50, 300, 1000].map((ms) => window.setTimeout(kick, ms));
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, []);
+
   return (
     <div ref={host} className="ld-hero-canvas" aria-hidden="true">
       <Canvas
-        frameloop={visible ? "demand" : "never"}
+        frameloop={!visible ? "never" : warm ? "always" : "demand"}
         dpr={dpr}
         // "percentage" = PCFShadowMap, which is what `true` (PCFSoft) already
         // falls back to in three r184 — minus its per-frame deprecation warning.
@@ -471,6 +533,7 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             <Bloom mipmapBlur luminanceThreshold={1.3} intensity={0.7} radius={0.6} />
           </EffectComposer>
         )}
+        <FirstFrames />
       </Canvas>
     </div>
   );

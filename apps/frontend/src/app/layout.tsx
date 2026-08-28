@@ -38,7 +38,8 @@ const dmSans = DM_Sans({
 const lora = Lora({
   variable: "--font-lora-serif",
   subsets: ["latin"],
-  weight: ["400", "700"],
+  // Variable font: the manual sets Lora at 400/500/600 and static 400/700 snapped
+  // every 500 and 600 to 700 in production.
   style: ["normal", "italic"],
 });
 

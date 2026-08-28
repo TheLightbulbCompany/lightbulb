@@ -7,7 +7,7 @@ export function GetStartedLauncher({ done, total, pulse, onClick }: {
   const offset = C * (1 - (total ? done / total : 0));
   return (
     <button type="button" onClick={onClick} aria-label="Get started"
-      className="fixed right-5 bottom-5 z-40 flex items-center gap-2.5 h-[46px] pl-2 pr-4 rounded-full bg-[var(--midnight)] text-[var(--cream)] shadow-[0_10px_26px_-8px_rgba(6,64,43,.5)] hover:brightness-110 transition">
+      className="fixed right-5 bottom-5 z-40 flex items-center gap-2.5 h-[46px] pl-2 pr-4 rounded-full bg-[var(--midnight)] text-[var(--cream)] shadow-[0_10px_26px_-8px_color-mix(in_srgb,var(--midnight)_50%,transparent)] hover:brightness-110 transition">
       <span className="relative w-[30px] h-[30px]">
         <svg width="30" height="30" className="-rotate-90">
           <circle cx="15" cy="15" r="12" stroke="color-mix(in srgb, var(--cream) 25%, transparent)" strokeWidth="3" fill="none" />

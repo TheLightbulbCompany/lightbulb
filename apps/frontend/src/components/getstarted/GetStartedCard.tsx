@@ -22,7 +22,7 @@ export function GetStartedCard({ gs, onAction }: {
   }, [close]);
   return (
     <section role="dialog" aria-label="Get started" aria-modal={false}
-      className="fixed right-5 bottom-[78px] z-50 w-[384px] max-h-[520px] flex flex-col bg-[var(--cream)] border border-[var(--edge)] rounded-2xl shadow-[0_18px_50px_-12px_rgba(6,64,43,.28)] overflow-hidden">
+      className="fixed right-5 bottom-[78px] z-50 w-[384px] max-h-[520px] flex flex-col bg-[var(--cream)] border border-[var(--edge)] rounded-2xl shadow-[0_18px_50px_-12px_color-mix(in_srgb,var(--midnight)_28%,transparent)] overflow-hidden">
       <div className="px-4 pt-3.5">
         <div className="flex items-center gap-2.5 mb-3">
           <span className="w-[30px] h-[30px] rounded-lg bg-[var(--midnight)] grid place-items-center"><Sparkles size={16} className="text-[var(--cream)]" /></span>

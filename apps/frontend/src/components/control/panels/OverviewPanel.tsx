@@ -514,7 +514,7 @@ function SummaryCard({
       className={cn(
         "rounded-lg border border-[var(--edge)] bg-cream p-3 text-center w-full",
         interactive &&
-          "cursor-pointer hover:border-[var(--edge)] hover:bg-cream-deep transition focus:outline-none focus:ring-2 focus:ring-[var(--midnight)]/30",
+          "cursor-pointer hover:border-[var(--midnight-faint)] hover:bg-cream-deep transition focus:outline-none focus:ring-2 focus:ring-[var(--midnight)]/30",
       )}
     >
       <div className="flex items-center justify-center gap-1.5 mb-1">

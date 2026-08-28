@@ -20,16 +20,17 @@ import type { GrowthData, GrowthOwnerStage, GrowthSegment } from "../_lib/api";
 import { STAGE_LABEL } from "./sections";
 
 // Growth-dashboard series. globals.css maps --chart-1..5 to ok, info, warn, err,
-// brass in BOTH grounds. Single-meaning series:
-//   CHART_1 ok    — autonomous / healthy / the ladder
-//   CHART_4 err   — alert: auto-paused, the largest gate-blocked reason
-//   CHART_5 brass — secondary / unknown / order-independent
-// CHART_2 (info), CHART_3 (warn) and CHART_4 (err) also serve as plain distinct
-// hues where a multi-series chart needs one more line than there are meanings —
-// so `trial_started` is err and `archived` is info for separation, not status.
+// NEUTRAL in BOTH grounds. Single-meaning series:
+//   CHART_1 ok      — autonomous / healthy / the ladder
+//   CHART_4 err     — alert: auto-paused, the largest gate-blocked reason.
+//                     A series that is not an alert never takes it.
+//   CHART_5 neutral — secondary / unknown / order-independent. Not a state
+//                     colour: state colour only ever means state. (It was
+//                     brass, a second warm gold indistinguishable from warn.)
+// CHART_2 (info) and CHART_3 (warn) also serve as plain distinct hues where a
+// multi-series chart needs one more line than there are meanings — so
+// `trial_started` is warn and `archived` is info for separation, not status.
 // Read the legend, not the colour, on the funnel and survival charts.
-// CHART_3 (warn) and CHART_5 (brass) are both warm golds and are the weakest
-// pair to tell apart, so a four-line chart takes one of them, not both.
 const CHART_1 = "var(--chart-1)";
 const CHART_2 = "var(--chart-2)";
 const CHART_3 = "var(--chart-3)";
@@ -188,7 +189,7 @@ const FUNNEL_DAILY_EVENTS = ["landing_viewed", "signup_started", "trial_started"
 const FUNNEL_DAILY_CONFIG: ChartConfig = {
   landing_viewed: { label: "landing viewed", color: CHART_5 },
   signup_started: { label: "signup started", color: CHART_2 },
-  trial_started: { label: "trial started", color: CHART_4 },
+  trial_started: { label: "trial started", color: CHART_3 },
   trial_converted: { label: "trial converted", color: CHART_1 },
 };
 
@@ -352,6 +353,8 @@ export function AutomationSurvivalChart({ seg }: { seg: GrowthSegment }) {
   );
 }
 
+// err first (a blocked gate IS the alert), then four hues no two of which are
+// adjacent-and-alike in the stack: warn gold, neutral grey, info blue, ok green.
 const GATE_BLOCKED_CYCLE = [CHART_4, CHART_3, CHART_5, CHART_2, CHART_1];
 
 const GATE_BLOCKED_TITLE = "provision.gate.blocked per day (CloudWatch, all owners) — last 7 days";

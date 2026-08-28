@@ -130,13 +130,16 @@
   --input: var(--edge);
   --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1, so cream rings midnight */
 
-  /* Growth-dashboard series. Semantic: 1 = autonomous/healthy, 2 = human-
-     initiated, 3 = nightly CEO, 4 = alert, 5 = secondary. */
+  /* Growth-dashboard series: 1 ok, 2 info, 3 warn, 4 err, 5 neutral. Semantic:
+     1 = autonomous/healthy, 2 = human-initiated, 3 = nightly CEO, 4 = alert,
+     5 = secondary/unknown. The fifth is deliberately NOT a state colour — a
+     state colour only ever means state, and it was brass, a second warm gold
+     that no reader could separate from warn in one chart. */
   --chart-1: var(--ok);
   --chart-2: var(--info);
   --chart-3: var(--warn);
   --chart-4: var(--err);
-  --chart-5: var(--brass);
+  --chart-5: var(--midnight-muted);
 }
 
 /*
@@ -177,7 +180,9 @@
   --chart-2: var(--info);
   --chart-3: var(--warn);
   --chart-4: var(--err);
-  --chart-5: var(--brass);
+  /* = --muted-foreground on this ground; --midnight-muted is a cream-ground
+     mix and would compute to a near-invisible grey on midnight. */
+  --chart-5: color-mix(in srgb, var(--cream) 70%, var(--midnight));
 }
 
 @layer base {

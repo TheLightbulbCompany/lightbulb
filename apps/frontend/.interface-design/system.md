@@ -38,6 +38,7 @@ No hex, `rgb()`, `oklch()`, `hsl()`, `[#…]`, or Tailwind palette class (`zinc-
 the scanner skips: `globals.css` and `landing.css` (the token layer),
 `components/landing/**` (marketing, its own palette), `lib/clerkAppearance.ts` (Clerk
 takes hex, not `var()`), `*Brand.ts` (vendor marks), and tests (`__tests__/`,
-`*.test.*`). Charts use `var(--chart-1..5)` (ok, info, warn, err, brass). Enforced by
+`*.test.*`). Charts use `var(--chart-1..5)` (ok, info, warn, err, neutral — the fifth is
+`--muted-foreground`, not a state colour, so no non-status series borrows one). Enforced by
 `node scripts/brand-tokens-scan.mjs src` — must print 0. Admin primitives: `StatusChip` ·
 `Tile` (`tone` border = severity) · `Card` · `MetricStat` · `ErrorBanner` · `LogRow` · `AuditRow`.

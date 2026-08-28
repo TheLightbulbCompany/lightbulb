@@ -47,7 +47,7 @@ export function SlashCommandMenu({
   return (
     <div
       role="listbox"
-      className="absolute bottom-full mb-2 left-0 right-0 max-h-80 overflow-y-auto rounded-2xl border border-[var(--edge)] bg-white shadow-lg z-20"
+      className="absolute bottom-full mb-2 left-0 right-0 max-h-80 overflow-y-auto rounded-2xl border border-[var(--edge)] bg-cream shadow-lg z-20"
     >
       {sections.map((section, si) => (
         <div key={section.label} className="py-1">
@@ -67,18 +67,18 @@ export function SlashCommandMenu({
                 onClick={() => onSelect(cmd)}
                 className={cn(
                   "w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm",
-                  here === activeIndex ? "bg-[var(--midnight)]/8 text-[var(--midnight)]" : "text-[#5a5549] hover:bg-[var(--cream-deep)]",
+                  here === activeIndex ? "bg-[var(--midnight)]/8 text-[var(--midnight)]" : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
                 )}
               >
                 <span className="font-medium text-[var(--midnight)]">/{cmd.name}</span>
                 <span className="flex-1 truncate text-[var(--midnight-muted)]">{cmd.description}</span>
-                {hasArgs && <span className="text-[#b5ae9e]">▸</span>}
+                {hasArgs && <span className="text-[var(--midnight-faint)]">▸</span>}
               </button>
             );
           })}
         </div>
       ))}
-      <div className="px-3 py-1 text-[0.65rem] text-[#b5ae9e] border-t border-[var(--edge)]">
+      <div className="px-3 py-1 text-[0.65rem] text-[var(--midnight-muted)] border-t border-[var(--edge)]">
         ↑↓ navigate · Tab fill · ↵ run · esc close
       </div>
     </div>

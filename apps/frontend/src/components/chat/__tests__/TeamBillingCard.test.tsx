@@ -61,7 +61,7 @@ describe("TeamBillingCard", () => {
     expect(container.querySelector('[class*="settings-"]')).toBeNull();
 
     const card = screen.getByTestId("team-billing-card");
-    expect(card.className).toMatch(/\bbg-white\b/);
+    expect(card.className).toMatch(/\bbg-cream\b/);
     expect(card.className).toMatch(/\bborder\b/);
     expect(card.className).toMatch(/rounded-2xl/);
 

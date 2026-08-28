@@ -71,7 +71,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
 
   if (error) {
     return (
-      <div ref={rootRef} className="flex items-center justify-center h-full text-red-500 text-sm">
+      <div ref={rootRef} className="flex items-center justify-center h-full text-err text-sm">
         Could not load file.
       </div>
     );
@@ -118,11 +118,11 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
       <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
         <span className="text-xs text-[var(--midnight-muted)]">{file.name}</span>
         <div className="flex items-center gap-2">
-          {dirty && <span className="text-[10px] text-amber-500 font-medium">unsaved</span>}
+          {dirty && <span className="text-[10px] text-warn font-medium">unsaved</span>}
           <button
             onClick={handleSave}
             disabled={!dirty || saving || !onSave}
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-white hover:bg-[#0a5c3e] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
             Save
@@ -133,7 +133,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         ref={textareaRef}
         value={editContent}
         onChange={(e) => setEditContent(e.target.value)}
-        className="flex-1 w-full p-4 text-sm font-mono bg-white text-[var(--midnight)] resize-none focus:outline-none"
+        className="flex-1 w-full p-4 text-sm font-mono bg-cream text-[var(--midnight)] resize-none focus:outline-none"
         spellCheck={false}
       />
     </div>

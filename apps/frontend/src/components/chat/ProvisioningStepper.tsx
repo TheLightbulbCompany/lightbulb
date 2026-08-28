@@ -915,17 +915,17 @@ export function ProvisioningStepper({
             justify-content: center;
           }
           .provision-title {
-            font-family: var(--font-lora-serif), serif;
+            font-family: var(--font-serif), serif;
             font-size: 22px; font-weight: 400; color: var(--midnight);
             margin-bottom: 8px;
           }
           .provision-desc {
-            font-family: var(--font-dm-sans), sans-serif;
+            font-family: var(--font-sans), sans-serif;
             font-size: 14px; color: var(--midnight-muted);
             margin-bottom: 24px;
           }
           .provision-muted {
-            font-family: var(--font-dm-sans), sans-serif;
+            font-family: var(--font-sans), sans-serif;
             font-size: 13px;
             color: var(--midnight-muted);
             margin: 0;
@@ -933,7 +933,7 @@ export function ProvisioningStepper({
           .provision-timeout {
             margin-top: 28px;
             padding-top: 20px;
-            border-top: 1px solid #ece6d9;
+            border-top: 1px solid var(--edge);
             display: flex; flex-direction: column;
             align-items: center; gap: 14px;
             max-width: 360px;
@@ -1101,13 +1101,13 @@ export function ProvisioningStepper({
             aria-live="polite"
             aria-atomic="true"
             className="mb-2 text-[22px] font-normal text-[var(--midnight)]"
-            style={{ fontFamily: "var(--font-lora-serif), serif" }}
+            style={{ fontFamily: "var(--font-serif), serif" }}
           >
             {copy.title}
           </h2>
           <p
             className="text-sm text-[var(--midnight-muted)]"
-            style={{ fontFamily: "var(--font-dm-sans), sans-serif" }}
+            style={{ fontFamily: "var(--font-sans), sans-serif" }}
           >
             {copy.desc}
           </p>
@@ -1123,7 +1123,7 @@ export function ProvisioningStepper({
   // the gate's own `action.admin_only` rather than assuming it.
   //
   // The wrapper mirrors the generic blocked card below (logo centerpiece +
-  // Check again / Contact support footer on the #faf7f2 canvas) so a blocked
+  // Check again / Contact support footer on the cream canvas) so a blocked
   // org lands on the same shaped screen as every other gate; only the card in
   // the middle differs.
   if (gatePhase === "blocked" && blocked && blocked.code === "team_billing_required") {
@@ -1262,12 +1262,12 @@ export function ProvisioningStepper({
             justify-content: center;
           }
           .provision-title {
-            font-family: var(--font-lora-serif), serif;
+            font-family: var(--font-serif), serif;
             font-size: 22px; font-weight: 400; color: var(--midnight);
             margin-bottom: 8px;
           }
           .provision-desc {
-            font-family: var(--font-dm-sans), sans-serif;
+            font-family: var(--font-sans), sans-serif;
             font-size: 14px; color: var(--midnight-muted);
             margin-bottom: 24px;
           }
@@ -1276,15 +1276,15 @@ export function ProvisioningStepper({
             padding: 10px 22px;
             border-radius: 9999px;
             background: var(--midnight);
-            color: #ffffff;
-            font-family: var(--font-dm-sans), sans-serif;
+            color: var(--cream);
+            font-family: var(--font-sans), sans-serif;
             font-size: 14px;
             font-weight: 500;
             text-decoration: none;
           }
-          .provision-cta:hover { background: #052e1f; }
+          .provision-cta:hover { background: var(--midnight-soft); }
           .provision-muted {
-            font-family: var(--font-dm-sans), sans-serif;
+            font-family: var(--font-sans), sans-serif;
             font-size: 13px;
             color: var(--midnight-muted);
             margin: 0;
@@ -1292,7 +1292,7 @@ export function ProvisioningStepper({
           .provision-timeout {
             margin-top: 28px;
             padding-top: 20px;
-            border-top: 1px solid #ece6d9;
+            border-top: 1px solid var(--edge);
             display: flex; flex-direction: column;
             align-items: center; gap: 14px;
             max-width: 360px;
@@ -1427,7 +1427,7 @@ export function ProvisioningStepper({
         <div className="text-center space-y-6 max-w-sm">
           <StepperDisplay currentPhase={phase} steps={STEPS_PAID} error />
           <div className="space-y-2">
-            <XCircle className="h-8 w-8 text-[#dc2626] mx-auto" />
+            <XCircle className="h-8 w-8 text-err mx-auto" />
             <h2 className="text-lg font-medium text-[var(--midnight)]">Setup failed</h2>
             <p className="text-sm text-[var(--midnight-muted)]">
               {isOrg
@@ -1515,13 +1515,15 @@ export function ProvisioningStepper({
           position: absolute; bottom: 0; left: 4px; right: 4px; height: 32px;
           background: var(--midnight); border-radius: 0 0 8px 8px;
         }
+        /* --ok-reversed, not --ok: the pod body is its own midnight ground,
+           so the window is a state mark on midnight even on the cream card. */
         .pod-window {
-          width: 20px; height: 10px; background: #a8e6c6; border-radius: 4px;
+          width: 20px; height: 10px; background: var(--ok-reversed); border-radius: 4px;
           margin: 8px auto 0;
           /* Default flat glow; pulse only switches on once the lid opens, so
              the window doesn't visibly breathe during the brief pod-closed
              provisioning phase. */
-          box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
+          box-shadow: 0 0 0 0 transparent;
         }
         .pod-open .pod-window {
           /* Slow ambient pulse — visible during the 3+ min stretch where
@@ -1533,12 +1535,10 @@ export function ProvisioningStepper({
         }
         @keyframes pod-window-pulse {
           0%, 100% {
-            box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
-            background: #a8e6c6;
+            box-shadow: 0 0 0 0 transparent;
           }
           50% {
-            box-shadow: 0 0 14px 2px rgba(168, 230, 198, 0.55);
-            background: #c8f0d6;
+            box-shadow: 0 0 14px 2px color-mix(in srgb, var(--ok-reversed) 55%, transparent);
           }
         }
         .pod-lid-l, .pod-lid-r {
@@ -1550,7 +1550,7 @@ export function ProvisioningStepper({
         .pod-open .pod-lid-l { transform: rotate(-35deg); }
         .pod-open .pod-lid-r { transform: rotate(35deg); }
         .pod-steam-line {
-          position: absolute; width: 2px; background: #c8e6c9; border-radius: 1px;
+          position: absolute; width: 2px; background: var(--midnight-faint); border-radius: 1px;
           opacity: 0; transition: opacity 400ms ease-out 300ms;
         }
         .pod-open .pod-steam-line { opacity: 1; animation: steam 1.5s ease-out infinite; }
@@ -1572,12 +1572,12 @@ export function ProvisioningStepper({
 
         /* Title fade */
         .provision-title {
-          font-family: var(--font-lora-serif), serif;
+          font-family: var(--font-serif), serif;
           font-size: 22px; font-weight: 400; color: var(--midnight);
           margin-bottom: 8px; transition: opacity 150ms ease-out;
         }
         .provision-desc {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), sans-serif;
           font-size: 14px; color: var(--midnight-muted);
           margin-bottom: 32px; transition: opacity 150ms ease-out;
         }
@@ -1590,15 +1590,15 @@ export function ProvisioningStepper({
           gap: 6px; min-height: 56px;
         }
         .provision-idea-eyebrow {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), sans-serif;
           font-size: 12px; font-weight: 500;
-          color: #a8a396; letter-spacing: 0.3px;
+          color: var(--midnight-label); letter-spacing: 0.3px;
           text-transform: uppercase;
         }
         .provision-idea {
-          font-family: var(--font-lora-serif), serif;
+          font-family: var(--font-serif), serif;
           font-size: 15px; font-style: italic;
-          color: #4a4638; line-height: 1.4;
+          color: var(--midnight-soft); line-height: 1.4;
           max-width: 42ch; text-align: center;
           transition: opacity 180ms ease-out, transform 180ms ease-out;
           will-change: opacity, transform;
@@ -1614,21 +1614,21 @@ export function ProvisioningStepper({
           background: var(--edge); transition: background 300ms ease-out, transform 300ms ease-out;
         }
         .provision-dot.active { background: var(--midnight); transform: scale(1.2); }
-        .provision-dot.done { background: #2d8a4e; }
+        .provision-dot.done { background: var(--ok); }
         .provision-connector {
           width: 32px; height: 2px; background: var(--edge);
           transition: background 300ms ease-out;
         }
-        .provision-connector.done { background: #2d8a4e; }
+        .provision-connector.done { background: var(--ok); }
 
         .provision-free-banner {
           margin-top: 24px;
           padding: 12px 16px;
-          background: #e8f5e9;
-          border: 1px solid #c8e6c9;
+          background: transparent;
+          border: 1px solid var(--ok);
           border-radius: 12px;
           font-size: 13px;
-          color: #2d7a50;
+          color: var(--ok);
         }
         .provision-free-sub {
           font-size: 12px; color: var(--midnight-muted); margin-top: 8px;
@@ -1637,9 +1637,9 @@ export function ProvisioningStepper({
            sees the clock moving even before the soft-timeout copy appears. */
         .provision-elapsed {
           margin-top: 18px;
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), sans-serif;
           font-size: 12px;
-          color: #a8a396;
+          color: var(--midnight-muted);
           letter-spacing: 0.2px;
           font-variant-numeric: tabular-nums;
         }
@@ -1648,16 +1648,16 @@ export function ProvisioningStepper({
         .provision-timeout {
           margin-top: 28px;
           padding-top: 20px;
-          border-top: 1px solid #ece6d9;
+          border-top: 1px solid var(--edge);
           display: flex; flex-direction: column;
           align-items: center; gap: 14px;
           max-width: 360px;
           margin-left: auto; margin-right: auto;
         }
         .provision-timeout-msg {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), sans-serif;
           font-size: 13px;
-          color: #6e695d;
+          color: var(--midnight-muted);
           line-height: 1.5;
           margin: 0;
           text-align: center;
@@ -1834,12 +1834,12 @@ function TeamsDegradedNotice() {
     <div
       role="status"
       aria-live="polite"
-      className="max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+      className="max-w-xs rounded-xl border border-warn bg-cream px-4 py-3 shadow-lg"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">
-          <p className="text-sm font-medium text-[#7a4a12]">Teams needs attention</p>
-          <p className="mt-1 text-xs text-[#8a6a3a]">
+          <p className="text-sm font-medium text-warn">Teams needs attention</p>
+          <p className="mt-1 text-xs text-[var(--midnight-soft)]">
             Your team workspace didn&apos;t finish setting up, so some team
             features may be unavailable. Chat works normally.
           </p>
@@ -1857,7 +1857,7 @@ function TeamsDegradedNotice() {
           type="button"
           aria-label="Dismiss"
           onClick={() => setDismissed(true)}
-          className="text-lg leading-none text-[#b08a5a] hover:text-[#7a4a12]"
+          className="text-lg leading-none text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
           ×
         </button>
@@ -1900,22 +1900,22 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
     <div
       role="status"
       aria-live="polite"
-      className="max-w-sm rounded-xl border border-[#e9b8b8] bg-[#fdf1f1] px-4 py-3 shadow-lg"
+      className="max-w-sm rounded-xl border border-err bg-cream px-4 py-3 shadow-lg"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">
-          <p className="text-sm font-medium text-[#8a2c2c]">Friday couldn&apos;t start</p>
-          <p className="mt-1 text-xs text-[#8a5a5a]">
+          <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
+          <p className="mt-1 text-xs text-[var(--midnight-soft)]">
             Your workspace is ready, but her first run didn&apos;t get going.
             Send her a message here to kick things off — if that doesn&apos;t
             work either, contact support and we&apos;ll get it sorted.
           </p>
           {lastError && (
             <details className="mt-2">
-              <summary className="cursor-pointer text-xs font-medium text-[#8a5a5a]">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--midnight-soft)]">
                 Technical details
               </summary>
-              <p className="mt-1 break-words font-mono text-[11px] leading-snug text-[#8a5a5a]">
+              <p className="mt-1 break-words font-mono text-[11px] leading-snug text-[var(--midnight-soft)]">
                 {lastError}
               </p>
             </details>
@@ -1934,7 +1934,7 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
           type="button"
           aria-label="Dismiss"
           onClick={() => setDismissed(true)}
-          className="text-lg leading-none text-[#c08a8a] hover:text-[#8a2c2c]"
+          className="text-lg leading-none text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
           ×
         </button>
@@ -1965,23 +1965,23 @@ function StepperDisplay({
         return (
           <div key={step.phase} className="flex items-center gap-3">
             {isErrorStep ? (
-              <XCircle className="h-5 w-5 text-[#dc2626] flex-shrink-0" />
+              <XCircle className="h-5 w-5 text-err flex-shrink-0" />
             ) : isComplete ? (
-              <CheckCircle className="h-5 w-5 text-[#2d8a4e] flex-shrink-0" />
+              <CheckCircle className="h-5 w-5 text-ok flex-shrink-0" />
             ) : isCurrent ? (
               <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] flex-shrink-0" />
             ) : (
-              <Circle className="h-5 w-5 text-[#d4cfc5] flex-shrink-0" />
+              <Circle className="h-5 w-5 text-[var(--midnight-faint)] flex-shrink-0" />
             )}
             <span
               className={
                 isErrorStep
-                  ? "text-sm text-[#dc2626]"
+                  ? "text-sm text-err"
                   : isComplete
                     ? "text-sm text-[var(--midnight)]"
                     : isCurrent
                       ? "text-sm text-[var(--midnight)] font-medium"
-                      : "text-sm text-[#c5bfb6]"
+                      : "text-sm text-[var(--midnight-faint)]"
               }
             >
               {isCurrent && !error ? step.activeLabel : step.label}
@@ -2097,7 +2097,7 @@ function StarterCreditsPicker({
               "rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 " +
               (valueCents === c
                 ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)] font-medium"
-                : "border-[var(--edge)] bg-white text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
+                : "border-[var(--edge)] bg-cream text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
             }
           >
             ${c / 100}
@@ -2116,7 +2116,7 @@ function StarterCreditsPicker({
           aria-label="Starter Claude credits in dollars"
           onChange={(e) => setDraft(e.target.value)}
           onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-white px-2 py-1 text-xs text-[var(--midnight)] focus:border-[rgba(6,64,43,0.25)] focus:outline-none disabled:opacity-50"
+          className="w-20 rounded-md border border-[var(--edge)] bg-cream px-2 py-1 text-xs text-[var(--midnight)] focus:border-[var(--midnight)] focus:outline-none disabled:opacity-50"
         />
       </label>
     </div>
@@ -2205,7 +2205,7 @@ export function ProviderPicker({
           {!embedded && (
             <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
               <rect width="100" height="100" rx="22" fill="var(--midnight)" />
-              <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+              <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-serif), serif" fontStyle="italic" fontSize="52" fill="var(--cream)">8</text>
             </svg>
           )}
           <h2 className="text-2xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
@@ -2220,7 +2220,7 @@ export function ProviderPicker({
         </div>
 
         {error && (
-          <div className="text-sm text-red-600 -mt-4">{error}</div>
+          <div className="text-sm text-err -mt-4">{error}</div>
         )}
 
         <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-3">
@@ -2228,7 +2228,7 @@ export function ProviderPicker({
             <div
               key={card.id}
               className={
-                "rounded-xl border p-6 space-y-4 bg-white text-left flex flex-col " +
+                "rounded-xl border p-6 space-y-4 bg-cream text-left flex flex-col " +
                 (card.highlighted ? "border-2 border-[var(--midnight)]" : "border-[var(--edge)]")
               }
             >
@@ -2263,7 +2263,7 @@ export function ProviderPicker({
                   disabled={loading !== null}
                 />
               )}
-              <ul className="text-sm text-[#5a5549] space-y-2 flex-1">
+              <ul className="text-sm text-[var(--midnight-soft)] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
                     <span aria-hidden className="text-[var(--midnight)]">✓</span>
@@ -2274,7 +2274,7 @@ export function ProviderPicker({
               <Button
                 className={
                   card.highlighted
-                    ? "w-full rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white"
+                    ? "w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
                     : "w-full rounded-full border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
                 }
                 variant={card.highlighted ? "default" : "outline"}

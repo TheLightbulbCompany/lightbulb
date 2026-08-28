@@ -272,7 +272,7 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
         aria-label={paywallHeading}
         data-testid="chat-error-card"
         data-error-code={code ?? "none"}
-        className="my-2 rounded-lg border border-[var(--edge)] bg-white px-4 py-4"
+        className="my-2 rounded-lg border border-[var(--edge)] bg-cream px-4 py-4"
       >
         <ProviderPicker
           embedded
@@ -297,10 +297,10 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
       role="alert"
       data-testid="chat-error-card"
       data-error-code={code ?? "none"}
-      className="my-2 rounded-lg border border-[#f5c6cb] bg-[#fdecea] px-4 py-3 text-[#7a2018]"
+      className="my-2 rounded-lg border border-err bg-cream px-4 py-3 text-err"
     >
       <div className="flex items-start gap-3">
-        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-[#c0392b]" />
+        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-err" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-tight">{title}</p>
           <p className="mt-1 text-sm leading-snug whitespace-pre-wrap break-words">{description}</p>
@@ -310,7 +310,7 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
                 asChild
                 size="sm"
                 variant="outline"
-                className="h-7 px-3 text-xs border-[#c0392b] text-[#7a2018] hover:bg-[#fbd6d2]"
+                className="h-7 px-3 text-xs border-err text-err hover:bg-[var(--cream-deep)]"
               >
                 {action.crossRoute ? (
                   // Different Next route — must go through the router. A bare
@@ -327,7 +327,7 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 px-2 text-xs text-[#7a2018] hover:bg-[#fbd6d2]"
+                className="h-7 px-2 text-xs text-err hover:bg-[var(--cream-deep)]"
                 onClick={onRetry}
               >
                 <RefreshCw className="h-3 w-3 mr-1.5" />

@@ -32,7 +32,7 @@ function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (segment:
     <div className="flex items-center gap-1 text-sm text-[var(--midnight-muted)] min-w-0">
       {segments.map((segment, i) => (
         <React.Fragment key={i}>
-          {i > 0 && <span className="text-[#cdc7ba]">/</span>}
+          {i > 0 && <span className="text-[var(--midnight-faint)]">/</span>}
           <button
             onClick={() => onNavigate(segments.slice(0, i + 1).join("/"))}
             className="hover:text-[var(--midnight)] transition-colors truncate"
@@ -161,7 +161,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("workspace")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "workspace"
-                ? "bg-white text-[var(--midnight)] shadow-sm font-medium"
+                ? "bg-cream text-[var(--midnight)] shadow-sm font-medium"
                 : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
             }`}
           >
@@ -175,7 +175,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("config")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "config"
-                ? "bg-white text-[var(--midnight)] shadow-sm font-medium"
+                ? "bg-cream text-[var(--midnight)] shadow-sm font-medium"
                 : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
             }`}
           >

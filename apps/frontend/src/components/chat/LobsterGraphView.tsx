@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ZoomIn, ZoomOut, RotateCcw, Copy, FileText, Loader2 } from "lucide-react";
 import { lobsterToMermaid } from "@/lib/lobster";
+import { LOBSTER_MERMAID_THEME } from "./lobsterMermaidBrand";
 
 interface LobsterGraphViewProps {
   content: string;
@@ -10,7 +11,7 @@ interface LobsterGraphViewProps {
 }
 
 // Themed once, shared across instances. theme:"base" + a full themeVariables
-// set keeps the diagram inside the product's cream/green palette instead of
+// set keeps the diagram inside the product's cream/midnight palette instead of
 // mermaid's default blues. securityLevel:"strict" sanitizes labels since we
 // inject the SVG via dangerouslySetInnerHTML.
 const MERMAID_CONFIG = {
@@ -18,19 +19,8 @@ const MERMAID_CONFIG = {
   securityLevel: "strict",
   theme: "base",
   fontFamily: "ui-sans-serif, system-ui, sans-serif",
-  // Literal hex, NOT var(--token), and it has to stay that way: mermaid
-  // derives further colours from these (border/contrast shades via khroma),
-  // which needs a parseable colour value, not a CSS variable reference it
-  // would only ever see as an opaque string. Keep in sync with globals.css
-  // by hand — cream-deeper, forest, ink, mute.
   themeVariables: {
-    primaryColor: "#f3efe6",
-    primaryBorderColor: "#06402B",
-    primaryTextColor: "#1a1a1a",
-    secondaryColor: "#ece6d8",
-    tertiaryColor: "#f6f2ea",
-    lineColor: "#767061",
-    edgeLabelBackground: "#f3efe6",
+    ...LOBSTER_MERMAID_THEME,
     fontSize: "13px",
   },
 } as const;
@@ -117,10 +107,10 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
           <Copy className="h-3 w-3" /> Copy source
         </button>
       </div>
-      <div className="flex-1 overflow-auto p-4 bg-white">
+      <div className="flex-1 overflow-auto p-4 bg-cream">
         {renderError ? (
           <div className="text-sm">
-            <p className="text-red-500 mb-2">Couldn&apos;t render the diagram.</p>
+            <p className="text-err mb-2">Couldn&apos;t render the diagram.</p>
             <pre className="text-xs bg-[var(--cream-deep)] p-3 rounded overflow-auto whitespace-pre-wrap">
               {result.mermaid}
             </pre>

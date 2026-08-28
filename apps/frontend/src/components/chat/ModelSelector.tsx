@@ -26,6 +26,7 @@ import {
   ZhipuIcon,
 } from "./ProviderIcons";
 import { cn } from "@/lib/utils";
+import { PROVIDER_BRAND } from "./providerBrand";
 
 interface Model {
   id: string;
@@ -50,22 +51,22 @@ interface ProviderConfig {
 }
 
 const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
-  ai21: { displayName: "AI21", icon: Ai21Icon, brandColor: "#6336E7" },
-  amazon: { displayName: "Amazon", icon: AwsIcon, brandColor: "#FF9900" },
-  anthropic: { displayName: "Anthropic", icon: AnthropicIcon, brandColor: "#D4A574" },
-  cohere: { displayName: "Cohere", icon: CohereIcon, brandColor: "#39594D" },
-  deepseek: { displayName: "DeepSeek", icon: DeepSeekIcon, brandColor: "#4D6BFE" },
-  "glm-4": { displayName: "Zhipu AI", icon: ZhipuIcon, brandColor: "#3859FF" },
-  google: { displayName: "Google", icon: GoogleIcon, brandColor: "#4285F4" },
-  meta: { displayName: "Meta", icon: MetaIcon, brandColor: "#0082FB" },
-  minimax: { displayName: "Minimax", icon: MinimaxIcon, brandColor: "#F23F5D" },
-  mistral: { displayName: "Mistral", icon: MistralIcon, brandColor: "#FA520F" },
-  moonshot: { displayName: "Moonshot", icon: MoonshotIcon, brandColor: "#8B8BF5" },
-  moonshotai: { displayName: "Moonshot", icon: MoonshotIcon, brandColor: "#8B8BF5" },
-  nvidia: { displayName: "Nvidia", icon: NvidiaIcon, brandColor: "#74B71B" },
-  openai: { displayName: "OpenAI", icon: OpenAIIcon, brandColor: "#10A37F" },
-  qwen: { displayName: "Qwen", icon: QwenIcon, brandColor: "#615CED" },
-  zhipu: { displayName: "Zhipu AI", icon: ZhipuIcon, brandColor: "#3859FF" },
+  ai21: { displayName: "AI21", icon: Ai21Icon, brandColor: PROVIDER_BRAND.ai21 },
+  amazon: { displayName: "Amazon", icon: AwsIcon, brandColor: PROVIDER_BRAND.amazon },
+  anthropic: { displayName: "Anthropic", icon: AnthropicIcon, brandColor: PROVIDER_BRAND.anthropic },
+  cohere: { displayName: "Cohere", icon: CohereIcon, brandColor: PROVIDER_BRAND.cohere },
+  deepseek: { displayName: "DeepSeek", icon: DeepSeekIcon, brandColor: PROVIDER_BRAND.deepseek },
+  "glm-4": { displayName: "Zhipu AI", icon: ZhipuIcon, brandColor: PROVIDER_BRAND.zhipu },
+  google: { displayName: "Google", icon: GoogleIcon, brandColor: PROVIDER_BRAND.google },
+  meta: { displayName: "Meta", icon: MetaIcon, brandColor: PROVIDER_BRAND.meta },
+  minimax: { displayName: "Minimax", icon: MinimaxIcon, brandColor: PROVIDER_BRAND.minimax },
+  mistral: { displayName: "Mistral", icon: MistralIcon, brandColor: PROVIDER_BRAND.mistral },
+  moonshot: { displayName: "Moonshot", icon: MoonshotIcon, brandColor: PROVIDER_BRAND.moonshot },
+  moonshotai: { displayName: "Moonshot", icon: MoonshotIcon, brandColor: PROVIDER_BRAND.moonshot },
+  nvidia: { displayName: "Nvidia", icon: NvidiaIcon, brandColor: PROVIDER_BRAND.nvidia },
+  openai: { displayName: "OpenAI", icon: OpenAIIcon, brandColor: PROVIDER_BRAND.openai },
+  qwen: { displayName: "Qwen", icon: QwenIcon, brandColor: PROVIDER_BRAND.qwen },
+  zhipu: { displayName: "Zhipu AI", icon: ZhipuIcon, brandColor: PROVIDER_BRAND.zhipu },
 };
 
 function extractProvider(modelId: string): string {
@@ -91,7 +92,7 @@ function getProviderConfig(providerId: string): ProviderConfig {
   return {
     displayName: providerId.charAt(0).toUpperCase() + providerId.slice(1),
     icon: Cpu,
-    brandColor: "#888888",
+    brandColor: "var(--midnight-muted)",
   };
 }
 
@@ -201,7 +202,7 @@ export function ModelSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-2 h-9 px-3 bg-white border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[#c5bfb6] transition-all"
+          className="gap-2 h-9 px-3 bg-cream border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[var(--midnight-faint)] transition-all"
         >
           <span className="flex items-center gap-2">
             <ProviderIcon config={selectedProviderConfig || getProviderConfig("unknown")} size={16} />
@@ -215,16 +216,16 @@ export function ModelSelector({
         side="bottom"
         sideOffset={8}
         collisionPadding={16}
-        className="!w-[320px] !p-0 rounded-xl border-[var(--edge)] bg-white text-[var(--midnight)] shadow-[0_2px_8px_rgba(26,26,26,0.04),0_12px_32px_rgba(26,26,26,0.10)]"
+        className="!w-[320px] !p-0 rounded-xl border-[var(--edge)] bg-cream text-[var(--midnight)] shadow-[0_2px_8px_color-mix(in_srgb,var(--midnight)_4%,transparent),0_12px_32px_color-mix(in_srgb,var(--midnight)_10%,transparent)]"
         style={{ maxHeight: 320 }}
       >
         {/* Search header */}
-        <div className="p-3 border-b border-[#f0ece3]">
+        <div className="p-3 border-b border-[var(--edge-soft)]">
           <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-[#b5ae9e]" />
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-[var(--midnight-faint)]" />
             <Input
               placeholder="Search models..."
-              className="pl-9 bg-[#f7f3ea] border-[#e8e3d9] text-[var(--midnight)] placeholder:text-[#b5ae9e] h-9"
+              className="pl-9 bg-cream-deep border-[var(--edge-soft)] text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] h-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -246,7 +247,7 @@ export function ModelSelector({
         >
             <div className="py-1">
             {groups.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-[#b5ae9e]">
+              <div className="px-4 py-8 text-center text-sm text-[var(--midnight-muted)]">
                 No models found
               </div>
             ) : (
@@ -258,11 +259,11 @@ export function ModelSelector({
                     {/* Group header */}
                     <button
                       onClick={() => toggleProvider(group.providerId)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[#f7f3ea] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--cream-deep)] transition-colors"
                     >
                       <ChevronRight
                         className={cn(
-                          "h-3.5 w-3.5 text-[#b5ae9e] transition-transform duration-200",
+                          "h-3.5 w-3.5 text-[var(--midnight-faint)] transition-transform duration-200",
                           isExpanded && "rotate-90"
                         )}
                       />
@@ -292,7 +293,7 @@ export function ModelSelector({
                                 "w-full flex items-center justify-between pl-9 pr-3 py-1.5 text-sm transition-colors group",
                                 isSelected
                                   ? "bg-[var(--cream-deep)] text-[var(--midnight)]"
-                                  : "text-[#5a5549] hover:bg-[#f7f3ea] hover:text-[var(--midnight)]"
+                                  : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
                               )}
                             >
                               <div className="flex items-center gap-2 min-w-0">
@@ -321,8 +322,8 @@ export function ModelSelector({
         </div>
 
         {/* Footer */}
-        <div className="p-2 border-t border-[#f0ece3] bg-[var(--cream)] rounded-b-xl shrink-0">
-          <div className="text-[10px] text-center text-[#b5ae9e]">
+        <div className="p-2 border-t border-[var(--edge-soft)] bg-[var(--cream)] rounded-b-xl shrink-0">
+          <div className="text-[10px] text-center text-[var(--midnight-muted)]">
             Powered by AWS Bedrock
           </div>
         </div>

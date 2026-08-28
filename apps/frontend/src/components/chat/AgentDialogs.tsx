@@ -129,10 +129,10 @@ export function AgentCreateDialog({ open, existingNames, onCancel, onCreate }: C
             }}
             placeholder="e.g. Research Assistant"
             disabled={submitting}
-            className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2d8a4e]/30 disabled:opacity-50"
+            className="w-full rounded-md border border-[var(--edge)] bg-cream px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
           />
           {(clientError || error) && (
-            <p className="text-xs text-red-500">{clientError || error}</p>
+            <p className="text-xs text-err">{clientError || error}</p>
           )}
         </div>
         <AlertDialogFooter>
@@ -200,9 +200,9 @@ export function AgentRenameDialog({ agent, onCancel, onRename }: RenameProps) {
               if (e.key === "Escape" && !submitting) onCancel();
             }}
             disabled={submitting}
-            className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2d8a4e]/30 disabled:opacity-50"
+            className="w-full rounded-md border border-[var(--edge)] bg-cream px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
           />
-          {error && <p className="text-xs text-red-500">{error}</p>}
+          {error && <p className="text-xs text-err">{error}</p>}
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
@@ -256,7 +256,7 @@ export function AgentDeleteDialog({ agent, onCancel, onDelete }: DeleteProps) {
             This removes the agent&apos;s workspace, files, and session history. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {error && <p className="text-xs text-red-500">{error}</p>}
+        {error && <p className="text-xs text-err">{error}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
           <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>
@@ -303,7 +303,7 @@ export function SessionDeleteDialog({ session, onCancel, onDelete }: SessionDele
             This deletes the session and archives its transcript. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {error && <p className="text-xs text-red-500">{error}</p>}
+        {error && <p className="text-xs text-err">{error}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
           <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>

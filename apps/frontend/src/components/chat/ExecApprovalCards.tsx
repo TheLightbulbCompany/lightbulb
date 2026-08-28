@@ -64,7 +64,7 @@ function CommandWithSpans({
       parts.push(<span key={`p${i}`}>{command.slice(cursor, s.startIndex)}</span>);
     }
     parts.push(
-      <mark key={`m${i}`} className="bg-[#f5e3b3] text-[var(--midnight)] rounded px-0.5">
+      <mark key={`m${i}`} className="bg-bulb text-[var(--midnight)] rounded px-0.5">
         {command.slice(s.startIndex, s.endIndex)}
       </mark>,
     );
@@ -106,11 +106,11 @@ function PluginBody({ pending }: { pending: ExecApprovalRequest }) {
   return (
     <>
       {pending.pluginDescription && (
-        <pre className="font-mono text-[#302d28] whitespace-pre-wrap break-words text-sm mt-1">
+        <pre className="font-mono text-[var(--midnight)] whitespace-pre-wrap break-words text-sm mt-1">
           {pending.pluginDescription}
         </pre>
       )}
-      <div className="mt-2 space-y-1 text-xs text-[#302d28]">
+      <div className="mt-2 space-y-1 text-xs text-[var(--midnight)]">
         <MetaRow label="Severity" value={pending.pluginSeverity} />
         <MetaRow label="Plugin" value={pending.pluginId} />
         <MetaRow label="Agent" value={pending.agentId} />
@@ -177,12 +177,12 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
         <>
           <div className="flex items-start justify-between gap-2">
             <CommandWithSpans command={pending.command} spans={pending.commandSpans} />
-            <span className="inline-flex items-center px-2 py-0.5 text-xs rounded bg-[#e8e3d9] text-[#302d28] shrink-0">
+            <span className="inline-flex items-center px-2 py-0.5 text-xs rounded bg-cream-deep text-[var(--midnight)] shrink-0">
               {HOST_LABEL[pending.host]}
             </span>
           </div>
 
-          <div className="mt-2 space-y-1 text-xs text-[#302d28]">
+          <div className="mt-2 space-y-1 text-xs text-[var(--midnight)]">
             <MetaRow label="Host" value={HOST_LABEL[pending.host]} />
             <MetaRow label="Agent" value={pending.agentId} />
             <MetaRow label="Session" value={pending.sessionKey} />
@@ -234,7 +234,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
       </div>
 
       {lastFailed && (
-        <div className="mt-2 text-xs text-[#b42318] flex items-center gap-2">
+        <div className="mt-2 text-xs text-err flex items-center gap-2">
           <span>That decision didn&apos;t send.</span>
           <button
             type="button"

@@ -30,7 +30,7 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 function WorkspaceShellLoading() {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-      <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>
+      <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
     </div>
   );
 }

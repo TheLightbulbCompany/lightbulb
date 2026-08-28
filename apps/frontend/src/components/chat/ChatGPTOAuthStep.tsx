@@ -98,7 +98,7 @@ function DeviceCodePanel({
           </p>
           <button
             onClick={onRestart}
-            className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-5 py-2 text-sm font-medium"
+            className="rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream px-5 py-2 text-sm font-medium"
           >
             Get a new code
           </button>
@@ -195,7 +195,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
         </p>
         <button
           onClick={start}
-          className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-6 py-3 font-medium"
+          className="rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream px-6 py-3 font-medium"
         >
           Try again
         </button>
@@ -242,7 +242,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
         )}
         <button
           onClick={() => void harness.start()}
-          className="rounded-full bg-[var(--midnight)] hover:bg-[#0a5c3e] text-white px-6 py-3 font-medium"
+          className="rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream px-6 py-3 font-medium"
         >
           {harness.state.status === "error" ? "Try again" : "Enable coding"}
         </button>

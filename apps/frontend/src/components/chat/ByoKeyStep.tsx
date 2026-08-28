@@ -106,8 +106,8 @@ function saveErrorMessage(err: unknown): string {
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
 // the next/font CSS vars via inline styles rather than Tailwind font classes,
 // the same way the stepper's own cards do.
-const SERIF_FONT = { fontFamily: "var(--font-lora-serif), serif" } as const;
-const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
+const SERIF_FONT = { fontFamily: "var(--font-serif), serif" } as const;
+const SANS_FONT = { fontFamily: "var(--font-sans), sans-serif" } as const;
 
 // Segmented pill selector. The real radio stays in the DOM (sr-only) so
 // keyboard + screen-reader behaviour is untouched; the pill is the peer's
@@ -115,14 +115,14 @@ const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
 // Tailwind orders the bare `hover:` variant after `checked:`.
 const PROVIDER_PILL =
   "block cursor-pointer rounded-full border px-4 py-2 text-sm transition-colors " +
-  "border-[var(--edge)] bg-white text-[var(--midnight)] hover:bg-[var(--cream-deep)] " +
-  "peer-checked:border-[var(--midnight)] peer-checked:bg-[var(--midnight)] peer-checked:text-white " +
+  "border-[var(--edge)] bg-cream text-[var(--midnight)] hover:bg-[var(--cream-deep)] " +
+  "peer-checked:border-[var(--midnight)] peer-checked:bg-[var(--midnight)] peer-checked:text-cream " +
   "peer-checked:hover:bg-[var(--midnight)] " +
-  "peer-focus-visible:ring-2 peer-focus-visible:ring-[rgba(6,64,43,0.25)]";
+  "peer-focus-visible:ring-2 peer-focus-visible:ring-ring";
 
 const PRIMARY_BUTTON =
-  "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-white " +
-  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
+  "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-cream " +
+  "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
 
 export function ByoKeyStep({ onComplete }: Props) {
   const api = useApi();
@@ -233,7 +233,7 @@ export function ByoKeyStep({ onComplete }: Props) {
         required
         autoComplete="off"
         spellCheck={false}
-        className="rounded-lg border border-[var(--edge)] bg-white px-3 py-2.5 font-mono text-sm text-[var(--midnight)] placeholder:text-[#b5ae9e] focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]"
+        className="rounded-lg border border-[var(--edge)] bg-cream px-3 py-2.5 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring"
       />
 
       {error && <p className="text-sm text-[var(--err)]">{error}</p>}

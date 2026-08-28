@@ -371,15 +371,15 @@ export function ChatInput({
             {pendingFiles.map((pf) => (
               <div
                 key={pf.id}
-                className="flex items-center gap-1.5 bg-[#e8e3d9] rounded-lg px-2.5 py-1.5 text-xs text-[#5a5549]"
+                className="flex items-center gap-1.5 bg-cream-deep rounded-lg px-2.5 py-1.5 text-xs text-[var(--midnight-soft)]"
               >
                 <FileIcon className="h-3.5 w-3.5 shrink-0 text-[var(--midnight-muted)]" />
                 <span className="truncate max-w-37.5">{pf.file.name}</span>
-                <span className="text-[#b5ae9e]">{formatFileSize(pf.file.size)}</span>
+                <span className="text-[var(--midnight-muted)]">{formatFileSize(pf.file.size)}</span>
                 <button
                   type="button"
                   onClick={() => removeFile(pf.id)}
-                  className="ml-0.5 text-[#b5ae9e] hover:text-[#5a5549] transition-colors"
+                  className="ml-0.5 text-[var(--midnight-faint)] hover:text-[var(--midnight)] transition-colors"
                   aria-label={`Remove ${pf.file.name}`}
                 >
                   <X className="h-3 w-3" />
@@ -390,12 +390,12 @@ export function ChatInput({
         )}
 
         {sizeError && (
-          <div className="flex items-center gap-1.5 mb-2 px-3 py-2 bg-[rgba(179,36,36,0.06)] border border-[rgba(179,36,36,0.2)] rounded-xl text-xs text-[var(--err)]">
+          <div className="flex items-center gap-1.5 mb-2 px-3 py-2 bg-cream border border-err rounded-xl text-xs text-[var(--err)]">
             <span>{sizeError.message}</span>
             <button
               type="button"
               onClick={dismissSizeError}
-              className="ml-auto text-[rgba(179,36,36,0.45)] hover:text-[var(--err)]"
+              className="ml-auto text-[var(--midnight-muted)] hover:text-[var(--err)]"
               aria-label="Dismiss size error"
             >
               <X className="h-3 w-3" />
@@ -404,14 +404,14 @@ export function ChatInput({
         )}
 
         {!isConnected && (
-          <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-[#fdf6e3] border border-[#ede3c4] text-xs text-[#8a7340]">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#c9a227] animate-pulse" />
+          <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-cream border border-warn text-xs text-warn">
+            <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
             <span>Reconnecting to your agent — messages you send will be delivered once back online.</span>
           </div>
         )}
 
         {queuedMessages.length > 0 && (
-          <div className="flex flex-col gap-1 mb-2 px-3 py-2 rounded-xl bg-[var(--cream-deep)] border border-[#e8e3d9]">
+          <div className="flex flex-col gap-1 mb-2 px-3 py-2 rounded-xl bg-[var(--cream-deep)] border border-[var(--edge-soft)]">
             <div className="flex items-center justify-between text-xs text-[var(--midnight-muted)]">
               <span>{queuedMessages.length} queued</span>
               {onClearQueue && (
@@ -480,7 +480,7 @@ export function ChatInput({
                         type="button"
                         aria-label="Remove queued message"
                         onClick={() => onRemoveQueued(q.id)}
-                        className="text-[#b5ae9e] hover:text-[#5a5549]"
+                        className="text-[var(--midnight-faint)] hover:text-[var(--midnight)]"
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -497,7 +497,7 @@ export function ChatInput({
           </div>
         )}
 
-        <div className="relative flex flex-col rounded-2xl border border-[var(--edge)] bg-white shadow-[0_1px_2px_rgba(26,26,26,0.03),0_4px_16px_rgba(26,26,26,0.05)] transition-[border-color,box-shadow] duration-200 focus-within:border-[var(--midnight)]/25 focus-within:shadow-[0_1px_2px_rgba(26,26,26,0.03),0_6px_24px_rgba(26,26,26,0.08)]">
+        <div className="relative flex flex-col rounded-2xl border border-[var(--edge)] bg-cream shadow-[0_1px_2px_color-mix(in_srgb,var(--midnight)_3%,transparent),0_4px_16px_color-mix(in_srgb,var(--midnight)_5%,transparent)] transition-[border-color,box-shadow] duration-200 focus-within:border-[var(--midnight)]/25 focus-within:shadow-[0_1px_2px_color-mix(in_srgb,var(--midnight)_3%,transparent),0_6px_24px_color-mix(in_srgb,var(--midnight)_8%,transparent)]">
           <input
             ref={fileInputRef}
             type="file"
@@ -525,9 +525,9 @@ export function ChatInput({
               />
             )}
             {suggestedMessage && !input && (
-              <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-[15px] leading-6 text-[#b5ae9e]">
+              <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-[15px] leading-6 text-[var(--midnight-muted)]">
                 {suggestedMessage}
-                <span className="ml-2 text-xs text-[#cdc7ba]">[Tab]</span>
+                <span className="ml-2 text-xs text-[var(--midnight-faint)]">[Tab]</span>
               </div>
             )}
             <textarea
@@ -537,7 +537,7 @@ export function ChatInput({
               onKeyDown={handleKeyDown}
               placeholder={suggestedMessage ? "" : "Ask anything"}
               rows={1}
-              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[15px] leading-6 text-[var(--midnight)] placeholder:text-[#b5ae9e] focus:outline-none"
+              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[15px] leading-6 text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none"
               disabled={isDisabled}
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />
@@ -560,7 +560,7 @@ export function ChatInput({
                 <Button
                   type="button"
                   size="icon"
-                  className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-white hover:bg-[#3d382e]"
+                  className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)]"
                   onClick={() => { capture("chat_stopped"); onStop?.(); }}
                   data-testid="stop-button"
                   aria-label="Stop agent"
@@ -571,7 +571,7 @@ export function ChatInput({
               <Button
                 type="button"
                 size="icon"
-                className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-white hover:bg-[#0a5c3e] disabled:bg-[#ece7dc] disabled:text-[#b5ae9e]"
+                className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:bg-[var(--cream-deep)] disabled:text-[var(--midnight-faint)]"
                 onClick={handleSend}
                 disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
                 data-testid="send-button"

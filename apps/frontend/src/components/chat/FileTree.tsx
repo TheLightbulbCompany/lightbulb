@@ -43,7 +43,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       <div>
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[#e8e3d9] rounded transition-colors"
+          className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded transition-colors"
         >
           {expanded ? <ChevronDown className="h-3.5 w-3.5 text-[var(--midnight-muted)] flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-[var(--midnight-muted)] flex-shrink-0" />}
           {expanded ? <FolderOpen className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" /> : <FolderClosed className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" />}
@@ -74,10 +74,10 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       onClick={() => onSelect(entry.path)}
       className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm rounded transition-colors ${
         isSelected
-          ? "bg-white text-[var(--midnight)] shadow-sm"
+          ? "bg-cream text-[var(--midnight)] shadow-sm"
           : isMissing
-            ? "text-[var(--midnight-muted)] hover:bg-[#e8e3d9]"
-            : "text-[var(--midnight)] hover:bg-[#e8e3d9]"
+            ? "text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)]"
+            : "text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
       }`}
       title={isMissing ? "Click to create this file" : undefined}
     >

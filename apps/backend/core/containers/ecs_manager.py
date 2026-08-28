@@ -379,7 +379,7 @@ class EcsManager:
                     {"Key": "Name", "Value": f"isol8-{user_id}"},
                     {"Key": "owner_id", "Value": user_id},
                     {"Key": "owner_type", "Value": owner_type},
-                    {"Key": "ManagedBy", "Value": "isol8-backend"},
+                    {"Key": "ManagedBy", "Value": "lightbulb-backend"},
                 ],
             )
             access_point_id = resp["AccessPointId"]

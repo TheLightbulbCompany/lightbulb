@@ -447,7 +447,7 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
                 tags=[
                     {"key": "owner_id", "value": owner_id},
                     {"key": "tier", "value": tier},
-                    {"key": "ManagedBy", "value": "isol8-backend"},
+                    {"key": "ManagedBy", "value": "lightbulb-backend"},
                 ],
             )
             arns[tier] = resp["inferenceProfileArn"]
@@ -661,7 +661,7 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
         "Description": f"Isol8 per-owner Bedrock role for {owner_id}",
         "Tags": [
             {"Key": "owner_id", "Value": owner_id},
-            {"Key": "ManagedBy", "Value": "isol8-backend"},
+            {"Key": "ManagedBy", "Value": "lightbulb-backend"},
             # Born with the conditioned trust policy → mark converged so the
             # existing-role path's backfill skips it on every later call.
             {"Key": "trust_hardened", "Value": "1"},

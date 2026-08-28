@@ -95,6 +95,13 @@ async def test_banks_when_no_coupon_configured(deps):
     deps["wl"].add_counter.assert_any_await("ref@x.com", "free_months_banked", 1)
 
 
+async def test_stripe_failure_after_cas_banks_the_month(deps):
+    deps["stripe"].Subscription.modify.side_effect = RuntimeError("stripe down")
+    await ref.on_invoice_paid(_invoice())  # no exception
+    deps["wl"].mark_rewarded.assert_awaited_once_with("payer@x.com")
+    deps["wl"].add_counter.assert_any_await("ref@x.com", "free_months_banked", 1)
+
+
 async def test_drains_one_banked_month_for_the_payer(deps):
     payer = dict(PAYER_ROW, referred_by=None, free_months_banked=2)
     deps["wl"].get = AsyncMock(side_effect=lambda e: {"payer@x.com": payer}.get(e))
@@ -107,6 +114,19 @@ async def test_drains_one_banked_month_for_the_payer(deps):
     deps["stripe"].Subscription.modify.assert_called_once_with(
         "sub_payer", discounts=[{"coupon": "coupon_free"}], idempotency_key="banked_month:sub_payer:in_1"
     )
+
+
+async def test_stripe_failure_during_drain_puts_the_month_back(deps):
+    payer = dict(PAYER_ROW, referred_by=None, free_months_banked=1)
+    deps["wl"].get = AsyncMock(side_effect=lambda e: {"payer@x.com": payer}.get(e))
+    deps["billing"].get_by_owner_id = AsyncMock(
+        return_value={"owner_id": "user_payer", "stripe_subscription_id": "sub_payer", "subscription_status": "active"}
+    )
+    deps["stripe"].Subscription.retrieve = MagicMock(return_value={"id": "sub_payer", "discount": None})
+    deps["stripe"].Subscription.modify.side_effect = RuntimeError("stripe down")
+    await ref.on_invoice_paid(_invoice())  # no exception
+    deps["wl"].add_counter.assert_any_await("payer@x.com", "free_months_banked", -1)
+    deps["wl"].add_counter.assert_any_await("payer@x.com", "free_months_banked", 1)
 
 
 async def test_org_owner_is_skipped(deps):

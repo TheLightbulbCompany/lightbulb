@@ -103,9 +103,6 @@ class EnterRefused(Exception):
         self.reason = reason
 
 
-BASELINE_DAYS = 30
-
-
 async def enter(auth: AuthContext, s: Schedule, *, display_name: str, stripe_key: str, public: bool) -> dict:
     owner_id = resolve_owner_id(auth)
     billing = await billing_repo.get_by_owner_id(owner_id)
@@ -118,7 +115,7 @@ async def enter(auth: AuthContext, s: Schedule, *, display_name: str, stripe_key
     except launch_revenue.KeyRejected as e:
         raise EnterRefused(e.reason) from None
     baseline_end = s.competition_start_at
-    baseline_start = baseline_end - timedelta(days=BASELINE_DAYS)
+    baseline_start = baseline_end - timedelta(days=launch_revenue.BASELINE_DAYS)
     try:
         baseline_cents, currency = await launch_revenue.sum_net_revenue(stripe_key, baseline_start, baseline_end)
     except launch_revenue.MixedCurrency:

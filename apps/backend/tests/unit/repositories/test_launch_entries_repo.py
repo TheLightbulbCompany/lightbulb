@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -39,6 +40,22 @@ async def test_upsert_creates_then_preserves_entered_at_and_revenue(table):
     assert again["entered_at"] == row["entered_at"]
     assert again["display_name"] == "Ada L." and again["public"] is False
     assert again["baseline_cents"] == 1200 and again["window_cents"] == 2500
+
+
+async def test_upsert_stamps_baseline_at_and_set_baseline_refinalises(table):
+    row = await table.upsert(
+        "user_1", display_name="Ada", public=True, waitlist_position=None, currency="usd", baseline_cents=100
+    )
+    assert row["baseline_at"]
+    await table.set_baseline("user_1", baseline_cents=999, currency="eur", baseline_at="2026-10-01T00:00:00Z")
+    again = await table.get("user_1")
+    assert again["baseline_cents"] == 999
+    assert again["currency"] == "eur"
+    assert again["baseline_at"] == "2026-10-01T00:00:00Z"
+    # A row that does not exist is not created (the caller routes this through _record).
+    with pytest.raises(ClientError):
+        await table.set_baseline("ghost", baseline_cents=1, currency="usd", baseline_at="t")
+    assert await table.get("ghost") is None
 
 
 async def test_set_revenue_clears_error_and_stamps(table):

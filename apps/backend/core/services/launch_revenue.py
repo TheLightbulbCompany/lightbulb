@@ -19,7 +19,7 @@ import boto3
 import stripe
 
 from core.config import settings
-from core.dynamodb import run_in_thread
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import launch_entries_repo
 from core.secrets_manager import create_or_update_secret
 from core.services import launch_phase
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 KEY_PATTERN_PROD = re.compile(r"^rk_live_[A-Za-z0-9]+$")
 KEY_PATTERN_NONPROD = re.compile(r"^rk_(live|test)_[A-Za-z0-9]+$")
+# The baseline window is the 30 days before the competition starts (spec).
+BASELINE_DAYS = 30
 REVENUE_TYPES = frozenset({"charge", "payment"})
 REFUND_TYPES = frozenset({"refund", "payment_refund"})
 _PAGE = 100
@@ -148,15 +150,40 @@ async def _record(owner_id: str, coro) -> None:
         logger.warning("launch refresh: write failed for %s", owner_id, exc_info=True)
 
 
+def _baseline_is_provisional(entry: dict, s: Schedule) -> bool:
+    """An entrant who enters during the activation window has a baseline summed
+    over a window whose tail is still in the future — the last days contribute $0.
+    ``refresh_entry`` only runs at/after ``competition_start_at``, so the first
+    pass is the earliest moment the real number exists."""
+    raw = entry.get("baseline_at")
+    if not raw:
+        return True
+    return launch_phase.parse_iso(raw) < s.competition_start_at
+
+
 async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None:
     owner_id = entry["owner_id"]
     now = now or datetime.now(timezone.utc)
     end = min(now, s.competition_end_at)
+    baseline_cents = int(entry.get("baseline_cents", 0))
     try:
         key = await load_key(owner_id)
         if not key:
             await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "missing_key"))
             return
+        if _baseline_is_provisional(entry, s):
+            baseline_cents, baseline_currency = await sum_net_revenue(
+                key, s.competition_start_at - timedelta(days=BASELINE_DAYS), s.competition_start_at
+            )
+            await _record(
+                owner_id,
+                launch_entries_repo.set_baseline(
+                    owner_id,
+                    baseline_cents=baseline_cents,
+                    currency=baseline_currency,
+                    baseline_at=utc_now_iso(),
+                ),
+            )
         window, currency = await sum_net_revenue(key, s.competition_start_at, end)
     except KeyRejected as e:
         await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, e.reason))
@@ -168,7 +195,7 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
         logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
         await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "refresh_failed"))
         return
-    delta = window - int(entry.get("baseline_cents", 0))
+    delta = window - baseline_cents
     await _record(
         owner_id, launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency)
     )

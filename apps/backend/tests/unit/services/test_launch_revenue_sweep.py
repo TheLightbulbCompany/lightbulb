@@ -11,11 +11,22 @@ DROP = datetime(2026, 9, 18, 16, tzinfo=timezone.utc)
 S = launch_phase.Schedule(DROP, DROP + timedelta(hours=72), DROP + timedelta(hours=72, days=30), 220, 72, 30)
 
 
+def ENTRY(owner_id: str, baseline_cents: int, **over) -> dict:
+    """A settled entry: its baseline was computed after the window closed."""
+    return {
+        "owner_id": owner_id,
+        "baseline_cents": baseline_cents,
+        "baseline_at": (S.competition_start_at + timedelta(minutes=1)).isoformat(),
+        **over,
+    }
+
+
 @pytest.fixture
 def repo():
     with patch.object(rev, "launch_entries_repo") as r:
         r.set_revenue = AsyncMock()
         r.set_refresh_error = AsyncMock()
+        r.set_baseline = AsyncMock()
         yield r
 
 
@@ -33,7 +44,7 @@ async def test_refresh_entry_writes_window_minus_baseline(repo):
         patch.object(rev, "load_key", AsyncMock(return_value="rk_test_x")),
         patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(12_000, "usd"))) as summer,
     ):
-        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 5_000}, S, now=NOW)
+        await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
     summer.assert_awaited_once_with("rk_test_x", S.competition_start_at, NOW)
     repo.set_revenue.assert_awaited_once_with("u1", window_cents=12_000, delta_cents=7_000, currency="usd")
 
@@ -44,7 +55,7 @@ async def test_refresh_entry_clamps_window_end_to_competition_end(repo):
         patch.object(rev, "load_key", AsyncMock(return_value="rk")),
         patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(0, "usd"))) as summer,
     ):
-        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=late)
+        await rev.refresh_entry(ENTRY("u1", 0), S, now=late)
     assert summer.await_args.args[2] == S.competition_end_at
 
 
@@ -53,10 +64,10 @@ async def test_refresh_entry_records_errors_instead_of_raising(repo):
         patch.object(rev, "load_key", AsyncMock(return_value="rk")),
         patch.object(rev, "sum_net_revenue", AsyncMock(side_effect=rev.KeyRejected("stripe_auth"))),
     ):
-        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=NOW)
+        await rev.refresh_entry(ENTRY("u1", 0), S, now=NOW)
     repo.set_refresh_error.assert_awaited_once_with("u1", "stripe_auth")
     with patch.object(rev, "load_key", AsyncMock(return_value=None)):
-        await rev.refresh_entry({"owner_id": "u2", "baseline_cents": 0}, S, now=NOW)
+        await rev.refresh_entry(ENTRY("u2", 0), S, now=NOW)
     repo.set_refresh_error.assert_awaited_with("u2", "missing_key")
 
 
@@ -66,10 +77,10 @@ async def test_refresh_entry_swallows_repo_write_failures(repo):
         patch.object(rev, "load_key", AsyncMock(return_value="rk")),
         patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(5, "usd"))),
     ):
-        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=NOW)  # no exception
+        await rev.refresh_entry(ENTRY("u1", 0), S, now=NOW)  # no exception
     repo.set_refresh_error = AsyncMock(side_effect=RuntimeError("row gone"))
     with patch.object(rev, "load_key", AsyncMock(return_value=None)):
-        await rev.refresh_entry({"owner_id": "u2", "baseline_cents": 0}, S, now=NOW)  # no exception
+        await rev.refresh_entry(ENTRY("u2", 0), S, now=NOW)  # no exception
 
 
 async def test_refresh_all_skips_fresh_rows_unless_forced(repo):
@@ -125,3 +136,42 @@ async def test_maybe_revalidate_noop_when_unconfigured_or_outside_window():
         assert rev.maybe_revalidate(now=DROP - timedelta(days=1)) is False
         assert rev.maybe_revalidate(now=S.competition_end_at + timedelta(days=2)) is False
     assert rev._inflight is None
+
+
+async def test_refresh_entry_finalises_a_baseline_computed_before_the_window_closed(repo):
+    early = ENTRY("u1", 5_000, baseline_at=(S.competition_start_at - timedelta(hours=1)).isoformat())
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(side_effect=[(9_000, "usd"), (12_000, "usd")])) as summer,
+    ):
+        await rev.refresh_entry(early, S, now=NOW)
+    assert summer.await_count == 2
+    baseline_call, window_call = summer.await_args_list
+    assert baseline_call.args[1] == S.competition_start_at - timedelta(days=rev.BASELINE_DAYS)
+    assert baseline_call.args[2] == S.competition_start_at
+    assert window_call.args[1] == S.competition_start_at and window_call.args[2] == NOW
+    assert repo.set_baseline.await_args.kwargs["baseline_cents"] == 9_000
+    assert repo.set_baseline.await_args.kwargs["currency"] == "usd"
+    assert repo.set_baseline.await_args.kwargs["baseline_at"]
+    # the recomputed baseline, not the provisional 5_000, drives this pass's delta
+    assert repo.set_revenue.await_args.kwargs["delta_cents"] == 12_000 - 9_000
+
+
+async def test_refresh_entry_finalises_when_baseline_at_is_missing(repo):
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(side_effect=[(100, "usd"), (400, "usd")])) as summer,
+    ):
+        await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=NOW)
+    assert summer.await_count == 2
+    repo.set_baseline.assert_awaited_once()
+
+
+async def test_refresh_entry_leaves_a_settled_baseline_alone(repo):
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(12_000, "usd"))) as summer,
+    ):
+        await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
+    assert summer.await_count == 1
+    repo.set_baseline.assert_not_awaited()

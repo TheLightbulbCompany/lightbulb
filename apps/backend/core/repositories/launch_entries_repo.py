@@ -46,7 +46,7 @@ async def upsert(
         Key={"owner_id": owner_id},
         UpdateExpression=(
             "SET display_name = :n, #pub = :p, currency = :c, baseline_cents = :b, "
-            "waitlist_position = :w, updated_at = :now, "
+            "baseline_at = :now, waitlist_position = :w, updated_at = :now, "
             "entered_at = if_not_exists(entered_at, :now), "
             "window_cents = if_not_exists(window_cents, :zero), "
             "delta_cents = if_not_exists(delta_cents, :zero)"
@@ -64,6 +64,20 @@ async def upsert(
         ReturnValues="ALL_NEW",
     )
     return _plain(resp["Attributes"])
+
+
+async def set_baseline(owner_id: str, *, baseline_cents: int, currency: str, baseline_at: str) -> None:
+    """Finalise a baseline that was computed over a window still in the future.
+
+    ``baseline_at`` is the instant the numbers were read; the refresh pass
+    recomputes while it predates ``competition_start_at`` (see launch_revenue)."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET baseline_cents = :b, currency = :c, baseline_at = :a",
+        ConditionExpression="attribute_exists(owner_id)",
+        ExpressionAttributeValues={":b": int(baseline_cents), ":c": currency, ":a": baseline_at},
+    )
 
 
 async def set_revenue(owner_id: str, *, window_cents: int, delta_cents: int, currency: str) -> None:

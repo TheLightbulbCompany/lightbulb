@@ -1568,9 +1568,9 @@ export class ServiceStack extends cdk.Stack {
       // once the legacy identity is retired. All three are apex addresses, so
       // the one apex domain identity authorizes them; `support@` is a Google
       // Workspace mailbox (apex MX), not an SES one.
-      EMAIL_FROM_WELCOME: `Isol8 <hello@${platformMailDomain}>`,
+      EMAIL_FROM_WELCOME: `Lightbulb AI <hello@${platformMailDomain}>`,
       EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
-      EMAIL_FROM_TICKETS: `Isol8 Support <tickets@${platformMailDomain}>`,
+      EMAIL_FROM_TICKETS: `Lightbulb AI Support <tickets@${platformMailDomain}>`,
     };
 
     const backendContainerSecrets: Record<string, ecs.Secret> = {

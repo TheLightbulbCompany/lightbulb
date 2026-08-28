@@ -6,6 +6,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from core.config import settings
 from core.services import billing_service
 from core.services.billing_service import (
     BillingService,
@@ -1267,7 +1268,11 @@ class TestCreditTopUpProvisionsOnDemand:
             with pytest.raises(BillingServiceError) as exc:
                 await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
         assert "try again in a moment" not in str(exc.value)
-        assert "support@isol8.co" in str(exc.value)
+        # Derived, not a literal: the message is built from
+        # settings.EMAIL_SUPPORT_ADDRESS, which moves with the mail domain.
+        # Hardcoding it here is what made this test fail the mail migration
+        # rather than follow it.
+        assert settings.EMAIL_SUPPORT_ADDRESS in str(exc.value)
 
     @pytest.mark.asyncio
     async def test_silent_no_op_still_reports_transient(self, _account, monkeypatch):

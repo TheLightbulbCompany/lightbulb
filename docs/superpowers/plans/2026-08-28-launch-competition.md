@@ -471,7 +471,7 @@ async def test_join_is_idempotent_per_email(table):
     assert again["position"] == first["position"]
     assert again["referral_code"] == first["referral_code"]
     assert again["source"] == "waitlist"  # first write wins
-    assert await table.count() == 2  # two people, not three
+    assert await table.count() == 1  # one person, not two — the counter advances only for NEW rows
 
 
 async def test_join_attributes_referral_and_counts_it(table):
@@ -761,7 +761,7 @@ async def count() -> int:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_launch_waitlist_repo.py -v && uv run ruff check core/repositories/launch_waitlist_repo.py`
-Expected: 11 passed; ruff clean. (Note `count()` returns the counter, so `test_join_is_idempotent_per_email` expects 2 — one position per NEW email.)
+Expected: 11 passed; ruff clean. (`count()` returns the counter, which advances once per NEW email, so `test_join_is_idempotent_per_email` expects 1.)
 
 - [ ] **Step 5: Commit**
 

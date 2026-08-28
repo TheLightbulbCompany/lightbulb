@@ -2522,6 +2522,15 @@ _inflight: asyncio.Task | None = None
 _last_started_at: datetime | None = None
 
 
+async def _record(owner_id: str, coro) -> None:
+    """Repo writes in the refresh path must never abort the pass — a row deleted
+    mid-pass or a throttled write just leaves that owner stale until the next read."""
+    try:
+        await coro
+    except Exception:  # noqa: BLE001
+        logger.warning("launch refresh: write failed for %s", owner_id, exc_info=True)
+
+
 async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -> None:
     owner_id = entry["owner_id"]
     now = now or datetime.now(timezone.utc)
@@ -2529,21 +2538,24 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
     try:
         key = await load_key(owner_id)
         if not key:
-            await launch_entries_repo.set_refresh_error(owner_id, "missing_key")
+            await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "missing_key"))
             return
         window, currency = await sum_net_revenue(key, s.competition_start_at, end)
     except KeyRejected as e:
-        await launch_entries_repo.set_refresh_error(owner_id, e.reason)
+        await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, e.reason))
         return
     except MixedCurrency:
-        await launch_entries_repo.set_refresh_error(owner_id, "mixed_currency")
+        await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "mixed_currency"))
         return
     except Exception:  # noqa: BLE001 — one bad entry must not stop the pass
         logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
-        await launch_entries_repo.set_refresh_error(owner_id, "refresh_failed")
+        await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "refresh_failed"))
         return
     delta = window - int(entry.get("baseline_cents", 0))
-    await launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency)
+    await _record(
+        owner_id,
+        launch_entries_repo.set_revenue(owner_id, window_cents=window, delta_cents=delta, currency=currency),
+    )
 
 
 def _in_refresh_window(s: Schedule, now: datetime) -> bool:

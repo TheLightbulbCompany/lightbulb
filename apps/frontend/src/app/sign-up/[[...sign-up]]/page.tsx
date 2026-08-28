@@ -33,7 +33,7 @@ export default function Page() {
           right: -120px;
           width: 480px;
           height: 480px;
-          background: rgba(74, 158, 116, .15);
+          background: color-mix(in srgb, var(--midnight) 6%, transparent);
           border-radius: 50%;
           filter: blur(100px);
           pointer-events: none;
@@ -45,7 +45,7 @@ export default function Page() {
           left: -80px;
           width: 320px;
           height: 320px;
-          background: rgba(0, 0, 0, .15);
+          background: color-mix(in srgb, var(--midnight) 60%, transparent);
           border-radius: 50%;
           filter: blur(80px);
           pointer-events: none;
@@ -62,7 +62,7 @@ export default function Page() {
           justify-content: center;
         }
         .auth-eyebrow {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 11px;
           font-weight: 700;
           letter-spacing: 4px;
@@ -71,17 +71,17 @@ export default function Page() {
           margin-bottom: 20px;
         }
         .auth-tagline {
-          font-family: var(--font-lora-serif), 'Lora', serif;
+          font-family: var(--font-serif), 'Lora', serif;
           font-size: clamp(32px, 3.5vw, 48px);
           font-weight: 400;
           line-height: 1.15;
           letter-spacing: -.02em;
-          color: white;
+          color: var(--cream);
           margin-bottom: 28px;
         }
         .auth-tagline em {
           font-style: italic;
-          color: #a8e6c6;
+          color: var(--cream);
         }
 
         /* ── FEATURE PILLS ── */
@@ -109,25 +109,25 @@ export default function Page() {
           width: 36px;
           height: 36px;
           border-radius: 10px;
-          background: rgba(255,255,255,.1);
-          border: 1px solid rgba(255,255,255,.1);
+          background: color-mix(in srgb, var(--cream) 10%, transparent);
+          border: 1px solid color-mix(in srgb, var(--cream) 14%, transparent);
           display: flex;
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
         }
         .auth-feat-title {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 14px;
           font-weight: 600;
-          color: white;
+          color: var(--cream);
           margin-bottom: 2px;
           line-height: 1.4;
         }
         .auth-feat-desc {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 13px;
-          color: rgba(255,255,255,.55);
+          color: color-mix(in srgb, var(--cream) 70%, var(--midnight));
           line-height: 1.5;
         }
 
@@ -149,7 +149,7 @@ export default function Page() {
           right: 60px;
           width: 200px;
           height: 200px;
-          background: rgba(6, 64, 43, .03);
+          background: color-mix(in srgb, var(--midnight) 3%, transparent);
           border-radius: 50%;
           filter: blur(60px);
           pointer-events: none;
@@ -173,9 +173,9 @@ export default function Page() {
         .auth-footer-links {
           margin-top: 24px;
           text-align: center;
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 14px;
-          color: #6b6960;
+          color: var(--midnight-muted);
           line-height: 1.5;
         }
         .auth-footer-links a {
@@ -184,18 +184,18 @@ export default function Page() {
           text-decoration: none;
           transition: color 200ms ease-out;
         }
-        .auth-footer-links a:hover { color: #054d33; }
+        .auth-footer-links a:hover { color: var(--midnight-soft); }
 
         .auth-legal-links {
           margin-top: 16px;
           text-align: center;
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 12px;
-          color: #9e9a90;
+          color: var(--midnight-muted);
           line-height: 1.5;
         }
         .auth-legal-links a {
-          color: #6b6960;
+          color: var(--midnight-muted);
           text-decoration: none;
           transition: color 200ms ease-out;
         }
@@ -243,7 +243,7 @@ export default function Page() {
             <div className="auth-features" role="list">
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a8e6c6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                   </svg>
@@ -255,7 +255,7 @@ export default function Page() {
               </div>
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a8e6c6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10" />
                     <polyline points="12 6 12 12 16 14" />
                   </svg>
@@ -267,7 +267,7 @@ export default function Page() {
               </div>
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a8e6c6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 2L2 7l10 5 10-5-10-5z" />
                     <path d="M2 17l10 5 10-5" />
                     <path d="M2 12l10 5 10-5" />

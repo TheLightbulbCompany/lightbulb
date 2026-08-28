@@ -1,3 +1,4 @@
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -119,7 +120,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `isol8-${environment}-ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -132,7 +133,7 @@ describe("DatabaseStack — integrations status table", () => {
 
   test("creates isol8-dev-integrations table with owner_id/provider composite key + PAY_PER_REQUEST", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-integrations",
+      TableName: "lightbulb-dev-integrations",
       KeySchema: [
         { AttributeName: "owner_id", KeyType: "HASH" },
         { AttributeName: "provider", KeyType: "RANGE" },
@@ -145,7 +146,7 @@ describe("DatabaseStack — integrations status table", () => {
     // A regression dropping CMK or PITR (e.g. swapping to AWS-managed or
     // removing point-in-time recovery) on the status index must fail here.
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "isol8-dev-integrations",
+      TableName: "lightbulb-dev-integrations",
       SSESpecification: Match.objectLike({ SSEEnabled: true, SSEType: "KMS" }),
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });
@@ -196,7 +197,10 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
               "dynamodb:Query",
             ]),
             Resource: Match.arrayWith([
-              Match.stringLikeRegexp(".*:table/isol8-dev-integrations"),
+              // `*-dev-integrations` — the prefix is a wildcard for the
+              // duration of the table rename, so ONE entry covers both
+              // isol8-dev- and lightbulb-dev-. Narrows at step D.
+              Match.stringLikeRegexp(".*:table/\\*-dev-integrations"),
             ]),
           }),
         ]),
@@ -231,7 +235,10 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
           Match.objectLike({
             Sid: "DynamoDbIntegrations",
             Resource: Match.arrayWith([
-              Match.stringLikeRegexp(".*:table/isol8-prod-integrations"),
+              // `*-prod-integrations` — the prefix is a wildcard for the
+              // duration of the table rename, so ONE entry covers both
+              // isol8-prod- and lightbulb-prod-. Narrows at step D.
+              Match.stringLikeRegexp(".*:table/\\*-prod-integrations"),
             ]),
           }),
         ]),

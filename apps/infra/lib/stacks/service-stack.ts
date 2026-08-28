@@ -18,6 +18,7 @@ import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
@@ -746,10 +747,8 @@ export class ServiceStack extends cdk.Stack {
           "dynamodb:Scan",
         ],
         resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-integrations/index/*`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-oauth-state/index/*`,
+          ...bothTableArns(this.region, this.account, env, "integrations"),
+          ...bothTableArns(this.region, this.account, env, "oauth-state"),
           // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB
           // statement (identical action set + condition-less shape) rather than
           // added as a separate fourth statement: the backend role's inline
@@ -758,8 +757,7 @@ export class ServiceStack extends cdk.Stack {
           // this very statement out of the AWS::IAM::Policy resource other
           // features assert on. Same cross-stack-export-avoidance posture; the
           // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-aip-owners/index/*`,
+          ...bothTableArns(this.region, this.account, env, "bedrock-aip-owners"),
           // Metronome local fast-gate flag (Phase 2). Folded into this by-name
           // statement for the SAME reason as bedrock-aip-owners above: a separate
           // grantReadWriteData would both bloat the near-10 KB inline policy
@@ -767,8 +765,7 @@ export class ServiceStack extends cdk.Stack {
           // statement) AND export the table ARN cross-stack. The action set
           // (GetItem/PutItem/UpdateItem/Query) matches MetronomeFastGate +
           // metronome_provisioning + metronome_funding.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-metronome-fast-gate/index/*`,
+          ...bothTableArns(this.region, this.account, env, "metronome-fast-gate"),
           // bedrock-gate bearer-token table. mint_gate_token / deny_gate_token
           // (core/billing/bedrock_gate_tokens.py) PutItem/UpdateItem/DeleteItem
           // here for EVERY Bedrock owner at provision time, so without this grant
@@ -777,8 +774,7 @@ export class ServiceStack extends cdk.Stack {
           // tables above (a separate grantReadWriteData would tip CDK into an
           // overflow ManagedPolicy). The table itself is defined in the
           // bedrock-gate stack (gate-private), so only the ARN is referenced.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-gate-tokens`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${env}-bedrock-gate-tokens/index/*`,
+          ...bothTableArns(this.region, this.account, env, "bedrock-gate-tokens"),
         ],
       }),
     );

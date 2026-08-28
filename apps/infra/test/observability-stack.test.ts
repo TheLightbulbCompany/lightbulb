@@ -1,3 +1,4 @@
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -117,7 +118,7 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         companySlugsTable: makeTable("CompanySlugs"),
         agentEmailAddressesTable: makeTable("AgentEmailAddresses"),
       },
-      connectionsTableName: `isol8-${envName}-ws-connections`,
+      connectionsTableName: `${tablePrefix(envName)}ws-connections`,
       authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       paperclipDbCluster,
       paperclipService,

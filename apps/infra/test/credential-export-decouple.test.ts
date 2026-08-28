@@ -1,3 +1,4 @@
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -126,7 +127,7 @@ function build(environment: "dev" | "prod"): {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `isol8-${environment}-ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -156,7 +157,7 @@ describe.each(["dev", "prod"] as const)(
 
       const connectionsResources = database.findResources(
         "AWS::DynamoDB::Table",
-        { Properties: { TableName: `isol8-${environment}-connections` } },
+        { Properties: { TableName: `${tablePrefix(environment)}connections` } },
       );
       expect(Object.keys(connectionsResources)).toEqual([]);
     });
@@ -174,7 +175,7 @@ describe.each(["dev", "prod"] as const)(
       // a stable literal (`<stack>-oauth-state-table`), not a GetAtt auto-export,
       // so it never created the rename-blocking coupling.
       database.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `isol8-${environment}-oauth-state`,
+        TableName: `${tablePrefix(environment)}oauth-state`,
       });
       database.hasOutput("*", {
         Export: { Name: `isol8-${environment}-database-oauth-state-table` },
@@ -190,7 +191,10 @@ describe.each(["dev", "prod"] as const)(
         },
       });
       const json = JSON.stringify(service.toJSON());
-      expect(json).toContain(`:table/isol8-${environment}-oauth-state`);
+      // Wildcard prefix during the rename: one entry grants both
+      // isol8-{env}-oauth-state and lightbulb-{env}-oauth-state, so the
+      // role keeps working across the reader flip. Narrows at step D.
+      expect(json).toContain(`:table/*-${environment}-oauth-state`);
     });
 
     test("service stack no longer imports either credential-table ARN", () => {

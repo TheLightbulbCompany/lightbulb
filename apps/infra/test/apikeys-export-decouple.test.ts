@@ -1,3 +1,4 @@
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -113,7 +114,7 @@ function build(environment: "dev" | "prod"): {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `isol8-${environment}-ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -144,7 +145,7 @@ describe.each(["dev", "prod"] as const)(
 
     test("database stack no longer defines an api-keys table", () => {
       const resources = database.findResources("AWS::DynamoDB::Table", {
-        Properties: { TableName: `isol8-${environment}-api-keys` },
+        Properties: { TableName: `${tablePrefix(environment)}api-keys` },
       });
       expect(Object.keys(resources)).toEqual([]);
     });

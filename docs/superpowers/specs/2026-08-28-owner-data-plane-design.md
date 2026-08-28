@@ -47,14 +47,27 @@ already run** (`core/services/payout_service.py`, Express accounts for
 marketplace payouts; Connect webhook secret + `account.updated` handler in
 `routers/marketplace_purchases.py`). Two doors, one code path:
 
-- **Create**: `POST /v1/accounts` with Standard-style controller properties
-  (`fees.payer=account`, `losses=stripe`, `dashboard=full`), prefilled from
-  the company name and the owner's Clerk email; hosted onboarding via Account
-  Links (`type=account_onboarding`; single-use, minutes TTL, minted on click,
-  never stored or emailed).
-- **Connect existing**: Standard OAuth for an owner who already runs Stripe.
-  (An account already controlled by another platform gets a fresh account —
-  Stripe's 2021 rule.)
+- **Create**: **Accounts v2** — `POST /v2/core/accounts` with the `merchant`
+  configuration (`card_payments` requested), `dashboard: full`, and
+  `defaults.responsibilities = {fees_collector: stripe, losses_collector:
+  stripe}`; prefilled from the company name and the owner's Clerk email;
+  hosted onboarding via v2 account links (`use_case.type =
+  account_onboarding`, `configurations: [merchant]`; single-use, ~10-minute
+  TTL, minted on click, never stored or emailed). Decided 2026-08-28: v2 is GA
+  for all Stripe users (dahlia, 2026-04-22), our dev platform already serves
+  `/v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient.v2.core`.
+  v2 also lets the account act as a *customer* later (bill the company's
+  Lightbulb subscription to its own account — Money → Spend, P1+).
+- **Connect existing**: Standard OAuth for an owner who already runs Stripe —
+  v1 by Stripe's own limitations list; v2 endpoints manage the resulting
+  account too. (An account already controlled by another platform gets a
+  fresh account — Stripe's 2021 rule.)
+- Status vocabulary stays the v1 trio (`details_submitted` /
+  `charges_enabled` / `payouts_enabled`), read via v1 endpoints that accept
+  v2 ids, so both doors and the existing `account.updated` webhook share one
+  shape. v2 thin events are optional later. Not on v2: `card_issuing_*` and
+  Treasury — if Stripe Issuing is ever chosen for agent cards, that lives on a
+  v1 Custom account, not this one.
 
 Both yield a Standard account the owner logs into and keeps; **zero Connect
 fees, no application fee**; we read with the platform key + `Stripe-Account`

@@ -4,7 +4,7 @@
 
 **Goal:** Give every paid company one Standard-style Stripe account connected to the Connect platform we already run — created by us or connected by the owner — raised by Friday as an approval card, tracked on the billing row, kept current by Connect webhooks, and shown on Settings → Connections.
 
-**Architecture:** A new `company_stripe` service wraps the Stripe calls (v1 `Account.create` with controller properties, Account Links, Standard OAuth); `billing_repo` gains diff-written `company_stripe_*` fields plus a GSI to find an owner by account id; the existing `/webhooks/stripe-marketplace` receiver learns to route `account.updated` for company accounts and `account.application.deauthorized`; a `/api/v1/company/stripe/*` router exposes status/create/link/connect/disconnect behind the paid + org-admin gates and a hook-token route lets Friday file the approval; the frontend adds a section on `/settings/connections` and a "Set up Stripe" action on the `connect_stripe` approval row.
+**Architecture:** A new `company_stripe` service wraps the Stripe calls (**Accounts v2**: `StripeClient.v2.core.accounts.create` with the `merchant` configuration, `dashboard: full`, Stripe-collected fees and losses; v2 account links; Standard OAuth stays v1 because Stripe lists OAuth as v1-only, and v2 endpoints manage those accounts too); `billing_repo` gains diff-written `company_stripe_*` fields plus a GSI to find an owner by account id; the existing `/webhooks/stripe-marketplace` receiver learns to route `account.updated` for company accounts and `account.application.deauthorized`; a `/api/v1/company/stripe/*` router exposes status/create/link/connect/disconnect behind the paid + org-admin gates and a hook-token route lets Friday file the approval; the frontend adds a section on `/settings/connections` and a "Set up Stripe" action on the `connect_stripe` approval row.
 
 **Tech Stack:** FastAPI, `stripe` Python SDK (global `stripe.api_key`), DynamoDB via boto3 + moto for tests, pytest + `AsyncMock`, Next.js/React + SWR, AWS CDK (TypeScript), Paperclip admin client for approvals.
 
@@ -12,7 +12,9 @@
 
 ## Global Constraints
 
-- Zero Connect fees: accounts are created with `controller.fees.payer = "account"` and `controller.losses.payments = "stripe"`; no `application_fee` anywhere.
+- Zero Connect fees: accounts are created on **Accounts v2** with `defaults.responsibilities = {fees_collector: "stripe", losses_collector: "stripe"}`, `dashboard: "full"`, `configuration.merchant.capabilities.card_payments.requested = true`; no `application_fee` anywhere. Verified 2026-08-28: Accounts v2 is GA for all Stripe users (dahlia changelog 2026-04-22), our dev platform already serves `GET /v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient(...).v2.core.accounts` / `.account_links`. Pin `stripe>=14.4.1` in `apps/backend/pyproject.toml` (today `>=8.0.0`).
+- Standard OAuth ("connect existing") and `OAuth.deauthorize` stay on v1 — Stripe's v2 limitations list names OAuth as v1-only; v2 endpoints still read/manage those accounts (a fresh v1 account may take up to 10 minutes before v2 endpoints see it).
+- Status booleans are read through the v1 shape (`stripe.Account.retrieve(acct)` → `details_submitted` / `charges_enabled` / `payouts_enabled`) for both doors — v1 endpoints accept v2 ids and return the v1 structure — so the webhook, repo and pages have one status vocabulary. v1 `account.updated` still fires for v2 accounts (Connected-accounts scope), so the existing endpoint keeps working; a v2 thin-event destination is optional and not part of P0a.
 - The accounts layer is paid-only: every mutating owner route calls `require_always_on_entitlement(owner_id)` (`routers/teams/_guards.py:20`), which raises 402 with `code: routines_require_subscription`.
 - Money is org-admin-only: in an org context every mutating route calls `require_org_admin(auth)` (`core/auth.py:118`).
 - Owner id is always `resolve_owner_id(auth)` (`core/auth.py:97`) — `AuthContext` has no `owner_id` field.
@@ -403,7 +405,7 @@ git commit -m "feat(company-stripe): billing_repo setters + account-id lookup fo
 # apps/backend/tests/unit/services/test_company_stripe.py
 import os
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -422,39 +424,51 @@ def _settings(monkeypatch):
     monkeypatch.setattr(settings, "STRIPE_COMPANY_OAUTH_REDIRECT_URL", "https://api-dev.example/api/v1/company/stripe/connect/callback")
 
 
+def _client_with(accounts_create=None, links_create=None):
+    """A stand-in for StripeClient exposing only v2.core.accounts / account_links."""
+    accounts = SimpleNamespace(create=accounts_create or MagicMock())
+    links = SimpleNamespace(create=links_create or MagicMock())
+    return SimpleNamespace(v2=SimpleNamespace(core=SimpleNamespace(accounts=accounts, account_links=links)))
+
+
 @pytest.mark.asyncio
-async def test_create_company_account_uses_controller_properties_and_no_fees():
-    with patch("core.services.company_stripe.stripe.Account.create") as create:
-        create.return_value = SimpleNamespace(id="acct_new")
+async def test_create_company_account_uses_v2_merchant_config_and_stripe_fees():
+    create = MagicMock(return_value=SimpleNamespace(id="acct_new"))
+    with patch("core.services.company_stripe._client", return_value=_client_with(accounts_create=create)):
         account_id = await company_stripe.create_company_account(
             owner_id="org_a", email="founder@example.com", company_name="Northwind Ceramics"
         )
     assert account_id == "acct_new"
-    kwargs = create.call_args.kwargs
-    assert "type" not in kwargs
-    assert kwargs["controller"] == {
-        "fees": {"payer": "account"},
-        "losses": {"payments": "stripe"},
-        "stripe_dashboard": {"type": "full"},
+    params, options = create.call_args.args[0], create.call_args.kwargs["options"]
+    assert params["dashboard"] == "full"
+    assert params["contact_email"] == "founder@example.com"
+    assert params["display_name"] == "Northwind Ceramics"
+    assert params["identity"] == {"country": "us"}
+    assert params["configuration"] == {"merchant": {"capabilities": {"card_payments": {"requested": True}}}}
+    assert params["defaults"] == {
+        "currency": "usd",
+        "responsibilities": {"fees_collector": "stripe", "losses_collector": "stripe"},
     }
-    assert kwargs["country"] == "US"
-    assert kwargs["email"] == "founder@example.com"
-    assert kwargs["business_profile"] == {"name": "Northwind Ceramics"}
-    assert kwargs["metadata"] == {"owner_id": "org_a", "kind": "company"}
-    assert kwargs["idempotency_key"].startswith("company_account_create:")
+    assert params["metadata"] == {"owner_id": "org_a", "kind": "company"}
+    assert options["idempotency_key"].startswith("company_account_create:")
 
 
 @pytest.mark.asyncio
-async def test_create_company_onboarding_link():
-    with patch("core.services.company_stripe.stripe.AccountLink.create") as link:
-        link.return_value = SimpleNamespace(url="https://connect.stripe.com/setup/x")
+async def test_create_company_onboarding_link_v2():
+    link = MagicMock(return_value=SimpleNamespace(url="https://accounts.stripe.com/r/acct_new#alu_x"))
+    with patch("core.services.company_stripe._client", return_value=_client_with(links_create=link)):
         url = await company_stripe.create_company_onboarding_link(account_id="acct_new")
-    assert url == "https://connect.stripe.com/setup/x"
-    kwargs = link.call_args.kwargs
-    assert kwargs["account"] == "acct_new"
-    assert kwargs["type"] == "account_onboarding"
-    assert kwargs["refresh_url"] == settings.STRIPE_COMPANY_REFRESH_URL
-    assert kwargs["return_url"] == settings.STRIPE_COMPANY_RETURN_URL
+    assert url == "https://accounts.stripe.com/r/acct_new#alu_x"
+    params = link.call_args.args[0]
+    assert params["account"] == "acct_new"
+    assert params["use_case"] == {
+        "type": "account_onboarding",
+        "account_onboarding": {
+            "configurations": ["merchant"],
+            "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
+            "return_url": settings.STRIPE_COMPANY_RETURN_URL,
+        },
+    }
 
 
 def test_build_connect_authorize_url():
@@ -499,14 +513,19 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'core.services.company
 
 ```python
 # apps/backend/core/services/company_stripe.py
-"""The company's own Stripe account on our Connect platform.
+"""The company's own Stripe account on our Connect platform (Accounts v2).
 
-Standard-style connected account (controller properties, full dashboard,
-account pays its own Stripe fees, Stripe carries losses). The owner keeps
-the account and logs into dashboard.stripe.com; we take no application fee.
-Two doors — create via ``Account.create`` + hosted onboarding, or connect an
-existing account via Standard OAuth — both land the same ``acct_…`` on the
-billing row.
+A ``merchant``-configured v2 account with the full Dashboard; Stripe collects
+the account's fees and carries its losses, so the platform pays nothing and
+takes no application fee. The owner keeps the account and logs into
+dashboard.stripe.com. Two doors — create via ``v2.core.accounts`` + hosted
+onboarding, or connect an existing account via Standard OAuth (v1-only by
+Stripe's own limitations list) — both land the same ``acct_…`` on the
+billing row, and v2 endpoints manage either kind.
+
+Status booleans are read through the v1 shape (``details_submitted`` /
+``charges_enabled`` / ``payouts_enabled``) for both doors — v1 endpoints
+accept v2 ids — so the webhook, repo and pages share one vocabulary.
 
 Blocking SDK calls run on a worker thread, as in ``payout_service``.
 """
@@ -518,20 +537,24 @@ import uuid
 from urllib.parse import urlencode
 
 import stripe
+from stripe import StripeClient
 
 from core.config import settings
 
 CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 
-# Controller properties = "Standard-like" without the legacy ``type``:
-#   fees.payer=account      → the account pays Stripe's fees; the platform pays nothing
-#   losses.payments=stripe  → Stripe, not the platform, is liable for negative balances
-#   stripe_dashboard=full   → the owner gets the full Dashboard
-CONTROLLER = {
-    "fees": {"payer": "account"},
-    "losses": {"payments": "stripe"},
-    "stripe_dashboard": {"type": "full"},
+# v2 defaults: Stripe collects fees from the account and carries its losses
+# (the platform pays nothing); full Dashboard; merchant config = accept
+# card payments and receive payouts to its own bank.
+ACCOUNT_DEFAULTS = {
+    "currency": "usd",
+    "responsibilities": {"fees_collector": "stripe", "losses_collector": "stripe"},
 }
+MERCHANT_CONFIGURATION = {"merchant": {"capabilities": {"card_payments": {"requested": True}}}}
+
+
+def _client() -> StripeClient:
+    return StripeClient(settings.STRIPE_SECRET_KEY)
 
 
 def _set_key() -> None:
@@ -539,31 +562,44 @@ def _set_key() -> None:
 
 
 async def create_company_account(*, owner_id: str, email: str, company_name: str) -> str:
-    """Create the account shell. Fresh uuid4 idempotency key on purpose — a
-    stable key would return a deleted account from Stripe's 24h cache; the
-    router de-dups on the billing row instead."""
-    _set_key()
+    """Create the account shell. ``identity`` carries only the country —
+    entity type and everything else are collected by Stripe in hosted
+    onboarding (``requirements_collector`` defaults to ``stripe``). Fresh
+    uuid4 idempotency key on purpose — a stable key would return a deleted
+    account from Stripe's 24h cache; the router de-dups on the billing row."""
+    client = _client()
     account = await asyncio.to_thread(
-        stripe.Account.create,
-        controller=CONTROLLER,
-        country="US",
-        email=email,
-        business_profile={"name": company_name},
-        metadata={"owner_id": owner_id, "kind": "company"},
-        idempotency_key=f"company_account_create:{uuid.uuid4()}",
+        client.v2.core.accounts.create,
+        {
+            "contact_email": email,
+            "display_name": company_name,
+            "dashboard": "full",
+            "identity": {"country": "us"},
+            "configuration": MERCHANT_CONFIGURATION,
+            "defaults": ACCOUNT_DEFAULTS,
+            "metadata": {"owner_id": owner_id, "kind": "company"},
+        },
+        options={"idempotency_key": f"company_account_create:{uuid.uuid4()}"},
     )
     return account.id
 
 
 async def create_company_onboarding_link(*, account_id: str) -> str:
-    """Single-use, minutes-TTL hosted onboarding link. Mint per request."""
-    _set_key()
+    """Single-use, ~10-minute hosted onboarding link (v2). Mint per request."""
+    client = _client()
     link = await asyncio.to_thread(
-        stripe.AccountLink.create,
-        account=account_id,
-        refresh_url=settings.STRIPE_COMPANY_REFRESH_URL,
-        return_url=settings.STRIPE_COMPANY_RETURN_URL,
-        type="account_onboarding",
+        client.v2.core.account_links.create,
+        {
+            "account": account_id,
+            "use_case": {
+                "type": "account_onboarding",
+                "account_onboarding": {
+                    "configurations": ["merchant"],
+                    "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
+                    "return_url": settings.STRIPE_COMPANY_RETURN_URL,
+                },
+            },
+        },
     )
     return link.url
 

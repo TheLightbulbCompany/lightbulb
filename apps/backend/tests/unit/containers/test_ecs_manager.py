@@ -852,13 +852,17 @@ class TestStartUserService:
 
     @pytest.mark.asyncio
     async def test_start_scales_to_one_without_force_new_deployment(self, manager, mock_ecs_client):
-        """start_user_service calls update_service with desiredCount=1 ONLY.
+        """start_user_service scales to 1 and re-asserts the Cloud Map registry.
 
         forceNewDeployment is NOT passed: when stop_user_service has just run
         but ECS hasn't yet stopped the old task, a follow-up start_user_service
         with forceNewDeployment=True would terminate the still-running task
         and produce a ~30s post-login outage. Plain desiredCount=1 lets ECS
         keep the existing healthy task if there is one.
+
+        serviceRegistries IS passed: this is the call the scale-up branch
+        actually reaches, so it is the only place a parked service's registry
+        can be brought current before it wakes.
         """
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
@@ -873,6 +877,7 @@ class TestStartUserService:
                 cluster=manager._cluster,
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=1,
+                serviceRegistries=[{"registryArn": manager._cloud_map_service_arn}],
                 deploymentConfiguration={
                     "deploymentCircuitBreaker": {
                         "enable": True,
@@ -5064,3 +5069,76 @@ class TestKickoffOnReadyTransition:
         assert any((c.args[1] if len(c.args) > 1 else {}).get("status") == "running" for c in upd.await_args_list), (
             "the gateway-healthy write must survive a failing kickoff"
         )
+
+
+class TestStaleLogConfigRefresh:
+    """A wake reuses the service's existing task-def revision, which pins the log
+    group BY NAME. Rename that group in CDK and the revision names something that
+    no longer exists — the task then fails ResourceInitializationError and cannot
+    start at all, forever, because only a full provision re-derives the revision."""
+
+    def _base(self, group):
+        return {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "logConfiguration": {"logDriver": "awslogs", "options": {"awslogs-group": group}},
+                    }
+                ]
+            }
+        }
+
+    def _current(self, group):
+        return {
+            "taskDefinition": {
+                "family": "isol8-dev-openclaw-user",
+                "taskRoleArn": "arn:aws:iam::123456789:role/owner",
+                "executionRoleArn": "arn:aws:iam::123456789:role/exec",
+                "networkMode": "awsvpc",
+                "requiresCompatibilities": ["FARGATE"],
+                "cpu": "1024",
+                "memory": "4096",
+                "volumes": [{"name": "efs"}],
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "environment": [{"name": "PER_USER", "value": "keep-me"}],
+                        "logConfiguration": {"logDriver": "awslogs", "options": {"awslogs-group": group}},
+                    }
+                ],
+            }
+        }
+
+    def test_returns_none_when_log_config_already_matches(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.side_effect = [
+            self._base("/lightbulb/dev/openclaw"),
+            self._current("/lightbulb/dev/openclaw"),
+        ]
+        assert manager._refresh_stale_log_config("arn:td/isol8-dev-openclaw-user:207") is None
+        mock_ecs_client.register_task_definition.assert_not_called()
+
+    def test_re_registers_onto_the_base_group_when_stale(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.side_effect = [
+            self._base("/lightbulb/dev/openclaw"),
+            self._current("/isol8/dev/openclaw"),
+        ]
+        mock_ecs_client.register_task_definition.return_value = {
+            "taskDefinition": {"taskDefinitionArn": "arn:td/isol8-dev-openclaw-user:208"}
+        }
+        out = manager._refresh_stale_log_config("arn:td/isol8-dev-openclaw-user:207")
+
+        assert out == "arn:td/isol8-dev-openclaw-user:208"
+        kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+        cd = kwargs["containerDefinitions"][0]
+        assert cd["logConfiguration"]["options"]["awslogs-group"] == "/lightbulb/dev/openclaw"
+        # per-user config must survive: this is why we clone the owner's revision
+        # rather than re-deriving from the base
+        assert cd["environment"] == [{"name": "PER_USER", "value": "keep-me"}]
+        assert kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/owner"
+        assert kwargs["cpu"] == "1024"
+
+    def test_a_describe_failure_never_blocks_the_start(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.side_effect = Exception("throttled")
+        assert manager._refresh_stale_log_config("arn:td/whatever:1") is None
+        mock_ecs_client.register_task_definition.assert_not_called()

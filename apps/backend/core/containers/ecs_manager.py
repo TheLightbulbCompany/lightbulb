@@ -1521,10 +1521,31 @@ class EcsManager:
 
         try:
             with timing("container.lifecycle.latency", {"op": "start"}):
+                # A wake reuses the service's existing task-def revision, which
+                # pins the log group by name. If CDK has since renamed it, that
+                # revision names a group that no longer exists and the task
+                # cannot start at all. Refresh before scaling up, not after.
+                refreshed = None
+                try:
+                    svc = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
+                    td = (svc.get("services") or [{}])[0].get("taskDefinition")
+                    if td:
+                        refreshed = self._refresh_stale_log_config(td)
+                except Exception as e:  # noqa: BLE001 — a failed check must not block the start
+                    logger.warning("log-config refresh check failed for %s: %s", service_name, e)
+
                 self._ecs.update_service(
                     cluster=self._cluster,
                     service=service_name,
                     desiredCount=1,
+                    # Re-assert the Cloud Map registry on EVERY start, not just
+                    # on the provision paths. This is the call the scale-up
+                    # branch actually reaches, so without it a parked service
+                    # wakes still registered against whatever registry it was
+                    # created with -- discover_ip then finds nothing and the
+                    # container looks unreachable while running perfectly.
+                    **self._service_registries(),
+                    **({"taskDefinition": refreshed} if refreshed else {}),
                     deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                 )
         except Exception as e:
@@ -2276,6 +2297,68 @@ class EcsManager:
         if not self._cloud_map_service_arn:
             return {}
         return {"serviceRegistries": [{"registryArn": self._cloud_map_service_arn}]}
+
+    def _refresh_stale_log_config(self, task_def_arn: str) -> str | None:
+        """Re-register *task_def_arn* onto the CDK base's log configuration.
+
+        Per-user task definitions are IMMUTABLE revisions that pin the log group
+        by name, and only a full provision re-derives them from the base. A wake
+        reuses whatever revision the service already has -- so renaming the log
+        group in CDK leaves every parked owner pinned to a group that no longer
+        exists, and their next start dies with
+
+            ResourceInitializationError: failed to validate logger args
+
+        which is not a degraded container but one that cannot start at all, and
+        no amount of retrying fixes it.
+
+        Refreshing ONLY logConfiguration, rather than calling
+        _register_task_definition, is deliberate: that path needs per-user
+        secrets, hook token, task role and sizing that a wake does not have, and
+        reconstructing them here would duplicate the restart branch. Cloning the
+        owner's current revision preserves all of that untouched.
+
+        Returns the new task-def ARN, or None when nothing needed changing (the
+        common case, so the extra describe is the only cost on a healthy wake).
+        """
+        try:
+            base = self._ecs.describe_task_definition(taskDefinition=self._base_task_def_family)["taskDefinition"]
+            current = self._ecs.describe_task_definition(taskDefinition=task_def_arn)["taskDefinition"]
+        except Exception as e:  # noqa: BLE001 — never block a start on this check
+            logger.warning("could not compare task def %s against base: %s", task_def_arn, e)
+            return None
+
+        base_log = (base.get("containerDefinitions") or [{}])[0].get("logConfiguration")
+        if not base_log:
+            return None
+        cds = current.get("containerDefinitions") or []
+        if all(cd.get("logConfiguration") == base_log for cd in cds):
+            return None
+
+        stale = {(cd.get("logConfiguration") or {}).get("options", {}).get("awslogs-group") for cd in cds}
+        logger.warning(
+            "task def %s pins log group(s) %s but the base now uses %s — re-registering",
+            task_def_arn.rsplit("/", 1)[-1],
+            sorted(g for g in stale if g),
+            (base_log.get("options") or {}).get("awslogs-group"),
+        )
+        for cd in cds:
+            cd["logConfiguration"] = base_log
+
+        keys = (
+            "family",
+            "taskRoleArn",
+            "executionRoleArn",
+            "networkMode",
+            "volumes",
+            "requiresCompatibilities",
+            "cpu",
+            "memory",
+            "runtimePlatform",
+        )
+        kwargs = {k: current[k] for k in keys if current.get(k)}
+        kwargs["containerDefinitions"] = cds
+        return self._ecs.register_task_definition(**kwargs)["taskDefinition"]["taskDefinitionArn"]
 
     def discover_ip(self, service_name: str) -> str | None:
         """Discover a task's private IP via AWS Cloud Map.

@@ -99,8 +99,8 @@ async def test_compute_counts_and_economics(deps):
     data, state, errors = await ops_launch.compute()
     assert state == "ok" and errors == []
     assert data["waitlist"] == {"total": 3, "top_slots_activated": 1, "top_slots_claimed": 1}
-    # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comped. u_c: position 3 ⇒ paid.
-    assert data["entrants"] == {"total": 2, "paid": 1, "comped": 1, "public": 1}
+    # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comp-eligible. u_c: position 3 ⇒ paid.
+    assert data["entrants"] == {"total": 2, "paid": 1, "comp_eligible": 1, "public": 1}
     assert data["pot_cents"] == 100_000 + 2 * 1_000
     assert data["referrals"] == {"signed_up": 1, "paid": 1, "months_banked": 1}
     econ = data["economics"]
@@ -111,7 +111,7 @@ async def test_compute_counts_and_economics(deps):
     assert (
         data["entries"][0]["owner_id"] == "u_a"
         and data["entries"][0]["pct"] == 2.0
-        and data["entries"][0]["comped"] is True
+        and data["entries"][0]["comp_eligible"] is True
     )
     assert data["entries"][1]["refresh_error"] == "stripe_auth"
     row = next(r for r in data["waitlist_rows"] if r["email"] == "a@x.com")

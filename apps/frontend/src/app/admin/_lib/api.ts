@@ -687,7 +687,8 @@ export interface LaunchOpsEntry {
   pct: number | null;
   refreshed_at: string | null;
   refresh_error: string | null;
-  comped: boolean;
+  /** position ≤ comp_slots AND activated by the deadline — eligibility, not observed redemption. */
+  comp_eligible: boolean;
 }
 
 export interface LaunchOpsWaitlistRow {
@@ -708,7 +709,7 @@ export interface LaunchOpsData {
   phase: "waitlist" | "activation" | "live" | "ended";
   schedule: { drop_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
   waitlist: { total: number; top_slots_activated: number; top_slots_claimed: number };
-  entrants: { total: number; paid: number; comped: number; public: number };
+  entrants: { total: number; paid: number; comp_eligible: number; public: number };
   pot_cents: number;
   referrals: { signed_up: number; paid: number; months_banked: number };
   economics: {

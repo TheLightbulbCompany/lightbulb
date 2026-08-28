@@ -48,7 +48,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
         <MetricStat label="pot" value={formatMoney(data.pot_cents, "usd")} />
         <MetricStat label="waitlist" value={data.waitlist.total} hint={`${data.waitlist.top_slots_claimed} of top ${data.schedule.comp_slots} claimed`} />
         <MetricStat label="top slots activated" value={`${data.waitlist.top_slots_activated} / ${data.schedule.comp_slots}`} />
-        <MetricStat label="entrants" value={data.entrants.total} hint={`${data.entrants.paid} paid · ${data.entrants.comped} comped · ${data.entrants.public} public`} />
+        <MetricStat label="entrants" value={data.entrants.total} hint={`${data.entrants.paid} paid · ${data.entrants.comp_eligible} eligible · ${data.entrants.public} public`} />
         <MetricStat label="referrals signed up" value={data.referrals.signed_up} />
         <MetricStat label="referrals paid" value={data.referrals.paid} hint={`${data.referrals.months_banked} months banked`} />
         <MetricStat label="P&L before credits" value={formatMoney(e.pnl_cents, "usd")} tone={e.pnl_cents < 0 ? "error" : "default"} />
@@ -83,13 +83,13 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
 
       <Card title={`Entries (${data.entries.length})`}>
         <Table
-          head={["#", "entrant", "owner", "pos", "comped", "public", "baseline", "window", "lift", "growth", "refreshed", "error"]}
+          head={["#", "entrant", "owner", "pos", "eligible", "public", "baseline", "window", "lift", "growth", "refreshed", "error"]}
           rows={data.entries.map((r, i) => [
             i + 1,
             r.display_name ?? "—",
             r.owner_id,
             r.waitlist_position ?? "—",
-            r.comped ? "yes" : "no",
+            r.comp_eligible ? "yes" : "no",
             r.public ? "yes" : "no",
             formatMoney(r.baseline_cents, r.currency ?? "usd"),
             formatMoney(r.window_cents, r.currency ?? "usd"),

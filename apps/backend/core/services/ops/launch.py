@@ -48,13 +48,16 @@ async def _compute(s: launch_phase.Schedule) -> dict:
 
     billing_rows = await asyncio.gather(*[billing_repo.get_by_owner_id(e["owner_id"]) for e in entries])
     entry_rows = []
-    comped = 0
+    comp_eligible = 0
     for e, billing in zip(entries, billing_rows):
         pos = e.get("waitlist_position")
+        # ELIGIBILITY, not redemption. Nothing observes whether the promo code was actually
+        # used (that would be a $0 first invoice), so the P&L below treats every eligible
+        # entrant as comped — the pessimistic read.
         # Org entrants (owner_id "org_…") are never comped: comps are personal-only per the
         # spec, and `activated` is keyed by the individual user_id, so they land in `paid`.
-        is_comped = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
-        comped += int(is_comped)
+        is_eligible = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
+        comp_eligible += int(is_eligible)
         baseline = int(e.get("baseline_cents", 0))
         delta = int(e.get("delta_cents", 0))
         entry_rows.append(
@@ -71,16 +74,16 @@ async def _compute(s: launch_phase.Schedule) -> dict:
                 "pct": round(delta / baseline, 4) if baseline > 0 else None,
                 "refreshed_at": e.get("refreshed_at"),
                 "refresh_error": e.get("refresh_error"),
-                "comped": is_comped,
+                "comp_eligible": is_eligible,
             }
         )
     entry_rows.sort(key=lambda r: -r["delta_cents"])
 
-    paid = len(entries) - comped
+    paid = len(entries) - comp_eligible
     referrals_paid = sum(int(w.get("referrals_paid", 0)) for w in waitlist)
     months_banked = sum(int(w.get("free_months_banked", 0)) for w in waitlist)
     paid_profit = paid * (PLAN_PRICE_CENTS - CONTAINER_COST_CENTS - per_entrant)
-    comp_cost = comped * (CONTAINER_COST_CENTS + per_entrant)
+    comp_cost = comp_eligible * (CONTAINER_COST_CENTS + per_entrant)
     referral_cost = referrals_paid * (CONTAINER_COST_CENTS + per_entrant)
     pnl = paid_profit - comp_cost - referral_cost
 
@@ -101,7 +104,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         "entrants": {
             "total": len(entries),
             "paid": paid,
-            "comped": comped,
+            "comp_eligible": comp_eligible,
             "public": sum(1 for e in entries if e.get("public", True)),
         },
         "pot_cents": launch_phase.pot_cents(len(entries)),

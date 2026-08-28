@@ -403,7 +403,7 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
-      value: `isol8-${env}-`,
+      value: tablePrefix(env),
       exportName: `${this.stackName}-table-prefix`,
     });
 

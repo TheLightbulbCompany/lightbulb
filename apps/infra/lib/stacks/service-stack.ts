@@ -1476,7 +1476,7 @@ export class ServiceStack extends cdk.Stack {
       CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
       CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
       CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
-      DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
+      DYNAMODB_TABLE_PREFIX: tablePrefix(env),
       OAUTH_TOKENS_TABLE: tableName(env, "oauth-tokens"),
       // Metronome lifecycle + gating settings. Metronome is the ONLY
       // billing ledger: the backend provisions Metronome customers, funds
@@ -1489,7 +1489,7 @@ export class ServiceStack extends cdk.Stack {
       // Literal name (not a cross-stack tableName Ref) — same posture as
       // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
       // DynamoDbIntegrations statement, so no cross-stack export is created.
-      METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
+      METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03
@@ -1515,7 +1515,7 @@ export class ServiceStack extends cdk.Stack {
       // table is granted BY NAME above, so the env var is the literal name
       // (not a cross-stack tableName ref). The boundary + base-policy ARNs
       // come from the container stack's live members.
-      BEDROCK_AIP_OWNERS_TABLE: `isol8-${env}-bedrock-aip-owners`,
+      BEDROCK_AIP_OWNERS_TABLE: tableName(env, "bedrock-aip-owners"),
       BEDROCK_OWNER_BOUNDARY_ARN:
         props.container.ownerBedrockBoundary.managedPolicyArn,
       BEDROCK_OWNER_BASE_POLICY_ARN:

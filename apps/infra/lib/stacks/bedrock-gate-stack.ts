@@ -160,11 +160,11 @@ export class BedrockGateStack extends cdk.Stack {
           TOKENS_TABLE: tokensTable.tableName,
           // Plan + trial daily-spend/reserved counters (billing-accounts) and
           // the paid credit balance projection (metronome-fast-gate).
-          BILLING_TABLE: `isol8-${gateEnv}-billing-accounts`,
-          FAST_GATE_TABLE: `isol8-${gateEnv}-metronome-fast-gate`,
+          BILLING_TABLE: `${tablePrefix(gateEnv)}billing-accounts`,
+          FAST_GATE_TABLE: `${tablePrefix(gateEnv)}metronome-fast-gate`,
           // Shared per-requestId dedup with the meter (source attr distinguishes
           // gateway vs meter claims) — counts each invocation exactly once.
-          INVOCATION_DEDUP_TABLE: `isol8-${gateEnv}-bedrock-invocation-dedup`,
+          INVOCATION_DEDUP_TABLE: `${tablePrefix(gateEnv)}bedrock-invocation-dedup`,
           // The TRUE $3.00 cap — the reservation hold bounds overshoot, so no
           // enforce-early margin is needed. Lockstep with trial_cap.py and the
           // meter's index.py (all 3_000_000): move all copies together.
@@ -307,9 +307,13 @@ export class BedrockGateStack extends cdk.Stack {
           ],
           resources: [
             tokensTable.tableArn,
-            ddbArn(`isol8-${gateEnv}-billing-accounts`),
-            ddbArn(`isol8-${gateEnv}-metronome-fast-gate`),
-            ddbArn(`isol8-${gateEnv}-bedrock-invocation-dedup`),
+            // Wildcard prefix so the grant spans the rename: the gate reads
+            // these three by NAME and the names move in this same deploy. A
+            // grant left on the legacy prefix AccessDenies the gate the instant
+            // its env flips — and the gate IS the trial spend fence.
+            ddbArn(`*-${gateEnv}-billing-accounts`),
+            ddbArn(`*-${gateEnv}-metronome-fast-gate`),
+            ddbArn(`*-${gateEnv}-bedrock-invocation-dedup`),
           ],
         }),
       );

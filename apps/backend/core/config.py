@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     CLERK_AZP_MODE: str = "audit"
 
     # DynamoDB
-    DYNAMODB_TABLE_PREFIX: str = "isol8-dev-"
+    DYNAMODB_TABLE_PREFIX: str = "lightbulb-dev-"
     DYNAMODB_ENDPOINT_URL: str | None = None
 
     # Clerk Secret Key (for fetching user/org metadata)

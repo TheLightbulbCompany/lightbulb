@@ -43,7 +43,9 @@ interface ModelSelectorProps {
 
 interface ProviderConfig {
   displayName: string;
-  icon: React.ElementType;
+  // ComponentType, not ElementType — ElementType includes intrinsic tag names, and
+  // @react-three/fiber's JSX augmentation makes <Icon size> intersect to never across them.
+  icon: React.ComponentType<{ size?: number; className?: string }>;
   brandColor: string;
 }
 

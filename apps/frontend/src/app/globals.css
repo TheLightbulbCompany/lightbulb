@@ -23,6 +23,11 @@
   --color-bulb: var(--bulb);
   --color-brass: var(--brass);
   --color-edge: var(--edge);
+  --color-edge-soft: var(--edge-soft);
+  --color-midnight-soft: var(--midnight-soft);
+  --color-midnight-muted: var(--midnight-muted);
+  --color-midnight-label: var(--midnight-label);
+  --color-midnight-faint: var(--midnight-faint);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-err: var(--err);

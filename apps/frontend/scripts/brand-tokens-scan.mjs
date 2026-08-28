@@ -27,7 +27,7 @@ const UTIL =
 
 const RULES = [
   { re: /#([0-9a-fA-F]{3}){1,2}\b(?![\w-])/g, skipComments: true },
-  { re: /\b(rgba?|oklch|hsla?)\(/g, skipComments: false },
+  { re: /(?<![\w-])(rgba?|oklch|hsla?)\(/g, skipComments: false }, // not \b: `_rgba(` inside a Tailwind arbitrary value must match
   { re: new RegExp(`\\b(${UTIL})-(${PALETTE})-\\d{2,3}\\b`, "g"), skipComments: false },
   { re: /\b(bg|text|border)-(white|black)\b/g, skipComments: false },
   { re: /\[#[0-9a-fA-F]{3,8}\]/g, skipComments: false },

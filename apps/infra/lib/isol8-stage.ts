@@ -213,10 +213,6 @@ export class Isol8Stage extends cdk.Stage {
       // Every OTHER env stays empty, which keeps the backend's guards inert —
       // there is no DNS, and nothing would route.
       agentEmailDomain,
-      // Undefined in every env/deploy where SesInboundStack isn't
-      // instantiated (non-prod stage) — ServiceStack defaults this to an
-      // empty string, which is inert without AGENT_EMAIL_DOMAIN.
-      agentEmailAttachmentsBucket: sesInbound?.attachmentsBucketName,
       // Undefined wherever AgentMailOutboundStack isn't instantiated —
       // ServiceStack defaults this to an empty string, which stamps no
       // configuration set on outbound sends (core/services/ses_email.py).

@@ -159,15 +159,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
-  /** Optional: page topic ARN from ObservabilityStack (set via env var import). */
-  alertPageTopicArn?: string;
-  /**
-   * Attachments bucket name from the prod-stage SesInboundStack, when it
-   * exists (prod-only — see isol8-stage.ts). Undefined/empty in
-   * every env where that stack isn't instantiated; the backend only reads
-   * this when AGENT_EMAIL_DOMAIN is also set, so an empty string is inert.
-   */
-  agentEmailAttachmentsBucket?: string;
   /**
    * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
    * prod-only SesInboundStack — see isol8-stage.ts). Empty/undefined in every
@@ -1119,17 +1110,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // SNS (page topic — for backend-initiated alerts like fleet patch audits)
-    if (props.alertPageTopicArn) {
-      this.taskRole.addToPolicy(
-        new iam.PolicyStatement({
-          sid: "SnsPublishPageTopic",
-          actions: ["sns:Publish"],
-          resources: [props.alertPageTopicArn],
-        }),
-      );
-    }
-
     // DynamoDB CRUD on connections table
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -1591,11 +1571,6 @@ export class ServiceStack extends cdk.Stack {
       // it lives in the plain env block, NOT secrets. Distinct from the
       // POSTHOG_PROJECT_API_KEY personal read key in backendContainerSecrets.
       POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
-      // Observability: page topic ARN for backend-initiated SNS alerts.
-      // Populated after first deploy via Fn.importValue from ObservabilityStack.
-      ...(props.alertPageTopicArn
-        ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
-        : {}),
       // Agent-email base domain — the platform mail domain in prod (where the
       // SES stack and verified identity exist), empty in every other env. The backend's
       // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
@@ -1603,11 +1578,6 @@ export class ServiceStack extends cdk.Stack {
       AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
       // Agent-email inbound attachments bucket, from the prod-stage
       // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
-      // Empty string in every env where that stack isn't deployed; the
-      // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
-      // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
-      // "empty defaults keep the app booting" posture above.
-      AGENT_EMAIL_ATTACHMENTS_BUCKET: props.agentEmailAttachmentsBucket ?? "",
       // SES configuration set stamped on every agent-mail send
       // (core/services/ses_email.py), from the AgentMailOutboundStack
       // instantiated in lockstep with AGENT_EMAIL_DOMAIN above. Empty string

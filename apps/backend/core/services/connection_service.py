@@ -107,10 +107,10 @@ class ConnectionService:
 
         Args:
             table_name: DynamoDB table name. If not provided, uses
-                       WS_CONNECTIONS_TABLE env var (default: "isol8-websocket-connections")
+                       WS_CONNECTIONS_TABLE env var (default: "lightbulb-dev-ws-connections")
             region_name: AWS region. If not provided, uses AWS_REGION env var.
         """
-        self.table_name = table_name or os.environ.get("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
+        self.table_name = table_name or os.environ.get("WS_CONNECTIONS_TABLE", "lightbulb-dev-ws-connections")
         # Explicitly set region to avoid NoRegionError in containerized environments
         region = region_name or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = boto3.client("dynamodb", region_name=region)

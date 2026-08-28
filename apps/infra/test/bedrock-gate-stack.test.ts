@@ -67,9 +67,9 @@ describe("BedrockGateStack", () => {
             // TOKENS_TABLE is a CFN Ref to the in-stack table (its physical
             // name is asserted on the DynamoDB resource below).
             TOKENS_TABLE: Match.anyValue(),
-            BILLING_TABLE: `isol8-${gateEnv}-billing-accounts`,
-            FAST_GATE_TABLE: `isol8-${gateEnv}-metronome-fast-gate`,
-            INVOCATION_DEDUP_TABLE: `isol8-${gateEnv}-bedrock-invocation-dedup`,
+            BILLING_TABLE: `${tablePrefix(gateEnv)}billing-accounts`,
+            FAST_GATE_TABLE: `${tablePrefix(gateEnv)}metronome-fast-gate`,
+            INVOCATION_DEDUP_TABLE: `${tablePrefix(gateEnv)}bedrock-invocation-dedup`,
             // The gateway enforces the TRUE $3.00 cap (reservation bounds
             // overshoot); trial_cap.py stays 2_600_000 until Phase 5.
             CAP_MICROCENTS: "3000000",
@@ -256,9 +256,9 @@ describe("BedrockGateStack", () => {
                 "dynamodb:UpdateItem",
               ],
               Resource: Match.arrayWith([
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${gateEnv}-billing-accounts`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${gateEnv}-metronome-fast-gate`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${gateEnv}-bedrock-invocation-dedup`,
+                `arn:aws:dynamodb:us-east-1:877352799272:table/*-${gateEnv}-billing-accounts`,
+                `arn:aws:dynamodb:us-east-1:877352799272:table/*-${gateEnv}-metronome-fast-gate`,
+                `arn:aws:dynamodb:us-east-1:877352799272:table/*-${gateEnv}-bedrock-invocation-dedup`,
               ]),
             }),
           ]),

@@ -46,10 +46,10 @@ describe("BedrockMeterStack", () => {
         Environment: {
           Variables: Match.objectLike({
             METER_ENV: meterEnv,
-            AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
-            BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
-            CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
-            GATE_TOKENS_TABLE: `isol8-${meterEnv}-bedrock-gate-tokens`,
+            AIP_OWNERS_TABLE: `${tablePrefix(meterEnv)}bedrock-aip-owners`,
+            BILLING_TABLE: `${tablePrefix(meterEnv)}billing-accounts`,
+            CONTAINERS_TABLE: `${tablePrefix(meterEnv)}containers`,
+            GATE_TOKENS_TABLE: `${tablePrefix(meterEnv)}bedrock-gate-tokens`,
             ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
             INVOCATION_DEDUP_TABLE: Match.anyValue(),
             DLQ_URL: Match.anyValue(),

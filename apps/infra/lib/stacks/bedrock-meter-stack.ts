@@ -235,19 +235,19 @@ export class BedrockMeterStack extends cdk.Stack {
           // The synchronous per-record fail-safe sink the Lambda code sends to.
           DLQ_URL: dlq.queueUrl,
           // Per-env attribution table: aip_arn -> {owner_id, tier, plan}.
-          AIP_OWNERS_TABLE: `isol8-${meterEnv}-bedrock-aip-owners`,
+          AIP_OWNERS_TABLE: `${tablePrefix(meterEnv)}bedrock-aip-owners`,
           // Per-requestId replay guard for the trial counter.
           INVOCATION_DEDUP_TABLE: dedupTable.tableName,
           // The trial daily-spend counter lives on the billing row
           // (trial_daily_spend_microcents.{YYYY-MM-DD}); the revoked flag the
           // backend's daily restore reads lives on the containers row.
-          BILLING_TABLE: `isol8-${meterEnv}-billing-accounts`,
-          CONTAINERS_TABLE: `isol8-${meterEnv}-containers`,
+          BILLING_TABLE: `${tablePrefix(meterEnv)}billing-accounts`,
+          CONTAINERS_TABLE: `${tablePrefix(meterEnv)}containers`,
           // The bedrock-gate's per-owner token table (owned by the gate stack;
           // ARN-by-convention like every other table here). The deny-flag kill
           // step flips denied=true on the owner's row so the gateway 403s the
           // cut-over owner — the gateway-path half of the kill.
-          GATE_TOKENS_TABLE: `isol8-${meterEnv}-bedrock-gate-tokens`,
+          GATE_TOKENS_TABLE: `${tablePrefix(meterEnv)}bedrock-gate-tokens`,
           // The per-user ECS services live in the env's container-stack cluster,
           // whose physical name is CFN-generated (renaming it would REPLACE the
           // cluster and destroy every per-user service) and, for dev, unknowable

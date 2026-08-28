@@ -619,8 +619,8 @@
 }
 
 .ld-iso-body h3 em {
+  /* Lora italic carries the emphasis; it inherits the heading's colour. */
   font-style: italic;
-  color: var(--brass); /* yellow is never type; brass is the label colour on midnight */
 }
 
 .ld-iso-body p {
@@ -1740,7 +1740,7 @@
   font-size: 9.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--cream) 45%, transparent);
+  color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
   margin-bottom: 6px;
 }
 
@@ -1791,7 +1791,7 @@
   font-size: 9.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--cream) 45%, transparent);
+  color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
 }
 
 .ld-footer-base a:hover {

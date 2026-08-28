@@ -1,4 +1,4 @@
-import { tablePrefix } from "../lib/table-names";
+import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -109,16 +109,16 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       cluster,
       efsFileSystem: efsFs,
       databaseTables: {
-        usersTable: `${tablePrefix(envName)}users`,
-        containersTable: `${tablePrefix(envName)}containers`,
-        billingTable: `${tablePrefix(envName)}billing-accounts`,
-        usageCountersTable: `${tablePrefix(envName)}usage-counters`,
-        pendingUpdatesTable: `${tablePrefix(envName)}pending-updates`,
-        channelLinksTable: `${tablePrefix(envName)}channel-links`,
-        companySlugsTable: `${tablePrefix(envName)}company-slugs`,
-        agentEmailAddressesTable: `${tablePrefix(envName)}agent-email-addresses`,
+        usersTable: `${legacyTablePrefix(envName)}users`,
+        containersTable: `${legacyTablePrefix(envName)}containers`,
+        billingTable: `${legacyTablePrefix(envName)}billing-accounts`,
+        usageCountersTable: `${legacyTablePrefix(envName)}usage-counters`,
+        pendingUpdatesTable: `${legacyTablePrefix(envName)}pending-updates`,
+        channelLinksTable: `${legacyTablePrefix(envName)}channel-links`,
+        companySlugsTable: `${legacyTablePrefix(envName)}company-slugs`,
+        agentEmailAddressesTable: `${legacyTablePrefix(envName)}agent-email-addresses`,
       },
-      connectionsTableName: `${tablePrefix(envName)}ws-connections`,
+      connectionsTableName: `${legacyTablePrefix(envName)}ws-connections`,
       authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       paperclipDbCluster,
       paperclipService,

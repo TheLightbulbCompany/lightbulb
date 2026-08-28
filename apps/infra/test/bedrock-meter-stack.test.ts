@@ -1,4 +1,4 @@
-import { tablePrefix } from "../lib/table-names";
+import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import {
@@ -68,7 +68,7 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::DynamoDB::Table", 2);
     for (const meterEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${tablePrefix(meterEnv)}bedrock-invocation-dedup`,
+        TableName: `${legacyTablePrefix(meterEnv)}bedrock-invocation-dedup`,
         KeySchema: [{ AttributeName: "request_id", KeyType: "HASH" }],
         BillingMode: "PAY_PER_REQUEST",
         TimeToLiveSpecification: { AttributeName: "ttl", Enabled: true },

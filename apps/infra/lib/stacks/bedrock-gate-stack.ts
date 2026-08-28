@@ -10,7 +10,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { tablePrefix } from "../table-names";
+import { legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -122,7 +122,7 @@ export class BedrockGateStack extends cdk.Stack {
       // AWS-owned encryption is sufficient (no cross-stage CMK to reference).
       // RETAIN + PITR: a lost token row silently breaks an owner's inference.
       const tokensTable = new dynamodb.Table(this, `GateTokensTable${idSuffix}`, {
-        tableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
+        tableName: `${legacyTablePrefix(gateEnv)}bedrock-gate-tokens`,
         partitionKey: {
           name: "token_hash",
           type: dynamodb.AttributeType.STRING,

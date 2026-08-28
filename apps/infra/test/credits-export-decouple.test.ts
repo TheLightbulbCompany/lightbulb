@@ -32,13 +32,13 @@ describe("credits export decouple (pass 2 — retired)", () => {
 
   test("both ledger tables are gone", () => {
     const creditsResources = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-credits" },
+      Properties: { TableName: "isol8-dev-credits" },
     });
     expect(Object.keys(creditsResources)).toEqual([]);
 
     const creditTransactionsResources = template.findResources(
       "AWS::DynamoDB::Table",
-      { Properties: { TableName: "lightbulb-dev-credit-transactions" } },
+      { Properties: { TableName: "isol8-dev-credit-transactions" } },
     );
     expect(Object.keys(creditTransactionsResources)).toEqual([]);
   });

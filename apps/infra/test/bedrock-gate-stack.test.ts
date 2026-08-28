@@ -1,4 +1,4 @@
-import { tablePrefix } from "../lib/table-names";
+import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import {
@@ -159,7 +159,7 @@ describe("BedrockGateStack", () => {
     template.resourceCountIs("AWS::DynamoDB::Table", 2);
     for (const gateEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
+        TableName: `${legacyTablePrefix(gateEnv)}bedrock-gate-tokens`,
         KeySchema: [{ AttributeName: "token_hash", KeyType: "HASH" }],
         BillingMode: "PAY_PER_REQUEST",
         PointInTimeRecoverySpecification: {
@@ -169,7 +169,7 @@ describe("BedrockGateStack", () => {
     }
     template.hasResource("AWS::DynamoDB::Table", {
       Properties: Match.objectLike({
-        TableName: "lightbulb-prod-bedrock-gate-tokens",
+        TableName: "isol8-prod-bedrock-gate-tokens",
       }),
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",

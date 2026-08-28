@@ -27,7 +27,7 @@ describe("DatabaseStack — admin-actions table", () => {
 
   test("creates isol8-{env}-admin-actions with composite key", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
+      TableName: "isol8-dev-admin-actions",
       KeySchema: [
         { AttributeName: "admin_user_id", KeyType: "HASH" },
         { AttributeName: "timestamp_action_id", KeyType: "RANGE" },
@@ -38,7 +38,7 @@ describe("DatabaseStack — admin-actions table", () => {
 
   test("admin-actions has target-timestamp GSI for per-target audit queries", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
+      TableName: "isol8-dev-admin-actions",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({
           IndexName: "target-timestamp-index",
@@ -53,7 +53,7 @@ describe("DatabaseStack — admin-actions table", () => {
 
   test("admin-actions uses customer-managed KMS encryption (matches other tables)", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
+      TableName: "isol8-dev-admin-actions",
       SSESpecification: Match.objectLike({
         SSEEnabled: true,
         SSEType: "KMS",
@@ -63,7 +63,7 @@ describe("DatabaseStack — admin-actions table", () => {
 
   test("admin-actions has point-in-time recovery enabled", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
+      TableName: "isol8-dev-admin-actions",
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });
   });
@@ -72,7 +72,7 @@ describe("DatabaseStack — admin-actions table", () => {
     // CDK omits the TimeToLiveSpecification entirely when no TTL is set.
     // Assert it's absent on this specific table.
     const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-admin-actions" },
+      Properties: { TableName: "isol8-dev-admin-actions" },
     });
     const tableLogicalIds = Object.keys(tables);
     expect(tableLogicalIds).toHaveLength(1);
@@ -82,7 +82,7 @@ describe("DatabaseStack — admin-actions table", () => {
 
   test("dev environment uses DESTROY removal policy (matches other dev tables)", () => {
     const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-admin-actions" },
+      Properties: { TableName: "isol8-dev-admin-actions" },
     });
     const logicalId = Object.keys(tables)[0];
     expect(tables[logicalId].DeletionPolicy).toBe("Delete");
@@ -97,7 +97,7 @@ describe("DatabaseStack — admin-actions table — prod", () => {
 
   test("prod environment uses RETAIN removal policy", () => {
     const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-prod-admin-actions" },
+      Properties: { TableName: "isol8-prod-admin-actions" },
     });
     const logicalId = Object.keys(tables)[0];
     expect(tables[logicalId].DeletionPolicy).toBe("Retain");
@@ -179,7 +179,7 @@ describe("DatabaseStack — paperclip-companies table", () => {
 
   test("creates isol8-{env}-paperclip-companies with user_id PK and PAY_PER_REQUEST", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-paperclip-companies",
+      TableName: "isol8-dev-paperclip-companies",
       KeySchema: [{ AttributeName: "user_id", KeyType: "HASH" }],
       BillingMode: "PAY_PER_REQUEST",
     });
@@ -187,7 +187,7 @@ describe("DatabaseStack — paperclip-companies table", () => {
 
   test("paperclip-companies has by-status-purge-at GSI for the cleanup cron", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-paperclip-companies",
+      TableName: "isol8-dev-paperclip-companies",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({
           IndexName: "by-status-purge-at",
@@ -207,7 +207,7 @@ describe("DatabaseStack — paperclip-companies table", () => {
     // must be ALL because the org-owner lookup needs full row data
     // (paperclip_password_encrypted etc).
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-paperclip-companies",
+      TableName: "isol8-dev-paperclip-companies",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({
           IndexName: "by-org-id",
@@ -220,7 +220,7 @@ describe("DatabaseStack — paperclip-companies table", () => {
 
   test("paperclip-companies uses customer-managed KMS encryption (matches stack posture)", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-paperclip-companies",
+      TableName: "isol8-dev-paperclip-companies",
       SSESpecification: Match.objectLike({
         SSEEnabled: true,
         SSEType: "KMS",
@@ -237,7 +237,7 @@ describe("DatabaseStack — bedrock-aip-owners reverse table", () => {
 
   test("creates the bedrock-aip-owners reverse table keyed on aip_arn", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-bedrock-aip-owners",
+      TableName: "isol8-dev-bedrock-aip-owners",
       KeySchema: [{ AttributeName: "aip_arn", KeyType: "HASH" }],
       AttributeDefinitions: Match.arrayWith([
         { AttributeName: "aip_arn", AttributeType: "S" },
@@ -255,7 +255,7 @@ describe("DatabaseStack — metronome fast-gate table (Phase 2)", () => {
 
   test("creates the metronome-fast-gate table keyed on owner_id", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-metronome-fast-gate",
+      TableName: "isol8-dev-metronome-fast-gate",
       KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
       AttributeDefinitions: Match.arrayWith([
         { AttributeName: "owner_id", AttributeType: "S" },
@@ -266,7 +266,7 @@ describe("DatabaseStack — metronome fast-gate table (Phase 2)", () => {
 
   test("metronome-fast-gate uses customer-managed KMS encryption (matches stack posture)", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-metronome-fast-gate",
+      TableName: "isol8-dev-metronome-fast-gate",
       SSESpecification: Match.objectLike({
         SSEEnabled: true,
         SSEType: "KMS",

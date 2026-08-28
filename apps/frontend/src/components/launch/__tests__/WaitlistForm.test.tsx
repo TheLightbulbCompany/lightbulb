@@ -46,7 +46,7 @@ describe("WaitlistForm", () => {
     fetchLaunchInfo.mockResolvedValue(info);
     joinWaitlist.mockRejectedValue(new Error("invalid_email"));
     render(<WaitlistForm />);
-    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "nope@" } });
+    fireEvent.change(await screen.findByLabelText(/email/i), { target: { value: "nope@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /join/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/valid email/i);
   });

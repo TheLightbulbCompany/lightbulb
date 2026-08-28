@@ -77,11 +77,7 @@ function WaitlistFormInner() {
 
   return (
     <div>
-      {/* noValidate: email format is the backend's call, not the browser's — a
-          malformed address should reach `joinWaitlist` and surface the
-          server's rejection copy, not get silently swallowed by native
-          constraint validation before the submit handler ever runs. */}
-      <form className="ld-ask" onSubmit={submit} aria-label="Join the waitlist" noValidate>
+      <form className="ld-ask" onSubmit={submit} aria-label="Join the waitlist">
         <label className="sr-only" htmlFor="launch-email">Email</label>
         <input
           id="launch-email"

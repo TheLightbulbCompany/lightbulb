@@ -5,7 +5,7 @@ the competition ends.
 
 ## Goal
 
-Relaunch under the Lightbulb AI brand with a waitlist, a product drop, and a one-month
+Relaunch under the Lightbulb brand with a waitlist, a product drop, and a one-month
 competition ranked on the entrant's own Stripe revenue. The economics sheet (owner's)
 breaks even at 500 entrants: 220 comped waitlist users, ~100 referral free months, ~180
 paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.

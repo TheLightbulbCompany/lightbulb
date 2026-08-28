@@ -106,7 +106,7 @@ exists.
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at isol8.co/chat"*.
 
-**The Launch Competition.** For a time-boxed window Lightbulb AI runs a
+**The Launch Competition.** For a time-boxed window Lightbulb runs a
 competition ranked on the entrant's own Stripe account's revenue lift, never
 platform revenue. Entry and the waitlist happen on the website, never inside
 chat: `flickmeon.ai` (root) hosts the waitlist before the drop, and

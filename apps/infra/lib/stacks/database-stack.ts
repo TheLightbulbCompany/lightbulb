@@ -3,6 +3,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
+import { tablePrefix } from "../table-names";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
@@ -18,6 +19,9 @@ export interface DatabaseStackProps extends cdk.StackProps {
 }
 
 const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
+  // Dev data is expendable (owner, 2026-08-28): the table-prefix rename
+  // REPLACES every table, so dev's legacy tables are deleted and dev starts
+  // empty on the new prefix. No dev copy step, and no lingering RETAIN to undo.
   dev: { removalPolicy: cdk.RemovalPolicy.DESTROY },
   prod: { removalPolicy: cdk.RemovalPolicy.RETAIN },
 };
@@ -79,13 +83,21 @@ export class DatabaseStack extends cdk.Stack {
       },
     ): dynamodb.Table =>
       new dynamodb.Table(this, id, {
-        tableName: `isol8-${env}-${suffix}`,
+        tableName: `${tablePrefix(env)}${suffix}`,
         partitionKey: schema.partitionKey,
         ...(schema.sortKey ? { sortKey: schema.sortKey } : {}),
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        removalPolicy: schema.ephemeral
-          ? cdk.RemovalPolicy.DESTROY
-          : config.removalPolicy,
+        // NOT `ephemeral ? DESTROY : ...` during the table-prefix rename.
+        // Changing `tableName` REPLACES the table, and DESTROY deletes the old
+        // one immediately -- but every READER still names the legacy table
+        // until the atomic reader flip. So an ephemeral table would be deleted
+        // out from under bedrock-gate (INVOCATION_DEDUP_TABLE) and the WS
+        // Lambdas (ws-connections) for the whole window between the two
+        // deploys. Ephemeral means "safe to lose eventually", not "safe to
+        // delete while something is still reading it".
+        //
+        // Restore the ephemeral DESTROY when the legacy tables are dropped.
+        removalPolicy: config.removalPolicy,
         ...(schema.ephemeral ? {} : { pointInTimeRecovery: true }),
         encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
         encryptionKey: props.kmsKey,

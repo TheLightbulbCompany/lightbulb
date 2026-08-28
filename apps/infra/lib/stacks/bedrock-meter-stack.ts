@@ -11,6 +11,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as cr from "aws-cdk-lib/custom-resources";
+import { bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -208,7 +209,7 @@ export class BedrockMeterStack extends cdk.Stack {
       // AlreadyExists. This is 48h-ephemeral replay state, not a system of
       // record.
       const dedupTable = new dynamodb.Table(this, `MeterDedupTable${idSuffix}`, {
-        tableName: `isol8-${meterEnv}-bedrock-invocation-dedup`,
+        tableName: `${tablePrefix(meterEnv)}bedrock-invocation-dedup`,
         partitionKey: {
           name: "request_id",
           type: dynamodb.AttributeType.STRING,
@@ -328,7 +329,8 @@ export class BedrockMeterStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["dynamodb:GetItem"],
           resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-bedrock-aip-owners`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}bedrock-aip-owners`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}bedrock-aip-owners`,
           ],
         }),
       );
@@ -356,8 +358,10 @@ export class BedrockMeterStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["dynamodb:UpdateItem"],
           resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-billing-accounts`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-containers`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}billing-accounts`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}billing-accounts`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}containers`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}containers`,
           ],
         }),
       );
@@ -417,8 +421,10 @@ export class BedrockMeterStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
           resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-containers`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/isol8-${meterEnv}-bedrock-gate-tokens`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}containers`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}containers`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}bedrock-gate-tokens`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}bedrock-gate-tokens`,
           ],
         }),
       );

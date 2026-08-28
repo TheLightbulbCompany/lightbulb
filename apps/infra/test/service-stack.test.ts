@@ -1,3 +1,4 @@
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -102,7 +103,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `isol8-${environment}-ws-connections`,
+    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
     agentMailConfigurationSet: "isol8-test-agent-mail",

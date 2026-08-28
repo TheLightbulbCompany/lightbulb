@@ -159,6 +159,11 @@ function Driver({
   const theme = useLampTheme();
   const invalidate = useThree((s) => s.invalidate);
   const canvas = useThree((s) => s.gl.domElement);
+  // Not read — a dep. r3f already runs a ResizeObserver on the canvas host, so
+  // this re-runs the listener effect (and so re-measures `rect`) on a reflow
+  // that is neither a scroll nor a window resize: a next/font swap, or any late
+  // shift above the fold resizing the content-sized .ld-funnel.
+  const size = useThree((s) => s.size);
   const target = theme === "light" ? 1 : 0;
   const startRef = React.useRef<{ from: number; at: number } | null>(null);
   // Where the anchor is heading, and how fast it is going. Written by the
@@ -279,7 +284,7 @@ function Driver({
       document.removeEventListener("mouseleave", rest);
       window.removeEventListener("resize", onResize);
     };
-  }, [pendulum, invalidate, visible, canvas]);
+  }, [pendulum, invalidate, visible, canvas, size]);
 
   useFrame((state) => {
     let busy = false;
@@ -422,7 +427,13 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             setDpr([1, 1.5]);
             invalidate.current?.(); // dpr change alone clears the buffer
           }}
-          flipflops={2}
+          // Infinity, not a small count: drei increments `flipped` before it
+          // calls onDecline, and `flipped > flipflops` latches `api.fallback`,
+          // which stops sampling for good. The demand loop guarantees idle-gap
+          // declines, so any finite count burned the ladder in the first few
+          // seconds and the rungs never fired on a GPU that needed them. The
+          // `averages.some(f => f < 20)` guard above is the real gate.
+          flipflops={Infinity}
         />
         <Driver
           litRef={litRef}

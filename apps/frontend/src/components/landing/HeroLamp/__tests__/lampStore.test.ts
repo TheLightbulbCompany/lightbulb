@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import {
   LAMP_STORAGE_KEY,
+  clearTheming,
   getServerTheme,
   getTheme,
   hydrateFromStorage,
@@ -14,10 +15,11 @@ import {
 
 describe("lampStore", () => {
   beforeEach(() => {
-    window.localStorage.clear();
     document.documentElement.removeAttribute("data-lb-theme");
     setTheme("dark");
-    document.documentElement.removeAttribute("data-lb-theming");
+    // after setTheme, which persists: every test starts with nothing stored
+    window.localStorage.clear();
+    clearTheming();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -68,11 +70,31 @@ describe("lampStore", () => {
     window.localStorage.setItem(LAMP_STORAGE_KEY, "light");
     hydrateFromStorage();
     expect(getTheme()).toBe("light");
-    window.localStorage.setItem(LAMP_STORAGE_KEY, "banana");
     setTheme("dark");
+    window.localStorage.setItem(LAMP_STORAGE_KEY, "banana");
     hydrateFromStorage();
     expect(getTheme()).toBe("dark");
-    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("dark");
+    // hydration is not a write: junk is left where it was
+    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("banana");
+  });
+
+  it("hydrating with nothing stored paints dark but stores no choice", () => {
+    document.documentElement.removeAttribute("data-lb-theme");
+    hydrateFromStorage();
+    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("dark");
+    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBeNull();
+  });
+
+  it("clearTheming drops the marker and cancels its pending timer", () => {
+    vi.useFakeTimers();
+    strike();
+    expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(true);
+    clearTheming();
+    expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(false);
+    // the cancelled timer must not fire later and cut a fresh marker short
+    document.documentElement.setAttribute("data-lb-theming", "");
+    vi.advanceTimersByTime(800);
+    expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(true);
   });
 
   it("notifies subscribers once per change", () => {

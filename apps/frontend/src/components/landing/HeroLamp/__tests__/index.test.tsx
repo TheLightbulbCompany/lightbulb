@@ -31,9 +31,15 @@ describe("HeroLamp chooses scene vs fallback", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("renders the three.js scene when WebGL is available and motion is allowed", () => {
-    render(<HeroLamp />);
+    const { unmount } = render(<HeroLamp />);
     expect(screen.getByTestId("three-scene")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /light/i, hidden: false })).toBeInTheDocument();
+    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("dark");
+    // the contract is home-only: a soft nav off "/" must not carry it, and the
+    // cleanup runs in the mutation phase so the next route never paints dark
+    unmount();
+    expect(document.documentElement.getAttribute("data-lb-theme")).toBeNull();
+    expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(false);
   });
 
   it("falls back to the SVG lamp under prefers-reduced-motion", () => {
@@ -41,6 +47,9 @@ describe("HeroLamp chooses scene vs fallback", () => {
     render(<HeroLamp />);
     expect(screen.queryByTestId("three-scene")).not.toBeInTheDocument();
     expect(document.querySelector(".ld-lamp-svg")).not.toBeNull();
+    // the SVG carries its own control — the scene's button would be a second,
+    // inert "Turn on the light" in the a11y tree
+    expect(document.querySelector(".ld-lamp-switch")).toBeNull();
   });
 
   it("falls back to the SVG lamp without WebGL", () => {

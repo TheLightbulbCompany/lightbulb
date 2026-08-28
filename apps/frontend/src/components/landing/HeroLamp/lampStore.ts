@@ -32,10 +32,25 @@ function markTheming() {
   themingTimer = setTimeout(() => document.documentElement.removeAttribute("data-lb-theming"), 800);
 }
 
-function write(t: LampTheme) {
+/** Cancels the marker and its pending timer — for an unmount that takes the
+ *  theme attribute off with it, so the strike's 0.7s easing does not ride a
+ *  soft nav onto the next route. */
+export function clearTheming(): void {
+  clearTimeout(themingTimer);
+  themingTimer = undefined;
+  if (typeof document !== "undefined") {
+    document.documentElement.removeAttribute("data-lb-theming");
+  }
+}
+
+function paint(t: LampTheme) {
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("data-lb-theme", t);
   }
+}
+
+function write(t: LampTheme) {
+  paint(t);
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(LAMP_STORAGE_KEY, t);
@@ -90,8 +105,11 @@ export function hydrateFromStorage(): void {
   // transition, for the same reason the scene seeds its lit state instead
   // of replaying the strike: the page arrives in that state, it doesn't
   // move into it.
+  // Only an expressed choice is persisted. Painting the default is the DOM
+  // half of write(); storing it would make "never touched the lamp" and "chose
+  // dark" indistinguishable for good.
   if (v === "light" || v === "dark") commit(v);
-  else write(theme);
+  else paint(theme);
 }
 
 export function useLampTheme(): LampTheme {

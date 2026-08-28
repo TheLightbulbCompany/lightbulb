@@ -47,10 +47,13 @@ export function HangingLamp() {
     let raf = 0;
     let lastY = window.scrollY;
 
+    // Parks at rest instead of burning 60fps forever. This is the no-WebGL
+    // path — the weakest machines on the site — and scroll is the only thing
+    // that moves it, so the scroll handler restarts the loop.
     const frame = () => {
       pendulum.step();
       host.style.transform = `rotate(${pendulum.angle}rad)`;
-      raf = requestAnimationFrame(frame);
+      raf = pendulum.settled() ? 0 : requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
 
@@ -58,6 +61,7 @@ export function HangingLamp() {
       const delta = window.scrollY - lastY;
       lastY = window.scrollY;
       pendulum.impulse(delta * SCROLL_IMPULSE);
+      if (!raf) raf = requestAnimationFrame(frame);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
 

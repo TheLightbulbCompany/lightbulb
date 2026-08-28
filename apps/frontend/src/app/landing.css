@@ -2655,6 +2655,10 @@
 .ld-lamp-switch:focus-visible {
   outline: 2px solid var(--bulb);
   outline-offset: 4px;
+  /* Over .ld-funnel-in's 1 only while the ring is drawn — WCAG 2.4.11 wants
+     the focus indicator unobscured, and the lamp drifts over the copy. Click
+     behaviour is unchanged: unfocused, the rectangle is still at 0. */
+  z-index: 2;
 }
 
 /* DOM side of the two states. Dark = waiting (still ≥4.5:1); lit = reading. */

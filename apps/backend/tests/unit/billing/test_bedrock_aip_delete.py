@@ -202,6 +202,9 @@ class TestDeleteOwnerBedrockRole:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {
+            "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
+        }
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -242,6 +245,9 @@ class TestDeleteOwnerBedrockRole:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {
+            "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
+        }
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -257,6 +263,9 @@ class TestDeleteOwnerBedrockRole:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {
+            "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
+        }
         fake.delete_role_policy.side_effect = _no_such_entity("DeleteRolePolicy")
         fake.detach_role_policy.side_effect = _no_such_entity("DetachRolePolicy")
         fake.delete_role.side_effect = _no_such_entity("DeleteRole")
@@ -277,6 +286,7 @@ class TestDeleteOwnerBedrockRole:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {"AttachedPolicies": []}
         fake.delete_role_policy.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "nope"}}, "DeleteRolePolicy"
         )
@@ -430,3 +440,51 @@ class TestDeleteOwnerAipsAttemptsEveryArn:
 
         # All three attempted, not just up to the failure.
         assert [c.kwargs["inferenceProfileIdentifier"] for c in fake.delete_inference_profile.call_args_list] == arns
+
+
+class TestDetachByEnumeration:
+    """Teardown must detach what is ACTUALLY attached, not the ARN the current
+    setting names. A role minted before a policy-ARN change carries the OLD
+    attachment; detaching the new ARN returns NoSuchEntity, which is swallowed,
+    so the old attachment survives and DeleteRole then fails DeleteConflict --
+    the role leaks and the old policy can never be deleted."""
+
+    @pytest.mark.asyncio
+    async def test_detaches_a_policy_the_current_setting_does_not_name(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        stale = "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base"
+        fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {"AttachedPolicies": [{"PolicyArn": stale}]}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        # the CURRENT setting names a DIFFERENT policy than the one attached
+        monkeypatch.setattr(
+            mod.settings,
+            "BEDROCK_OWNER_BASE_POLICY_ARN",
+            "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
+            raising=False,
+        )
+
+        await mod.delete_owner_bedrock_role("org_abc")
+
+        fake.detach_role_policy.assert_called_once()
+        assert fake.detach_role_policy.call_args.kwargs["PolicyArn"] == stale
+        fake.delete_role.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_detaches_every_attached_policy_not_just_one(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        arns = [
+            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
+            "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
+        ]
+        fake = MagicMock()
+        fake.list_attached_role_policies.return_value = {"AttachedPolicies": [{"PolicyArn": a} for a in arns]}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        await mod.delete_owner_bedrock_role("org_abc")
+
+        assert [c.kwargs["PolicyArn"] for c in fake.detach_role_policy.call_args_list] == arns

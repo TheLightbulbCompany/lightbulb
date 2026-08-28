@@ -326,6 +326,7 @@ class EcsManager:
         self._subnets = [s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()]
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
+
         self._servicediscovery = boto3.client("servicediscovery", region_name=settings.AWS_REGION)
         self._cloud_map_namespace_name = settings.CLOUD_MAP_NAMESPACE_NAME
         self._cloud_map_service_name = settings.CLOUD_MAP_SERVICE_NAME
@@ -2264,6 +2265,18 @@ class EcsManager:
     # Discovery and health
     # ------------------------------------------------------------------
 
+    def _service_registries(self) -> dict:
+        """``serviceRegistries`` kwarg for update_service, or {} when unset.
+
+        Empty dict rather than an empty list: passing ``serviceRegistries=[]``
+        DEREGISTERS the service from Cloud Map, which would make every provision
+        silently strand the container -- ``discover_ip`` would find nothing and
+        the box would look unreachable while running perfectly.
+        """
+        if not self._cloud_map_service_arn:
+            return {}
+        return {"serviceRegistries": [{"registryArn": self._cloud_map_service_arn}]}
+
     def discover_ip(self, service_name: str) -> str | None:
         """Discover a task's private IP via AWS Cloud Map.
 
@@ -3083,6 +3096,14 @@ class EcsManager:
                             service=service_name,
                             desiredCount=1,
                             taskDefinition=new_task_def_arn,
+                            # Re-assert the Cloud Map registry on every provision.
+                            # create_service was the ONLY writer of this field, so a
+                            # service created against a different registry stayed on
+                            # it forever with no code path able to move it -- even
+                            # though UpdateService accepts serviceRegistries for
+                            # deploymentController=ECS. Re-asserting the current
+                            # target makes every provision self-heal.
+                            **self._service_registries(),
                             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                         )
                         old_task_def_arn = existing.get("task_definition_arn") if existing else None
@@ -3202,6 +3223,8 @@ class EcsManager:
                         cluster=self._cluster,
                         service=service_name,
                         forceNewDeployment=True,
+                        # Same self-heal as the restart branch above.
+                        **self._service_registries(),
                         deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                     )
                 except Exception as e:

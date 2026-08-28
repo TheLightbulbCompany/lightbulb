@@ -846,16 +846,23 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
             if e.response["Error"]["Code"] != "NoSuchEntity":
                 raise
 
-    if settings.BEDROCK_OWNER_BASE_POLICY_ARN:
-        try:
+    # Detach whatever is ACTUALLY attached, not the ARN the current setting
+    # names. A role minted before a policy-ARN change still carries the OLD
+    # attachment; detaching the new ARN returns NoSuchEntity, which is swallowed
+    # -- so the old attachment survives, DeleteRole below fails DeleteConflict,
+    # the role leaks, and the old policy's AttachmentCount can never reach zero,
+    # meaning it can never be deleted either. Enumerating removes the class.
+    try:
+        attached = await run_in_thread(client.list_attached_role_policies, RoleName=role_name)
+        for policy in attached.get("AttachedPolicies", []):
             await run_in_thread(
                 client.detach_role_policy,
                 RoleName=role_name,
-                PolicyArn=settings.BEDROCK_OWNER_BASE_POLICY_ARN,
+                PolicyArn=policy["PolicyArn"],
             )
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "NoSuchEntity":
-                raise
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
 
     try:
         await run_in_thread(client.delete_role, RoleName=role_name)

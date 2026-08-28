@@ -71,7 +71,7 @@ function PropertiesDetails({
   if (!properties || Object.keys(properties).length === 0) return null;
   return (
     <details className="mt-1 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none text-muted-foreground hover:text-muted-foreground">
+      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
         Properties
       </summary>
       <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-muted-foreground">

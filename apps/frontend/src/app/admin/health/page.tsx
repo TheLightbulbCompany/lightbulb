@@ -141,7 +141,7 @@ export default async function HealthPage() {
           })}
         </div>
         <div className="mt-3 text-xs text-muted-foreground">
-          Total containers: <span className="font-mono text-muted-foreground">{fleet.total ?? 0}</span>
+          Total containers: <span className="font-mono text-foreground">{fleet.total ?? 0}</span>
         </div>
       </Card>
 
@@ -181,7 +181,7 @@ export default async function HealthPage() {
         ) : (
           <div className="overflow-x-auto rounded border border-border">
             <table className="w-full min-w-[720px] table-fixed text-xs sm:text-sm">
-              <thead className="bg-card text-left text-muted-foreground">
+              <thead className="bg-secondary text-left text-muted-foreground">
                 <tr>
                   <th className="w-48 px-3 py-2 font-medium">Timestamp</th>
                   <th className="w-40 px-3 py-2 font-medium">User</th>

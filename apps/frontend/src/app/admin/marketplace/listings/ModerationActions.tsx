@@ -160,7 +160,7 @@ export function ModerationActions({
               type="button"
               size="sm"
               variant="outline"
-              className="border-err text-err hover:bg-accent"
+              className="border-err text-err hover:bg-accent hover:text-err"
             >
               Reject
             </Button>

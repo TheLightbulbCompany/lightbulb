@@ -315,7 +315,9 @@ export default async function ListingDetail({
                           fileFlags[0].severity,
                         )}`}
                       >
-                        {fileFlags.length}
+                        {/* Rule 4: the severity is the badge's colour, so it
+                            also has to be a word — never colour alone. */}
+                        {fileFlags.length} {fileFlags[0].severity}
                       </span>
                     )}
                     <span className="text-muted-foreground">{formatBytes(f.size_bytes)}</span>

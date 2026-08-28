@@ -20,12 +20,14 @@ import type { GrowthData, GrowthOwnerStage, GrowthSegment } from "../_lib/api";
 import { STAGE_LABEL } from "./sections";
 
 // Growth-dashboard series. globals.css maps --chart-1..5 to ok, info, warn, err,
-// brass in BOTH grounds; the consumers below pick by meaning, not by index:
+// brass in BOTH grounds. Single-meaning series:
 //   CHART_1 ok    — autonomous / healthy / the ladder
-//   CHART_2 info  — human-initiated
-//   CHART_3 warn  — nightly CEO (shown, never counted)
-//   CHART_4 err   — alert (auto-paused, the largest gate-blocked reason)
+//   CHART_4 err   — alert: auto-paused, the largest gate-blocked reason
 //   CHART_5 brass — secondary / unknown / order-independent
+// CHART_2 (info) and CHART_3 (warn) also serve as plain distinct hues where a
+// multi-series chart needs one more line than there are meanings — so
+// `trial_converted` is warn and `archived` is info for separation, not status.
+// Read the legend, not the colour, on the funnel and survival charts.
 const CHART_1 = "var(--chart-1)";
 const CHART_2 = "var(--chart-2)";
 const CHART_3 = "var(--chart-3)";

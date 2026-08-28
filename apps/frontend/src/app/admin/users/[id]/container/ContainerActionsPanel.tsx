@@ -301,7 +301,7 @@ export function ContainerActionsPanel({
             runtime-appended subtrees the regen drops (channel pairings, route
             bindings, identity). Config-only: no restart, EFS workspace/agent
             state untouched. Pair with{" "}
-            <strong className="text-muted-foreground">Apply now</strong> below when the
+            <strong className="text-foreground">Apply now</strong> below when the
             change needs a gateway restart to activate (e.g. plugin
             enablement).
           </p>
@@ -324,11 +324,11 @@ export function ContainerActionsPanel({
             Queue image update
           </h3>
           <p className="text-xs text-muted-foreground">
-            <strong className="text-muted-foreground">Queue</strong> creates a pending Track 2
+            <strong className="text-foreground">Queue</strong> creates a pending Track 2
             update — the owner sees a banner in chat and chooses when to apply
             (Update now / Tonight / Remind later); the container keeps running on the
             current image until they accept.{" "}
-            <strong className="text-muted-foreground">Apply now</strong> force-rolls the
+            <strong className="text-foreground">Apply now</strong> force-rolls the
             container onto the selected image immediately (no banner wait). Both reuse
             the container&apos;s existing on-disk config and preserve EFS
             workspace/agent state — Apply now briefly restarts the container.

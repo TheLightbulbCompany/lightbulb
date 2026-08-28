@@ -111,7 +111,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
             type="button"
             size="sm"
             variant="outline"
-            className="border-err text-err hover:bg-accent"
+            className="border-err text-err hover:bg-accent hover:text-err"
           >
             Take down listing
           </Button>

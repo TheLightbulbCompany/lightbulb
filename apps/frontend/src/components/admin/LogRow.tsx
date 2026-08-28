@@ -89,7 +89,7 @@ export function LogRow({ entry }: LogRowProps) {
         <div className="space-y-2 border-t border-border px-3 py-3">
           {entry.correlation_id ? (
             <div className="text-xs text-muted-foreground">
-              <span className="font-semibold text-muted-foreground">
+              <span className="font-semibold text-foreground">
                 correlation_id:
               </span>{" "}
               <span className="font-mono text-foreground">

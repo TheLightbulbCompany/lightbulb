@@ -25,7 +25,7 @@ export default async function UserLayout({ children, params }: UserLayoutProps) 
     <div className="space-y-6">
       <div className="space-y-1">
         <div className="text-xs text-muted-foreground">
-          <Link href="/admin/users" className="hover:text-muted-foreground">
+          <Link href="/admin/users" className="hover:text-foreground">
             Users
           </Link>
           <span className="mx-2 text-muted-foreground">/</span>

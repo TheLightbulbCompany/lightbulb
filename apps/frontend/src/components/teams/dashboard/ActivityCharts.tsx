@@ -5,31 +5,34 @@
 // 4 charts (Run Activity / Priority / Issue Status / Success Rate) +
 // shared helpers (ChartCard, DateLabels, ChartLegend, getLast14Days).
 // Vanilla flexbox + percentage heights — no chart library.
-// Colors mapped onto the editorial palette (forest / forest-soft /
-// warn / mute / mute-soft / ink / ink-soft / edge) — class-only swap,
-// chart axis + height logic untouched.
+// Colors mapped onto the brand tokens (midnight and its steps / brass /
+// warn / edge / the state pairs) — class-only swap, chart axis + height
+// logic untouched.
 
 import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/shared/types";
 
-/* ---- Editorial color tokens (used inline via CSS var(...)) ----
- * Centralized so every chart pulls from the same semantic mapping.
+/* ---- Brand tokens (used inline via CSS var(...)) ----
+ * Centralized so every chart pulls from the same semantic mapping. Weight
+ * carries most of the meaning here: the midnight ramp (midnight ->
+ * midnight-soft -> midnight-muted -> midnight-faint -> edge) reads
+ * heaviest-to-faintest, and a state colour is spent only where one is real.
  * Run-status semantics:
- *   succeeded -> forest      (deep green, success)
- *   failed    -> warn        (amber, alert)
- *   other     -> mute        (neutral)
+ *   succeeded -> midnight       (heaviest, success)
+ *   failed    -> warn           (alert)
+ *   other     -> midnight-muted (neutral)
  * Priority semantics (ordered crit -> low):
- *   critical  -> warn        (amber alert)
- *   high      -> forest      (deep, weighty)
- *   medium    -> mute        (neutral)
- *   low       -> mute-soft   (faint)
+ *   critical  -> warn            (alert)
+ *   high      -> midnight        (weighty)
+ *   medium    -> midnight-muted  (neutral)
+ *   low       -> midnight-faint  (faint)
  * Status semantics:
- *   todo         -> mute-soft (waiting)
- *   in_progress  -> forest-soft (active)
- *   in_review    -> ink-soft  (consideration)
- *   done         -> forest    (completed)
- *   blocked      -> warn      (alert)
- *   cancelled    -> mute      (neutral)
- *   backlog      -> edge      (parked)
+ *   todo         -> midnight-faint (waiting)
+ *   in_progress  -> brass          (active)
+ *   in_review    -> midnight-soft  (consideration)
+ *   done         -> midnight       (completed)
+ *   blocked      -> warn           (alert)
+ *   cancelled    -> midnight-muted (neutral)
+ *   backlog      -> edge           (parked)
  * Success-rate thresholds:
  *   >= 80%      -> ok
  *   >= 50%      -> warn

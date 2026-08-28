@@ -273,7 +273,7 @@ def _emit_metric(name, **properties):
                 "Timestamp": int(time.time() * 1000),
                 "CloudWatchMetrics": [
                     {
-                        "Namespace": "Isol8",
+                        "Namespace": "LightbulbAI",
                         "Dimensions": [list(dims.keys())],
                         "Metrics": [{"Name": name, "Unit": "Count"}],
                     }

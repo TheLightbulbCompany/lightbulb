@@ -1506,7 +1506,7 @@ def handler(event, context):
         return {'statusCode': 200, 'emitted': False}
     cluster = detail.get('clusterArn', '').split('/')[-1]
     cw.put_metric_data(
-        Namespace='Isol8/ECS',
+        Namespace='LightbulbAI/ECS',
         MetricData=[{
             'MetricName': 'TaskStoppedUnexpected',
             'Dimensions': [{'Name': 'ClusterName', 'Value': cluster}],
@@ -1605,7 +1605,7 @@ def handler(event, _ctx):
     running = ecs.list_tasks(cluster=cluster_arn, serviceName=service, desiredStatus='RUNNING')
     count = len(running.get('taskArns') or [])
     if count > 1:
-        cw.put_metric_data(Namespace='Isol8/ECS', MetricData=[{
+        cw.put_metric_data(Namespace='LightbulbAI/ECS', MetricData=[{
             'MetricName': 'MultiTaskPerService',
             'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_arn.split('/')[-1]}],
             'Value': 1.0, 'Unit': 'Count',

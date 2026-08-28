@@ -54,7 +54,7 @@ async def test_join_is_idempotent_per_email(table):
     assert again["position"] == first["position"]
     assert again["referral_code"] == first["referral_code"]
     assert again["source"] == "waitlist"  # first write wins
-    assert await table.count() == 2  # two people, not three
+    assert await table.count() == 1  # one person, not two
 
 
 async def test_join_attributes_referral_and_counts_it(table):

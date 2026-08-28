@@ -2717,9 +2717,12 @@ async def test_compute_counts_and_economics(deps):
 
 
 async def test_compute_is_cached_for_60s(deps):
-    await ops_launch.compute()
+    first = await ops_launch.compute()
+    assert first[1] == "ok"
     with patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(side_effect=AssertionError("should be cached"))):
-        await ops_launch.compute()
+        second = await ops_launch.compute()
+    assert second is first  # the cached tuple — read_source would have turned a re-read into UNAVAILABLE
+    assert second[1] == "ok"
 
 
 async def test_compute_unconfigured():
@@ -2825,6 +2828,8 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     comped = 0
     for e, billing in zip(entries, billing_rows):
         pos = e.get("waitlist_position")
+        # Org entrants (owner_id "org_…") are never comped: comps are personal-only per the
+        # spec, and `activated` is keyed by the individual user_id, so they land in `paid`.
         is_comped = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
         comped += int(is_comped)
         baseline = int(e.get("baseline_cents", 0))

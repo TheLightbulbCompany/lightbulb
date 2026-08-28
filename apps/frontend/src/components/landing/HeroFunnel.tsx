@@ -15,7 +15,6 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { LogoMark } from "@/components/Logo";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
@@ -74,7 +73,6 @@ export function HeroFunnel() {
         <p className="ld-mono ld-funnel-eyebrow">
           The Integrated Management Environment
         </p>
-        <LogoMark className="ld-funnel-mark" />
         <h1 className="ld-funnel-h1">
           Type an idea.{" "}
           <br />

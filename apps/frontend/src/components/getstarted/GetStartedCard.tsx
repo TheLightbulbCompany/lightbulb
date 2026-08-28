@@ -59,7 +59,7 @@ export function GetStartedCard({ gs, onAction }: {
         {gs.tab === "learn" && article && (
           <div>
             <button type="button" onClick={gs.backToLearn} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--forest)] mb-4"><ChevronLeft size={15} /> All concepts</button>
-            <div className="text-[11px] tracking-wider uppercase font-bold text-[var(--forest-soft)] mb-1.5">{article.tag}</div>
+            <div className="text-[11px] tracking-wider uppercase font-bold text-[rgba(15,26,43,0.66)] mb-1.5">{article.tag}</div>
             {/* h2, not h1: this is a floating dialog, not the page's top-level
                 heading — nests under the card's "Get started" header. */}
             <h2 className="font-editorial-serif text-[22px] font-semibold leading-tight mb-3">{article.title}</h2>

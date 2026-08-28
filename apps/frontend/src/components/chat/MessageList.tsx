@@ -431,8 +431,24 @@ export function ThinkingBlock({
 }
 
 
+/*
+ * The thinking indicator.
+ *
+ * This was a figure-eight that rotated to a horizontal infinity and chased a
+ * tracer round the loop — the isol8 mark, animated. Under the Lightbulb
+ * identity the mark is a lamp, so the indicator is the lamp's own filament
+ * heating and cooling while the agent works.
+ *
+ * The cycle is deliberately ASYMMETRIC: fast attack, slow decay, the way an
+ * incandescent filament actually behaves. A 50/50 on-off blink reads as a
+ * broken bulb — an error signal — which is the opposite of what a running
+ * agent should look like.
+ *
+ * The exported name, props and call sites are unchanged, so AgentHead and
+ * StreamingStatusBar keep working without edits.
+ */
 export const AGENT_GLYPH_PATH =
-    "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
+    "M 86,150 L 72,132 L 72,76 A 28,32 0 0 1 128,76 L 128,132 L 114,150 Z";
 
 export function AgentGlyph({
     state = "idle",
@@ -447,26 +463,23 @@ export function AgentGlyph({
         <svg
             width={size}
             height={size}
-            viewBox="0 0 24 12"
+            viewBox="62 40 76 148"
             fill="none"
+            aria-hidden="true"
             className={cn("agent-glyph", state === "thinking" && "agent-glyph--thinking", className)}
         >
-            <path
-                className="agent-glyph-base"
-                d={AGENT_GLYPH_PATH}
-                strokeWidth="1.6"
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-            <path
-                className="agent-glyph-tracer"
-                d={AGENT_GLYPH_PATH}
-                strokeWidth="1.6"
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
+            <path className="agent-glyph-glass" d={AGENT_GLYPH_PATH} strokeWidth="5" />
+            <g className="agent-glyph-cage" strokeWidth="4" strokeLinejoin="round">
+                <path d="M 87,74 L 95,74 L 101,146 L 99,146 Z" />
+                <path d="M 96,74 L 104,74 L 101.4,146 L 98.6,146 Z" />
+                <path d="M 105,74 L 113,74 L 101,146 L 99,146 Z" />
+                <path d="M 74,96 H 126 M 82,120 H 118" fill="none" />
+            </g>
+            <g className="agent-glyph-collar">
+                <rect x="86" y="150" width="28" height="7" rx="1" />
+                <rect x="87" y="160" width="26" height="7" rx="1" />
+                <rect x="89" y="170" width="22" height="6" rx="1" />
+            </g>
         </svg>
     );
 }

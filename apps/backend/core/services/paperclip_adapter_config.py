@@ -136,11 +136,18 @@ def desired_agent_adapter_fields(*, agent_id: str, gateway_token: str) -> dict:
     - ``claimedApiKeyPath`` — the agent's own per-agent identity file; the
       singular ``~/.openclaw/workspace`` default collides across agents.
     """
-    return {
+    fields = {
         "authToken": gateway_token,
         "agentId": agent_id,
         "claimedApiKeyPath": claimed_api_key_path(agent_id),
     }
+    # ``paperclipApiUrl`` is written once at agent-create time and was reconciled
+    # by NOTHING, so any change to PAPERCLIP_INTERNAL_URL stranded every existing
+    # agent on the old in-VPC host with no path back. Guarded on a set value so an
+    # unset local-dev setting cannot clobber a good one or churn the drift check.
+    if settings.PAPERCLIP_INTERNAL_URL:
+        fields["paperclipApiUrl"] = settings.PAPERCLIP_INTERNAL_URL
+    return fields
 
 
 class AdapterConfigError(Exception):

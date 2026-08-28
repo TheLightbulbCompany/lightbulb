@@ -177,29 +177,25 @@ export interface ServiceStackProps extends cdk.StackProps {
 }
 
 /**
- * Tag values accepted by the owner-AIP IAM fence, during the rename migration.
+ * Tag value accepted by the owner-AIP IAM fence.
  *
- * STEP 1 of add-before-remove. The tag `ManagedBy` gates every mutate action on
- * an owner's Bedrock application inference profile, and all 39 prod AIPs carry
- * `isol8-backend` today. Flipping the writer and this condition together would
- * AccessDeny the backend from every EXISTING profile -- Bedrock inference dies
- * fleet-wide, free tier included, while newly minted profiles keep working and
- * mask it.
+ * The `ManagedBy` tag gates every mutate action on an owner's Bedrock
+ * application inference profile, so flipping the writer and this condition
+ * TOGETHER would AccessDeny the backend from every EXISTING profile -- Bedrock
+ * inference dies fleet-wide, free tier included, while newly minted profiles
+ * keep working and mask it.
  *
- * So the order is: widen here (purely additive -- it grants nothing that was
- * not already granted, it only stops denying the new value) -> re-tag the
- * existing profiles -> flip the writer -> narrow this back to the new value
- * alone. Each step is separately deployable and separately reversible.
+ * That is why the rename ran as four separately reversible steps: widen this to
+ * accept both values -> re-tag the existing profiles -> flip the writer ->
+ * narrow back to the new value alone. All four are now DONE; this is the
+ * narrowed end state, verified against the live account first (37/37 owner
+ * profiles on `lightbulb-backend`, 0 on the old value; the 2 untagged ones are
+ * the idempotency probes, which this condition does not gate).
  *
- * STEPS 1-3 ARE DONE (2026-08-28). All 37 owner profiles across both envs now
- * carry `lightbulb-backend`, and the backend writer emits it. This list is the
- * only thing still spanning both values; collapsing it is step 4, and it must
- * wait until nothing carries `isol8-backend` -- re-verify before you do.
- *
- * `StringEquals` with a list is OR, so both values match while the fleet is
- * mixed. Do not collapse this to a single value until step 4.
+ * If you ever need to move it again, widen FIRST. Never flip writer+condition
+ * in one deploy.
  */
-const MANAGED_BY_ACCEPTED = ["isol8-backend", "lightbulb-backend"];
+const MANAGED_BY_ACCEPTED = ["lightbulb-backend"];
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
@@ -434,6 +430,11 @@ export class ServiceStack extends cdk.Stack {
             "iam:GetRolePolicy",
             "iam:AttachRolePolicy",
             "iam:DetachRolePolicy",
+            // delete_owner_bedrock_role now detaches by ENUMERATION rather than
+            // by naming an ARN from settings, so teardown can see an attachment
+            // made under a previous policy ARN. Without this the enumeration
+            // AccessDenies and the role can never be deleted.
+            "iam:ListAttachedRolePolicies",
             "iam:TagRole",
             "iam:GetRole",
             // Lets ensure_owner_bedrock_role converge a previously-minted role's

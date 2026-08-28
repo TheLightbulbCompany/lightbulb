@@ -175,7 +175,7 @@ export function HandlePicker({
   }
 
   return (
-    <div className={`flex flex-col ${gap} ${padding} rounded-2xl border border-[var(--edge)] bg-white`}>
+    <div className={`flex flex-col ${gap} ${padding} rounded-2xl border border-[var(--edge)] bg-card`}>
       <div>
         <label
           htmlFor="marketplace-handle"
@@ -183,8 +183,8 @@ export function HandlePicker({
         >
           Marketplace handle
         </label>
-        <div className="flex items-center rounded-lg border border-[#cfc7b8] bg-[var(--cream)] focus-within:border-[var(--midnight)] focus-within:ring-1 focus-within:ring-[var(--midnight)]/20">
-          <span className="pl-3 pr-1 text-[#8a8478] text-[14px] select-none">@</span>
+        <div className="flex items-center rounded-lg border border-[var(--edge)] bg-cream-deep focus-within:border-[var(--midnight)] focus-within:ring-1 focus-within:ring-[var(--midnight)]/20">
+          <span className="pl-3 pr-1 text-muted-foreground text-[14px] select-none">@</span>
           <input
             id="marketplace-handle"
             type="text"
@@ -200,7 +200,7 @@ export function HandlePicker({
             <AvailabilityIndicator status={status} />
           </span>
         </div>
-        <p className="mt-1.5 text-[11.5px] text-[#8a8478]">
+        <p className="mt-1.5 text-[11.5px] text-muted-foreground">
           3–32 chars; lowercase letters, digits, hyphens, underscores. Public on every
           listing byline.
         </p>
@@ -211,7 +211,7 @@ export function HandlePicker({
           htmlFor="marketplace-display-name"
           className="block text-[12.5px] font-semibold text-[var(--midnight)] mb-1.5"
         >
-          Display name <span className="text-[#8a8478] font-normal">(optional)</span>
+          Display name <span className="text-muted-foreground font-normal">(optional)</span>
         </label>
         <input
           id="marketplace-display-name"
@@ -219,7 +219,7 @@ export function HandlePicker({
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           placeholder="What people call you"
-          className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--midnight)] focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]/20"
+          className="w-full rounded-lg border border-[var(--edge)] bg-cream-deep py-2 px-3 text-[14px] text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--midnight)] focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]/20"
           maxLength={64}
         />
       </div>
@@ -230,7 +230,7 @@ export function HandlePicker({
             htmlFor="marketplace-bio"
             className="block text-[12.5px] font-semibold text-[var(--midnight)] mb-1.5"
           >
-            Bio <span className="text-[#8a8478] font-normal">(optional, up to 280)</span>
+            Bio <span className="text-muted-foreground font-normal">(optional, up to 280)</span>
           </label>
           <textarea
             id="marketplace-bio"
@@ -238,14 +238,14 @@ export function HandlePicker({
             onChange={(e) => setBio(e.target.value)}
             placeholder="Builders should know..."
             rows={3}
-            className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--midnight)] focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]/20 resize-none"
+            className="w-full rounded-lg border border-[var(--edge)] bg-cream-deep py-2 px-3 text-[14px] text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--midnight)] focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]/20 resize-none"
             maxLength={280}
           />
         </div>
       )}
 
       {serverError && (
-        <div className="rounded-lg border border-[#f0b3a8] bg-[#fbe9e7] px-3 py-2 text-[12.5px] text-[#8a3a2a]">
+        <div className="rounded-lg border border-[var(--err)] px-3 py-2 text-[12.5px] text-[var(--err)]">
           {serverError}
         </div>
       )}
@@ -256,7 +256,7 @@ export function HandlePicker({
             type="button"
             onClick={onCancel}
             disabled={submitting}
-            className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--midnight)] px-3.5 py-1.5"
+            className="text-[12.5px] text-muted-foreground hover:text-[var(--midnight)] px-3.5 py-1.5"
           >
             Cancel
           </button>
@@ -265,7 +265,7 @@ export function HandlePicker({
           type="button"
           onClick={save}
           disabled={!canSave}
-          className="bg-[var(--midnight)] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-50 disabled:cursor-not-allowed"
+          className="bg-[var(--midnight)] text-[var(--cream)] px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? "Saving…" : saveLabel}
         </button>
@@ -276,13 +276,13 @@ export function HandlePicker({
 
 function AvailabilityIndicator({ status }: { status: Status }) {
   if (status.kind === "idle") return <span className="text-[var(--midnight-muted)]">—</span>;
-  if (status.kind === "checking") return <span className="text-[#8a8478]">checking…</span>;
+  if (status.kind === "checking") return <span className="text-muted-foreground">checking…</span>;
   if (status.kind === "available") return <span className="text-[var(--midnight)]">available</span>;
-  if (status.kind === "error") return <span className="text-[#8a3a2a]">offline</span>;
+  if (status.kind === "error") return <span className="text-[var(--err)]">offline</span>;
   // unavailable
-  if (status.reason === "format") return <span className="text-[#8a3a2a]">format</span>;
-  if (status.reason === "reserved") return <span className="text-[#8a3a2a]">reserved</span>;
-  return <span className="text-[#8a3a2a]">taken</span>;
+  if (status.reason === "format") return <span className="text-[var(--err)]">format</span>;
+  if (status.reason === "reserved") return <span className="text-[var(--err)]">reserved</span>;
+  return <span className="text-[var(--err)]">taken</span>;
 }
 
 /** Fetch the current user's profile (or null) — convenience for callers

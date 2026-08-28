@@ -23,7 +23,7 @@ export function AgentsBrowse({ items }: { items: Listing[] }) {
 
   return (
     <>
-      <section className="sticky top-[64px] z-10 border-y border-[var(--edge)] bg-[rgba(250,247,242,0.92)] backdrop-blur-xl">
+      <section className="sticky top-[64px] z-10 border-y border-[var(--edge)] bg-[var(--cream)]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-2 overflow-x-auto px-6 py-4">
           <TagPill label="All" count={items.length} active={activeTag === "all"} onClick={() => setActiveTag("all")} />
           {tags.map((tag) => (

@@ -89,7 +89,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
       </button>
       {error && (
         <p
-          className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--err)]"
+          className="mt-3 rounded-lg border border-[var(--err)] px-3 py-2 text-sm text-[var(--err)]"
           role="alert"
         >
           {error}{" "}

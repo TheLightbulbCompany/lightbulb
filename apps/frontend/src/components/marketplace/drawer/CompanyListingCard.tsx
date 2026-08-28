@@ -44,8 +44,8 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
     <article
       className={`relative rounded-2xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
         phase === "started"
-          ? "border-[#aac6b4] bg-[#f4f8f4]"
-          : "border-[var(--edge)] bg-white hover:-translate-y-0.5 hover:shadow-md hover:border-[#cfc7b8]"
+          ? "border-[var(--ok)]"
+          : "border-[var(--edge)] bg-card hover:-translate-y-0.5 hover:shadow-md hover:border-[var(--midnight-faint)]"
       }`}
     >
       {company.min_plan === "ultra_pro" && (
@@ -61,9 +61,9 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
       >
         {company.name}
       </Link>
-      <p className="text-[13px] text-[#5b5b5b] leading-snug line-clamp-2">{company.description}</p>
+      <p className="text-[13px] text-muted-foreground leading-snug line-clamp-2">{company.description}</p>
       <div className="mt-auto flex items-center justify-between pt-2.5 border-t border-dashed border-[var(--edge)]">
-        <span className="text-[11.5px] italic text-[#5b5b5b]">
+        <span className="text-[11.5px] italic text-muted-foreground">
           {company.agent_count} agents · {company.skill_count} skills
         </span>
         {phase === "started" ? (
@@ -75,7 +75,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
             type="button"
             onClick={deploy}
             disabled={phase === "deploying"}
-            className="text-white bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:opacity-90 transition disabled:opacity-60"
+            className="text-[var(--cream)] bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:opacity-90 transition disabled:opacity-60"
           >
             {phase === "deploying" ? "Deploying…" : "Deploy company"}
           </button>

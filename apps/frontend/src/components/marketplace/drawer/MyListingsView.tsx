@@ -134,7 +134,7 @@ export function MyListingsView() {
     return (
       <div className="editorial-card p-6 text-center" role="alert">
         <h4 className="font-editorial-serif text-xl mb-2">Couldn&apos;t load your listings.</h4>
-        <p className="text-[13px] text-[#5b5b5b] mb-4">
+        <p className="text-[13px] text-muted-foreground mb-4">
           Something went wrong fetching your store — your listings are safe.
         </p>
         <button
@@ -189,7 +189,7 @@ export function MyListingsView() {
       <div className="flex items-end justify-between gap-3.5 flex-wrap mb-4">
         <div>
           <h3 className="font-editorial-serif text-2xl text-[var(--midnight)]">My listings</h3>
-          <div className="flex gap-6 mt-2 text-[13px] text-[#5b5b5b]">
+          <div className="flex gap-6 mt-2 text-[13px] text-muted-foreground">
             <Stat label="active listings" value={activeCount.toString()} />
             <Stat label="total installs" value={totalInstalls.toLocaleString()} />
             <Stat
@@ -205,22 +205,22 @@ export function MyListingsView() {
         <button
           type="button"
           onClick={() => setView("publish")}
-          className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+          className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold"
         >
           + New listing
         </button>
       </div>
 
       {grouped.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-[var(--edge)] rounded-2xl bg-white">
+        <div className="text-center py-12 border border-dashed border-[var(--edge)] rounded-2xl bg-card">
           <h4 className="font-editorial-serif text-xl mb-2">No listings yet.</h4>
-          <p className="text-[14px] text-[#5b5b5b] mb-4">
+          <p className="text-[14px] text-muted-foreground mb-4">
             Open chat to publish your first agent.
           </p>
           <button
             type="button"
             onClick={() => setView("publish")}
-            className="bg-[var(--midnight)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-5 py-2 rounded-full text-[14px] font-semibold"
           >
             + Publish your agent
           </button>
@@ -270,7 +270,7 @@ function Stat({
           {action}
         </button>
       )}
-      {note && <span className="block text-[11.5px] text-[#a07520] mt-0.5">{note}</span>}
+      {note && <span className="block text-[11.5px] text-[var(--warn)] mt-0.5">{note}</span>}
     </div>
   );
 }
@@ -323,16 +323,16 @@ function ListingRow({
   // rejected outranks live published — we want the seller's eye on the
   // republish that needs attention.
   const pillTone = pendingWasRejected
-    ? "bg-[#fbe9e7] text-[#8a3a2a]"
+    ? "border border-[var(--err)] text-[var(--err)]"
     : pending?.status === "review"
-      ? "bg-[#fef4e3] text-[#a07520]"
+      ? "border border-[var(--warn)] text-[var(--warn)]"
       : live.status === "published"
-        ? "bg-[#e3efe6] text-[var(--midnight)]"
+        ? "border border-[var(--ok)] text-[var(--ok)]"
         : live.status === "review"
-          ? "bg-[#fef4e3] text-[#a07520]"
+          ? "border border-[var(--warn)] text-[var(--warn)]"
           : liveWasRejected
-            ? "bg-[#fbe9e7] text-[#8a3a2a]"
-            : "bg-[#f3eee5] text-[#5b5b5b]";
+            ? "border border-[var(--err)] text-[var(--err)]"
+            : "border border-[var(--edge)] text-muted-foreground";
 
   return (
     <button
@@ -340,13 +340,13 @@ function ListingRow({
       data-testid="my-listings-row"
       data-was-rejected={wasRejected ? "true" : undefined}
       onClick={onClick}
-      className={`w-full text-left bg-white border rounded-2xl p-5 flex items-start gap-4 hover:bg-[#fbf9f4] transition-colors ${
-        wasRejected ? "border-[#f0b3a8] bg-[#fff8f5]" : "border-[var(--edge)]"
+      className={`w-full text-left bg-card border rounded-2xl p-5 flex items-start gap-4 hover:bg-cream-deep transition-colors ${
+        wasRejected ? "border-[var(--err)]" : "border-[var(--edge)]"
       }`}
     >
       <div className="flex-1 min-w-0">
         <div className="font-editorial-serif text-lg">{live.name}</div>
-        <div className="flex gap-3 text-[12.5px] text-[#5b5b5b] mt-0.5">
+        <div className="flex gap-3 text-[12.5px] text-muted-foreground mt-0.5">
           <span>Updated {new Date(live.created_at).toLocaleDateString()}</span>
           <span>{installCount} installs</span>
           <span className="font-semibold text-[var(--midnight)]">

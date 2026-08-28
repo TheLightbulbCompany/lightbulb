@@ -15,7 +15,7 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
     <div className="editorial-page flex min-h-screen flex-col pt-[65px]">
       <UserSync />
       <Navbar />
-      <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[rgba(243,239,230,0.92)] backdrop-blur-xl">
+      <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[var(--cream)]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3 text-sm">
           <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
             Marketplace

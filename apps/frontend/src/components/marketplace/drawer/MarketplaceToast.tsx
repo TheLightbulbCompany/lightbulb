@@ -32,14 +32,14 @@ export function MarketplaceToast() {
       <div
         data-testid="toast-error"
         role="alert"
-        className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--err)] text-white rounded-2xl px-5 py-3.5 shadow-xl"
+        className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--midnight)] text-[var(--cream)] border border-[var(--err-reversed)] rounded-2xl px-5 py-3.5 shadow-xl"
       >
         <div className="flex items-center gap-3.5 text-sm">
           <span>{toast.error}</span>
           <button
             type="button"
             onClick={() => dismissToast()}
-            className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
+            className="bg-[var(--cream)]/20 hover:bg-[var(--cream)]/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
           >
             Dismiss
           </button>
@@ -49,7 +49,7 @@ export function MarketplaceToast() {
   }
 
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--midnight)] text-white rounded-2xl px-5 py-3.5 shadow-xl">
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--midnight)] text-[var(--cream)] rounded-2xl px-5 py-3.5 shadow-xl">
       <div className="flex items-center gap-3.5 text-sm">
         <span>
           ✓ <strong>{toast.agentName} installed</strong> in your workspace.
@@ -57,7 +57,7 @@ export function MarketplaceToast() {
         <button
           type="button"
           onClick={handleOpen}
-          className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
+          className="bg-[var(--cream)]/20 hover:bg-[var(--cream)]/30 px-3 py-1.5 rounded-full text-[12.5px] font-semibold"
         >
           Open in chat →
         </button>
@@ -65,7 +65,7 @@ export function MarketplaceToast() {
       {!!toast.automationsPending && (
         <p
           data-testid="toast-automations-pending"
-          className="mt-2 text-[12px] text-white/85 leading-snug"
+          className="mt-2 text-[12px] text-[var(--cream)]/85 leading-snug"
         >
           {toast.automationsPending === 1
             ? "1 automation needs wiring"
@@ -75,7 +75,7 @@ export function MarketplaceToast() {
         </p>
       )}
       {toast.acpNote === "enabled" && (
-        <p data-testid="toast-acp-enabled" className="mt-2 text-[12px] text-white/85 leading-snug">
+        <p data-testid="toast-acp-enabled" className="mt-2 text-[12px] text-[var(--cream)]/85 leading-snug">
           This agent can delegate coding tasks to a Claude Code / Codex harness
           (matched to your provider).
         </p>
@@ -83,7 +83,7 @@ export function MarketplaceToast() {
       {toast.acpNote === "unavailable" && (
         <p
           data-testid="toast-acp-unavailable"
-          className="mt-2 text-[12px] text-white/85 leading-snug"
+          className="mt-2 text-[12px] text-[var(--cream)]/85 leading-snug"
         >
           This agent wants a coding harness, but your current provider can&apos;t
           run one yet.

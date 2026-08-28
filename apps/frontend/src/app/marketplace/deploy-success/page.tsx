@@ -251,7 +251,7 @@ function DeploySuccessInner() {
           <h1 className="font-editorial-serif text-4xl italic text-[var(--midnight)]">
             Something went sideways.
           </h1>
-          <p className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-4 py-3 text-sm text-[var(--err)]">
+          <p className="mt-4 rounded-lg border border-[var(--err)] px-4 py-3 text-sm text-[var(--err)]">
             {errorMsg}
           </p>
           {errorRetryable && (

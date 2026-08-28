@@ -22,6 +22,7 @@ import {
   allTableArns,
   bothTableArns,
   legacyTablePrefix,
+  alertTopicArn,
   resourcePrefix,
   tableName,
   tablePrefix,
@@ -2206,12 +2207,12 @@ export class ServiceStack extends cdk.Stack {
     // reasoning as the secret-names / KMS-key-ARNs handling elsewhere in this
     // stack: pass the identifier, not the construct. The topic name is
     // deterministic, so this stays correct as long as ObservabilityStack keeps
-    // naming it `isol8-{env}-alerts-page`.
+    // naming it `lightbulb-{env}-alerts-page`.
     const pageAction = new cloudwatch_actions.SnsAction(
       sns.Topic.fromTopicArn(
         this,
         "AlertsPageImported",
-        `arn:aws:sns:${this.region}:${this.account}:isol8-${env}-alerts-page`,
+        alertTopicArn(this.region, this.account, env, "page"),
       ),
     );
 

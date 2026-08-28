@@ -531,7 +531,7 @@ describe("BedrockMeterStack", () => {
       const tier = pages ? "page" : "warn";
       if (pages) paged++;
       expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain(
-        `isol8-${expectedEnv}-alerts-${tier}`,
+        `lightbulb-${expectedEnv}-alerts-${tier}`,
       );
     }
     // All three kill-failure alarms (iam, ecs, deny-token), both envs. If this

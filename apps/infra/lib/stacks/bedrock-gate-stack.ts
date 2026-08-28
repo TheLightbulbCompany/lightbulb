@@ -10,7 +10,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { legacyTablePrefix, tablePrefix } from "../table-names";
+import { alertTopicArn, legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -346,14 +346,14 @@ export class BedrockGateStack extends cdk.Stack {
       const alarmTopic = sns.Topic.fromTopicArn(
         this,
         `GateAlerts${idSuffix}`,
-        `arn:aws:sns:${this.region}:${this.account}:isol8-${gateEnv}-alerts-warn`,
+        alertTopicArn(this.region, this.account, gateEnv, "warn"),
       );
       const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
       const pageTopic = sns.Topic.fromTopicArn(
         this,
         `GatePage${idSuffix}`,
-        `arn:aws:sns:${this.region}:${this.account}:isol8-${gateEnv}-alerts-page`,
+        alertTopicArn(this.region, this.account, gateEnv, "page"),
       );
       const pageAction = new cloudwatchActions.SnsAction(pageTopic);
 

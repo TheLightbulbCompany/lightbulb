@@ -139,13 +139,13 @@ export class ObservabilityStack extends cdk.Stack {
 
     // Page tier: fires on customer-impacting events.
     this.pageTopic = new sns.Topic(this, "AlertsPage", {
-      topicName: `isol8-${props.envName}-alerts-page`,
+      topicName: `${resourcePrefix(props.envName)}alerts-page`,
       displayName: "Isol8 Page",
     });
 
     // Warn tier.
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {
-      topicName: `isol8-${props.envName}-alerts-warn`,
+      topicName: `${resourcePrefix(props.envName)}alerts-warn`,
       displayName: "Isol8 Warn",
     });
 
@@ -245,12 +245,12 @@ export class ObservabilityStack extends cdk.Stack {
     // -----------------------------------------------------------------------
     new cdk.CfnOutput(this, "PageTopicArn", {
       value: this.pageTopic.topicArn,
-      exportName: `isol8-${props.envName}-page-topic-arn`,
+      exportName: `${resourcePrefix(props.envName)}page-topic-arn`,
     });
 
     new cdk.CfnOutput(this, "WarnTopicArn", {
       value: this.warnTopic.topicArn,
-      exportName: `isol8-${props.envName}-warn-topic-arn`,
+      exportName: `${resourcePrefix(props.envName)}warn-topic-arn`,
     });
   }
 

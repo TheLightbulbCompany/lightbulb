@@ -19,8 +19,8 @@ import { Acquisition, Activation, Counters, Headline, NorthStar, Owners, Posthog
 
 export const dynamic = "force-dynamic";
 
-const DETAIL_SUMMARY = "cursor-pointer text-sm text-zinc-300 py-2";
-const DETAIL_WRAPPER = "border-t border-zinc-800 first:border-t-0";
+const DETAIL_SUMMARY = "cursor-pointer text-sm text-muted-foreground py-2";
+const DETAIL_WRAPPER = "border-t border-border first:border-t-0";
 
 export default async function AdminGrowthPage() {
   const { getToken } = await auth();
@@ -31,8 +31,8 @@ export default async function AdminGrowthPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-zinc-100">Growth</h1>
-        <p className="text-xs text-zinc-500">
+        <h1 className="text-xl font-semibold text-foreground">Growth</h1>
+        <p className="text-xs text-muted-foreground">
           Metric set from docs/growth/2026-08-17-blitzscaling-strategy.md §3. External owners only; internal accounts below.
           {data ? ` Generated ${data.generated_at}, ${data.window_weeks}-week window.` : ""}
         </p>

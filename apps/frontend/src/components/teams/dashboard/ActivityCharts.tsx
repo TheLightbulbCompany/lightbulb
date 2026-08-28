@@ -5,44 +5,47 @@
 // 4 charts (Run Activity / Priority / Issue Status / Success Rate) +
 // shared helpers (ChartCard, DateLabels, ChartLegend, getLast14Days).
 // Vanilla flexbox + percentage heights — no chart library.
-// Colors mapped onto the editorial palette (forest / forest-soft /
-// warn / mute / mute-soft / ink / ink-soft / edge) — class-only swap,
-// chart axis + height logic untouched.
+// Colors mapped onto the brand tokens (midnight and its steps / brass /
+// warn / edge / the state pairs) — class-only swap, chart axis + height
+// logic untouched.
 
 import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/shared/types";
 
-/* ---- Editorial color tokens (used inline via CSS var(...)) ----
- * Centralized so every chart pulls from the same semantic mapping.
+/* ---- Brand tokens (used inline via CSS var(...)) ----
+ * Centralized so every chart pulls from the same semantic mapping. Weight
+ * carries most of the meaning here: the midnight ramp (midnight ->
+ * midnight-soft -> midnight-muted -> midnight-faint -> edge) reads
+ * heaviest-to-faintest, and a state colour is spent only where one is real.
  * Run-status semantics:
- *   succeeded -> forest      (deep green, success)
- *   failed    -> warn        (amber, alert)
- *   other     -> mute        (neutral)
+ *   succeeded -> midnight       (heaviest, success)
+ *   failed    -> warn           (alert)
+ *   other     -> midnight-muted (neutral)
  * Priority semantics (ordered crit -> low):
- *   critical  -> warn        (amber alert)
- *   high      -> forest      (deep, weighty)
- *   medium    -> mute        (neutral)
- *   low       -> mute-soft   (faint)
+ *   critical  -> warn            (alert)
+ *   high      -> midnight        (weighty)
+ *   medium    -> midnight-muted  (neutral)
+ *   low       -> midnight-faint  (faint)
  * Status semantics:
- *   todo         -> mute-soft (waiting)
- *   in_progress  -> forest-soft (active)
- *   in_review    -> ink-soft  (consideration)
- *   done         -> forest    (completed)
- *   blocked      -> warn      (alert)
- *   cancelled    -> mute      (neutral)
- *   backlog      -> edge      (parked)
+ *   todo         -> midnight-faint (waiting)
+ *   in_progress  -> brass          (active)
+ *   in_review    -> midnight-soft  (consideration)
+ *   done         -> midnight       (completed)
+ *   blocked      -> warn           (alert)
+ *   cancelled    -> midnight-muted (neutral)
+ *   backlog      -> edge           (parked)
  * Success-rate thresholds:
- *   >= 80%      -> forest
+ *   >= 80%      -> ok
  *   >= 50%      -> warn
- *   < 50%       -> ink        (dark, somber)
+ *   < 50%       -> err
  */
 const COLOR = {
-  succeeded: "var(--forest)",
+  succeeded: "var(--midnight)",
   failed: "var(--warn)",
-  other: "var(--mute)",
+  other: "var(--midnight-muted)",
   emptyBar: "var(--edge-soft)",
-  rateHigh: "var(--forest)",
+  rateHigh: "var(--ok)",
   rateMid: "var(--warn)",
-  rateLow: "var(--ink)",
+  rateLow: "var(--err)",
 } as const;
 
 /* ---- Utilities ---- */
@@ -73,7 +76,7 @@ function DateLabels({ days }: { days: string[] }) {
           {(i === 0 || i === 6 || i === 13) ? (
             <span
               className="text-[9px] tabular-nums font-mono"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               {formatDayLabel(day)}
             </span>
@@ -91,7 +94,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
         <span
           key={item.label}
           className="flex items-center gap-1.5 text-[10px]"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           <span
             className="h-1.5 w-1.5 rounded-full shrink-0"
@@ -110,14 +113,14 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
       <div className="flex items-baseline justify-between gap-2">
         <h3
           className="font-editorial-serif text-2xl"
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
         >
           {title}
         </h3>
         {subtitle && (
           <span
             className="text-[10px] tabular-nums"
-            style={{ color: "var(--mute)" }}
+            style={{ color: "var(--midnight-muted)" }}
           >
             {subtitle}
           </span>
@@ -162,7 +165,7 @@ function EmptyChartCopy({ children }: { children: React.ReactNode }) {
   return (
     <p
       className="font-editorial-serif text-base italic"
-      style={{ color: "var(--mute)" }}
+      style={{ color: "var(--midnight-muted)" }}
     >
       {children}
     </p>
@@ -189,7 +192,7 @@ export function RunActivityChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} runs`}
             >
               {total > 0 ? (
@@ -230,9 +233,9 @@ export function RunActivityChart(props: RunChartProps) {
 
 const priorityColors: Record<string, string> = {
   critical: "var(--warn)",
-  high: "var(--forest)",
-  medium: "var(--mute)",
-  low: "var(--mute-soft)",
+  high: "var(--midnight)",
+  medium: "var(--midnight-muted)",
+  low: "var(--midnight-faint)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -263,7 +266,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
@@ -289,12 +292,12 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "var(--mute-soft)",
-  in_progress: "var(--forest-soft)",
-  in_review: "var(--ink-soft)",
-  done: "var(--forest)",
+  todo: "var(--midnight-faint)",
+  in_progress: "var(--brass)",
+  in_review: "var(--midnight-soft)",
+  done: "var(--midnight)",
   blocked: "var(--warn)",
-  cancelled: "var(--mute)",
+  cancelled: "var(--midnight-muted)",
   backlog: "var(--edge)",
 };
 
@@ -337,13 +340,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--mute)" }} />
+                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--midnight-muted)" }} />
                   ) : null)}
                 </div>
               ) : (
@@ -357,7 +360,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--mute)", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--midnight-muted)", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }
@@ -380,7 +383,7 @@ export function SuccessRateChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deeper)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}
             >
               {entry.total > 0 ? (

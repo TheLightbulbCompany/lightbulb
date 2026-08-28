@@ -2,7 +2,7 @@
 // 4 chart components (RunActivity / Priority / IssueStatus / SuccessRate).
 // Empty-state copy + rendered bar segments are verified per component.
 //
-// Color assertions use the editorial palette tokens (--forest, --warn, --mute,
+// Color assertions use the editorial palette tokens (--midnight, --warn, --midnight-muted,
 // etc.) which the chart components emit via inline style attributes.
 
 import { describe, test, expect } from "vitest";
@@ -68,7 +68,7 @@ describe("RunActivityChart", () => {
       { date: today, succeeded: 3, failed: 1, other: 0, total: 4 },
     ];
     const { container } = render(<RunActivityChart activity={activity} />);
-    const succeededBar = container.querySelector('[style*="var(--forest)"]');
+    const succeededBar = container.querySelector('[style*="var(--midnight)"]');
     const failedBar = container.querySelector('[style*="var(--warn)"]');
     expect(succeededBar).not.toBeNull();
     expect(failedBar).not.toBeNull();
@@ -80,7 +80,7 @@ describe("RunActivityChart", () => {
       { date: today, succeeded: 0, failed: 0, other: 2, total: 2 },
     ];
     const { container } = render(<RunActivityChart activity={activity} />);
-    const otherBar = container.querySelector('[style*="var(--mute)"]');
+    const otherBar = container.querySelector('[style*="var(--midnight-muted)"]');
     expect(otherBar).not.toBeNull();
   });
 });
@@ -100,7 +100,7 @@ describe("PriorityChart", () => {
     const { container } = render(<PriorityChart issues={issues} />);
     // critical -> warn, high -> forest in the editorial mapping
     const criticalSegment = container.querySelector('[style*="var(--warn)"]');
-    const highSegment = container.querySelector('[style*="var(--forest)"]');
+    const highSegment = container.querySelector('[style*="var(--midnight)"]');
     expect(criticalSegment || highSegment).not.toBeNull();
   });
 
@@ -154,27 +154,28 @@ describe("SuccessRateChart", () => {
     expect(screen.getByText(/no runs yet/i)).toBeInTheDocument();
   });
 
-  test("computes success rate per day and uses forest token for >= 80%", () => {
+  test("computes success rate per day and uses the ok token for >= 80%", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 8, failed: 2, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    // 80% rate -> forest token
-    const forestBar = container.querySelector('[style*="var(--forest)"]');
-    expect(forestBar).not.toBeNull();
+    // 80% rate -> ok token
+    const okBar = container.querySelector('[style*="var(--ok)"]');
+    expect(okBar).not.toBeNull();
     // tooltip should encode the percentage
     const tooltipNode = container.querySelector('[title*="80%"]');
     expect(tooltipNode).not.toBeNull();
   });
 
-  test("uses ink token for low success rate (< 50%)", () => {
+  test("uses the err token for low success rate (< 50%)", () => {
     const today = new Date().toISOString().slice(0, 10);
     const activity: DashboardRunActivityDay[] = [
       { date: today, succeeded: 1, failed: 9, other: 0, total: 10 },
     ];
     const { container } = render(<SuccessRateChart activity={activity} />);
-    const lowBar = container.querySelector('[style*="var(--ink)"]');
+    const lowBar = container.querySelector('[style*="var(--err)"]');
     expect(lowBar).not.toBeNull();
+    expect(container.querySelector('[style*="var(--ok)"]')).toBeNull();
   });
 });

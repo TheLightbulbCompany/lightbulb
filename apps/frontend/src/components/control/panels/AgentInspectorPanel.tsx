@@ -106,7 +106,7 @@ export function AgentInspectorPanel({
 
   if (!agentId) {
     return (
-      <div className="flex items-center justify-center py-12 text-sm text-[var(--mute)]">
+      <div className="flex items-center justify-center py-12 text-sm text-[var(--midnight-muted)]">
         Select an agent to inspect.
       </div>
     );
@@ -141,8 +141,8 @@ export function AgentInspectorPanel({
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
               activeTab === tab.id
-                ? "bg-[var(--cream)] text-[var(--forest)]"
-                : "text-[var(--mute)] hover:text-[var(--ink)]",
+                ? "bg-[var(--cream)] text-[var(--midnight)]"
+                : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
             )}
             onClick={() => setActiveTab(tab.id)}
           >
@@ -168,7 +168,7 @@ export function AgentInspectorPanel({
               >
                 <h3
                   id="inspector-org-heading"
-                  className="text-[10px] uppercase tracking-wider text-[var(--mute)] mb-3"
+                  className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)] mb-3"
                 >
                   Organization
                 </h3>

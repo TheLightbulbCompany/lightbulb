@@ -12,10 +12,11 @@
 //     inline-hidden — once Tooltip is vendored, swap the `<>` wrapper for
 //     <Tooltip><TooltipTrigger asChild>...</TooltipTrigger><TooltipContent>
 //     ...</TooltipContent></Tooltip> and drop the title attribute.
-// Editorial retheme: the upstream amber tokens (border-amber-500/40,
-// bg-amber-500/10, text-amber-700) map onto `--warn` in the editorial
-// palette — the badge still reads as "attention required" against the
-// cream surface, but in the right hue for the new chrome.
+// Editorial retheme: the upstream badge's amber border, background wash,
+// and label text (a 40%/10%-opacity amber-500 border/fill plus amber-700
+// text) map onto `--warn` in the editorial palette — the badge still reads
+// as "attention required" against the cream surface, but in the right hue
+// for the new chrome.
 
 import Link from "next/link";
 import { Eye } from "lucide-react";

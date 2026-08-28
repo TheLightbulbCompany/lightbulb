@@ -230,7 +230,7 @@ export function AssigneePicker({
 
   const triggerClass =
     variant === "inline"
-      ? "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-[var(--cream-deeper)]"
+      ? "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-[var(--cream-deep)]"
       : "inline-flex items-center gap-2 text-sm hover:underline";
 
   return (
@@ -239,7 +239,7 @@ export function AssigneePicker({
         <button
           type="button"
           className={cn(triggerClass, className)}
-          style={{ color: hasAssignee ? "var(--ink)" : "var(--mute)" }}
+          style={{ color: hasAssignee ? "var(--midnight)" : "var(--midnight-muted)" }}
         >
           <User className="h-3.5 w-3.5" />
           <span>{triggerLabel}</span>
@@ -251,7 +251,7 @@ export function AssigneePicker({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         <input
@@ -276,7 +276,7 @@ export function AssigneePicker({
           aria-activedescendant={
             activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined
           }
-          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul id={listboxId} className="max-h-56 overflow-y-auto" role="listbox">
@@ -294,10 +294,10 @@ export function AssigneePicker({
               onClick={() => handleOptionClick({ kind: "clear" })}
               onMouseEnter={() => setActiveIndex(0)}
               className={cn(
-                "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
+                "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
                 activeIndex === 0 && "bg-[var(--cream-deeper)]",
               )}
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               No {noun}
             </button>
@@ -305,7 +305,7 @@ export function AssigneePicker({
           {peopleEnabled && (
             <li
               className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             >
               Agents
@@ -328,7 +328,7 @@ export function AssigneePicker({
                   onClick={() => handleOptionClick(option)}
                   onMouseEnter={() => setActiveIndex(optionIndex)}
                   className={cn(
-                    "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
+                    "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
                     activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                   )}
                 >
@@ -341,7 +341,7 @@ export function AssigneePicker({
             <>
               <li
                 className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide"
-                style={{ color: "var(--mute)" }}
+                style={{ color: "var(--midnight-muted)" }}
                 aria-hidden="true"
               >
                 People
@@ -366,7 +366,7 @@ export function AssigneePicker({
                       onClick={() => handleOptionClick(option)}
                       onMouseEnter={() => setActiveIndex(optionIndex)}
                       className={cn(
-                        "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deeper)]",
+                        "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deep)]",
                         activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                       )}
                     >
@@ -380,7 +380,7 @@ export function AssigneePicker({
                 );
               })}
               {visibleMembers.length === 0 && (
-                <li className="px-2 py-1.5 text-xs" style={{ color: "var(--mute)" }}>
+                <li className="px-2 py-1.5 text-xs" style={{ color: "var(--midnight-muted)" }}>
                   No people
                 </li>
               )}
@@ -389,7 +389,7 @@ export function AssigneePicker({
           {visibleAgents.length === 0 && !peopleEnabled && (
             <li
               className="px-2 py-2 text-xs"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               No matches
             </li>

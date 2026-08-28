@@ -37,17 +37,17 @@ export function EmptyState({
     <div
       role="status"
       className={cn(
-        "flex w-full flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-white/10 bg-white/[0.02] px-6 py-16 text-center",
+        "flex w-full flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-card px-6 py-16 text-center",
         className,
       )}
     >
       {icon ? (
-        <div className="text-zinc-500" aria-hidden="true">
+        <div className="text-muted-foreground" aria-hidden="true">
           {icon}
         </div>
       ) : null}
-      <h2 className="text-lg font-semibold text-white">{title}</h2>
-      <p className="max-w-md text-sm text-zinc-400">{body}</p>
+      <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+      <p className="max-w-md text-sm text-muted-foreground">{body}</p>
       {action ? (
         action.href ? (
           <Button asChild variant="outline" size="sm">

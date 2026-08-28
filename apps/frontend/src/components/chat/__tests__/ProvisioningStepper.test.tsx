@@ -454,7 +454,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // what made this gate paint as raw unstyled text in prod.
     const card = screen.getByTestId("team-billing-card");
     expect(card.className).not.toMatch(/settings-/);
-    expect(card.className).toMatch(/\bbg-white\b/);
+    expect(card.className).toMatch(/bg-cream(?![-\w])/);
     // Same centerpiece footer the generic blocked card gets.
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
   });

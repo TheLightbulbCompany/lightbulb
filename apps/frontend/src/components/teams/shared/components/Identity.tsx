@@ -63,8 +63,8 @@ export function Identity({
           avatarSize[size],
         )}
         style={{
-          backgroundColor: "var(--cream-deeper)",
-          color: "var(--mute)",
+          backgroundColor: "var(--cream-deep)",
+          color: "var(--midnight-muted)",
           border: "1px solid var(--edge)",
         }}
         aria-hidden={avatarUrl ? undefined : true}
@@ -82,7 +82,7 @@ export function Identity({
       </span>
       <span
         className={cn("truncate", textSize[size])}
-        style={{ color: "var(--ink)" }}
+        style={{ color: "var(--midnight)" }}
       >
         {name}
       </span>

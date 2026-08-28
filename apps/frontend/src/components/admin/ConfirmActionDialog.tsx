@@ -105,7 +105,7 @@ export function ConfirmActionDialog({
           <AlertDialogTitle>{actionLabel}</AlertDialogTitle>
           <AlertDialogDescription>
             Type{" "}
-            <span className="font-mono font-semibold text-white">
+            <span className="font-mono font-semibold text-foreground">
               {confirmText}
             </span>{" "}
             below to confirm.
@@ -115,7 +115,7 @@ export function ConfirmActionDialog({
         {locked ? (
           <p
             role="alert"
-            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
+            className="rounded-md border-l-2 border-warn bg-card px-3 py-2 text-sm text-warn"
           >
             Locked. Reload the page to try again.
           </p>
@@ -136,7 +136,7 @@ export function ConfirmActionDialog({
               aria-label={`Type ${confirmText} to confirm`}
             />
             {mismatchError ? (
-              <p role="alert" className="text-sm text-red-400">
+              <p role="alert" className="text-sm text-err">
                 Type the exact id to confirm — autofill doesn&apos;t count.
               </p>
             ) : null}
@@ -152,7 +152,7 @@ export function ConfirmActionDialog({
             aria-label={`Confirm ${actionLabel}`}
             className={cn(
               destructive &&
-                "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20",
+                "bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20",
             )}
           >
             {busy ? "Working\u2026" : actionLabel}

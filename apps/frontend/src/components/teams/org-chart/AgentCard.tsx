@@ -110,7 +110,7 @@ export function AgentCard({
         top: `${y}px`,
         width: `${CARD_W}px`,
         height: `${CARD_H}px`,
-        color: "var(--ink)",
+        color: "var(--midnight)",
       }}
     >
       {/* Header: glyph avatar + name + status dot */}
@@ -118,11 +118,11 @@ export function AgentCard({
         <span className="relative shrink-0">
           <span
             className="flex h-7 w-7 items-center justify-center rounded-full"
-            style={{ backgroundColor: "var(--cream-deeper)" }}
+            style={{ backgroundColor: "var(--cream-deep)" }}
           >
             <Bot
               className="h-4 w-4"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             />
           </span>
@@ -145,7 +145,7 @@ export function AgentCard({
       </div>
 
       {/* Subtitle: title or role */}
-      <div className="text-xs capitalize truncate" style={{ color: "var(--mute)" }}>
+      <div className="text-xs capitalize truncate" style={{ color: "var(--midnight-muted)" }}>
         {subtitle}
       </div>
 
@@ -153,7 +153,7 @@ export function AgentCard({
       {capabilities?.trim() ? (
         <div
           className="text-[11px] leading-snug line-clamp-2"
-          style={{ color: "var(--ink-soft)" }}
+          style={{ color: "var(--midnight-soft)" }}
         >
           {capabilities}
         </div>
@@ -161,13 +161,13 @@ export function AgentCard({
 
       {/* Footer: status text + last-active, pinned to the bottom edge */}
       <div className="mt-auto flex items-center justify-between gap-2 text-[10px]">
-        <span className="truncate" style={{ color: "var(--mute)" }} title={statusText}>
+        <span className="truncate" style={{ color: "var(--midnight-muted)" }} title={statusText}>
           {statusText}
         </span>
         {lastHeartbeatAt ? (
           <span
             className="shrink-0 whitespace-nowrap"
-            style={{ color: "var(--mute)" }}
+            style={{ color: "var(--midnight-muted)" }}
             title={new Date(lastHeartbeatAt).toLocaleString()}
           >
             {timeAgo(lastHeartbeatAt)}

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Host_Grotesk, DM_Sans, Lora, Epilogue } from "next/font/google";
+import { Geist, Geist_Mono, Source_Sans_3, DM_Sans, Lora } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
@@ -7,6 +7,7 @@ import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
@@ -20,10 +21,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const hostGrotesk = Host_Grotesk({
-  variable: "--font-host-grotesk",
+// §05: the product face. Never below 400 — the manual forbids light weights.
+const sourceSans = Source_Sans_3({
+  variable: "--font-source-sans",
   subsets: ["latin"],
-  weight: ["400", "700"],
+  weight: ["400", "500", "600"],
+  display: "swap",
 });
 
 const dmSans = DM_Sans({
@@ -37,12 +40,6 @@ const lora = Lora({
   subsets: ["latin"],
   weight: ["400", "700"],
   style: ["normal", "italic"],
-});
-
-const epilogue = Epilogue({
-  variable: "--font-epilogue",
-  subsets: ["latin"],
-  weight: ["300", "400", "500"],
 });
 
 const SITE_TITLE = "Lightbulb AI — AI Agents for Autonomous Businesses";
@@ -91,16 +88,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
+    <ClerkProvider appearance={clerkAppearance}>
       {/* suppressHydrationWarning: the script above writes an attribute onto
           <html> that the server-rendered markup does not carry. */}
-      <html lang="en" suppressHydrationWarning>
+      <html
+        lang="en"
+        suppressHydrationWarning
+        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable} ${geistSans.variable} ${dmSans.variable}`}
+      >
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         </head>
-        <body
-          className={`${geistSans.variable} ${geistMono.variable} ${hostGrotesk.variable} ${dmSans.variable} ${lora.variable} ${epilogue.variable} antialiased`}
-        >
+        <body className="antialiased">
           <ErrorBoundary>
             <SwrProvider>
               <PostHogProvider>

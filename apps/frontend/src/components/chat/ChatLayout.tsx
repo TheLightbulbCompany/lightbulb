@@ -255,7 +255,7 @@ export function ChatLayout({
   if (onboardingPhase !== "ready") {
     return (
       <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>
+        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
       </div>
     );
   }
@@ -399,7 +399,7 @@ export function ChatLayout({
             {onOpenFile && (
               <button
                 onClick={() => { capture("file_browser_opened"); onOpenFile?.(""); }}
-                className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1"
+                className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
                 title="Browse workspace files"
               >
                 <FolderOpen size={18} />
@@ -415,7 +415,7 @@ export function ChatLayout({
                 <button
                   type="button"
                   onClick={() => openAgentInspector?.(currentAgentId)}
-                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
                   title="Open agent inspector"
                   aria-label="Open agent inspector"
                 >
@@ -424,7 +424,7 @@ export function ChatLayout({
                 <button
                   type="button"
                   onClick={() => openAgentIssues?.(currentAgentId)}
-                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
                   title="See this agent's work"
                   aria-label="See this agent's work"
                 >
@@ -434,7 +434,7 @@ export function ChatLayout({
                   type="button"
                   onClick={() => { void handleTogglePauseResume(); }}
                   disabled={agentActionBusy}
-                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)] disabled:opacity-50"
+                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)] disabled:opacity-50"
                   title={currentAgentPaused ? "Resume agent" : "Pause agent"}
                   aria-label={currentAgentPaused ? "Resume agent" : "Pause agent"}
                 >
@@ -445,7 +445,7 @@ export function ChatLayout({
             <div style={{ flex: 1 }} />
             <button
               onClick={() => openSupport()}
-              className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 mr-1"
+              className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 mr-1"
               title="Get help / report a problem"
               aria-label="Get help"
             >

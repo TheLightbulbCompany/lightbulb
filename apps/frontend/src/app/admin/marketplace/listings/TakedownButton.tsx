@@ -111,7 +111,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
             type="button"
             size="sm"
             variant="outline"
-            className="border-red-700/60 bg-red-700/30 text-red-200 hover:bg-red-700/50"
+            className="border-err text-err hover:bg-accent hover:text-err"
           >
             Take down listing
           </Button>
@@ -130,7 +130,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
           {locked ? (
             <p
               role="alert"
-              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
+              className="rounded-md border-l-2 border-warn bg-card px-3 py-2 text-sm text-warn"
             >
               Locked. Reload the page to try again.
             </p>
@@ -139,7 +139,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-reason"
-                  className="text-xs font-medium uppercase tracking-wide text-zinc-400"
+                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                 >
                   Reason
                 </label>
@@ -148,7 +148,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
                   value={reason}
                   onChange={(e) => setReason(e.target.value as Reason)}
                   disabled={busy}
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none"
                 >
                   {REASONS.map((r) => (
                     <option key={r.value} value={r.value}>
@@ -161,7 +161,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-basis"
-                  className="text-xs font-medium uppercase tracking-wide text-zinc-400"
+                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                 >
                   Basis ({MIN_BASIS_LENGTH}-{MAX_BASIS_LENGTH} chars)
                 </label>
@@ -173,13 +173,13 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
                   rows={4}
                   disabled={busy}
                   maxLength={MAX_BASIS_LENGTH}
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
                   aria-label="Takedown basis (recorded on audit log)"
                 />
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-muted-foreground">
                   {basisLen} / {MAX_BASIS_LENGTH}
                   {basisLen > 0 && basisLen < MIN_BASIS_LENGTH && (
-                    <span className="text-amber-400">
+                    <span className="text-warn">
                       {" "}
                       — at least {MIN_BASIS_LENGTH} characters required
                     </span>
@@ -190,10 +190,10 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-confirm"
-                  className="text-xs font-medium uppercase tracking-wide text-zinc-400"
+                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                 >
                   Type{" "}
-                  <span className="font-mono font-semibold text-white">
+                  <span className="font-mono font-semibold text-foreground">
                     {confirmText}
                   </span>{" "}
                   to confirm
@@ -213,7 +213,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
           )}
 
           {error && (
-            <p role="alert" className="text-xs text-red-400">
+            <p role="alert" className="text-xs text-err">
               {error}
             </p>
           )}
@@ -225,7 +225,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               onClick={handleSubmit}
               disabled={submitDisabled}
               aria-busy={busy}
-              className="bg-destructive text-white hover:bg-destructive/90"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {busy ? "Working…" : "Take down listing"}
             </Button>

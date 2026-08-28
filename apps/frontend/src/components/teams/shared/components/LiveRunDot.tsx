@@ -24,7 +24,7 @@ interface LiveRunDotProps {
 const TONE: Record<LiveRunActivity, { color: string; halo: string; label: string }> = {
   // A lively soft-forest "ping" reads as working; a slow amber "pulse" reads
   // as stuck / needs-a-look — never red (the run is still live, not failed).
-  running: { color: "var(--forest)", halo: "var(--forest-soft)", label: "Agent running" },
+  running: { color: "var(--midnight)", halo: "var(--brass)", label: "Agent running" },
   stalled: { color: "var(--warn)", halo: "var(--warn)", label: "Agent may be stuck" },
 };
 

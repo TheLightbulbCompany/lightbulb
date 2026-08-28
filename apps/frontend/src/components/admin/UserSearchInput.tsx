@@ -49,7 +49,7 @@ export function UserSearchInput({
   return (
     <div className={cn("relative w-full", className)}>
       <Search
-        className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500"
+        className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         aria-hidden="true"
       />
       <Input
@@ -63,7 +63,7 @@ export function UserSearchInput({
       />
       {isLoading ? (
         <span
-          className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 text-xs text-zinc-400"
+          className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 text-xs text-muted-foreground"
           role="status"
           aria-live="polite"
         >

@@ -108,7 +108,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-[#f0ebe2] transition-colors"
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-cream-deep transition-colors"
         >
           <X className="h-4 w-4" />
         </button>
@@ -141,7 +141,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
       <AgentPaperclipFields value={meta} onChange={setMeta} disabled={creating} />
 
       {(clientError || error) && !atAgentLimit && (
-        <p className="text-xs text-red-500">{clientError || error}</p>
+        <p className="text-xs text-err">{clientError || error}</p>
       )}
       {/* The plan agent limit is not a failure the user can retry their way out
           of, so it gets an action instead of red text. Same reasoning as the
@@ -160,7 +160,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
               "Upgrade to Ultra Pro"
             )}
           </Button>
-          {upgradeError && <p className="text-xs text-red-500">{upgradeError}</p>}
+          {upgradeError && <p className="text-xs text-err">{upgradeError}</p>}
         </div>
       )}
 

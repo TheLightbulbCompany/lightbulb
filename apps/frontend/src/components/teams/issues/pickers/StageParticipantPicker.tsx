@@ -23,8 +23,8 @@ import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/type
 // Shared chip style so selected participants read identically to the rest of
 // the rail's pill rows (Labels, Related Tasks, blockers).
 const CHIP_STYLE = {
-  background: "var(--cream-deeper)",
-  color: "var(--ink-soft)",
+  background: "var(--cream-deep)",
+  color: "var(--midnight-soft)",
   border: "1px solid var(--edge)",
 } as const;
 
@@ -103,7 +103,7 @@ export function StageParticipantPicker({
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
           style={CHIP_STYLE}
         >
-          <User className="h-3 w-3 shrink-0" style={{ color: "var(--mute)" }} />
+          <User className="h-3 w-3 shrink-0" style={{ color: "var(--midnight-muted)" }} />
           <span className="truncate">{valueLabel(value)}</span>
         </span>
       ))}
@@ -118,7 +118,7 @@ export function StageParticipantPicker({
           <button
             type="button"
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors hover:underline"
-            style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+            style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           >
             <Plus className="h-3 w-3" />
             Add {noun}
@@ -130,7 +130,7 @@ export function StageParticipantPicker({
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
         >
           <input
@@ -143,7 +143,7 @@ export function StageParticipantPicker({
                 : `Search agents...`
             }
             aria-label={`Search ${noun}s`}
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
             style={{ borderBottom: "1px solid var(--edge)" }}
           />
           <ul
@@ -153,7 +153,7 @@ export function StageParticipantPicker({
           >
             <li
               className="px-2 pt-1 pb-1 text-[10px] uppercase tracking-wide"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             >
               Agents
@@ -167,7 +167,7 @@ export function StageParticipantPicker({
                     type="button"
                     onClick={() => toggle(value)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deeper)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -183,7 +183,7 @@ export function StageParticipantPicker({
               );
             })}
             {visibleAgents.length === 0 && (
-              <li className="px-2 py-1.5 text-xs" style={{ color: "var(--mute)" }}>
+              <li className="px-2 py-1.5 text-xs" style={{ color: "var(--midnight-muted)" }}>
                 No matching agents.
               </li>
             )}
@@ -191,7 +191,7 @@ export function StageParticipantPicker({
               <>
                 <li
                   className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide"
-                  style={{ color: "var(--mute)" }}
+                  style={{ color: "var(--midnight-muted)" }}
                   aria-hidden="true"
                 >
                   People
@@ -209,7 +209,7 @@ export function StageParticipantPicker({
                         type="button"
                         onClick={() => toggle(value)}
                         className={cn(
-                          "flex w-full items-center gap-2 px-2 py-1.5 text-left rounded hover:bg-[var(--cream-deeper)]",
+                          "flex w-full items-center gap-2 px-2 py-1.5 text-left rounded hover:bg-[var(--cream-deep)]",
                           isSelected && "bg-[var(--cream-deeper)]",
                         )}
                       >
@@ -231,7 +231,7 @@ export function StageParticipantPicker({
                 {visibleMembers.length === 0 && (
                   <li
                     className="px-2 py-1.5 text-xs"
-                    style={{ color: "var(--mute)" }}
+                    style={{ color: "var(--midnight-muted)" }}
                   >
                     No matching people.
                   </li>

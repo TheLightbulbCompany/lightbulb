@@ -26,12 +26,12 @@ export function MarketplaceDrawer() {
       {/* Scrim */}
       <div
         onClick={close}
-        className="fixed inset-0 z-50 bg-[rgba(20,30,25,0.45)] transition-opacity duration-250"
+        className="fixed inset-0 z-50 bg-[var(--midnight)]/45 transition-opacity duration-250"
         aria-hidden="true"
       />
       <aside
         data-mode={isPublish ? "publish" : undefined}
-        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-[-30px_0_80px_rgba(10,30,20,0.16)] flex flex-col transform translate-x-0 transition-transform duration-350"
+        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-[-30px_0_80px_color-mix(in_srgb,var(--midnight)_16%,transparent)] flex flex-col transform translate-x-0 transition-transform duration-350"
         aria-label="Marketplace drawer"
       >
         {/* HEADER */}
@@ -43,7 +43,7 @@ export function MarketplaceDrawer() {
                 <button
                   type="button"
                   onClick={() => open({ view: "publish" })}
-                  className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
+                  className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Publish your agent
@@ -52,7 +52,7 @@ export function MarketplaceDrawer() {
                   href="/marketplace"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--ink)] inline-flex items-center gap-1"
+                  className="text-[12.5px] text-muted-foreground hover:text-[var(--midnight)] inline-flex items-center gap-1"
                 >
                   Open in full page <ExternalLink className="w-3 h-3" />
                 </Link>
@@ -62,7 +62,7 @@ export function MarketplaceDrawer() {
               type="button"
               onClick={close}
               aria-label="Close drawer"
-              className="w-8 h-8 rounded-full border border-[var(--edge)] bg-white text-[#5b5b5b] hover:text-[var(--ink)] flex items-center justify-center"
+              className="w-8 h-8 rounded-full border border-[var(--edge)] bg-card text-muted-foreground hover:text-[var(--midnight)] flex items-center justify-center"
             >
               <X className="w-4 h-4" />
             </button>
@@ -85,15 +85,15 @@ function DefaultHeader() {
   const { state, setView } = useMarketplaceDrawer();
   return (
     <div className="flex items-center gap-4 min-w-0">
-      <span className="font-editorial-serif italic text-[13px] text-[#5b5b5b]">Marketplace</span>
-      <div className="bg-[#f3eee5] rounded-full p-1 flex gap-1">
+      <span className="font-editorial-serif italic text-[13px] text-muted-foreground">Marketplace</span>
+      <div className="bg-cream-deep rounded-full p-1 flex gap-1">
         <button
           type="button"
           onClick={() => setView("browse")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "browse"
-              ? "bg-white text-[var(--ink)] shadow-sm"
-              : "text-[#5b5b5b]"
+              ? "bg-card text-[var(--midnight)] shadow-sm"
+              : "text-muted-foreground"
           }`}
         >
           Browse
@@ -103,8 +103,8 @@ function DefaultHeader() {
           onClick={() => setView("mine")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "mine"
-              ? "bg-white text-[var(--ink)] shadow-sm"
-              : "text-[#5b5b5b]"
+              ? "bg-card text-[var(--midnight)] shadow-sm"
+              : "text-muted-foreground"
           }`}
         >
           My listings
@@ -123,12 +123,12 @@ function PublishHeader() {
       <button
         type="button"
         onClick={() => setView(previous)}
-        className="inline-flex items-center gap-1.5 text-[13px] text-[#5b5b5b] hover:text-[var(--ink)] hover:bg-[#f3eee5] rounded-full px-2.5 py-1.5"
+        className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground hover:text-[var(--midnight)] hover:bg-cream-deep rounded-full px-2.5 py-1.5"
       >
         <ChevronLeft className="w-3.5 h-3.5" />
         Marketplace
       </button>
-      <span className="font-editorial-serif italic text-[14px] text-[#5b5b5b]">
+      <span className="font-editorial-serif italic text-[14px] text-muted-foreground">
         {isEditing ? `Edit "${state.editListing?.name}"` : "Publish an agent"}
       </span>
     </div>
@@ -138,8 +138,8 @@ function PublishHeader() {
 function DetailHeader() {
   return (
     <div className="flex items-center gap-3.5 min-w-0">
-      <span className="font-editorial-serif italic text-[13px] text-[#5b5b5b]">Marketplace</span>
-      <span className="font-editorial-serif italic text-[14px] text-[#5b5b5b]">Listing details</span>
+      <span className="font-editorial-serif italic text-[13px] text-muted-foreground">Marketplace</span>
+      <span className="font-editorial-serif italic text-[14px] text-muted-foreground">Listing details</span>
     </div>
   );
 }
@@ -154,7 +154,7 @@ function DetailBody() {
       <button
         type="button"
         onClick={() => setView("mine")}
-        className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline mb-3"
+        className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline mb-3"
       >
         ← Back to my listings
       </button>

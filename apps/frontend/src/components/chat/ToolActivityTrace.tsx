@@ -170,23 +170,23 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
         {running && (
           <span
             aria-hidden
-            className="absolute -left-[17px] top-[9px] h-[5px] w-[5px] rounded-full bg-[var(--forest-soft)] shadow-[0_0_0_3px_var(--forest-tint)] motion-safe:animate-pulse"
+            className="absolute -left-[17px] top-[9px] h-[5px] w-[5px] rounded-full bg-[var(--brass)] shadow-[0_0_0_3px_var(--cream-deep)] motion-safe:animate-pulse"
           />
         )}
         {call.status === "error" && (
           <span
             aria-hidden
-            className="absolute -left-[14px] bottom-1.5 top-1.5 w-px bg-[var(--danger)]"
+            className="absolute -left-[14px] bottom-1.5 top-1.5 w-px bg-[var(--err)]"
           />
         )}
         <span
           className={cn(
             "min-w-0 flex-1 truncate",
             call.status === "error"
-              ? "text-[var(--danger)]"
+              ? "text-[var(--err)]"
               : running
-                ? "text-[var(--ink)]"
-                : "text-[var(--ink-soft)]",
+                ? "text-[var(--midnight)]"
+                : "text-[var(--midnight-soft)]",
           )}
         >
           {/* The verb carries the meaning; the target is secondary. Monospace
@@ -198,7 +198,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
                 display.kind === "command"
                   ? "font-[family-name:var(--font-mono)] text-[12px]"
                   : undefined,
-                call.status === "error" ? "opacity-90" : "text-[var(--mute)]",
+                call.status === "error" ? "opacity-90" : "text-[var(--midnight-muted)]",
               )}
             >
               {display.detail}
@@ -210,20 +210,20 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
           <ChevronRight
             aria-hidden
             className={cn(
-              "h-3 w-3 shrink-0 self-center text-[var(--mute-soft)] opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100",
+              "h-3 w-3 shrink-0 self-center text-[var(--midnight-faint)] opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100",
               open && "rotate-90 opacity-100",
             )}
           />
         )}
         {/* Fixed slot so a row gaining a duration never shifts its neighbours.
             Hidden on mobile, where the width is worth more than the number. */}
-        <span className="hidden w-[38px] shrink-0 text-right text-[11px] tabular-nums text-[var(--mute-soft)] sm:inline">
+        <span className="hidden w-[38px] shrink-0 text-right text-[11px] tabular-nums text-[var(--midnight-faint)] sm:inline">
           {showDuration ? formatDuration(durationMs!) : ""}
         </span>
       </button>
 
       {call.status === "error" && output && (
-        <div className="mb-1 mt-px max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[11.5px] leading-[1.5] text-[var(--danger)]">
+        <div className="mb-1 mt-px max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--err)] bg-[color-mix(in_srgb,var(--err)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[11.5px] leading-[1.5] text-[var(--err)]">
           {output}
         </div>
       )}
@@ -232,16 +232,16 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
         <div className="mb-1.5 mt-1 max-w-xl space-y-2 rounded-md border border-[var(--edge)] bg-[var(--cream)] p-2 text-xs">
           {hasArgs && (
             <div>
-              <div className="mb-0.5 font-medium text-[var(--ink-soft)]">input</div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deeper)] px-2 py-1 text-[var(--ink-soft)]">
+              <div className="mb-0.5 font-medium text-[var(--midnight-soft)]">input</div>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
                 {JSON.stringify(call.args, null, 2)}
               </pre>
             </div>
           )}
           {output && call.status !== "error" && (
             <div>
-              <div className="mb-0.5 font-medium text-[var(--ink-soft)]">output</div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deeper)] px-2 py-1 text-[var(--ink-soft)]">
+              <div className="mb-0.5 font-medium text-[var(--midnight-soft)]">output</div>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
                 {output}
               </pre>
             </div>
@@ -290,12 +290,12 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
         type="button"
         onClick={() => setUserOpened(true)}
         aria-expanded={false}
-        className="mb-3.5 mt-0.5 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--mute)] transition-colors hover:text-[var(--ink-soft)]"
+        className="mb-3.5 mt-0.5 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
       >
-        <ChevronRight aria-hidden className="h-3 w-3 shrink-0 text-[var(--mute-soft)]" />
+        <ChevronRight aria-hidden className="h-3 w-3 shrink-0 text-[var(--midnight-faint)]" />
         {summary}
         {totalMs !== undefined && totalMs >= DURATION_FLOOR_MS && (
-          <span className="text-[11.5px] tabular-nums text-[var(--mute-soft)]">
+          <span className="text-[11.5px] tabular-nums text-[var(--midnight-faint)]">
             {formatDuration(totalMs)}
           </span>
         )}
@@ -316,9 +316,9 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
           type="button"
           onClick={() => setUserOpened(false)}
           aria-expanded={true}
-          className="mb-1 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--mute)] transition-colors hover:text-[var(--ink-soft)]"
+          className="mb-1 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
         >
-          <ChevronRight aria-hidden className="h-3 w-3 shrink-0 rotate-90 text-[var(--mute-soft)]" />
+          <ChevronRight aria-hidden className="h-3 w-3 shrink-0 rotate-90 text-[var(--midnight-faint)]" />
           Collapse
         </button>
       )}

@@ -53,7 +53,7 @@ export default function Page() {
 
         /* ── LEFT PANEL: branding ── */
         .auth-brand {
-          background: var(--forest);
+          background: var(--midnight);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
@@ -61,31 +61,6 @@ export default function Page() {
           position: relative;
           overflow: hidden;
         }
-        .auth-brand::before {
-          content: '';
-          position: absolute;
-          bottom: -120px;
-          right: -120px;
-          width: 480px;
-          height: 480px;
-          background: rgba(74, 158, 116, .15);
-          border-radius: 50%;
-          filter: blur(100px);
-          pointer-events: none;
-        }
-        .auth-brand::after {
-          content: '';
-          position: absolute;
-          top: -80px;
-          left: -80px;
-          width: 320px;
-          height: 320px;
-          background: rgba(0, 0, 0, .15);
-          border-radius: 50%;
-          filter: blur(80px);
-          pointer-events: none;
-        }
-
         .auth-brand-top {
           position: relative;
           z-index: 1;
@@ -99,21 +74,21 @@ export default function Page() {
           justify-content: center;
         }
         .auth-brand-welcome {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 14px;
           font-weight: 500;
-          color: rgba(255, 255, 255, .55);
+          color: var(--brass);
           margin-bottom: 16px;
           letter-spacing: .5px;
           text-transform: uppercase;
         }
         .auth-brand-tagline {
-          font-family: var(--font-lora-serif), serif;
+          font-family: var(--font-serif), Georgia, serif;
           font-size: clamp(32px, 3.5vw, 48px);
           font-weight: 400;
           line-height: 1.2;
           letter-spacing: -.02em;
-          color: white;
+          color: var(--cream);
           margin: 0;
         }
 
@@ -122,7 +97,7 @@ export default function Page() {
           display: inline-block;
           position: relative;
           font-style: italic;
-          color: #a8e6c6;
+          color: var(--cream);
           height: 1.4em;
           vertical-align: bottom;
           overflow: hidden;
@@ -169,7 +144,7 @@ export default function Page() {
           right: 60px;
           width: 200px;
           height: 200px;
-          background: rgba(6, 64, 43, .03);
+          background: color-mix(in srgb, var(--midnight) 3%, transparent);
           border-radius: 50%;
           filter: blur(60px);
           pointer-events: none;
@@ -186,16 +161,16 @@ export default function Page() {
           margin-bottom: 32px;
         }
         .auth-title {
-          font-family: var(--font-lora-serif), serif;
+          font-family: var(--font-serif), Georgia, serif;
           font-size: 28px;
           font-weight: 400;
-          color: var(--ink);
+          color: var(--midnight);
           margin: 0 0 8px 0;
         }
         .auth-subtitle {
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 14px;
-          color: #74716a;
+          color: var(--midnight-muted);
           line-height: 1.5;
           margin: 0;
         }
@@ -203,23 +178,23 @@ export default function Page() {
         /* footer link */
         .auth-footer {
           text-align: center;
-          font-family: var(--font-dm-sans), sans-serif;
+          font-family: var(--font-sans), system-ui, sans-serif;
           font-size: 14px;
-          color: #74716a;
+          color: var(--midnight-muted);
           margin-top: 24px;
         }
         .auth-footer a {
-          color: var(--forest);
+          color: var(--midnight);
           font-weight: 600;
           padding: 4px 2px;
           text-decoration: none;
           transition: color 200ms ease-out;
         }
         .auth-footer a:hover {
-          color: #0a5c3e;
+          color: var(--midnight-soft);
         }
         .auth-footer a:focus-visible {
-          outline: 2px solid var(--forest);
+          outline: 2px solid var(--midnight);
           outline-offset: 2px;
           border-radius: 4px;
         }
@@ -307,7 +282,7 @@ export default function Page() {
               </div>
               <h2 className="auth-title">Welcome back</h2>
               <p className="auth-subtitle">
-                Sign in to your Lightbulb AI account to continue.
+                Sign in to your Lightbulb account to continue.
               </p>
             </div>
 

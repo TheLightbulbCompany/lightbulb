@@ -122,7 +122,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
     return (
       <p
         role="status"
-        className="font-editorial-serif italic text-[#8a3a2a] p-4"
+        className="font-editorial-serif italic text-[var(--err)] p-4"
       >
         We couldn&apos;t find this listing in your account. It may have been
         retired, taken down, or transferred to another owner.
@@ -132,7 +132,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
 
   if (!live) {
     return (
-      <p className="font-editorial-serif italic text-[var(--mute)]">Loading…</p>
+      <p className="font-editorial-serif italic text-[var(--midnight-muted)]">Loading…</p>
     );
   }
 
@@ -259,19 +259,19 @@ function Header({
   return (
     <header className="mb-6 flex items-start justify-between gap-3 flex-wrap">
       <div>
-        <h2 className="font-editorial-serif text-3xl text-[var(--ink)]">
+        <h2 className="font-editorial-serif text-3xl text-[var(--midnight)]">
           {live.name}
         </h2>
-        <p className="text-[12.5px] text-[#5b5b5b] mt-1">{live.slug}</p>
+        <p className="text-[12.5px] text-muted-foreground mt-1">{live.slug}</p>
         <span
           className={`inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full ${
             live.status === "published"
-              ? "bg-[#e3efe6] text-[var(--forest)]"
+              ? "border border-[var(--ok)] text-[var(--ok)]"
               : live.status === "review"
-                ? "bg-[#fef4e3] text-[#a07520]"
+                ? "border border-[var(--warn)] text-[var(--warn)]"
                 : live.status === "draft" && live.rejection_notes
-                  ? "bg-[#fbe9e7] text-[#8a3a2a]"
-                  : "bg-[#f3eee5] text-[#5b5b5b]"
+                  ? "border border-[var(--err)] text-[var(--err)]"
+                  : "border border-[var(--edge)] text-muted-foreground"
           }`}
         >
           {live.status === "published"
@@ -292,7 +292,7 @@ function Header({
             type="button"
             onClick={handleContinueEdit}
             disabled={busy}
-            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
           >
             {continueEditLabel}
           </button>
@@ -302,7 +302,7 @@ function Header({
             onClick={handleRepublish}
             disabled={!canRepublish || busy}
             title={republishDisabledReason}
-            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
           >
             Republish with updates
           </button>
@@ -312,14 +312,14 @@ function Header({
             type="button"
             onClick={handleDiscard}
             disabled={busy}
-            className="text-[12.5px] font-semibold text-[#8a3a2a] hover:underline"
+            className="text-[12.5px] font-semibold text-[var(--err)] hover:underline"
           >
             Discard pending update
           </button>
         )}
         <a
           href={`/marketplace/listing/${live.listing_id}`}
-          className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline"
+          className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline"
         >
           View on marketplace →
         </a>
@@ -331,21 +331,21 @@ function Header({
 function Stats({ live }: { live: Listing }) {
   const installs = live.install_count ?? 0;
   return (
-    <div className="flex gap-6 mb-6 text-[13px] text-[#5b5b5b]">
+    <div className="flex gap-6 mb-6 text-[13px] text-muted-foreground">
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           {installs.toLocaleString()}
         </strong>
         <span>installs</span>
       </div>
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           ${(live.price_cents / 100).toFixed(2)}
         </strong>
         <span>price</span>
       </div>
       <div>
-        <strong className="block font-editorial-serif text-lg text-[var(--ink)]">
+        <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           v{live.version}
         </strong>
         <span>current version</span>
@@ -406,8 +406,8 @@ function TabBtn({
       onClick={() => setTab(name)}
       className={`pb-2 text-[13px] font-semibold ${
         active
-          ? "text-[var(--forest)] border-b-2 border-[var(--forest)]"
-          : "text-[#5b5b5b]"
+          ? "text-[var(--midnight)] border-b-2 border-[var(--midnight)]"
+          : "text-muted-foreground"
       }`}
     >
       {children}
@@ -419,7 +419,7 @@ function OverviewTab({ listing }: { listing: Listing }) {
   return (
     <div className="space-y-4">
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
           Description
         </h3>
         <div className="prose prose-sm max-w-none">
@@ -427,14 +427,14 @@ function OverviewTab({ listing }: { listing: Listing }) {
         </div>
       </section>
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
           Tags
         </h3>
         <div className="flex gap-2 flex-wrap">
           {(listing.tags ?? []).map((t) => (
             <span
               key={t}
-              className="text-[12px] px-2 py-1 rounded-full bg-[#f3eee5] text-[#5b5b5b]"
+              className="text-[12px] px-2 py-1 rounded-full bg-cream-deep text-muted-foreground"
             >
               {t}
             </span>
@@ -456,24 +456,24 @@ function BundleTab({ listing }: { listing: Listing }) {
     <div className="space-y-4">
       <Field label="Snapshotted from agent" value={listing.agent_id ?? "—"} />
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
           MCPs bundled
         </h3>
         <ul className="text-[13px] space-y-1">
           {mcps.length === 0 ? (
-            <li className="text-[var(--mute)] italic">None</li>
+            <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
             mcps.map((m) => <li key={m}>{m}</li>)
           )}
         </ul>
       </section>
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
           Skills bundled
         </h3>
         <ul className="text-[13px] space-y-1">
           {skills.length === 0 ? (
-            <li className="text-[var(--mute)] italic">None</li>
+            <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
             skills.map((s) => <li key={s}>{s}</li>)
           )}
@@ -491,10 +491,10 @@ function PendingTab({ pending }: { pending: Listing }) {
   return (
     <div className="space-y-4">
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-2">
+        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
           v{pending.version} {wasRejected ? "rejected" : pending.status}
         </h3>
-        <p className="text-[13px] text-[#5b5b5b]">
+        <p className="text-[13px] text-muted-foreground">
           Created {new Date(pending.created_at).toLocaleDateString()}
         </p>
       </section>
@@ -503,7 +503,7 @@ function PendingTab({ pending }: { pending: Listing }) {
         <div
           role="status"
           data-testid="rejection-notes"
-          className="rounded-xl border border-[#f0b3a8] bg-[#fbe9e7] px-4 py-3 text-[13px] text-[#8a3a2a]"
+          className="rounded-xl border border-[var(--err)] px-4 py-3 text-[13px] text-[var(--err)]"
         >
           <strong className="font-semibold block mb-1">
             Rejection reason
@@ -515,7 +515,7 @@ function PendingTab({ pending }: { pending: Listing }) {
       <button
         type="button"
         onClick={() => startEditListing(pending)}
-        className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+        className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold"
       >
         {wasRejected ? "Revise & resubmit →" : "Continue editing →"}
       </button>
@@ -543,16 +543,16 @@ function versionStatusLabel(l: Listing): string {
 function versionStatusCls(status: string): string {
   switch (status) {
     case "published":
-      return "bg-[#e3efe6] text-[var(--forest)]";
+      return "border border-[var(--ok)] text-[var(--ok)]";
     case "review":
-      return "bg-[#fef4e3] text-[#a07520]";
+      return "border border-[var(--warn)] text-[var(--warn)]";
     case "draft":
-      return "bg-[#f3eee5] text-[#5b5b5b]";
+      return "border border-[var(--edge)] text-muted-foreground";
     case "taken_down":
-      return "bg-[#fbe9e7] text-[#8a3a2a]";
+      return "border border-[var(--err)] text-[var(--err)]";
     default:
       // retired + any future status — neutral grey
-      return "bg-[#f3eee5] text-[var(--mute)]";
+      return "border border-[var(--edge)] text-[var(--midnight-muted)]";
   }
 }
 
@@ -574,12 +574,12 @@ function VersionHistoryTab({
             data-testid={`version-row-${v.version}`}
             className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
               v.version === liveVersion
-                ? "border-[#aac6b4] bg-[#f4f8f4]"
-                : "border-[var(--edge)] bg-white"
+                ? "border-[var(--ok)]"
+                : "border-[var(--edge)] bg-card"
             }`}
           >
             <div className="flex items-center gap-3">
-              <span className="font-editorial-serif text-base text-[var(--ink)]">
+              <span className="font-editorial-serif text-base text-[var(--midnight)]">
                 v{v.version}
               </span>
               <span
@@ -590,7 +590,7 @@ function VersionHistoryTab({
                 {versionStatusLabel(v)}
               </span>
             </div>
-            <div className="flex items-center gap-5 text-[12.5px] text-[#5b5b5b]">
+            <div className="flex items-center gap-5 text-[12.5px] text-muted-foreground">
               <span>{installs.toLocaleString()} installs</span>
               <span>{stamp ? new Date(stamp).toLocaleDateString() : "—"}</span>
             </div>
@@ -610,7 +610,7 @@ function Field({
 }) {
   return (
     <div>
-      <span className="block text-[11.5px] tracking-widest uppercase font-bold text-[#5b5b5b] mb-1">
+      <span className="block text-[11.5px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-1">
         {label}
       </span>
       <span className="text-[13px]">{value}</span>

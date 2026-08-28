@@ -37,10 +37,10 @@ describe("CompanyNav", () => {
     fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
   });
-  it("marks the active item with the forest accent", () => {
+  it("marks the active item with the midnight accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);
     const btn = screen.getByText("Automations").closest("button");
-    expect(btn?.className).toMatch(/forest/);
+    expect(btn?.className).toMatch(/--midnight/);
   });
   it("owns no scroll region — the shared .sidebar-scroll wrapper owns the single scroll", () => {
     // Inverted deliberately in #1002: the nav used to carry its own

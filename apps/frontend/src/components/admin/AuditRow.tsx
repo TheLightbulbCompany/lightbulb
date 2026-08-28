@@ -49,45 +49,45 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       onClick={onClick}
       title={`HTTP ${entry.http_status} \u00b7 ${entry.elapsed_ms}ms${entry.error_message ? ` \u00b7 ${entry.error_message}` : ""}`}
       className={cn(
-        "grid w-full grid-cols-[180px_minmax(180px,1fr)_minmax(160px,1fr)_auto_auto] items-center gap-3 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-left text-xs",
-        onClick && "cursor-pointer transition-colors hover:bg-white/[0.04]",
+        "grid w-full grid-cols-[180px_minmax(180px,1fr)_minmax(160px,1fr)_auto_auto] items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-left text-xs",
+        onClick && "cursor-pointer transition-colors hover:bg-accent",
       )}
       data-result={entry.result}
       data-audit-status={entry.audit_status ?? "written"}
     >
       <time
-        className="font-mono text-zinc-400"
+        className="font-mono text-muted-foreground"
         dateTime={when.iso ?? timestamp}
         title={when.iso ?? undefined}
         suppressHydrationWarning
       >
         {when.label}
       </time>
-      <span className="truncate font-mono text-zinc-100">{entry.action}</span>
+      <span className="truncate font-mono text-foreground">{entry.action}</span>
       {linkTarget ? (
         <Link
           href={`/admin/users/${encodeURIComponent(linkTarget)}`}
-          className="truncate text-sky-300 hover:underline"
+          className="truncate text-info hover:underline"
           title={linkTarget}
         >
           {linkTarget}
         </Link>
       ) : (
-        <span className="truncate text-zinc-300">{entry.target_user_id}</span>
+        <span className="truncate text-muted-foreground">{entry.target_user_id}</span>
       )}
       <span
         className={cn(
           "rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
           isError
-            ? "bg-red-500/15 text-red-300"
-            : "bg-emerald-500/15 text-emerald-300",
+            ? "border border-err text-err"
+            : "border border-ok text-ok",
         )}
       >
         {entry.result}
       </span>
       {isPanic ? (
         <span
-          className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
+          className="rounded border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn"
           title="Audit row failed to write to DynamoDB; see CloudWatch"
         >
           {"audit panic \u2014 see CloudWatch"}

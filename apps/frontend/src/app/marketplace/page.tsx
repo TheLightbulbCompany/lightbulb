@@ -26,15 +26,15 @@ export default async function Home() {
       <JsonLd data={{ ...softwareApplicationJsonLd, name: "Lightbulb AI AI Agent Marketplace", url: absoluteUrl("/marketplace") }} />
       <JsonLd data={breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Marketplace", path: "/marketplace" }])} />
       <section className="border-b border-[var(--edge)] py-16 md:py-24">
-        <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--mute)]">
+        <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
           The marketplace
         </div>
-        <h1 className="font-editorial-serif text-5xl leading-[0.98] text-[var(--ink)] md:text-7xl">
+        <h1 className="font-editorial-serif text-5xl leading-[0.98] text-[var(--midnight)] md:text-7xl">
           Hire an agent.
           <br />
-          <em className="text-[var(--forest)]">Keep your job.</em>
+          <em className="text-[var(--midnight)]">Keep your job.</em>
         </h1>
-        <p className="mt-6 max-w-xl text-base leading-7 text-[var(--ink-soft)]">
+        <p className="mt-6 max-w-xl text-base leading-7 text-[var(--midnight-soft)]">
           Curated AI agents you can deploy into your Lightbulb AI container in one click.
           Browse, install, and start delegating.
         </p>
@@ -45,7 +45,7 @@ export default async function Home() {
           >
             Browse all agents
           </Link>
-          <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mute)]">
+          <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
             {agents.length} featured · free to install
           </span>
         </div>
@@ -56,13 +56,13 @@ export default async function Home() {
           <SectionLabel label="Featured agents" count={agents.length} />
           <Link
             href="/marketplace/agents"
-            className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--forest)] no-underline"
+            className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--midnight)] no-underline"
           >
             View all →
           </Link>
         </div>
         {agents.length === 0 ? (
-          <p className="font-editorial-serif text-xl italic text-[var(--mute)]">
+          <p className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
             No agents listed yet.
           </p>
         ) : (

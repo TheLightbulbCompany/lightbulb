@@ -79,8 +79,8 @@ function SortControl({
             className="rounded px-2 py-1 transition-colors"
             style={
               active
-                ? { background: "var(--ink)", color: "var(--cream)" }
-                : { color: "var(--mute)" }
+                ? { background: "var(--midnight)", color: "var(--cream)" }
+                : { color: "var(--midnight-muted)" }
             }
           >
             {o.label}
@@ -198,15 +198,15 @@ export function ArtifactsPanel() {
             type="button"
             onClick={() => setExpandedIssueId(null)}
             data-testid="artifact-stack-back"
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-[var(--cream-deeper)]"
-            style={{ color: "var(--mute)" }}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-[var(--cream-deep)]"
+            style={{ color: "var(--midnight-muted)" }}
           >
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
             All artifacts
           </button>
           {selectedGroup ? (
-            <span className="truncate" style={{ color: "var(--mute)" }}>
-              <span className="font-mono" style={{ color: "var(--ink)" }}>
+            <span className="truncate" style={{ color: "var(--midnight-muted)" }}>
+              <span className="font-mono" style={{ color: "var(--midnight)" }}>
                 {selectedGroup.issue?.identifier}
               </span>{" "}
               {selectedGroup.title}
@@ -217,25 +217,25 @@ export function ArtifactsPanel() {
 
       <section aria-label="Artifacts gallery" className="min-w-0">
         {activeLoading && !hasItems ? (
-          <p className="font-editorial-serif text-base italic" style={{ color: "var(--mute)" }}>
+          <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
             Loading artifacts…
           </p>
         ) : activeError && !hasItems ? (
           <p
             role="alert"
             className="font-editorial-serif text-base italic"
-            style={{ color: "var(--warn)" }}
+            style={{ color: "var(--err)" }}
           >
             Failed to load artifacts.
           </p>
         ) : !hasItems ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <Images size={28} style={{ color: "var(--mute)" }} />
-            <p className="font-editorial-serif text-base italic" style={{ color: "var(--mute)" }}>
+            <Images size={28} style={{ color: "var(--midnight-muted)" }} />
+            <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               {isExpanded ? "No artifacts in this task." : "No artifacts yet."}
             </p>
             {!isExpanded ? (
-              <p className="text-xs" style={{ color: "var(--mute)" }}>
+              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
                 Deliverables your agents produce show up here.
               </p>
             ) : null}
@@ -293,7 +293,7 @@ export function ArtifactsPanel() {
               }}
               disabled={deleting}
               className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
-              style={{ background: "var(--edge)", color: "var(--ink)" }}
+              style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               Cancel
             </button>
@@ -301,8 +301,7 @@ export function ArtifactsPanel() {
               type="button"
               onClick={confirmDelete}
               disabled={deleting}
-              className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
-              style={{ background: "var(--warn)", color: "var(--warn-ink, #fff)" }}
+              className="rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground disabled:opacity-50"
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>
@@ -310,7 +309,7 @@ export function ArtifactsPanel() {
         }
       >
         {deleteError ? (
-          <p role="alert" className="text-sm" style={{ color: "var(--warn)" }}>
+          <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
             {deleteError}
           </p>
         ) : null}

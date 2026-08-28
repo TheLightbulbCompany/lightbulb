@@ -364,9 +364,9 @@ export function InboxPage({
           role="alert"
           className="mt-4 rounded-md border px-4 py-3 text-sm"
           style={{
-            borderColor: "color-mix(in srgb, var(--danger) 25%, transparent)",
-            background: "color-mix(in srgb, var(--danger) 6%, transparent)",
-            color: "var(--danger)",
+            borderColor: "color-mix(in srgb, var(--err) 25%, transparent)",
+            background: "color-mix(in srgb, var(--err) 6%, transparent)",
+            color: "var(--err)",
           }}
         >
           Failed to load inbox. Try refreshing.

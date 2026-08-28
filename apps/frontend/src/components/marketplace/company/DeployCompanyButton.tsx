@@ -39,20 +39,20 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
   if (started) {
     return (
       <section className="editorial-card p-6" data-testid="deploy-started-card" role="status">
-        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
           Deploy started
         </div>
-        <h3 className="mt-2 font-editorial-serif text-2xl text-[var(--ink)]">
+        <h3 className="mt-2 font-editorial-serif text-2xl text-[var(--midnight)]">
           Deploying {company.name}
         </h3>
-        <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">
+        <p className="mt-3 text-sm leading-6 text-[var(--midnight-soft)]">
           Building {started.agentCount} {started.agentCount === 1 ? "agent" : "agents"}. They&apos;ll
           appear in your Teams roster in about a minute — enable their routines
           from Teams once they&apos;re up.
         </p>
         <Link
           href="/chat"
-          className="mt-5 inline-block font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--forest)] underline"
+          className="mt-5 inline-block font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--midnight)] underline"
         >
           Open Teams
         </Link>
@@ -89,7 +89,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
       </button>
       {error && (
         <p
-          className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]"
+          className="mt-3 rounded-lg border border-[var(--err)] px-3 py-2 text-sm text-[var(--err)]"
           role="alert"
         >
           {error}{" "}

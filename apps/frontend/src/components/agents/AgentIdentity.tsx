@@ -26,7 +26,7 @@ export function Monogram({
         borderRadius: radius,
         color: agent.accent,
         backgroundColor: agent.tint,
-        borderColor: `${agent.accent}22`,
+        borderColor: "var(--border)",
         fontSize: Math.round(size * 0.4),
       }}
       aria-hidden
@@ -41,7 +41,7 @@ export function AgentPill({
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "forest" | "danger" | "warn";
+  tone?: "neutral" | "midnight" | "brass" | "err" | "warn";
 }) {
   return <span className={`agent-pill agent-pill--${tone}`}>{children}</span>;
 }

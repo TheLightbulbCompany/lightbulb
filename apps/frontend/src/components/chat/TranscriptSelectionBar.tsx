@@ -232,7 +232,7 @@ export function TranscriptSelectionBar({
         aria-label={copied ? "Copied" : "Copy selection"}
         className={cn(
           "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
-          copied ? "text-[var(--forest)]" : "text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
+          copied ? "text-[var(--midnight)]" : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
         )}
       >
         {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}

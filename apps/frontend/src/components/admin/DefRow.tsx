@@ -17,11 +17,11 @@ interface Props {
  * accepted as small visual regressions in exchange for the dedup.
  */
 export function DefRow({ label, value, mono, href }: Props) {
-  const valueCls = mono ? "truncate font-mono text-zinc-200" : "truncate text-zinc-200";
+  const valueCls = mono ? "truncate font-mono text-foreground" : "truncate text-foreground";
   const title = typeof value === "string" ? value : undefined;
   return (
     <div className="flex items-baseline gap-3">
-      <dt className="w-32 shrink-0 text-xs uppercase tracking-wide text-zinc-500">
+      <dt className="w-32 shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 flex-1">
@@ -30,7 +30,7 @@ export function DefRow({ label, value, mono, href }: Props) {
             href={href}
             target="_blank"
             rel="noopener noreferrer"
-            className={`block ${valueCls} text-sky-300 hover:underline`}
+            className={`block ${valueCls} text-info hover:underline`}
             title={title}
           >
             {value}

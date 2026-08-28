@@ -179,24 +179,24 @@ function RoutineToggle({
         className={cn(
           "relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border transition-colors",
           "disabled:cursor-not-allowed disabled:opacity-50",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--forest)] focus-visible:ring-offset-1",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)] focus-visible:ring-offset-1",
         )}
         style={{
-          backgroundColor: enabled ? "var(--forest)" : "var(--cream-deeper)",
-          borderColor: enabled ? "var(--forest)" : "var(--edge)",
+          backgroundColor: enabled ? "var(--midnight)" : "var(--cream-deep)",
+          borderColor: enabled ? "var(--midnight)" : "var(--edge)",
         }}
       >
         <span
           aria-hidden="true"
           className={cn(
-            "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform",
+            "inline-block h-3.5 w-3.5 transform rounded-full bg-cream shadow-sm transition-transform",
             enabled ? "translate-x-[18px]" : "translate-x-0.5",
           )}
         />
       </button>
       <span
         className="text-sm tabular-nums"
-        style={{ color: enabled ? "var(--ink)" : "var(--mute)" }}
+        style={{ color: enabled ? "var(--midnight)" : "var(--midnight-muted)" }}
       >
         {enabled ? "Active" : "Paused"}
       </span>
@@ -383,7 +383,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
 
   if (error)
     return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
+      <div className="editorial-page p-8 text-[var(--err)]">
         Error: {String(error)}
       </div>
     );
@@ -396,10 +396,10 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         const next = nextRunLabel(r);
         return (
           <div>
-            <div className="font-medium text-[var(--ink)]">
+            <div className="font-medium text-[var(--midnight)]">
               {routineName(r)}
             </div>
-            <div className="text-xs text-[var(--mute)]">
+            <div className="text-xs text-[var(--midnight-muted)]">
               {routineTriggerSentence(r)}
               {" · "}
               {agentName(routineAgentId(r))}
@@ -455,7 +455,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           <button
             onClick={() => remove(r.id)}
             disabled={busy === r.id}
-            className="text-sm text-[var(--mute)] hover:text-[var(--danger)] hover:underline"
+            className="text-sm text-[var(--midnight-muted)] hover:text-[var(--err)] hover:underline"
           >
             Delete
           </button>
@@ -471,7 +471,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           <button
             type="button"
             onClick={() => nav.openDetail("routine-detail", r.id)}
-            className="text-sm text-[var(--forest)] hover:underline"
+            className="text-sm text-[var(--midnight)] hover:underline"
           >
             Open →
           </button>
@@ -481,7 +481,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
             onClick={(e) =>
               handleShellLinkClick(e, teamsDetailUrl("routine", r.id))
             }
-            className="text-sm text-[var(--forest)] hover:underline"
+            className="text-sm text-[var(--midnight)] hover:underline"
           >
             Open →
           </a>
@@ -550,7 +550,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         cross-routine view rather than invent backend surface for it.
       */}
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : filtered.length === 0 ? (
@@ -710,11 +710,11 @@ function RunRoutineDialog({
       <div className="flex flex-col gap-3">
         {err && (
           <div
-            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
-              background: "color-mix(in srgb, var(--danger) 6%, transparent)",
+                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
+              background: "color-mix(in srgb, var(--err) 6%, transparent)",
             }}
           >
             {err}
@@ -726,7 +726,7 @@ function RunRoutineDialog({
           if (v.type === "select") {
             return (
               <label key={v.name} className="block">
-                <span className="text-sm text-[var(--ink-soft)]">{label}</span>
+                <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
                 <div className="mt-1">
                   <EditorialSelect
                     options={(v.options ?? []).map((o) => ({
@@ -744,7 +744,7 @@ function RunRoutineDialog({
           if (v.type === "boolean") {
             return (
               <label key={v.name} className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
+                <span className="text-sm text-[var(--midnight-soft)]">
                   {variableLabel(v)}
                 </span>
                 <div className="mt-1">
@@ -763,12 +763,12 @@ function RunRoutineDialog({
           if (v.type === "textarea") {
             return (
               <label key={v.name} className="block">
-                <span className="text-sm text-[var(--ink-soft)]">{label}</span>
+                <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
                 <textarea
                   value={values[v.name] ?? ""}
                   onChange={(e) => setVar(v.name, e.target.value)}
                   rows={3}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
                 />
               </label>
             );
@@ -776,12 +776,12 @@ function RunRoutineDialog({
           // text + number share the text input; number is coerced on submit.
           return (
             <label key={v.name} className="block">
-              <span className="text-sm text-[var(--ink-soft)]">{label}</span>
+              <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
               <input
                 type={v.type === "number" ? "number" : "text"}
                 value={values[v.name] ?? ""}
                 onChange={(e) => setVar(v.name, e.target.value)}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
               />
             </label>
           );
@@ -809,7 +809,7 @@ function SortMenu({
           type="button"
           title="Sort"
           aria-label="Sort automations"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--mute)] transition-colors hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
         >
           <ArrowUpDown className="h-3.5 w-3.5" />
         </button>
@@ -823,13 +823,13 @@ function SortMenu({
             className={cn(
               "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
               value === field
-                ? "bg-[var(--cream-deeper)] text-[var(--ink)]"
-                : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+                ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
+                : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
             )}
           >
             <span>{label}</span>
             {value === field ? (
-              <span className="text-xs text-[var(--mute)]">
+              <span className="text-xs text-[var(--midnight-muted)]">
                 {dir === "asc" ? "↑" : "↓"}
               </span>
             ) : (
@@ -1021,11 +1021,11 @@ function CreateRoutineDialog({
         {rung !== "connected_app" && (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--ink-soft)]">Title</span>
+              <span className="text-sm text-[var(--midnight-soft)]">Title</span>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
               />
             </label>
             {/* Agent picker replaces the old raw "Agent ID" text input — the
@@ -1033,7 +1033,7 @@ function CreateRoutineDialog({
                 Assignee is optional upstream (a routine can be created
                 unassigned). */}
             <div className="block">
-              <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
+              <span className="text-sm text-[var(--midnight-soft)]">Assignee</span>
               <div className="mt-1">
                 <AssigneePicker
                   agents={agents}
@@ -1045,7 +1045,7 @@ function CreateRoutineDialog({
               </div>
             </div>
             <div className="block">
-              <span className="text-sm text-[var(--ink-soft)]">Reviewer</span>
+              <span className="text-sm text-[var(--midnight-soft)]">Reviewer</span>
               <div className="mt-1">
                 <AssigneePicker
                   agents={reviewerAgents}
@@ -1070,7 +1070,7 @@ function CreateRoutineDialog({
                 append a clearly-marked block, disclosed below). */}
             {conn.eventIds.length > 0 && routines.length > 0 && (
               <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">Automation</span>
+                <span className="text-sm text-[var(--midnight-soft)]">Automation</span>
                 <div className="mt-1">
                   <EditorialSelect
                     options={[
@@ -1084,7 +1084,7 @@ function CreateRoutineDialog({
                     onValueChange={setConnRoutineId}
                   />
                 </div>
-                <span className="text-xs text-[var(--mute)]">
+                <span className="text-xs text-[var(--midnight-muted)]">
                   {!attachRoutineId
                     ? "Writes a new automation from this event's template."
                     : conn.attachDisclosure
@@ -1101,7 +1101,7 @@ function CreateRoutineDialog({
         {rung === "webhook" && (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--ink-soft)]">
+              <span className="text-sm text-[var(--midnight-soft)]">
                 Signing mode
               </span>
               <div className="mt-1">
@@ -1114,14 +1114,14 @@ function CreateRoutineDialog({
                   onValueChange={setSigningMode}
                 />
               </div>
-              <span className="text-xs text-[var(--mute)]">
+              <span className="text-xs text-[var(--midnight-muted)]">
                 The external app signs each request with this secret; Lightbulb AI
                 verifies it.
               </span>
             </label>
             {showReplayWindow && (
               <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
+                <span className="text-sm text-[var(--midnight-soft)]">
                   Replay window (seconds)
                 </span>
                 <input
@@ -1130,7 +1130,7 @@ function CreateRoutineDialog({
                   max={86400}
                   value={replayWindowSec}
                   onChange={(e) => setReplayWindowSec(e.target.value)}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
                 />
               </label>
             )}
@@ -1139,25 +1139,25 @@ function CreateRoutineDialog({
 
         {rung !== "connected_app" && (
           <label className="block">
-            <span className="text-sm text-[var(--ink-soft)]">
+            <span className="text-sm text-[var(--midnight-soft)]">
               Description
             </span>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
               rows={3}
             />
           </label>
         )}
         {shownErr && (
           <div
-            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
               background:
-                "color-mix(in srgb, var(--danger) 6%, transparent)",
+                "color-mix(in srgb, var(--err) 6%, transparent)",
             }}
           >
             {shownErr}

@@ -124,6 +124,6 @@ describe("CodeBlock — copy affordance", () => {
     const { container: inline } = render(<CodeBlock>inline_value</CodeBlock>);
     const code = inline.querySelector("code");
     expect(code?.className).not.toMatch(/#e8e3d9/i);
-    expect(code?.className).toContain("var(--cream-deepest)");
+    expect(code?.className).toContain("var(--cream-deeper)");
   });
 });

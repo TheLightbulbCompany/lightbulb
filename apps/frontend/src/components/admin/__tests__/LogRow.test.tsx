@@ -62,6 +62,6 @@ describe("LogRow", () => {
   it("level badge has appropriate color class for ERROR", () => {
     render(<LogRow entry={baseEntry} />);
     const badge = screen.getByText("ERROR");
-    expect(badge.className).toMatch(/text-red-300/);
+    expect(badge.className).toMatch(/text-err/);
   });
 });

@@ -43,7 +43,7 @@ export function AgentsListPanel() {
 
   if (error) {
     return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
+      <div className="editorial-page p-8 text-[var(--err)]">
         Error: {String(error)}
       </div>
     );
@@ -55,14 +55,14 @@ export function AgentsListPanel() {
       header: "Name",
       sortable: true,
       cell: (a) => (
-        <div className="font-medium text-[var(--ink)]">{a.name}</div>
+        <div className="font-medium text-[var(--midnight)]">{a.name}</div>
       ),
     },
     {
       key: "role",
       header: "Role",
       cell: (a) => (
-        <span className="text-xs uppercase tracking-wide text-[var(--mute)]">
+        <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">
           {a.role}
         </span>
       ),
@@ -71,7 +71,7 @@ export function AgentsListPanel() {
       key: "origin",
       header: "Origin",
       cell: (a) => (
-        <span className="text-xs text-[var(--ink-soft)]">
+        <span className="text-xs text-[var(--midnight-soft)]">
           {a.origin ?? "Custom"}
           {a.origin === "Marketplace" && a.marketplace
             ? ` · ${a.marketplace.slug} v${a.marketplace.version}`
@@ -89,14 +89,14 @@ export function AgentsListPanel() {
         return (
           <span className="flex items-center justify-end gap-2">
             <button
-              className="text-sm hover:underline text-[var(--ink-soft)]"
+              className="text-sm hover:underline text-[var(--midnight-soft)]"
               onClick={() => (paused ? resume(a.id) : pause(a.id))}
             >
               {paused ? "Resume" : "Pause"}
             </button>
             {!seeded && (
               <button
-                className="text-sm hover:underline text-[var(--danger)]"
+                className="text-sm hover:underline text-[var(--err)]"
                 onClick={() => {
                   if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
                     remove(a.id);
@@ -119,7 +119,7 @@ export function AgentsListPanel() {
           href={agentInspectorUrl(a.id)}
           onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(a.id))}
           className="text-sm hover:underline"
-          style={{ color: "var(--forest)" }}
+          style={{ color: "var(--midnight)" }}
         >
           Open →
         </a>
@@ -145,7 +145,7 @@ export function AgentsListPanel() {
         searchAriaLabel="Search agents"
       />
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : filtered.length === 0 ? (
@@ -263,28 +263,28 @@ function CreateAgentDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Name</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Title</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Senior backend engineer"
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Role</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Role</span>
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             <option value="engineer">Engineer</option>
             <option value="ceo">CEO</option>
@@ -292,12 +292,12 @@ function CreateAgentDialog({
           </select>
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Reports to</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Reports to</span>
           <select
             aria-label="Reports to"
             value={reportsTo}
             onChange={(e) => setReportsTo(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             <option value="">No manager (top level)</option>
             {agents.map((a) => (
@@ -308,7 +308,7 @@ function CreateAgentDialog({
           </select>
         </label>
         {err && (
-          <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+          <div className="text-[var(--err)] text-sm border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] rounded px-3 py-2">
             {err}
           </div>
         )}

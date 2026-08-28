@@ -87,7 +87,7 @@ export default async function ListingsBrowse({
         });
   if (!result.ok) {
     return (
-      <p className="text-sm text-red-400" role="alert">
+      <p className="text-sm text-err" role="alert">
         Error loading listings: {result.error ?? `http_${result.status}`}
       </p>
     );
@@ -108,7 +108,7 @@ export default async function ListingsBrowse({
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold text-zinc-100">Listings</h1>
+      <h1 className="text-2xl font-semibold text-foreground">Listings</h1>
 
       {/* Filter pills. Each pill is a Link that swaps ?status while preserving
           the current q so a search-then-filter flow doesn't lose the query. */}
@@ -141,8 +141,8 @@ export default async function ListingsBrowse({
               aria-current={isActive ? "page" : undefined}
               className={
                 isActive
-                  ? "rounded-full border border-zinc-100 bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-900"
-                  : "rounded-full border border-zinc-700 bg-zinc-900/40 px-3 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+                  ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+                  : "rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground hover:border-foreground hover:text-foreground"
               }
             >
               {f.label}
@@ -175,11 +175,11 @@ export default async function ListingsBrowse({
           defaultValue={q}
           placeholder="Search by name, slug, tag, description…"
           aria-label="Search listings"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
         />
         <button
           type="submit"
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 hover:border-zinc-500"
+          className="rounded-md border border-border bg-accent px-3 py-2 text-sm font-medium text-foreground hover:border-foreground"
         >
           Search
         </button>
@@ -190,31 +190,31 @@ export default async function ListingsBrowse({
                 ? `/admin/marketplace/listings?status=${explicitStatus}`
                 : `/admin/marketplace/listings`
             }
-            className="rounded-md border border-transparent px-2 py-2 text-sm text-zinc-400 hover:text-zinc-200"
+            className="rounded-md border border-transparent px-2 py-2 text-sm text-muted-foreground hover:text-foreground"
           >
             Clear
           </Link>
         ) : null}
       </form>
 
-      <p className="text-sm text-zinc-500">
+      <p className="text-sm text-muted-foreground">
         {items.length} {heading.toLowerCase()} listing
         {items.length === 1 ? "" : "s"}
         {q ? ` matching "${q}"` : ""}.
       </p>
 
       {items.length === 0 ? (
-        <p className="text-sm text-zinc-400">No listings match these filters.</p>
+        <p className="text-sm text-muted-foreground">No listings match these filters.</p>
       ) : (
         <ul className="space-y-3">
           {items.map((listing) => (
             <li
               key={`${listing.listing_id}-${listing.version}`}
-              className="flex items-start justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-900/40 p-5"
+              className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card p-5"
             >
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-zinc-100">
+                  <h3 className="font-semibold text-foreground">
                     <Link
                       href={`/admin/marketplace/listings/${listing.listing_id}?version=${listing.version}`}
                       className="hover:underline"
@@ -227,29 +227,29 @@ export default async function ListingsBrowse({
                     label={listing.status.replace("_", " ")}
                   />
                 </div>
-                <p className="mt-1 text-sm text-zinc-400">
+                <p className="mt-1 text-sm text-muted-foreground">
                   <code className="font-mono">{listing.slug}</code> ·{" "}
                   {listing.format} · $
                   {(listing.price_cents / 100).toFixed(2)}
                 </p>
                 {listing.description_md ? (
-                  <p className="mt-2 line-clamp-3 text-sm text-zinc-300">
+                  <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
                     {listing.description_md.slice(0, 240)}
                     {listing.description_md.length > 240 ? "…" : ""}
                   </p>
                 ) : null}
-                <p className="mt-2 text-xs text-zinc-500">
+                <p className="mt-2 text-xs text-muted-foreground">
                   seller:{" "}
                   <Link
                     href={`/admin/users/${encodeURIComponent(listing.seller_id)}`}
-                    className="font-mono text-sky-300 hover:underline"
+                    className="font-mono text-info hover:underline"
                   >
                     {listing.seller_id}
                   </Link>
                 </p>
                 <Link
                   href={`/admin/marketplace/listings/${listing.listing_id}?version=${listing.version}`}
-                  className="mt-2 inline-block text-xs text-zinc-300 underline"
+                  className="mt-2 inline-block text-xs text-muted-foreground underline"
                 >
                   Open full review →
                 </Link>

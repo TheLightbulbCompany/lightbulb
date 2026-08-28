@@ -46,7 +46,7 @@ export function SubIssuesSection({
             {newButton}
           </div>
           {showProgress && (
-            <p className="text-xs" style={{ color: "var(--mute)" }}>
+            <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               {summary.doneCount} / {summary.totalCount} done
               {summary.inProgressCount > 0 ? ` · ${summary.inProgressCount} in progress` : ""}
               {summary.blockedCount > 0 ? ` · ${summary.blockedCount} blocked` : ""}
@@ -64,7 +64,7 @@ export function SubIssuesSection({
         <div className="flex items-center justify-end gap-2">{newButton}</div>
       )}
       {error && (
-        <p className="text-xs" style={{ color: "var(--danger)" }}>Couldn&apos;t load sub-issues.</p>
+        <p className="text-xs" style={{ color: "var(--err)" }}>Couldn&apos;t load sub-issues.</p>
       )}
       <NewIssueDialog
         open={dialogOpen}

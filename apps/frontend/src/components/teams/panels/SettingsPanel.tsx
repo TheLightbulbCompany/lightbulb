@@ -44,26 +44,26 @@ export function SettingsPanel() {
 
   return (
     <div className="editorial-page p-8 max-w-2xl space-y-4">
-      <h1 className="font-editorial-serif text-4xl text-[var(--ink)]">Settings</h1>
+      <h1 className="font-editorial-serif text-4xl text-[var(--midnight)]">Settings</h1>
       <label className="block">
-        <span className="text-sm text-[var(--ink-soft)]">Display name</span>
+        <span className="text-sm text-[var(--midnight-soft)]">Display name</span>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
         />
       </label>
       <label className="block">
-        <span className="text-sm text-[var(--ink-soft)]">Description</span>
+        <span className="text-sm text-[var(--midnight-soft)]">Description</span>
         <textarea
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           rows={4}
         />
       </label>
       {err && (
-        <div className="text-[var(--danger)] text-sm border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] rounded px-3 py-2">
+        <div className="text-[var(--err)] text-sm border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] rounded px-3 py-2">
           {err}
         </div>
       )}
@@ -74,7 +74,7 @@ export function SettingsPanel() {
       >
         {saving ? "Saving…" : "Save"}
       </button>
-      <p className="text-xs text-[var(--mute)] pt-4 border-t border-[var(--edge)] italic">
+      <p className="text-xs text-[var(--midnight-muted)] pt-4 border-t border-[var(--edge)] italic">
         Adapter, plugin, and instance settings are operator-controlled and not
         editable here.
       </p>

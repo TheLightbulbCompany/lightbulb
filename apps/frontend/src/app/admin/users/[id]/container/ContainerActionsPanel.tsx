@@ -265,11 +265,11 @@ export function ContainerActionsPanel({
         </div>
 
         {/* Re-apply standard sizing (post-flat-fee: single per-user task profile) */}
-        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Re-apply standard sizing
           </h3>
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-muted-foreground">
             Forces the ECS service to roll its task definition back to the
             owner&apos;s plan-sized profile (standard 1 vCPU / 4 GB; Ultra
             Pro 2 vCPU / 8 GB). Use as a recovery action when a container is
@@ -290,18 +290,18 @@ export function ContainerActionsPanel({
             scripts/reapply_openclaw_config.py). Config-only, no restart —
             the counterpart to "Apply now" below, which rolls the image but
             reuses the on-disk config verbatim. */}
-        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Regenerate config
           </h3>
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-muted-foreground">
             Re-renders <span className="font-mono">openclaw.json</span> from the
             current config generator via the provisioning write path — clears
             stale keys a deep-merge patch would preserve — then restores the
             runtime-appended subtrees the regen drops (channel pairings, route
             bindings, identity). Config-only: no restart, EFS workspace/agent
             state untouched. Pair with{" "}
-            <strong className="text-zinc-300">Apply now</strong> below when the
+            <strong className="text-foreground">Apply now</strong> below when the
             change needs a gateway restart to activate (e.g. plugin
             enablement).
           </p>
@@ -319,16 +319,16 @@ export function ContainerActionsPanel({
         {/* Track 2 image update (banner + user-driven apply). Non-destructive
             alternative to Reprovision — container keeps running on the old image
             until the owner clicks "Update now" in their chat banner. */}
-        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Queue image update
           </h3>
-          <p className="text-xs text-zinc-400">
-            <strong className="text-zinc-300">Queue</strong> creates a pending Track 2
+          <p className="text-xs text-muted-foreground">
+            <strong className="text-foreground">Queue</strong> creates a pending Track 2
             update — the owner sees a banner in chat and chooses when to apply
             (Update now / Tonight / Remind later); the container keeps running on the
             current image until they accept.{" "}
-            <strong className="text-zinc-300">Apply now</strong> force-rolls the
+            <strong className="text-foreground">Apply now</strong> force-rolls the
             container onto the selected image immediately (no banner wait). Both reuse
             the container&apos;s existing on-disk config and preserve EFS
             workspace/agent state — Apply now briefly restarts the container.
@@ -370,8 +370,8 @@ export function ContainerActionsPanel({
                             key={b.label}
                             className={
                               b.tone === "dev"
-                                ? "rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-emerald-300"
-                                : "rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-amber-300"
+                                ? "rounded border border-ok px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-ok"
+                                : "rounded border border-warn px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-warn"
                             }
                           >
                             {b.label}
@@ -387,9 +387,9 @@ export function ContainerActionsPanel({
               </SelectContent>
             </Select>
           ) : (
-            <p className="text-xs text-amber-300">
+            <p className="text-xs text-warn">
               Couldn&apos;t list ECR tags — enter the full image URL manually. See{" "}
-              <code className="font-mono text-zinc-300">openclaw-version.json</code>{" "}
+              <code className="font-mono text-muted-foreground">openclaw-version.json</code>{" "}
               on main for the current dev tag.
             </p>
           )}

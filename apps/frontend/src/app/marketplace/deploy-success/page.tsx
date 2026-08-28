@@ -33,7 +33,7 @@ export default function DeploySuccessPage() {
 function Loading() {
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-md items-center justify-center px-6 py-16">
-      <p className="font-editorial-serif text-2xl italic text-[var(--mute)]">Loading…</p>
+      <p className="font-editorial-serif text-2xl italic text-[var(--midnight-muted)]">Loading…</p>
     </main>
   );
 }
@@ -197,10 +197,10 @@ function DeploySuccessInner() {
           <div className="mb-6 flex justify-center">
             <Monogram agent={editorial} size={96} radius={20} />
           </div>
-          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--ink)]">
-            Hiring <em className="text-[var(--forest)]">{editorial.name}</em>…
+          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--midnight)]">
+            Hiring <em className="text-[var(--midnight)]">{editorial.name}</em>…
           </h1>
-          <p className="mt-4 font-editorial-serif text-lg italic text-[var(--mute)]">
+          <p className="mt-4 font-editorial-serif text-lg italic text-[var(--midnight-muted)]">
             Setting up the workspace.
           </p>
         </div>
@@ -211,8 +211,8 @@ function DeploySuccessInner() {
           <div className="mb-5 flex justify-center">
             <Monogram agent={editorial} size={72} radius={16} />
           </div>
-          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">Almost there.</h1>
-          <p className="mt-4 text-base leading-7 text-[var(--ink-soft)]">
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--midnight)]">Almost there.</h1>
+          <p className="mt-4 text-base leading-7 text-[var(--midnight-soft)]">
             Stripe&apos;s confirmation webhook is taking a moment. Refresh in a few seconds and
             we&apos;ll finish hiring {editorial.name}.
           </p>
@@ -231,10 +231,10 @@ function DeploySuccessInner() {
           <div className="mb-5 flex justify-center">
             <Monogram agent={editorial} size={72} radius={16} />
           </div>
-          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--midnight)]">
             Already on it.
           </h1>
-          <p className="mt-4 text-base leading-7 text-[var(--ink-soft)]">
+          <p className="mt-4 text-base leading-7 text-[var(--midnight-soft)]">
             {editorial.name} is already installing — give it a moment, then open your workspace.
           </p>
           <Link
@@ -248,10 +248,10 @@ function DeploySuccessInner() {
 
       {phase === "error" && (
         <div className="editorial-card p-8 text-center">
-          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--midnight)]">
             Something went sideways.
           </h1>
-          <p className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-4 py-3 text-sm text-[var(--danger)]">
+          <p className="mt-4 rounded-lg border border-[var(--err)] px-4 py-3 text-sm text-[var(--err)]">
             {errorMsg}
           </p>
           {errorRetryable && (
@@ -274,23 +274,23 @@ function DeploySuccessInner() {
           <div className="mb-6 flex justify-center">
             <Monogram agent={editorial} size={96} radius={20} />
           </div>
-          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--ink)]">
-            You hired <em className="text-[var(--forest)]">{editorial.name}.</em>
+          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--midnight)]">
+            You hired <em className="text-[var(--midnight)]">{editorial.name}.</em>
           </h1>
           <div className="mt-4 flex items-center justify-center gap-2">
             <AgentPill>{editorial.role}</AgentPill>
-            <AgentPill tone="forest">Active in your container</AgentPill>
+            <AgentPill tone="midnight">Active in your container</AgentPill>
           </div>
-          <p className="mx-auto mt-6 max-w-md font-editorial-serif text-lg italic leading-8 text-[var(--ink-soft)]">
+          <p className="mx-auto mt-6 max-w-md font-editorial-serif text-lg italic leading-8 text-[var(--midnight-soft)]">
             &ldquo;{editorial.vibe}&rdquo;
           </p>
-          <p className="mt-3 text-sm leading-6 text-[var(--mute)]">
+          <p className="mt-3 text-sm leading-6 text-[var(--midnight-muted)]">
             {editorial.name} is settling in. Open chat to introduce yourself.
           </p>
           {automationsPending > 0 && (
             <p
               data-testid="deploy-automations-pending"
-              className="mx-auto mt-3 max-w-md text-sm leading-6 text-[var(--mute)]"
+              className="mx-auto mt-3 max-w-md text-sm leading-6 text-[var(--midnight-muted)]"
             >
               {automationsPending === 1
                 ? "1 automation needs wiring"
@@ -310,7 +310,7 @@ function DeploySuccessInner() {
             Open chat with {editorial.name} →
           </Link>
           {agentUuid && (
-            <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mute)]">
+            <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
               Agent ID · {agentUuid}
             </p>
           )}

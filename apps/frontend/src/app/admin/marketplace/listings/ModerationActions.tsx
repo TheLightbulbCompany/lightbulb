@@ -134,7 +134,7 @@ export function ModerationActions({
             title={approveDisabledReason}
             aria-label={approveDisabledReason ?? "Approve disabled"}
             data-testid="approve-disabled"
-            className="bg-zinc-700/20 text-zinc-500 cursor-not-allowed"
+            className="bg-muted text-muted-foreground cursor-not-allowed"
           >
             Approve
           </Button>
@@ -147,7 +147,7 @@ export function ModerationActions({
             <Button
               type="button"
               size="sm"
-              className="bg-emerald-700/30 text-emerald-300 hover:bg-emerald-700/40"
+              className="border border-ok bg-transparent text-ok hover:bg-accent"
             >
               Approve
             </Button>
@@ -160,7 +160,7 @@ export function ModerationActions({
               type="button"
               size="sm"
               variant="outline"
-              className="border-red-700/40 bg-red-700/20 text-red-300 hover:bg-red-700/30"
+              className="border-err text-err hover:bg-accent hover:text-err"
             >
               Reject
             </Button>
@@ -179,7 +179,7 @@ export function ModerationActions({
               placeholder="Reason for rejection (required)…"
               rows={4}
               disabled={busy}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
               aria-label="Rejection notes"
             />
             <AlertDialogFooter>
@@ -187,7 +187,7 @@ export function ModerationActions({
               <AlertDialogAction
                 onClick={handleReject}
                 disabled={busy || notes.trim().length === 0}
-                className="bg-destructive text-white hover:bg-destructive/90"
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 {busy ? "Rejecting…" : "Reject listing"}
               </AlertDialogAction>
@@ -196,7 +196,7 @@ export function ModerationActions({
         </AlertDialog>
       </div>
       {error && (
-        <span className="text-xs text-red-400" role="alert">
+        <span className="text-xs text-err" role="alert">
           {error}
         </span>
       )}

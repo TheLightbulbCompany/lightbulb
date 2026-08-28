@@ -3,7 +3,7 @@
 // Ported from upstream Paperclip's ActiveAgentsPanel
 // (paperclip/ui/src/components/ActiveAgentsPanel.tsx) (MIT, (c) 2025
 // Paperclip AI). Same run-card grid + live-status semantics; editorial
-// reskin onto OUR cream/forest theme (tokens --cream/--ink/--mute/--forest/
+// reskin onto OUR cream/forest theme (tokens --cream/--midnight/--midnight-muted/--midnight/
 // --edge, the `editorial-card` class, `font-editorial-serif` heading).
 //
 // LIVE TRANSCRIPT (v1): active run cards now show a polled tail of the run's
@@ -87,8 +87,8 @@ function RunActivity({
       <div
         className="max-h-28 overflow-y-auto rounded-lg px-2.5 py-2 font-mono text-[10px] leading-relaxed"
         style={{
-          background: "var(--cream-deepest)",
-          color: "var(--ink-soft)",
+          background: "var(--cream-deeper)",
+          color: "var(--midnight-soft)",
           borderTop: "1px solid var(--edge)",
         }}
         aria-label="Live agent activity"
@@ -111,8 +111,8 @@ function RunActivity({
         !activityLine && "italic",
       )}
       style={{
-        background: "var(--cream-deepest)",
-        color: "var(--mute)",
+        background: "var(--cream-deeper)",
+        color: "var(--midnight-muted)",
         borderTop: "1px solid var(--edge)",
       }}
     >
@@ -149,9 +149,9 @@ function AgentRunCard({
       style={
         active
           ? {
-              borderColor: "color-mix(in srgb, var(--forest) 35%, var(--edge))",
+              borderColor: "color-mix(in srgb, var(--midnight) 35%, var(--edge))",
               background:
-                "color-mix(in srgb, var(--forest-tint) 55%, var(--cream))",
+                "color-mix(in srgb, var(--cream-deep) 55%, var(--cream))",
             }
           : undefined
       }
@@ -172,7 +172,7 @@ function AgentRunCard({
           ) : (
             <span
               className="inline-flex size-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: "var(--mute)" }}
+              style={{ backgroundColor: "var(--midnight-muted)" }}
               aria-hidden
             />
           )}
@@ -183,14 +183,14 @@ function AgentRunCard({
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
           aria-label={`Run details ${run.id}`}
           className="flex-shrink-0 text-[11px] hover:underline"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           Details
         </a>
       </div>
 
       {/* Live status line */}
-      <div className="text-[11px]" style={{ color: "var(--mute)" }}>
+      <div className="text-[11px]" style={{ color: "var(--midnight-muted)" }}>
         {liveStatusLabel(run)}
       </div>
 
@@ -203,8 +203,8 @@ function AgentRunCard({
           className="block rounded-lg border px-2.5 py-2 text-xs transition-colors hover:opacity-80"
           style={{
             borderColor: "var(--edge)",
-            background: "var(--cream-deeper)",
-            color: active ? "var(--forest)" : "var(--ink)",
+            background: "var(--cream-deep)",
+            color: "var(--midnight)",
           }}
           title={issueTitle ? `${issueKey} — ${issueTitle}` : issueKey}
         >
@@ -243,7 +243,7 @@ export function ActiveAgentsPanel({
     <section aria-label="Active agents" className="min-w-0">
       <h2
         className="mb-3 font-editorial-serif text-2xl"
-        style={{ color: "var(--ink)" }}
+        style={{ color: "var(--midnight)" }}
       >
         Agents
       </h2>
@@ -251,7 +251,7 @@ export function ActiveAgentsPanel({
       {visibleRuns.length === 0 ? (
         <div
           className="editorial-card px-4 py-3 font-editorial-serif text-base italic"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           No active agent runs.
         </div>

@@ -49,7 +49,7 @@ export function ProjectsListPanel() {
 
   if (error) {
     return (
-      <div className="editorial-page p-8 text-[var(--danger)]">
+      <div className="editorial-page p-8 text-[var(--err)]">
         Error: {String(error)}
       </div>
     );
@@ -61,14 +61,14 @@ export function ProjectsListPanel() {
       header: "Name",
       sortable: true,
       cell: (p) => (
-        <div className="font-medium text-[var(--ink)]">{p.name}</div>
+        <div className="font-medium text-[var(--midnight)]">{p.name}</div>
       ),
     },
     {
       key: "description",
       header: "Description",
       cell: (p) => (
-        <span className="text-sm text-[var(--ink-soft)]">
+        <span className="text-sm text-[var(--midnight-soft)]">
           {p.description ?? "—"}
         </span>
       ),
@@ -83,7 +83,7 @@ export function ProjectsListPanel() {
             type="button"
             onClick={() => nav.openDetail("project-detail", p.id)}
             className="text-sm hover:underline"
-            style={{ color: "var(--forest)" }}
+            style={{ color: "var(--midnight)" }}
           >
             Open →
           </button>
@@ -94,7 +94,7 @@ export function ProjectsListPanel() {
               handleShellLinkClick(e, teamsDetailUrl("project", p.id))
             }
             className="text-sm hover:underline"
-            style={{ color: "var(--forest)" }}
+            style={{ color: "var(--midnight)" }}
           >
             Open →
           </a>
@@ -120,7 +120,7 @@ export function ProjectsListPanel() {
         searchAriaLabel="Search projects"
       />
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--mute)]">
+        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : filtered.length === 0 ? (
@@ -191,30 +191,30 @@ function CreateProjectDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Name</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Description</span>
+          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
             rows={3}
           />
         </label>
         {err && (
           <div
-            className="text-[var(--danger)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
               background:
-                "color-mix(in srgb, var(--danger) 6%, transparent)",
+                "color-mix(in srgb, var(--err) 6%, transparent)",
             }}
           >
             {err}

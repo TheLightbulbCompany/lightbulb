@@ -87,13 +87,13 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_50%,transparent)] p-4"
       role="dialog"
       aria-modal="true"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"
+        className="w-full max-w-md rounded-lg bg-cream p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {state === "sent" || state === "received" ? (
@@ -101,7 +101,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
             <h2 className="mb-2 text-lg font-semibold">
               {state === "sent" ? "Thanks — we got it" : "Couldn’t send that"}
             </h2>
-            <p className="mb-6 text-sm text-gray-600">
+            <p className="mb-6 text-sm text-[var(--midnight-muted)]">
               {state === "sent" ? (
                 <>Your message is on its way to our team. We&rsquo;ll reply to your email.</>
               ) : (
@@ -118,7 +118,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800"
+              className="rounded-md bg-midnight px-4 py-2 text-sm text-cream hover:bg-[var(--midnight-soft)]"
             >
               Close
             </button>
@@ -127,25 +127,25 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
           <>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Contact support</h2>
-              <button type="button" onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-gray-600">
+              <button type="button" onClick={onClose} aria-label="Close" className="text-[var(--midnight-muted)] hover:text-midnight">
                 ✕
               </button>
             </div>
 
             {presetError ? (
-              <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
+              <p className="mb-3 rounded-md bg-err/10 px-3 py-2 text-xs text-err">
                 We&rsquo;ll attach the error details automatically.
               </p>
             ) : null}
 
-            <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="support-category">
+            <label className="mb-1 block text-sm font-medium text-midnight" htmlFor="support-category">
               Topic
             </label>
             <select
               id="support-category"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              className="mb-4 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              className="mb-4 w-full rounded-md border border-edge px-3 py-2 text-sm"
             >
               {SUPPORT_CATEGORIES.map((c) => (
                 <option key={c} value={c}>
@@ -154,7 +154,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
               ))}
             </select>
 
-            <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="support-message">
+            <label className="mb-1 block text-sm font-medium text-midnight" htmlFor="support-message">
               Message
             </label>
             <textarea
@@ -163,11 +163,11 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
               onChange={(e) => setMessage(e.target.value)}
               rows={5}
               placeholder="Describe what happened…"
-              className="mb-4 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              className="mb-4 w-full rounded-md border border-edge px-3 py-2 text-sm"
             />
 
             {state === "error" ? (
-              <p className="mb-3 text-xs text-red-600">
+              <p className="mb-3 text-xs text-err">
                 Couldn&rsquo;t send — please try again, or email support@isol8.co directly.
               </p>
             ) : null}
@@ -176,7 +176,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-md border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+                className="rounded-md border border-edge px-4 py-2 text-sm hover:bg-cream-deep"
               >
                 Cancel
               </button>
@@ -184,7 +184,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
                 type="button"
                 onClick={submit}
                 disabled={state === "sending" || !message.trim()}
-                className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50"
+                className="rounded-md bg-midnight px-4 py-2 text-sm text-cream hover:bg-[var(--midnight-soft)] disabled:opacity-50"
               >
                 {state === "sending" ? "Sending…" : "Send"}
               </button>

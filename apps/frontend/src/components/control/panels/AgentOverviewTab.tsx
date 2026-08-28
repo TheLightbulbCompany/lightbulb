@@ -24,8 +24,8 @@ function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: st
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-[var(--mute)]/60">{label}</div>
-      <div className="text-sm font-medium truncate text-[var(--ink)]">{value}</div>
+      <div className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60">{label}</div>
+      <div className="text-sm font-medium truncate text-[var(--midnight)]">{value}</div>
     </div>
   );
 }
@@ -215,8 +215,8 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
 
   return (
     <div className="space-y-4 mt-2">
-      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-white">
-        <h3 className="text-sm font-medium text-[var(--ink)]">Identity</h3>
+      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
+        <h3 className="text-sm font-medium text-[var(--midnight)]">Identity</h3>
         <div className="grid grid-cols-2 gap-3">
           <InfoRow label="Agent ID" value={agentId} />
           <InfoRow label="Name" value={identity?.name || agent?.name || "\u2014"} />
@@ -225,8 +225,8 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         </div>
       </div>
 
-      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-white">
-        <h3 className="text-sm font-medium text-[var(--ink)]">Model</h3>
+      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
+        <h3 className="text-sm font-medium text-[var(--midnight)]">Model</h3>
         {selectorModels.length > 0 ? (
           <ModelSelector
             models={selectorModels}
@@ -235,15 +235,15 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
             disabled={updatingModel || !configSnapshot?.hash}
           />
         ) : (
-          <p className="text-xs text-[var(--mute)]">
+          <p className="text-xs text-[var(--midnight-muted)]">
             {currentModel
               ? displayModelName(currentModel, modelNames) || "Custom model"
               : "No models configured in gateway"}
           </p>
         )}
-        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--mute)]" />}
+        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--midnight-muted)]" />}
         {modelError && (
-          <p className="text-xs text-[#dc2626] flex items-center gap-1">
+          <p className="text-xs text-err flex items-center gap-1">
             <AlertCircle className="h-3 w-3" /> {modelError}
           </p>
         )}
@@ -251,16 +251,16 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
 
       <AgentHeartbeatCard agentId={agentId} />
 
-      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-white">
-        <h3 className="text-sm font-medium text-[var(--ink)]">Role &amp; description</h3>
-        <p className="text-xs text-[var(--mute)]">
+      <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
+        <h3 className="text-sm font-medium text-[var(--midnight)]">Role &amp; description</h3>
+        <p className="text-xs text-[var(--midnight-muted)]">
           How Friday sees this agent in the org chart. Used when delegating work.
         </p>
 
         <AgentPaperclipFields value={meta} onChange={setMetaFromUser} disabled={savingMeta} />
 
         {metaError && (
-          <p className="text-xs text-[#dc2626] flex items-center gap-1">
+          <p className="text-xs text-err flex items-center gap-1">
             <AlertCircle className="h-3 w-3" /> {metaError}
           </p>
         )}
@@ -274,10 +274,10 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
 
       {data && (
         <details className="group">
-          <summary className="text-xs text-[var(--mute)]/60 cursor-pointer hover:text-[var(--mute)]">
+          <summary className="text-xs text-[var(--midnight-muted)]/60 cursor-pointer hover:text-[var(--midnight-muted)]">
             Raw identity data
           </summary>
-          <pre className="mt-2 text-xs bg-[var(--cream-deeper)] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
+          <pre className="mt-2 text-xs bg-[var(--cream-deep)] rounded-lg p-3 overflow-auto max-h-48 text-[var(--midnight-soft)]">
             {JSON.stringify(data, null, 2)}
           </pre>
         </details>

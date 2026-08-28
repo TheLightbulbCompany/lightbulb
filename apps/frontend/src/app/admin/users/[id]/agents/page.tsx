@@ -140,9 +140,9 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     <div className="space-y-6">
       <Header />
       {orgBanner}
-      <div className="overflow-x-auto rounded-md border border-white/10">
+      <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[720px] table-fixed text-sm">
-          <thead className="bg-zinc-900 text-left text-xs uppercase tracking-wide text-zinc-400">
+          <thead className="bg-card text-left text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">Name</th>
               <th className="w-48 px-3 py-2 font-medium">Model</th>
@@ -158,30 +158,30 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
               return (
               <tr
                 key={row.agent_id}
-                className="border-t border-white/5 align-top text-zinc-200"
+                className="border-t border-border align-top text-foreground"
               >
                 <td className="truncate px-3 py-2" title={row.name}>
                   {row.name}
                 </td>
-                <td className="truncate px-3 py-2 font-mono text-xs text-zinc-300" title={row.model}>
+                <td className="truncate px-3 py-2 font-mono text-xs text-muted-foreground" title={row.model}>
                   {row.model}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-zinc-300">
+                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                   {row.skills_count}
                 </td>
                 <td
-                  className="px-3 py-2 font-mono text-xs text-zinc-400"
+                  className="px-3 py-2 font-mono text-xs text-muted-foreground"
                   title={lastActive.iso ?? undefined}
                 >
                   {lastActive.label}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-zinc-300">
+                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                   {row.sessions_count}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <Link
                     href={`/admin/users/${encodeURIComponent(id)}/agents/${encodeURIComponent(row.agent_id)}`}
-                    className="text-sky-300 hover:underline"
+                    className="text-info hover:underline"
                   >
                     View
                   </Link>
@@ -197,7 +197,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
         <div className="flex justify-center">
           <Link
             href={`/admin/users/${encodeURIComponent(id)}/agents?cursor=${encodeURIComponent(result.cursor)}`}
-            className="rounded-md border border-white/10 bg-white/[0.02] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.04]"
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-accent"
           >
             Load more
           </Link>
@@ -210,6 +210,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
 // User-id breadcrumb is provided by the parent layout — render only the
 // section heading here so the title doesn't duplicate.
 function Header() {
-  return <h1 className="text-xl font-semibold text-zinc-100">Agents</h1>;
+  return <h1 className="text-xl font-semibold text-foreground">Agents</h1>;
 }
 

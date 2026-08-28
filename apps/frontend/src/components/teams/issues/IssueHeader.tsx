@@ -63,7 +63,7 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
       {issue.identifier && (
         <span
           className="text-xs font-mono shrink-0"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {issue.identifier}
         </span>
@@ -87,7 +87,7 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
           className="font-editorial-serif flex-1 min-w-0 bg-transparent outline-none text-2xl font-medium"
           style={{
             borderBottom: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
           disabled={saving}
         />
@@ -99,9 +99,9 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
             "font-editorial-serif flex-1 min-w-0 text-left text-2xl font-medium rounded px-1 -mx-1 transition-colors",
             saving && "opacity-50",
           )}
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--cream-deeper)";
+            e.currentTarget.style.background = "var(--cream-deep)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";

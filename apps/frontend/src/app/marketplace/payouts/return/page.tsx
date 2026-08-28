@@ -70,7 +70,7 @@ export default function PayoutsReturnPage() {
   return (
     <main className="max-w-md mx-auto px-6 py-16 text-center">
       <h1 className="font-editorial-serif text-2xl mb-4">Finishing setup…</h1>
-      <p className="text-[var(--mute)]">
+      <p className="text-[var(--midnight-muted)]">
         Verifying your Stripe Connect account. This usually takes a few seconds.
       </p>
     </main>

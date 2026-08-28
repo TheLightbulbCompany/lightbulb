@@ -196,7 +196,7 @@ export function McpServersTab(props: { agentId?: string }) {
             Add Server
           </Button>
           {status && (
-            <div className={`flex items-center gap-1.5 text-xs ${status.type === "error" ? "text-destructive" : "text-green-500"}`}>
+            <div className={`flex items-center gap-1.5 text-xs ${status.type === "error" ? "text-destructive" : "text-ok"}`}>
               {status.type === "error" ? (
                 <AlertCircle className="h-3 w-3 flex-shrink-0" />
               ) : (

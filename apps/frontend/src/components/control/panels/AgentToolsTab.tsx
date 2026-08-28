@@ -244,13 +244,13 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
   }, [callRpc, agentId, localProfile, localAlsoAllow, localDeny, mutateConfig]);
 
   if (catalogLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-[var(--mute)] mt-4" />;
+    return <Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)] mt-4" />;
   }
 
   if (catalogError) {
     return (
       <div className="mt-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">{catalogError.message}</p>
+        <p className="text-sm text-err">{catalogError.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutateCatalog()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -270,7 +270,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-medium">Tool Access</h3>
-          <p className="text-xs text-[var(--mute)]">
+          <p className="text-xs text-[var(--midnight-muted)]">
             {enabledCount}/{totalTools} enabled
           </p>
         </div>
@@ -302,28 +302,28 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
 
       {globalToolsConfig?.allow && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-50 border border-yellow-300/40">
-          <AlertCircle className="h-3 w-3 text-yellow-600 flex-shrink-0" />
-          <span className="text-xs text-yellow-700">
-            Global <code className="text-[10px] bg-[var(--cream-deeper)] px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))]">
+          <AlertCircle className="h-3 w-3 text-warn flex-shrink-0" />
+          <span className="text-xs text-warn">
+            Global <code className="text-[10px] bg-[var(--cream-deep)] px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
           </span>
         </div>
       )}
 
-      <div className="flex items-center gap-3 text-xs text-[var(--mute)]">
+      <div className="flex items-center gap-3 text-xs text-[var(--midnight-muted)]">
         <span>
-          Profile: <span className="font-medium text-[var(--ink)]">{effectiveProfile}</span>
+          Profile: <span className="font-medium text-[var(--midnight)]">{effectiveProfile}</span>
         </span>
         <span>
-          Source: <span className="font-medium text-[var(--ink)]">{profileSource}</span>
+          Source: <span className="font-medium text-[var(--midnight)]">{profileSource}</span>
         </span>
         {dirty && (
-          <span className="text-yellow-500 font-medium">unsaved</span>
+          <span className="text-warn font-medium">unsaved</span>
         )}
       </div>
 
       <div className="flex items-center gap-1 flex-wrap">
-        <span className="text-xs text-[var(--mute)] mr-1">Quick Presets:</span>
+        <span className="text-xs text-[var(--midnight-muted)] mr-1">Quick Presets:</span>
         {presets.map((preset) => (
           <Button
             key={preset.id}
@@ -347,7 +347,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
       {sections.map((section) => (
         <div key={section.id} className="space-y-1">
-          <h4 className="text-xs font-semibold text-[var(--mute)] uppercase tracking-wide">
+          <h4 className="text-xs font-semibold text-[var(--midnight-muted)] uppercase tracking-wide">
             {section.label}
           </h4>
           <div className="space-y-0.5">
@@ -356,7 +356,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
               return (
                 <div
                   key={tool.id}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--cream-deeper)] group"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--cream-deep)] group"
                 >
                   <button
                     className="flex-shrink-0 focus:outline-none"
@@ -364,26 +364,26 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                     aria-label={`Toggle ${tool.label}`}
                   >
                     {allowed ? (
-                      <ToggleRight className="h-4 w-4 text-[#2d8a4e]" />
+                      <ToggleRight className="h-4 w-4 text-ok" />
                     ) : (
-                      <ToggleLeft className="h-4 w-4 text-[var(--mute)]/40" />
+                      <ToggleLeft className="h-4 w-4 text-[var(--midnight-muted)]/40" />
                     )}
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className={cn(
                       "text-sm font-medium truncate",
-                      !allowed && "text-[var(--mute)]/50",
+                      !allowed && "text-[var(--midnight-muted)]/50",
                     )}>
                       {tool.label}
                     </div>
                     {tool.description && (
-                      <div className="text-xs text-[var(--mute)]/70 line-clamp-1">
+                      <div className="text-xs text-[var(--midnight-muted)]/70 line-clamp-1">
                         {tool.description}
                       </div>
                     )}
                   </div>
                   {tool.source && (
-                    <span className="text-[10px] text-[var(--mute)]/40 flex-shrink-0">
+                    <span className="text-[10px] text-[var(--midnight-muted)]/40 flex-shrink-0">
                       {String(tool.source)}
                     </span>
                   )}
@@ -395,10 +395,10 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
       ))}
 
       <details className="group">
-        <summary className="text-xs text-[var(--mute)]/60 cursor-pointer hover:text-[var(--mute)]">
+        <summary className="text-xs text-[var(--midnight-muted)]/60 cursor-pointer hover:text-[var(--midnight-muted)]">
           Raw catalog data
         </summary>
-        <pre className="mt-2 text-xs bg-[var(--cream-deeper)] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
+        <pre className="mt-2 text-xs bg-[var(--cream-deep)] rounded-lg p-3 overflow-auto max-h-48 text-[var(--midnight-soft)]">
           {JSON.stringify(catalogData, null, 2)}
         </pre>
       </details>

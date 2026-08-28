@@ -19,16 +19,22 @@ import { ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTool
 import type { GrowthData, GrowthOwnerStage, GrowthSegment } from "../_lib/api";
 import { STAGE_LABEL } from "./sections";
 
-// Growth-dashboard series colors (see globals.css .dark block): 1 = green,
-// autonomous/healthy; 2 = blue, human-initiated; 3 = amber, nightly CEO
-// (shown, never counted); 4 = violet, secondary/unknown/other; 5 = red, alert.
+// Growth-dashboard series. globals.css maps --chart-1..5 to ok, info, warn, err,
+// brass in BOTH grounds. Single-meaning series:
+//   CHART_1 ok    — autonomous / healthy / the ladder
+//   CHART_4 err   — alert: auto-paused, the largest gate-blocked reason
+//   CHART_5 brass — secondary / unknown / order-independent
+// CHART_2 (info) and CHART_3 (warn) also serve as plain distinct hues where a
+// multi-series chart needs one more line than there are meanings — so
+// `trial_converted` is warn and `archived` is info for separation, not status.
+// Read the legend, not the colour, on the funnel and survival charts.
 const CHART_1 = "var(--chart-1)";
 const CHART_2 = "var(--chart-2)";
 const CHART_3 = "var(--chart-3)";
 const CHART_4 = "var(--chart-4)";
 const CHART_5 = "var(--chart-5)";
 
-const GRID_STROKE = "rgb(39 39 42)";
+const GRID_STROKE = "var(--border)";
 const AXIS_TICK_PROPS = { tickLine: false as const, axisLine: false as const, className: "text-[10px]" };
 const NUMERIC_Y_PROPS = { ...AXIS_TICK_PROPS, width: 32, allowDecimals: false as const, domain: [0, "auto"] as [number, "auto"] };
 
@@ -131,8 +137,8 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
 function KpiTile({ label, value, tone, sparkline }: { label: string; value: React.ReactNode; tone?: "alert"; sparkline: React.ReactNode }) {
   return (
     <div>
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className={`text-2xl font-semibold tabular-nums ${tone === "alert" ? "text-red-300" : "text-zinc-100"}`}>{value}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`text-2xl font-semibold tabular-nums ${tone === "alert" ? "text-err" : "text-foreground"}`}>{value}</div>
       <div className="mt-2 h-10 w-full">{sparkline}</div>
     </div>
   );
@@ -152,7 +158,7 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
   return (
     <Card>
       <div className="grid grid-cols-2 gap-6 md:grid-cols-3 xl:grid-cols-6">
-        <KpiTile label="Owners" value={seg.owners.total} sparkline={<Sparkline values={cumulativeOwners} color={CHART_4} />} />
+        <KpiTile label="Owners" value={seg.owners.total} sparkline={<Sparkline values={cumulativeOwners} color={CHART_5} />} />
         <KpiTile label="Paying" value={seg.owners.paid} sparkline={<NoSparkline />} />
         <KpiTile
           label="Active owners this week"
@@ -178,7 +184,7 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
 
 const FUNNEL_DAILY_EVENTS = ["landing_viewed", "signup_started", "trial_started", "trial_converted"] as const;
 const FUNNEL_DAILY_CONFIG: ChartConfig = {
-  landing_viewed: { label: "landing viewed", color: CHART_4 },
+  landing_viewed: { label: "landing viewed", color: CHART_5 },
   signup_started: { label: "signup started", color: CHART_2 },
   trial_started: { label: "trial started", color: CHART_1 },
   trial_converted: { label: "trial converted", color: CHART_3 },
@@ -201,7 +207,7 @@ export function AcquisitionChart({ data }: { data: GrowthData }) {
           ))}
         </LineChart>
       </ChartContainer>
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         PostHog, unique persons — dev and prod share one PostHog project, so these count both environments.
       </div>
     </Card>
@@ -247,7 +253,7 @@ export function NorthStarRunsChart({ seg }: { seg: GrowthSegment }) {
           <Bar dataKey="nightly_ok" stackId="nightly" fill={CHART_3} radius={[2, 2, 0, 0]} isAnimationActive={false} />
         </BarChart>
       </ChartContainer>
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         autonomous = dispatched by a schedule or webhook. human = everything else, including the nightly CEO&apos;s
         follow-on work. The nightly CEO&apos;s own runs are shown and never counted.
       </div>
@@ -282,7 +288,7 @@ const LADDER: GrowthOwnerStage["stage"][] = [
 ];
 const ACTIVATION_CONFIG: ChartConfig = {
   stage: { label: "ladder", color: CHART_1 },
-  flag: { label: "order-independent", color: CHART_4 },
+  flag: { label: "order-independent", color: CHART_5 },
 };
 
 /** 5. Activation gate — ladder vs. order-independent counts per stage, horizontal. */
@@ -303,11 +309,11 @@ export function ActivationGateChart({ seg }: { seg: GrowthSegment }) {
           <ChartTooltip content={<ChartTooltipContent />} />
           <ChartLegend content={<ChartLegendContent />} />
           <Bar dataKey="stage" fill={CHART_1} radius={[0, 2, 2, 0]} isAnimationActive={false} />
-          <Bar dataKey="flag" fill={CHART_4} radius={[0, 2, 2, 0]} isAnimationActive={false} />
+          <Bar dataKey="flag" fill={CHART_5} radius={[0, 2, 2, 0]} isAnimationActive={false} />
         </BarChart>
       </ChartContainer>
-      <div className="mt-2 text-xs text-zinc-500">
-        Ladder (green) counts owners who cleared every earlier step; order-independent (violet) counts each step on
+      <div className="mt-2 text-xs text-muted-foreground">
+        Ladder (green) counts owners who cleared every earlier step; order-independent (brass) counts each step on
         its own — a gap between them is a stalled owner, not a missing one.
       </div>
     </Card>
@@ -316,8 +322,8 @@ export function ActivationGateChart({ seg }: { seg: GrowthSegment }) {
 
 const SURVIVAL_ROWS: { key: "armed" | "paused_manual" | "auto_paused" | "archived"; label: string; color: string }[] = [
   { key: "armed", label: "armed", color: CHART_1 },
-  { key: "paused_manual", label: "paused by owner", color: CHART_4 },
-  { key: "auto_paused", label: "auto-paused", color: CHART_5 },
+  { key: "paused_manual", label: "paused by owner", color: CHART_5 },
+  { key: "auto_paused", label: "auto-paused", color: CHART_4 },
   { key: "archived", label: "archived", color: CHART_2 },
 ];
 
@@ -344,7 +350,7 @@ export function AutomationSurvivalChart({ seg }: { seg: GrowthSegment }) {
   );
 }
 
-const GATE_BLOCKED_CYCLE = [CHART_5, CHART_3, CHART_4, CHART_2, CHART_1];
+const GATE_BLOCKED_CYCLE = [CHART_4, CHART_3, CHART_5, CHART_2, CHART_1];
 
 const GATE_BLOCKED_TITLE = "provision.gate.blocked per day (CloudWatch, all owners) — last 7 days";
 
@@ -356,7 +362,7 @@ export function GateBlockedDailyChart({ data }: { data: GrowthData }) {
   if (codes.length === 0) {
     return (
       <Card title={GATE_BLOCKED_TITLE}>
-        <div className="flex h-[220px] items-center justify-center text-xs text-zinc-500">none</div>
+        <div className="flex h-[220px] items-center justify-center text-xs text-muted-foreground">none</div>
       </Card>
     );
   }
@@ -394,7 +400,7 @@ const POSTHOG_RUNS_ORDER = ["autonomous", "human", "unknown"] as const;
 const POSTHOG_RUNS_CONFIG: ChartConfig = {
   autonomous: { label: "autonomous", color: CHART_1 },
   human: { label: "human", color: CHART_2 },
-  unknown: { label: "unknown", color: CHART_4 },
+  unknown: { label: "unknown", color: CHART_5 },
 };
 
 /** 8. PostHog cross-check — agent_run_completed by initiation, weekly. */
@@ -414,7 +420,7 @@ export function PosthogCrosscheckChart({ data }: { data: GrowthData }) {
           ))}
         </LineChart>
       </ChartContainer>
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         Attribution here is lossy; the Paperclip DB above is the ledger. Counts both environments.
       </div>
     </Card>

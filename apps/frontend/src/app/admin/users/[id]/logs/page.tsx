@@ -61,14 +61,14 @@ function LogsFilters({ userId, level, hours }: LogsFiltersProps) {
     <form
       method="GET"
       action={`/admin/users/${encodeURIComponent(userId)}/logs`}
-      className="flex flex-wrap items-end gap-3 rounded-md border border-white/5 bg-white/[0.02] p-3"
+      className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-card p-3"
     >
-      <label className="flex flex-col gap-1 text-xs text-zinc-400">
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Level
         <select
           name="level"
           defaultValue={level}
-          className="rounded-md border border-white/10 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100"
+          className="rounded-md border border-border bg-card px-2 py-1.5 text-sm text-foreground"
         >
           {ALLOWED_LEVELS.map((lvl) => (
             <option key={lvl} value={lvl}>
@@ -78,12 +78,12 @@ function LogsFilters({ userId, level, hours }: LogsFiltersProps) {
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-zinc-400">
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Time window
         <select
           name="hours"
           defaultValue={String(hours)}
-          className="rounded-md border border-white/10 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100"
+          className="rounded-md border border-border bg-card px-2 py-1.5 text-sm text-foreground"
         >
           {HOURS_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -95,7 +95,7 @@ function LogsFilters({ userId, level, hours }: LogsFiltersProps) {
 
       <button
         type="submit"
-        className="h-9 rounded-md border border-white/10 bg-white/[0.04] px-4 text-sm text-zinc-100 hover:bg-white/[0.08]"
+        className="h-9 rounded-md border border-border bg-card px-4 text-sm text-foreground hover:bg-accent"
       >
         Apply
       </button>
@@ -120,7 +120,7 @@ export default async function LogsPage({ params, searchParams }: LogsPageProps) 
   if (!token) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold text-zinc-100">Logs</h1>
+        <h1 className="text-xl font-semibold text-foreground">Logs</h1>
         <ErrorBanner error="Missing Clerk session token." />
       </div>
     );
@@ -144,13 +144,13 @@ export default async function LogsPage({ params, searchParams }: LogsPageProps) 
   return (
     <div className="space-y-6">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold text-zinc-100">Logs</h1>
+        <h1 className="text-xl font-semibold text-foreground">Logs</h1>
         {cwUrl?.url ? (
           <a
             href={cwUrl.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-sky-300 hover:underline"
+            className="text-xs text-info hover:underline"
           >
             {"Open full search in CloudWatch \u2192"}
           </a>
@@ -190,7 +190,7 @@ export default async function LogsPage({ params, searchParams }: LogsPageProps) 
         <div className="flex justify-center">
           <Link
             href={nextCursorHref}
-            className="rounded-md border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-zinc-100 hover:bg-white/[0.08]"
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-accent"
           >
             Load more
           </Link>

@@ -103,7 +103,7 @@ function PropertyRow({
     <div
       className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
       style={{
-        color: "var(--ink-soft)",
+        color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",
       }}
     >
@@ -115,13 +115,13 @@ function PropertyRow({
   );
 }
 
-const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
+const EMPTY_DASH_STYLE = { color: "var(--midnight-muted)" } as const;
 
 // Shared chip styling for the Labels and Related-Tasks rows so the read-only
 // pills read identically across the rail.
 const CHIP_STYLE = {
-  background: "var(--cream-deeper)",
-  color: "var(--ink-soft)",
+  background: "var(--cream-deep)",
+  color: "var(--midnight-soft)",
   border: "1px solid var(--edge)",
 } as const;
 
@@ -172,7 +172,7 @@ function GoalRow({
         prefetch={false}
         onClick={(e) => handleShellLinkClick(e, goalUrl)}
         className="truncate hover:underline"
-        style={{ color: "var(--ink)" }}
+        style={{ color: "var(--midnight)" }}
       >
         {goal?.title ?? goalId.slice(0, 8)}
       </Link>
@@ -206,7 +206,7 @@ function ParentLink({ parentId }: { parentId: string }) {
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, parentUrl)}
       className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
-      style={{ color: "var(--forest)" }}
+      style={{ color: "var(--midnight)" }}
     >
       <span className="font-mono text-xs shrink-0">{label}</span>
       {title && <span className="truncate">{title}</span>}
@@ -223,7 +223,7 @@ function SubTasksRow({ issueId }: { issueId: string }) {
   return (
     <PropertyRow label="Sub-tasks">
       {count > 0 ? (
-        <span style={{ color: "var(--ink-soft)" }}>
+        <span style={{ color: "var(--midnight-soft)" }}>
           {count} {count === 1 ? "sub-task" : "sub-tasks"}
         </span>
       ) : (
@@ -340,21 +340,21 @@ function MonitorRow({
       style={{
         background: "var(--cream)",
         border: "1px solid var(--edge)",
-        color: "var(--ink)",
+        color: "var(--midnight)",
       }}
     >
-      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
         Re-check at
         <input
           type="datetime-local"
           value={whenLocal}
           onChange={(e) => setWhenLocal(e.target.value)}
           aria-label="Re-check at"
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
-          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
-      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
         External service
         <input
           type="text"
@@ -363,11 +363,11 @@ function MonitorRow({
           placeholder="e.g. GitHub Actions"
           aria-label="External service"
           maxLength={120}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
-          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
-      <label className="block text-xs mb-2" style={{ color: "var(--ink-soft)" }}>
+      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
         Notes
         <input
           type="text"
@@ -376,8 +376,8 @@ function MonitorRow({
           placeholder="What to look for"
           aria-label="Monitor notes"
           maxLength={500}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
-          style={{ border: "1px solid var(--edge)", color: "var(--ink)" }}
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
       <div className="flex justify-end gap-2 pt-1">
@@ -406,24 +406,24 @@ function MonitorRow({
     return (
       <PropertyRow label="Monitor">
         <div className="flex flex-col gap-1">
-          <span style={{ color: "var(--ink-soft)" }}>
+          <span style={{ color: "var(--midnight-soft)" }}>
             Re-check{" "}
             <time dateTime={monitor.nextCheckAt}>
               {timeAgo(monitor.nextCheckAt)}
             </time>
           </span>
           {monitor.serviceName && (
-            <span className="text-xs" style={{ color: "var(--mute)" }}>
+            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               {monitor.serviceName}
             </span>
           )}
           {monitor.notes && (
-            <span className="text-xs" style={{ color: "var(--mute)" }}>
+            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               {monitor.notes}
             </span>
           )}
           {progress && (
-            <span className="text-xs" style={{ color: "var(--mute)" }}>
+            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
               {progress}
             </span>
           )}
@@ -434,7 +434,7 @@ function MonitorRow({
                 onClick={() => void checkNow()}
                 disabled={checkState === "checking"}
                 className="text-xs hover:underline disabled:opacity-60"
-                style={{ color: "var(--forest)" }}
+                style={{ color: "var(--midnight)" }}
               >
                 {checkState === "checking"
                   ? "Checking…"
@@ -452,7 +452,7 @@ function MonitorRow({
                   <button
                     type="button"
                     className="text-xs hover:underline"
-                    style={{ color: "var(--mute)" }}
+                    style={{ color: "var(--midnight-muted)" }}
                   >
                     Edit
                   </button>
@@ -465,7 +465,7 @@ function MonitorRow({
                 type="button"
                 onClick={onMonitorClear}
                 className="text-xs hover:underline"
-                style={{ color: "var(--mute)" }}
+                style={{ color: "var(--midnight-muted)" }}
               >
                 Clear
               </button>
@@ -497,7 +497,7 @@ function MonitorRow({
   return (
     <PropertyRow label="Monitor">
       <span className="inline-flex items-baseline gap-2">
-        <span data-empty={spentLabel ? undefined : "true"} style={{ color: "var(--mute)" }}>
+        <span data-empty={spentLabel ? undefined : "true"} style={{ color: "var(--midnight-muted)" }}>
           {spentLabel ?? "Not scheduled"}
         </span>
         {onMonitorChange && (
@@ -509,7 +509,7 @@ function MonitorRow({
               <button
                 type="button"
                 className="text-xs hover:underline"
-                style={{ color: "var(--mute)" }}
+                style={{ color: "var(--midnight-muted)" }}
               >
                 Schedule
               </button>
@@ -749,7 +749,7 @@ export function IssueProperties({
       />
       <PropertyRow label="Created">
         {issue.createdAt ? (
-          <time dateTime={issue.createdAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={issue.createdAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(issue.createdAt)}
           </time>
         ) : (
@@ -758,7 +758,7 @@ export function IssueProperties({
       </PropertyRow>
       <PropertyRow label="Updated">
         {issue.updatedAt ? (
-          <time dateTime={issue.updatedAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={issue.updatedAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(issue.updatedAt)}
           </time>
         ) : (

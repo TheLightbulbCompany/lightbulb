@@ -15,40 +15,40 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
     <div className="editorial-page flex min-h-screen flex-col pt-[65px]">
       <UserSync />
       <Navbar />
-      <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[rgba(243,239,230,0.92)] backdrop-blur-xl">
+      <div className="marketplace-subnav sticky top-[65px] z-10 border-b border-[var(--edge)] bg-[var(--cream)]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3 text-sm">
-          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--mute)]">
+          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
             Marketplace
           </div>
           <nav className="flex items-center gap-1">
             <Link
               href="/marketplace"
-              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+              className="rounded-full px-3 py-1.5 text-[var(--midnight-soft)] no-underline hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
             >
               Featured
             </Link>
             <Link
               href="/marketplace/agents"
-              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+              className="rounded-full px-3 py-1.5 text-[var(--midnight-soft)] no-underline hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
             >
               Browse
             </Link>
             <Link
               href="/marketplace/companies"
-              className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+              className="rounded-full px-3 py-1.5 text-[var(--midnight-soft)] no-underline hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
             >
               Companies
             </Link>
             <SignedIn>
               <Link
                 href="/marketplace/buyer"
-                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+                className="rounded-full px-3 py-1.5 text-[var(--midnight-soft)] no-underline hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
               >
                 Purchases
               </Link>
               <Link
                 href="/marketplace/dashboard"
-                className="rounded-full px-3 py-1.5 text-[var(--ink-soft)] no-underline hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+                className="rounded-full px-3 py-1.5 text-[var(--midnight-soft)] no-underline hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
               >
                 Earnings
               </Link>
@@ -67,17 +67,17 @@ export default function MarketplaceLayout({ children }: { children: React.ReactN
         </div>
       </div>
       <div className="flex-1">{children}</div>
-      <footer className="border-t border-[var(--edge)] bg-[var(--cream-deeper)]">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6 text-xs text-[var(--mute)]">
+      <footer className="border-t border-[var(--edge)] bg-[var(--cream-deep)]">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6 text-xs text-[var(--midnight-muted)]">
           <span className="font-mono uppercase tracking-[0.14em]">Lightbulb AI marketplace · v0</span>
           <nav className="flex items-center gap-4">
-            <Link href="/terms" className="text-[var(--mute)] no-underline hover:text-[var(--forest)]">
+            <Link href="/terms" className="text-[var(--midnight-muted)] no-underline hover:text-[var(--midnight)]">
               Terms
             </Link>
-            <Link href="/privacy" className="text-[var(--mute)] no-underline hover:text-[var(--forest)]">
+            <Link href="/privacy" className="text-[var(--midnight-muted)] no-underline hover:text-[var(--midnight)]">
               Privacy
             </Link>
-            <Link href="/" className="text-[var(--mute)] no-underline hover:text-[var(--forest)]">
+            <Link href="/" className="text-[var(--midnight-muted)] no-underline hover:text-[var(--midnight)]">
               ← Back to Lightbulb AI
             </Link>
           </nav>

@@ -113,7 +113,7 @@ export function IssueRow({
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected
-    ? "!text-[var(--mute)] !border-[var(--mute)]"
+    ? "!text-[var(--midnight-muted)] !border-[var(--midnight-muted)]"
     : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
   const productivityReview = issue.productivityReview ?? null;
@@ -126,7 +126,7 @@ export function IssueRow({
     <span
       className={cn(
         "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
-        selected ? "border-[var(--mute)] text-[var(--mute)]" : null,
+        selected ? "border-[var(--midnight-muted)] text-[var(--midnight-muted)]" : null,
       )}
       style={
         selected
@@ -149,7 +149,7 @@ export function IssueRow({
   const hasChecklistStep = checklistStepNumber !== null;
   const checklistStep = hasChecklistStep ? (
     <span
-      className="shrink-0 font-mono text-xs text-[var(--mute)]"
+      className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]"
       aria-hidden="true"
     >
       {checklistStepNumber}.
@@ -170,9 +170,13 @@ export function IssueRow({
       onClick={handleOpen}
       className={cn(
         "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
-        selected ? "hover:bg-transparent" : "hover:bg-[var(--cream-deeper)]",
+        selected
+          ? "hover:bg-transparent"
+          : checklistCurrentStep
+            ? "hover:bg-[var(--cream-deeper)]"
+            : "hover:bg-[var(--cream-deep)]",
         checklistCurrentStep
-          ? "border-l-2 border-l-[var(--forest)] bg-[var(--forest-tint)] pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]"
+          ? "border-l-2 border-l-[var(--midnight)] bg-[var(--cream-deeper)] pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]"
           : null,
         className,
       )}
@@ -219,7 +223,7 @@ export function IssueRow({
                 {productivityReviewIndicator}
               </span>
               {checklistStep}
-              <span className="shrink-0 font-mono text-xs text-[var(--mute)]">
+              <span className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]">
                 {identifier}
               </span>
             </>
@@ -227,12 +231,12 @@ export function IssueRow({
           {mobileMeta ? (
             <>
               <span
-                className="text-xs text-[var(--mute)] sm:hidden"
+                className="text-xs text-[var(--midnight-muted)] sm:hidden"
                 aria-hidden="true"
               >
                 &middot;
               </span>
-              <span className="text-xs text-[var(--mute)] sm:hidden">
+              <span className="text-xs text-[var(--midnight-muted)] sm:hidden">
                 {mobileMeta}
               </span>
             </>
@@ -243,7 +247,7 @@ export function IssueRow({
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
           {desktopTrailing}
           {trailingMeta ? (
-            <span className="text-xs text-[var(--mute)]">{trailingMeta}</span>
+            <span className="text-xs text-[var(--midnight-muted)]">{trailingMeta}</span>
           ) : null}
         </span>
       ) : null}
@@ -266,9 +270,7 @@ export function IssueRow({
               }}
               className={cn(
                 "inline-flex h-4 w-4 items-center justify-center rounded-full !p-0 !border-0 transition-colors",
-                selected
-                  ? "hover:bg-[var(--cream-deeper)]"
-                  : "hover:bg-[var(--forest-tint)]",
+                "hover:bg-[var(--cream-deep)]",
               )}
               aria-label="Mark as read"
             >
@@ -279,8 +281,8 @@ export function IssueRow({
                 )}
                 style={{
                   background: selected
-                    ? "var(--mute-soft)"
-                    : "var(--forest)",
+                    ? "var(--midnight-soft)"
+                    : "var(--midnight)",
                 }}
               />
             </EditorialButton>
@@ -299,7 +301,7 @@ export function IssueRow({
                 onArchive();
               }}
               disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md !p-0 !border-0 text-[var(--mute)] opacity-0 transition-opacity hover:text-[var(--ink)] group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+              className="inline-flex h-4 w-4 items-center justify-center rounded-md !p-0 !border-0 text-[var(--midnight-muted)] opacity-0 transition-opacity hover:text-[var(--midnight)] group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
               aria-label="Dismiss from inbox"
             >
               <X className="h-3.5 w-3.5" />

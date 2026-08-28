@@ -26,13 +26,13 @@ export function PanelTabs({ tabs, value, onValueChange, className }: PanelTabsPr
             value={tab.value}
             className={cn(
               "rounded-none border-b-2 border-transparent bg-transparent px-3 py-2 text-[13px]",
-              "data-[state=active]:border-[var(--forest)] data-[state=active]:bg-transparent data-[state=active]:text-[var(--ink)]",
-              "data-[state=inactive]:text-[var(--mute)]",
+              "data-[state=active]:border-[var(--midnight)] data-[state=active]:bg-transparent data-[state=active]:text-[var(--midnight)]",
+              "data-[state=inactive]:text-[var(--midnight-muted)]",
             )}
           >
             <span>{tab.label}</span>
             {typeof tab.count === "number" && tab.count > 0 && (
-              <span className="ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums bg-[var(--edge)] text-[var(--ink)]">
+              <span className="ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums bg-[var(--edge)] text-[var(--midnight)]">
                 {tab.count}
               </span>
             )}

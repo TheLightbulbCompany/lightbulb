@@ -39,26 +39,26 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
       <div className="flex items-start justify-between gap-3 mb-3">
         <p
           className="text-[10px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {label}
         </p>
         <Icon
           className="h-3.5 w-3.5 shrink-0 mt-0.5 transition-colors"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
           strokeWidth={1.75}
         />
       </div>
       <p
         className="font-editorial-serif text-4xl sm:text-5xl tabular-nums leading-none"
-        style={{ color: "var(--ink)" }}
+        style={{ color: "var(--midnight)" }}
       >
         {value}
       </p>
       {description && (
         <div
           className="text-xs mt-2.5 tabular-nums leading-snug"
-          style={{ color: "var(--ink-soft)" }}
+          style={{ color: "var(--midnight-soft)" }}
         >
           {description}
         </div>

@@ -33,9 +33,9 @@ export interface CommandPaletteProps {
 //
 // Overlay + content are wired against the radix primitive directly (not via
 // the shadcn DialogContent wrapper) because that wrapper bakes in its own
-// DialogPortal + a dark bg-black/80 DialogOverlay. Using the wrapper here
-// would render two backdrops on top of each other and the dark one would
-// cover the editorial rgba(26,26,26,0.45) tint we want (matches the
+// DialogPortal + a heavily-darkened default DialogOverlay. Using the wrapper
+// here would render two backdrops on top of each other and the dark one
+// would cover the editorial midnight tint we want (matches the
 // NewIssueDialog backdrop).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
@@ -43,14 +43,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       <DialogPortal>
         <DialogPrimitive.Overlay
           className="fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
-          style={{ background: "rgba(26, 26, 26, 0.45)" }}
+          style={{ background: "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
         />
         <DialogPrimitive.Content
           className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg"
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
         >
           <DialogTitle className="sr-only">Command palette</DialogTitle>
@@ -110,7 +110,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
       >
         <Search
           className="h-4 w-4 shrink-0"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
           aria-hidden="true"
         />
         <input
@@ -119,8 +119,8 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--mute)] focus-visible:outline-none focus-visible:ring-0"
-          style={{ color: "var(--ink)" }}
+          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--midnight-muted)] focus-visible:outline-none focus-visible:ring-0"
+          style={{ color: "var(--midnight)" }}
         />
       </div>
       <div className="max-h-[60vh] overflow-y-auto py-2" style={{ background: "var(--cream)" }}>
@@ -128,8 +128,8 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
             <div
               className="px-4 py-8 text-center text-sm italic"
               style={{
-                color: "var(--mute)",
-                fontFamily: "var(--font-lora), Georgia, serif",
+                color: "var(--midnight-muted)",
+                fontFamily: "var(--font-serif), Georgia, serif",
               }}
             >
               No results.
@@ -217,7 +217,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
       <div
         className="px-3 py-1 text-[10px] uppercase"
         style={{
-          color: "var(--mute)",
+          color: "var(--midnight-muted)",
           fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace",
           letterSpacing: "0.14em",
         }}
@@ -256,20 +256,20 @@ function Row({
       className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors"
       style={{
         background: selected ? "var(--cream-deeper)" : "transparent",
-        borderLeft: selected ? "2px solid var(--forest)" : "2px solid transparent",
-        color: "var(--ink)",
+        borderLeft: selected ? "2px solid var(--midnight)" : "2px solid transparent",
+        color: "var(--midnight)",
       }}
       onMouseLeave={(e) => {
         if (!selected) e.currentTarget.style.background = "transparent";
       }}
       onMouseOver={(e) => {
-        if (!selected) e.currentTarget.style.background = "var(--forest-tint)";
+        if (!selected) e.currentTarget.style.background = "var(--cream-deep)";
       }}
     >
       {Icon && (
         <Icon
           className="h-4 w-4 shrink-0"
-          style={{ color: selected ? "var(--forest)" : "var(--mute)" }}
+          style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
           aria-hidden="true"
         />
       )}
@@ -277,7 +277,7 @@ function Row({
       {sublabel && (
         <span
           className="agent-pill shrink-0"
-          style={{ background: "var(--cream-deeper)" }}
+          style={{ background: "var(--cream-deep)" }}
         >
           {sublabel}
         </span>

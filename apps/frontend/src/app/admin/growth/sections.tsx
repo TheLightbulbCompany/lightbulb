@@ -27,12 +27,12 @@ const FLAG_LABEL: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, string
 };
 
 export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
-  if (rows.length === 0) return <div className="text-xs text-zinc-500">none</div>;
+  if (rows.length === 0) return <div className="text-xs text-muted-foreground">none</div>;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-left text-zinc-500">
+          <tr className="text-left text-muted-foreground">
             {head.map((h) => (
               <th key={h} className="pb-1 pr-4 font-normal">{h}</th>
             ))}
@@ -40,7 +40,7 @@ export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i} className="border-t border-zinc-800 text-zinc-200">
+            <tr key={i} className="border-t border-border text-foreground">
               {r.map((c, j) => (
                 <td key={j} className="py-1 pr-4 tabular-nums">{c}</td>
               ))}
@@ -54,7 +54,7 @@ export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][
 
 function owner(o: { owner_id: string; name: string }) {
   return (
-    <Link href={`/admin/users/${encodeURIComponent(o.owner_id)}`} className="text-zinc-100 underline-offset-2 hover:underline">
+    <Link href={`/admin/users/${encodeURIComponent(o.owner_id)}`} className="text-foreground underline-offset-2 hover:underline">
       {o.name}
     </Link>
   );
@@ -66,7 +66,7 @@ export function Headline({ seg, audience }: { seg: GrowthSegment; audience: stri
     <Card title={`${audience} with automations firing ${h.weeks.length} consecutive weeks`}>
       <div className="flex items-baseline gap-6">
         <MetricStat label={`of ${h.bar} (the PMF bar)`} value={h.count} tone={h.count === 0 ? "unknown" : "default"} />
-        <div className="text-xs text-zinc-400">
+        <div className="text-xs text-muted-foreground">
           weeks {h.weeks[0]} → {h.weeks[h.weeks.length - 1]} · {h.owners.length ? h.owners.join(", ") : "nobody yet"}
         </div>
       </div>
@@ -97,7 +97,7 @@ export function Activation({ seg }: { seg: GrowthSegment }) {
           <MetricStat key={s} label={STAGE_LABEL[s]} value={a.stages[s]} />
         ))}
       </div>
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         regardless of order:{" "}
         {(Object.keys(FLAG_LABEL) as (keyof typeof FLAG_LABEL)[])
           .map((s) => `${FLAG_LABEL[s]} ${a.flags[s]}`)
@@ -141,7 +141,7 @@ export function NorthStar({ seg }: { seg: GrowthSegment }) {
           w.nightly_ok,
         ])}
       />
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         human = every run not dispatched by a schedule or webhook — issue assignments, run-now, and the nightly
         CEO&apos;s follow-on work included
       </div>
@@ -171,19 +171,19 @@ export function Counters({ seg, data }: { seg: GrowthSegment; data: GrowthData }
   return (
     <div className="grid gap-6 md:grid-cols-3">
       <div>
-        <div className="mb-1 text-xs text-zinc-500">auto-paused automations</div>
+        <div className="mb-1 text-xs text-muted-foreground">auto-paused automations</div>
         <Table head={["owner", "routine", "since"]} rows={seg.counters.auto_paused.map((r) => [owner(r), r.title, r.since ?? "—"])} />
       </div>
       <div>
-        <div className="mb-1 text-xs text-zinc-500">archived within 7 days of creation</div>
+        <div className="mb-1 text-xs text-muted-foreground">archived within 7 days of creation</div>
         <Table head={["owner", "routine"]} rows={seg.counters.archived_within_7d.map((r) => [owner(r), r.title])} />
       </div>
       <div>
-        <div className="mb-1 text-xs text-zinc-500">provision.gate.blocked, last 7d (CloudWatch, all owners)</div>
+        <div className="mb-1 text-xs text-muted-foreground">provision.gate.blocked, last 7d (CloudWatch, all owners)</div>
         <Table head={["code", "count"]} rows={data.gate_blocked_7d.map((g) => [g.code, g.n])} />
-        <div className="mt-3 text-xs text-zinc-500">
+        <div className="mt-3 text-xs text-muted-foreground">
           nightly CEO (paid owners): {seg.nightly_ceo.armed} armed · {seg.nightly_ceo.opted_out} opted out ·{" "}
-          <span className={seg.nightly_ceo.never_armed ? "text-red-300" : ""}>{seg.nightly_ceo.never_armed} never armed</span>
+          <span className={seg.nightly_ceo.never_armed ? "text-err" : ""}>{seg.nightly_ceo.never_armed} never armed</span>
         </div>
       </div>
     </div>
@@ -217,11 +217,11 @@ export function Acquisition({ seg, data }: { seg: GrowthSegment; data: GrowthDat
         <Table head={["week", ...FUNNEL_EVENTS]} rows={data.weeks.map((w) => [w, ...FUNNEL_EVENTS.map((e) => funnel.get(w)?.[e] ?? 0)])} />
         <Table head={["week", "signups"]} rows={seg.owners.signups_by_week.map((w) => [w.week, w.n])} />
         <div>
-          <div className="mb-1 text-xs text-zinc-500">signup_started by first touch</div>
+          <div className="mb-1 text-xs text-muted-foreground">signup_started by first touch</div>
           <Table head={["source", "owners"]} rows={data.posthog.signup_sources.map((s) => [s.source, s.owners])} />
         </div>
       </div>
-      <div className="mt-2 text-xs text-zinc-500">
+      <div className="mt-2 text-xs text-muted-foreground">
         trial → first agent response is the SEO plan&apos;s old activation read; it is a trial-stage signal only — trials cannot arm automations.
         Churn/NRR are not built (no cancel reason is stored); activated vs cancelled per week is the stand-in.
       </div>

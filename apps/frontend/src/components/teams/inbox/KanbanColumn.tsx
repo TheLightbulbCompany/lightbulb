@@ -46,13 +46,13 @@ export function KanbanColumn({
         <StatusIcon status={status} />
         <span
           className="text-xs font-semibold uppercase tracking-wide"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {statusLabel(status)}
         </span>
         <span
           className="text-xs ml-auto tabular-nums"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {issues.length}
         </span>
@@ -63,7 +63,7 @@ export function KanbanColumn({
           "min-h-0 flex-1 space-y-1 overflow-y-auto rounded-md p-1 transition-colors",
         )}
         style={{
-          backgroundColor: isOver ? "var(--edge)" : "var(--cream-deeper)",
+          backgroundColor: isOver ? "var(--edge)" : "var(--cream-deep)",
         }}
       >
         <SortableContext

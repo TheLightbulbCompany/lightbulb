@@ -53,7 +53,7 @@ export default function Dashboard() {
       </main>
     );
   }
-  if (error) return <p className="p-8 text-[var(--danger)]">Couldn&apos;t load dashboard: {error.message}</p>;
+  if (error) return <p className="p-8 text-[var(--err)]">Couldn&apos;t load dashboard: {error.message}</p>;
   if (!data) return <p className="p-8">Loading…</p>;
   return (
     <main className="max-w-3xl mx-auto px-6 py-12">
@@ -66,7 +66,7 @@ export default function Dashboard() {
         />
       </div>
       {data.dashboard_url ? (
-        <a href={data.dashboard_url} className="text-[var(--ink)] underline">
+        <a href={data.dashboard_url} className="text-[var(--midnight)] underline">
           Open Stripe dashboard →
         </a>
       ) : (
@@ -80,7 +80,7 @@ export default function Dashboard() {
             {onboardLoading ? "Redirecting to Stripe…" : "Onboard for payouts"}
           </button>
           {onboardError && (
-            <p className="mt-3 text-sm text-[var(--danger)]" role="alert">
+            <p className="mt-3 text-sm text-[var(--err)]" role="alert">
               {onboardError}
             </p>
           )}
@@ -93,7 +93,7 @@ export default function Dashboard() {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="editorial-card p-4">
-      <p className="text-sm text-[var(--mute)]">{label}</p>
+      <p className="text-sm text-[var(--midnight-muted)]">{label}</p>
       <p className="text-2xl font-bold mt-1">{value}</p>
     </div>
   );

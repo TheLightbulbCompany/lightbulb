@@ -26,14 +26,14 @@ export function OrgChartPanel() {
 
   if (isLoading) {
     return (
-      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--mute)]">
+      <div className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
         Loading...
       </div>
     );
   }
   if (error) {
     return (
-      <div role="alert" className="editorial-page p-8 text-[var(--danger)]">
+      <div role="alert" className="editorial-page p-8 text-[var(--err)]">
         Failed to load agents.
       </div>
     );

@@ -89,7 +89,7 @@ function AttachmentLink({ path, name, children }: {
       onClick={handleClick}
       disabled={busy}
       className="cursor-pointer underline disabled:cursor-wait"
-      style={{ color: "var(--forest)" }}
+      style={{ color: "var(--midnight)" }}
     >
       {children}
     </button>
@@ -124,7 +124,7 @@ const markdownComponents: Components = {
         }
       : { target: "_blank", rel: "noopener noreferrer" };
     return (
-      <a href={safe} style={{ color: "var(--forest)", textDecoration: "underline" }}
+      <a href={safe} style={{ color: "var(--midnight)", textDecoration: "underline" }}
          {...props} {...shellAttrs}>
         {children}
       </a>
@@ -152,7 +152,7 @@ const markdownComponents: Components = {
   ),
   blockquote: ({ children }) => (
     <blockquote className="border-l-2 pl-3 my-2 text-sm"
-                style={{ borderColor: "var(--edge)", color: "var(--mute)" }}>{children}</blockquote>
+                style={{ borderColor: "var(--edge)", color: "var(--midnight-muted)" }}>{children}</blockquote>
   ),
 };
 

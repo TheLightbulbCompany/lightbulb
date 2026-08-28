@@ -13,9 +13,9 @@ import {
 } from "@/lib/modelRouting";
 
 const SELECT_CLS =
-  "rounded-md border border-[var(--edge)] bg-white px-2 py-1.5 text-sm text-[var(--ink)] disabled:opacity-50";
+  "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50";
 const TIME_CLS =
-  "rounded-md border border-[var(--edge)] bg-white px-2 py-1 text-sm text-[var(--ink)] disabled:opacity-50";
+  "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-sm text-[var(--midnight)] disabled:opacity-50";
 
 /**
  * Per-agent heartbeat controls: cadence, model, active hours.
@@ -98,16 +98,16 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
     catalogModels.find((m) => m.ref === defaults.model)?.name ?? "default model";
 
   return (
-    <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-white">
-      <h3 className="text-sm font-medium text-[var(--ink)]">Heartbeat</h3>
-      <p className="text-xs text-[var(--mute)]">
+    <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
+      <h3 className="text-sm font-medium text-[var(--midnight)]">Heartbeat</h3>
+      <p className="text-xs text-[var(--midnight-muted)]">
         Periodic autonomous check-ins. These run (and cost tokens) even when
         you&apos;re away — tune the cadence, route them to a cheaper model, or
         restrict them to working hours.
       </p>
 
       <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1 text-xs text-[var(--mute)]">
+        <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
           Cadence
           <select
             className={SELECT_CLS}
@@ -127,7 +127,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-[var(--mute)]">
+        <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
           Model
           <select
             className={SELECT_CLS}
@@ -149,7 +149,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
       </div>
 
       <div className="space-y-2">
-        <label className="flex items-center gap-2 text-xs text-[var(--mute)]">
+        <label className="flex items-center gap-2 text-xs text-[var(--midnight-muted)]">
           <input
             type="checkbox"
             checked={hoursEnabled}
@@ -162,7 +162,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
           Only during active hours
         </label>
         {hoursEnabled && (
-          <div className="flex items-center gap-2 text-xs text-[var(--mute)]">
+          <div className="flex items-center gap-2 text-xs text-[var(--midnight-muted)]">
             <input
               type="time"
               className={TIME_CLS}
@@ -189,12 +189,12 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
       </div>
 
       {error && (
-        <p className="text-xs text-[#dc2626] flex items-center gap-1">
+        <p className="text-xs text-err flex items-center gap-1">
           <AlertCircle className="h-3 w-3" /> {error}
         </p>
       )}
       {restartNotice && (
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Applied — the agent gateway is restarting briefly; chat reconnects
           automatically.
         </p>
@@ -204,7 +204,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
         type="button"
         onClick={save}
         disabled={!dirty || saving || !configReady}
-        className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-1.5 text-sm disabled:opacity-50 inline-flex items-center gap-2"
+        className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-1.5 text-sm disabled:opacity-50 inline-flex items-center gap-2"
       >
         {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
         Save heartbeat settings

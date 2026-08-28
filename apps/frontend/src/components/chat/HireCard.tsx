@@ -106,7 +106,7 @@ function PrimaryListing({ listing }: { listing: HireListing }) {
 
   return (
     <article aria-label={listing.name} className="rounded-lg border border-border bg-card p-3">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[.09em] text-[var(--mute)]">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[.09em] text-[var(--midnight-muted)]">
         Recommended
       </div>
       <div className="flex items-start justify-between gap-3">
@@ -160,14 +160,14 @@ function AlternativeRow({ listing, onPromote }: { listing: HireListing; onPromot
           className="chat-hire-alt-btn group flex w-full items-baseline justify-between gap-2.5 py-1.5 text-left"
         >
           <span className="min-w-0 truncate text-[13px] leading-[1.5]">
-            <span className="font-medium text-[var(--ink-soft)] group-hover:text-[var(--ink)]">
+            <span className="font-medium text-[var(--midnight-soft)] group-hover:text-[var(--midnight)]">
               {listing.name}
             </span>
             {listing.summary && (
-              <span className="text-[var(--mute)]"> — {listing.summary}</span>
+              <span className="text-[var(--midnight-muted)]"> — {listing.summary}</span>
             )}
           </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-[var(--mute)]">
+          <span className="shrink-0 text-[11px] tabular-nums text-[var(--midnight-muted)]">
             {priceLabel(listing.price_cents)}
           </span>
         </button>
@@ -204,11 +204,11 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            className="inline-flex items-center gap-1.5 text-[12.5px] text-[var(--mute)] transition-colors hover:text-[var(--ink-soft)]"
+            className="inline-flex items-center gap-1.5 text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
           >
             <ChevronRight
               aria-hidden
-              className={cn("h-3 w-3 shrink-0 text-[var(--mute-soft)] transition-transform", open && "rotate-90")}
+              className={cn("h-3 w-3 shrink-0 text-[var(--midnight-faint)] transition-transform", open && "rotate-90")}
             />
             {alternatives.length} alternative{alternatives.length === 1 ? "" : "s"}
           </button>
@@ -223,9 +223,9 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
                   />
                 ))}
               </ul>
-              {/* --mute-soft is non-text-only (3.44:1 on cream), so this
-                  reuses --mute rather than the mock's literal token. */}
-              <div className="mt-1.5 text-[11.5px] italic text-[var(--mute)]">
+              {/* --midnight-faint is non-text-only (3.44:1 on cream), so this
+                  reuses --midnight-muted rather than the mock's literal token. */}
+              <div className="mt-1.5 text-[11.5px] italic text-[var(--midnight-muted)]">
                 Picking one promotes it to Recommended. It does not deploy.
               </div>
             </>

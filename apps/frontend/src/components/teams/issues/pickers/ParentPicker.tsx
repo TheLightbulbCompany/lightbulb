@@ -94,7 +94,7 @@ export function ParentPicker({
           prefetch={false}
           onClick={(e) => handleShellLinkClick(e, parentUrl)}
           className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
-          style={{ color: "var(--forest)" }}
+          style={{ color: "var(--midnight)" }}
         >
           <span className="font-mono text-xs shrink-0">{parentLabel}</span>
           {parentTitle && <span className="truncate">{parentTitle}</span>}
@@ -111,7 +111,7 @@ export function ParentPicker({
           <button
             type="button"
             className="text-xs hover:underline shrink-0"
-            style={{ color: "var(--mute)" }}
+            style={{ color: "var(--midnight-muted)" }}
           >
             {parentId ? "Change" : "Set parent"}
           </button>
@@ -122,7 +122,7 @@ export function ParentPicker({
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
-            color: "var(--ink)",
+            color: "var(--midnight)",
           }}
         >
           <input
@@ -130,7 +130,7 @@ export function ParentPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search issues..."
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search issues to set as parent"
           />
@@ -139,8 +139,8 @@ export function ParentPicker({
               <button
                 type="button"
                 onClick={() => select(null)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
-                style={{ color: "var(--mute)" }}
+                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+                style={{ color: "var(--midnight-muted)" }}
               >
                 Clear parent
               </button>
@@ -153,7 +153,7 @@ export function ParentPicker({
                     type="button"
                     onClick={() => select(candidate.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deeper)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -176,7 +176,7 @@ export function ParentPicker({
               );
             })}
             {candidates.length === 0 && (
-              <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
+              <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
                 No matching issues.
               </li>
             )}

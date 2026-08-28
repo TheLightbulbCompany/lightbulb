@@ -58,7 +58,7 @@ function MyChannelsSectionInner() {
   if (error) {
     return (
       <div className="p-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <p className="text-sm text-[var(--err)]">Failed to load channels.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           Retry
         </Button>
@@ -67,7 +67,7 @@ function MyChannelsSectionInner() {
   }
 
   if (isLoading || !data) {
-    return <div className="p-4 text-sm text-[var(--mute)]">Loading channels…</div>;
+    return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading channels…</div>;
   }
 
   const performUnlink = async () => {
@@ -86,7 +86,7 @@ function MyChannelsSectionInner() {
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold">My Channels</h2>
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Link your Telegram, Discord, and Slack identities to your organization&apos;s bots.
         </p>
       </div>
@@ -95,11 +95,11 @@ function MyChannelsSectionInner() {
         const bots = data[provider];
         return (
           <div key={provider} className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--mute)]">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">
               {PROVIDER_LABELS[provider]}
             </h3>
             {bots.length === 0 ? (
-              <div className="rounded-md border border-[var(--edge)] p-3 text-xs text-[var(--mute)]">
+              <div className="rounded-md border border-[var(--edge)] p-3 text-xs text-[var(--midnight-muted)]">
                 {!isSubscribed ? (
                   <>Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.</>
                 ) : (
@@ -117,13 +117,13 @@ function MyChannelsSectionInner() {
                     className="flex items-center gap-3 rounded-md border border-[var(--edge)] p-3"
                   >
                     {bot.linked ? (
-                      <CheckCircle2 className="h-4 w-4 text-[#2d8a4e]" />
+                      <CheckCircle2 className="h-4 w-4 text-[var(--ok)]" />
                     ) : (
-                      <AlertCircle className="h-4 w-4 text-amber-500" />
+                      <AlertCircle className="h-4 w-4 text-[var(--warn)]" />
                     )}
                     <div className="flex-1">
                       <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
-                      <p className="text-xs text-[var(--mute)]">{bot.agent_id}</p>
+                      <p className="text-xs text-[var(--midnight-muted)]">{bot.agent_id}</p>
                     </div>
                     {bot.linked ? (
                       <Button
@@ -153,13 +153,13 @@ function MyChannelsSectionInner() {
 
       {wizard && (
         <div
-          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-50"
           role="dialog"
           aria-modal="true"
           onClick={() => setWizard(null)}
         >
           <div
-            className="bg-white rounded-lg shadow-xl"
+            className="bg-cream rounded-lg shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <BotSetupWizard

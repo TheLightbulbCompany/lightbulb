@@ -4,14 +4,14 @@ import { describe, expect, it } from "vitest";
 import { StatusChip } from "../StatusChip";
 
 describe("StatusChip", () => {
-  it("renders the status label and an emerald class for running", () => {
+  it("renders the status label and the ok tone for running", () => {
     const { container } = render(<StatusChip status="running" />);
     expect(screen.getByText(/running/i)).toBeTruthy();
-    expect(container.querySelector("span")?.className).toContain("emerald");
+    expect(container.querySelector("span")?.className).toContain("text-ok");
   });
 
-  it("renders a zinc (unknown) class for an unrecognized status", () => {
+  it("renders the neutral (unknown) tone for an unrecognized status", () => {
     const { container } = render(<StatusChip status="wat" />);
-    expect(container.querySelector("span")?.className).toContain("zinc");
+    expect(container.querySelector("span")?.className).toContain("text-muted-foreground");
   });
 });

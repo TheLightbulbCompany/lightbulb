@@ -14,10 +14,10 @@ import {
 
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
-const CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--mute)]/60";
+const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--midnight-muted)]/60";
 const SELECT_CLS =
-  "rounded-md border border-[var(--edge)] bg-white px-2 py-1.5 text-sm text-[var(--ink)] disabled:opacity-50 w-full";
+  "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50 w-full";
 
 /**
  * Owner-level model routing: the default model every agent inherits, and
@@ -46,18 +46,18 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
     return (
       <div className={CARD}>
         <span className={EYEBROW}>MODEL ROUTING</span>
-        <p className="text-sm text-[var(--ink)]">Running on your ChatGPT plan.</p>
-        <div className="grid grid-cols-2 gap-4 text-xs text-[var(--mute)]">
+        <p className="text-sm text-[var(--midnight)]">Running on your ChatGPT plan.</p>
+        <div className="grid grid-cols-2 gap-4 text-xs text-[var(--midnight-muted)]">
           <div className="space-y-0.5">
-            <div className="text-sm text-[var(--ink)]">Agents — GPT-5.5</div>
+            <div className="text-sm text-[var(--midnight)]">Agents — GPT-5.5</div>
             <span>What agents use by default.</span>
           </div>
           <div className="space-y-0.5">
-            <div className="text-sm text-[var(--ink)]">Maintenance — GPT-5.4 mini</div>
+            <div className="text-sm text-[var(--midnight)]">Maintenance — GPT-5.4 mini</div>
             <span>Compaction, memory flush, heartbeats.</span>
           </div>
         </div>
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Model routing is managed automatically on the ChatGPT plan.
         </p>
       </div>
@@ -89,7 +89,7 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
       <span className={EYEBROW}>MODEL ROUTING</span>
 
       <div className="grid grid-cols-2 gap-4">
-        <label className="flex flex-col gap-1 text-xs text-[var(--mute)]">
+        <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
           Default model
           <select
             className={SELECT_CLS}
@@ -107,7 +107,7 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
           <span>What agents use unless overridden per-agent.</span>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-[var(--mute)]">
+        <label className="flex flex-col gap-1 text-xs text-[var(--midnight-muted)]">
           Overhead model
           <select
             className={SELECT_CLS}
@@ -129,9 +129,9 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
         </label>
       </div>
 
-      {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--mute)]" />}
+      {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--midnight-muted)]" />}
       {restartNotice && (
-        <p className="text-xs text-[var(--mute)]">
+        <p className="text-xs text-[var(--midnight-muted)]">
           Applied — the agent gateway is restarting briefly; chat reconnects
           automatically.
         </p>

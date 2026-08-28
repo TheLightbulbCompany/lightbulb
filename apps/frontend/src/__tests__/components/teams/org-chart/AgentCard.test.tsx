@@ -29,14 +29,14 @@ describe("AgentCard", () => {
     // Active states pulse to indicate live activity.
     expect(dot.className).toMatch(/animate-pulse/);
     // 'running' resolves to the editorial forest token.
-    expect(dot).toHaveStyle({ backgroundColor: "var(--forest)" });
+    expect(dot).toHaveStyle({ backgroundColor: "var(--midnight)" });
   });
 
   test("status dot uses default color for unknown status", () => {
     render(<AgentCard {...baseProps} status="weird" />);
     const dot = screen.getByLabelText(/status: weird/i);
     // Unknown statuses fall back to the editorial mute token.
-    expect(dot).toHaveStyle({ backgroundColor: "var(--mute)" });
+    expect(dot).toHaveStyle({ backgroundColor: "var(--midnight-muted)" });
   });
 
   test("link href points to the shell's agent inspector", () => {

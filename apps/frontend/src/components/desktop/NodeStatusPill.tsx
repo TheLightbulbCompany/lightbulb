@@ -7,7 +7,7 @@ import { useGateway } from "@/hooks/useGateway";
  *
  * Three states:
  * - connected → green "Local tools available"
- * - error     → amber "Local tools: connection failing" — previously an
+ * - error     → warn "Local tools: connection failing" — previously an
  *   erroring node rendered NOTHING, indistinguishable from no desktop app
  *   at all (the Rust side only logged to /tmp/isol8-desktop.log)
  * - anything else (no desktop app, connecting, parked between retries) →
@@ -17,7 +17,7 @@ export function NodeStatusPill() {
   const { nodeConnected, nodeStatus } = useGateway();
   const failing = !nodeConnected && nodeStatus === "error";
   if (!nodeConnected && !failing) return null;
-  const color = nodeConnected ? "#16a34a" : "#d97706";
+  const color = nodeConnected ? "var(--ok)" : "var(--warn)";
   return (
     <div
       style={{

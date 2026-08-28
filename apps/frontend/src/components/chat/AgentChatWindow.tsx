@@ -154,9 +154,9 @@ function UpdateBanner() {
   // During apply -- show spinner state
   if (applying) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg flex items-center gap-3">
-        <Loader2 className="h-4 w-4 text-[#2d8a4e] shrink-0 animate-spin" />
-        <p className="text-sm text-[#1a5c32] flex-1">Updating your agent...</p>
+      <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg flex items-center gap-3">
+        <Loader2 className="h-4 w-4 text-info shrink-0 animate-spin" />
+        <p className="text-sm text-info flex-1">Updating your agent...</p>
       </div>
     );
   }
@@ -164,14 +164,14 @@ function UpdateBanner() {
   // Org member (non-admin) -- info only
   if (isOrg && !isOrgAdmin) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-[#2d8a4e] shrink-0" />
-        <p className="text-sm text-[#1a5c32] flex-1">
+      <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-info shrink-0" />
+        <p className="text-sm text-info flex-1">
           An update is available. Your admin can apply it.
         </p>
         <button
           onClick={() => setDismissed(true)}
-          className="text-[#2d8a4e] hover:text-[#2d8a4e] shrink-0"
+          className="text-info hover:text-info shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -181,20 +181,20 @@ function UpdateBanner() {
   }
 
   return (
-    <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg">
+    <div className="mx-4 mb-2 p-3 bg-cream border border-info rounded-lg">
       <div className="flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-[#2d8a4e] shrink-0" />
+        <RefreshCw className="h-4 w-4 text-info shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-[#1a5c32]">
+          <p className="text-sm text-info">
             Update available: {description}
           </p>
-          <p className="text-xs text-[#2d7a50] mt-0.5">
+          <p className="text-xs text-[var(--midnight-soft)] mt-0.5">
             Your agent needs a brief restart (~30s) to apply.
           </p>
         </div>
         <button
           onClick={() => setDismissed(true)}
-          className="text-[#2d8a4e] hover:text-[#2d8a4e] shrink-0"
+          className="text-info hover:text-info shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -204,7 +204,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleApplyNow(firstUpdate.update_id)}
         >
           <RefreshCw className="h-3 w-3 mr-1" />
@@ -213,7 +213,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleScheduleTonight(firstUpdate.update_id)}
         >
           <Clock className="h-3 w-3 mr-1" />
@@ -222,7 +222,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
+          className="shrink-0 border-info text-info hover:bg-[var(--cream-deep)]"
           onClick={() => handleRemindLater(firstUpdate.update_id)}
         >
           Remind Me Later
@@ -423,17 +423,17 @@ export function AgentChatWindow({
         >
           <div className="w-full max-w-3xl mx-auto space-y-10 py-8">
             <div className="space-y-2.5">
-              <div className="h-3.5 w-11/12 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none" />
-              <div className="h-3.5 w-3/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
+              <div className="h-3.5 w-11/12 rounded bg-cream-deep animate-pulse motion-reduce:animate-none" />
+              <div className="h-3.5 w-3/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
             </div>
             {/* Echoes the real user bubble: right-aligned, rounded-2xl/br-md. */}
             <div className="flex justify-end">
-              <div className="h-9 w-2/5 rounded-2xl rounded-br-md bg-[#f0ebe2] animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
+              <div className="h-9 w-2/5 rounded-2xl rounded-br-md bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
             </div>
             <div className="space-y-2.5">
-              <div className="h-3.5 w-4/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:450ms]" />
-              <div className="h-3.5 w-full rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:600ms]" />
-              <div className="h-3.5 w-2/5 rounded bg-[#eee9df] animate-pulse motion-reduce:animate-none [animation-delay:750ms]" />
+              <div className="h-3.5 w-4/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:450ms]" />
+              <div className="h-3.5 w-full rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:600ms]" />
+              <div className="h-3.5 w-2/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:750ms]" />
             </div>
           </div>
         </div>
@@ -469,14 +469,14 @@ export function AgentChatWindow({
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--ink)", lineHeight: 1 }}>8</span>
+              <span style={{ fontFamily: "var(--font-serif), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--midnight)", lineHeight: 1 }}>8</span>
             </div>
-            <h1 className="text-3xl mb-3 text-[var(--ink)] tracking-tight font-lora">
+            <h1 className="text-3xl mb-3 text-[var(--midnight)] tracking-tight font-lora">
               {agentId
                 ? agentDisplayName(activeAgent ?? { id: agentId })
                 : "Select an agent"}
             </h1>
-            <p className="text-[var(--mute)] text-base">
+            <p className="text-[var(--midnight-muted)] text-base">
               Start a conversation with your agent
             </p>
           </div>
@@ -508,7 +508,7 @@ export function AgentChatWindow({
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
       {historyTruncated && (
-        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--mute)] bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
+        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--midnight-muted)] bg-[var(--cream-deep)] border-b border-[var(--edge)]">
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}

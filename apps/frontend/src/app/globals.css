@@ -6,26 +6,35 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  /* Tailwind's `bg-white` / `text-white` / `border-white` repointed to cream.
-   *
-   * 62 component files use `bg-white`, and every one of them means "the
-   * lightest surface", not "#ffffff". §06 is explicit that the light ground
-   * is cream and never pure white, so repointing the utility rebrands all of
-   * them at once instead of a 62-file diff that would have to be repeated
-   * every time someone reaches for the utility again.
-   *
-   * If you genuinely need paper-white (a print stylesheet, an image matte),
-   * write the literal — do not reach for this class. */
+  /* `bg-white`/`text-white`/`border-white` repointed to cream: §06 says the
+     light ground is cream and never pure white. Need paper-white? Write it. */
   --color-white: var(--cream);
+
+  --font-sans: var(--font-source-sans);
+  --font-serif: var(--font-lora-serif);
+  --font-mono: var(--font-geist-mono);
+
+  /* Brand primitives as Tailwind colours: `bg-cream-deep`, `text-brass`,
+     `border-edge`, `text-ok`. */
+  --color-midnight: var(--midnight);
+  --color-cream: var(--cream);
+  --color-cream-deep: var(--cream-deep);
+  --color-cream-deeper: var(--cream-deeper);
+  --color-bulb: var(--bulb);
+  --color-brass: var(--brass);
+  --color-edge: var(--edge);
+  --color-edge-soft: var(--edge-soft);
+  --color-midnight-soft: var(--midnight-soft);
+  --color-midnight-muted: var(--midnight-muted);
+  --color-midnight-label: var(--midnight-label);
+  --color-midnight-faint: var(--midnight-faint);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-host: var(--font-host-grotesk);
-  --font-dm: var(--font-dm-sans);
-  --font-lora: var(--font-lora-serif);
-  --font-epilogue: var(--font-epilogue);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -41,6 +50,7 @@
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -52,179 +62,121 @@
 }
 
 /*
- * Editorial design tokens (PR #542 + teams-shell atoms).
- * Stable surface contract for `apps/frontend/src/components/teams/shell/*`.
- *   --cream           page background; text on dark surfaces.
- *   --cream-deeper    secondary cream surface (panels on cream pages).
- *   --cream-deepest   tertiary cream surface (sunken wells, code blocks).
- *   --edge            hairline borders, separators, hover wash on dark text.
- *   --edge-soft       softer edge for nested borders.
- *   --forest          primary brand color; primary CTA fill, focus ring base, active tab underline.
- *   --forest-soft     forest-on-light variants (links, secondary chips).
- *   --forest-tint     subtle forest-tinted surface for hover states without full forest fill.
- *   --ink             primary text.
- *   --ink-soft        body-on-cream text (slightly softer than --ink).
- *   --mute            secondary text, overline, tabular labels.
- *   --mute-soft       NON-TEXT ONLY — status dots, chart fills + legend
- *                     swatches, diagram strokes, hairline hover borders.
- *                     NOT for text: it is 3.44:1 on --cream, which clears
- *                     the 3:1 bar for non-text (WCAG 1.4.11) but not the
- *                     4.5:1 body-text bar. There is no lighter text tier
- *                     available — --mute at 4.61:1 is already the lightest
- *                     colour that passes AA on cream. Tertiary text uses
- *                     --mute.
- *   --warn            warning text + low-priority danger.
- *   --danger          destructive button fill, error border + helper text.
+ * Brand Identity Manual v1.0 §06 — the only colours the product may use.
+ * Every other colour in src/ is a bug; scripts/brand-tokens-scan.mjs finds them.
+ *
+ * MEASURED contrast, not estimated: getComputedStyle on real elements on a
+ * live page (2026-08-28), colour-mix resolved by the browser. Text clears 4.5:1.
+ *   on --cream #F5EFE2:
+ *     --midnight       #0F1A2B  15.24:1   --midnight-soft   #3D4550  8.51:1
+ *     --midnight-muted #62676D   5.00:1   --midnight-label  #696D72  4.55:1
+ *     --ok 5.44:1   --warn 5.30:1   --err 6.33:1   --info 6.76:1
+ *     --midnight-faint #999A99   2.47:1  disabled + non-text only (1.4.3 exempt)
+ *     --brass           2.94:1  NEVER body copy on cream (§06 names this a fail)
+ *     --bulb            1.45:1  never type, never a page fill
+ *   reversed (.dark) on --midnight #0F1A2B, --card #212B3A:
+ *     --foreground     #F5EFE2  15.24:1   --muted-foreground #B0AFAB  7.96:1
+ *     --ok 7.40:1   --warn 7.42:1   --err 6.70:1   --info 7.99:1
+ *     (on --card:   6.04     6.06        5.47        6.53)
+ *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
  */
 :root {
   --radius: 0.5rem;
 
-  /* ── The Lightbulb Company palette ────────────────────────────────────
-   * Brand Identity Manual v1.0 §06. Four values, no fifth, no gradient
-   * ramps, no tint scales. Forest green is retired.
-   *
-   * The legacy token NAMES are kept and repointed rather than renamed:
-   * `--forest` is referenced in ~83 files through the shadcn surface
-   * contract below, so repointing rebrands every primitive at once and a
-   * rename would be a thousand-line diff with the same result. `--forest`
-   * now holds midnight, which keeps its ONE structural job — the dark
-   * ground that cream type sits on (15.2:1, unchanged from forest's 13.9).
-   *
-   * The greens (`--forest-soft`, `--forest-tint`, `--edge-forest`) become
-   * brass and bulb tints. Nothing in the system is green any more.
-   */
-  --midnight: #0F1A2B;
-  --bulb: #F0C34E;
-  --brass: #B68235;
+  --midnight: #0F1A2B;              /* headers, dark UI, all body copy on cream */
+  --cream: #F5EFE2;                 /* default light ground; never pure white */
+  --bulb: #F0C34E;                  /* the light — one accent at a time */
+  --brass: #B68235;                 /* rules, small labels ON MIDNIGHT only */
 
-  --cream: #F5EFE2;
-  --cream-deeper: #EFE8D9;
-  --cream-deepest: #E7DECB;
-  --edge: #ded5c2;
-  --edge-soft: #e8e0d0;
-  --edge-forest: #ecdcbb;      /* was a green edge; now a brass one */
-  --forest: #0F1A2B;           /* midnight — the dark ground */
-  --forest-soft: #B68235;      /* was #B68235 green */
-  --forest-tint: #f6ead0;      /* was #f6ead0 green tint; now bulb tint */
-  --gold: #B68235;             /* brass */
-  --ink: #1a1a1a;
-  --ink-soft: #3d3d3d;
-  /* #726c5d, not the older #767061: --mute is secondary BODY text, and this
-   * token is measured against --cream, which this rebrand DARKENED from
-   * #faf7f2 to #F5EFE2. That drop took #767061 from its verified 4.61:1 to
-   * 4.30:1 — back under the 4.5:1 WCAG AA floor the value existed to clear.
-   * #726c5d holds the same warm-grey hue at 4.56:1 on the new ground.
-   * Anything re-tuning --cream has to re-check this pair. */
-  --mute: #726c5d;
-  /* #8a8578, not the older #b5af9f: at #b5af9f this measured 2.05:1 on
-   * --cream, which failed even the 3:1 non-text bar — so the status dots and
-   * the get-started diagram it colours were themselves inaccessible, not just
-   * the text that used to reference it. On the new cream it measures 3.21:1,
-   * still clear of the 3:1 non-text bar, so it is unchanged. */
-  --mute-soft: #8a8578;
-  /* §06 states, as lamps. The manual's green/orange/red/blue state palette
-   * is deliberately unused: it forces a fifth and sixth colour into a
-   * four-colour system. Status is a lamp — on, dim, or out — and because
-   * three states share one hue, "never colour alone" binds harder here:
-   * every lamp in the UI ships beside a word. `--danger` keeps a distinct
-   * value because a destructive confirm is the one place a word alone is
-   * not enough, and it is desaturated toward the palette. */
-  --lamp-on: #F0C34E;
-  --lamp-dim: #B68235;
-  --lamp-out: rgba(15, 26, 43, 0.30);
-  /* #96501A, not brass. Brass measures 2.94:1 on cream — §06 names that
-     value a fail twice and says brass is "not a body-copy colour on any
-     light surface" — and --warn IS body copy here: 53 call sites, many of
-     them role="alert" paragraphs. #96501A is §06's own Warning-on-cream
-     value at 5.30:1, verified against this cream rather than assumed.
-     Single value, no on-midnight pair, because --warn has no dark-ground
-     call site in the app today; add the pair (#E09A55) when one appears.
-     --danger below was already §06's Error-on-cream, so this makes the
-     two consistent rather than introducing a new idea. */
-  --warn: #96501A;
-  --danger: #96382B;
+  --cream-deep: #EFE8D9;            /* the one surface step (hover/selected, inset inputs) */
+  --cream-deeper: #E7DECB;          /* the second step (pressed, table stripe) */
+  --edge: #DED5C2;                  /* hairline borders on cream */
+  --edge-soft: #E8E0D0;             /* softer separation on cream */
 
-  /*
-   * shadcn/ui surface contract, repointed at the editorial palette above.
-   * These were stock `npx shadcn init` grayscale, so every Button/Input/
-   * Popover/Dialog rendered neutral-gray inside cream+forest pages. Mapping
-   * them here rebrands all 15 primitives across the ~83 files that import
-   * them, with no component edits.
-   *
-   * Conventions borrowed from components/teams/, which is the surface where
-   * the editorial system is fully applied:
-   *   - cards/panels are delineated by --edge borders, NOT a surface shift,
-   *     so --card and --popover are plain --cream (every `bg-card` call site
-   *     already pairs with `border-border`).
-   *   - --cream-deeper is the hover/selected wash (see IssueRow, GoalHeader).
-   */
+  --midnight-soft: color-mix(in srgb, var(--midnight) 80%, var(--cream));   /* secondary text */
+  --midnight-muted: color-mix(in srgb, var(--midnight) 64%, var(--cream));  /* tertiary/metadata text */
+  /* §06 says 60% for small uppercase labels; on THIS cream 60% measures
+     4.42:1, under the AA floor for text — and a label is text. 61% is the
+     lowest step that clears it (4.55:1). */
+  --midnight-label: color-mix(in srgb, var(--midnight) 61%, var(--cream));
+  --midnight-faint: color-mix(in srgb, var(--midnight) 50%, var(--cream));  /* disabled text; also status dots, diagram strokes — 3.37:1, clears the 3:1 non-text bar (40% was 2.47) */
+
+  /* §06 state pairs — the second value is for the reversed ground. */
+  --ok: #3A6B45;    --ok-reversed: #7FB58D;
+  --warn: #96501A;  --warn-reversed: #E09A55;
+  --err: #96382B;   --err-reversed: #DB8C7C;
+  --info: #35566F;  --info-reversed: #93B4C9;
+
+  /* shadcn/ui surface contract as a view onto the tokens above, so the
+     ~15 primitives in components/ui/ need no edits. Cards are delineated by
+     --border, not a surface shift. */
   --background: var(--cream);
-  --foreground: var(--ink);
+  --foreground: var(--midnight);
   --card: var(--cream);
+  --card-foreground: var(--midnight);
   --popover: var(--cream);
-  --popover-foreground: var(--ink);
-  --primary: var(--forest);
+  --popover-foreground: var(--midnight);
+  --primary: var(--midnight);
   --primary-foreground: var(--cream);
-  --secondary: var(--cream-deeper);
-  --secondary-foreground: var(--ink);
-  --muted: var(--cream-deeper);
-  --muted-foreground: var(--mute);
-  --accent: var(--cream-deeper);
-  --accent-foreground: var(--ink);
-  --destructive: var(--danger);
+  --secondary: var(--cream-deep);
+  --secondary-foreground: var(--midnight);
+  --muted: var(--cream-deep);
+  --muted-foreground: var(--midnight-muted);
+  --accent: var(--cream-deep);
+  --accent-foreground: var(--midnight);
+  --destructive: var(--err);
   --destructive-foreground: var(--cream);
   --border: var(--edge);
   --input: var(--edge);
-  --ring: var(--forest);
+  /* The one place the bulb appears in product chrome: focus is where the light is. */
+  --ring: var(--midnight);  /* on cream the bulb is 1.45:1 — a focus ring must clear 3:1; the bulb rings only on midnight */
+
+  /* Growth-dashboard series. Semantic: 1 = autonomous/healthy, 2 = human-
+     initiated, 3 = nightly CEO, 4 = alert, 5 = secondary. */
+  --chart-1: var(--ok);
+  --chart-2: var(--info);
+  --chart-3: var(--warn);
+  --chart-4: var(--err);
+  --chart-5: var(--brass);
 }
 
 /*
- * Dark override — scoped to /admin, which is the ONLY surface that applies
- * the `dark` class: app/admin/layout.tsx:45,52 wrap the whole admin tree in
- * `dark min-h-screen bg-background text-foreground`. Its header is hardcoded
- * zinc-800/900, so this block is what keeps the body matching it; without it
- * the admin body renders cream under a near-black header, and the `dark:`
- * variants baked into components/ui/{button,select,tabs}.tsx (which still
- * fire here, since `.dark` is their ancestor) composite against the wrong
- * surface.
- *
- * Deliberately still the stock shadcn dark values rather than an editorial
- * dark palette: /admin has never used cream/forest, and retheming it is a
- * separate decision from the :root pass above. Only the tokens with real
- * call sites are kept — --card-foreground and --sidebar-* are dropped here
- * for the same zero-usage reason they were dropped from :root. --chart-* IS
- * kept: the /admin/growth charts are its call site, and since /admin is the
- * only charted surface and always renders inside `.dark`, defining it here
- * (and not in :root) is the whole of the need.
+ * Reversed — cream on midnight, §06's reversed treatment, not gray.
+ * Scoped to /admin, the only surface applying `.dark` (app/admin/layout.tsx:45,52);
+ * the class stays the mechanism so a future dark mode is one class away.
  */
 .dark {
-  --background: oklch(0 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
-  --popover: oklch(0.145 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  /* Growth-dashboard series colors. Semantic, not decorative: 1 = autonomous /
-     healthy, 2 = human-initiated, 3 = nightly CEO (shown, never counted),
-     4 = secondary series, 5 = alert. Stock shadcn dark values — chosen for
-     contrast against oklch(0 0 0), not to match the editorial :root palette. */
-  --chart-1: oklch(0.696 0.17 162.48);
-  --chart-2: oklch(0.588 0.158 241.966);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
+  --background: var(--midnight);
+  --foreground: var(--cream);
+  --card: color-mix(in srgb, var(--midnight) 92%, var(--cream));
+  --card-foreground: var(--cream);
+  --popover: color-mix(in srgb, var(--midnight) 92%, var(--cream));
+  --popover-foreground: var(--cream);
+  --primary: var(--cream);
+  --primary-foreground: var(--midnight);
+  --secondary: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --secondary-foreground: var(--cream);
+  --muted: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --muted-foreground: color-mix(in srgb, var(--cream) 70%, var(--midnight));
+  --accent: color-mix(in srgb, var(--midnight) 86%, var(--cream));
+  --accent-foreground: var(--cream);
+  --destructive: var(--err-reversed);
+  --destructive-foreground: var(--midnight);
+  --border: color-mix(in srgb, var(--cream) 14%, var(--midnight));
+  --input: color-mix(in srgb, var(--cream) 14%, var(--midnight));
+  --ring: var(--bulb);
+
+  /* The state tokens flip here, so no component ever names a -reversed token. */
+  --ok: var(--ok-reversed);
+  --warn: var(--warn-reversed);
+  --err: var(--err-reversed);
+  --info: var(--info-reversed);
+
+  --chart-1: var(--ok);
+  --chart-2: var(--info);
+  --chart-3: var(--warn);
+  --chart-4: var(--err);
+  --chart-5: var(--brass);
 }
 
 @layer base {
@@ -234,6 +186,8 @@
 
   body {
     @apply bg-background text-foreground;
+    /* §05: Source Sans 3 for everything that is not prose. */
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   }
 }
 
@@ -244,18 +198,18 @@
 }
 
 .font-editorial {
-  font-family: var(--font-dm), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 .font-editorial-serif {
-  font-family: var(--font-lora), Georgia, serif;
+  font-family: var(--font-serif), Georgia, serif;
 }
 
 .editorial-page {
   min-height: 100vh;
   background: var(--cream);
-  color: var(--ink);
-  font-family: var(--font-dm), ui-sans-serif, system-ui, sans-serif;
+  color: var(--midnight);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 .editorial-card,
@@ -284,7 +238,7 @@
   gap: 6px;
   border-radius: 999px;
   border: 1px solid transparent;
-  font-family: var(--font-dm), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   font-weight: 700;
   transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
 }
@@ -295,7 +249,7 @@
 .editorial-btn--icon { padding: 6px;     width: 32px; height: 32px; }
 
 .editorial-btn--primary {
-  background: var(--forest);
+  background: var(--midnight);
   color: var(--cream);
 }
 
@@ -305,13 +259,13 @@
 
 .editorial-btn--secondary {
   background: var(--cream);
-  color: var(--forest);
+  color: var(--midnight);
   border-color: var(--edge);
 }
 
 .editorial-btn--ghost {
   background: transparent;
-  color: var(--ink);
+  color: var(--midnight);
   border: 1px solid transparent;
 }
 .editorial-btn--ghost:hover:not(:disabled) {
@@ -319,9 +273,9 @@
 }
 
 .editorial-btn--destructive {
-  background: var(--danger);
+  background: var(--err);
   color: var(--cream);
-  border: 1px solid var(--danger);
+  border: 1px solid var(--err);
 }
 .editorial-btn--destructive:hover:not(:disabled) {
   filter: brightness(0.95);
@@ -333,18 +287,18 @@
 }
 
 /* FILLED variants need a real disabled treatment, not the blanket alpha
- * above. At 50% opacity a --forest fill composites to a washed-out sage
+ * above. At 50% opacity a --midnight fill composites to a washed-out sage
  * (#8a8578) and drags its own --cream label down with it — the label ends up
  * near the page colour, so it reads as a ghostly blob at ~2.5:1 rather than
- * as a disabled control. Flattening to a muted surface + --mute label keeps
+ * as a disabled control. Flattening to a muted surface + --midnight-muted label keeps
  * the shape legible as a STATE (~2.9:1, and it's the design system's own
  * secondary-text token). Disabled controls are exempt from WCAG 1.4.3, but
  * this is still an improvement on what it replaces, not a regression. */
 .editorial-btn--primary:disabled,
 .editorial-btn--destructive:disabled {
   opacity: 1;
-  background: var(--cream-deepest);
-  color: var(--mute);
+  background: var(--cream-deeper);
+  color: var(--midnight-muted);
   border-color: var(--edge);
 }
 
@@ -354,7 +308,7 @@
   justify-content: center;
   flex: 0 0 auto;
   border: 1px solid;
-  font-family: var(--font-lora), Georgia, serif;
+  font-family: var(--font-serif), Georgia, serif;
   font-style: italic;
   font-weight: 700;
   line-height: 1;
@@ -365,8 +319,8 @@
   align-items: center;
   gap: 4px;
   border-radius: 6px;
-  background: #f0ebe0;
-  color: var(--mute);
+  background: var(--cream-deep);
+  color: var(--midnight-muted);
   padding: 3px 7px;
   font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: 10px;
@@ -375,18 +329,28 @@
   letter-spacing: 0.06em;
 }
 
-.agent-pill--forest {
-  background: var(--forest-tint);
-  color: var(--forest);
+.agent-pill--midnight {
+  background: var(--cream-deep);
+  color: var(--midnight);
 }
 
-.agent-pill--danger {
-  background: rgba(179, 36, 36, 0.1);
-  color: var(--danger);
+/* brass = the detail colour: paid, price, a small mark. The HAIRLINE is brass;
+   the label is the ground's text colour — brass type on cream is 2.94:1 (§06 fail). */
+.agent-pill--brass {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--brass);
+  color: var(--foreground);
+}
+
+.agent-pill--err {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--err);
+  color: var(--err);
 }
 
 .agent-pill--warn {
-  background: rgba(176, 138, 42, 0.12);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--warn);
   color: var(--warn);
 }
 
@@ -396,7 +360,7 @@
   gap: 10px;
   margin-bottom: 12px;
   font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
-  color: var(--mute);
+  color: var(--midnight-muted);
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -418,7 +382,7 @@
 }
 
 .section-label b {
-  color: var(--forest);
+  color: var(--midnight);
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -429,7 +393,7 @@
   flex-direction: column;
   gap: 14px;
   padding: 22px;
-  color: var(--ink);
+  color: var(--midnight);
 }
 
 .agent-card__head {
@@ -440,15 +404,15 @@
 
 .agent-card h3 {
   margin: 0;
-  color: var(--ink);
-  font-family: var(--font-lora), Georgia, serif;
+  color: var(--midnight);
+  font-family: var(--font-serif), Georgia, serif;
   font-size: 22px;
   line-height: 1;
 }
 
 .agent-card__head p {
   margin-top: 4px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: 10.5px;
   letter-spacing: 0.12em;
@@ -457,8 +421,8 @@
 
 .agent-card__quote {
   min-height: 44px;
-  color: var(--ink-soft);
-  font-family: var(--font-lora), Georgia, serif;
+  color: var(--midnight-soft);
+  font-family: var(--font-serif), Georgia, serif;
   font-size: 14.5px;
   font-style: italic;
   line-height: 1.5;
@@ -484,7 +448,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--mute);
+  color: var(--midnight-muted);
   font-size: 11px;
 }
 
@@ -497,7 +461,7 @@
 }
 
 .status-dot--active {
-  background: var(--forest-soft);
+  background: var(--brass);
   box-shadow: 0 0 0 3px rgba(182, 130, 53, 0.18);
 }
 
@@ -514,18 +478,18 @@
 
 .agent-glyph .agent-glyph-glass {
   fill: none;
-  stroke: var(--ink);
+  stroke: var(--midnight);
   opacity: 0.34;
   transition: stroke 400ms ease, opacity 400ms ease;
 }
 .agent-glyph .agent-glyph-cage {
-  fill: var(--ink);
-  stroke: var(--ink);
+  fill: var(--midnight);
+  stroke: var(--midnight);
   opacity: 0.32;
   transition: opacity 350ms ease, fill 350ms ease, stroke 350ms ease;
 }
 .agent-glyph .agent-glyph-collar {
-  fill: var(--ink);
+  fill: var(--midnight);
   opacity: 0.45;
   transition: opacity 350ms ease;
 }
@@ -538,16 +502,16 @@
 }
 
 @keyframes filament-incandesce {
-  0%   { opacity: 0.28; fill: var(--ink);  stroke: var(--ink); }
+  0%   { opacity: 0.28; fill: var(--midnight);  stroke: var(--midnight); }
   14%  { opacity: 1;    fill: var(--bulb); stroke: var(--bulb); }  /* attack */
   62%  { opacity: 0.62; fill: var(--bulb); stroke: var(--bulb); }  /* decay  */
-  100% { opacity: 0.28; fill: var(--ink);  stroke: var(--ink); }
+  100% { opacity: 0.28; fill: var(--midnight);  stroke: var(--midnight); }
 }
 @keyframes filament-envelope {
-  0%   { opacity: 0.34; stroke: var(--ink); }
+  0%   { opacity: 0.34; stroke: var(--midnight); }
   14%  { opacity: 0.95; stroke: var(--brass); }
   62%  { opacity: 0.55; stroke: var(--brass); }
-  100% { opacity: 0.34; stroke: var(--ink); }
+  100% { opacity: 0.34; stroke: var(--midnight); }
 }
 
 /* Motion is decoration here, not information — the label beside the glyph
@@ -570,7 +534,7 @@
 
 /* ── FOCUS RING (global) ── */
 :focus-visible {
-  outline: 2px solid var(--forest);
+  outline: 2px solid var(--midnight);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -596,7 +560,7 @@ button:focus-visible { border-radius: 999px; }
   background: rgba(15, 26, 43, 0.92);
   border-bottom-color: rgba(245, 239, 226, 0.14);
 }
-[data-lb-theme="dark"] .ld-page .landing-nav .brand-logo--ink { color: #F5EFE2; }
+[data-lb-theme="dark"] .ld-page .landing-nav .brand-logo--midnight { color: #F5EFE2; }
 [data-lb-theme="dark"] .ld-page .landing-nav .nav-badge { color: #F5EFE2; }
 [data-lb-theme="dark"] .ld-page .landing-nav .nav-links { color: rgba(245, 239, 226, 0.72); }
 [data-lb-theme="dark"] .ld-page .landing-nav .nav-links a:hover,
@@ -611,17 +575,17 @@ button:focus-visible { border-radius: 999px; }
    on midnight. */
 [data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:hover { background: color-mix(in srgb, #F5EFE2 88%, #0F1A2B); }
 [data-lb-theme="dark"] .ld-page .landing-nav .btn-primary:active { background: color-mix(in srgb, #F5EFE2 78%, #0F1A2B); }
-.nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: var(--mute); }
+.nav-links { display: flex; gap: 8px; font-size: 14px; font-weight: 500; color: var(--midnight-muted); }
 .nav-links a {
   padding: 6px 14px; border-radius: 99px;
   transition: color .2s, background .2s;
   position: relative; text-decoration: none; color: inherit;
 }
-.nav-links a:hover { color: var(--forest); background: rgba(15, 26, 43,.06); }
-.nav-links a.active { color: var(--forest); background: rgba(15, 26, 43,.08); font-weight: 600; }
+.nav-links a:hover { color: var(--midnight); background: rgba(15, 26, 43,.06); }
+.nav-links a.active { color: var(--midnight); background: rgba(15, 26, 43,.08); font-weight: 600; }
 .nav-links a::after {
   content: ''; position: absolute; bottom: 2px; left: 50%; right: 50%;
-  height: 1.5px; background: var(--forest); border-radius: 1px;
+  height: 1.5px; background: var(--midnight); border-radius: 1px;
   transition: left .25s cubic-bezier(.25,.8,.5,1), right .25s cubic-bezier(.25,.8,.5,1);
 }
 .nav-links a:hover::after, .nav-links a.active::after { left: 14px; right: 14px; }
@@ -630,41 +594,41 @@ button:focus-visible { border-radius: 999px; }
 .nav-badge {
   display: inline-block;
   font-size: 8px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
-  /* NOT --forest-soft: that token is brass since the rebrand, and §06
+  /* NOT --brass: that token is brass since the rebrand, and §06
      records brass on cream at 2.9:1 — a fail it names explicitly. Midnight
      is 15.2:1, and the brass stays where it belongs, on the rule and the
      wash behind this badge. */
-  color: var(--forest); background: rgba(182, 130, 53,.12);
+  color: var(--midnight); background: rgba(182, 130, 53,.12);
   border: 1px solid rgba(182, 130, 53,.3);
   padding: 1px 5px; border-radius: 99px;
   vertical-align: super; margin-left: 3px; line-height: 1.4;
 }
 .nav-right { display: flex; align-items: center; gap: 16px; justify-content: flex-end; }
-.nav-login { font-size: 14px; font-weight: 500; color: var(--mute); transition: color .2s; text-decoration: none; }
-.nav-login:hover { color: var(--forest); }
+.nav-login { font-size: 14px; font-weight: 500; color: var(--midnight-muted); transition: color .2s; text-decoration: none; }
+.nav-login:hover { color: var(--midnight); }
 .btn-primary {
   padding: 8px 20px; font-size: 14px; font-weight: 700; font-family: inherit;
-  color: var(--cream); background: var(--forest); border-radius: 999px; border: none; cursor: pointer;
+  color: var(--cream); background: var(--midnight); border-radius: 999px; border: none; cursor: pointer;
   transition: background .2s; text-decoration: none; display: inline-block;
 }
 .btn-primary:hover { background: #16223a; }
 .btn-primary:active { background: #0a1422; }
 .btn-secondary {
   padding: 12px 28px; font-size: 14px; font-weight: 500; font-family: inherit;
-  color: var(--mute); border: 1px solid var(--edge); border-radius: 999px; background: transparent;
+  color: var(--midnight-muted); border: 1px solid var(--edge); border-radius: 999px; background: transparent;
   cursor: pointer; transition: background .2s, border-color .2s; text-decoration: none; display: inline-block;
 }
-.btn-secondary:hover { background: var(--cream-deeper); border-color: var(--mute-soft); }
+.btn-secondary:hover { background: var(--cream-deep); border-color: var(--midnight-faint); }
 .btn-large {
   padding: 12px 28px; font-size: 14px; font-weight: 700; font-family: inherit;
-  color: var(--cream); background: var(--forest); border-radius: 999px;
+  color: var(--cream); background: var(--midnight); border-radius: 999px;
   box-shadow: 0 6px 20px rgba(15, 26, 43,.2); border: none; cursor: pointer;
   transition: transform .15s ease, box-shadow .25s ease;
   position: relative; overflow: visible; text-decoration: none; display: inline-block;
 }
 .btn-large::before {
   content: ''; position: absolute; inset: -2px; border-radius: 999px;
-  background: var(--forest); opacity: 0; z-index: -1;
+  background: var(--midnight); opacity: 0; z-index: -1;
   animation: cta-glow 3s ease-in-out infinite;
 }
 @keyframes cta-glow {
@@ -689,7 +653,7 @@ button:focus-visible { border-radius: 999px; }
   display: block;
   width: 20px;
   height: 2px;
-  background: var(--ink);
+  background: var(--midnight);
   border-radius: 1px;
   transition: transform 0.25s ease, opacity 0.25s ease;
 }
@@ -744,12 +708,12 @@ button:focus-visible { border-radius: 999px; }
   display: flex; flex-direction: column; justify-content: center;
   border-right: 1px solid var(--edge);
 }
-.eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--forest); margin-bottom: 24px; }
+.eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--midnight); margin-bottom: 24px; }
 .hero-h1 {
-  font-family: var(--font-lora); font-size: clamp(48px, 5vw, 72px); font-weight: 400;
-  line-height: 1; letter-spacing: -.02em; color: var(--ink); margin-bottom: 32px;
+  font-family: var(--font-serif); font-size: clamp(48px, 5vw, 72px); font-weight: 400;
+  line-height: 1; letter-spacing: -.02em; color: var(--midnight); margin-bottom: 32px;
 }
-.hero-h1 em { font-style: italic; color: var(--forest); }
+.hero-h1 em { font-style: italic; color: var(--midnight); }
 .hero-h1 em {
   background: var(--brass);
   background-size: 200% auto;
@@ -764,7 +728,7 @@ button:focus-visible { border-radius: 999px; }
 .hero-download-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .hero-download-link:hover { color: #333; }
 .hero-right {
-  background: var(--cream-deeper); padding: 36px 36px;
+  background: var(--cream-deep); padding: 36px 36px;
   display: flex; flex-direction: column; justify-content: center; gap: 0;
   position: relative; overflow: hidden;
 }
@@ -796,20 +760,20 @@ button:focus-visible { border-radius: 999px; }
 
 /* ── WORKFLOW ── */
 .wf-step-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.wf-num { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--forest); background: rgba(15, 26, 43,.1); padding: 2px 8px; border-radius: 99px; }
-.wf-step-title { font-size: 10px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; color: var(--mute); }
+.wf-num { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--midnight); background: rgba(15, 26, 43,.1); padding: 2px 8px; border-radius: 99px; }
+.wf-step-title { font-size: 10px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; color: var(--midnight-muted); }
 .wf-chat-card { background: var(--cream); border: 1px solid var(--edge); border-radius: 14px; overflow: hidden; transition: transform .3s ease, box-shadow .3s ease; }
 .wf-chat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
-.wf-chat-hd { background: var(--forest); padding: 9px 14px; display: flex; align-items: center; gap: 7px; }
+.wf-chat-hd { background: var(--midnight); padding: 9px 14px; display: flex; align-items: center; gap: 7px; }
 .wf-chat-dot { width: 6px; height: 6px; border-radius: 50%; background: #F0C34E; }
 .wf-chat-name { font-size: 11px; font-weight: 600; color: rgba(255,255,255,.8); }
 .wf-chat-bd { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .wf-bubble { font-size: 12px; line-height: 1.5; padding: 7px 11px; border-radius: 10px; }
-.wf-bubble-u { align-self: flex-end; background: #f6ead0; border: 1px solid #ecdcbb; color: var(--ink); border-radius: 10px 10px 3px 10px; }
+.wf-bubble-u { align-self: flex-end; background: #f6ead0; border: 1px solid #ecdcbb; color: var(--midnight); border-radius: 10px 10px 3px 10px; }
 .wf-bubble-a { align-self: flex-start; background: var(--cream); border: 1px solid #e8e0d0; color: #555; border-radius: 3px 10px 10px 10px; max-width: 90%; }
 .wf-conn { display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 5px; }
 .wf-conn-line { width: 1px; height: 14px; background: repeating-linear-gradient(to bottom, #ded5c2 0, #ded5c2 3px, transparent 3px, transparent 6px); }
-.wf-conn-badge { font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--forest); background: rgba(15, 26, 43,.08); padding: 3px 10px; border-radius: 99px; border: 1px solid rgba(15, 26, 43,.15); }
+.wf-conn-badge { font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--midnight); background: rgba(15, 26, 43,.08); padding: 3px 10px; border-radius: 99px; border: 1px solid rgba(15, 26, 43,.15); }
 .wf-hub { display: flex; flex-direction: column; align-items: center; }
 .wf-agent-node { width: 54px; height: 54px; background: var(--cream); border: 1.5px solid #d4cfc5; border-radius: 14px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
 .wf-agent-ring { position: absolute; inset: -6px; border-radius: 20px; border: 1.5px solid rgba(15, 26, 43,.2); animation: wf-pulse 2.5s ease-in-out infinite; pointer-events: none; }
@@ -817,16 +781,16 @@ button:focus-visible { border-radius: 999px; }
 .wf-int-row { display: flex; justify-content: space-between; width: 220px; }
 .wf-int { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .wf-int-bubble { width: 46px; height: 46px; background: var(--cream); border: 1.5px solid var(--edge); border-radius: 12px; display: flex; align-items: center; justify-content: center; transition: border-color .2s, box-shadow .2s; }
-.wf-int-bubble:hover { border-color: var(--forest); box-shadow: 0 0 16px rgba(15, 26, 43,.12); }
+.wf-int-bubble:hover { border-color: var(--midnight); box-shadow: 0 0 16px rgba(15, 26, 43,.12); }
 .wf-int:nth-child(1) .wf-int-bubble { animation: wf-float 3.2s ease-in-out infinite 0s; }
 .wf-int:nth-child(2) .wf-int-bubble { animation: wf-float 3.2s ease-in-out infinite .7s; }
 .wf-int:nth-child(3) .wf-int-bubble { animation: wf-float 3.2s ease-in-out infinite 1.4s; }
 @keyframes wf-float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
-.wf-int-lbl { font-size: 10px; font-weight: 600; color: var(--mute); }
+.wf-int-lbl { font-size: 10px; font-weight: 600; color: var(--midnight-muted); }
 .wf-tasks-card { background: var(--cream); border: 1px solid var(--edge); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; transition: transform .3s ease, box-shadow .3s ease; }
 .wf-tasks-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
 .wf-task { display: flex; align-items: center; gap: 10px; }
-.wf-check { width: 18px; height: 18px; border-radius: 50%; background: var(--forest); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.wf-check { width: 18px; height: 18px; border-radius: 50%; background: var(--midnight); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .wf-task-text { font-size: 12px; color: #333; }
 
 /* ── LIVING WORKFLOW SEQUENCE ── */
@@ -839,7 +803,7 @@ button:focus-visible { border-radius: 999px; }
 .wf-seq .wf-bubble-a { opacity: 0; transform: translateX(-16px) scale(.95); transition: opacity .35s, transform .4s cubic-bezier(.16,1,.3,1); }
 .wf-seq .wf-bubble-u[data-wf-on], .wf-seq .wf-bubble-a[data-wf-on] { opacity: 1 !important; transform: translateX(0) scale(1) !important; }
 .wf-seq .wf-bubble-a .wf-type-cursor {
-  display: inline-block; width: 2px; height: 1em; background: var(--forest);
+  display: inline-block; width: 2px; height: 1em; background: var(--midnight);
   margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
 }
 @keyframes wf-cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
@@ -860,7 +824,7 @@ button:focus-visible { border-radius: 999px; }
    falls to its own line instead — an acceptable degrade rather than
    forcing every block shape inline. */
 .chat-caret {
-  display: inline-block; width: 2px; height: 1em; background: var(--forest);
+  display: inline-block; width: 2px; height: 1em; background: var(--midnight);
   margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
 }
 @keyframes chat-block-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
@@ -933,16 +897,16 @@ button:focus-visible { border-radius: 999px; }
 /* ── FEATURES ── */
 .landing-features { background: var(--cream); padding: 96px 48px; }
 .section-inner { max-width: 1152px; margin: 0 auto; }
-.section-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--forest); margin-bottom: 16px; }
-.section-h2 { font-family: var(--font-lora); font-size: clamp(32px, 4vw, 48px); font-weight: 400; line-height: 1.15; letter-spacing: -.02em; color: var(--ink); margin-bottom: 64px; max-width: 480px; }
-.section-h2 em { font-style: italic; color: var(--forest); }
+.section-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--midnight); margin-bottom: 16px; }
+.section-h2 { font-family: var(--font-serif); font-size: clamp(32px, 4vw, 48px); font-weight: 400; line-height: 1.15; letter-spacing: -.02em; color: var(--midnight); margin-bottom: 64px; max-width: 480px; }
+.section-h2 em { font-style: italic; color: var(--midnight); }
 .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--edge); border-radius: 16px; overflow: hidden; border: 1px solid var(--edge); }
 .feat-card { background: var(--cream); padding: 40px 32px; transition: transform .25s ease, box-shadow .25s ease; }
 .feat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(0,0,0,.06); }
-.feat-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--forest); display: flex; align-items: center; justify-content: center; margin-bottom: 24px; transition: transform .4s cubic-bezier(.34,1.56,.64,1), box-shadow .3s; }
+.feat-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--midnight); display: flex; align-items: center; justify-content: center; margin-bottom: 24px; transition: transform .4s cubic-bezier(.34,1.56,.64,1), box-shadow .3s; }
 .feat-card:hover .feat-icon { transform: rotateY(180deg); box-shadow: 0 4px 16px rgba(15, 26, 43,.2); }
-.feat-title { font-family: var(--font-lora); font-size: 21px; font-weight: 400; color: var(--ink); margin-bottom: 12px; }
-.feat-desc { font-size: 14px; color: var(--mute); line-height: 1.7; }
+.feat-title { font-family: var(--font-serif); font-size: 21px; font-weight: 400; color: var(--midnight); margin-bottom: 12px; }
+.feat-desc { font-size: 14px; color: var(--midnight-muted); line-height: 1.7; }
 @media (max-width: 768px) {
   .landing-features { padding: 64px 20px; }
   .feat-grid { grid-template-columns: 1fr; gap: 0; }
@@ -951,27 +915,27 @@ button:focus-visible { border-radius: 999px; }
 }
 
 /* ── PRICING ── */
-.landing-pricing { background: var(--cream-deeper); padding: 96px 48px; border-top: 1px solid var(--edge); }
+.landing-pricing { background: var(--cream-deep); padding: 96px 48px; border-top: 1px solid var(--edge); }
 .price-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; max-width: 1120px; }
 .price-card { background: var(--cream); border-radius: 16px; padding: 32px; display: flex; flex-direction: column; position: relative; border: 1px solid var(--edge); transition: transform .25s ease, box-shadow .25s ease; }
 .price-card:hover { transform: translateY(-3px); box-shadow: 0 16px 40px rgba(15, 26, 43,.1); }
-.price-card.highlight { border-color: var(--forest); box-shadow: 0 8px 32px rgba(15, 26, 43,.1); }
-.popular-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); padding: 4px 16px; background: var(--forest); color: var(--cream); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; border-radius: 999px; white-space: nowrap; overflow: hidden; }
+.price-card.highlight { border-color: var(--midnight); box-shadow: 0 8px 32px rgba(15, 26, 43,.1); }
+.popular-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); padding: 4px 16px; background: var(--midnight); color: var(--cream); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; border-radius: 999px; white-space: nowrap; overflow: hidden; }
 .popular-badge::after { content: ''; position: absolute; top: 0; left: -100%; width: 60%; height: 100%; background: linear-gradient(90deg, transparent, rgba(245,239,226,.3), transparent); animation: badge-shimmer 3s ease-in-out infinite; }
 @keyframes badge-shimmer { 0%, 70%, 100% { left: -100%; } 85% { left: 150%; } }
 .plan-name { font-size: 11px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: #888; margin-bottom: 16px; }
 .plan-price { display: flex; align-items: baseline; gap: 4px; margin-bottom: 8px; }
-.plan-price-num { font-family: var(--font-lora); font-size: 48px; color: var(--ink); }
+.plan-price-num { font-family: var(--font-serif); font-size: 48px; color: var(--midnight); }
 .plan-price-mo { font-size: 14px; color: #aaa; }
 .plan-desc { font-size: 12px; color: #aaa; margin-bottom: 24px; margin-top: 10px; }
 .plan-features { list-style: none; display: flex; flex-direction: column; gap: 12px; margin-bottom: 32px; flex: 1; padding: 0; }
 .plan-features li { display: flex; gap: 12px; font-size: 14px; color: #666; }
-.plan-dash { color: var(--forest); font-weight: 700; }
+.plan-dash { color: var(--midnight); font-weight: 700; }
 .plan-cta { display: block; width: 100%; padding: 12px; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; border: none; transition: all .2s; text-decoration: none; text-align: center; }
 .plan-cta.default { background: transparent; border: 1px solid #ddd; color: #888; }
 .plan-cta.default:hover { background: #f0ebe0; border-color: #ccc; }
 .plan-cta.default:active { background: #e8e3d8; }
-.plan-cta.featured { background: var(--forest); color: var(--cream); }
+.plan-cta.featured { background: var(--midnight); color: var(--cream); }
 .plan-cta.featured:hover { background: #16223a; }
 .plan-cta.featured:active { background: #0a1422; }
 @media (max-width: 1024px) {
@@ -987,8 +951,8 @@ button:focus-visible { border-radius: 999px; }
 .marketplace-intro { max-width: 720px; margin-bottom: 56px; }
 .marketplace-intro .section-h2 { margin-bottom: 22px; max-width: 640px; }
 .marketplace-lede { font-size: 16px; color: #5c5c5c; line-height: 1.7; max-width: 620px; margin-bottom: 24px; }
-.marketplace-lede strong { color: var(--ink); font-weight: 600; }
-.marketplace-cta-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--forest); text-decoration: none; transition: gap .18s ease; }
+.marketplace-lede strong { color: var(--midnight); font-weight: 600; }
+.marketplace-cta-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--midnight); text-decoration: none; transition: gap .18s ease; }
 .marketplace-cta-inline:hover { gap: 10px; }
 /* shelf — featured listings with puck monograms, real prices/tags */
 .shelf {
@@ -1005,7 +969,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .shelf-frame-label {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--midnight-muted);
 }
 .shelf-grid {
   display: grid;
@@ -1021,12 +985,12 @@ button:focus-visible { border-radius: 999px; }
   transition: background .2s ease;
   position: relative;
 }
-.listing:hover { background: var(--cream-deeper); }
+.listing:hover { background: var(--cream-deep); }
 .listing-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.listing-name { font-family: var(--font-lora); font-size: 22px; font-weight: 400; line-height: 1.1; color: var(--ink); margin: 0; }
-.listing-desc { font-family: var(--font-lora); font-style: italic; font-size: 14px; line-height: 1.55; color: #5c5c5c; flex: 1; margin: 0; }
+.listing-name { font-family: var(--font-serif); font-size: 22px; font-weight: 400; line-height: 1.1; color: var(--midnight); margin: 0; }
+.listing-desc { font-family: var(--font-serif); font-style: italic; font-size: 14px; line-height: 1.55; color: #5c5c5c; flex: 1; margin: 0; }
 .listing-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.listing-tag { font-size: 11px; color: #5c5c5c; background: var(--cream-deeper); padding: 3px 9px; border-radius: 999px; border: 1px solid var(--edge); }
+.listing-tag { font-size: 11px; color: #5c5c5c; background: var(--cream-deep); padding: 3px 9px; border-radius: 999px; border: 1px solid var(--edge); }
 .listing-foot {
   display: flex; align-items: center; justify-content: flex-end;
   padding-top: 12px; border-top: 1px dashed var(--edge);
@@ -1034,7 +998,7 @@ button:focus-visible { border-radius: 999px; }
 .listing-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--forest);
+  color: var(--midnight);
   display: inline-flex; align-items: center; gap: 4px;
   transition: gap .15s ease;
 }
@@ -1043,34 +1007,34 @@ button:focus-visible { border-radius: 999px; }
 .price {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px; font-weight: 700; letter-spacing: .08em;
-  color: var(--forest); background: rgba(15, 26, 43,.08);
+  color: var(--midnight); background: rgba(15, 26, 43,.08);
   padding: 5px 10px; border-radius: 999px;
   flex-shrink: 0;
 }
 .price.free {
-  color: var(--mute); background: var(--cream-deeper); border: 1px solid var(--edge);
+  color: var(--midnight-muted); background: var(--cream-deep); border: 1px solid var(--edge);
 }
 
 /* "Browse all" tile */
 .listing.more {
   align-items: center; justify-content: center;
   text-align: center;
-  background: var(--cream-deeper);
+  background: var(--cream-deep);
   gap: 10px;
 }
 .listing.more .more-glyph {
-  font-family: var(--font-lora); font-style: italic;
-  font-size: 56px; color: var(--forest); line-height: 1;
+  font-family: var(--font-serif); font-style: italic;
+  font-size: 56px; color: var(--midnight); line-height: 1;
 }
 .listing.more .more-lbl {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 .listing.more .more-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--forest);
+  color: var(--midnight);
 }
 
 @media (max-width: 980px) {
@@ -1086,7 +1050,7 @@ button:focus-visible { border-radius: 999px; }
 .faq-list { max-width: 640px; }
 .faq-item { border-bottom: 1px solid var(--edge); padding: 28px 0; cursor: pointer; }
 .faq-q {
-  font-family: var(--font-lora); font-size: 18px; font-weight: 400; color: var(--forest); margin-bottom: 0;
+  font-family: var(--font-serif); font-size: 18px; font-weight: 400; color: var(--midnight); margin-bottom: 0;
   display: flex; align-items: center; justify-content: space-between; transition: color .2s;
 }
 .faq-icon {
@@ -1098,9 +1062,9 @@ button:focus-visible { border-radius: 999px; }
 }
 .faq-icon::before { width: 16px; height: 2px; top: 11px; left: 4px; }
 .faq-icon::after { width: 2px; height: 16px; top: 4px; left: 11px; transition: transform .4s cubic-bezier(.34,1.56,.64,1), opacity .3s, background .2s; }
-.faq-item:hover .faq-icon::before, .faq-item:hover .faq-icon::after { background: var(--forest); }
+.faq-item:hover .faq-icon::before, .faq-item:hover .faq-icon::after { background: var(--midnight); }
 .faq-item.open .faq-icon::after { transform: rotate(90deg); opacity: 0; }
-.faq-item.open .faq-icon::before { background: var(--forest); }
+.faq-item.open .faq-icon::before { background: var(--midnight); }
 .faq-a-wrapper {
   display: grid;
   grid-template-rows: 0fr;
@@ -1123,7 +1087,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 /* ── SCROLL PROGRESS ── */
-.scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: var(--forest); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(182, 130, 53,.4); }
+.scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: var(--midnight); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(182, 130, 53,.4); }
 
 /* ── FOOTER ── */
 .landing-footer { background: #0F1A2B; padding: 48px 24px; }
@@ -1156,7 +1120,7 @@ button:focus-visible { border-radius: 999px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
   .scroll-progress { transition: none; }
-  .hero-h1 em { background: none; -webkit-background-clip: unset; -webkit-text-fill-color: var(--forest); color: var(--forest); }
+  .hero-h1 em { background: none; -webkit-background-clip: unset; -webkit-text-fill-color: var(--midnight); color: var(--midnight); }
   .wf-seq .wf-step-hd, .wf-seq .wf-chat-card, .wf-seq .wf-conn, .wf-seq .wf-hub, .wf-seq .wf-tasks-card,
   .wf-seq .wf-bubble-u, .wf-seq .wf-bubble-a, .wf-seq .wf-int, .wf-seq .wf-agent-node,
   .wf-seq .wf-task, .wf-seq .wf-conn-line, .wf-seq .wf-conn-badge { opacity: 1 !important; transform: none !important; }
@@ -1172,7 +1136,7 @@ button:focus-visible { border-radius: 999px; }
   display: flex;
   flex-direction: column;
   background: var(--cream);
-  color: var(--ink);
+  color: var(--midnight);
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
   line-height: 1.7;
 }
@@ -1194,9 +1158,9 @@ button:focus-visible { border-radius: 999px; }
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
   font-size: 14px;
   font-weight: 600;
-  color: var(--forest);
+  color: var(--midnight);
   background: transparent;
-  border: 2px solid var(--forest);
+  border: 2px solid var(--midnight);
   border-radius: 999px;
   padding: 8px 20px;
   text-decoration: none;
@@ -1205,7 +1169,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 .legal-btn-back:hover {
-  background: var(--forest);
+  background: var(--midnight);
   color: #fff;
 }
 
@@ -1229,7 +1193,7 @@ button:focus-visible { border-radius: 999px; }
   font-family: var(--font-lora-serif), 'Lora', serif;
   font-size: 2.25rem;
   font-weight: 700;
-  color: var(--forest);
+  color: var(--midnight);
   margin-bottom: 8px;
   line-height: 1.3;
 }
@@ -1238,7 +1202,7 @@ button:focus-visible { border-radius: 999px; }
   font-family: var(--font-lora-serif), 'Lora', serif;
   font-size: 1.35rem;
   font-weight: 700;
-  color: var(--forest);
+  color: var(--midnight);
   margin-top: 40px;
   margin-bottom: 12px;
   padding-bottom: 8px;
@@ -1266,7 +1230,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 .legal-content li::marker {
-  color: var(--forest);
+  color: var(--midnight);
 }
 
 .legal-content strong {
@@ -1274,7 +1238,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 .legal-content a {
-  color: var(--forest);
+  color: var(--midnight);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -1298,7 +1262,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 .legal-tier-table th {
-  background: var(--forest);
+  background: var(--midnight);
   color: #fff;
   font-weight: 600;
 }
@@ -1324,7 +1288,7 @@ button:focus-visible { border-radius: 999px; }
 
 .legal-footer-links a {
   font-size: 14px;
-  color: var(--forest);
+  color: var(--midnight);
   text-decoration: none;
   font-weight: 500;
 }
@@ -1352,7 +1316,7 @@ button:focus-visible { border-radius: 999px; }
   font-family: var(--font-lora-serif), 'Lora', serif;
   font-size: 2rem;
   font-weight: 700;
-  color: var(--forest);
+  color: var(--midnight);
   margin-bottom: 8px;
 }
 
@@ -1378,7 +1342,7 @@ button:focus-visible { border-radius: 999px; }
 .support-field label {
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--midnight);
 }
 
 .support-field input,
@@ -1386,7 +1350,7 @@ button:focus-visible { border-radius: 999px; }
 .support-field textarea {
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
   font-size: 16px;
-  color: var(--ink);
+  color: var(--midnight);
   background: #fff;
   border: 1px solid var(--edge);
   border-radius: 12px;
@@ -1399,13 +1363,13 @@ button:focus-visible { border-radius: 999px; }
 .support-field select:focus,
 .support-field textarea:focus {
   outline: none;
-  border-color: var(--forest);
+  border-color: var(--midnight);
   box-shadow: 0 0 0 3px rgba(15, 26, 43, 0.15);
 }
 
 .support-field input::placeholder,
 .support-field textarea::placeholder {
-  color: var(--mute);
+  color: var(--midnight-muted);
 }
 
 .support-field select {
@@ -1428,7 +1392,7 @@ button:focus-visible { border-radius: 999px; }
   font-size: 16px;
   font-weight: 600;
   color: #fff;
-  background: var(--forest);
+  background: var(--midnight);
   border: none;
   border-radius: 999px;
   padding: 14px 32px;
@@ -1456,7 +1420,7 @@ button:focus-visible { border-radius: 999px; }
 }
 
 .support-direct a {
-  color: var(--forest);
+  color: var(--midnight);
   font-weight: 600;
   text-decoration: none;
 }
@@ -1491,7 +1455,7 @@ button:focus-visible { border-radius: 999px; }
 /* ── BRAND LOGO (canonical wordmark) ── */
 .brand-logo-link { display: inline-flex; align-items: center; text-decoration: none; }
 .brand-logo {
-  font-family: var(--font-lora), Georgia, serif;
+  font-family: var(--font-serif), Georgia, serif;
   /* §03 wordmark spec: Lora Medium, uppercase, tracking +0.18em. Weight
      below 400 is never used, and 700 is not the spec — 500 is. */
   font-weight: 500;
@@ -1501,7 +1465,7 @@ button:focus-visible { border-radius: 999px; }
   align-items: center;
   transition: color .2s ease;
 }
-.brand-logo--ink   { color: var(--ink); }
+.brand-logo--midnight   { color: var(--midnight); }
 .brand-logo--cream { color: var(--cream); }
 
 /* The product bulb (§01). Was a styled Didone "8" glyph; it is artwork now,
@@ -1525,13 +1489,13 @@ button:focus-visible { border-radius: 999px; }
 .brand-logo--sm { font-size: 15px; }
 .brand-logo--md { font-size: 18px; }
 .brand-logo--lg { font-size: 24px; }
-.brand-logo-link:hover .brand-logo--ink { color: var(--forest); }
+.brand-logo-link:hover .brand-logo--midnight { color: var(--midnight); }
 .brand-logo-link:hover .brand-logo--cream { color: var(--bulb); }
 
 /* ── TEAM (formerly Orchestration) ── */
-.landing-orch { background: var(--cream-deeper); padding: 128px 48px; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
+.landing-orch { background: var(--cream-deep); padding: 128px 48px; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
 .landing-orch .agents-lede { font-size: 16px; color: #5c5c5c; line-height: 1.7; max-width: 620px; margin: 0 0 56px; }
-.landing-orch .agents-lede strong { color: var(--ink); font-weight: 600; }
+.landing-orch .agents-lede strong { color: var(--midnight); font-weight: 600; }
 
 .orch-stage {
   position: relative; min-height: 440px;
@@ -1541,13 +1505,13 @@ button:focus-visible { border-radius: 999px; }
 .orch-frame-label {
   position: absolute; top: 16px; left: 22px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--midnight-muted);
 }
 .orch-frame-meta {
   position: absolute; top: 16px; right: 22px;
   display: inline-flex; align-items: center; gap: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .14em; color: var(--mute);
+  font-size: 10px; letter-spacing: .14em; color: var(--midnight-muted);
 }
 
 .orch-const {
@@ -1557,7 +1521,7 @@ button:focus-visible { border-radius: 999px; }
 .orch-const svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .orch-const svg line { stroke: var(--edge); stroke-width: 1; }
 .orch-const svg line.active {
-  stroke: var(--forest); stroke-width: 1.5; stroke-dasharray: 4 4;
+  stroke: var(--midnight); stroke-width: 1.5; stroke-dasharray: 4 4;
   animation: orch-dashflow 1.4s linear infinite;
 }
 @keyframes orch-dashflow {
@@ -1566,7 +1530,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .orch-const-pulse {
   position: absolute; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--forest); box-shadow: 0 0 12px rgba(15, 26, 43,.5); pointer-events: none;
+  background: var(--midnight); box-shadow: 0 0 12px rgba(15, 26, 43,.5); pointer-events: none;
 }
 .orch-const-node { position: absolute; transform: translate(-50%, -50%); }
 
@@ -1583,20 +1547,20 @@ button:focus-visible { border-radius: 999px; }
 /* ── FEATURES: skills shelf folded in ── */
 .skills-strip {
   margin-top: 48px; padding: 28px 32px;
-  background: var(--cream-deeper); border: 1px solid var(--edge);
+  background: var(--cream-deep); border: 1px solid var(--edge);
   border-radius: 16px;
   display: grid; grid-template-columns: 1.1fr 2fr; gap: 36px; align-items: center;
 }
 .skills-strip-lede h3 {
-  font-family: var(--font-lora), Georgia, serif; font-size: 22px;
-  font-weight: 400; color: var(--ink); margin: 0 0 8px; line-height: 1.15;
+  font-family: var(--font-serif), Georgia, serif; font-size: 22px;
+  font-weight: 400; color: var(--midnight); margin: 0 0 8px; line-height: 1.15;
 }
-.skills-strip-lede h3 em { font-style: italic; color: var(--forest); }
+.skills-strip-lede h3 em { font-style: italic; color: var(--midnight); }
 .skills-strip-lede p { font-size: 14px; color: #777; line-height: 1.65; margin: 0 0 14px; }
 .skills-strip-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11.5px; font-weight: 600; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--forest); transition: letter-spacing .18s;
+  text-transform: uppercase; color: var(--midnight); transition: letter-spacing .18s;
 }
 .skills-strip-cta:hover { letter-spacing: .18em; }
 
@@ -1605,17 +1569,17 @@ button:focus-visible { border-radius: 999px; }
   display: inline-flex; align-items: center; gap: 10px;
   padding: 9px 14px 9px 12px;
   background: var(--cream); border: 1px solid var(--edge); border-radius: 999px;
-  font-size: 12.5px; color: var(--ink-soft);
+  font-size: 12.5px; color: var(--midnight-soft);
   transition: border-color .2s, transform .2s;
 }
-.skill-chip:hover { border-color: var(--forest); transform: translateY(-2px); }
+.skill-chip:hover { border-color: var(--midnight); transform: translateY(-2px); }
 .skill-chip-dot {
   width: 8px; height: 8px; border-radius: 50%;
-  background: var(--forest-soft); flex-shrink: 0;
+  background: var(--brass); flex-shrink: 0;
 }
 .skill-chip-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px; color: var(--mute);
+  font-size: 11px; color: var(--midnight-muted);
 }
 
 @media (max-width: 980px) {

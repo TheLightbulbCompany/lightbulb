@@ -41,16 +41,16 @@ export function EditorialDialog({
           // view and its Cancel/Save become unclickable (7 routine-variable rows
           // at 1280x720 did exactly that). `flex` overrides the base `grid` via
           // tailwind-merge, which keeps the footer content-sized at any row count.
-          "flex max-h-[85svh] flex-col overflow-hidden border-[var(--edge)] bg-[var(--cream)] text-[var(--ink)] sm:max-w-[520px]",
+          "flex max-h-[85svh] flex-col overflow-hidden border-[var(--edge)] bg-[var(--cream)] text-[var(--midnight)] sm:max-w-[520px]",
           className,
         )}
       >
         <DialogHeader>
-          <DialogTitle className="font-editorial-serif text-[22px] leading-tight text-[var(--ink)]">
+          <DialogTitle className="font-editorial-serif text-[22px] leading-tight text-[var(--midnight)]">
             {title}
           </DialogTitle>
           {description ? (
-            <DialogDescription className="text-[13px] text-[var(--mute)]">
+            <DialogDescription className="text-[13px] text-[var(--midnight-muted)]">
               {description}
             </DialogDescription>
           ) : (

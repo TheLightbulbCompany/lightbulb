@@ -84,8 +84,8 @@ export function CompanyNav({
                 onClick={() => onPanelChange?.(panel)}
                 className={`flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-sm transition-colors ${
                   active
-                    ? "bg-[var(--cream)] text-[var(--forest)]"
-                    : "text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+                    ? "bg-[var(--cream)] text-[var(--midnight)]"
+                    : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
                 }`}
               >
                 <Icon size={16} />

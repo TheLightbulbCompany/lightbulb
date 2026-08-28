@@ -65,7 +65,7 @@ export function PanelDataTable<Row>({
       <div
         role="alert"
         className="px-3 py-2 text-[13px]"
-        style={{ color: "var(--danger)" }}
+        style={{ color: "var(--err)" }}
       >
         {error}
       </div>
@@ -86,7 +86,7 @@ export function PanelDataTable<Row>({
                   col.align === "center" && "text-center",
                 )}
               >
-                <span className="text-[var(--mute)]">{col.header}</span>
+                <span className="text-[var(--midnight-muted)]">{col.header}</span>
               </TableHead>
             ))}
           </TableRow>
@@ -101,7 +101,7 @@ export function PanelDataTable<Row>({
                 <TableCell key={col.key} className="py-3">
                   <span
                     aria-hidden="true"
-                    className="block h-3 animate-pulse rounded bg-[var(--cream-deeper)]"
+                    className="block h-3 animate-pulse rounded bg-[var(--cream-deep)]"
                   />
                 </TableCell>
               ))}
@@ -149,7 +149,7 @@ export function PanelDataTable<Row>({
                 <button
                   type="button"
                   onClick={() => toggleSort(col)}
-                  className="inline-flex items-center gap-1 text-[var(--mute)] transition-colors hover:text-[var(--ink)]"
+                  className="inline-flex items-center gap-1 text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
                 >
                   {col.header}
                   {sortKey === col.key &&
@@ -160,7 +160,7 @@ export function PanelDataTable<Row>({
                     ))}
                 </button>
               ) : (
-                <span className="text-[var(--mute)]">{col.header}</span>
+                <span className="text-[var(--midnight-muted)]">{col.header}</span>
               )}
             </TableHead>
           ))}
@@ -186,14 +186,14 @@ export function PanelDataTable<Row>({
             className={cn(
               "border-b border-[var(--edge)] transition-colors",
               onRowClick &&
-                "cursor-pointer hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]",
+                "cursor-pointer hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]",
             )}
           >
             {columns.map((col) => (
               <TableCell
                 key={col.key}
                 className={cn(
-                  "text-[13px] text-[var(--ink)]",
+                  "text-[13px] text-[var(--midnight)]",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                 )}

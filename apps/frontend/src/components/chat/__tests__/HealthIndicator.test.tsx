@@ -43,10 +43,10 @@ describe("HealthIndicator", () => {
     );
     const { container } = render(<HealthIndicator />);
     expect(screen.getByText("Connected")).toBeInTheDocument();
-    // Green dot. Verifying class presence covers the visual contract — the
-    // test owns the green-vs-yellow-vs-red invariant, not the literal hex.
+    // The ok dot. Verifying class presence covers the visual contract — the
+    // test owns the ok-vs-warn-vs-err invariant, not the literal colour.
     const dot = container.querySelector("span.rounded-full");
-    expect(dot?.className).toContain("bg-[#2d8a4e]");
+    expect(dot?.className).toContain("bg-ok");
     expect(screen.queryByRole("button")).toBeNull();
   });
 
@@ -68,7 +68,7 @@ describe("HealthIndicator", () => {
     const { container } = render(<HealthIndicator />);
     expect(screen.getByText("Agent thinking...")).toBeInTheDocument();
     const dot = container.querySelector("span.rounded-full");
-    expect(dot?.className).toContain("bg-yellow-500");
+    expect(dot?.className).toContain("bg-warn");
     expect(dot?.className).toContain("animate-pulse");
     expect(screen.queryByRole("button")).toBeNull();
   });
@@ -86,7 +86,7 @@ describe("HealthIndicator", () => {
     const { container } = render(<HealthIndicator />);
     expect(screen.getByText("Gateway not responding")).toBeInTheDocument();
     const dot = container.querySelector("span.rounded-full");
-    expect(dot?.className).toContain("bg-red-500");
+    expect(dot?.className).toContain("bg-err");
     const btn = screen.getByRole("button", { name: "Restart Gateway" });
     expect(btn).toBeInTheDocument();
   });

@@ -14,14 +14,14 @@ import type { IssuePriority } from "@/components/teams/shared/types";
 // `paperclip/ui/src/lib/status-colors.ts`, retheme-mapped onto the editorial
 // palette. Each priority resolves to a single CSS-variable color so the icon
 // matches the rest of the Teams UI (no Tailwind hue classes).
-//   critical / high  -> --danger  (urgent — red)
+//   critical / high  -> --err  (urgent — red)
 //   medium           -> --warn    (attention — amber)
-//   low              -> --mute    (low signal — soft neutral)
+//   low              -> --midnight-muted    (low signal — soft neutral)
 const priorityColor: Record<IssuePriority, string> = {
-  critical: "var(--danger)",
-  high: "var(--danger)",
+  critical: "var(--err)",
+  high: "var(--err)",
   medium: "var(--warn)",
-  low: "var(--mute)",
+  low: "var(--midnight-muted)",
 };
 
 const priorityConfig: Record<IssuePriority, { icon: typeof ArrowUp; color: string; label: string }> = {
@@ -69,7 +69,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
     );
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--ink)] hover:bg-[var(--cream-deeper)] rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded px-1 -mx-1 py-0.5 transition-colors">
       {icon}
       <span className="text-sm">{config.label}</span>
     </button>
@@ -90,8 +90,8 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
               variant="ghost"
               size="sm"
               className={cn(
-                "w-full justify-start gap-2 text-xs text-[var(--ink)] hover:bg-[var(--cream-deeper)]",
-                p === priority && "bg-[var(--forest-tint)]",
+                "w-full justify-start gap-2 text-xs text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
+                p === priority && "bg-[var(--cream-deeper)]",
               )}
               onClick={() => {
                 onChange(p);

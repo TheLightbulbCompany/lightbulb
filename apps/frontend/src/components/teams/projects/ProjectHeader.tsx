@@ -59,7 +59,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
     <div className="flex flex-col gap-2">
       <span
         className="text-xs font-mono uppercase tracking-wide"
-        style={{ color: "var(--mute)" }}
+        style={{ color: "var(--midnight-muted)" }}
       >
         Project
       </span>
@@ -82,7 +82,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
             className="font-editorial-serif flex-1 min-w-0 bg-transparent outline-none text-2xl font-medium"
             style={{
               borderBottom: "1px solid var(--edge)",
-              color: "var(--ink)",
+              color: "var(--midnight)",
             }}
             disabled={saving}
           />
@@ -94,9 +94,9 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
               "font-editorial-serif flex-1 min-w-0 text-left text-2xl font-medium rounded px-1 -mx-1 transition-colors",
               saving && "opacity-50",
             )}
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--cream-deeper)";
+              e.currentTarget.style.background = "var(--cream-deep)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "transparent";

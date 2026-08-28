@@ -52,21 +52,21 @@ export function HireManagerDialog({
       role="dialog"
       aria-modal="true"
       aria-label={`Hire ${listing.name}`}
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--midnight)]/30 p-4"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-[var(--edge)] bg-[#fbf8f1] p-5 shadow-xl"
+        className="w-full max-w-sm rounded-2xl border border-[var(--edge)] bg-card p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="font-editorial-serif text-lg text-[var(--ink)]">
+        <h2 className="font-editorial-serif text-lg text-[var(--midnight)]">
           Hire {listing.name}
         </h2>
-        <p className="mt-1 text-[13px] text-[#5b5b5b]">
+        <p className="mt-1 text-[13px] text-muted-foreground">
           Where should this agent sit in your team?
         </p>
 
-        <label className="mt-4 block text-[11.5px] tracking-widest uppercase font-bold text-[#5b5b5b]">
+        <label className="mt-4 block text-[11.5px] tracking-widest uppercase font-bold text-[var(--midnight-label)]">
           Reports to
         </label>
         <select
@@ -74,7 +74,7 @@ export function HireManagerDialog({
           disabled={isLoading || isHiring}
           value={selected ?? ""}
           onChange={(e) => setPicked(e.target.value === "" ? null : e.target.value)}
-          className="mt-1.5 w-full rounded-lg border border-[#d8cfbf] bg-white px-3 py-2 text-[13px] text-[var(--ink)] disabled:opacity-60"
+          className="mt-1.5 w-full rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2 text-[13px] text-[var(--midnight)] disabled:opacity-60"
         >
           <option value="">No manager (top level)</option>
           {agents.map((a) => (
@@ -85,7 +85,7 @@ export function HireManagerDialog({
           ))}
         </select>
         {error && (
-          <p className="mt-1.5 text-[12px] text-[#8a3a2a]">
+          <p className="mt-1.5 text-[12px] text-[var(--err)]">
             Couldn&apos;t load your team — the agent will be added at the top
             level. You can reassign it later in Teams.
           </p>
@@ -96,7 +96,7 @@ export function HireManagerDialog({
             type="button"
             onClick={onClose}
             disabled={isHiring}
-            className="px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold text-[#5b5b5b] hover:text-[var(--ink)] disabled:opacity-60"
+            className="px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold text-muted-foreground hover:text-[var(--midnight)] disabled:opacity-60"
           >
             Cancel
           </button>
@@ -105,7 +105,7 @@ export function HireManagerDialog({
             data-testid="confirm-hire"
             onClick={() => onConfirm(selected)}
             disabled={isHiring || isLoading}
-            className="bg-[var(--forest)] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
+            className="bg-[var(--midnight)] text-[var(--cream)] px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--midnight-soft)] disabled:opacity-60"
           >
             {isHiring ? "Hiring…" : "Hire"}
           </button>

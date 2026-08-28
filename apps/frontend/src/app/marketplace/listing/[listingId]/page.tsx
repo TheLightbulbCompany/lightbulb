@@ -33,17 +33,17 @@ export default async function ListingDetail({
       <aside className="lg:sticky lg:top-24 lg:self-start">
         <div className="editorial-card p-7">
           <Monogram agent={editorial} size={96} radius={20} />
-          <h1 className="mt-6 font-editorial-serif text-5xl leading-none text-[var(--ink)]">
+          <h1 className="mt-6 font-editorial-serif text-5xl leading-none text-[var(--midnight)]">
             {listing.name}
           </h1>
-          <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--mute)]">
+          <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--midnight-muted)]">
             {editorial.role}
           </p>
-          <p className="mt-5 font-editorial-serif text-lg italic leading-7 text-[var(--forest)]">
+          <p className="mt-5 font-editorial-serif text-lg italic leading-7 text-[var(--midnight)]">
             &ldquo;{editorial.vibe}&rdquo;
           </p>
           <div className="mt-6 flex items-center gap-3">
-            <AgentPill tone={editorial.isFree ? "forest" : "neutral"}>{editorial.price}</AgentPill>
+            <AgentPill tone={editorial.isFree ? "neutral" : "brass"}>{editorial.price}</AgentPill>
             {listing.tags.slice(0, 3).map((tag) => (
               <AgentPill key={tag}>{tag}</AgentPill>
             ))}
@@ -63,7 +63,7 @@ export default async function ListingDetail({
       </aside>
 
       <section className="min-w-0">
-        <article className="editorial-card bg-[var(--cream-deeper)] p-8">
+        <article className="editorial-card bg-[var(--cream-deep)] p-8">
           <SectionLabel label="About" />
           <MarkdownDescription source={listing.description_md} />
         </article>
@@ -75,7 +75,7 @@ export default async function ListingDetail({
         {isPaid && (
           <section className="mt-8 editorial-card p-6">
             <SectionLabel label="After purchase" />
-            <p className="text-sm leading-7 text-[var(--ink-soft)]">
+            <p className="text-sm leading-7 text-[var(--midnight-soft)]">
               After Stripe Checkout completes, your purchased agent deploys to your Lightbulb AI container
               automatically. You&apos;ll be redirected to a confirmation page with a deep link to
               open it in chat.
@@ -140,14 +140,14 @@ export function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
       <div className="grid gap-5 md:grid-cols-2">
         {manifest.vibe && (
           <Field label="Identity">
-            <p className="font-editorial-serif text-base italic text-[var(--ink)]">
+            <p className="font-editorial-serif text-base italic text-[var(--midnight)]">
               &ldquo;{manifest.vibe}&rdquo;
             </p>
           </Field>
         )}
         {manifest.suggested_model && (
           <Field label="Suggested model">
-            <p className="font-mono text-sm text-[var(--forest)]">{manifest.suggested_model}</p>
+            <p className="font-mono text-sm text-[var(--midnight)]">{manifest.suggested_model}</p>
           </Field>
         )}
         {groups.length > 0 ? (
@@ -158,19 +158,19 @@ export function ManifestSummary({ manifest }: { manifest: ListingManifest }) {
                   <AgentPill key={req.key}>{requirementLabel(req)}</AgentPill>
                 ))}
               </div>
-              <p className="mt-2 text-xs leading-5 text-[var(--mute)]">{group.hint}</p>
+              <p className="mt-2 text-xs leading-5 text-[var(--midnight-muted)]">{group.hint}</p>
             </Field>
           ))
         ) : (
           <Field label="Integrations">
-            <p className="text-sm italic text-[var(--mute)]">
+            <p className="text-sm italic text-[var(--midnight-muted)]">
               Self-contained — no external integrations required.
             </p>
           </Field>
         )}
       </div>
       {manifest.scan_incomplete === true && (
-        <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+        <p className="mt-6 text-xs leading-5 text-[var(--midnight-muted)]">
           Some dependencies may not have been fully detected.
         </p>
       )}
@@ -187,14 +187,14 @@ function CompanyFacts({ company }: { company: CompanyManifest }) {
   return (
     <section className="mt-8 editorial-card p-7">
       <SectionLabel label="What's inside" />
-      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--mute)]">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--midnight-muted)]">
         <span>{company.agent_count} agents</span>
         <span>{company.team_count} {company.team_count === 1 ? "team" : "teams"}</span>
         <span>{company.skill_count} skills</span>
       </div>
       {envNames.length > 0 && (
         <div className="mt-5">
-          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
             Environment required
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -205,7 +205,7 @@ function CompanyFacts({ company }: { company: CompanyManifest }) {
         </div>
       )}
       {company.source?.repo && (
-        <p className="mt-6 text-xs leading-5 text-[var(--mute)]">
+        <p className="mt-6 text-xs leading-5 text-[var(--midnight-muted)]">
           Mirrored from {company.source.repo}
           {company.license ? ` · ${company.license}` : ""}
         </p>
@@ -217,7 +217,7 @@ function CompanyFacts({ company }: { company: CompanyManifest }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mute)]">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
         {label}
       </div>
       <div>{children}</div>

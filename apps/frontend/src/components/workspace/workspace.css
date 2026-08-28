@@ -17,8 +17,8 @@
  * `.app-shell` / `.main-area`: those are coupled to the old file-viewer slide
  * transition (grid-template-columns morph) which the dock replaces.
  *
- * Palette matches the cream/forest sidebar: cream #f3efe6 / #faf7f2, border
- * #e0dbd0, forest #06402B.
+ * Palette is the brand token set the sidebar uses: --cream / --cream-deep
+ * grounds, --edge borders, --midnight for the dark controls.
  */
 .workspace-shell {
   display: grid;

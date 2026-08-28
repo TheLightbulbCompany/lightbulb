@@ -57,7 +57,7 @@ export function ActivityPanel() {
               aria-label="Filter by type"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              className="h-8 rounded border border-[var(--edge)] bg-[var(--cream)] px-2 text-xs text-[var(--ink)]"
+              className="h-8 rounded border border-[var(--edge)] bg-[var(--cream)] px-2 text-xs text-[var(--midnight)]"
             >
               <option value="all">All types</option>
               {entityTypes.map((type) => (
@@ -78,7 +78,7 @@ export function ActivityPanel() {
           {isLoading && events.length === 0 ? (
             <div
               className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               Loading activity…
             </div>
@@ -93,7 +93,7 @@ export function ActivityPanel() {
           ) : filtered.length === 0 ? (
             <div
               className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               {events.length === 0 ? "No activity yet." : "No activity of this type."}
             </div>

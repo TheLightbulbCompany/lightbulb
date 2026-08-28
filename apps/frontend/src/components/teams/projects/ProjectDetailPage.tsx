@@ -96,8 +96,8 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          fontFamily: "var(--font-serif), serif",
+          color: "var(--midnight-muted)",
         }}
       >
         Loading…
@@ -110,11 +110,11 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       <div
         role="alert"
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
-        style={{ color: "var(--danger)" }}
+        style={{ color: "var(--err)" }}
       >
         <p>Failed to load project.</p>
         {error?.message && (
-          <p className="mt-1" style={{ color: "var(--mute)" }}>
+          <p className="mt-1" style={{ color: "var(--midnight-muted)" }}>
             {error.message}
           </p>
         )}
@@ -127,8 +127,8 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          fontFamily: "var(--font-serif), serif",
+          color: "var(--midnight-muted)",
         }}
       >
         Project not found.
@@ -155,11 +155,11 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   return (
     <div
       className="flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full"
-      style={{ background: "var(--cream)", color: "var(--ink)" }}
+      style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
       <nav
         className="flex items-center gap-1 text-xs"
-        style={{ color: "var(--mute)" }}
+        style={{ color: "var(--midnight-muted)" }}
         aria-label="Breadcrumb"
       >
         <Link
@@ -171,7 +171,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           Projects
         </Link>
         <ChevronRight className="h-3 w-3" />
-        <span className="truncate" style={{ color: "var(--ink-soft)" }}>
+        <span className="truncate" style={{ color: "var(--midnight-soft)" }}>
           {project.name}
         </span>
       </nav>

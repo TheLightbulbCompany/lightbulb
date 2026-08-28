@@ -55,16 +55,16 @@ export function FailedRunRow({
 
   return (
     <li className="flex items-center gap-2 px-3 py-2">
-      <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: "var(--danger)" }} />
+      <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: "var(--err)" }} />
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[var(--ink)]">{title}</span>
+          <span className="truncate text-[var(--midnight)]">{title}</span>
           {count > 1 && (
             <span
               className="flex-shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums"
               style={{
-                color: "var(--danger)",
-                background: "color-mix(in srgb, var(--danger) 12%, transparent)",
+                color: "var(--err)",
+                background: "color-mix(in srgb, var(--err) 12%, transparent)",
               }}
               title={`${count} occurrences`}
             >
@@ -73,14 +73,14 @@ export function FailedRunRow({
           )}
         </span>
       </div>
-      {run.startedAt && <span className="text-xs text-[var(--mute)]">{timeAgo(run.startedAt)}</span>}
+      {run.startedAt && <span className="text-xs text-[var(--midnight-muted)]">{timeAgo(run.startedAt)}</span>}
       <div className="flex items-center gap-2">
         <a
           href={teamsDetailUrl("run", run.id)}
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
           aria-label={`View run ${run.id}`}
           className="text-xs hover:underline"
-          style={{ color: "var(--forest)" }}
+          style={{ color: "var(--midnight)" }}
         >
           View
         </a>

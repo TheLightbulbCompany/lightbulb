@@ -53,7 +53,7 @@ function PreviewFrame({ children }: { children: React.ReactNode }) {
   return (
     <div
       className="relative flex aspect-[16/10] w-full items-center justify-center overflow-hidden"
-      style={{ background: "var(--cream-deeper)", borderBottom: "1px solid var(--edge)" }}
+      style={{ background: "var(--cream-deep)", borderBottom: "1px solid var(--edge)" }}
     >
       {children}
     </div>
@@ -83,7 +83,7 @@ function IconPreview({ mediaKind }: { mediaKind: string }) {
   // data-testid lives on the wrapper (lucide's typed props reject data-*).
   return (
     <PreviewFrame>
-      <span data-testid="artifact-preview-icon" style={{ color: "var(--mute)" }}>
+      <span data-testid="artifact-preview-icon" style={{ color: "var(--midnight-muted)" }}>
         {createElement(iconForMediaKind(mediaKind), {
           className: "h-8 w-8",
           "aria-hidden": true,
@@ -100,7 +100,7 @@ function TextPreview({ text }: { text: string }) {
         <p
           data-testid="artifact-preview-text"
           className="max-h-full overflow-hidden whitespace-pre-wrap break-words text-xs leading-5"
-          style={{ color: "var(--ink-soft)" }}
+          style={{ color: "var(--midnight-soft)" }}
         >
           {text}
         </p>
@@ -108,7 +108,7 @@ function TextPreview({ text }: { text: string }) {
       <div
         aria-hidden="true"
         className="pointer-events-none absolute bottom-0 left-0 right-0 h-8"
-        style={{ background: "linear-gradient(to top, var(--cream-deeper), transparent)" }}
+        style={{ background: "linear-gradient(to top, var(--cream-deep), transparent)" }}
       />
     </PreviewFrame>
   );
@@ -150,7 +150,7 @@ function ImagePreview({ path, alt }: { path: string; alt: string }) {
       <PreviewFrame>
         <ImageIcon
           className="h-8 w-8 animate-pulse"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
           aria-hidden="true"
         />
       </PreviewFrame>
@@ -199,7 +199,7 @@ function SecondaryButton({
       aria-label={label}
       title={label}
       className="flex h-7 w-7 items-center justify-center rounded-md backdrop-blur transition-colors"
-      style={{ background: "var(--cream)", color: "var(--ink-soft)", border: "1px solid var(--edge)" }}
+      style={{ background: "var(--cream)", color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
     >
       {children}
     </button>
@@ -275,7 +275,7 @@ export function ArtifactGalleryCard({
             aria-label="Open in issue"
             title="Open in issue"
             className="flex h-7 w-7 items-center justify-center rounded-md backdrop-blur transition-colors"
-            style={{ background: "var(--cream)", color: "var(--ink-soft)", border: "1px solid var(--edge)" }}
+            style={{ background: "var(--cream)", color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
           >
             <ExternalLink className="h-3.5 w-3.5" />
           </Link>
@@ -293,12 +293,12 @@ export function ArtifactGalleryCard({
       <div className="flex flex-1 flex-col gap-1 p-3">
         <h3
           className="truncate text-sm font-medium leading-5"
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
           title={title}
         >
           {title}
         </h3>
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--mute)" }}>
+        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--midnight-muted)" }}>
           {artifact.issue?.identifier ? (
             <span className="font-mono">{artifact.issue.identifier}</span>
           ) : null}
@@ -306,7 +306,7 @@ export function ArtifactGalleryCard({
           <span>Updated {timeAgo(artifact.updatedAt)}</span>
         </div>
         {artifact.createdByAgent ? (
-          <span className="truncate text-[11px]" style={{ color: "var(--mute)" }}>
+          <span className="truncate text-[11px]" style={{ color: "var(--midnight-muted)" }}>
             {artifact.createdByAgent.name}
           </span>
         ) : null}
@@ -347,13 +347,13 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
         <ArtifactPreview artifact={preview} />
       ) : (
         <PreviewFrame>
-          <Layers className="h-8 w-8" style={{ color: "var(--mute)" }} aria-hidden="true" />
+          <Layers className="h-8 w-8" style={{ color: "var(--midnight-muted)" }} aria-hidden="true" />
         </PreviewFrame>
       )}
       <span
         data-testid="artifact-stack-count"
         className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium backdrop-blur"
-        style={{ background: "var(--cream)", color: "var(--ink)", border: "1px solid var(--edge)" }}
+        style={{ background: "var(--cream)", color: "var(--midnight)", border: "1px solid var(--edge)" }}
       >
         <Layers className="h-3 w-3" aria-hidden="true" />
         {group.count}
@@ -362,19 +362,19 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="flex items-center gap-2">
           {group.issue?.identifier ? (
-            <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: "var(--mute)" }}>
+            <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: "var(--midnight-muted)" }}>
               {group.issue.identifier}
             </span>
           ) : null}
           <h3
             className="min-w-0 flex-1 truncate text-sm font-medium leading-5"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
             title={group.title}
           >
             {group.title}
           </h3>
         </div>
-        <span className="text-[11px]" style={{ color: "var(--mute)" }}>
+        <span className="text-[11px]" style={{ color: "var(--midnight-muted)" }}>
           {group.count} {group.count === 1 ? "item" : "items"} · Updated {timeAgo(group.updatedAt)}
         </span>
       </div>

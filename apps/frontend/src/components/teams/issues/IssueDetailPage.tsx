@@ -125,9 +125,9 @@ function IssueDescription({
         placeholder="Add a description…"
         aria-label="Issue description"
         style={{
-          background: "var(--cream-deeper)",
+          background: "var(--cream-deep)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       />
     );
@@ -141,7 +141,7 @@ function IssueDescription({
         className="w-full text-left text-sm whitespace-pre-wrap pl-3"
         style={{
           borderLeft: "2px solid var(--edge)",
-          color: "var(--ink-soft)",
+          color: "var(--midnight-soft)",
         }}
       >
         {description}
@@ -156,7 +156,7 @@ function IssueDescription({
       className="w-full text-left text-sm italic pl-3"
       style={{
         borderLeft: "2px solid var(--edge)",
-        color: "var(--mute)",
+        color: "var(--midnight-muted)",
       }}
     >
       Add a description…
@@ -237,8 +237,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          fontFamily: "var(--font-serif), serif",
+          color: "var(--midnight-muted)",
         }}
       >
         Loading…
@@ -251,11 +251,11 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <div
         role="alert"
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
-        style={{ color: "var(--danger)" }}
+        style={{ color: "var(--err)" }}
       >
         <p>Failed to load issue.</p>
         {error?.message && (
-          <p className="mt-1" style={{ color: "var(--mute)" }}>
+          <p className="mt-1" style={{ color: "var(--midnight-muted)" }}>
             {error.message}
           </p>
         )}
@@ -268,8 +268,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
-          color: "var(--mute)",
+          fontFamily: "var(--font-serif), serif",
+          color: "var(--midnight-muted)",
         }}
       >
         Issue not found.
@@ -280,7 +280,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   return (
     <div
       className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
-      style={{ background: "var(--cream)", color: "var(--ink)" }}
+      style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
       <main className="flex flex-col gap-6 min-w-0">
         {/* Hidden tasks are unreachable from every list, board, and search —
@@ -294,13 +294,13 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded px-3 py-2 text-sm"
             style={{
               border: "1px solid var(--edge)",
-              background: "var(--cream-deeper)",
-              color: "var(--ink-soft)",
+              background: "var(--cream-deep)",
+              color: "var(--midnight-soft)",
             }}
           >
             <EyeOff
               className="h-4 w-4 shrink-0"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             />
             <span>This task is hidden — it won&apos;t show in Tasks or search.</span>
@@ -314,7 +314,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                   );
               }}
               className="hover:underline"
-              style={{ color: "var(--forest)" }}
+              style={{ color: "var(--midnight)" }}
             >
               Restore
             </button>
@@ -334,8 +334,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deeper)]"
-                style={{ color: "var(--mute)" }}
+                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)]"
+                style={{ color: "var(--midnight-muted)" }}
                 aria-label="Issue actions"
               >
                 <MoreHorizontal className="h-4 w-4" />
@@ -547,7 +547,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           </>
         }
       >
-        <p className="text-sm" style={{ color: "var(--ink-soft)" }}>
+        <p className="text-sm" style={{ color: "var(--midnight-soft)" }}>
           {issue.identifier ? `${issue.identifier}: ` : ""}
           {issue.title}
         </p>

@@ -19,7 +19,7 @@ export function IssueParentBreadcrumb({ parentId }: { parentId: string }) {
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, parentUrl)}
       className="inline-flex items-center gap-1 text-sm hover:underline"
-      style={{ color: "var(--forest)" }}
+      style={{ color: "var(--midnight)" }}
     >
       <ChevronUp className="h-3.5 w-3.5" />
       {label}

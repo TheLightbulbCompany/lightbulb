@@ -63,15 +63,15 @@ function DecisionMeta({ item }: { item: AttentionItem }) {
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span
         className="rounded px-1.5 py-0.5 font-medium"
-        style={{ background: "var(--forest-tint)", color: "var(--forest)" }}
+        style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
       >
         {sourceLabel(item)}
       </span>
       {item.originAgentName && (
-        <span style={{ color: "var(--mute)" }}>{item.originAgentName}</span>
+        <span style={{ color: "var(--midnight-muted)" }}>{item.originAgentName}</span>
       )}
       {item.relatedIssue?.identifier && (
-        <span style={{ color: "var(--mute)" }}>
+        <span style={{ color: "var(--midnight-muted)" }}>
           {item.relatedIssue.identifier}
         </span>
       )}
@@ -79,7 +79,7 @@ function DecisionMeta({ item }: { item: AttentionItem }) {
         // The pressure cue. Honest data — the feed's own createdAt — and the
         // only place in the product that says how long a human has kept an
         // agent blocked.
-        style={{ color: overdue ? "var(--danger)" : "var(--mute)" }}
+        style={{ color: overdue ? "var(--err)" : "var(--midnight-muted)" }}
         title={new Date(item.createdAt).toLocaleString()}
       >
         {overdue ? "waiting " : ""}
@@ -104,10 +104,10 @@ function UnhydratedRow({
   return (
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm" style={{ color: "var(--ink)" }}>
+        <p className="truncate text-sm" style={{ color: "var(--midnight)" }}>
           {item.subject.title ?? sourceLabel(item)}
         </p>
-        <p className="text-xs" style={{ color: "var(--mute)" }}>
+        <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
           {item.whyNow}
         </p>
       </div>
@@ -116,7 +116,7 @@ function UnhydratedRow({
           type="button"
           onClick={() => onOpenIssue(issueId)}
           className="flex items-center gap-1 text-xs underline-offset-2 hover:underline"
-          style={{ color: "var(--forest)" }}
+          style={{ color: "var(--midnight)" }}
         >
           Open thread
           <ExternalLink className="h-3 w-3" aria-hidden="true" />
@@ -216,9 +216,9 @@ export function AttentionList({
         role="alert"
         className="rounded-md border px-4 py-3 text-sm"
         style={{
-          borderColor: "color-mix(in srgb, var(--danger) 25%, transparent)",
-          background: "color-mix(in srgb, var(--danger) 6%, transparent)",
-          color: "var(--danger)",
+          borderColor: "color-mix(in srgb, var(--err) 25%, transparent)",
+          background: "color-mix(in srgb, var(--err) 6%, transparent)",
+          color: "var(--err)",
         }}
       >
         Couldn&apos;t load what needs you. Try refreshing — decisions may be
@@ -234,7 +234,7 @@ export function AttentionList({
           <div
             key={n}
             className="h-16 animate-pulse rounded-md"
-            style={{ background: "var(--cream-deeper)" }}
+            style={{ background: "var(--cream-deep)" }}
           />
         ))}
       </div>

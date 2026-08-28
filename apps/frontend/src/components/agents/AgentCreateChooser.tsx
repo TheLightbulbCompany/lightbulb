@@ -27,7 +27,7 @@ export function AgentCreateChooser({
 
   const cardClass =
     "flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-colors " +
-    "focus:outline-none focus:ring-1 focus:ring-[var(--forest)]";
+    "focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]";
 
   return (
     <div className="grid gap-2 sm:grid-cols-2" data-testid="agent-create-chooser">
@@ -36,13 +36,13 @@ export function AgentCreateChooser({
         onClick={choose("hire", onHire)}
         className={
           cardClass +
-          " border-[var(--forest)] bg-[var(--forest-tint)]/60 hover:bg-[var(--forest-tint)]"
+          " border-[var(--midnight)] bg-[var(--cream-deep)]/60 hover:bg-[var(--cream-deep)]"
         }
       >
-        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--forest)]">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--midnight)]">
           <ShoppingBag className="h-4 w-4" /> Hire from marketplace
         </span>
-        <span className="text-xs text-[var(--mute)]">
+        <span className="text-xs text-[var(--midnight-muted)]">
           Pre-built agents, ready to work.
         </span>
       </button>
@@ -50,13 +50,13 @@ export function AgentCreateChooser({
         type="button"
         onClick={choose("build", onBuild)}
         className={
-          cardClass + " border-[var(--edge)] hover:bg-[var(--cream-deeper)]"
+          cardClass + " border-[var(--edge)] hover:bg-[var(--cream-deep)]"
         }
       >
-        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--midnight)]">
           <Wrench className="h-4 w-4" /> Build your own
         </span>
-        <span className="text-xs text-[var(--mute)]">
+        <span className="text-xs text-[var(--midnight-muted)]">
           A blank agent you configure.
         </span>
       </button>

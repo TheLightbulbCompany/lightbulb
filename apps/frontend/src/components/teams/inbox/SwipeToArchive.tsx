@@ -149,7 +149,7 @@ export function SwipeToArchive({
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 flex items-center justify-end px-4"
         style={{
-          background: "var(--forest)",
+          background: "var(--midnight)",
           color: "var(--cream)",
           opacity: Math.max(archiveReveal, 0.2),
         }}

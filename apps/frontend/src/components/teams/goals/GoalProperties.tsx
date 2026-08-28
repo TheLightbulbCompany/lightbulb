@@ -45,7 +45,7 @@ function PropertyRow({
     <div
       className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
       style={{
-        color: "var(--ink-soft)",
+        color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",
       }}
     >
@@ -57,7 +57,7 @@ function PropertyRow({
   );
 }
 
-const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
+const EMPTY_DASH_STYLE = { color: "var(--midnight-muted)" } as const;
 
 function levelLabel(level: string): string {
   return level.replace(/\b\w/g, (c) => c.toUpperCase());
@@ -77,7 +77,7 @@ function LevelPicker({
         <button
           type="button"
           className="capitalize cursor-pointer hover:opacity-80 transition-opacity"
-          style={{ color: "var(--ink)" }}
+          style={{ color: "var(--midnight)" }}
         >
           {level}
         </button>
@@ -88,7 +88,7 @@ function LevelPicker({
         style={{
           background: "var(--cream)",
           border: "1px solid var(--edge)",
-          color: "var(--ink)",
+          color: "var(--midnight)",
         }}
       >
         {GOAL_LEVELS.map((l) => (
@@ -146,7 +146,7 @@ export function GoalProperties({
             prefetch={false}
             onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(ownerAgent.id))}
             className="hover:underline"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
           >
             {ownerAgent.name}
           </Link>
@@ -163,7 +163,7 @@ export function GoalProperties({
             prefetch={false}
             onClick={(e) => handleShellLinkClick(e, parentGoalUrl)}
             className="hover:underline"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
           >
             {parentGoal?.title ?? goal.parentId.slice(0, 8)}
           </Link>
@@ -171,7 +171,7 @@ export function GoalProperties({
       )}
       <PropertyRow label="Created">
         {goal.createdAt ? (
-          <time dateTime={goal.createdAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={goal.createdAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(goal.createdAt)}
           </time>
         ) : (
@@ -182,7 +182,7 @@ export function GoalProperties({
       </PropertyRow>
       <PropertyRow label="Updated">
         {goal.updatedAt ? (
-          <time dateTime={goal.updatedAt} style={{ color: "var(--mute)" }}>
+          <time dateTime={goal.updatedAt} style={{ color: "var(--midnight-muted)" }}>
             {timeAgo(goal.updatedAt)}
           </time>
         ) : (

@@ -68,8 +68,8 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
     setAnyone(anyoneFromRow);
   }, [agentId, row?.address, sendersFromRow, anyoneFromRow]);
 
-  if (error && !data) return <div className="p-4 text-sm text-[#dc2626]">Failed to load email settings.</div>;
-  if (isLoading || !data) return <div className="p-4 text-sm text-[var(--mute)]">Loading email…</div>;
+  if (error && !data) return <div className="p-4 text-sm text-err">Failed to load email settings.</div>;
+  if (isLoading || !data) return <div className="p-4 text-sm text-[var(--midnight-muted)]">Loading email…</div>;
 
   const save = async () => {
     setSaving(true);
@@ -108,15 +108,15 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
       <h3 className="flex items-center gap-2 text-sm font-semibold"><Mail className="h-4 w-4" /> Email</h3>
       <div className="rounded-md border border-[var(--edge)] p-3 space-y-3">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--mute)]">Address</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">Address</div>
           {row ? (
             <code className="text-sm">{row.address}</code>
           ) : (
-            <p className="text-xs text-[var(--mute)]">Not created yet — it appears the first time this agent uses email, or when you save below.</p>
+            <p className="text-xs text-[var(--midnight-muted)]">Not created yet — it appears the first time this agent uses email, or when you save below.</p>
           )}
         </div>
         {row?.outbound_disabled && (
-          <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+          <div role="alert" className="rounded-md border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] p-2 text-xs">
             Outbound email is paused: a recipient reported a message as spam.
             <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
               Re-enable
@@ -125,7 +125,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
         )}
         <label className="block text-xs">
           <span className="font-semibold">Who can wake this agent by email</span>
-          <span className="block text-[var(--mute)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed.</span>
+          <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed.</span>
           <textarea
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
@@ -138,7 +138,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
           Let this agent email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
-        {err && <p className="text-xs text-[#dc2626]">{err}</p>}
+        {err && <p className="text-xs text-err">{err}</p>}
         <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
       </div>
     </div>

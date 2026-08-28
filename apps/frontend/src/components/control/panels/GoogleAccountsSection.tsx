@@ -98,18 +98,18 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
     <section
       id="google-accounts"
       aria-labelledby="google-accounts-heading"
-      className="overflow-hidden rounded-md border border-[var(--edge)] bg-white"
+      className="overflow-hidden rounded-md border border-[var(--edge)] bg-cream"
     >
       <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[var(--edge)] px-5 py-4">
         <div className="min-w-0 flex-1">
           <h3
             id="google-accounts-heading"
-            className="text-base font-semibold text-[var(--ink)]"
+            className="text-base font-semibold text-[var(--midnight)]"
             style={headingStyle}
           >
             Google accounts
           </h3>
-          <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--mute)]">
+          <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--midnight-muted)]">
             One Google connection can hold several accounts — a shared inbox, a
             second workspace — and each agent acts as one of them.
           </p>
@@ -119,7 +119,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
 
       {error && (
         <div className="flex items-center gap-3 px-5 py-4">
-          <p className="flex-1 text-sm text-[var(--danger)]">
+          <p className="flex-1 text-sm text-[var(--err)]">
             Failed to load Google accounts.
           </p>
           <Button variant="outline" size="sm" onClick={() => mutate()}>
@@ -129,7 +129,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
       )}
 
       {!error && isLoading && (
-        <p className="px-5 py-4 text-sm text-[var(--mute)]">
+        <p className="px-5 py-4 text-sm text-[var(--midnight-muted)]">
           Loading Google accounts…
         </p>
       )}
@@ -137,11 +137,11 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
       {!error && !isLoading && (
         <>
           <div className="border-b border-[var(--edge)] px-5 py-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
+            <p className="text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
               Connected accounts
             </p>
             {accounts.length === 0 ? (
-              <p className="mt-2 text-sm text-[var(--mute)]">
+              <p className="mt-2 text-sm text-[var(--midnight-muted)]">
                 No Google accounts connected yet.
               </p>
             ) : (
@@ -160,10 +160,10 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                       className="flex items-center gap-4 bg-[var(--cream)] px-3 py-2.5"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-[var(--ink)]">
+                        <p className="truncate text-sm font-medium text-[var(--midnight)]">
                           {account.email}
                         </p>
-                        <p className="mt-0.5 text-xs text-[var(--mute)]">
+                        <p className="mt-0.5 text-xs text-[var(--midnight-muted)]">
                           {used === 0
                             ? "No agent acts as this account"
                             : `${used} agent${used === 1 ? "" : "s"} act${used === 1 ? "s" : ""} as this account`}
@@ -190,21 +190,21 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
           </div>
 
           <div className="px-5 py-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
+            <p className="text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
               Which account each agent acts as
             </p>
-            <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--mute)]">
+            <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--midnight-muted)]">
               An agent given an account is told to use it for every Google
               action, on every run. Leave it on{" "}
-              <span className="text-[var(--ink-soft)]">Default</span> and the
+              <span className="text-[var(--midnight-soft)]">Default</span> and the
               agent is never told which account to use.
             </p>
             {agentsLoading ? (
-              <p className="mt-3 text-sm text-[var(--mute)]">Loading agents…</p>
+              <p className="mt-3 text-sm text-[var(--midnight-muted)]">Loading agents…</p>
             ) : agents.length === 0 ? (
-              <p className="mt-3 text-sm text-[var(--mute)]">No agents yet.</p>
+              <p className="mt-3 text-sm text-[var(--midnight-muted)]">No agents yet.</p>
             ) : accounts.length === 0 ? (
-              <p className="mt-3 text-sm text-[var(--mute)]">
+              <p className="mt-3 text-sm text-[var(--midnight-muted)]">
                 Connect a Google account to assign it to an agent.
               </p>
             ) : (
@@ -220,7 +220,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                     >
                       <label
                         htmlFor={selectId}
-                        className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink)]"
+                        className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--midnight)]"
                       >
                         {agentDisplayName(agent)}
                       </label>
@@ -231,7 +231,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                         onChange={(e) =>
                           onAssignmentChange(agent.id, e.target.value)
                         }
-                        className="h-9 w-56 rounded-md border border-[var(--edge)] bg-white px-2 text-sm text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="h-9 w-56 rounded-md border border-[var(--edge)] bg-cream-deep px-2 text-sm text-[var(--midnight)] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <option value={DEFAULT_OPTION}>Default</option>
                         {accounts.map((account) => (

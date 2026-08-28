@@ -39,16 +39,16 @@ const BUNDLED_GRANT_TIMEOUT_MS = 90_000;
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
 // the next/font CSS vars via inline styles rather than Tailwind font classes,
 // the same way the stepper's own cards do.
-const SERIF_FONT = { fontFamily: "var(--font-lora-serif), serif" } as const;
-const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
+const SERIF_FONT = { fontFamily: "var(--font-serif), serif" } as const;
+const SANS_FONT = { fontFamily: "var(--font-sans), sans-serif" } as const;
 
 const PRIMARY_BUTTON =
-  "rounded-full bg-[var(--forest)] px-6 py-2.5 text-sm font-medium text-white " +
-  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[var(--forest)]";
+  "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-cream " +
+  "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
 
 const TEXT_INPUT =
-  "rounded-lg border border-[var(--edge)] bg-white px-3 py-2.5 text-sm text-[var(--ink)] " +
-  "focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]";
+  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)] " +
+  "focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring";
 
 /**
  * Bedrock onboarding step: collect an initial Claude credit top-up.
@@ -187,15 +187,15 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
   if (awaitingBundledGrant) {
     return (
       <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center" style={SANS_FONT}>
-        <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
+        <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
           Adding your Claude credits
         </h3>
-        <p className="text-sm text-[var(--mute)]">
+        <p className="text-sm text-[var(--midnight-muted)]">
           Your payment went through. The credits are being added to your
           balance — this usually takes a few seconds and continues on its own.
         </p>
         {bundledGrantSlow && (
-          <p className="text-sm text-[var(--danger)]">
+          <p className="text-sm text-[var(--err)]">
             This is taking longer than expected. Your payment was received and
             the credits will still land — if this doesn&apos;t clear shortly,
             contact support and we&apos;ll finish it for you.
@@ -210,10 +210,10 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
-      <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
+      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Add Claude credits
       </h3>
-      <p className="text-sm text-[var(--mute)]">
+      <p className="text-sm text-[var(--midnight-muted)]">
         {autoChargeEnabled
           ? "Prepay for Claude inference — charged automatically to your card on file. Add any amount, top up later anytime."
           : "Prepay for Claude inference. You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
@@ -229,8 +229,8 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
             className={
               "rounded-full border px-3 py-2 text-sm transition-colors " +
               (amount === c
-                ? "border-[var(--forest)] bg-[var(--forest-tint)] text-[var(--forest)] font-medium"
-                : "border-[var(--edge)] bg-white text-[var(--ink)] hover:bg-[var(--cream-deeper)]")
+                ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)] font-medium"
+                : "border-[var(--edge)] bg-cream text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
             }
           >
             ${c / 100}
@@ -249,12 +249,12 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
       />
 
       {!autoChargeEnabled && (
-        <label className="flex items-start gap-2 text-[13px] text-[var(--mute)]">
+        <label className="flex items-start gap-2 text-[13px] text-[var(--midnight-muted)]">
           <input
             type="checkbox"
             checked={optIn}
             onChange={(e) => setOptIn(e.target.checked)}
-            className="mt-0.5 accent-[var(--forest)]"
+            className="mt-0.5 accent-[var(--midnight)]"
           />
           <span>
             Enable one-click top-ups — save this card so future credit
@@ -265,14 +265,14 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
       )}
 
       {checkoutCancelled && !requested && !error && (
-        <p className="text-sm text-[var(--mute)]">
+        <p className="text-sm text-[var(--midnight-muted)]">
           Checkout was cancelled — nothing was charged. Pick an amount to try
           again.
         </p>
       )}
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+      {error && <p className="text-sm text-[var(--err)]">{error}</p>}
       {requested && (
-        <p className="text-sm text-[var(--mute)]">
+        <p className="text-sm text-[var(--midnight-muted)]">
           Payment requested — your card on file is being charged in the
           background. This step advances automatically once the credits land
           (usually under a minute).

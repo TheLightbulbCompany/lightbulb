@@ -138,7 +138,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
             ) : null}
           </>
         ) : (
-          <p className="text-sm text-zinc-500">No container row.</p>
+          <p className="text-sm text-muted-foreground">No container row.</p>
         )}
       </Card>
 
@@ -173,7 +173,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
             />
           </dl>
         ) : (
-          <p className="text-sm text-zinc-500">No container row.</p>
+          <p className="text-sm text-muted-foreground">No container row.</p>
         )}
       </Card>
 
@@ -207,22 +207,22 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
           </dl>
 
           <div className="mt-4">
-            <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+            <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
               Seeded agents ({seededAgentIds.length})
             </div>
             {seededAgentIds.length > 0 ? (
               <ul className="space-y-1 text-sm">
                 {seededAgentIds.map((agentId, index) => (
                   <li key={agentId} className="flex items-baseline gap-2">
-                    <span className="truncate font-mono text-zinc-200">{agentId}</span>
+                    <span className="truncate font-mono text-foreground">{agentId}</span>
                     {index === 0 ? (
-                      <span className="text-xs text-zinc-500">Friday (CEO)</span>
+                      <span className="text-xs text-muted-foreground">Friday (CEO)</span>
                     ) : null}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-zinc-500">No seeded agents.</p>
+              <p className="text-sm text-muted-foreground">No seeded agents.</p>
             )}
           </div>
         </Card>
@@ -280,7 +280,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       {/* 6. Gate + SFN */}
       <Card title="Gate & SFN execution">
         <div>
-          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Gate</div>
+          <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Gate</div>
           {data.gate ? (
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
               <DefRow label="Code" value={data.gate.code ?? "—"} mono />
@@ -288,12 +288,12 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
               <DefRow label="Message" value={data.gate.message ?? "—"} />
             </dl>
           ) : (
-            <p className="text-sm text-zinc-500">Not blocked.</p>
+            <p className="text-sm text-muted-foreground">Not blocked.</p>
           )}
         </div>
 
-        <div className="mt-4 border-t border-zinc-800 pt-4">
-          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+        <div className="mt-4 border-t border-border pt-4">
+          <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
             SFN execution
           </div>
           {sfnReadError ? (
@@ -318,7 +318,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
               />
             </dl>
           ) : (
-            <p className="text-sm text-zinc-500">No execution stamped.</p>
+            <p className="text-sm text-muted-foreground">No execution stamped.</p>
           )}
         </div>
       </Card>
@@ -336,5 +336,5 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
 // User-id breadcrumb is provided by the parent layout — render only the
 // section heading here so the title doesn't duplicate.
 function Header() {
-  return <h1 className="text-xl font-semibold text-zinc-100">Provisioning</h1>;
+  return <h1 className="text-xl font-semibold text-foreground">Provisioning</h1>;
 }

@@ -1,21 +1,40 @@
 <!-- apps/frontend/.interface-design/system.md -->
-# Admin Operator Console — Design System
+# Lightbulb AI — Design System
 
-**Direction:** operator console for a live agent fleet. Calm when healthy, loud only on incidents.
-**Surface:** existing DARK admin theme (zinc-900/40 cards, zinc-800 borders, zinc-100 text). NOT cream/forest — that is the main-app brand; the admin surface stays dark (no recolor).
-**Depth:** borders-only (`border-zinc-800`); no shadows.
-**Spacing base:** 4px (Tailwind scale).
-**Radius:** `rounded-lg` cards, `rounded` chips.
+Brand Identity Manual v1.0 (§05 Typography, §06 Colour, §07 Icons) is the source of truth.
+Tokens live in `src/app/globals.css`; nothing else defines a colour. Operator direction:
+calm when healthy, loud only on incidents. Borders only, no shadows; 4px spacing.
 
-## Semantic status colors (the operator register)
-- running / healthy → emerald (`bg-emerald-500/15 text-emerald-300 border-emerald-500/30`)
-- provisioning / in-progress → sky
-- stopped / warn → amber
-- error / incident → red
-- unknown / unable-to-read → zinc  ← a degraded source read renders THIS, never green
+## The two grounds
+The product is **cream** (`:root`). `/admin` is the manual's **reversed** treatment — cream
+on midnight, not gray — via the `dark` class on `app/admin/layout.tsx`. Same utilities on
+both; only the token values change.
 
-## Components
-- `StatusChip` — one status language everywhere (extracted from container/page.tsx).
-- `Tile` — attention-strip cell; `tone` border encodes severity.
-- `Card` — section container.
-- `MetricStat` — tabular-nums metric.
+| | cream (`:root`) | reversed (`.dark`) |
+|---|---|---|
+| `bg-background` / `text-foreground` | cream / midnight | midnight / cream |
+| `bg-card`, `bg-popover` | cream | midnight 92% |
+| `bg-secondary`, `bg-accent`, `bg-muted` | cream-deep | midnight 86% |
+| `text-muted-foreground` / `border-border` / `border-input` | midnight 64% / edge / edge | cream 70% / cream 14% / cream 14% |
+| `bg-primary` / `text-primary-foreground` | midnight / cream | cream / midnight |
+| `ring` | bulb | bulb — focus is the only place the light appears |
+
+## State pairs (`text-ok`, `border-warn`, …)
+`--ok` `--warn` `--err` `--info` each carry a cream value and a `-reversed` value; the
+`.dark` block re-points the token, so **never name a `-reversed` token in a component**.
+ok = success/running · info = in-progress/links · warn = stopped/degraded · err = incident.
+- A state colour marks text, an icon, a border or a thin rule — **never a fill**.
+  Badge = `border border-ok text-ok`. Banner = `border-l-2 border-warn bg-card`.
+- **Never colour alone**: every status keeps its word or icon.
+- Unknown / unreadable renders neutral (`border-border text-muted-foreground`), never ok.
+
+## Fonts (§05)
+`font-sans` Source Sans 3 (UI, 400/500/600, never lighter) · `font-serif` Lora (prose,
+headings) · `font-mono` Geist Mono (code and terminal output only).
+
+## The no-literal rule
+No hex, `rgb()`, `oklch()`, `hsl()`, `[#…]`, or Tailwind palette class (`zinc-*`,
+`emerald-*`, `sky-*`, `amber-*`, `red-*`, `white`, `black`, …) outside `globals.css`
+and `landing.css`. Charts use `var(--chart-1..5)` (ok, info, warn, err, brass). Enforced by
+`node scripts/brand-tokens-scan.mjs src` — must print 0. Admin primitives: `StatusChip` ·
+`Tile` (`tone` border = severity) · `Card` · `MetricStat` · `ErrorBanner` · `LogRow` · `AuditRow`.

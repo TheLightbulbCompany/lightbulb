@@ -52,7 +52,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
       href={issueHref(issue)}
       prefetch={false}
       className="block no-underline"
-      style={{ color: "var(--ink)" }}
+      style={{ color: "var(--midnight)" }}
       // Native anchors are browser-draggable by default, which hijacks the
       // pointer and prevents dnd-kit's PointerSensor from starting the
       // sortable drag — so the card never moves. Disable native drag so the
@@ -87,7 +87,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
       <div className="flex items-start gap-1.5 mb-1.5">
         <span
           className="text-xs font-mono shrink-0"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
@@ -97,7 +97,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
       </div>
       <p
         className="text-sm leading-snug line-clamp-2 mb-2"
-        style={{ color: "var(--ink)" }}
+        style={{ color: "var(--midnight)" }}
       >
         {issue.title}
       </p>
@@ -111,7 +111,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
             ) : (
               <span
                 className="text-xs font-mono"
-                style={{ color: "var(--mute)" }}
+                style={{ color: "var(--midnight-muted)" }}
               >
                 {issue.assigneeAgentId.slice(0, 8)}
               </span>

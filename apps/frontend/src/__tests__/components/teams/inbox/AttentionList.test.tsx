@@ -106,7 +106,7 @@ describe("AttentionList", () => {
     // The 38-hour approval that motivated this surface: the wait is the
     // pressure cue, so past a day it stops reading as ordinary metadata.
     const wait = screen.getByText(/waiting 1d ago/i);
-    expect(wait.getAttribute("style") ?? "").toMatch(/danger/);
+    expect(wait.getAttribute("style") ?? "").toMatch(/--err/);
   });
 
   test("resolving an interaction goes through the shared mutation route", async () => {

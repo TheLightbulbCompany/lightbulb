@@ -5,17 +5,17 @@
 // vocabulary was first modeled there) and RoutineDetailPanel's Run history
 // rows, which used to carry a second, incomplete copy of this same
 // classification (no `running`/`queued`/`scheduled_retry`/`timed_out`
-// handling — everything but succeeded/failed fell through to `--mute`,
+// handling — everything but succeeded/failed fell through to `--midnight-muted`,
 // including an in-flight OR a genuinely failed timed-out run). One
 // classification, reused, so the two surfaces can't drift again.
 
 /** Free upstream string — color the known vocabulary, default to mute. */
 export function statusColor(status: string | null | undefined): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "succeeded" || s === "done" || s === "completed") return "var(--forest)";
-  if (s === "failed" || s === "error" || s === "cancelled" || s === "timed_out") return "var(--danger)";
-  if (s === "running" || s === "queued" || s === "scheduled_retry") return "var(--forest)";
-  return "var(--mute)";
+  if (s === "succeeded" || s === "done" || s === "completed") return "var(--midnight)";
+  if (s === "failed" || s === "error" || s === "cancelled" || s === "timed_out") return "var(--err)";
+  if (s === "running" || s === "queued" || s === "scheduled_retry") return "var(--midnight)";
+  return "var(--midnight-muted)";
 }
 
 /**

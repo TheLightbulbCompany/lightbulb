@@ -145,13 +145,13 @@ function RecentTaskRow({
       href={teamsDetailUrl("issue", issue.id)}
       prefetch={false}
       onClick={handleClick}
-      className="group flex items-center gap-2 border-b border-[var(--edge)] px-4 py-2.5 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deeper)]"
-      style={{ color: "var(--ink)" }}
+      className="group flex items-center gap-2 border-b border-[var(--edge)] px-4 py-2.5 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deep)]"
+      style={{ color: "var(--midnight)" }}
     >
       <span className="inline-flex shrink-0 items-center" aria-hidden="true">
         <StatusIcon status={issue.status} />
       </span>
-      <span className="shrink-0 font-mono text-xs text-[var(--mute)]">
+      <span className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]">
         {identifier}
       </span>
       <span className="min-w-0 flex-1 truncate">{issue.title}</span>
@@ -166,7 +166,7 @@ function RecentTaskRow({
         <time
           dateTime={updatedTs}
           className="shrink-0 text-[11px] tabular-nums"
-          style={{ color: "var(--mute)" }}
+          style={{ color: "var(--midnight-muted)" }}
         >
           {timeAgo(updatedTs)}
         </time>
@@ -195,7 +195,7 @@ export function DashboardPanel() {
     return (
       <div
         className="editorial-page p-6 sm:p-8 font-editorial-serif text-xl italic"
-        style={{ color: "var(--mute)" }}
+        style={{ color: "var(--midnight-muted)" }}
       >
         Loading…
       </div>
@@ -339,7 +339,7 @@ export function DashboardPanel() {
         <div className="flex items-baseline justify-between mb-3">
           <h2
             className="font-editorial-serif text-2xl"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
           >
             Recent Tasks
           </h2>
@@ -349,7 +349,7 @@ export function DashboardPanel() {
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
               className="text-[11px] transition-colors hover:underline"
-              style={{ color: "var(--forest)" }}
+              style={{ color: "var(--midnight)" }}
             >
               View all →
             </Link>
@@ -362,7 +362,7 @@ export function DashboardPanel() {
           {recentTasks.length === 0 ? (
             <div
               className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               No recent tasks.
             </div>
@@ -389,7 +389,7 @@ export function DashboardPanel() {
         <div className="flex items-baseline justify-between mb-3">
           <h2
             className="font-editorial-serif text-2xl"
-            style={{ color: "var(--ink)" }}
+            style={{ color: "var(--midnight)" }}
           >
             Recent activity
           </h2>
@@ -399,7 +399,7 @@ export function DashboardPanel() {
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("activity"))}
               className="text-[11px] transition-colors hover:underline"
-              style={{ color: "var(--forest)" }}
+              style={{ color: "var(--midnight)" }}
             >
               View all →
             </Link>
@@ -412,14 +412,14 @@ export function DashboardPanel() {
           {activityLoading && events.length === 0 ? (
             <div
               className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               Loading activity…
             </div>
           ) : events.length === 0 ? (
             <div
               className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               No recent activity.
             </div>

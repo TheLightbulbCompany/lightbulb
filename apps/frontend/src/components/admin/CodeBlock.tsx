@@ -33,7 +33,7 @@ function renderJsonHighlighted(jsonText: string): string {
   return escaped.replace(
     KEY_PATTERN,
     (_match, indent: string, key: string, colon: string) =>
-      `${indent}<span class="font-semibold text-sky-300">${key}</span>${colon}`,
+      `${indent}<span class="font-semibold text-info">${key}</span>${colon}`,
   );
 }
 
@@ -55,13 +55,13 @@ export function CodeBlock({
   return (
     <div
       className={cn(
-        "overflow-auto rounded-md border border-white/10 bg-zinc-950 p-4",
+        "overflow-auto rounded-md border border-border bg-background p-4",
         className,
       )}
       style={{ maxHeight }}
       data-language={language}
     >
-      <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-zinc-100">
+      <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
         {isJson ? (
           <code
             // We escape input above and only inject our own <span> tags.

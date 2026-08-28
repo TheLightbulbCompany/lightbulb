@@ -59,7 +59,7 @@ export function DocumentRevisionMenu({
         <button
           type="button"
           className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
-          style={{ border: "1px solid var(--edge)", color: "var(--mute)" }}
+          style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           aria-label={`Revision history for ${documentKey}`}
           onClick={(e) => e.stopPropagation()}
         >

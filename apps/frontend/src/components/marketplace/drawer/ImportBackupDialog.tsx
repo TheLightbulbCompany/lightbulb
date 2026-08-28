@@ -198,7 +198,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
         {(phase === "pick" || phase === "uploading" || phase === "scanning") && tauriInvoke && (
           <button type="button" onClick={() => void importFromThisMac()} disabled={busy}
-            className="w-full rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+            className="w-full rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-[var(--cream)] disabled:opacity-50">
             Import from this Mac
           </button>
         )}
@@ -206,68 +206,68 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           <label className="block rounded-2xl border border-dashed border-[var(--edge)] p-5 text-center text-[13px]">
             <input ref={inputRef} type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" aria-label="Choose a backup archive"
               disabled={busy} onChange={(e) => void handleFile(e.target.files?.[0])} className="block w-full text-[13px]" />
-            {phase === "uploading" && <p className="mt-2 text-[#5b5b5b]">Uploading…</p>}
-            {phase === "scanning" && <p className="mt-2 text-[#5b5b5b]">Scanning the archive…</p>}
+            {phase === "uploading" && <p className="mt-2 text-muted-foreground">Uploading…</p>}
+            {phase === "scanning" && <p className="mt-2 text-muted-foreground">Scanning the archive…</p>}
           </label>
         )}
 
         {preview && (phase === "preview" || phase === "confirming") && (
           <div className="max-h-[60vh] space-y-3 overflow-y-auto text-[13px]">
-            <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
-              <p className="text-[15px] font-medium text-[var(--ink)]">{preview.name}</p>
-              {preview.description && <p className="text-[#5b5b5b]">{preview.description}</p>}
+            <div className="rounded-2xl border border-[var(--edge)] bg-card p-3">
+              <p className="text-[15px] font-medium text-[var(--midnight)]">{preview.name}</p>
+              {preview.description && <p className="text-muted-foreground">{preview.description}</p>}
               {claude ? (
-                <p className="mt-1 text-[#5b5b5b]">
+                <p className="mt-1 text-muted-foreground">
                   {claude.collections.length} project memories · {claude.collections.reduce((n, c) => n + c.file_count, 0)} memory files · {claude.skills.length} skill{claude.skills.length === 1 ? "" : "s"}
                 </p>
               ) : (
-                <p className="mt-1 text-[#5b5b5b]">{preview.file_count} files · {preview.cron_jobs} scheduled jobs</p>
+                <p className="mt-1 text-muted-foreground">{preview.file_count} files · {preview.cron_jobs} scheduled jobs</p>
               )}
             </div>
 
             {claude && (
               <>
                 <label className="block">
-                  <span className="text-[12px] text-[#5b5b5b]">Apply to agent</span>
+                  <span className="text-[12px] text-muted-foreground">Apply to agent</span>
                   <select aria-label="Target agent" value={target} disabled={busy || !!claudeItems}
                     onChange={(e) => setTarget(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-white px-3 py-2 text-[13px] text-[var(--ink)] disabled:opacity-60">
+                    className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2 text-[13px] text-[var(--midnight)] disabled:opacity-60">
                     <option value="">Choose an agent…</option>
                     {rosterAgents.map((a) => (
                       <option key={a.id} value={a.id}>{a.name}{a.role === "ceo" ? " — CEO" : a.title ? ` — ${a.title}` : ""}</option>
                     ))}
                   </select>
                 </label>
-                {roster.error != null && <p className="text-[12px] text-[#8a3a2a]">Couldn&apos;t load your team — reopen the dialog to retry.</p>}
+                {roster.error != null && <p className="text-[12px] text-[var(--err)]">Couldn&apos;t load your team — reopen the dialog to retry.</p>}
                 {claude.collections.length > 0 && (
-                  <fieldset><legend className="text-[12px] text-[#5b5b5b]">Project memories</legend>
+                  <fieldset><legend className="text-[12px] text-muted-foreground">Project memories</legend>
                     {claude.collections.map((c) => (
                       <label key={c.id} className="flex items-center gap-2 py-0.5">
                         <input type="checkbox" aria-label={c.label} checked={claudeCols.has(c.id)} disabled={busy || !!claudeItems} onChange={() => toggle(claudeCols, setClaudeCols, c.id)} />
-                        <span>{c.label} · <span className="text-[#5b5b5b]">{c.file_count} file{c.file_count === 1 ? "" : "s"}</span></span>
+                        <span>{c.label} · <span className="text-muted-foreground">{c.file_count} file{c.file_count === 1 ? "" : "s"}</span></span>
                       </label>
                     ))}
                   </fieldset>
                 )}
                 {claude.skills.length > 0 && (
-                  <fieldset><legend className="text-[12px] text-[#5b5b5b]">Skills</legend>
+                  <fieldset><legend className="text-[12px] text-muted-foreground">Skills</legend>
                     {claude.skills.map((s) => (<label key={s} className="mr-3 inline-flex items-center gap-1"><input type="checkbox" aria-label={s} checked={skills.has(s)} disabled={busy || !!claudeItems} onChange={() => toggle(skills, setSkills, s)} />{s}</label>))}
                   </fieldset>
                 )}
                 {claude.has_user_memory && <p>Global CLAUDE.md → appended to the agent&apos;s USER.md</p>}
                 {Object.keys(claude.skipped).length > 0 && (
-                  <p className="text-[#5b5b5b]">Skipped: {Object.entries(claude.skipped).map(([k, v]) => `${v} ${k}`).join(" · ")}</p>
+                  <p className="text-muted-foreground">Skipped: {Object.entries(claude.skipped).map(([k, v]) => `${v} ${k}`).join(" · ")}</p>
                 )}
                 {claudeItems && (
-                  <div className="rounded-2xl border border-[var(--edge)] bg-white p-3">
-                    <p className="font-medium text-[var(--ink)]">Imported</p>
+                  <div className="rounded-2xl border border-[var(--edge)] bg-card p-3">
+                    <p className="font-medium text-[var(--midnight)]">Imported</p>
                     <ul className="mt-1 space-y-0.5">
                       {claudeItems.map((i) => (
-                        <li key={i.item} className="font-mono text-[11.5px] text-[#5b5b5b]">{i.item} — {i.status === "applied" ? "applied" : "already exists, skipped"}</li>
+                        <li key={i.item} className="font-mono text-[11.5px] text-muted-foreground">{i.item} — {i.status === "applied" ? "applied" : "already exists, skipped"}</li>
                       ))}
                     </ul>
                     {claudeWarnings.length > 0 && (
-                      <ul className="mt-2 list-disc space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-2 pl-6 text-amber-900">
+                      <ul className="mt-2 list-disc space-y-1 rounded-xl border border-[var(--warn)] p-2 pl-6 text-[var(--warn)]">
                         {claudeWarnings.map((w) => <li key={w}>{w}</li>)}
                       </ul>
                     )}
@@ -278,7 +278,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
 
             {!claude && (<>
             <fieldset>
-              <legend className="text-[12px] text-[#5b5b5b]">Agents</legend>
+              <legend className="text-[12px] text-muted-foreground">Agents</legend>
               {preview.agents.map((a) => (
                 <label key={a.id} className="flex items-center gap-2 py-0.5">
                   <input type="checkbox" aria-label={a.name} checked={agents.has(a.id)} disabled={busy} onChange={() => toggle(agents, setAgents, a.id)} />
@@ -286,31 +286,31 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                       inside the grey <span>) so its resolved text is never exactly equal to a.name alone —
                       testing-library's getByText("Quill") only reads an element's own direct text-node
                       children, and the backup's overall name commonly matches its main agent's name. */}
-                  <span>{a.name} · <span className="text-[#5b5b5b]">{a.id}{a.has_history ? ` · history ${mb(a.history_bytes)}` : ""}</span></span>
+                  <span>{a.name} · <span className="text-muted-foreground">{a.id}{a.has_history ? ` · history ${mb(a.history_bytes)}` : ""}</span></span>
                 </label>
               ))}
             </fieldset>
 
             {needsUltra && (
-              <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+              <p role="alert" className="rounded-xl border border-[var(--warn)] p-3 text-[var(--warn)]">
                 You have {preview.existing_agents} agents; importing {agents.size} more brings you to {preview.existing_agents + agents.size}. The standard
                 plan runs up to {preview.standard_max_agents} agents per workspace. <Link href="/settings" className="underline">Upgrade to Ultra Pro</Link> in Settings, or pick fewer agents.
               </p>
             )}
 
             {preview.skills.length > 0 && (
-              <fieldset><legend className="text-[12px] text-[#5b5b5b]">Skills</legend>
+              <fieldset><legend className="text-[12px] text-muted-foreground">Skills</legend>
                 {preview.skills.map((s) => (<label key={s} className="mr-3 inline-flex items-center gap-1"><input type="checkbox" aria-label={s} checked={skills.has(s)} disabled={busy} onChange={() => toggle(skills, setSkills, s)} />{s}</label>))}
               </fieldset>
             )}
             {preview.mcp_servers.length > 0 && (
-              <fieldset><legend className="text-[12px] text-[#5b5b5b]">MCP servers (secrets are never imported — you re-enter them)</legend>
+              <fieldset><legend className="text-[12px] text-muted-foreground">MCP servers (secrets are never imported — you re-enter them)</legend>
                 {preview.mcp_servers.map((s) => (<label key={s} className="mr-3 inline-flex items-center gap-1"><input type="checkbox" aria-label={s} checked={mcps.has(s)} disabled={busy} onChange={() => toggle(mcps, setMcps, s)} />{s}</label>))}
               </fieldset>
             )}
             {preview.plugins.length > 0 && (
-              <fieldset><legend className="text-[12px] text-[#5b5b5b]">Plugins (your workspace restarts to load them)</legend>
-                {preview.plugins.map((p) => (<label key={p.id} className="flex items-center gap-2 py-0.5"><input type="checkbox" aria-label={p.id} checked={plugins.has(p.id)} disabled={busy} onChange={() => toggle(plugins, setPlugins, p.id)} />{p.spec}{p.has_dependencies && <span className="text-[#5b5b5b]"> · needs deps installed in the container</span>}</label>))}
+              <fieldset><legend className="text-[12px] text-muted-foreground">Plugins (your workspace restarts to load them)</legend>
+                {preview.plugins.map((p) => (<label key={p.id} className="flex items-center gap-2 py-0.5"><input type="checkbox" aria-label={p.id} checked={plugins.has(p.id)} disabled={busy} onChange={() => toggle(plugins, setPlugins, p.id)} />{p.spec}{p.has_dependencies && <span className="text-muted-foreground"> · needs deps installed in the container</span>}</label>))}
               </fieldset>
             )}
             <label className="flex items-center gap-2"><input type="checkbox" checked={memory} disabled={busy} onChange={() => setMemory(!memory)} />Memory logs (MEMORY.md, memory/)</label>
@@ -320,7 +320,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             )}
 
             {partial && (
-              <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+              <div role="alert" className="rounded-2xl border border-[var(--warn)] p-3 text-[var(--warn)]">
                 <p className="font-medium">Some agents couldn&apos;t be imported</p>
                 <ul className="list-disc space-y-0.5 pl-5 mt-1">
                   {partial.failed.map((a) => (
@@ -333,18 +333,18 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             </>)}
 
             {preview.warnings.length > 0 && (
-              <ul className="list-disc space-y-1 rounded-2xl border border-amber-200 bg-amber-50 p-3 pl-7 text-amber-900">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+              <ul className="list-disc space-y-1 rounded-2xl border border-[var(--warn)] p-3 pl-7 text-[var(--warn)]">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
             )}
-            {preview.skipped_big_files.length > 0 && <p className="text-[#5b5b5b]">Skipped {preview.skipped_big_files.length} file(s) over 512 MB.</p>}
+            {preview.skipped_big_files.length > 0 && <p className="text-muted-foreground">Skipped {preview.skipped_big_files.length} file(s) over 512 MB.</p>}
             {safetyFlags.length > 0 && (
               <fieldset>
-                <legend className="text-[12px] text-[#5b5b5b]">
+                <legend className="text-[12px] text-muted-foreground">
                   Safety notes (don&apos;t block the import; you&apos;ll see them again if you publish)
                 </legend>
                 <ul className="space-y-1">
                   {safetyFlags.map((f, i) => (
-                    <li key={`${f.file}-${f.line ?? 0}-${i}`} className="rounded-lg border border-[var(--edge)] bg-[#f3eee5] px-2 py-1 font-mono text-[11.5px] text-[#5b5b5b]">
-                      <span className="mr-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] uppercase text-[#5b5b5b]">{f.severity}</span>
+                    <li key={`${f.file}-${f.line ?? 0}-${i}`} className="rounded-lg border border-[var(--edge)] bg-cream-deep px-2 py-1 font-mono text-[11.5px] text-muted-foreground">
+                      <span className="mr-2 rounded-full bg-card px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">{f.severity}</span>
                       {f.pattern} · {f.file}{f.line ? `:${f.line}` : ""}
                     </li>
                   ))}
@@ -354,19 +354,19 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           </div>
         )}
 
-        {error && <p role="alert" className="rounded-xl bg-red-50 p-2 text-[13px] text-red-700">{error}</p>}
+        {error && <p role="alert" className="rounded-xl border border-[var(--err)] p-2 text-[13px] text-[var(--err)]">{error}</p>}
 
         <DialogFooter>
-          <button type="button" onClick={cancel} disabled={busy} className="rounded-full px-4 py-2 text-[13px] text-[#5b5b5b] hover:bg-black/5">Cancel</button>
+          <button type="button" onClick={cancel} disabled={busy} className="rounded-full px-4 py-2 text-[13px] text-muted-foreground hover:bg-[var(--midnight)]/5">Cancel</button>
           {partial && (
             <button type="button" onClick={continueWithPartial} disabled={busy}
-              className="rounded-full border border-[var(--edge)] px-4 py-2 text-[13px] font-medium text-[var(--ink)] hover:bg-black/5">
+              className="rounded-full border border-[var(--edge)] px-4 py-2 text-[13px] font-medium text-[var(--midnight)] hover:bg-[var(--midnight)]/5">
               Continue with {partial.okIds.length} imported
             </button>
           )}
           {preview && (claudeItems ? (
             <button type="button" onClick={() => { onImported(target); onOpenChange(false); reset(); }}
-              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white">
+              className="rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-[var(--cream)]">
               Done
             </button>
           ) : (
@@ -377,7 +377,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 // the staging behind an empty success.
                 ? !target || (claudeCols.size === 0 && skills.size === 0 && !claude.has_user_memory)
                 : agents.size === 0 || needsUltra)}
-              className="rounded-full bg-[var(--ink)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">
+              className="rounded-full bg-[var(--midnight)] px-4 py-2 text-[13px] font-medium text-[var(--cream)] disabled:opacity-50">
               {phase === "confirming" ? "Adding…" : claude ? "Import context" : partial ? "Retry" : "Add to my team"}
             </button>
           ))}

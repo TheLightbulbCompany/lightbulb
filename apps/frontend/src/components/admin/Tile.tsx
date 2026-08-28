@@ -3,11 +3,11 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 const TONE: Record<string, string> = {
-  ok: "border-emerald-500/30",
-  warn: "border-amber-500/30",
-  error: "border-red-500/40",
-  info: "border-sky-500/30",
-  unknown: "border-zinc-700",
+  ok: "border-ok",
+  warn: "border-warn",
+  error: "border-err",
+  info: "border-info",
+  unknown: "border-border",
 };
 
 export function Tile({
@@ -29,21 +29,21 @@ export function Tile({
 }) {
   const body = (
     <>
-      <div className="truncate text-xs uppercase tracking-wide text-zinc-500" title={title}>
+      <div className="truncate text-xs uppercase tracking-wide text-muted-foreground" title={title}>
         {title}
       </div>
-      {label ? <div className="mt-1 text-lg font-semibold text-zinc-100">{label}</div> : null}
+      {label ? <div className="mt-1 text-lg font-semibold text-foreground">{label}</div> : null}
       {sub ? (
-        <div className="mt-1 truncate font-mono text-[10px] text-zinc-500" title={sub}>
+        <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={sub}>
           {sub}
         </div>
       ) : null}
       {children}
     </>
   );
-  const cls = cn("rounded-lg border bg-zinc-900/40 p-3", TONE[tone]);
+  const cls = cn("rounded-lg border bg-card p-3", TONE[tone]);
   if (href) {
-    const linkCls = cn(cls, "block hover:bg-zinc-900/60");
+    const linkCls = cn(cls, "block hover:bg-accent");
     return /^https?:\/\//.test(href) ? (
       <a href={href} target="_blank" rel="noreferrer" className={linkCls}>
         {body}

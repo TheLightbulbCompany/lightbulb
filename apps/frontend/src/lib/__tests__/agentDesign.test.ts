@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialsFor, paletteFor, fromListing } from "../agentDesign";
+import { initialsFor, paletteFor, fromListing, PALETTE } from "../agentDesign";
 import type { Listing } from "@/lib/marketplace/types";
 
 describe("initialsFor", () => {
@@ -21,10 +21,16 @@ describe("paletteFor", () => {
     expect(paletteFor("atlas")).toEqual(paletteFor("atlas"));
   });
 
-  it("returns a palette entry from the curated set", () => {
-    const result = paletteFor("anything");
-    expect(result.accent).toMatch(/^#[0-9a-f]{6}$/i);
-    expect(result.tint).toMatch(/^#[0-9a-f]{6}$/i);
+  it("returns the single neutral chip style for any slug — agents are not colour-coded, identity is the monogram", () => {
+    expect(paletteFor("anything")).toEqual({ accent: "var(--foreground)", tint: "var(--accent)" });
+    expect(paletteFor("a totally different slug")).toEqual({ accent: "var(--foreground)", tint: "var(--accent)" });
+  });
+
+  it("never uses a state token (--ok/--warn/--err/--info) for agent identity", () => {
+    for (const entry of PALETTE) {
+      expect(entry.accent).not.toMatch(/--(ok|warn|err|info)\b/);
+      expect(entry.tint).not.toMatch(/--(ok|warn|err|info)\b/);
+    }
   });
 });
 

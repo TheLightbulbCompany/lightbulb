@@ -110,7 +110,7 @@ export function AutomationGoogleAccount({
           account contradicts the agent's own, this line stops promising an
           outcome — the block below owns it, and two paragraphs must not
           disagree about what the agent will read. */}
-      <p className="text-xs leading-relaxed text-[var(--ink-soft)]">
+      <p className="text-xs leading-relaxed text-[var(--midnight-soft)]">
         <span className="font-medium">{ceoName}</span> runs this automation
         {conflicted ? (
           "."
@@ -133,7 +133,7 @@ export function AutomationGoogleAccount({
             background: "color-mix(in srgb, var(--warn) 7%, transparent)",
           }}
         >
-          <p className="text-xs leading-relaxed text-[var(--ink-soft)]">
+          <p className="text-xs leading-relaxed text-[var(--midnight-soft)]">
             {ceoName} is set to act as{" "}
             <span className="font-medium">{assigned}</span>, and its standing
             instructions say to always use that account — so it may ignore{" "}
@@ -144,7 +144,7 @@ export function AutomationGoogleAccount({
             type="button"
             disabled={busy}
             onClick={() => account && void makeItTheirs(account)}
-            className="self-start text-left text-xs font-medium text-[var(--forest)] underline underline-offset-2 disabled:opacity-50"
+            className="self-start text-left text-xs font-medium text-[var(--midnight)] underline underline-offset-2 disabled:opacity-50"
           >
             {busy ? "Saving…" : `Make ${account} ${ceoName}'s account`}
           </button>
@@ -156,7 +156,7 @@ export function AutomationGoogleAccount({
           type="button"
           disabled={busy}
           onClick={() => void makeItTheirs(account)}
-          className="self-start text-left text-xs font-medium text-[var(--forest)] underline underline-offset-2 disabled:opacity-50"
+          className="self-start text-left text-xs font-medium text-[var(--midnight)] underline underline-offset-2 disabled:opacity-50"
         >
           {busy
             ? "Saving…"
@@ -167,12 +167,12 @@ export function AutomationGoogleAccount({
       {/* The way out. A hairline separates it from the facts above: those
           describe this automation, this is how you change the premise. Without
           it a one-option picker reads as "one account is all there is". */}
-      <p className="border-t border-[var(--edge)] pt-2 text-xs leading-relaxed text-[var(--mute)]">
+      <p className="border-t border-[var(--edge)] pt-2 text-xs leading-relaxed text-[var(--midnight-muted)]">
         Need a different mailbox?{" "}
         <button
           type="button"
           onClick={() => void openConnectAnother()}
-          className="font-medium text-[var(--forest)] underline underline-offset-2"
+          className="font-medium text-[var(--midnight)] underline underline-offset-2"
         >
           Connect another Google account
         </button>{" "}

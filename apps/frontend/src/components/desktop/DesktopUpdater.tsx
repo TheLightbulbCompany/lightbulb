@@ -201,10 +201,10 @@ export function DesktopUpdater({
           onClick={install}
           title={state.manifest.notes ?? undefined}
           style={{
-            background: "#16a34a",
+            background: "var(--midnight)",
             border: "none",
             padding: "4px 8px",
-            color: "white",
+            color: "var(--cream)",
             fontSize: 11,
             borderRadius: 4,
             cursor: "pointer",
@@ -216,7 +216,7 @@ export function DesktopUpdater({
       )}
       {state.kind === "installing" && <span style={{ fontSize: 11, opacity: 0.7 }}>Installing…</span>}
       {state.kind === "error" && (
-        <span style={{ fontSize: 11, color: "#dc2626" }}>
+        <span style={{ fontSize: 11, color: "var(--err)" }}>
           Update error.{" "}
           <button
             type="button"

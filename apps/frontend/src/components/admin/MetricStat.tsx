@@ -1,7 +1,7 @@
 const VALUE_TONE: Record<string, string> = {
-  default: "text-zinc-100",
-  error: "text-red-300",
-  unknown: "text-zinc-300",
+  default: "text-foreground",
+  error: "text-err",
+  unknown: "text-muted-foreground",
 };
 
 export function MetricStat({
@@ -18,8 +18,8 @@ export function MetricStat({
   return (
     <div>
       <div className={`text-2xl font-semibold tabular-nums ${VALUE_TONE[tone]}`}>{value}</div>
-      <div className="text-xs text-zinc-500">{label}</div>
-      {hint ? <div className="text-[10px] text-zinc-600">{hint}</div> : null}
+      <div className="text-xs text-muted-foreground">{label}</div>
+      {hint ? <div className="text-[10px] text-muted-foreground">{hint}</div> : null}
     </div>
   );
 }

@@ -85,7 +85,7 @@ export default async function HealthPage() {
   if (!health) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-semibold text-zinc-100">System health</h1>
+        <h1 className="text-2xl font-semibold text-foreground">System health</h1>
         <ErrorBanner error="System health endpoint unreachable" variant="error" />
       </div>
     );
@@ -98,7 +98,7 @@ export default async function HealthPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-zinc-100">System health</h1>
+      <h1 className="text-2xl font-semibold text-foreground">System health</h1>
 
       {/* Upstream probes */}
       <Card title="Upstreams">
@@ -115,7 +115,7 @@ export default async function HealthPage() {
                 tone={UPSTREAM_TONE[probe.status ?? ""] ?? "unknown"}
               >
                 {probe.latency_ms !== undefined ? (
-                  <div className="mt-1 font-mono text-xs text-zinc-500">
+                  <div className="mt-1 font-mono text-xs text-muted-foreground">
                     {probe.latency_ms}ms
                   </div>
                 ) : null}
@@ -140,29 +140,29 @@ export default async function HealthPage() {
             );
           })}
         </div>
-        <div className="mt-3 text-xs text-zinc-500">
-          Total containers: <span className="font-mono text-zinc-300">{fleet.total ?? 0}</span>
+        <div className="mt-3 text-xs text-muted-foreground">
+          Total containers: <span className="font-mono text-foreground">{fleet.total ?? 0}</span>
         </div>
       </Card>
 
       {/* Background tasks */}
       <Card title="Background tasks">
         {Object.keys(tasks).length === 0 ? (
-          <p className="text-sm text-zinc-500">No background tasks registered.</p>
+          <p className="text-sm text-muted-foreground">No background tasks registered.</p>
         ) : (
-          <div className="overflow-hidden rounded border border-zinc-800">
+          <div className="overflow-hidden rounded border border-border">
             {Object.entries(tasks).map(([name, state], idx) => (
               <div
                 key={name}
                 className={`flex items-center justify-between px-4 py-2 text-sm ${
-                  idx > 0 ? "border-t border-zinc-800" : ""
+                  idx > 0 ? "border-t border-border" : ""
                 }`}
                 title={state.error ?? undefined}
               >
-                <span className="font-mono text-zinc-200">{name}</span>
+                <span className="font-mono text-foreground">{name}</span>
                 <div className="flex items-center gap-3">
                   {state.error ? (
-                    <span className="max-w-[20rem] truncate font-mono text-xs text-red-300">
+                    <span className="max-w-[20rem] truncate font-mono text-xs text-err">
                       {state.error}
                     </span>
                   ) : null}
@@ -177,11 +177,11 @@ export default async function HealthPage() {
       {/* Recent errors */}
       <Card title="Recent errors (last 24h)">
         {recentErrors.length === 0 ? (
-          <p className="text-sm text-zinc-500">No recent errors logged.</p>
+          <p className="text-sm text-muted-foreground">No recent errors logged.</p>
         ) : (
-          <div className="overflow-x-auto rounded border border-zinc-800">
+          <div className="overflow-x-auto rounded border border-border">
             <table className="w-full min-w-[720px] table-fixed text-xs sm:text-sm">
-              <thead className="bg-zinc-900 text-left text-zinc-400">
+              <thead className="bg-secondary text-left text-muted-foreground">
                 <tr>
                   <th className="w-48 px-3 py-2 font-medium">Timestamp</th>
                   <th className="w-40 px-3 py-2 font-medium">User</th>
@@ -193,27 +193,27 @@ export default async function HealthPage() {
                 {recentErrors.map((err, i) => (
                   <tr
                     key={`${err.timestamp ?? "ts"}-${i}`}
-                    className="border-t border-zinc-800 align-top"
+                    className="border-t border-border align-top"
                   >
-                    <td className="px-3 py-2 font-mono text-zinc-300">
+                    <td className="px-3 py-2 font-mono text-muted-foreground">
                       {err.timestamp ?? "—"}
                     </td>
-                    <td className="px-3 py-2 font-mono text-zinc-300">
+                    <td className="px-3 py-2 font-mono text-muted-foreground">
                       {err.user_id ? (
                         <Link
                           href={`/admin/users/${encodeURIComponent(err.user_id)}`}
-                          className="text-sky-300 hover:underline"
+                          className="text-info hover:underline"
                         >
                           {truncate(err.user_id, 16)}
                         </Link>
                       ) : (
-                        <span className="text-zinc-500">{"—"}</span>
+                        <span className="text-muted-foreground">{"—"}</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-zinc-200" title={err.message ?? ""}>
+                    <td className="px-3 py-2 text-foreground" title={err.message ?? ""}>
                       {truncate(err.message ?? "", 120)}
                     </td>
-                    <td className="px-3 py-2 font-mono text-zinc-400">
+                    <td className="px-3 py-2 font-mono text-muted-foreground">
                       {err.correlation_id ?? "—"}
                     </td>
                   </tr>

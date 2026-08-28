@@ -28,11 +28,11 @@ export function PanelMasthead({
       )}
     >
       <div className="flex items-baseline gap-2">
-        <Heading className="font-editorial-serif text-2xl leading-none text-[var(--ink)]">
+        <Heading className="font-editorial-serif text-2xl leading-none text-[var(--midnight)]">
           {title}
         </Heading>
         {overline !== title && (
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--midnight-muted)]">
             {overline}
           </p>
         )}
@@ -42,7 +42,7 @@ export function PanelMasthead({
           {meta && (
             <p
               data-testid="panel-masthead-meta"
-              className="text-xs tabular-nums font-mono text-[var(--mute)]"
+              className="text-xs tabular-nums font-mono text-[var(--midnight-muted)]"
             >
               {meta}
             </p>

@@ -116,21 +116,21 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
       href={target.href}
       onClick={handleClick}
       data-result-type={result.type}
-      className="group flex items-start gap-3 rounded-md border px-3 py-3 no-underline transition-colors hover:bg-[var(--cream-deeper)]"
-      style={{ borderColor: "var(--edge)", color: "var(--ink)" }}
+      className="group flex items-start gap-3 rounded-md border px-3 py-3 no-underline transition-colors hover:bg-[var(--cream-deep)]"
+      style={{ borderColor: "var(--edge)", color: "var(--midnight)" }}
     >
-      <span className="mt-0.5 shrink-0" style={{ color: "var(--mute)" }}>
+      <span className="mt-0.5 shrink-0" style={{ color: "var(--midnight-muted)" }}>
         {TypeIcon ? <TypeIcon size={15} /> : <Quote size={15} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           {issue?.identifier ? (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--mute)" }}>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--midnight-muted)" }}>
               {issue.identifier}
             </span>
           ) : null}
           {artifact?.issueIdentifier ? (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--mute)" }}>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--midnight-muted)" }}>
               {artifact.issueIdentifier}
             </span>
           ) : null}
@@ -146,12 +146,12 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
             <div
               key={`${snippet.field}-${i}`}
               className="mt-1.5 flex min-w-0 items-start gap-1.5 text-xs"
-              style={{ color: "var(--mute)" }}
+              style={{ color: "var(--midnight-muted)" }}
             >
               <Icon size={13} className="mt-0.5 shrink-0" />
               <span
                 className="shrink-0 rounded border px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide"
-                style={{ borderColor: "var(--edge)", color: "var(--mute)" }}
+                style={{ borderColor: "var(--edge)", color: "var(--midnight-muted)" }}
               >
                 {label}
               </span>
@@ -164,7 +164,7 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
           );
         })}
       </div>
-      <div className="ml-2 hidden shrink-0 flex-col items-end gap-1 text-xs sm:flex" style={{ color: "var(--mute)" }}>
+      <div className="ml-2 hidden shrink-0 flex-col items-end gap-1 text-xs sm:flex" style={{ color: "var(--midnight-muted)" }}>
         {assigneeName ? <span className="truncate">{assigneeName}</span> : null}
         {updated ? <span className="tabular-nums">{updated}</span> : null}
       </div>

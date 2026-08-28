@@ -23,7 +23,7 @@ export function AgentsBrowse({ items }: { items: Listing[] }) {
 
   return (
     <>
-      <section className="sticky top-[64px] z-10 border-y border-[var(--edge)] bg-[rgba(250,247,242,0.92)] backdrop-blur-xl">
+      <section className="sticky top-[64px] z-10 border-y border-[var(--edge)] bg-[var(--cream)]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-2 overflow-x-auto px-6 py-4">
           <TagPill label="All" count={items.length} active={activeTag === "all"} onClick={() => setActiveTag("all")} />
           {tags.map((tag) => (
@@ -40,7 +40,7 @@ export function AgentsBrowse({ items }: { items: Listing[] }) {
 
       <section className="mx-auto max-w-6xl px-6 py-10">
         {filtered.length === 0 ? (
-          <p className="py-20 text-center font-editorial-serif text-2xl italic text-[var(--mute)]">
+          <p className="py-20 text-center font-editorial-serif text-2xl italic text-[var(--midnight-muted)]">
             No agents fit that brief.
           </p>
         ) : (
@@ -72,8 +72,8 @@ function TagPill({
       onClick={onClick}
       className={`shrink-0 rounded-full border px-4 py-1.5 text-sm font-medium transition ${
         active
-          ? "border-[var(--forest)] bg-[var(--forest)] text-[var(--cream)]"
-          : "border-[var(--edge)] text-[var(--ink-soft)] hover:bg-[var(--forest-tint)] hover:text-[var(--forest)]"
+          ? "border-[var(--midnight)] bg-[var(--midnight)] text-[var(--cream)]"
+          : "border-[var(--edge)] text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
       }`}
     >
       <span>{label}</span>

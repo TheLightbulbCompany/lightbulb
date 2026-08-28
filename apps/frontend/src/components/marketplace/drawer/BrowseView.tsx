@@ -61,8 +61,8 @@ export function BrowseView() {
   return (
     <div>
       <div className="flex gap-2.5 mb-4 items-center flex-wrap">
-        <div className="flex-1 min-w-[220px] flex items-center gap-2.5 bg-white border border-[var(--edge)] rounded-xl px-3.5 py-2.5">
-          <Search className="w-4 h-4 text-[#5b5b5b]" />
+        <div className="flex-1 min-w-[220px] flex items-center gap-2.5 bg-cream-deep border border-[var(--edge)] rounded-xl px-3.5 py-2.5">
+          <Search className="w-4 h-4 text-muted-foreground" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -90,7 +90,7 @@ export function BrowseView() {
                 setLoading(true);
               }}
               className={`px-3 py-1.5 rounded-full text-[12.5px] ${
-                scope === s ? "bg-[var(--forest)] text-white" : "bg-transparent text-[#5b5b5b]"
+                scope === s ? "bg-[var(--midnight)] text-[var(--cream)]" : "bg-transparent text-muted-foreground"
               }`}
             >
               {s === "agents" ? "Agents" : "Companies"}
@@ -107,8 +107,8 @@ export function BrowseView() {
               onClick={() => setCategory(c)}
               className={`px-3 py-1.5 rounded-full text-[12.5px] border ${
                 category === c
-                  ? "bg-[var(--forest)] text-white border-[var(--forest)]"
-                  : "bg-transparent text-[#5b5b5b] border-[var(--edge)]"
+                  ? "bg-[var(--midnight)] text-[var(--cream)] border-[var(--midnight)]"
+                  : "bg-transparent text-muted-foreground border-[var(--edge)]"
               }`}
             >
               {c[0].toUpperCase() + c.slice(1)}
@@ -118,13 +118,13 @@ export function BrowseView() {
       )}
       <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
         {loading && items.length === 0 ? (
-          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">Loading…</p>
+          <p className="font-editorial-serif italic text-[var(--midnight-muted)] col-span-full">Loading…</p>
         ) : loadError ? (
-          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full" role="alert">
+          <p className="font-editorial-serif italic text-[var(--midnight-muted)] col-span-full" role="alert">
             Couldn&apos;t load the marketplace — check your connection and try another search.
           </p>
         ) : items.length === 0 ? (
-          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">
+          <p className="font-editorial-serif italic text-[var(--midnight-muted)] col-span-full">
             {scope === "companies" ? "No companies fit that brief." : "No agents fit that brief."}
           </p>
         ) : scope === "companies" ? (

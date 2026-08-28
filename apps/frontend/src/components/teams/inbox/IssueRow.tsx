@@ -170,7 +170,11 @@ export function IssueRow({
       onClick={handleOpen}
       className={cn(
         "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
-        selected ? "hover:bg-transparent" : "hover:bg-[var(--cream-deep)]",
+        selected
+          ? "hover:bg-transparent"
+          : checklistCurrentStep
+            ? "hover:bg-[var(--cream-deeper)]"
+            : "hover:bg-[var(--cream-deep)]",
         checklistCurrentStep
           ? "border-l-2 border-l-[var(--midnight)] bg-[var(--cream-deeper)] pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]"
           : null,
@@ -277,7 +281,7 @@ export function IssueRow({
                 )}
                 style={{
                   background: selected
-                    ? "var(--midnight-faint)"
+                    ? "var(--midnight-soft)"
                     : "var(--midnight)",
                 }}
               />

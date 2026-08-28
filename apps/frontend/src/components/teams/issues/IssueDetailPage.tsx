@@ -237,7 +237,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
+          fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
         }}
       >
@@ -268,7 +268,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
         style={{
-          fontFamily: "var(--font-lora-serif), serif",
+          fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
         }}
       >

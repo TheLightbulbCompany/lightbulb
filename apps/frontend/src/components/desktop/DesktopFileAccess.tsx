@@ -140,7 +140,7 @@ export function DesktopFileAccess() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
         {paths.length === 0 ? (
-          <p style={{ fontSize: 13, color: "var(--midnight-faint)" }}>(no folders configured)</p>
+          <p style={{ fontSize: 13, color: "var(--midnight-muted)" }}>(no folders configured)</p>
         ) : (
           paths.map((p) => (
             <div

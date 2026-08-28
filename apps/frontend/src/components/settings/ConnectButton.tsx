@@ -180,7 +180,7 @@ export function ConnectButton({
             href={connection.byo_setup_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-xs text-[var(--ok)] underline underline-offset-2"
+            className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-midnight"
           >
             Register an OAuth app →
           </Link>

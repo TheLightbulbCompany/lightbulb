@@ -187,7 +187,7 @@ export function IssueComments({
         <p
           className="text-sm italic"
           style={{
-            fontFamily: "var(--font-lora-serif), serif",
+            fontFamily: "var(--font-serif), serif",
             color: "var(--midnight-muted)",
           }}
         >
@@ -197,7 +197,7 @@ export function IssueComments({
         <p
           className="text-sm italic"
           style={{
-            fontFamily: "var(--font-lora-serif), serif",
+            fontFamily: "var(--font-serif), serif",
             color: "var(--midnight-muted)",
           }}
         >

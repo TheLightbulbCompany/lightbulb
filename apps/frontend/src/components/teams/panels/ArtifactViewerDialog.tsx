@@ -82,7 +82,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
   }
   if (state.status === "error") {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--warn)" }}>
+      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
         Could not load this attachment.
       </p>
     );
@@ -142,7 +142,7 @@ function DocumentBody({
 
   if (!key) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--warn)" }}>
+      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
         This document can’t be opened.
       </p>
     );
@@ -156,7 +156,7 @@ function DocumentBody({
   }
   if (error && !data) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--warn)" }}>
+      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
         Could not load this document.
       </p>
     );
@@ -211,7 +211,7 @@ function WorkProductBody({
   }
   if ((error && !data) || (data && !wp)) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--warn)" }}>
+      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
         Could not load this output.
       </p>
     );
@@ -296,8 +296,7 @@ export function ArtifactViewerDialog({
           <button
             type="button"
             onClick={() => onRequestDelete(artifact)}
-            className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm"
-            style={{ background: "var(--warn)", color: "var(--cream)" }}
+            className="inline-flex items-center gap-1.5 rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
           >
             <Trash2 className="h-4 w-4" />
             Delete
@@ -313,7 +312,7 @@ export function ArtifactViewerDialog({
         ) : kind === "attachment" ? (
           <AttachmentBody key={artifact.id} artifact={artifact} />
         ) : (
-          <p role="alert" className="text-sm italic" style={{ color: "var(--warn)" }}>
+          <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
             Unsupported artifact type.
           </p>
         )}

@@ -155,7 +155,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     return (
       <div
         className="flex h-full items-center justify-center p-8 text-sm italic"
-        style={{ fontFamily: "var(--font-lora-serif), serif", color: "var(--midnight-muted)" }}
+        style={{ fontFamily: "var(--font-serif), serif", color: "var(--midnight-muted)" }}
       >
         Loading…
       </div>

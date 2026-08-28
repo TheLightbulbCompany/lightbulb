@@ -127,7 +127,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
           <>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Contact support</h2>
-              <button type="button" onClick={onClose} aria-label="Close" className="text-[var(--midnight-faint)] hover:text-[var(--midnight-muted)]">
+              <button type="button" onClick={onClose} aria-label="Close" className="text-[var(--midnight-muted)] hover:text-midnight">
                 ✕
               </button>
             </div>

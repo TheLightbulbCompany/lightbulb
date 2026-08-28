@@ -699,12 +699,7 @@ function QuestionOptionButton({
       id={id}
       onClick={onClick}
     >
-      <div
-        className={cn(
-          "text-sm font-medium",
-          selected ? "text-[var(--midnight)]" : "text-[var(--midnight)]",
-        )}
-      >
+      <div className="text-sm font-medium text-[var(--midnight)]">
         {label}
       </div>
       {description ? (
@@ -999,7 +994,7 @@ function AskUserQuestionsCard({
           </div>
         </div>
       ) : interaction.status === "cancelled" ? (
-        <div className="rounded-2xl border border-err/60 bg-err/85 p-4 text-sm leading-6 text-err">
+        <div className="rounded-2xl border border-err/60 bg-err/10 p-4 text-sm leading-6 text-err">
           <div className="font-semibold">Question cancelled</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
@@ -1036,7 +1031,7 @@ function AskUserQuestionsCard({
           })}
 
           {interaction.result?.summaryMarkdown ? (
-            <div className="rounded-2xl border border-ok/60 bg-ok/85 p-4">
+            <div className="rounded-2xl border border-ok/60 bg-ok/10 p-4">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ok">
                 Submitted summary
               </div>

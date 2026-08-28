@@ -224,7 +224,7 @@ export function ArtifactsPanel() {
           <p
             role="alert"
             className="font-editorial-serif text-base italic"
-            style={{ color: "var(--warn)" }}
+            style={{ color: "var(--err)" }}
           >
             Failed to load artifacts.
           </p>
@@ -301,8 +301,7 @@ export function ArtifactsPanel() {
               type="button"
               onClick={confirmDelete}
               disabled={deleting}
-              className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
-              style={{ background: "var(--warn)", color: "var(--cream)" }}
+              className="rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground disabled:opacity-50"
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>
@@ -310,7 +309,7 @@ export function ArtifactsPanel() {
         }
       >
         {deleteError ? (
-          <p role="alert" className="text-sm" style={{ color: "var(--warn)" }}>
+          <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
             {deleteError}
           </p>
         ) : null}

@@ -104,16 +104,24 @@ logger = logging.getLogger(__name__)
 # admin@isol8.co email — safe there only because no dev user has ever
 # signed up as admin@isol8.co. Don't replicate the dev value in new
 # environments.
-# DO NOT RENAME: must stay byte-identical to the live Better Auth row and to
+# MUST stay byte-identical to the live Better Auth row and to
 # paperclip_user_delete.BOOTSTRAP_EMAILS, which refuses to delete it.
-ADMIN_EMAIL = "admin+paperclip@isol8.co"
+#
+# Moved to the platform mail domain 2026-08-28. This constant had drifted: prod's
+# live rows are already `admin+paperclip@thelightbulb.company` (verified against
+# the Paperclip DB and the prod paperclip_admin_credentials secret), so the old
+# value named a row that no longer exists. The "do not rename" note it carried
+# was written when isol8.co WAS the live row -- the rule is not "never change
+# this", it is "change it only in lockstep with the live row and the guard".
+ADMIN_EMAIL = "admin+paperclip@thelightbulb.company"
 SECRET_NAME_TEMPLATE = "isol8/{env}/paperclip_admin_credentials"
 
 
 def _public_host(env: str) -> str:
     """Public host the operator opens in their browser to complete the
     board-claim flow. Per the URL rename in #497, dev is
-    ``dev.company.isol8.co`` and prod is ``company.isol8.co``.
+    ``dev.company.{root}`` and prod is ``company.{root}`` -- where {root} is the
+    product domain, now flickmeon.ai (isol8.co is retired).
     """
     if env == "prod":
         return "company.isol8.co"

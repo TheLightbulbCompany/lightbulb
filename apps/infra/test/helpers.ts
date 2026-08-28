@@ -37,12 +37,17 @@ export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
   // cannot. Domains are deduped because these constants overlap during the move.
   ...Object.fromEntries(
     [
-      ...new Set([
-        ROOT_DOMAIN,
-        PLATFORM_MAIL_DOMAIN,
-        LEGACY_ROOT_DOMAIN,
-        LEGACY_MAIL_DOMAIN,
-      ]),
+      // Both LEGACY_* constants are "" now that those domains are retired;
+      // an empty entry would synthesize a `domainName=` context key that
+      // matches no lookup.
+      ...new Set(
+        [
+          ROOT_DOMAIN,
+          PLATFORM_MAIL_DOMAIN,
+          LEGACY_ROOT_DOMAIN,
+          LEGACY_MAIL_DOMAIN,
+        ].filter(Boolean),
+      ),
     ].map((domain) => [
       `hosted-zone:account=877352799272:domainName=${domain}:region=us-east-1`,
       {

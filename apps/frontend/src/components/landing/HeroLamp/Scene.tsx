@@ -62,10 +62,19 @@ const GLASS_DROP = LAMP_ANCHOR_Y - GLASS_CENTER_Y; // 1.5 — anchor to glass ce
 // the pendulum's damping is 0.986 per FRAME, so the tail is logarithmic in
 // the peak and a big swing is expensive on a demand loop.
 const SWING_FROM_DRIFT = 0.002;
-// Below this the swing moves the glass under half a pixel, so the loop stops
-// asking for frames even though `pendulum.settled()` (floor 0.0004 rad, i.e.
-// 0.02°) is still false. Both the angle AND its per-frame change have to be
-// under it — at the top of a swing the angle passes through zero at full speed.
+// The demand loop gives up on the swing here, well before `pendulum.settled()`
+// (floor 0.0004 rad ≈ 0.02°, ~400 more frames of GPU for motion nobody sees).
+// Both the angle AND its per-frame change must be under it, because at a zero
+// crossing the angle is ~0 while the speed is at its peak — so in practice the
+// loop stops at a crossing, and with ω = √0.014 ≈ 0.118 rad/frame that is the
+// first crossing whose amplitude is ≤ 0.002/0.118 ≈ 0.017 rad: about 3.5px of
+// remaining glass travel, not a sub-pixel wobble. What parks is under half a
+// pixel (|angle| ≤ 0.002 → 0.4px off plumb); what is abandoned is the 3.5px
+// swing it would still have made.
+//
+// The pendulum is FROZEN, not damped to rest: its angle and velocity keep
+// whatever values they had, `settled()` stays false, and the next frame anyone
+// asks for (a strike, a scroll, a pointer move) resumes the swing mid-flight.
 const SWING_INVISIBLE = 0.002;
 // Don't rewrite the switch's transform for sub-pixel jitter.
 const SWITCH_EPSILON = 0.5;
@@ -249,10 +258,14 @@ function Driver({
     };
     // A finger that lifts is a pointer that left; a mouse button that lifts is
     // not, and snapping the lamp home on every click would be a twitch.
+    // `pointercancel` matters more than `pointerup` here: a swipe to scroll
+    // sends pointermoves that pull the lamp to the finger and then CANCELS —
+    // there is no pointerup — so without this the anchor stays parked at the
+    // swipe. Scrolling does not rest it, and coming back on screen just
+    // re-aims at the stale target.
     const onUp = (e: PointerEvent) => {
       if (e.pointerType === "touch") rest();
     };
-    const onLeave = rest;
     const onResize = () => {
       remeasure();
       invalidate();
@@ -260,16 +273,18 @@ function Driver({
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pointermove", onMove, { passive: true });
     window.addEventListener("pointerup", onUp, { passive: true });
-    window.addEventListener("pointerleave", onLeave, { passive: true });
-    // The pointer leaving the viewport fires on the document, not the window.
-    document.addEventListener("mouseleave", onLeave, { passive: true });
+    window.addEventListener("pointercancel", onUp, { passive: true });
+    // The pointer leaving the viewport fires on the document, not the window:
+    // `pointerleave` does not bubble and window is not in the leave chain, so
+    // a window-level listener for it would never run.
+    document.addEventListener("mouseleave", rest, { passive: true });
     window.addEventListener("resize", onResize, { passive: true });
     return () => {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointerleave", onLeave);
-      document.removeEventListener("mouseleave", onLeave);
+      window.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("mouseleave", rest);
       window.removeEventListener("resize", onResize);
     };
   }, [pendulum, invalidate, visible, canvas]);

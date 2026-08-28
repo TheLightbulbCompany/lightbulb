@@ -8,7 +8,7 @@ import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
-import { Lamp, easeStrike, type LampColors } from "./Lamp";
+import { GLASS_CENTER_Y, LAMP_ANCHOR_Y, Lamp, easeStrike, type LampColors } from "./Lamp";
 import { Desk } from "./Desk";
 import { Laptop } from "./Laptop";
 
@@ -22,13 +22,55 @@ const CAMERA_FOV = 40;
 // the strike's clock rather than stepped at the theme flip.
 const ENV_DARK = 0.35;
 const ENV_LIT = 1;
-// Cursor: the lamp leans toward it (±LEAN_MAX radians, ≈±4°, across the
-// viewport width) and crossing its column pushes it.
-const LEAN_MAX = 0.14;
-const LEAN_RATE = 8; // per second — the lean closes ~1/e of the gap every 125ms
-const LEAN_SETTLE = 0.0005;
-const COLUMN_HALF_W = 180;
-const POINTER_IMPULSE = 0.0002;
+// ── The lamp follows the cursor ────────────────────────────────────────────
+// The anchor springs toward a target derived from the pointer's position over
+// the hero, and the lamp hangs from it. K and DAMP are the tuned per-60Hz-frame
+// values (`v += d·0.012; v *= 0.86`) rewritten against real time, because a
+// demand loop's frame gaps are irregular — an idle burst must land in the same
+// place a smooth 60Hz run would.
+const SPRING_K = 0.012 * 60; // per second
+const SPRING_DAMP = 0.86; // per 60Hz frame
+const MAX_DT = 0.05; // s — a backgrounded tab must not teleport the lamp
+const VEL_SETTLE = 0.0004; // world units per 60Hz frame
+const POS_SETTLE = 0.002; // world units
+// Visible half-height at z = 0: CAMERA_Z · tan(fov/2). Half-width is this
+// times the canvas aspect.
+const HALF_HEIGHT = CAMERA_Z * Math.tan((CAMERA_FOV / 2) * (Math.PI / 180)); // 2.91
+// How close to the side the lamp may get, in world units.
+const EDGE_MARGIN = 0.6;
+// Pointer y is mapped over the hero's top 70%; below that the lamp is already
+// as low as it goes.
+const POINTER_Y_SPAN = 0.7;
+// Floor for the glass centre: its bottom (0.2 − 0.55) then clears the open
+// laptop lid's top (world y ≈ −0.5).
+const GLASS_FLOOR_Y = 0.2;
+const GLASS_DROP = LAMP_ANCHOR_Y - GLASS_CENTER_Y; // 1.5 — anchor to glass centre
+// A dragged pendant trails. The impulse is the anchor's own x velocity, so it
+// fires only while the lamp is actually moving and dies with it. This REPLACES
+// the old column-crossing impulse, which pushed the pendulum whenever the
+// pointer passed within 180px of the hero's centre — a stand-in for "the
+// pointer is over the lamp" that stopped being true the moment the lamp
+// started following the cursor. It also saturated IMPULSE_CLAMP on any brisk
+// move: measured, a 12-step sweep across the centre left the demand loop
+// running for 19.5s, against 2.0s for the same sweep off the column.
+//
+// Tuned by render, NOT derived: a fast drag runs the anchor at ~0.24 world
+// units per 60Hz frame, and the pendulum's restoring force balances a
+// sustained drive F at sin(θ) = F / 0.014 — so this lands a hard sweep near
+// 0.03 rad (≈6px of glass travel), a trail rather than a swing. The brief's
+// 0.9 saturated the clamp for the whole transit and rang for eight seconds:
+// the pendulum's damping is 0.986 per FRAME, so the tail is logarithmic in
+// the peak and a big swing is expensive on a demand loop.
+const SWING_FROM_DRIFT = 0.002;
+// Below this the swing moves the glass under half a pixel, so the loop stops
+// asking for frames even though `pendulum.settled()` (floor 0.0004 rad, i.e.
+// 0.02°) is still false. Both the angle AND its per-frame change have to be
+// under it — at the top of a swing the angle passes through zero at full speed.
+const SWING_INVISIBLE = 0.002;
+// Don't rewrite the switch's transform for sub-pixel jitter.
+const SWITCH_EPSILON = 0.5;
+
+const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
 type Quality = 2 | 1 | 0; // 2 = full, 1 = no bloom, 0 = no bloom + no shadows
 
@@ -97,23 +139,42 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
  *  to `litRef` lands in the same frame they read it. */
 function Driver({
   litRef,
-  leanRef,
+  anchorRef,
   appearRef,
   pendulum,
   visible,
+  switchRef,
 }: {
   litRef: React.MutableRefObject<number>;
-  leanRef: React.MutableRefObject<number>;
+  anchorRef: React.MutableRefObject<{ x: number; y: number }>;
   appearRef: React.MutableRefObject<number>;
   pendulum: ReturnType<typeof createPendulum>;
   visible: boolean;
+  switchRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
   const theme = useLampTheme();
   const invalidate = useThree((s) => s.invalidate);
   const canvas = useThree((s) => s.gl.domElement);
   const target = theme === "light" ? 1 : 0;
   const startRef = React.useRef<{ from: number; at: number } | null>(null);
-  const leanTarget = React.useRef(0);
+  // Where the anchor is heading, and how fast it is going. Written by the
+  // pointer listeners, integrated in useFrame — never read during render.
+  const anchorTarget = React.useRef({ x: 0, y: LAMP_ANCHOR_Y });
+  const anchorVel = React.useRef({ x: 0, y: 0 });
+  const lastStep = React.useRef(0);
+  // Scratch for the switch projection; allocated once, mutated per frame.
+  const proj = React.useRef(new THREE.Vector3());
+  const lastSwitchPx = React.useRef({ x: NaN, y: NaN });
+  // The button, held in a ref of our own. Writing `switchRef.current.style`
+  // directly is a mutation THROUGH a prop, which the React Compiler rejects
+  // (unlike `litRef.current = …`, which is a ref write it understands).
+  const switchEl = React.useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => {
+    switchEl.current = switchRef?.current ?? null;
+    // The button exists only after commit, which can be a frame later than the
+    // first render — ask for one so its transform is written straight away.
+    invalidate();
+  }, [switchRef, invalidate]);
   // Stamped on the first rendered frame, not at mount: under frameloop
   // "never" (hero off-screen) the tween would otherwise run out unseen.
   const appearStart = React.useRef<number | null>(null);
@@ -126,13 +187,15 @@ function Driver({
     invalidate();
   }, [target, invalidate, litRef]);
 
-  // Scroll + pointer nudge the pendulum; both request frames. Resize only
-  // asks for a repaint: fiber's size/dpr subscription calls setPixelRatio +
-  // setSize, which clears the drawing buffer and does NOT invalidate, so the
-  // hero goes blank until something else asks for a frame.
-  // All three are unsubscribed while the hero is off-screen: `invalidate` is
+  // Scroll nudges the pendulum; the pointer aims the anchor (the swing then
+  // follows from the anchor's velocity, in useFrame). Both request frames.
+  // Resize only asks for a repaint: fiber's size/dpr subscription calls
+  // setPixelRatio + setSize, which clears the drawing buffer and does NOT
+  // invalidate, so the hero goes blank until something else asks for a frame.
+  // All of them are unsubscribed while the hero is off-screen: `invalidate` is
   // inert under frameloop="never", so impulses taken then would only pile up
-  // unswung velocity to unleash on the way back.
+  // unswung velocity to unleash on the way back — and an aim taken then would
+  // snap the lamp across the frame on the way back in.
   React.useEffect(() => {
     if (!visible) return;
     // Coming back on-screen: nothing in the scene graph changed, so no commit
@@ -140,75 +203,165 @@ function Driver({
     // left a tween queued that would otherwise never be drawn.
     invalidate();
     let lastY = window.scrollY;
-    let lastX: number | null = null;
+    // The hero's rect, cached. Reading it per pointermove forced a layout
+    // flush on every mouse event; only scrolling and resizing can move it.
+    let rect = canvas.getBoundingClientRect();
+    const remeasure = () => {
+      rect = canvas.getBoundingClientRect();
+    };
+
+    // A frame is only worth asking for when the lamp is actually being sent
+    // somewhere new — a pointermove that leaves the target where it already
+    // was is a mouse twitch, not motion.
+    const aim = (x: number, y: number) => {
+      const t = anchorTarget.current;
+      if (t.x === x && t.y === y) return;
+      t.x = x;
+      t.y = y;
+      invalidate();
+    };
+    const rest = () => aim(0, LAMP_ANCHOR_Y);
+
     const onScroll = () => {
       const d = window.scrollY - lastY;
       lastY = window.scrollY;
+      remeasure();
       pendulum.impulse(d * SCROLL_IMPULSE);
       invalidate();
     };
     const onMove = (e: PointerEvent) => {
-      const w = window.innerWidth;
-      const cx = w / 2;
-      // Lean follows the cursor anywhere; the lights swing with the group,
-      // so the pool on the wall follows it too.
-      leanTarget.current = Math.max(-0.5, Math.min(0.5, (e.clientX - cx) / w)) * LEAN_MAX;
-      // Push only when crossing the lamp's column over the canvas, by the
-      // pointer's x velocity — a slow drag across builds a swing the same way.
-      const r = canvas.getBoundingClientRect();
-      const over = e.clientY >= r.top && e.clientY <= r.bottom && Math.abs(e.clientX - cx) < COLUMN_HALF_W;
-      if (over && lastX !== null) pendulum.impulse((e.clientX - lastX) * POINTER_IMPULSE);
-      lastX = e.clientX;
+      if (rect.width === 0 || rect.height === 0) return;
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      // Off the hero entirely — including a touch drag that wanders out of it.
+      if (fx < 0 || fx > 1 || fy < 0 || fy > 1) {
+        rest();
+        return;
+      }
+      // x: the pointer's share of the width, mapped across the visible world
+      // and held EDGE_MARGIN in from the sides.
+      const halfWidth = HALF_HEIGHT * (rect.width / rect.height);
+      const x = clamp(fx - 0.5, -0.5, 0.5) * 2 * (halfWidth - EDGE_MARGIN);
+      // y: the anchor drops by exactly what the glass should drop, so the
+      // glass centre runs GLASS_CENTER_Y → GLASS_FLOOR_Y over the top 70%.
+      const y = LAMP_ANCHOR_Y - (clamp(fy, 0, POINTER_Y_SPAN) / POINTER_Y_SPAN) * (GLASS_CENTER_Y - GLASS_FLOOR_Y);
+      aim(x, y);
+    };
+    // A finger that lifts is a pointer that left; a mouse button that lifts is
+    // not, and snapping the lamp home on every click would be a twitch.
+    const onUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") rest();
+    };
+    const onLeave = rest;
+    const onResize = () => {
+      remeasure();
       invalidate();
     };
-    const onResize = () => invalidate();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pointermove", onMove, { passive: true });
+    window.addEventListener("pointerup", onUp, { passive: true });
+    window.addEventListener("pointerleave", onLeave, { passive: true });
+    // The pointer leaving the viewport fires on the document, not the window.
+    document.addEventListener("mouseleave", onLeave, { passive: true });
     window.addEventListener("resize", onResize, { passive: true });
     return () => {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointerleave", onLeave);
+      document.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("resize", onResize);
     };
   }, [pendulum, invalidate, visible, canvas]);
 
-  useFrame((state, delta) => {
+  useFrame((state) => {
     let busy = false;
-    if (appearStart.current === null) appearStart.current = performance.now();
+    const now = performance.now();
+    if (appearStart.current === null) appearStart.current = now;
     if (appearRef.current < 1) {
-      appearRef.current = Math.min(1, (performance.now() - appearStart.current) / APPEAR_MS);
+      appearRef.current = Math.min(1, (now - appearStart.current) / APPEAR_MS);
       busy = true;
     }
     const s = startRef.current;
     if (s) {
-      const t = Math.min(1, (performance.now() - s.at) / STRIKE_MS);
+      const t = Math.min(1, (now - s.at) / STRIKE_MS);
       litRef.current = s.from + (target - s.from) * t;
       if (t < 1) busy = true;
       else startRef.current = null;
     }
     state.scene.environmentIntensity = ENV_DARK + (ENV_LIT - ENV_DARK) * easeStrike(litRef.current);
-    pendulum.step();
-    if (!pendulum.settled()) busy = true;
-    const d = leanTarget.current - leanRef.current;
-    if (Math.abs(d) > LEAN_SETTLE) {
-      // Time-based, so the ease is the same at any frame rate (and a long
-      // idle gap on the demand loop simply lands it).
-      leanRef.current += d * (1 - Math.exp(-LEAN_RATE * delta));
+
+    // ── the anchor springs toward the cursor ──
+    // `delta` is fiber's, which a demand loop stretches across idle gaps just
+    // as badly; performance.now() is the same clock the tweens above use.
+    const dt = lastStep.current ? Math.min(MAX_DT, (now - lastStep.current) / 1000) : 1 / 60;
+    lastStep.current = now;
+    const frames = dt * 60; // how many 60Hz frames' worth of motion this is
+    const damp = Math.pow(SPRING_DAMP, frames);
+    const a = anchorRef.current;
+    const t = anchorTarget.current;
+    const v = anchorVel.current;
+    v.x = (v.x + (t.x - a.x) * SPRING_K * dt) * damp;
+    v.y = (v.y + (t.y - a.y) * SPRING_K * dt) * damp;
+    a.x += v.x * frames;
+    a.y += v.y * frames;
+    if (
+      Math.abs(v.x) > VEL_SETTLE || Math.abs(v.y) > VEL_SETTLE ||
+      Math.abs(t.x - a.x) > POS_SETTLE || Math.abs(t.y - a.y) > POS_SETTLE
+    ) {
       busy = true;
     } else {
-      leanRef.current = leanTarget.current;
+      // Land it exactly, so the demand loop can actually stop.
+      a.x = t.x;
+      a.y = t.y;
+      v.x = 0;
+      v.y = 0;
     }
+    // The lamp trails the hand that drags it. Scaled by `frames` so a 120Hz
+    // display drives it the same amount per second. Clamped inside `impulse`.
+    pendulum.impulse(-v.x * SWING_FROM_DRIFT * frames);
+    const wasAt = pendulum.angle;
+    pendulum.step();
+    if (
+      !pendulum.settled() &&
+      (Math.abs(pendulum.angle) > SWING_INVISIBLE || Math.abs(pendulum.angle - wasAt) > SWING_INVISIBLE)
+    ) {
+      busy = true;
+    }
+
+    // ── the switch follows the glass ──
+    // Projected from where the glass actually IS, swing included: rotating
+    // (0, −GLASS_DROP) about the anchor by the pendulum's angle. Cheaper than
+    // reading the mesh's world matrix, and correct mid-swing, where an
+    // anchor-only projection would leave the focus ring 40-odd px off the bulb.
+    const sw = switchEl.current;
+    if (sw) {
+      const sin = Math.sin(pendulum.angle);
+      const cos = Math.cos(pendulum.angle);
+      const p = proj.current.set(a.x + GLASS_DROP * sin, a.y - GLASS_DROP * cos, 0).project(state.camera);
+      const px = ((p.x + 1) / 2) * state.size.width;
+      const py = ((1 - p.y) / 2) * state.size.height;
+      const last = lastSwitchPx.current;
+      // Negated so the NaN of the first frame always writes.
+      if (!(Math.abs(px - last.x) < SWITCH_EPSILON && Math.abs(py - last.y) < SWITCH_EPSILON)) {
+        last.x = px;
+        last.y = py;
+        sw.style.transform = `translate(${px.toFixed(1)}px, ${py.toFixed(1)}px)`;
+      }
+    }
+
     if (busy) invalidate();
   });
   return null;
 }
 
-export default function Scene() {
+export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLButtonElement | null> }) {
   const lit = useLampTheme() === "light";
   // Seeded, not tweened, on the first render: a returning visitor whose stored
   // theme is already "light" should not watch the strike replay on every load.
   const litRef = React.useRef(lit ? 1 : 0);
-  const leanRef = React.useRef(0);
+  // Where the lamp hangs from. Rest is dead centre at the top of the frame.
+  const anchorRef = React.useRef({ x: 0, y: LAMP_ANCHOR_Y });
   const appearRef = React.useRef(0);
   const pendulum = React.useMemo(() => createPendulum(), []);
   const [colors] = React.useState(readColors);
@@ -266,7 +419,14 @@ export default function Scene() {
           }}
           flipflops={2}
         />
-        <Driver litRef={litRef} leanRef={leanRef} appearRef={appearRef} pendulum={pendulum} visible={visible} />
+        <Driver
+          litRef={litRef}
+          anchorRef={anchorRef}
+          appearRef={appearRef}
+          pendulum={pendulum}
+          visible={visible}
+          switchRef={switchRef}
+        />
         <ambientLight color={colors.cream} intensity={0.012} />
         {/* Studio reflections, built in code — no CDN HDRI. Intensity is
             written per frame by Driver (ENV_DARK → ENV_LIT on the strike). */}
@@ -285,7 +445,7 @@ export default function Scene() {
         </React.Suspense>
         <Lamp
           litRef={litRef}
-          leanRef={leanRef}
+          anchorRef={anchorRef}
           pendulum={pendulum}
           colors={colors}
           shadows={quality > 0}

@@ -31,9 +31,11 @@ export interface LampProps {
   colors: LampColors;
   shadows: boolean;
   shadowMapSize: number;
-  /** Extra tilt (radians) summed with the swing — the scene leans the lamp
-   *  toward the cursor. Same reason it is a ref as `litRef`. */
-  leanRef?: React.MutableRefObject<number>;
+  /** Where the lamp hangs from, in world units — sprung toward the cursor by
+   *  the scene. The group sits ON it (so the pendulum still pivots about the
+   *  anchor) and the cord stretches from the collar up to the ceiling to
+   *  cover the gap. A ref for the same reason as `litRef`. */
+  anchorRef: React.MutableRefObject<{ x: number; y: number }>;
 }
 
 export const LAMP_ANCHOR_Y = 3.2;
@@ -50,7 +52,13 @@ const COLLAR_H = COLLAR_RINGS.reduce((s, r) => s + r[1], 0); // 0.14
 const GLASS_NECK_Y = GLASS_CENTER_Y + GLASS_HEIGHT / 2; // 2.25 — lathe y=0
 const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS.at(-1)![1]; // 2.19
 const COLLAR_TOP_Y = COLLAR_BOTTOM_Y + COLLAR_H; // 2.33
-const CORD_LEN = LAMP_ANCHOR_Y - COLLAR_TOP_Y; // 0.87
+/** Collar top in group space — a fixed offset below the anchor, so the lamp
+ *  body is rigid and only the cord above it changes length. */
+const COLLAR_TOP_REL = COLLAR_TOP_Y - LAMP_ANCHOR_Y; // -0.87
+/** Where the cord disappears. The visible top of the frame is y ≈ 3.3 (half
+ *  height 2.91 + the camera's 0.4), so 4.6 is off-screen at every anchor the
+ *  cursor can reach — the cord never shows an end. */
+const CEILING_Y = 4.6;
 const FIL_LEN = 0.55;
 // Blade radii, top (where the three meet) → base. The glass is a lens: with
 // ior 1.5 it magnifies the filament ~1.5×, so these are thinner than they
@@ -86,8 +94,9 @@ const HALO_SCALE = 1.1;
 
 export const easeStrike = (t: number) => 1 - Math.pow(1 - t, 3); // fast attack, slow settle
 
-export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef }: LampProps) {
+export function Lamp({ litRef, anchorRef, pendulum, colors, shadows, shadowMapSize }: LampProps) {
   const group = React.useRef<THREE.Group>(null);
+  const cord = React.useRef<THREE.Mesh>(null);
   const spot = React.useRef<THREE.SpotLight>(null);
   const point = React.useRef<THREE.PointLight>(null);
   const spotTarget = React.useRef<THREE.Object3D>(new THREE.Object3D());
@@ -160,7 +169,20 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    g.rotation.z = pendulum.angle + (leanRef?.current ?? 0);
+    const a = anchorRef.current;
+    g.position.set(a.x, a.y, 0);
+    g.rotation.z = pendulum.angle;
+    if (cord.current) {
+      // The cord runs from the collar's top up to the ceiling. The collar sits
+      // at COLLAR_TOP_REL in group space, i.e. world y = a.y + COLLAR_TOP_REL,
+      // so the gap to the ceiling is CEILING_Y − (a.y + COLLAR_TOP_REL). The
+      // geometry is one unit long, so that gap IS the y scale; the centre sits
+      // half a length above the collar. Pull the lamp down and the cord pays
+      // out by exactly as much.
+      const len = CEILING_Y - (a.y + COLLAR_TOP_REL);
+      cord.current.scale.y = len;
+      cord.current.position.y = COLLAR_TOP_REL + len / 2;
+    }
     const k = easeStrike(litRef.current);
     if (spot.current) spot.current.intensity = SPOT_INTENSITY * k;
     if (point.current) point.current.intensity = POINT_INTENSITY * k;
@@ -175,10 +197,13 @@ export function Lamp({ litRef, pendulum, colors, shadows, shadowMapSize, leanRef
   });
 
   return (
+    // position is written every frame from `anchorRef`; this is the rest pose
+    // React renders before the first useFrame lands.
     <group ref={group} position={[0, LAMP_ANCHOR_Y, 0]}>
-      {/* cord — from the pivot down to the collar */}
-      <mesh position={[0, -CORD_LEN / 2, 0]} castShadow={shadows}>
-        <cylinderGeometry args={[0.012, 0.012, CORD_LEN, 8]} />
+      {/* cord — collar up through the ceiling. Unit-length geometry scaled in
+          useFrame, so paying it out costs no new geometry. */}
+      <mesh ref={cord} castShadow={shadows}>
+        <cylinderGeometry args={[0.012, 0.012, 1, 8]} />
         <meshStandardMaterial color={midnight} roughness={0.9} />
       </mesh>
 

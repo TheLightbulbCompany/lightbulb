@@ -2623,16 +2623,26 @@
 .ld-hero-canvas canvas { display: block; width: 100% !important; height: 100% !important; }
 
 /* The accessible switch over the glass. Transparent, but real: keyboard focus
-   draws the ring where the bulb is. Vertical position tracks the lamp's
-   world position (glass centre ≈ 21% down the section at fov 40). */
+   draws the ring where the bulb is. The lamp follows the cursor, so the scene
+   writes `transform: translate(px, py)` here every frame it moves — the glass
+   centre projected into canvas pixels. Origin at 0,0 with half-size negative
+   margins so that point is the button's centre; the translate below is only
+   the guess that holds until the first frame lands.
+
+   z-index 0, under .ld-funnel-in's 1: the button rides the cursor now, so at
+   2 this 84×140 transparent rectangle would sit over the headline and the
+   idea input and swallow their clicks. Below the copy it is still above the
+   canvas (which takes no pointer events at all), so clicking the lamp over
+   bare room still strikes it, and keyboard focus is untouched either way. */
 .ld-lamp-switch {
   position: absolute;
-  left: 50%;
-  top: calc(21% - 70px);
+  left: 0;
+  top: 0;
   width: 84px;
   height: 140px;
-  margin-left: -42px;
-  z-index: 2;
+  margin: -70px 0 0 -42px;
+  transform: translate(50vw, 160px);
+  z-index: 0;
   background: transparent;
   border: 0;
   border-radius: 42px;

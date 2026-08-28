@@ -56,6 +56,10 @@ In `apps/backend/core/config.py`, directly after `STRIPE_CONNECT_RETURN_URL: str
     STRIPE_CONNECT_CLIENT_ID: str = ""
 ```
 
+- [ ] **Step 1b: Pin the SDK**
+
+In `apps/backend/pyproject.toml` change `"stripe>=8.0.0"` to `"stripe>=14.4.1"` (the installed version; first to ship `StripeClient.v2.core.accounts` + `account_links`), then run `cd apps/backend && uv lock && uv sync` and confirm with `uv run python -c "from stripe import StripeClient; print(StripeClient('sk_test_x').v2.core.accounts)"`.
+
 - [ ] **Step 2: Add the CDK env vars**
 
 In `apps/infra/lib/stacks/service-stack.ts`, directly after the `STRIPE_CONNECT_RETURN_URL` entry (line 1559) add:
@@ -1820,7 +1824,7 @@ git push -u origin HEAD
 gh pr create --title "feat(company-stripe): the company's Stripe account on our Connect platform (P0a)" --body "$(cat <<'EOF'
 Implements P0a of docs/superpowers/specs/2026-08-28-owner-data-plane-design.md (§3.1, §3.6, §4.5).
 
-- Standard-style connected account per company: create (controller properties, zero Connect fees) or connect existing (Standard OAuth); Friday-raised `connect_stripe` approval card; status mirrored from Connect webhooks; deauthorize on disconnect and on wipe (never delete).
+- Accounts v2 connected account per company (merchant configuration, full dashboard, Stripe collects fees and losses — zero Connect fees): create + hosted onboarding, or connect existing (Standard OAuth); Friday-raised `connect_stripe` approval card; status mirrored from Connect webhooks; deauthorize on disconnect and on wipe (never delete). `stripe` pinned `>=14.4.1` for `StripeClient.v2.core`.
 - New: `core/services/company_stripe.py`, `company_stripe_approval.py`, `routers/company_stripe.py`; billing-accounts GSI `company-stripe-account-index`; Settings → Connections section; approval-row action; skill section.
 
 Owner actions: register the OAuth redirect URI and `account.application.deauthorized` on the dev/prod Connect webhook; brand Connect Onboarding.

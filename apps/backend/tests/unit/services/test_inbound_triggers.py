@@ -2596,3 +2596,59 @@ async def test_append_platform_block_does_not_stack_its_own_block():
 
     assert second.count(_PLATFORM_BLOCK_START) == 1
     assert second == first
+
+
+def test_strip_platform_blocks_scans_past_an_orphan_end_delimiter():
+    """An orphaned END is content, not a stop sign. Ending the scan there
+    leaves a real block behind it in place — the duplication this exists to
+    prevent."""
+    from core.services.inbound_triggers import (
+        _PLATFORM_BLOCK_END,
+        _PLATFORM_BLOCK_START,
+        _strip_platform_blocks,
+    )
+
+    desc = (
+        f"{_PLATFORM_BLOCK_END}\nowner deleted the start marker\n\n"
+        "Owner's second paragraph, load-bearing.\n\n"
+        f"{_PLATFORM_BLOCK_START}\nplatform clause\n{_PLATFORM_BLOCK_END}"
+    )
+    stripped = _strip_platform_blocks(desc)
+
+    assert "Owner's second paragraph, load-bearing." in stripped
+    assert "owner deleted the start marker" in stripped
+    # The orphan end survives; the complete block after it does not.
+    assert stripped.count(_PLATFORM_BLOCK_END) == 1
+    assert _PLATFORM_BLOCK_START not in stripped
+    assert "platform clause" not in stripped
+
+
+@pytest.mark.asyncio
+async def test_append_after_an_orphan_end_leaves_one_complete_block():
+    from core.services.inbound_triggers import (
+        _PLATFORM_BLOCK_END,
+        _PLATFORM_BLOCK_START,
+        _append_platform_block,
+    )
+
+    admin = MagicMock()
+    admin.get_routine = AsyncMock(
+        return_value={
+            "description": (
+                f"{_PLATFORM_BLOCK_END}\nowner deleted the start marker\n\n"
+                "Owner's second paragraph, load-bearing.\n\n"
+                f"{_PLATFORM_BLOCK_START}\nstale clause\n{_PLATFORM_BLOCK_END}"
+            )
+        }
+    )
+    admin.patch_routine = AsyncMock()
+
+    await _append_platform_block(admin, cookie="c", routine_id="rt_1", block="Fresh clause.")
+
+    written = admin.patch_routine.await_args.kwargs["body"]["description"]
+    assert "Owner's second paragraph, load-bearing." in written
+    assert "stale clause" not in written
+    assert "Fresh clause." in written
+    assert written.count(_PLATFORM_BLOCK_START) == 1
+    # One appended block + the surviving orphan end.
+    assert written.count(_PLATFORM_BLOCK_END) == 2

@@ -1059,15 +1059,18 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes the full template
         return False
-    # Line-anchored, and FIRST: `## You are made of Lightbulb` is a strict
-    # PREFIX of the "Lightbulb AI" heading, so a substring test here reads an
-    # unmigrated file as already-current. Whole-line matching closes that
-    # structurally, and it also means a current SOUL.md that merely QUOTES a
-    # retired heading in Friday's own prose is left alone. ``splitlines`` so a
-    # file ending on the heading with no trailing newline still matches.
-    if any(line.strip() == _SELF_GROUNDING_HEADING for line in content.splitlines()):
+    # Both checks are WHOLE-LINE, and the current one runs FIRST.
+    # `## You are made of Lightbulb` is a strict PREFIX of the "Lightbulb AI"
+    # heading, so a substring test would read an unmigrated file as
+    # already-current; line matching closes that structurally. It also means a
+    # SOUL.md that merely QUOTES either heading inline in Friday's own prose is
+    # left alone — an owner sentence about the rename is not a section header.
+    # ``splitlines`` so a file ending on the heading with no trailing newline
+    # still matches.
+    heading_lines = [line.strip() for line in content.splitlines()]
+    if _SELF_GROUNDING_HEADING in heading_lines:
         return False
-    if any(heading in content for heading in _LEGACY_SELF_GROUNDING_HEADINGS):
+    if any(heading in heading_lines for heading in _LEGACY_SELF_GROUNDING_HEADINGS):
         for legacy_section in _LEGACY_SELF_GROUNDING_SECTIONS:
             if legacy_section in content:
                 new_content = content.replace(legacy_section, _SELF_GROUNDING_SECTION, 1)

@@ -829,13 +829,19 @@ def _strip_platform_blocks(description: str) -> str:
     start, not the first start and any end after it. Anchoring the other way
     round eats everything between an orphaned start and a later complete
     block — which is exactly the owner prose the stacking bug leaves stranded.
+
+    An orphaned END is skipped rather than ending the scan: it is content now,
+    and a real block can still follow it.
     """
     for start, end in _PLATFORM_BLOCK_DELIMITERS:
-        while (close_at := description.find(end)) >= 0:
+        search_from = 0
+        while (close_at := description.find(end, search_from)) >= 0:
             open_at = description.rfind(start, 0, close_at)
             if open_at < 0:
-                break
+                search_from = close_at + len(end)
+                continue
             description = description[:open_at] + description[close_at + len(end) :]
+            search_from = open_at
     return description
 
 

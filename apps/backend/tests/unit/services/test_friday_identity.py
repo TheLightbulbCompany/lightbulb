@@ -1561,3 +1561,22 @@ def test_stale_brand_fragments_repoint_the_org_workspace_header():
         assert "This is **Acme**'s shared workspace on Lightbulb. The original owner is" in migrated
         assert "ada@acme.co" in migrated
         assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is False
+
+
+def test_inline_quote_of_a_retired_heading_is_not_a_grounding_section():
+    """A SOUL.md with NO grounding section that merely mentions a retired
+    heading mid-sentence must be appended to, not "rebranded in place" — the
+    legacy check is whole-line for the same reason the current one is."""
+    rel = f"workspace-{_UUID}/SOUL.md"
+    ws = _DictWorkspace({rel: "# SOUL\n\nThe old docs said ## You are made of Lightbulb AI — that name is gone.\n"})
+
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is True
+    migrated = ws.files[rel]
+
+    # The owner's sentence is untouched: the quote is still the retired wording.
+    assert "The old docs said ## You are made of Lightbulb AI — that name is gone." in migrated
+    # And a real section was APPENDED rather than the quote being rewritten.
+    assert migrated.rstrip().endswith(friday_identity._SELF_GROUNDING_SECTION.rstrip())
+    assert sum(line.strip() == friday_identity._SELF_GROUNDING_HEADING for line in migrated.splitlines()) == 1
+
+    assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False

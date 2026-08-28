@@ -209,6 +209,10 @@ mine to evolve, but they're yours to direct.
 
 _SELF_GROUNDING_HEADING = "## You are made of Lightbulb AI"
 
+# The bundled platform skill shipped as `isol8` and is now `lightbulb`.
+_RETIRED_SKILL_INVOCATION = "skill isol8"
+_SKILL_INVOCATION = "skill lightbulb"
+
 # Pre-rebrand heading. EVERY already-provisioned Friday's SOUL.md carries it,
 # so the heal migration below must match BOTH: guarding on the new heading
 # alone would append a second grounding section under the old one, on every
@@ -1102,6 +1106,34 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
     }
 
 
+def _migrate_retired_skill_id(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Repoint seeded files at the RENAMED bundled platform skill.
+
+    SOUL.md and AGENTS.md are both seeded write-if-missing, and
+    ``_migrate_add_soul_grounding`` returns early once the current heading is
+    present. So a Friday that took its heading-only rebrand swap keeps the
+    retired `skill isol8` in its body with no path that ever rewrites it, and
+    invokes a skill id the image no longer carries.
+
+    Registered LAST on purpose: the grounding migration matches
+    ``_LEGACY_SELF_GROUNDING_SECTION`` byte-exactly and that literal contains
+    the old id, so repairing the id first would break the match and append a
+    duplicate grounding section. Returns True when a rewrite happened.
+    """
+    rewrote = False
+    for name in ("SOUL.md", "AGENTS.md"):
+        rel_path = f"workspace-{agent_uuid}/{name}"
+        try:
+            content = workspace.read_file(owner_id, rel_path)
+        except Exception:  # noqa: BLE001 — not seeded yet; the seed loop writes it
+            continue
+        repaired = content.replace(_RETIRED_SKILL_INVOCATION, _SKILL_INVOCATION)
+        if repaired != content:
+            workspace.write_file(owner_id, rel_path, repaired)
+            rewrote = True
+    return rewrote
+
+
 def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
     """The append-heal pass for an EXISTING Friday's seeded files.
 
@@ -1134,6 +1166,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_webchat_migrated",
             "friday_identity.agents_md_webchat_migrate_error",
             "appended webchat section to AGENTS.md",
+        ),
+        (
+            _migrate_retired_skill_id,
+            "friday_identity.retired_skill_id_migrated",
+            "friday_identity.retired_skill_id_migrate_error",
+            "repointed retired skill id in SOUL.md/AGENTS.md",
         ),
     )
     for migrate, ok_metric, err_metric, what in migrations:

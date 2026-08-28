@@ -27,7 +27,11 @@ def test_quick_create_url_carries_all_params_url_encoded():
     assert url.startswith(
         "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review"
     )
-    assert "stackName=isol8-connector" in url
+    from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
+
+    # Derived: the quick-create stack is named for the role it mints, so this
+    # follows the rename instead of pinning whichever name was current.
+    assert f"stackName={CONNECTOR_ROLE_NAME}" in url
     assert "param_ExternalId=ext123" in url
     # template_url / principal_arn / policy_arn are URL-encoded (safe="").
     assert f"templateURL={quote(template_url, safe='')}" in url

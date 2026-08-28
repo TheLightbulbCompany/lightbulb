@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.billing import bedrock_aip
-from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
+from core.billing.bedrock_aip import ACCEPTED_CONNECTOR_ROLE_NAMES, CONNECTOR_ROLE_NAME
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -624,11 +624,16 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     if not match:
         raise HTTPException(status_code=400, detail="invalid role ARN")
 
-    # The backend's sts:AssumeRole IAM grant is scoped to role/isol8-connector
+    # The backend's sts:AssumeRole IAM grant is scoped to these role names
     # (service-stack.ts StsAssumeConnectorRole), and the quick-create template
-    # pins that RoleName. Reject other names HERE so a hand-rolled role fails
+    # pins the RoleName. Reject other names HERE so a hand-rolled role fails
     # with a clear 400 at connect time, not an AccessDenied at vend time.
-    if role_arn.split(":role/", 1)[1] != CONNECTOR_ROLE_NAME:
+    #
+    # A SET, not one name: the role lives in the OWNER'S account, so a rename on
+    # our side cannot rename theirs. Anyone who launched the stack before the
+    # rename still has the legacy role and must keep connecting until they
+    # relaunch. The IAM grant is widened to match.
+    if role_arn.split(":role/", 1)[1] not in ACCEPTED_CONNECTOR_ROLE_NAMES:
         raise HTTPException(
             status_code=400,
             detail=f"role must be named {CONNECTOR_ROLE_NAME} (use the quick-create stack from aws-setup)",

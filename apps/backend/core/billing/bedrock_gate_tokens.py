@@ -120,8 +120,11 @@ def _tokens_table_name() -> str:
     override = os.environ.get("BEDROCK_GATE_TOKENS_TABLE")
     if override:
         return override
-    env = settings.ENVIRONMENT or "dev"
-    return f"isol8-{env}-bedrock-gate-tokens"
+    # Route through the SAME prefix every other table uses. A hardcoded
+    # brand literal here silently outlived the table rename: CDK moved the
+    # table to the new prefix while this kept naming the old one, and the
+    # break only surfaced once the old table was deleted.
+    return f"{settings.DYNAMODB_TABLE_PREFIX}bedrock-gate-tokens"
 
 
 def _tokens_table():

@@ -247,3 +247,26 @@ async def test_probe_stripe_unconfigured_when_no_secret_key(monkeypatch):
 
     result = await _probe_stripe()
     assert result["status"] == "unconfigured"
+
+
+def test_ddb_probe_targets_the_shared_prefix_not_a_brand_literal(monkeypatch):
+    """Regression: the probe hardcoded `isol8-{env}-admin-actions`, so after the
+    table rename it described a table that no longer existed and reported the
+    whole DDB dependency as down."""
+    import asyncio
+
+    from core.services import system_health
+
+    monkeypatch.setattr(system_health.settings, "DYNAMODB_TABLE_PREFIX", "brand-prod-")
+    seen = {}
+
+    class _Client:
+        def describe_table(self, TableName):  # noqa: N803 — boto3 kwarg name
+            seen["name"] = TableName
+            return {}
+
+    monkeypatch.setattr(system_health.boto3, "client", lambda *a, **k: _Client())
+    result = asyncio.run(system_health._probe_ddb())
+
+    assert seen["name"] == "brand-prod-admin-actions"
+    assert result["status"] == "ok"

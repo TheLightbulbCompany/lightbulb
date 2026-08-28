@@ -38,15 +38,8 @@ export interface LampProps {
   anchorRef: React.MutableRefObject<{ x: number; y: number }>;
 }
 
-// v3: the laptop is the stage, and at SCALE 0.34 the top edge of its screen
-// reaches world y 4.12. The bulb has to hang clear of that AND below the
-// landing nav (fixed, 70px, opaque, over the top of the canvas). 5.0 puts the
-// glass's bottom 0.33 above the screen's top edge, projecting to 176 of 797 at
-// 1440x900 against a screen top of 243, with its own top at 84 — 14px below
-// the nav (10px at 1280x720). Everything else in this file derives from these
-// two.
-export const LAMP_ANCHOR_Y = 6.1;
-export const GLASS_CENTER_Y = 5.0;
+export const LAMP_ANCHOR_Y = 3.2;
+export const GLASS_CENTER_Y = 1.7;
 
 // Walking down from the pivot: cord, collar, then the glass hanging below the
 // collar (the lathe is flipped, so its apex points down). The profile starts
@@ -56,16 +49,16 @@ export const GLASS_CENTER_Y = 5.0;
 // the r=0.13 ring below it drops on inside the neck.
 const NECK_OVERLAP = 0.02;
 const COLLAR_H = COLLAR_RINGS.reduce((s, r) => s + r[1], 0); // 0.14
-const GLASS_NECK_Y = GLASS_CENTER_Y + GLASS_HEIGHT / 2; // 5.55 — lathe y=0
-const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS.at(-1)![1]; // 5.49
-const COLLAR_TOP_Y = COLLAR_BOTTOM_Y + COLLAR_H; // 5.63
+const GLASS_NECK_Y = GLASS_CENTER_Y + GLASS_HEIGHT / 2; // 2.25 — lathe y=0
+const COLLAR_BOTTOM_Y = GLASS_NECK_Y - NECK_OVERLAP - COLLAR_RINGS.at(-1)![1]; // 2.19
+const COLLAR_TOP_Y = COLLAR_BOTTOM_Y + COLLAR_H; // 2.33
 /** Collar top in group space — a fixed offset below the anchor, so the lamp
  *  body is rigid and only the cord above it changes length. */
-const COLLAR_TOP_REL = COLLAR_TOP_Y - LAMP_ANCHOR_Y; // -0.47
-/** Where the cord disappears. The visible top of the frame is y ≈ 6.57 at z = 0
- *  under Scene's camera, so 7.6 is off-screen at every anchor the cursor can
- *  reach — the cord never shows an end. */
-const CEILING_Y = 7.6;
+const COLLAR_TOP_REL = COLLAR_TOP_Y - LAMP_ANCHOR_Y; // -0.87
+/** Where the cord disappears. The visible top of the frame is y ≈ 3.3 (half
+ *  height 2.91 + the camera's 0.4), so 4.6 is off-screen at every anchor the
+ *  cursor can reach — the cord never shows an end. */
+const CEILING_Y = 4.6;
 const FIL_LEN = 0.55;
 // Blade radii, top (where the three meet) → base. The glass is a lens: with
 // ior 1.5 it magnifies the filament ~1.5×, so these are thinner than they
@@ -87,12 +80,10 @@ const COLLAR_STACK = COLLAR_RINGS.map(([r, h], i) => {
 // Tuned by render. The wall is the page colour (~0.9 linear, untonemapped),
 // so anything the lights add clips to white past +0.1 — a pool on cream is a
 // white-hot centre fading to cream, and the spot only needs to add ~0.35 at
-// its centre. Both were 10 / 2 when the glass hung 3.2 above the desk; v3
-// hangs it 6.5 above (see GLASS_CENTER_Y), and `decay: 2` is inverse-square,
-// so holding the pool costs (6.5/3.2)² ≈ 4x. The point light's `distance`
-// went 7 → 14 for the same reason: at 7 its range no longer reached the desk.
-const SPOT_INTENSITY = 39;
-const POINT_INTENSITY = 8;
+// its centre (d≈2.3 to the wall). 28 put +1.6 on the wall and bloomed the
+// whole hero; 9 on the point light alone added +1.0 right behind the lamp.
+const SPOT_INTENSITY = 10;
+const POINT_INTENSITY = 2;
 // Filament colour = brass → --bulb, scaled: a dull ember off, hot on. The
 // blades are light-immune (see the material), so this is their whole look.
 const FILAMENT_ON = 3.5;
@@ -313,7 +304,7 @@ export function Lamp({ litRef, anchorRef, pendulum, colors, shadows, shadowMapSi
           shadow-camera-near={0.3}
           shadow-camera-far={12}
         />
-        <pointLight ref={point} color={poolColor} intensity={0} decay={2} distance={14} />
+        <pointLight ref={point} color={poolColor} intensity={0} decay={2} distance={7} />
       </group>
     </group>
   );

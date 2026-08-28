@@ -9,31 +9,15 @@ import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
 import { GLASS_CENTER_Y, LAMP_ANCHOR_Y, Lamp, easeStrike, type LampColors } from "./Lamp";
-import { Desk, ROOM_BACK_Z } from "./Desk";
+import { Desk } from "./Desk";
 import { LAPTOP_URL, Laptop } from "./Laptop";
 
 const STRIKE_MS = 700;
 // The room arriving: the laptop rises from below the frame onto the desk,
 // once, on first paint. Not the strike — a returning lit visitor sees it too.
 const APPEAR_MS = 1500;
-// ── The camera (tuned by render at 1440x900 and 1280x720) ──────────────────
-// A long lens, far back, not the wide one v2 used. The spec asks for three
-// things at once — the screen 60-70% of the viewport width, the lamp's glass
-// whole and clear ABOVE the screen's top edge, and the screen out of the
-// canvas's 140px bottom fade — and a wide lens cannot hold all three: at fov
-// 45 from z 7.5 the glass sits 3x nearer the camera than the screen's top, so
-// the perspective divergence alone eats ~90px between them and the screen
-// bottom lands in the fade. At 22° from z 24 that divergence is ~12% and every
-// constraint clears. It also flattens the laptop, which the DOM copy going on
-// the screen next will thank us for.
-const CAMERA_Z = 24;
-const CAMERA_FOV = 22;
-const CAMERA_Y = 0;
-// R3F points a fresh camera at the origin. Aiming well above it drops the
-// whole room in frame, which is what buys the lamp its headroom: the landing
-// nav is fixed, opaque and 70px tall over the top of this canvas, so the glass
-// has to hang below it and still clear the screen's top edge.
-const CAMERA_LOOK_AT: [number, number, number] = [0, 1.85, -0.6];
+const CAMERA_Z = 8;
+const CAMERA_FOV = 40;
 // Studio reflections on the glass: dim in the dark, full when lit, ramped on
 // the strike's clock rather than stepped at the theme flip.
 const ENV_DARK = 0.35;
@@ -50,20 +34,17 @@ const MAX_DT = 0.05; // s — a backgrounded tab must not teleport the lamp
 const VEL_SETTLE = 0.0004; // world units per 60Hz frame
 const POS_SETTLE = 0.002; // world units
 // Visible half-height at z = 0: CAMERA_Z · tan(fov/2). Half-width is this
-// times the canvas aspect. The camera's small upward tilt is ignored — this
-// only decides how far sideways the pointer may send the lamp.
-const HALF_HEIGHT = CAMERA_Z * Math.tan((CAMERA_FOV / 2) * (Math.PI / 180)); // 4.67
+// times the canvas aspect.
+const HALF_HEIGHT = CAMERA_Z * Math.tan((CAMERA_FOV / 2) * (Math.PI / 180)); // 2.91
 // How close to the side the lamp may get, in world units.
 const EDGE_MARGIN = 0.6;
 // Pointer y is mapped over the hero's top 70%; below that the lamp is already
 // as low as it goes.
 const POINTER_Y_SPAN = 0.7;
-// Floor for the glass centre. The lamp moves mostly sideways now: the laptop's
-// screen fills the middle of the frame, so 0.4 is the whole drop the cursor
-// gets, and the glass's bottom stays above the screen's top edge at the bottom
-// of it.
-const GLASS_FLOOR_Y = GLASS_CENTER_Y - 0.4;
-const GLASS_DROP = LAMP_ANCHOR_Y - GLASS_CENTER_Y; // 1.1 — anchor to glass centre
+// Floor for the glass centre: its bottom (0.2 − 0.55) then clears the open
+// laptop lid's top (world y ≈ −0.5).
+const GLASS_FLOOR_Y = 0.2;
+const GLASS_DROP = LAMP_ANCHOR_Y - GLASS_CENTER_Y; // 1.5 — anchor to glass centre
 // A dragged pendant trails. The impulse is the anchor's own x velocity, so it
 // fires only while the lamp is actually moving and dies with it. This REPLACES
 // the old column-crossing impulse, which pushed the pendulum whenever the
@@ -144,7 +125,7 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
     mat.current.color.copy(midnight).lerp(cream, k);
   });
   return (
-    <mesh position={[0, 0, ROOM_BACK_Z]} receiveShadow>
+    <mesh position={[0, 0, -1.6]} receiveShadow>
       <planeGeometry args={[60, 40]} />
       <meshStandardMaterial
         ref={mat}
@@ -437,14 +418,9 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
         // falls back to in three r184 — minus its per-frame deprecation warning.
         shadows={quality > 0 ? "percentage" : false}
         gl={{ antialias: false, powerPreference: "high-performance" }}
-        camera={{ position: [0, CAMERA_Y, CAMERA_Z], fov: CAMERA_FOV, near: 0.1, far: 40 }}
+        camera={{ position: [0, 0.4, CAMERA_Z], fov: CAMERA_FOV, near: 0.1, far: 40 }}
         onCreated={(state) => {
           invalidate.current = state.invalidate;
-          // Once is enough: fiber's resize only rewrites `aspect` (and calls
-          // updateProjectionMatrix), never the camera's rotation, so the aim
-          // survives. Driver re-projects the switch button through this same
-          // camera, so it follows the glass with the tilt applied.
-          state.camera.lookAt(...CAMERA_LOOK_AT);
         }}
       >
         <PerformanceMonitor
@@ -495,9 +471,7 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             wrapped; the lamp above never waits on them either.
 
             Under 640px the hero's copy and pill span the whole width, and the
-            desk band has no room left. Measured at 390x844 (canvas 375x758)
-            against the v2 laptop, which was a THIRD of this one's size — the
-            conclusion only got safer:
+            desk band has no room left. Measured at 390x844 (canvas 375x758):
             the desk projects 532..585, the idea card covers 433..564 across
             the full width (22..353 of 375), and the fine copy starts at 582 —
             so the only desk not behind DOM is a 21px strip, and the 22px side
@@ -508,7 +482,7 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             gated on the same flag) its GLB and PNG are never fetched. */}
         {!narrow && (
           <React.Suspense fallback={null}>
-            <Laptop appearRef={appearRef} colors={colors} shadows={quality > 0} />
+            <Laptop litRef={litRef} appearRef={appearRef} colors={colors} shadows={quality > 0} />
           </React.Suspense>
         )}
         <Lamp

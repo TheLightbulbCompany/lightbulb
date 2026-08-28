@@ -1,4 +1,4 @@
-import { tablePrefix } from "../lib/table-names";
+import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -67,26 +67,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     vpc: network.vpc,
     targetGroup: network.targetGroup,
     albSecurityGroup: network.albSecurityGroup,
-    database: {
-      usersTable: database.usersTable,
-      containersTable: database.containersTable,
-      billingTable: database.billingTable,
-      usageCountersTable: database.usageCountersTable,
-      pendingUpdatesTable: database.pendingUpdatesTable,
-      channelLinksTable: database.channelLinksTable,
-      companySlugsTable: database.companySlugsTable,
-      agentEmailAddressesTable: database.agentEmailAddressesTable,
-      agentMailInboxTable: database.agentMailInboxTable,
-      adminActionsTable: database.adminActionsTable,
-      oauthTokensTable: database.oauthTokensTable,
-      webhookDedupTable: database.webhookDedupTable,
-      paperclipCompaniesTable: database.paperclipCompaniesTable,
-      marketplaceListingsTable: database.marketplaceListingsTable,
-      marketplacePurchasesTable: database.marketplacePurchasesTable,
-      marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
-      marketplaceTakedownsTable: database.marketplaceTakedownsTable,
-      marketplaceSellersTable: database.marketplaceSellersTable,
-    },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
@@ -119,7 +99,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -132,7 +112,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("creates marketplace-listings table with composite key", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
+      TableName: "isol8-dev-marketplace-listings",
       KeySchema: [
         { AttributeName: "listing_id", KeyType: "HASH" },
         { AttributeName: "version", KeyType: "RANGE" },
@@ -143,7 +123,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("marketplace-listings has the expected GSIs", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
+      TableName: "isol8-dev-marketplace-listings",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "seller-created-index" }),
         Match.objectLike({ IndexName: "status-published-index" }),
@@ -153,14 +133,14 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("dev environment uses DESTROY removal policy for marketplace tables", () => {
     template.hasResource("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-marketplace-listings" },
+      Properties: { TableName: "isol8-dev-marketplace-listings" },
       DeletionPolicy: "Delete",
     });
   });
 
   test("creates marketplace-purchases table with buyer_id PK", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
+      TableName: "isol8-dev-marketplace-purchases",
       KeySchema: [
         { AttributeName: "buyer_id", KeyType: "HASH" },
         { AttributeName: "purchase_id", KeyType: "RANGE" },
@@ -170,7 +150,7 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("marketplace-purchases has all 3 expected GSIs", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
+      TableName: "isol8-dev-marketplace-purchases",
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "listing-created-index" }),
         Match.objectLike({ IndexName: "license-key-index" }),
@@ -181,14 +161,14 @@ describe("DatabaseStack — marketplace tables", () => {
 
   test("creates marketplace-payout-accounts table with seller_id PK", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-payout-accounts",
+      TableName: "isol8-dev-marketplace-payout-accounts",
       KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
     });
   });
 
   test("creates marketplace-takedowns table with composite key", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-takedowns",
+      TableName: "isol8-dev-marketplace-takedowns",
       KeySchema: [
         { AttributeName: "listing_id", KeyType: "HASH" },
         { AttributeName: "takedown_id", KeyType: "RANGE" },

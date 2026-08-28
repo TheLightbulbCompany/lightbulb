@@ -1,4 +1,4 @@
-import { tablePrefix } from "../lib/table-names";
+import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -75,26 +75,6 @@ function build(environment: "dev" | "prod"): {
     vpc: network.vpc,
     targetGroup: network.targetGroup,
     albSecurityGroup: network.albSecurityGroup,
-    database: {
-      usersTable: database.usersTable,
-      containersTable: database.containersTable,
-      billingTable: database.billingTable,
-      usageCountersTable: database.usageCountersTable,
-      pendingUpdatesTable: database.pendingUpdatesTable,
-      channelLinksTable: database.channelLinksTable,
-      companySlugsTable: database.companySlugsTable,
-      agentEmailAddressesTable: database.agentEmailAddressesTable,
-      agentMailInboxTable: database.agentMailInboxTable,
-      adminActionsTable: database.adminActionsTable,
-      oauthTokensTable: database.oauthTokensTable,
-      webhookDedupTable: database.webhookDedupTable,
-      paperclipCompaniesTable: database.paperclipCompaniesTable,
-      marketplaceListingsTable: database.marketplaceListingsTable,
-      marketplacePurchasesTable: database.marketplacePurchasesTable,
-      marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
-      marketplaceTakedownsTable: database.marketplaceTakedownsTable,
-      marketplaceSellersTable: database.marketplaceSellersTable,
-    },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
@@ -127,7 +107,7 @@ function build(environment: "dev" | "prod"): {
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
-    connectionsTableName: `${tablePrefix(environment)}ws-connections`,
+    connectionsTableName: `${legacyTablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
   });
@@ -157,7 +137,7 @@ describe.each(["dev", "prod"] as const)(
 
       const connectionsResources = database.findResources(
         "AWS::DynamoDB::Table",
-        { Properties: { TableName: `${tablePrefix(environment)}connections` } },
+        { Properties: { TableName: `${legacyTablePrefix(environment)}connections` } },
       );
       expect(Object.keys(connectionsResources)).toEqual([]);
     });
@@ -175,7 +155,7 @@ describe.each(["dev", "prod"] as const)(
       // a stable literal (`<stack>-oauth-state-table`), not a GetAtt auto-export,
       // so it never created the rename-blocking coupling.
       database.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${tablePrefix(environment)}oauth-state`,
+        TableName: `${legacyTablePrefix(environment)}oauth-state`,
       });
       database.hasOutput("*", {
         Export: { Name: `isol8-${environment}-database-oauth-state-table` },

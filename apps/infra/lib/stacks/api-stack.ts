@@ -19,7 +19,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { tablePrefix } from "../table-names";
+import { legacyTablePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
 
@@ -285,7 +285,7 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
-      tableName: `${tablePrefix(env)}ws-connections`,
+      tableName: `${legacyTablePrefix(env)}ws-connections`,
       partitionKey: { name: "connectionId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,

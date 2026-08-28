@@ -3,7 +3,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
-import { tablePrefix } from "../table-names";
+import { legacyTablePrefix, tablePrefix } from "../table-names";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
@@ -83,7 +83,7 @@ export class DatabaseStack extends cdk.Stack {
       },
     ): dynamodb.Table =>
       new dynamodb.Table(this, id, {
-        tableName: `${tablePrefix(env)}${suffix}`,
+        tableName: `${legacyTablePrefix(env)}${suffix}`,
         partitionKey: schema.partitionKey,
         ...(schema.sortKey ? { sortKey: schema.sortKey } : {}),
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -401,6 +401,37 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "handle-index",
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
     });
+
+    // PIN every table export for this deploy. Removing the consumers' imports
+    // makes CDK stop EMITTING these exports, and CloudFormation then tries to
+    // DELETE them -- but this stack deploys BEFORE the consumers that still
+    // import them, so the delete is refused:
+    //
+    //   Cannot delete export isol8-dev-database:ExportsOutputFnGetAttOAuthTokensTable…Arn…
+    //   as it is in use
+    //
+    // Same deadlock as the "cannot update export" one, one step later, and the
+    // same fix dns-stack.ts already uses for WildcardCert: exportValue() keeps
+    // the export alive while nothing references it, so the consumers can drop
+    // their imports in this same deploy. The RENAME is deliberately NOT in this
+    // change -- pinning an export whose value also changed would be back to
+    // "cannot update export".
+    //
+    // Remove these pins (and rename the tables) in the NEXT change, once
+    // `cloudformation list-imports` shows zero importers.
+    for (const t of [
+      this.usersTable, this.containersTable, this.billingTable,
+      this.usageCountersTable, this.pendingUpdatesTable, this.channelLinksTable,
+      this.companySlugsTable, this.agentEmailAddressesTable,
+      this.agentMailInboxTable, this.adminActionsTable, this.oauthTokensTable,
+      this.webhookDedupTable, this.paperclipCompaniesTable,
+      this.marketplaceListingsTable, this.marketplacePurchasesTable,
+      this.marketplacePayoutAccountsTable, this.marketplaceTakedownsTable,
+      this.marketplaceSellersTable,
+    ]) {
+      this.exportValue(t.tableArn);
+      this.exportValue(t.tableName);
+    }
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: `isol8-${env}-`,

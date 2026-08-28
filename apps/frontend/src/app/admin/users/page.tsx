@@ -36,7 +36,7 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-zinc-100">Users</h1>
+        <h1 className="text-2xl font-semibold text-foreground">Users</h1>
       </div>
 
       <UsersClientHeader defaultValue={params.q} />
@@ -73,7 +73,7 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
                 ? { cursor: result.cursor, q: params.q }
                 : { cursor: result.cursor },
             }}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800"
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-accent"
           >
             Load more
           </Link>
@@ -85,9 +85,9 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
 
 function UsersTable({ users }: { users: UserDirectoryRow[] }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-white/10">
+    <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full min-w-[720px] text-sm">
-        <thead className="bg-zinc-900 text-left text-xs uppercase tracking-wide text-zinc-400">
+        <thead className="bg-card text-left text-xs uppercase tracking-wide text-muted-foreground">
           <tr>
             <th className="px-3 py-2 font-medium">Email</th>
             <th className="px-3 py-2 font-medium">Clerk ID</th>
@@ -102,42 +102,42 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
           {users.map((u) => (
             <tr
               key={u.clerk_id}
-              className="border-t border-white/5 transition-colors hover:bg-white/[0.03]"
+              className="border-t border-border transition-colors hover:bg-accent"
             >
               <td className="px-3 py-2">
                 <Link
                   href={`/admin/users/${encodeURIComponent(u.clerk_id)}`}
-                  className="text-sky-300 hover:underline"
+                  className="text-info hover:underline"
                 >
-                  {u.email ?? <span className="text-zinc-500">(no email)</span>}
+                  {u.email ?? <span className="text-muted-foreground">(no email)</span>}
                 </Link>
                 {u.org ? (
                   <span
-                    className="ml-2 font-mono text-[10px] text-indigo-300/80"
+                    className="ml-2 font-mono text-[10px] text-muted-foreground"
                     title={`Org: ${u.org.name} (${u.org.role})`}
                   >
                     [org:{u.org.slug}]
                   </span>
                 ) : null}
               </td>
-              <td className="px-3 py-2 font-mono text-xs text-zinc-300" title={u.clerk_id}>
+              <td className="px-3 py-2 font-mono text-xs text-muted-foreground" title={u.clerk_id}>
                 {truncate(u.clerk_id, 12)}
               </td>
-              <td className="px-3 py-2 text-zinc-300">{u.subscription_status ?? "—"}</td>
+              <td className="px-3 py-2 text-muted-foreground">{u.subscription_status ?? "—"}</td>
               <td className="px-3 py-2">
                 <StatusChip status={u.container_status} />
               </td>
-              <td className="px-3 py-2 font-mono text-xs text-zinc-300">
+              <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                 <RelativeTimestamp value={u.created_at} />
               </td>
-              <td className="px-3 py-2 font-mono text-xs text-zinc-300">
+              <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                 <RelativeTimestamp value={u.last_sign_in_at} />
               </td>
               <td className="px-3 py-2">
                 {u.banned ? (
                   <StatusChip status="error" label="Yes" />
                 ) : (
-                  <span className="text-xs text-zinc-500">No</span>
+                  <span className="text-xs text-muted-foreground">No</span>
                 )}
               </td>
             </tr>

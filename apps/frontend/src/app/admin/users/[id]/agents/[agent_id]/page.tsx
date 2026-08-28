@@ -148,7 +148,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
             value={
               <Link
                 href={`/admin/users/${encodeURIComponent(meta.owner_id ?? id)}`}
-                className="text-sky-300 hover:underline"
+                className="text-info hover:underline"
                 title={meta.owner_id ?? id}
               >
                 {meta.owner_id ?? id}
@@ -164,11 +164,11 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
       {/* Skills */}
       <Card title="Skills">
         {skills.length === 0 ? (
-          <p className="text-sm text-zinc-500">No skills installed.</p>
+          <p className="text-sm text-muted-foreground">No skills installed.</p>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-white/5">
+          <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full min-w-[560px] table-fixed text-xs sm:text-sm">
-              <thead className="bg-zinc-900 text-left text-zinc-400">
+              <thead className="bg-card text-left text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="w-32 px-3 py-2 font-medium">Version</th>
@@ -177,12 +177,12 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
               </thead>
               <tbody>
                 {skills.map((skill, i) => (
-                  <tr key={`${skill.name}-${i}`} className="border-t border-white/5">
-                    <td className="truncate px-3 py-2 text-zinc-200" title={skill.name}>
+                  <tr key={`${skill.name}-${i}`} className="border-t border-border">
+                    <td className="truncate px-3 py-2 text-foreground" title={skill.name}>
                       {skill.name}
                     </td>
-                    <td className="px-3 py-2 font-mono text-zinc-300">{skill.version}</td>
-                    <td className="px-3 py-2 font-mono text-zinc-400">{skill.source}</td>
+                    <td className="px-3 py-2 font-mono text-muted-foreground">{skill.version}</td>
+                    <td className="px-3 py-2 font-mono text-muted-foreground">{skill.source}</td>
                   </tr>
                 ))}
               </tbody>
@@ -194,7 +194,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
       {/* Config */}
       <Card title="openclaw.json (secrets redacted)">
         {config === undefined || config === null ? (
-          <p className="text-sm text-zinc-500">Config unavailable.</p>
+          <p className="text-sm text-muted-foreground">Config unavailable.</p>
         ) : (
           <CodeBlock
             value={
@@ -211,11 +211,11 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
       {/* Recent sessions */}
       <Card title="Recent sessions (top 20)">
         {sessions.length === 0 ? (
-          <p className="text-sm text-zinc-500">No recent sessions.</p>
+          <p className="text-sm text-muted-foreground">No recent sessions.</p>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-white/5">
+          <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full min-w-[640px] table-fixed text-xs sm:text-sm">
-              <thead className="bg-zinc-900 text-left text-zinc-400">
+              <thead className="bg-card text-left text-muted-foreground">
                 <tr>
                   <th className="w-48 px-3 py-2 font-medium">Timestamp</th>
                   <th className="w-28 px-3 py-2 font-medium">Status</th>
@@ -226,15 +226,15 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
                 {sessions.map((session, i) => {
                   const when = formatRelativeTime(session.timestamp);
                   return (
-                  <tr key={`${session.timestamp}-${i}`} className="border-t border-white/5 align-top">
+                  <tr key={`${session.timestamp}-${i}`} className="border-t border-border align-top">
                     <td
-                      className="px-3 py-2 font-mono text-zinc-300"
+                      className="px-3 py-2 font-mono text-muted-foreground"
                       title={when.iso ?? undefined}
                     >
                       {when.label}
                     </td>
-                    <td className="px-3 py-2 text-zinc-300">{session.status}</td>
-                    <td className="px-3 py-2 text-zinc-200" title={session.excerpt}>
+                    <td className="px-3 py-2 text-muted-foreground">{session.status}</td>
+                    <td className="px-3 py-2 text-foreground" title={session.excerpt}>
                       {session.excerpt
                         ? session.excerpt.length > 120
                           ? `${session.excerpt.slice(0, 120)}\u2026`
@@ -273,26 +273,26 @@ function Header({
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="space-y-1">
-        <p className="text-xs uppercase tracking-wide text-zinc-500">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">
           <Link
             href={`/admin/users/${encodeURIComponent(userId)}/agents`}
-            className="text-sky-300 hover:underline"
+            className="text-info hover:underline"
           >
             Agents
           </Link>
-          <span className="mx-2 text-zinc-600">/</span>
-          <span className="font-mono text-zinc-400">{agentId}</span>
+          <span className="mx-2 text-muted-foreground">/</span>
+          <span className="font-mono text-muted-foreground">{agentId}</span>
         </p>
-        <h1 className="text-2xl font-semibold text-zinc-100">{title}</h1>
+        <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
         {subtitle ? (
-          <p className="font-mono text-xs text-zinc-400">{subtitle}</p>
+          <p className="font-mono text-xs text-muted-foreground">{subtitle}</p>
         ) : null}
       </div>
-      <div className="text-right text-xs text-zinc-500">
+      <div className="text-right text-xs text-muted-foreground">
         {lastActive ? (
           <>
             <span className="block uppercase tracking-wide">Last active</span>
-            <span className="font-mono text-zinc-300" title={when.iso ?? undefined}>
+            <span className="font-mono text-muted-foreground" title={when.iso ?? undefined}>
               {when.label}
             </span>
           </>

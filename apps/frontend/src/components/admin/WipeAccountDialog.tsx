@@ -132,12 +132,12 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         </AlertDialogHeader>
 
         {previewLoading ? (
-          <p className="text-sm text-zinc-400">Loading preview…</p>
+          <p className="text-sm text-muted-foreground">Loading preview…</p>
         ) : previewError ? (
           <ErrorBanner error={previewError} variant="error" />
         ) : resultSteps ? (
           <div className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Result
             </h3>
             <StepList steps={resultSteps} />
@@ -145,7 +145,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         ) : previewSteps ? (
           <div className="space-y-4">
             <div className="space-y-2">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Will delete
               </h3>
               <StepList steps={previewSteps} />
@@ -153,10 +153,10 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
             <div className="space-y-1">
               <label
                 htmlFor="wipe-confirm-email"
-                className="text-xs font-medium uppercase tracking-wide text-zinc-400"
+                className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
               >
                 Type{" "}
-                <span className="font-mono font-semibold text-white">{email}</span>{" "}
+                <span className="font-mono font-semibold text-foreground">{email}</span>{" "}
                 to confirm
               </label>
               <Input
@@ -198,28 +198,28 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
 
 function StepList({ steps }: { steps: WipeStep[] }) {
   if (steps.length === 0) {
-    return <p className="text-sm text-zinc-500">No resources found for this owner.</p>;
+    return <p className="text-sm text-muted-foreground">No resources found for this owner.</p>;
   }
   return (
-    <ul className="max-h-72 space-y-1 overflow-y-auto rounded-md border border-zinc-800 p-2">
+    <ul className="max-h-72 space-y-1 overflow-y-auto rounded-md border border-border p-2">
       {steps.map((step, i) => (
         <li
           key={`${step.system}-${step.action}-${i}`}
           className="flex items-start justify-between gap-3 rounded px-2 py-1.5 text-xs"
         >
           <div className="min-w-0 break-all">
-            <div className="font-mono text-zinc-200">
+            <div className="font-mono text-foreground">
               <span>{step.system}</span>
-              <span className="mx-1 text-zinc-600">·</span>
+              <span className="mx-1 text-muted-foreground">·</span>
               <span>{step.action}</span>
             </div>
             {step.detail ? (
-              <div className="text-zinc-500">
+              <div className="text-muted-foreground">
                 {step.detail}
               </div>
             ) : null}
             {step.error ? (
-              <div role="alert" className="text-red-400">
+              <div role="alert" className="text-err">
                 {step.error}
               </div>
             ) : null}

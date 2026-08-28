@@ -135,7 +135,7 @@ function Rows({ children }: { children: React.ReactNode }) {
 }
 
 function None() {
-  return <span className="text-zinc-500">(none)</span>;
+  return <span className="text-muted-foreground">(none)</span>;
 }
 
 function IdentityCard({ identity }: { identity: unknown }) {
@@ -174,7 +174,7 @@ function IdentityCard({ identity }: { identity: unknown }) {
             data.banned ? (
               <StatusChip status="error" label="Yes" />
             ) : (
-              <span className="text-xs text-zinc-500">No</span>
+              <span className="text-xs text-muted-foreground">No</span>
             )
           }
         />
@@ -187,7 +187,7 @@ function BillingCard({ billing }: { billing: unknown }) {
   if (!isPlainObject(billing)) {
     return (
       <Card title="Billing">
-        <p className="text-sm text-zinc-500">No billing record.</p>
+        <p className="text-sm text-muted-foreground">No billing record.</p>
       </Card>
     );
   }
@@ -231,7 +231,7 @@ function ContainerCard({ container }: { container: unknown }) {
   if (!isPlainObject(container)) {
     return (
       <Card title="Container">
-        <p className="text-sm text-zinc-500">No container provisioned yet.</p>
+        <p className="text-sm text-muted-foreground">No container provisioned yet.</p>
       </Card>
     );
   }
@@ -278,7 +278,7 @@ function UsageCard({ usage }: { usage: unknown }) {
   if (!isPlainObject(usage)) {
     return (
       <Card title="Usage">
-        <p className="text-sm text-zinc-500">No usage data.</p>
+        <p className="text-sm text-muted-foreground">No usage data.</p>
       </Card>
     );
   }

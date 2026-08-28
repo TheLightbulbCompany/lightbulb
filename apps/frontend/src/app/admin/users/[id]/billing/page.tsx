@@ -163,7 +163,7 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
             />
           </dl>
         ) : (
-          <p className="text-sm text-zinc-500">No active invoice.</p>
+          <p className="text-sm text-muted-foreground">No active invoice.</p>
         )}
       </Card>
 
@@ -176,6 +176,6 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
 // User-id breadcrumb is provided by the parent layout — render only the
 // section heading here so the title doesn't duplicate.
 function Header() {
-  return <h1 className="text-xl font-semibold text-zinc-100">Billing</h1>;
+  return <h1 className="text-xl font-semibold text-foreground">Billing</h1>;
 }
 

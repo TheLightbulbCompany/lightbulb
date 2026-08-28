@@ -22,10 +22,10 @@ export interface LogRowProps {
 const MESSAGE_TRUNCATE = 200;
 
 const LEVEL_BADGE_CLASS: Record<string, string> = {
-  ERROR: "bg-red-500/15 text-red-300",
-  WARN: "bg-amber-500/15 text-amber-300",
-  INFO: "bg-sky-500/15 text-sky-300",
-  DEBUG: "bg-zinc-500/15 text-zinc-300",
+  ERROR: "border border-err text-err",
+  WARN: "border border-warn text-warn",
+  INFO: "border border-info text-info",
+  DEBUG: "border border-border text-muted-foreground",
 };
 
 function levelBadgeClass(level: string | null | undefined): string {
@@ -45,7 +45,7 @@ export function LogRow({ entry }: LogRowProps) {
 
   return (
     <div
-      className="rounded-md border border-white/5 bg-white/[0.02]"
+      className="rounded-md border border-border bg-card"
       data-expanded={expanded ? "true" : "false"}
     >
       <button
@@ -53,18 +53,18 @@ export function LogRow({ entry }: LogRowProps) {
         onClick={() => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         aria-label={expanded ? "Collapse log entry" : "Expand log entry"}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-white/[0.03]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent"
       >
         {expanded ? (
-          <ChevronDown className="size-3 shrink-0 text-zinc-500" aria-hidden />
+          <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
         ) : (
-          <ChevronRight className="size-3 shrink-0 text-zinc-500" aria-hidden />
+          <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden />
         )}
         {/* suppressHydrationWarning: the relative label is a function of
             Date.now(), so SSR and hydration can legitimately differ by a
             minute tick. */}
         <time
-          className="font-mono text-zinc-400"
+          className="font-mono text-muted-foreground"
           dateTime={when.iso ?? entry.timestamp}
           title={when.iso ?? undefined}
           suppressHydrationWarning
@@ -80,19 +80,19 @@ export function LogRow({ entry }: LogRowProps) {
         >
           {levelLabel}
         </span>
-        <span className="flex-1 truncate font-mono text-zinc-100">
+        <span className="flex-1 truncate font-mono text-foreground">
           {truncated}
         </span>
       </button>
 
       {expanded ? (
-        <div className="space-y-2 border-t border-white/5 px-3 py-3">
+        <div className="space-y-2 border-t border-border px-3 py-3">
           {entry.correlation_id ? (
-            <div className="text-xs text-zinc-400">
-              <span className="font-semibold text-zinc-300">
+            <div className="text-xs text-muted-foreground">
+              <span className="font-semibold text-muted-foreground">
                 correlation_id:
               </span>{" "}
-              <span className="font-mono text-zinc-100">
+              <span className="font-mono text-foreground">
                 {entry.correlation_id}
               </span>
             </div>
@@ -100,7 +100,7 @@ export function LogRow({ entry }: LogRowProps) {
           {entry.raw_json ? (
             <CodeBlock value={entry.raw_json} language="json" maxHeight={320} />
           ) : (
-            <p className="text-xs italic text-zinc-500">
+            <p className="text-xs italic text-muted-foreground">
               No raw JSON payload.
             </p>
           )}

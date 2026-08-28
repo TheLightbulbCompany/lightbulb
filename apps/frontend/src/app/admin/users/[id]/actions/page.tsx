@@ -43,7 +43,7 @@ export default async function ActionsPage({
   if (!token) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold text-zinc-100">Actions</h1>
+        <h1 className="text-xl font-semibold text-foreground">Actions</h1>
         <ErrorBanner error="Missing Clerk session token." />
       </div>
     );
@@ -63,11 +63,11 @@ export default async function ActionsPage({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-zinc-100">Admin actions</h1>
+      <h1 className="text-xl font-semibold text-foreground">Admin actions</h1>
 
       <Card title="Danger zone">
         <div className="space-y-2">
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Permanently deletes every resource for this owner — container,
             EFS, Paperclip, Bedrock credits, billing, and the Clerk user.
             Cannot be undone.
@@ -96,7 +96,7 @@ export default async function ActionsPage({
         <div className="flex justify-center">
           <Link
             href={nextCursorHref}
-            className="rounded-md border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-zinc-100 hover:bg-white/[0.08]"
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-accent"
           >
             Load more
           </Link>

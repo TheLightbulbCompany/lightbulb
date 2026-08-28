@@ -24,14 +24,14 @@ export default async function UserLayout({ children, params }: UserLayoutProps) 
   return (
     <div className="space-y-6">
       <div className="space-y-1">
-        <div className="text-xs text-zinc-500">
-          <Link href="/admin/users" className="hover:text-zinc-300">
+        <div className="text-xs text-muted-foreground">
+          <Link href="/admin/users" className="hover:text-muted-foreground">
             Users
           </Link>
-          <span className="mx-2 text-zinc-600">/</span>
-          <span className="font-mono text-zinc-300">{id}</span>
+          <span className="mx-2 text-muted-foreground">/</span>
+          <span className="font-mono text-muted-foreground">{id}</span>
         </div>
-        <h1 className="font-mono text-lg text-zinc-100" title={id}>
+        <h1 className="font-mono text-lg text-foreground" title={id}>
           {id}
         </h1>
       </div>

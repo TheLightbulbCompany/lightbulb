@@ -13,10 +13,10 @@ export function Card({
   className?: string;
 }) {
   return (
-    <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/40 p-4", className)}>
+    <div className={cn("rounded-lg border border-border bg-card p-4", className)}>
       {title || action ? (
         <div className="mb-3 flex items-center justify-between gap-3">
-          {title ? <h2 className="text-sm font-semibold text-zinc-300">{title}</h2> : null}
+          {title ? <h2 className="text-sm font-semibold text-muted-foreground">{title}</h2> : null}
           {action ?? null}
         </div>
       ) : null}

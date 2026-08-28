@@ -36,7 +36,7 @@ export function UserTabs({ userId, tabs }: UserTabsProps) {
     <nav
       role="tablist"
       aria-label="User detail sections"
-      className="flex items-center gap-1 border-b border-white/10"
+      className="flex items-center gap-1 border-b border-border"
     >
       {tabs.map((tab) => {
         const href = tab.segment ? `${base}/${tab.segment}` : base;
@@ -51,8 +51,8 @@ export function UserTabs({ userId, tabs }: UserTabsProps) {
               "px-4 py-2 text-sm transition-colors",
               "border-b-2",
               active
-                ? "border-sky-400 text-zinc-100"
-                : "border-transparent text-zinc-400 hover:border-zinc-700 hover:text-zinc-200",
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
             )}
           >
             {tab.label}

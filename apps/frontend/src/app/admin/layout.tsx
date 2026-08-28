@@ -50,58 +50,58 @@ export default async function AdminLayout({
 
   return (
     <div className="dark min-h-screen bg-background text-foreground">
-      <header className="border-b border-zinc-800 bg-zinc-900">
+      <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-8">
-            <Link href="/admin" className="text-lg font-semibold text-zinc-100">
+            <Link href="/admin" className="text-lg font-semibold text-foreground">
               Lightbulb AI admin
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <Link
                 href="/admin"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Overview
               </Link>
               <Link
                 href="/admin/users"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Users
               </Link>
               <Link
                 href="/admin/growth"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Growth
               </Link>
               <Link
                 href="/admin/marketplace/listings"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Marketplace
               </Link>
               <Link
                 href="/admin/deploys"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Deploys
               </Link>
               <Link
                 href="/admin/audit"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Audit
               </Link>
               <Link
                 href="/admin/health"
-                className="rounded-md px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Health
               </Link>
             </nav>
           </div>
-          <div className="text-xs text-zinc-500">
+          <div className="text-xs text-muted-foreground">
             {me.email ?? me.user_id}
           </div>
         </div>

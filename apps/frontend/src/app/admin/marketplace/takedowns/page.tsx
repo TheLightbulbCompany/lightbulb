@@ -38,7 +38,7 @@ export default async function RecentTakedownsPage() {
   const result = await listRecentTakedowns();
   if (!result.ok) {
     return (
-      <p className="text-sm text-red-400" role="alert">
+      <p className="text-sm text-err" role="alert">
         Error loading takedowns: {result.error ?? `http_${result.status}`}
       </p>
     );
@@ -49,57 +49,57 @@ export default async function RecentTakedownsPage() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-2xl font-semibold text-zinc-100">Takedowns</h1>
-      <p className="text-sm text-zinc-500">
+      <h1 className="text-2xl font-semibold text-foreground">Takedowns</h1>
+      <p className="text-sm text-muted-foreground">
         Recent takedowns. Granted by admins on the listing detail page.
       </p>
       {items.length === 0 ? (
-        <p className="text-sm text-zinc-400">No takedowns recorded yet.</p>
+        <p className="text-sm text-muted-foreground">No takedowns recorded yet.</p>
       ) : (
         <ul className="space-y-3">
           {items.map((td) => (
             <li
               key={td.takedown_id}
-              className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-5"
+              className="rounded-lg border border-border bg-card p-5"
             >
               <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
-                <p className="font-semibold text-zinc-100">
+                <p className="font-semibold text-foreground">
                   listing:{" "}
                   <Link
                     href={`/admin/marketplace/listings/${encodeURIComponent(td.listing_id)}`}
-                    className="font-mono text-sky-300 hover:underline"
+                    className="font-mono text-info hover:underline"
                   >
                     {td.listing_id}
                   </Link>
                 </p>
-                <span className="text-xs text-zinc-500 font-mono">
+                <span className="text-xs text-muted-foreground font-mono">
                   {td.decided_at ?? "—"}
                 </span>
               </div>
-              <dl className="grid grid-cols-2 gap-2 text-xs text-zinc-400 mb-3 sm:grid-cols-4">
+              <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground mb-3 sm:grid-cols-4">
                 <div>
-                  <dt className="text-zinc-500">Reason</dt>
-                  <dd className="text-zinc-200">{td.reason}</dd>
+                  <dt className="text-muted-foreground">Reason</dt>
+                  <dd className="text-foreground">{td.reason}</dd>
                 </div>
                 <div>
-                  <dt className="text-zinc-500">Decided by</dt>
-                  <dd className="text-zinc-200 font-mono break-all">
+                  <dt className="text-muted-foreground">Decided by</dt>
+                  <dd className="text-foreground font-mono break-all">
                     {td.decided_by ?? "—"}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-zinc-500">Affected purchases</dt>
-                  <dd className="text-zinc-200">
+                  <dt className="text-muted-foreground">Affected purchases</dt>
+                  <dd className="text-foreground">
                     {td.affected_purchases ?? 0}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-zinc-500">Status</dt>
-                  <dd className="text-zinc-200">{td.decision ?? "—"}</dd>
+                  <dt className="text-muted-foreground">Status</dt>
+                  <dd className="text-foreground">{td.decision ?? "—"}</dd>
                 </div>
               </dl>
               {td.basis_md && (
-                <p className="whitespace-pre-line rounded bg-zinc-950 p-3 text-sm text-zinc-200">
+                <p className="whitespace-pre-line rounded bg-background p-3 text-sm text-foreground">
                   {truncate(td.basis_md ?? "", BASIS_TRUNCATE)}
                 </p>
               )}

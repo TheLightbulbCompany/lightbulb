@@ -3,49 +3,49 @@ import { cn } from "@/lib/utils";
 export type OpsStatus = "running" | "provisioning" | "stopped" | "error" | "unknown";
 
 // Semantic tones from the design system: calm when healthy, loud only on
-// incidents. A degraded/unreadable source renders zinc, never green.
+// incidents. A degraded/unreadable source renders neutral, never ok.
 const TONE = {
-  emerald: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  sky: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  amber: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  red: "bg-red-500/15 text-red-300 border-red-500/30",
-  zinc: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+  ok: "border-ok text-ok",
+  info: "border-info text-info",
+  warn: "border-warn text-warn",
+  err: "border-err text-err",
+  neutral: "border-border text-muted-foreground",
 } as const;
 
 /**
  * Single source of the status language across the admin surface. Every
  * status-shaped string (container states, upstream probes, background
  * tasks, marketplace listing states) maps here; unrecognized values fall
- * back to zinc.
+ * back to neutral.
  */
 const CLASSES: Record<string, string> = {
   // running / healthy
-  running: TONE.emerald,
-  ok: TONE.emerald,
-  published: TONE.emerald,
+  running: TONE.ok,
+  ok: TONE.ok,
+  published: TONE.ok,
   // provisioning / in-progress
-  provisioning: TONE.sky,
-  starting: TONE.sky,
+  provisioning: TONE.info,
+  starting: TONE.info,
   // wipe preview — flags what a dry run would remove
-  would_delete: TONE.amber,
+  would_delete: TONE.warn,
   // stopped / warn
-  stopped: TONE.amber,
-  scaled_to_zero: TONE.amber,
-  cancelled: TONE.amber,
-  degraded: TONE.amber,
-  review: TONE.amber,
+  stopped: TONE.warn,
+  scaled_to_zero: TONE.warn,
+  cancelled: TONE.warn,
+  degraded: TONE.warn,
+  review: TONE.warn,
   // error / incident
-  error: TONE.red,
-  failed: TONE.red,
-  unreachable: TONE.red,
-  down: TONE.red,
-  taken_down: TONE.red,
+  error: TONE.err,
+  failed: TONE.err,
+  unreachable: TONE.err,
+  down: TONE.err,
+  taken_down: TONE.err,
   // unknown / inert
-  unknown: TONE.zinc,
-  unconfigured: TONE.zinc,
-  unregistered: TONE.zinc,
-  draft: TONE.zinc,
-  retired: TONE.zinc,
+  unknown: TONE.neutral,
+  unconfigured: TONE.neutral,
+  unregistered: TONE.neutral,
+  draft: TONE.neutral,
+  retired: TONE.neutral,
 };
 
 export function StatusChip({ status, label }: { status: string; label?: string }) {

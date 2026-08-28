@@ -7,7 +7,7 @@ describe("Tile", () => {
   it("renders a plain div with the tone border when no href is given", () => {
     const { container } = render(<Tile title="isol8-dev-service" label="running" tone="ok" />);
     expect(container.querySelector("a")).toBeNull();
-    expect(container.firstElementChild?.className).toContain("emerald");
+    expect(container.firstElementChild?.className).toContain("border-ok");
     expect(screen.getByText("running")).toBeTruthy();
   });
 
@@ -41,8 +41,8 @@ describe("Tile", () => {
     expect(a?.getAttribute("rel")).toBe("noreferrer");
   });
 
-  it("supports the warn (amber) tone", () => {
+  it("supports the warn tone", () => {
     const { container } = render(<Tile title="W28 unhealthy hosts" label="warning" tone="warn" />);
-    expect(container.firstElementChild?.className).toContain("amber");
+    expect(container.firstElementChild?.className).toContain("border-warn");
   });
 });

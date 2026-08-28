@@ -31,18 +31,18 @@ import type { DashboardRunActivityDay, HeartbeatRun } from "@/components/teams/s
  *   cancelled    -> mute      (neutral)
  *   backlog      -> edge      (parked)
  * Success-rate thresholds:
- *   >= 80%      -> forest
+ *   >= 80%      -> ok
  *   >= 50%      -> warn
- *   < 50%       -> ink        (dark, somber)
+ *   < 50%       -> err
  */
 const COLOR = {
   succeeded: "var(--midnight)",
   failed: "var(--warn)",
   other: "var(--midnight-muted)",
   emptyBar: "var(--edge-soft)",
-  rateHigh: "var(--midnight)",
+  rateHigh: "var(--ok)",
   rateMid: "var(--warn)",
-  rateLow: "var(--midnight)",
+  rateLow: "var(--err)",
 } as const;
 
 /* ---- Utilities ---- */

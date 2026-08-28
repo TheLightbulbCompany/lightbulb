@@ -23,24 +23,24 @@ export default async function DeploysPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-zinc-100">Deploys</h1>
+        <h1 className="text-2xl font-semibold text-foreground">Deploys</h1>
         {degraded ? <StatusChip status="unknown" label="data degraded" /> : null}
       </div>
       <Card>
         {rows.length === 0 ? (
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-muted-foreground">
             {degraded ? "Deploy data unavailable." : "No Lightbulb AI stacks found."}
           </p>
         ) : (
           <div className="space-y-2">
             {rows.map((r) => (
-              <div key={r.stack_name} className="rounded border border-zinc-800 p-3">
+              <div key={r.stack_name} className="rounded border border-border p-3">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-sm text-zinc-200">{r.stack_name}</span>
+                  <span className="font-mono text-sm text-foreground">{r.stack_name}</span>
                   <StatusChip status={deployTone(r.status)} label={r.status} />
                 </div>
                 {r.root_cause ? (
-                  <p className="mt-2 text-xs text-red-300">Root cause: {r.root_cause}</p>
+                  <p className="mt-2 text-xs text-err">Root cause: {r.root_cause}</p>
                 ) : null}
               </div>
             ))}

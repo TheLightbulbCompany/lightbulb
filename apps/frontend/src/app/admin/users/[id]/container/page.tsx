@@ -169,6 +169,6 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
 // User-id breadcrumb is provided by the parent layout — render only the
 // section heading here so the title doesn't duplicate.
 function Header() {
-  return <h1 className="text-xl font-semibold text-zinc-100">Container</h1>;
+  return <h1 className="text-xl font-semibold text-foreground">Container</h1>;
 }
 

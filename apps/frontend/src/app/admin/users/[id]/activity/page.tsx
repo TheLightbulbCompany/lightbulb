@@ -70,11 +70,11 @@ function PropertiesDetails({
 }) {
   if (!properties || Object.keys(properties).length === 0) return null;
   return (
-    <details className="mt-1 text-xs text-zinc-400">
-      <summary className="cursor-pointer select-none text-zinc-500 hover:text-zinc-300">
+    <details className="mt-1 text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none text-muted-foreground hover:text-muted-foreground">
         Properties
       </summary>
-      <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-white/5 bg-black/30 p-2 font-mono text-[11px] text-zinc-300">
+      <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-muted-foreground">
         {JSON.stringify(properties, null, 2)}
       </pre>
     </details>
@@ -93,7 +93,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
   if (!token) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold text-zinc-100">Activity</h1>
+        <h1 className="text-xl font-semibold text-foreground">Activity</h1>
         <ErrorBanner error="Missing Clerk session token." />
       </div>
     );
@@ -117,14 +117,14 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
 
   return (
     <div className="space-y-10">
-      <h1 className="text-xl font-semibold text-zinc-100">Activity</h1>
+      <h1 className="text-xl font-semibold text-foreground">Activity</h1>
 
       {/* --- Recent error logs ----------------------------------------- */}
       <section aria-labelledby="recent-logs-heading" className="space-y-3">
         <div className="flex items-baseline justify-between">
           <h2
             id="recent-logs-heading"
-            className="text-sm font-medium uppercase tracking-wide text-zinc-400"
+            className="text-sm font-medium uppercase tracking-wide text-muted-foreground"
           >
             Recent error logs (last 24h)
           </h2>
@@ -133,7 +133,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
               href={cwUrl.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-sky-300 hover:underline"
+              className="text-xs text-info hover:underline"
             >
               {"Open full search in CloudWatch \u2192"}
             </a>
@@ -170,7 +170,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
       <section aria-labelledby="posthog-heading" className="space-y-3">
         <h2
           id="posthog-heading"
-          className="text-sm font-medium uppercase tracking-wide text-zinc-400"
+          className="text-sm font-medium uppercase tracking-wide text-muted-foreground"
         >
           PostHog timeline
         </h2>
@@ -204,17 +204,17 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
               return (
               <li
                 key={`${evt.timestamp ?? "ts"}-${i}`}
-                className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+                className="rounded-md border border-border bg-card px-3 py-2 text-xs"
               >
                 <div className="flex items-center gap-3">
                   <time
-                    className="font-mono text-zinc-400"
+                    className="font-mono text-muted-foreground"
                     dateTime={when.iso ?? evt.timestamp ?? ""}
                     title={when.iso ?? undefined}
                   >
                     {when.label}
                   </time>
-                  <span className="font-semibold text-zinc-100">
+                  <span className="font-semibold text-foreground">
                     {evt.event ?? "(unnamed)"}
                   </span>
                   {evt.session_id ? (
@@ -222,7 +222,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
                       href={`${posthogUiHost()}/replay/${encodeURIComponent(evt.session_id)}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="ml-auto text-sky-300 hover:underline"
+                      className="ml-auto text-info hover:underline"
                     >
                       {"Watch session \u2192"}
                     </a>

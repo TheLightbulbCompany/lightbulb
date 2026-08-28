@@ -15,16 +15,16 @@ export default function MarketplaceAdminLayout({
 }) {
   return (
     <div>
-      <nav className="mb-6 flex gap-6 border-b border-zinc-800">
+      <nav className="mb-6 flex gap-6 border-b border-border">
         <Link
           href="/admin/marketplace/listings"
-          className="pb-3 text-sm text-zinc-300 hover:text-zinc-100"
+          className="pb-3 text-sm text-muted-foreground hover:text-foreground"
         >
           Review queue
         </Link>
         <Link
           href="/admin/marketplace/takedowns"
-          className="pb-3 text-sm text-zinc-300 hover:text-zinc-100"
+          className="pb-3 text-sm text-muted-foreground hover:text-foreground"
         >
           Takedowns
         </Link>

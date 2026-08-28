@@ -80,7 +80,7 @@ export default async function AdminOverviewPage() {
     <div className="space-y-6">
       <AutoRefresh intervalMs={20000} />
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-zinc-100">Operations</h1>
+        <h1 className="text-2xl font-semibold text-foreground">Operations</h1>
         {degraded ? <StatusChip status="unknown" label="data degraded" /> : null}
       </div>
 
@@ -100,11 +100,11 @@ export default async function AdminOverviewPage() {
             ))}
           </div>
         ) : degraded ? (
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-muted-foreground">
             Fleet data unavailable — unable to read one or more ops sources.
           </p>
         ) : (
-          <p className="text-sm text-zinc-500">All clear — nothing needs attention.</p>
+          <p className="text-sm text-muted-foreground">All clear — nothing needs attention.</p>
         )}
       </Card>
 
@@ -134,9 +134,9 @@ export default async function AdminOverviewPage() {
                 key={g.service_name}
                 href={`/admin/users/${encodeURIComponent(g.owner_id)}`}
                 title={`${g.owner_id} · ${g.service_name}`}
-                className="flex items-center justify-between rounded border border-zinc-800 p-2 hover:bg-zinc-900/60"
+                className="flex items-center justify-between rounded border border-border p-2 hover:bg-accent"
               >
-                <span className="truncate text-xs text-zinc-400">
+                <span className="truncate text-xs text-muted-foreground">
                   {g.display_name ?? g.owner_id}
                 </span>
                 <StatusChip status={g.status} />
@@ -144,7 +144,7 @@ export default async function AdminOverviewPage() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-muted-foreground">
             {degraded
               ? "Fleet data unavailable."
               : "No containers provisioned yet."}

@@ -81,11 +81,11 @@ export function ProvisioningActionsPanel({
         {error ? <ErrorBanner error={error} variant="error" /> : null}
         {notice ? <ErrorBanner error={notice} variant="info" /> : null}
 
-        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Retry provision
           </h3>
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-muted-foreground">
             Re-dispatches provisioning through the Step Functions executor.
             Safe for error rows and for &apos;provisioning&apos; rows with a
             stale claim (wedge rescue); refuses (409) while a fresh attempt
@@ -102,11 +102,11 @@ export function ProvisioningActionsPanel({
           </ConfirmActionDialog>
         </div>
 
-        <div className="space-y-2 rounded-lg border border-zinc-800 p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Reset bootstrap
           </h3>
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-muted-foreground">
             Re-arms a stuck onboarding kickoff: a failed one (attempts
             exhausted or chat.error), or a &apos;dispatched&apos; one whose
             claim expired — including the send-attempted-never-acked case,

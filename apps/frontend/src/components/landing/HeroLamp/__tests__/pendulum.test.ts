@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IMPULSE_CLAMP, createPendulum } from "../pendulum";
+import { IMPULSE_CLAMP, SCROLL_IMPULSE, createPendulum } from "../pendulum";
 
 describe("pendulum", () => {
   it("starts settled at rest", () => {
@@ -33,8 +33,9 @@ describe("pendulum", () => {
       p.step();
       maxAngle = Math.max(maxAngle, Math.abs(p.angle));
     }
-    expect(maxAngle).toBeLessThan(0.4);
+    expect(maxAngle).toBeLessThan(0.08);
     expect(IMPULSE_CLAMP).toBe(0.006);
+    expect(SCROLL_IMPULSE).toBe(0.00016);
   });
 
   it("reset returns to rest immediately", () => {

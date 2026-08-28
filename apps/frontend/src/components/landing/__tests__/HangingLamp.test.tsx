@@ -25,8 +25,10 @@ describe("HangingLamp (SVG fallback)", () => {
   });
 
   it("starts dark and offers to turn the light on", () => {
+    document.documentElement.removeAttribute("data-lb-theme");
     render(<HangingLamp />);
     expect(screen.getByRole("button", { name: "Turn on the light" })).toBeInTheDocument();
+    // hydrateFromStorage (called on mount) re-asserts the attribute the store holds
     expect(document.documentElement.getAttribute("data-lb-theme")).toBe("dark");
   });
 

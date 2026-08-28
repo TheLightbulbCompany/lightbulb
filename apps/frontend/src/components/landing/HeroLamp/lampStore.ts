@@ -21,6 +21,7 @@ function write(t: LampTheme) {
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("data-lb-theme", t);
   }
+  if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(LAMP_STORAGE_KEY, t);
   } catch {

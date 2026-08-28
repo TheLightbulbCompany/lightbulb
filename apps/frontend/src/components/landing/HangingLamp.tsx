@@ -8,9 +8,10 @@
  * real pendulum: it has mass, it damps, and scrolling nudges it. Clicking the
  * glass (or pulling the brass bead) strikes the filament and floods the room.
  *
- * Scope: the toggle writes `data-lb-theme` on <html> and persists to
- * localStorage. Only `.ld-page` reads it, so this cannot leak into /chat —
- * the app has its own surface contract and is not themed by this control.
+ * Scope: the shared store (`./HeroLamp/lampStore`) writes `data-lb-theme` on
+ * <html> and persists to localStorage; this component only reads it. Only
+ * `.ld-page` reads the attribute, so this cannot leak into /chat — the app
+ * has its own surface contract and is not themed by this control.
  *
  * prefers-reduced-motion: no pendulum, no scroll nudge, no circular flood.
  * The theme still toggles; it just cross-fades.

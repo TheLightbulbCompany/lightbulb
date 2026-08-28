@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { renderHook, act } from "@testing-library/react";
 import {
   LAMP_STORAGE_KEY,
   getServerTheme,
@@ -8,6 +9,7 @@ import {
   setTheme,
   strike,
   subscribe,
+  useLampTheme,
 } from "../lampStore";
 
 describe("lampStore", () => {
@@ -46,6 +48,7 @@ describe("lampStore", () => {
     setTheme("dark");
     hydrateFromStorage();
     expect(getTheme()).toBe("dark");
+    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("dark");
   });
 
   it("notifies subscribers once per change", () => {
@@ -56,5 +59,12 @@ describe("lampStore", () => {
     off();
     strike();
     expect(n).toBe(1);
+  });
+
+  it("useLampTheme tracks the store", () => {
+    const { result } = renderHook(() => useLampTheme());
+    expect(result.current).toBe("dark");
+    act(() => strike());
+    expect(result.current).toBe("light");
   });
 });

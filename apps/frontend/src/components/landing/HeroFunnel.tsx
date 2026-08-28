@@ -19,6 +19,7 @@ import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
+import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
 
 const COPY: Record<Path, { placeholder: string; swap: string }> = {
@@ -70,6 +71,7 @@ export function HeroFunnel() {
 
   return (
     <section className="ld-funnel" id="start">
+      <HeroLamp />
       <div className="ld-funnel-in">
         <p className="ld-mono ld-funnel-eyebrow">
           The Integrated Management Environment

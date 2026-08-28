@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Navbar } from "@/components/landing/Navbar";
-import { HangingLamp } from "@/components/landing/HangingLamp";
 import { HeroFunnel } from "@/components/landing/HeroFunnel";
 import { WorkspaceDemo } from "@/components/landing/WorkspaceDemo";
 import { MarketplaceTeaser } from "@/components/landing/MarketplaceTeaser";
@@ -23,7 +22,6 @@ export default function LandingPage() {
       <JsonLd data={organizationJsonLd} />
       <JsonLd data={websiteJsonLd} />
       <JsonLd data={softwareApplicationJsonLd} />
-      <HangingLamp />
       <Navbar />
       <HeroFunnel />
       <WorkspaceDemo />

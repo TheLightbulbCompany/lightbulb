@@ -35,7 +35,6 @@ export function HangingLamp() {
   // room starts unlit — so storage is never read during render.
   React.useEffect(() => {
     hydrateFromStorage();
-    return () => document.documentElement.removeAttribute("data-lb-theme");
   }, []);
 
   // Pendulum. transform only — never a layout property.

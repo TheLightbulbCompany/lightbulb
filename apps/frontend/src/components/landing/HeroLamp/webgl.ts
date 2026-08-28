@@ -11,7 +11,13 @@ export function hasWebGL(): boolean {
   if (!("WebGL2RenderingContext" in window) && !("WebGLRenderingContext" in window)) return false;
   try {
     const c = document.createElement("canvas");
-    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+    const ctx = c.getContext("webgl2") || c.getContext("webgl");
+    if (!ctx) return false;
+    // Contexts are a scarce per-tab resource (browsers cap them around 16) and
+    // this one only ever answered a question. Hand it straight back, so the
+    // probe is never why the scene's real context gets evicted.
+    (ctx.getExtension("WEBGL_lose_context") as { loseContext(): void } | null)?.loseContext();
+    return true;
   } catch {
     return false;
   }

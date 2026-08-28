@@ -1,4 +1,12 @@
 "use client";
+
+/**
+ * The laptop on the desk. "her"/"hers" throughout this file means Ksenia
+ * Kondrashova, whose CodePen `gOEgyaj` this model and its open/screen-on
+ * timelines come from: the code is MIT under CodePen's terms, and the GLB is
+ * her own unlicensed personal asset, self-hosted here at the owner's explicit
+ * ruling. Deviations from hers are called out where they happen.
+ */
 import * as React from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
@@ -38,22 +46,15 @@ export function Laptop({
 }) {
   const { scene } = useGLTF(LAPTOP_URL);
   const invalidate = useThree((s) => s.invalidate);
-  // Under 640px the hero's copy and pill span the whole width, and the desk
-  // band has no room left. Measured at 390x844 (canvas 375x758): the desk
-  // projects 532..585, the idea card covers 433..564 across the full width
-  // (22..353 of 375), and the fine copy starts at 582 — so the only desk not
-  // behind DOM is a 21px strip, and the 22px side margins are narrower than
-  // the closed lid. Every other gap (397..433, 644..666, 710..758) is off the
-  // desk or inside the 140px bottom fade. Off the desk it would still be a
-  // shadow caster and a light — so it is not mounted at all.
-  const narrow = useThree((s) => s.size.width < 640);
   const keysTex = useTexture(KEYS_URL);
   const root = React.useRef<THREE.Group>(null);
   const lid = React.useRef<THREE.Group>(null);
   const screenMat = React.useRef<THREE.MeshBasicMaterial>(null);
   const light = React.useRef<THREE.RectAreaLight>(null);
 
-  // Owner's exception: her materials, her hex. The ONLY hex in the scene.
+  // Owner's exception: her materials, her hex. The only hex in the scene
+  // besides the keyboard overlay's 0xffffff below — that one is an alpha
+  // mask's carrier white, not a colour choice, so it stays at its mesh.
   const mats = React.useMemo(
     () => ({
       metal: new THREE.MeshStandardMaterial({ color: 0xcecfd3 }),
@@ -75,9 +76,10 @@ export function Laptop({
   // Refresh) finds nothing and throws out of the Canvas. Clone per mount and
   // never touch the cached graph. clone(true) is enough here — no skinned
   // meshes; geometries stay shared and every material is assigned below.
-  // `dispose={null}` on the two <primitive>s below is the other half: on
-  // unmount R3F would otherwise dispose the clone's geometries, which ARE the
-  // cache's geometries.
+  // Sharing them is safe on unmount without any opt-out: R3F v9's removeChild
+  // skips disposal for `child.type === "primitive"` exactly so a <primitive>
+  // never destroys an object it was only handed, so the cache's geometries
+  // outlive this mount on their own.
   const model = React.useMemo(() => scene.clone(true), [scene]);
 
   // Split her model into lid (_top) and base (_bottom) groups.
@@ -131,13 +133,25 @@ export function Laptop({
     // when the idea changes (the lamp is already lit by the first keystroke),
     // and under frameloop="demand" a new texture is drawn by nobody.
     let live = true;
+    // The string actually on the screen. One store carries the idea AND the
+    // theme, so every strike notifies this listener too — repainting a 1024x700
+    // canvas and asking for a frame to redraw identical text is pure waste.
+    let painted: string | null = null;
     const redraw = () => {
       if (!live) return; // fonts.ready can land after unmount
-      idea.draw(getIdeaText());
+      const text = getIdeaText();
+      if (text === painted) return;
+      painted = text;
+      idea.draw(text);
       invalidate();
     };
     const off = subscribe(redraw);
-    document.fonts?.ready.then(redraw);
+    // Lora landing changes the GLYPHS, not the string, so this one repaint has
+    // to defeat the cache above.
+    document.fonts?.ready.then(() => {
+      painted = null;
+      redraw();
+    });
     return () => {
       live = false;
       off();
@@ -169,7 +183,7 @@ export function Laptop({
     if (light.current) light.current.intensity = SCREEN_LIGHT * s;
   });
 
-  if (narrow || !top || !bottom) return null;
+  if (!top || !bottom) return null;
 
   return (
     // x 3.0, not centred: the headline and the idea pill are DOM over the
@@ -187,7 +201,7 @@ export function Laptop({
     // D 2.0).
     <group ref={root} position={[3.0, DESK_TOP_Y, -0.3]} scale={SCALE}>
       <group ref={lid} rotation={[LID_CLOSED, 0, 0]}>
-        <primitive object={top} dispose={null} />
+        <primitive object={top} />
         {/* her screen: a plane in lid space, with a dark plane behind it for
             the off state (the texture only reaches 0.96 opacity, and the lid's
             0xCECFD3 shell showing through 4% would wash the midnight out).
@@ -220,7 +234,7 @@ export function Laptop({
         />
       </group>
       <group>
-        <primitive object={bottom} dispose={null} />
+        <primitive object={bottom} />
         <mesh rotation={[-0.5 * Math.PI, 0, 0]} position={[0, 0.045, 7.21]}>
           <planeGeometry args={[27.7, 11.6]} />
           <meshBasicMaterial color={0xffffff} alphaMap={keysTex} transparent />
@@ -229,4 +243,3 @@ export function Laptop({
     </group>
   );
 }
-useGLTF.preload(LAPTOP_URL);

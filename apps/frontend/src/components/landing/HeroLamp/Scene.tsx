@@ -3,14 +3,14 @@
 import * as React from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, Lightformer, PerformanceMonitor } from "@react-three/drei";
+import { Environment, Lightformer, PerformanceMonitor, useGLTF } from "@react-three/drei";
 import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
 import { GLASS_CENTER_Y, LAMP_ANCHOR_Y, Lamp, easeStrike, type LampColors } from "./Lamp";
 import { Desk } from "./Desk";
-import { Laptop } from "./Laptop";
+import { LAPTOP_URL, Laptop } from "./Laptop";
 
 const STRIKE_MS = 700;
 // The room arriving: the laptop rises from below the frame onto the desk,
@@ -401,6 +401,14 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
     return () => io.disconnect();
   }, []);
 
+  // Warm drei's GLTF cache while the rest of the scene compiles — but only
+  // where the laptop is actually mounted, so a phone never downloads a model
+  // it will not draw. In an effect rather than at module scope for the same
+  // reason: importing this file must not start a megabyte of its own.
+  React.useEffect(() => {
+    if (!narrow) useGLTF.preload(LAPTOP_URL);
+  }, [narrow]);
+
   return (
     <div ref={host} className="ld-hero-canvas" aria-hidden="true">
       <Canvas
@@ -422,7 +430,11 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
             // frame after an idle reads as a couple of fps and a burst that
             // settles inside its 250ms window never samples at all. A GPU
             // genuinely struggling with this scene sits at 20-40.
-            if (api.fps < 20) return;
+            // Checked against `averages`, not `fps`: drei declines on the ten
+            // averages, and one idle gap poisons an individual average while
+            // `fps` (the LAST sample) has already recovered — the guard has to
+            // read the same numbers the decision was made from.
+            if (api.averages.some((f) => f < 20)) return;
             // One rung per decline: dpr to 1, then bloom off, then shadows off.
             if (dpr[1] > 1) setDpr(([lo]) => [lo, 1]);
             else setQuality((q) => (q > 0 ? ((q - 1) as Quality) : q));
@@ -452,12 +464,27 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
         </Environment>
 
         <Wall litRef={litRef} colors={colors} />
-        {/* The GLB + its keyboard overlay suspend; the room is drawn without
-            them until they land, and the lamp above never waits on them. */}
-        <React.Suspense fallback={null}>
-          <Desk colors={colors} shadows={quality > 0} />
-          <Laptop litRef={litRef} appearRef={appearRef} colors={colors} shadows={quality > 0} />
-        </React.Suspense>
+        {/* The desk is code, not an asset — it draws immediately, outside the
+            boundary, so the room is furnished before the GLB resolves. */}
+        <Desk colors={colors} shadows={quality > 0} />
+        {/* Only the GLB + its keyboard overlay suspend, so only they are
+            wrapped; the lamp above never waits on them either.
+
+            Under 640px the hero's copy and pill span the whole width, and the
+            desk band has no room left. Measured at 390x844 (canvas 375x758):
+            the desk projects 532..585, the idea card covers 433..564 across
+            the full width (22..353 of 375), and the fine copy starts at 582 —
+            so the only desk not behind DOM is a 21px strip, and the 22px side
+            margins are narrower than the closed lid. Every other gap
+            (397..433, 644..666, 710..758) is off the desk or inside the 140px
+            bottom fade. Off the desk it would still be a shadow caster and a
+            light — so it is not mounted at all, and (with the preload above
+            gated on the same flag) its GLB and PNG are never fetched. */}
+        {!narrow && (
+          <React.Suspense fallback={null}>
+            <Laptop litRef={litRef} appearRef={appearRef} colors={colors} shadows={quality > 0} />
+          </React.Suspense>
+        )}
         <Lamp
           litRef={litRef}
           anchorRef={anchorRef}

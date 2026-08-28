@@ -137,7 +137,7 @@ human step, rendered as an approval card:
 | Mail on own domain | SES identity per owner domain on the existing per-owner tenant (`agent_mail_tenant.py`) | none | DKIM/MAIL FROM/DMARC auto-published, zone is ours |
 | Hosted fallback pages | CloudFront SaaS Manager tenants (`<slug>.flickmeon.ai`, `support.<slug>.flickmeon.ai`) | none | |
 | SEO/AEO data | DataForSEO (platform key) | none | P5 |
-| Image/video | fal.ai (platform key) | none | P3 |
+| Image/video | NO new vendor (decided 2026-08-28): images via the owner's existing provider path — Bedrock owners get Amazon Nova Canvas / SD3.5 through the bedrock-gate (metered + capped like inference), BYO-OpenAI owners get gpt-image-1 on their own key; "video" formats are ffmpeg compositions in the container (caption-over-clip, text-hook video, carousel) exactly as Result does — Result exposes only gpt-4o-mini + gemini-2.5-flash(-image), no video model; real generated video/avatars/voice = HeyGen / ElevenLabs / OpenRouter provisioned on the owner's identity through Projects | none | P3 |
 | Enrichment | existing Apollo/Attio/Parallel rails | OAuth | |
 
 Not adopted: merchant-of-record (Paddle/Polar/Lemon Squeezy — 4–5% or no
@@ -321,7 +321,7 @@ async back-office jobs, one real record per card — on our cream/green brand.
 | Home | rollup | new |
 | Payments / Products / Customers | Connect reads + webhooks | new |
 | Spend | agent_budget / usage / Projects spend | reshape Usage |
-| Content | LLM + fal.ai rail; feedback votes = learning loop | new |
+| Content | owner's LLM path + Bedrock/OpenAI image models + ffmpeg templates; feedback votes = learning loop | new |
 | Publish | bundle.social (team per company; portal link; MCP for Friday) + Paperclip routines | new |
 | SEO & AEO | DataForSEO + Google rail | new (P5) |
 | Ads | `meta_ads` rail (+ Google Ads) | partial |
@@ -347,7 +347,7 @@ async back-office jobs, one real record per card — on our cream/green brand.
 - **P1 Money + Home** — Payments, Products, Customers, Spend, Home.
 - **P2 Knowledge + Support** — Brain UI; Support widget + hosted page +
   inbox; Library feed; redaction widening.
-- **P3 Growth** — Publish (bundle.social), Content grid (fal.ai), Leads, Blog;
+- **P3 Growth** — Publish (bundle.social), Content grid (owner's provider path + ffmpeg templates), Leads, Blog;
   Growth add-on pricing fence.
 - **P4 Company** — Domain & Site, Identity (doola + Stripe Identity), Ads
   (Google Ads rail), mail on own domain.
@@ -400,7 +400,7 @@ runtime → Paperclip + OpenClaw (in production; theirs is not). Connections →
 Lightbulb MCP. Apps/db/storage/functions/auth/compute/queue/sandbox →
 Projects on the owner's identity; our container is compute. Domains/email/
 phone → §3.3. LLM/audio/voice/images/video/clips → Bedrock/OAuth/BYO have;
-fal.ai P3; skip voice/clips. Browser → real Chrome with owner takeover
+images via owner's provider path P3, gen-video via Projects (HeyGen/ElevenLabs) on request; skip clips. Browser → real Chrome with owner takeover
 (have, better). Social → bundle.social. SEO/AEO/app/travel/reviews/places/e-com
 → DataForSEO for SEO/AEO only. People/company/social data → Apollo/Parallel.
 Cards → §3.3. Trading/x402/wallet → skip. Customer billing → Connect.

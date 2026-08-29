@@ -1200,7 +1200,15 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     const CFN_TEMPLATE_KEY = "aws-connector.yaml";
     const cfnTemplatesBucket = new s3.Bucket(this, "CfnTemplatesBucket", {
-      bucketName: `isol8-${env}-cfn-templates`,
+      // The one bucket name a CUSTOMER sees: it is the TemplateURL in the
+      // CloudFormation quick-create link on the AWS-connect flow.
+      //
+      // Renaming replaces the bucket, which is safe here in a way it is not for
+      // the other buckets: prod is RETAIN, so the old bucket is orphaned rather
+      // than deleted and keeps serving any quick-create link a customer already
+      // holds, and BucketDeployment repopulates the new one with the same single
+      // object. Delete the orphan only once you accept that held links break.
+      bucketName: `${resourcePrefix(env)}cfn-templates`,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: new s3.BlockPublicAccess({
         blockPublicAcls: true,
@@ -1546,7 +1554,7 @@ export class ServiceStack extends cdk.Stack {
       // as the quick-create TemplateURL (CloudFormation must fetch it
       // anonymously). Bucket name + key are fixed, so this is a literal string
       // — no cross-stack output ref needed (the bucket lives in this stack).
-      CFN_TEMPLATE_URL: `https://isol8-${env}-cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
+      CFN_TEMPLATE_URL: `https://${resourcePrefix(env)}cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
       // Stripe Connect onboarding redirects — environment-specific so
       // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
       // bounces sellers back here on refresh + completion.

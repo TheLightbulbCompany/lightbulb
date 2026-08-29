@@ -52,13 +52,60 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+/* Scales the plain-CSS files also need (landing.css, ChatLayout.css, …).
+   `static` emits every variable to :root even when no utility uses it;
+   `inline` still bakes the value into the utilities. */
+@theme static inline {
+  /* ── Radius scale: four steps. 4 (chips, inline controls), 8 (inputs,
+     buttons, rows), 12 (cards, popovers), 16 (dialogs, panels), full. The
+     larger Tailwind names collapse onto the same steps so nothing renders a
+     fifth. Hand-typed 7/10/14/18/20px radii are a bug; use these. */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+  --radius-4xl: 1.5rem;
+
+  /* ── Motion curves. Built-in CSS easings are too weak for deliberate UI, so
+     Tailwind's `ease-out` / `ease-in-out` utilities are repointed to these.
+     Entering/exiting → ease-out. Moving on screen → ease-in-out. Sheets and
+     drawers → ease-drawer. Never ease-in on UI. Clocks live on :root (--dur-*). */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ── Shadows: three, all cast in midnight (never neutral black on cream).
+     hair = a card resting on the page; pop = popovers/dropdowns/menus;
+     lift = dialogs and hovered cards. Recipes live on :root (see --shadow-hair);
+     Tailwind's sm/md/lg/xl map onto them so `shadow-md` is already on brand. */
+  --shadow-2xs: var(--shadow-hair);
+  --shadow-xs: var(--shadow-hair);
+  --shadow-sm: var(--shadow-hair);
+  --shadow-md: var(--shadow-pop);
+  --shadow-lg: var(--shadow-pop);
+  --shadow-xl: var(--shadow-lift);
+  --shadow-2xl: var(--shadow-lift);
+
+  /* ── Type scale additions. With Tailwind's xs (12) / sm (14) / base (16) /
+     lg (18) / xl (20) / 2xl (24) these make the seven UI steps:
+     10 · 11 · 12 · 13 · 14 · 16 · 22. Arbitrary `text-[Npx]` is a bug. */
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 1.4;
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 1.4;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.4;
+  --text-title: 1.375rem;
+  --text-title--line-height: 1.15;
+
+  /* ── Tracking is size-specific: display tightens, small caps open. Body 0. */
+  --tracking-display: -0.02em;
+  --tracking-caps: 0.12em;
 }
 
 /*
@@ -82,6 +129,29 @@
  */
 :root {
   --radius: 0.5rem;
+
+  /* Motion clocks. Utilities: `duration-(--dur-base)`; CSS: `var(--dur-base)`.
+     fast = press feedback, tooltips, hover colour · base = popovers, dropdowns,
+     list enter · slow = dialogs, drawers, panel swaps. UI never exceeds slow;
+     strike is the landing lamp's clock and marketing-only. */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+  --dur-strike: 700ms;
+
+  /* Layers. Chrome (sticky headers, toolbars) < overlays (dialogs, menus) <
+     toasts. A bare `z-50` on chrome ties with the dialog scrim; use these. */
+  --z-chrome: 20;
+  --z-overlay: 50;
+  --z-toast: 60;
+
+  /* Shadow recipes (defined here, not in @theme: Tailwind's optimizer rewrites
+     color-mix() inside theme values). The theme's sm/md/lg/xl point at these. */
+  --shadow-hair: 0 1px 0 color-mix(in srgb, var(--midnight) 4%, transparent);
+  --shadow-pop:
+    0 4px 12px color-mix(in srgb, var(--midnight) 8%, transparent),
+    0 12px 32px color-mix(in srgb, var(--midnight) 10%, transparent);
+  --shadow-lift: 0 16px 40px color-mix(in srgb, var(--midnight) 10%, transparent);
 
   --midnight: #0F1A2B;              /* headers, dark UI, all body copy on cream */
   --cream: #F5EFE2;                 /* default light ground; never pure white */
@@ -195,6 +265,27 @@
     /* §05: Source Sans 3 for everything that is not prose. */
     font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   }
+
+  /* The one focus recipe. Keyboard focus only (`:focus-visible`, never
+     `:focus`); midnight on cream, bulb on midnight via --ring. Components
+     do not carry their own `ring-*` / `outline` focus styles. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* The product's most repeated typographic element — the small uppercase
+   label over a section, a column, a field. One recipe: 10px · 600 · 0.12em ·
+   --midnight-label (4.55:1 on cream). On a stepped surface (cream-deep and
+   below) pair it with `text-midnight-soft`. */
+@utility label-caps {
+  font-size: 0.625rem;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--midnight-label);
 }
 
 @layer utilities {
@@ -1121,16 +1212,22 @@ button:focus-visible { border-radius: 999px; }
 .reveal-d2 { transition-delay: .16s; }
 .reveal-d3 { transition-delay: .24s; }
 
-/* ── REDUCED MOTION ── */
+/* ── REDUCED MOTION — gentler, not zero ──
+   Opacity and colour transitions stay (they aid comprehension); movement goes.
+   Spinners keep spinning — a frozen loader reads as a hang. Surfaces that carry
+   their own reduce rules (.agent-glyph, the provisioning stepper, the landing
+   lamp) still apply them; this block is the floor, not a universal nuke. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
-  .scroll-progress { transition: none; }
-  .hero-h1 em { background: none; -webkit-background-clip: unset; -webkit-text-fill-color: var(--midnight); color: var(--midnight); }
-  .wf-seq .wf-step-hd, .wf-seq .wf-chat-card, .wf-seq .wf-conn, .wf-seq .wf-hub, .wf-seq .wf-tasks-card,
-  .wf-seq .wf-bubble-u, .wf-seq .wf-bubble-a, .wf-seq .wf-int, .wf-seq .wf-agent-node,
-  .wf-seq .wf-task, .wf-seq .wf-conn-line, .wf-seq .wf-conn-badge { opacity: 1 !important; transform: none !important; }
-  .wf-seq .wf-check svg path { stroke-dashoffset: 0 !important; }
+  /* tw-animate-css enter/exit: keep the fade, zero the translate/scale/rotate.
+     Unlayered, so it beats the `slide-in-from-*` / `zoom-in-*` utilities. */
+  .animate-in, .animate-out {
+    --tw-enter-translate-x: 0; --tw-enter-translate-y: 0; --tw-enter-scale: 1; --tw-enter-rotate: 0;
+    --tw-exit-translate-x: 0; --tw-exit-translate-y: 0; --tw-exit-scale: 1; --tw-exit-rotate: 0;
+  }
+  .animate-pulse, .animate-ping, .animate-bounce { animation: none; }
+  .chat-block-in { animation-name: chat-block-fade; }
 }
+@keyframes chat-block-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ═══════════════════════════════════════════════
    LEGAL / SUPPORT PAGE STYLES

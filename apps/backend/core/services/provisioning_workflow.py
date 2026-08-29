@@ -175,7 +175,9 @@ def _drifted(before: dict, after: dict) -> bool:
     return any(before.get(k) != after.get(k) for k in keys)
 
 
-async def _account_id(owner_id: str) -> str:
+async def account_id_for(owner_id: str) -> str:
+    """The company Stripe account every provisioning call is made on. Public
+    so the container catalog route reads it the same way ``start`` does."""
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if not account_id:
@@ -288,7 +290,7 @@ async def start(
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish."""
-    account_id = await _account_id(owner_id)
+    account_id = await account_id_for(owner_id)
 
     elig = await api.eligibility(account_id)
     if not elig.get("is_eligible"):
@@ -351,7 +353,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
     row = await repo.get(workflow_id)
     if not row or row.get("state") != "awaiting_approval":
         return row
-    account_id = await _account_id(row["owner_id"])
+    account_id = await account_id_for(row["owner_id"])
     service, provider = await _read_catalog(account_id, row["provider_name"], row["service_id"])
     fresh = snapshot_of(service, provider, row.get("configuration") or {})
     if _drifted(row.get("approval") or {}, fresh):
@@ -933,7 +935,7 @@ async def advance(workflow: dict) -> dict:
     state = workflow.get("state")
     if state in repo.TERMINAL_STATES or state in ("ask", "awaiting_approval"):
         return workflow
-    account_id = await _account_id(workflow["owner_id"])
+    account_id = await account_id_for(workflow["owner_id"])
     if state in ("awaiting_user_action", "stale"):
         return await _poll_user_action(account_id, workflow)
     if state == "connecting_provider":

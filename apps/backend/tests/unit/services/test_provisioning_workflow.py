@@ -343,6 +343,28 @@ async def test_catalog_drift_after_approval_files_a_fresh_card():
 
 
 @pytest.mark.asyncio
+async def test_a_drifted_consent_card_nobody_can_answer_parks_the_row():
+    """The fifth card site: a drift re-file that returns None must park, not
+    leave the row in awaiting_approval with no card."""
+    row = _row(state="awaiting_approval", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    now_paid = {
+        **SERVICE,
+        "pricing": {"type": "paid", "paid_pricing": [{"type": "freeform", "freeform": "$20/mo", "is_default": True}]},
+    }
+    mod.provisioning_approvals.request_provider_consent.return_value = None
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[now_paid])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["to_state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "no_company"
+
+
+@pytest.mark.asyncio
 async def test_paid_service_without_a_payment_profile_files_the_payment_card():
     paid = {
         **SERVICE,

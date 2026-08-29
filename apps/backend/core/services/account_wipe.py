@@ -102,7 +102,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
-from core.services import clerk_admin
+from core.services import clerk_admin, company_stripe
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -342,6 +342,25 @@ def _skip(steps: list[WipeStep], system: str, action: str, detail: str) -> None:
     steps.append(WipeStep(system=system, action=action, status="skipped", detail=detail))
 
 
+async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str, billing_row: dict | None) -> None:
+    """Step 8b: revoke the platform's link to the company's Stripe account.
+
+    NEVER deletes the account — it is the owner's business account and keeps
+    working as a normal Stripe account after we let go (spec §3.6).
+    """
+    account_id = (billing_row or {}).get("company_stripe_account_id")
+    if not account_id:
+        _skip(steps, "stripe", "deauthorize_company_account", "no company_stripe_account_id on billing row")
+        return
+
+    async def _s8b(account_id: str = account_id) -> str:
+        await company_stripe.deauthorize(account_id=account_id)
+        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+        return f"company_stripe_account_id={account_id} deauthorized (account retained by owner)"
+
+    await _step(steps, system="stripe", action="deauthorize_company_account", fn=_s8b)
+
+
 def _preview_step(
     steps: list[WipeStep],
     *,
@@ -460,6 +479,16 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         exists=bool(stripe_customer_id),
         detail_if_exists=stripe_customer_id or "",
         detail_if_absent="no stripe_customer_id on billing row",
+    )
+
+    company_stripe_account_id = (ids.billing or {}).get("company_stripe_account_id")
+    _preview_step(
+        steps,
+        system="stripe",
+        action="deauthorize_company_account",
+        exists=bool(company_stripe_account_id),
+        detail_if_exists=company_stripe_account_id or "",
+        detail_if_absent="no company_stripe_account_id on billing row",
     )
 
     # usage-counters has no cheap existence check (would need a bounded
@@ -794,6 +823,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         await _step(steps, system="stripe", action="delete_stripe_customer", fn=_s8)
     else:
         _skip(steps, "stripe", "delete_stripe_customer", "no stripe_customer_id on billing row")
+
+    # --- Step 8b: company Stripe account — deauthorize only ------------------
+    await _wipe_company_stripe(steps, owner_id=owner_id, billing_row=ids.billing)
 
     # --- Step 9 (spec #11, remaining tables) -------------------------------
     # containers + channel-links already removed inside step 3 above.

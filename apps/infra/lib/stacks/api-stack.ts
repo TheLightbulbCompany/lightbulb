@@ -666,11 +666,17 @@ export class ApiStack extends cdk.Stack {
         },
       );
 
-      new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
+      const wsMapping = new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
         apiId: wsApi.apiId,
         domainName: wsDomainName.ref,
         stage: env,
       });
+      // `stage` is a literal, so nothing ties the mapping to the Stage
+      // resource and CloudFormation creates them concurrently. On a fresh
+      // stack the mapping then races the stage and fails with "Invalid stage
+      // identifier" (prod api recreate, 2026-08-29, twice at the same second).
+      // The HTTP mapping above already carries this edge.
+      wsMapping.addDependency(wsStageResource.node.defaultChild as apigatewayv2.CfnStage);
 
       // --- Route53 A record for WebSocket API ---
       new route53.ARecord(this, "WsApiDnsRecord", {

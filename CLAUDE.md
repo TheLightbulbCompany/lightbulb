@@ -424,6 +424,14 @@ Mostly one repo per DynamoDB table (`marketplace_repo.py` fronts five
 marketplace tables); items are plain dicts. Table names follow
 `isol8-{env}-{suffix}` (see `database-stack.ts`).
 
+The **Stripe Projects provisioning rail** keeps its `integrations` rows and its
+Secrets Manager blobs under **`projects/{provider}`** (`integrations_repo.projects_key`)
+— never the bare provider, which the OAuth rail owns and four providers share
+(stripe/posthog/sentry/cloudflare). A bare-key write makes the provider look
+OAuth-connected to every reader and lets an OAuth Disconnect force-delete the
+Projects credentials. Readers inject only the names `provider_resources[].env_keys`
+declares.
+
 ### Container Orchestration (`core/containers/`)
 
 | File | Purpose |
@@ -763,6 +771,10 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 - Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
   with NFS).
 - `chown` to UID 1000 after write (OpenClaw runs as node)
+- `env.vars` is re-asserted at every provision from Secrets Manager by
+  `provisioning_landing.build_provisioned_env` — same class as the
+  `integration_mcp_servers` merge. A reprovision overwrites openclaw.json
+  wholesale, so anything not re-injected there is simply dropped.
 
 ---
 
@@ -799,6 +811,8 @@ POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → 
                 └─ openclaw-slice.json (slice to be deep-merged into buyer's openclaw.json)
 POST /listings/{id}/submit                              (draft → review)
 ```
+
+`.projects/` and `.stripe` (the Stripe Projects vault + CLI session) are named in `_SKIP_DIR_NAMES` as **greppable intent only** — the real exclusion is structural: Friday runs the CLI in the EFS root, a sibling of every `workspace-{id}/`, and the dotfile rule drops them at any depth.
 
 **Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
 

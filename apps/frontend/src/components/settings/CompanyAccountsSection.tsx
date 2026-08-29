@@ -7,6 +7,7 @@ import { notifyApiError } from "@/lib/notify";
 
 // Fallback deep links for providers whose `landed` post carried no dashboard
 // URL. Only providers the Projects catalog actually serves (spec §3.2).
+// Doubles as the ALLOWLIST for `dashboard_url` — see dashboardHref.
 const PROVIDER_HOME: Record<string, string> = {
   posthog: "https://posthog.com",
   vercel: "https://vercel.com/dashboard",
@@ -35,6 +36,30 @@ type Resource = {
 type AccountsPayload = { resources: Resource[]; stripe_cli: "paired" | "unpaired" };
 
 const PATH = "/company/provisioning/resources";
+
+/** Where "Open dashboard" may point, or null for no link at all.
+ *
+ * `dashboard_url` comes from an LLM-driven agent, so it is honoured only when it
+ * parses, is https, and sits on the provider's OWN host (exact, or a subdomain
+ * of it) — `us.posthog.com` works, an attacker-chosen host does not. Otherwise
+ * the provider's known home page; and for a provider we have no home page for,
+ * NO link, because a guessed `https://{provider}.com` is a host somebody else
+ * owns. `Object.hasOwn` because `provider` is untrusted too. */
+export function dashboardHref(provider: string, dashboardUrl?: string | null): string | null {
+  const home = Object.hasOwn(PROVIDER_HOME, provider) ? PROVIDER_HOME[provider] : undefined;
+  if (dashboardUrl && home) {
+    try {
+      const url = new URL(dashboardUrl);
+      const host = new URL(home).hostname;
+      if (url.protocol === "https:" && (url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+        return dashboardUrl;
+      }
+    } catch {
+      // Unparseable — fall through to the provider home.
+    }
+  }
+  return home ?? null;
+}
 
 export function CompanyAccountsSection({ canManage }: { canManage: boolean }) {
   const api = useApi();
@@ -92,31 +117,31 @@ export function CompanyAccountsSection({ canManage }: { canManage: boolean }) {
             </p>
           ) : (
             <ul className="flex flex-col gap-2">
-              {data?.resources.map((r) => (
-                <li key={`${r.provider}/${r.resource_id}`} className="flex flex-wrap items-center gap-3 text-sm">
-                  <span className="font-medium text-[var(--midnight)]">{r.provider}</span>
-                  <span className="text-[var(--midnight-muted)]">{r.service}</span>
-                  {r.resource_name && <span className="text-[var(--midnight-muted)]">{r.resource_name}</span>}
-                  <span className="text-[var(--midnight-muted)]">{r.status}</span>
-                  {/* Spec §3.4: state the level per resource. */}
-                  <span className="text-[var(--midnight-muted)]">
-                    {r.level === "company" ? "Company-level" : "Agent-level"}
-                  </span>
-                  <a
-                    className="settings-btn-outline"
-                    href={r.dashboard_url ?? PROVIDER_HOME[r.provider] ?? `https://${r.provider}.com`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open dashboard
-                  </a>
-                  {canManage && (
-                    <button type="button" className="settings-btn-outline" disabled={busy} onClick={() => revoke(r)}>
-                      Revoke
-                    </button>
-                  )}
-                </li>
-              ))}
+              {data?.resources.map((r) => {
+                const href = dashboardHref(r.provider, r.dashboard_url);
+                return (
+                  <li key={`${r.provider}/${r.resource_id}`} className="flex flex-wrap items-center gap-3 text-sm">
+                    <span className="font-medium text-[var(--midnight)]">{r.provider}</span>
+                    <span className="text-[var(--midnight-muted)]">{r.service}</span>
+                    {r.resource_name && <span className="text-[var(--midnight-muted)]">{r.resource_name}</span>}
+                    <span className="text-[var(--midnight-muted)]">{r.status}</span>
+                    {/* Spec §3.4: state the level per resource. */}
+                    <span className="text-[var(--midnight-muted)]">
+                      {r.level === "company" ? "Company-level" : "Agent-level"}
+                    </span>
+                    {href && (
+                      <a className="settings-btn-outline" href={href} target="_blank" rel="noopener noreferrer">
+                        Open dashboard
+                      </a>
+                    )}
+                    {canManage && (
+                      <button type="button" className="settings-btn-outline" disabled={busy} onClick={() => revoke(r)}>
+                        Revoke
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </>

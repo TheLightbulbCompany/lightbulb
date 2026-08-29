@@ -373,10 +373,11 @@ the login with the command `stripe login` printed as its `next_step`:
 stripe login --complete '<the url from next_step>'
 ```
 
-Read the outcome from Paperclip — `GET /api/approvals/<approval_id>`, or the
-approval wake — never by polling the backend; these routes file cards, they do
-not report on them. Say in your reply that you asked, and keep working on
-everything that does not need the account. This is never a gate.
+Read the outcome the way you read any approval: wait for the approval wake, or
+read the card in your own Paperclip surface. Never poll the backend for it —
+these routes file cards, they do not report on them. Say in your reply that you
+asked, and keep working on everything that does not need the account. This is
+never a gate.
 
 **Step 2 — find the exact service, then get the owner's consent.** Once per
 provider+service, before you add anything.
@@ -454,6 +455,8 @@ so read the right one:
 - **503** — the board was unreachable. Say so and retry on your next turn.
 - **502** — the board REFUSED. Retrying changes nothing: tell the owner what it
   said, verbatim, and move on.
+- **5xx (anything else)** — retry on your next turn: nothing was stored, or the
+  retry finishes it. The calls are safe to repeat.
 
 Never:
 

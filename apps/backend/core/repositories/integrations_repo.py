@@ -148,6 +148,71 @@ async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list
     )
 
 
+# ---------------------------------------------------------------------------
+# Provider resources provisioned through Stripe Projects.
+#
+# POINTERS ONLY (spec §2, §4.3): resource id, name, service, status, env var
+# NAMES, dashboard URL. Never a value — credentials live in Secrets Manager
+# (integration_secret_store), never in DynamoDB (spec §3.5).
+#
+# UpdateExpression rather than put_status's put_item: put_status full-replaces
+# the item, so routing these through it would drop identity /
+# google_watch_channels / meta_webhook_bindings. Same reasoning as
+# set_google_watch_channels above.
+# ---------------------------------------------------------------------------
+
+PROJECTS_ACTOR = "projects"
+
+
+async def list_provider_resources(owner_id: str, provider: str) -> list[dict]:
+    row = await get(owner_id, provider)
+    return list((row or {}).get("provider_resources") or [])
+
+
+async def _write_provider_resources(owner_id: str, provider: str, resources: list[dict]) -> list[dict]:
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression=(
+            "SET provider_resources = :r, actor = :a, #st = :s, updated_at = :now, "
+            "connected_at = if_not_exists(connected_at, :now)"
+        ),
+        # `status` is a DynamoDB reserved word.
+        ExpressionAttributeNames={"#st": "status"},
+        ExpressionAttributeValues={":r": resources, ":a": PROJECTS_ACTOR, ":s": "connected", ":now": now},
+    )
+    return resources
+
+
+async def record_provider_resource(owner_id: str, provider: str, resource: dict) -> list[dict]:
+    """Upsert one provisioned resource pointer. Idempotent per ``resource_id``.
+
+    Read-modify-write of a per-(owner, provider) list. The only writer is the
+    container's `landed` post, and one agent cannot land two resources for the
+    same provider at once, so a lost update needs two backend instances serving
+    the same owner mid-deploy — at which point Friday's next `landed` restores
+    the missing pointer.
+    """
+    resource_id = resource.get("resource_id")
+    if not resource_id:
+        raise ValueError("resource must carry a resource_id")
+    existing = await list_provider_resources(owner_id, provider)
+    merged = [r for r in existing if r.get("resource_id") != resource_id] + [resource]
+    merged.sort(key=lambda r: r.get("resource_id") or "")
+    return await _write_provider_resources(owner_id, provider, merged)
+
+
+async def remove_provider_resource(owner_id: str, provider: str, resource_id: str) -> list[dict]:
+    """Drop OUR pointer to a resource. Does NOT touch the provider — the owner
+    owns that resource and keeps it (spec §3.6)."""
+    existing = await list_provider_resources(owner_id, provider)
+    kept = [r for r in existing if r.get("resource_id") != resource_id]
+    if len(kept) == len(existing):
+        return existing
+    return await _write_provider_resources(owner_id, provider, kept)
+
+
 async def scan_all() -> list[dict]:
     """Every row in the table, paginated.
 

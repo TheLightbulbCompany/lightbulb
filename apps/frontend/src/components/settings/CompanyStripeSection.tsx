@@ -65,7 +65,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   }
 
   const bound = Boolean(data?.account_id);
-  // Both OAuth doors 503 without the platform client id, so don't offer the
+  // Both OAuth doors 409 without the platform client id, so don't offer the
   // one that only exists there, and say why the exit is unavailable.
   const connectConfigured = Boolean(data?.connect_configured);
 

@@ -85,18 +85,18 @@ def test_status_reports_connect_unconfigured(client, monkeypatch):
     assert resp.json()["connect_configured"] is False
 
 
-def test_connect_start_503_when_unconfigured(client, monkeypatch):
+def test_connect_start_409_when_unconfigured(client, monkeypatch):
     """Fail closed BEFORE the state row is written — an authorize URL with an
     empty client_id is a dead end the owner has to discover at Stripe."""
     monkeypatch.setattr(mod.settings, "STRIPE_CONNECT_CLIENT_ID", "")
     with patch.object(mod.oauth_state_repo, "put", AsyncMock()) as put:
         resp = client.get("/api/v1/company/stripe/connect/start")
-    assert resp.status_code == 503
+    assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "stripe_connect_not_configured"
     put.assert_not_awaited()
 
 
-def test_disconnect_503_when_unconfigured(client, monkeypatch):
+def test_disconnect_409_when_unconfigured(client, monkeypatch):
     monkeypatch.setattr(mod.settings, "STRIPE_CONNECT_CLIENT_ID", "")
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     with (
@@ -105,7 +105,7 @@ def test_disconnect_503_when_unconfigured(client, monkeypatch):
         patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
     ):
         resp = client.post("/api/v1/company/stripe/disconnect")
-    assert resp.status_code == 503
+    assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "stripe_connect_not_configured"
     deauth.assert_not_awaited()
     clear.assert_not_awaited()

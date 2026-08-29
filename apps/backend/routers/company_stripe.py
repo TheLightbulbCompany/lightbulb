@@ -55,7 +55,7 @@ def _require_connect_configured() -> None:
     row bound with no way out. Fail closed, before either side effect."""
     if not settings.STRIPE_CONNECT_CLIENT_ID:
         raise HTTPException(
-            status_code=503,
+            status_code=409,
             detail={
                 "code": "stripe_connect_not_configured",
                 "message": "Stripe Connect isn't configured for this environment yet",

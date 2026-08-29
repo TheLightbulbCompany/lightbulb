@@ -175,7 +175,7 @@ export default async function ListingsBrowse({
           defaultValue={q}
           placeholder="Search by name, slug, tag, description…"
           aria-label="Search listings"
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
         />
         <button
           type="submit"

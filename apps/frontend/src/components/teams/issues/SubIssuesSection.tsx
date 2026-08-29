@@ -32,7 +32,7 @@ export function SubIssuesSection({
 
   const newButton = (
     <EditorialButton variant="secondary" size="sm" onClick={() => setDialogOpen(true)}>
-      <Plus className="mr-1.5 h-3.5 w-3.5" />
+      <Plus size={16} className="mr-1.5" />
       New Sub-issue
     </EditorialButton>
   );

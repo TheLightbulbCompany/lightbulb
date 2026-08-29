@@ -54,7 +54,7 @@ export function ProjectPicker({
           )}
           style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
         >
-          <Folder className="h-3.5 w-3.5" />
+          <Folder size={16} />
           <span>{triggerLabel}</span>
         </button>
       </PopoverTrigger>
@@ -72,7 +72,7 @@ export function ProjectPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -80,7 +80,7 @@ export function ProjectPicker({
             <button
               type="button"
               onClick={() => handleSelect(null)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+              className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
               style={{ color: "var(--midnight-muted)" }}
             >
               Clear project
@@ -95,7 +95,7 @@ export function ProjectPicker({
               <button
                 type="button"
                 onClick={() => handleSelect(project.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+                className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
               >
                 {project.name}
               </button>

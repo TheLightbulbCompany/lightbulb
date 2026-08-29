@@ -391,7 +391,7 @@ export function PublishWizard() {
         <div
           role="alert"
           data-testid="wizard-rejection-banner"
-          className="mb-4 rounded-xl border border-[var(--err)] px-3.5 py-2.5 text-[13px] text-[var(--err)] leading-snug"
+          className="mb-4 rounded-xl border border-[var(--err)] px-3.5 py-2.5 text-ui text-[var(--err)] leading-snug"
         >
           <strong className="block font-semibold text-[var(--err)]">
             Admin sent this listing back for revisions.
@@ -403,7 +403,7 @@ export function PublishWizard() {
         <div
           role="status"
           data-testid="wizard-review-pullback-banner"
-          className="mb-4 rounded-xl border border-[var(--warn)] px-3.5 py-2.5 text-[13px] text-[var(--warn)] leading-snug"
+          className="mb-4 rounded-xl border border-[var(--warn)] px-3.5 py-2.5 text-ui text-[var(--warn)] leading-snug"
         >
           <strong className="block font-semibold text-[var(--warn)]">
             This listing is currently in review.
@@ -420,7 +420,7 @@ export function PublishWizard() {
             className={`w-5 h-1 rounded-full ${n <= step ? "bg-[var(--midnight)]" : "bg-[var(--edge)]"}`}
           />
         ))}
-        <span className="text-[11.5px] text-muted-foreground ml-2">
+        <span className="text-caption text-muted-foreground ml-2">
           {step === 6
             ? isEditing
               ? "Resubmitted"
@@ -433,12 +433,12 @@ export function PublishWizard() {
         <div
           role="region"
           aria-label="Marketplace handle required"
-          className="mb-4 rounded-2xl border border-[var(--warn)] px-3.5 py-3 text-[var(--warn)]"
+          className="mb-4 rounded-xl border border-[var(--warn)] px-3.5 py-3 text-[var(--warn)]"
         >
-          <div className="text-[12.5px] font-semibold text-[var(--warn)] mb-1">
+          <div className="text-ui font-semibold text-[var(--warn)] mb-1">
             Pick a marketplace handle before publishing
           </div>
-          <p className="text-[12px] mb-3 leading-snug">
+          <p className="text-xs mb-3 leading-snug">
             Your handle appears on every listing byline and on (future) credibility
             surfaces. You can change it later from Settings → Marketplace.
           </p>
@@ -481,7 +481,7 @@ export function PublishWizard() {
             type="button"
             onClick={back}
             disabled={step <= stepFloor || submitting}
-            className="text-muted-foreground hover:bg-cream-deep px-4 py-2 rounded-full text-[14px] disabled:opacity-30"
+            className="text-muted-foreground hover:bg-cream-deep px-4 py-2 rounded-full text-sm disabled:opacity-50"
           >
             Back
           </button>
@@ -490,7 +490,7 @@ export function PublishWizard() {
               type="button"
               onClick={cancel}
               disabled={submitting}
-              className="text-muted-foreground hover:bg-cream-deep px-4 py-2 rounded-full text-[14px]"
+              className="text-muted-foreground hover:bg-cream-deep px-4 py-2 rounded-full text-sm"
             >
               Cancel
             </button>
@@ -505,7 +505,7 @@ export function PublishWizard() {
                 // content surfaces the picker.
                 (step === 5 && profileChecked && !sellerProfile)
               }
-              className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
+              className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-5 py-2 rounded-full text-sm font-semibold disabled:opacity-50"
             >
               {step === 5
                 ? isEditing
@@ -520,7 +520,7 @@ export function PublishWizard() {
       {duplicateListingId && (
         <div
           role="alert"
-          className="mt-3 rounded-md border border-[var(--warn)] px-3 py-2.5 text-[13px] text-[var(--warn)]"
+          className="mt-3 rounded-md border border-[var(--warn)] px-3 py-2.5 text-ui text-[var(--warn)]"
         >
           <p>
             This agent is already published. Publishing again would create a
@@ -539,7 +539,7 @@ export function PublishWizard() {
       )}
 
       {submitError && (
-        <p role="alert" className="mt-3 text-[13px] text-[var(--err)]">
+        <p role="alert" className="mt-3 text-ui text-[var(--err)]">
           {submitError}
         </p>
       )}

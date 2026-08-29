@@ -64,7 +64,7 @@ function CommandWithSpans({
       parts.push(<span key={`p${i}`}>{command.slice(cursor, s.startIndex)}</span>);
     }
     parts.push(
-      <mark key={`m${i}`} className="bg-bulb text-[var(--midnight)] rounded px-0.5">
+      <mark key={`m${i}`} className="bg-bulb text-[var(--midnight)] rounded-sm px-0.5">
         {command.slice(s.startIndex, s.endIndex)}
       </mark>,
     );
@@ -163,7 +163,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
   };
 
   return (
-    <div className="rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3 text-sm">
+    <div className="rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3 text-sm transition-[opacity,translate] duration-(--dur-base) ease-out starting:translate-y-1 starting:opacity-0 motion-reduce:transition-[opacity]">
       {pending.kind === "plugin" ? (
         <>
           <div className="flex items-start justify-between gap-2">
@@ -177,7 +177,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
         <>
           <div className="flex items-start justify-between gap-2">
             <CommandWithSpans command={pending.command} spans={pending.commandSpans} />
-            <span className="inline-flex items-center px-2 py-0.5 text-xs rounded bg-cream-deep text-[var(--midnight)] shrink-0">
+            <span className="inline-flex items-center px-2 py-0.5 text-xs rounded-sm bg-cream-deep text-[var(--midnight)] shrink-0">
               {HOST_LABEL[pending.host]}
             </span>
           </div>

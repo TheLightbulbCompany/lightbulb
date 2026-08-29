@@ -38,9 +38,9 @@ type UserData = {
   byo_provider?: ByoProvider | null;
 };
 
-const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center flex-shrink-0";
+const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center shrink-0";
 const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
+const EYEBROW = "label-caps";
 
 // Dot color is driven by the container's live models.authStatus, not the
 // chip label — the label states which provider is configured, the dot states
@@ -54,7 +54,7 @@ const DOT_CLASS: Record<DotColor, string> = {
 
 function StatusChip({ label, dotColor }: { label: string; dotColor: DotColor }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--midnight)]/10 text-[var(--midnight)] px-2 py-0.5 text-xs font-medium">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--cream-deep)] text-[var(--midnight)] px-2 py-0.5 text-xs font-medium">
       <span
         data-testid="provider-health-dot"
         data-color={dotColor}
@@ -207,7 +207,7 @@ function CodingHarnessBlock() {
             </a>{" "}
             and enter this code:
           </p>
-          <p className="font-mono text-lg tracking-widest text-[var(--midnight)]">{state.userCode}</p>
+          <p className="font-mono text-title tracking-caps text-[var(--midnight)]">{state.userCode}</p>
           {state.expiresAt - now <= 0 ? (
             <>
               <p className="text-xs text-[var(--err)]">
@@ -328,7 +328,7 @@ function BedrockBlock({
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
   bedrock_claude: <AnthropicIcon size={24} />,
   chatgpt_oauth: <OpenAIIcon size={24} />,
-  byo_key: <KeyRound size={22} className="text-[var(--midnight-muted)]" />,
+  byo_key: <KeyRound size={20} className="text-[var(--midnight-muted)]" />,
 };
 
 /**
@@ -362,7 +362,7 @@ function ProviderChoiceCards({
               type="button"
               onClick={() => onPick(card.id)}
               disabled={committing !== null}
-              className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)]/40 hover:bg-[var(--cream-deep)]/60 disabled:opacity-60 disabled:hover:bg-cream"
+              className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)] disabled:opacity-50 disabled:hover:bg-cream"
             >
               {/* Icon sits beside the copy on narrow widths (stacked cards
                   would otherwise be needlessly tall) and above it once the
@@ -374,7 +374,7 @@ function ProviderChoiceCards({
                   <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
                   {busy && (
                     <p className="mt-2 flex items-center gap-1.5 text-xs text-[var(--midnight)]">
-                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                       Setting up…
                     </p>
                   )}
@@ -528,7 +528,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Model & Credits</h2>
+        <h2 className="font-editorial-serif text-title">Model & Credits</h2>
         <button
           type="button"
           // The read hook only auto-revalidates on a matching gateway *event*,

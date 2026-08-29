@@ -110,7 +110,7 @@ export function PluginsTab() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -120,7 +120,7 @@ export function PluginsTab() {
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -131,7 +131,7 @@ export function PluginsTab() {
       <div className="p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
+            <h2 className="font-editorial-serif text-title">
               Plugins
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
@@ -140,12 +140,12 @@ export function PluginsTab() {
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           </Button>
         </div>
 
         {toggleError && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] border border-err/20">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-err">
             <span className="text-xs text-err">{toggleError}</span>
           </div>
         )}
@@ -161,7 +161,7 @@ export function PluginsTab() {
             <div key={row.id} className="rounded-xl border border-[var(--edge)] bg-cream p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <Package className="h-5 w-5 text-[var(--midnight-muted)] flex-shrink-0 mt-0.5" />
+                  <Package size={20} className="text-[var(--midnight-muted)] shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3
@@ -169,11 +169,11 @@ export function PluginsTab() {
                       >
                         {row.id}
                       </h3>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
                         {row.kind}
                       </span>
                       {row.locked && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
                           Managed
                         </span>
                       )}
@@ -186,7 +186,7 @@ export function PluginsTab() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <span className={cn("text-xs font-medium", row.enabled ? "text-ok" : "text-[var(--midnight-muted)]")}>
                     {row.enabled ? "Enabled" : "Disabled"}
                   </span>
@@ -197,7 +197,7 @@ export function PluginsTab() {
                       className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:border-[var(--midnight-faint)] transition-colors disabled:opacity-50"
                     >
                       {busyId === row.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
+                        <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                       ) : row.enabled ? (
                         "Disable"
                       ) : (

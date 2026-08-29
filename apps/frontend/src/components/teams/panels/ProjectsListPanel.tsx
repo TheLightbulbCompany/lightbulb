@@ -195,7 +195,7 @@ function CreateProjectDialog({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
@@ -203,18 +203,18 @@ function CreateProjectDialog({
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
             rows={3}
           />
         </label>
         {err && (
           <div
-            className="text-[var(--err)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
+                "1px solid var(--err)",
               background:
-                "color-mix(in srgb, var(--err) 6%, transparent)",
+                "var(--cream)",
             }}
           >
             {err}

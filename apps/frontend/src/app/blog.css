@@ -57,7 +57,7 @@
   border-radius: 16px;
   background: color-mix(in srgb, var(--cream) 50%, transparent);
   overflow: hidden;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
 }
 /* Editorial index numeral (01, 02 …) — decorative, drawn from CSS counter. */
 .blog-card::before {
@@ -70,7 +70,7 @@
   font-size: 12px;
   letter-spacing: 0.1em;
   color: var(--midnight-faint);
-  transition: color 0.2s ease;
+  transition: color var(--dur-base) ease;
 }
 /* Forest hairline that wipes in from the left edge on hover. */
 .blog-card::after {
@@ -83,11 +83,11 @@
   background: var(--midnight);
   transform: scaleX(0);
   transform-origin: left;
-  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 .blog-card:hover {
   border-color: var(--edge);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--midnight) 6%, transparent);
+  box-shadow: var(--shadow-pop);
   transform: translateY(-2px);
 }
 .blog-card:hover::before {
@@ -140,7 +140,7 @@
   color: var(--midnight);
 }
 .blog-card-arrow {
-  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 .blog-card:hover .blog-card-arrow {
   transform: translateX(4px);
@@ -156,7 +156,7 @@
 .blog-back a {
   color: var(--midnight-muted);
   text-decoration: none;
-  transition: color 0.2s ease;
+  transition: color var(--dur-base) ease;
 }
 .blog-back a:hover {
   color: var(--midnight);
@@ -446,7 +446,7 @@
   line-height: 1.45;
   padding: 10px 12px;
   text-decoration: none;
-  transition: background 160ms ease;
+  transition: background var(--dur-base) ease;
 }
 
 .docs-nav a:hover {
@@ -476,7 +476,7 @@
   border: 1px solid color-mix(in srgb, var(--midnight) 16%, transparent);
   border-radius: 28px;
   background: color-mix(in srgb, var(--cream) 78%, transparent);
-  box-shadow: 0 18px 60px color-mix(in srgb, var(--midnight) 8%, transparent);
+  box-shadow: var(--shadow-lift);
   padding: 28px;
 }
 

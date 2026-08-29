@@ -155,7 +155,7 @@ export function SwipeToArchive({
         }}
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">
-          <Archive className="h-4 w-4" />
+          <Archive size={16} />
           Archive
         </span>
       </div>

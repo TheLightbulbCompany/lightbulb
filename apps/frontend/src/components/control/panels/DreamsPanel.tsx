@@ -37,7 +37,7 @@ export function DreamsPanel() {
   if (isLoading && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -46,7 +46,7 @@ export function DreamsPanel() {
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">Failed to load dreams: {error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -58,8 +58,8 @@ export function DreamsPanel() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Moon className="h-5 w-5 text-[var(--midnight-muted)]" />
-          <h2 className="text-lg font-medium text-[var(--midnight)]">Dreams</h2>
+          <Moon size={20} className="text-[var(--midnight-muted)]" />
+          <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Dreams</h2>
         </div>
         {agents.length > 1 && (
           <select
@@ -116,7 +116,7 @@ function SceneTab({
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2 text-sm">
-        <Sparkles className="h-4 w-4 text-[var(--midnight-muted)]" />
+        <Sparkles size={16} className="text-[var(--midnight-muted)]" />
         <span className="font-medium">Dreaming</span>
         <span className={dreaming.enabled ? "text-ok" : "text-[var(--midnight-muted)]"}>
           {dreaming.enabled ? "active" : "idle"}
@@ -174,7 +174,7 @@ function PhaseToggles({
 
   return (
     <div>
-      <p className="text-xs uppercase tracking-wide text-[var(--midnight-muted)] mb-2">Sleep phases</p>
+      <p className="label-caps text-[var(--midnight-muted)] mb-2">Sleep phases</p>
       <div className="space-y-2">
         {PHASE_ORDER.map((key) => {
           const on = dreaming?.phases?.[key]?.enabled ?? false;
@@ -182,7 +182,7 @@ function PhaseToggles({
             <div key={key} className="flex items-center justify-between rounded-lg border bg-cream px-3 py-2">
               <div className="flex items-center gap-2 text-sm">
                 <span className={`h-2 w-2 rounded-full ${on ? "bg-ok" : "bg-[var(--edge)]"}`} />
-                {key === "light" ? <Sun className="h-3.5 w-3.5 text-[var(--midnight-muted)]" /> : <Moon className="h-3.5 w-3.5 text-[var(--midnight-muted)]" />}
+                {key === "light" ? <Sun size={16} className="text-[var(--midnight-muted)]" /> : <Moon size={16} className="text-[var(--midnight-muted)]" />}
                 <span>{PHASE_LABEL[key]}</span>
                 {key === "deep" && <span className="text-xs text-warn">requires 6.6 image</span>}
               </div>
@@ -207,7 +207,7 @@ function PhaseToggles({
 function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border bg-cream p-3">
-      <p className="text-2xl font-semibold text-[var(--midnight)]">{value}</p>
+      <p className="text-title tabular-nums text-[var(--midnight)]">{value}</p>
       <p className="text-xs text-[var(--midnight-muted)]">{label}</p>
     </div>
   );
@@ -218,14 +218,14 @@ function DiaryTab({ params }: { params: Record<string, unknown> }) {
     "doctor.memory.dreamDiary",
     params,
   );
-  if (isLoading && !data) return <Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)]" />;
+  if (isLoading && !data) return <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)]" />;
   if (error && !data) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!data?.found || !data.content) {
     return (
       <div className="space-y-2">
         <p className="text-sm text-[var(--midnight-muted)]">No DREAMS.md yet — REM/deep phases populate it nightly.</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
+          <RefreshCw size={16} className="mr-1.5" /> Reload
         </Button>
       </div>
     );
@@ -235,7 +235,7 @@ function DiaryTab({ params }: { params: Record<string, unknown> }) {
       <div className="flex items-center justify-between">
         <p className="text-xs text-[var(--midnight-muted)]">{data.path}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
+          <RefreshCw size={16} className="mr-1.5" /> Reload
         </Button>
       </div>
       <pre className="whitespace-pre-wrap text-sm bg-cream border rounded-lg p-4 max-h-[60vh] overflow-auto">

@@ -4,14 +4,8 @@
 // (paperclip/ui/src/components/ProductivityReviewBadge.tsx) (MIT, (c) 2025
 // Paperclip AI). Two deviations from upstream:
 //   * React-Router `Link to=` -> next/link `href=`
-//   * Upstream's <Tooltip> wrapper requires the shadcn tooltip primitive +
-//     @radix-ui/react-tooltip, neither of which exist in the Isol8 frontend
-//     yet. Until they land we fall back to a native `title=` attribute on
-//     the link so the trigger label still surfaces on hover. The richer
-//     multi-line popover content is preserved in the JSX below but rendered
-//     inline-hidden — once Tooltip is vendored, swap the `<>` wrapper for
-//     <Tooltip><TooltipTrigger asChild>...</TooltipTrigger><TooltipContent>
-//     ...</TooltipContent></Tooltip> and drop the title attribute.
+//   * Upstream's <Tooltip> wrapper is now the local `ui/tooltip` primitive,
+//     which carries the multi-line trigger/review detail on hover and focus.
 // Editorial retheme: the upstream badge's amber border, background wash,
 // and label text (a 40%/10%-opacity amber-500 border/fill plus amber-700
 // text) map onto `--warn` in the editorial palette — the badge still reads
@@ -21,6 +15,7 @@
 import Link from "next/link";
 import { Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type {
   IssueProductivityReview,
@@ -76,27 +71,42 @@ export function ProductivityReviewBadge({
     typeof review.noCommentStreak === "number" && review.noCommentStreak > 0
       ? `\nNo-comment streak: ${review.noCommentStreak} runs`
       : "";
-  const titleText = `Productivity review open\nTrigger: ${label}${noCommentStreakLine}\nReview: ${reviewIdentifier} (${statusLabel})`;
+  const tooltipLines = [
+    "Productivity review open",
+    `Trigger: ${label}`,
+    ...(noCommentStreakLine ? [noCommentStreakLine.trim()] : []),
+    `Review: ${reviewIdentifier} (${statusLabel})`,
+  ];
 
   return (
-    <Link
-      href={reviewPath}
-      prefetch={false}
-      onClick={(e) => handleShellLinkClick(e, reviewPath)}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 transition-colors",
-        className,
-      )}
-      style={{
-        borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
-        backgroundColor: "color-mix(in srgb, var(--warn) 12%, transparent)",
-        color: "var(--warn)",
-      }}
-      aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
-      title={titleText}
-    >
-      <Eye className="h-3 w-3" aria-hidden />
-      {hideLabel ? null : <span>Under review</span>}
-    </Link>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Link
+          href={reviewPath}
+          prefetch={false}
+          onClick={(e) => handleShellLinkClick(e, reviewPath)}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-2xs font-medium shrink-0 transition-colors",
+            className,
+          )}
+          style={{
+            borderColor: "var(--warn)",
+            backgroundColor: "var(--cream)",
+            color: "var(--warn)",
+          }}
+          aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
+        >
+          <Eye size={12} strokeWidth={1.75} aria-hidden />
+          {hideLabel ? null : <span>Under review</span>}
+        </Link>
+      </TooltipTrigger>
+      <TooltipContent>
+        {tooltipLines.map((line) => (
+          <span key={line} className="block">
+            {line}
+          </span>
+        ))}
+      </TooltipContent>
+    </Tooltip>
   );
 }

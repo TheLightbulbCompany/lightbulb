@@ -79,7 +79,7 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
         ))}
       </div>
 
-      <p className="text-[11px] text-[var(--midnight-muted)] mb-3">
+      <p className="text-caption text-[var(--midnight-muted)] mb-3">
         Changes apply on the agent&apos;s next session.
       </p>
 

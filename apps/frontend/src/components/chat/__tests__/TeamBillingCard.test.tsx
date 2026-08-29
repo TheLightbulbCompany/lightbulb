@@ -63,7 +63,7 @@ describe("TeamBillingCard", () => {
     const card = screen.getByTestId("team-billing-card");
     expect(card.className).toMatch(/bg-cream(?![-\w])/);
     expect(card.className).toMatch(/\bborder\b/);
-    expect(card.className).toMatch(/rounded-2xl/);
+    expect(card.className).toMatch(/rounded-xl/);
 
     const cta = screen.getByRole("button", { name: /subscribe your team/i });
     expect(cta.className).toMatch(/bg-\[var\(--midnight\)\]/);

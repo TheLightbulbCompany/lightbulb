@@ -21,7 +21,7 @@ export function IssueParentBreadcrumb({ parentId }: { parentId: string }) {
       className="inline-flex items-center gap-1 text-sm hover:underline"
       style={{ color: "var(--midnight)" }}
     >
-      <ChevronUp className="h-3.5 w-3.5" />
+      <ChevronUp size={16} />
       {label}
     </Link>
   );

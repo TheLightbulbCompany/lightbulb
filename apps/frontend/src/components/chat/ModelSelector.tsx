@@ -202,7 +202,7 @@ export function ModelSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-2 h-9 px-3 bg-cream border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[var(--midnight-faint)] transition-all"
+          className="gap-2 h-9 px-3 bg-cream border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[var(--midnight-faint)]"
         >
           <span className="flex items-center gap-2">
             <ProviderIcon config={selectedProviderConfig || getProviderConfig("unknown")} size={16} />
@@ -216,7 +216,7 @@ export function ModelSelector({
         side="bottom"
         sideOffset={8}
         collisionPadding={16}
-        className="!w-[320px] !p-0 rounded-xl border-[var(--edge)] bg-cream text-[var(--midnight)] shadow-[0_2px_8px_color-mix(in_srgb,var(--midnight)_4%,transparent),0_12px_32px_color-mix(in_srgb,var(--midnight)_10%,transparent)]"
+        className="!w-[320px] !p-0 rounded-xl border-[var(--edge)] bg-cream text-[var(--midnight)] shadow-md"
         style={{ maxHeight: 320 }}
       >
         {/* Search header */}
@@ -263,7 +263,7 @@ export function ModelSelector({
                     >
                       <ChevronRight
                         className={cn(
-                          "h-3.5 w-3.5 text-[var(--midnight-faint)] transition-transform duration-200",
+                          "h-3 w-3 text-[var(--midnight-faint)] transition-transform duration-(--dur-base)",
                           isExpanded && "rotate-90"
                         )}
                       />
@@ -271,7 +271,7 @@ export function ModelSelector({
                       <span className="font-medium text-[var(--midnight)]">
                         {group.config.displayName}
                       </span>
-                      <span className="ml-auto text-[11px] text-[var(--midnight-muted)] bg-[var(--cream-deep)] px-1.5 py-0.5 rounded-full">
+                      <span className="ml-auto text-caption text-[var(--midnight-muted)] bg-[var(--cream-deep)] px-1.5 py-0.5 rounded-full">
                         {group.models.length}
                       </span>
                     </button>
@@ -301,13 +301,13 @@ export function ModelSelector({
                                   {model.name}
                                 </span>
                                 {tierModel && isTierModel(model.id, tierModel) && (
-                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[var(--midnight)]/10 text-[var(--midnight)] border border-[var(--midnight)]/15">
+                                  <span className="shrink-0 text-2xs font-medium px-1.5 py-0.5 rounded-full bg-[var(--midnight)]/10 text-[var(--midnight)] border border-[var(--midnight)]/15">
                                     Included
                                   </span>
                                 )}
                               </div>
                               {isSelected && (
-                                <Check className="h-3.5 w-3.5 text-[var(--midnight)] shrink-0 ml-2" />
+                                <Check className="h-3 w-3 text-[var(--midnight)] shrink-0 ml-2" />
                               )}
                             </button>
                           );
@@ -323,7 +323,7 @@ export function ModelSelector({
 
         {/* Footer */}
         <div className="p-2 border-t border-[var(--edge-soft)] bg-[var(--cream)] rounded-b-xl shrink-0">
-          <div className="text-[10px] text-center text-[var(--midnight-muted)]">
+          <div className="text-2xs text-center text-[var(--midnight-muted)]">
             Powered by AWS Bedrock
           </div>
         </div>

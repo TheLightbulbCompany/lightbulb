@@ -50,7 +50,7 @@ export function SettingsPanel() {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
         />
       </label>
       <label className="block">
@@ -58,12 +58,12 @@ export function SettingsPanel() {
         <textarea
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           rows={4}
         />
       </label>
       {err && (
-        <div className="text-[var(--err)] text-sm border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] rounded px-3 py-2">
+        <div className="text-err text-ui border border-err bg-cream rounded-lg px-3 py-2">
           {err}
         </div>
       )}

@@ -102,7 +102,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   }, [canCreate, callRpc, name, normalizedId, meta, onCreated]);
 
   return (
-    <div className="rounded-lg border border-border bg-card/30 p-4 space-y-3">
+    <div className="rounded-lg border border-border bg-cream-deep p-4 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium">New Agent</h3>
         <button
@@ -110,7 +110,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           onClick={onCancel}
           className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-cream-deep transition-colors"
         >
-          <X className="h-4 w-4" />
+          <X size={16} />
         </button>
       </div>
 
@@ -134,7 +134,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
             if (e.key === "Escape") onCancel();
           }}
           autoFocus
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
         />
       </div>
 
@@ -148,12 +148,12 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           marketplace hire's missing_credentials branch: "try again" copy on a
           wall the user cannot clear just sends them back into it. */}
       {atAgentLimit && (
-        <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
+        <div className="rounded-md border border-border bg-cream-deep p-3 space-y-2">
           <p className="text-xs text-muted-foreground">{error}</p>
           <Button type="button" size="sm" disabled={upgrading} onClick={handleUpgrade}>
             {upgrading ? (
               <>
-                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                <Loader2 size={12} strokeWidth={1.75} className="mr-2 animate-spin" />
                 Starting upgrade…
               </>
             ) : (
@@ -169,7 +169,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           Cancel
         </Button>
         <Button size="sm" onClick={handleCreate} disabled={!canCreate}>
-          {creating ? <Loader2 className="h-3 w-3 animate-spin" /> : "Create"}
+          {creating ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Create"}
         </Button>
       </div>
     </div>

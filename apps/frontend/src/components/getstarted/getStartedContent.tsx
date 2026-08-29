@@ -42,7 +42,7 @@ export const ARTICLES: Article[] = [
     id: "meet-friday-atlas", tag: "The agents", title: "Meet Friday & Atlas",
     body: (<>
       <p className={P}>Lightbulb works like a tiny company that runs itself. You don’t wire up agents one by one — you tell <b>Friday</b> what you want, and Friday assembles the team to do it.</p>
-      <div className="bg-[var(--cream-deep)] border border-[var(--edge)] rounded-2xl p-4 text-center mb-4"><FridayAtlasDiagram /></div>
+      <div className="bg-[var(--cream-deep)] border border-[var(--edge)] rounded-xl p-4 text-center mb-4"><FridayAtlasDiagram /></div>
       <p className={P}><b>Friday — your CEO.</b> The orchestrator you talk to. Give it a goal; it plans, delegates to specialists, and reports back.</p>
       <p className={P}><b>Atlas — your recruiter.</b> When a job needs a skill you don’t have yet, Atlas finds or builds the right agent from the marketplace.</p>
     </>),

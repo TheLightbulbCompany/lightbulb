@@ -64,7 +64,7 @@ export function PanelDataTable<Row>({
     return (
       <div
         role="alert"
-        className="px-3 py-2 text-[13px]"
+        className="px-3 py-2 text-ui"
         style={{ color: "var(--err)" }}
       >
         {error}
@@ -81,12 +81,11 @@ export function PanelDataTable<Row>({
                 key={col.key}
                 style={col.width ? { width: col.width } : undefined}
                 className={cn(
-                  "text-[10px] font-semibold uppercase tracking-[0.12em]",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                 )}
               >
-                <span className="text-[var(--midnight-muted)]">{col.header}</span>
+                <span className="label-caps">{col.header}</span>
               </TableHead>
             ))}
           </TableRow>
@@ -101,7 +100,7 @@ export function PanelDataTable<Row>({
                 <TableCell key={col.key} className="py-3">
                   <span
                     aria-hidden="true"
-                    className="block h-3 animate-pulse rounded bg-[var(--cream-deep)]"
+                    className="block h-3 animate-pulse rounded-sm bg-[var(--cream-deep)]"
                   />
                 </TableCell>
               ))}
@@ -140,7 +139,6 @@ export function PanelDataTable<Row>({
                   : undefined
               }
               className={cn(
-                "text-[10px] font-semibold uppercase tracking-[0.12em]",
                 col.align === "right" && "text-right",
                 col.align === "center" && "text-center",
               )}
@@ -149,18 +147,18 @@ export function PanelDataTable<Row>({
                 <button
                   type="button"
                   onClick={() => toggleSort(col)}
-                  className="inline-flex items-center gap-1 text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
+                  className="label-caps inline-flex items-center gap-1 transition-colors duration-(--dur-fast) ease-out hover:text-[var(--midnight)]"
                 >
                   {col.header}
                   {sortKey === col.key &&
                     (sortDir === "asc" ? (
-                      <ChevronUp aria-hidden="true" className="h-3 w-3" />
+                      <ChevronUp size={12} strokeWidth={1.75} aria-hidden="true" />
                     ) : (
-                      <ChevronDown aria-hidden="true" className="h-3 w-3" />
+                      <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />
                     ))}
                 </button>
               ) : (
-                <span className="text-[var(--midnight-muted)]">{col.header}</span>
+                <span className="label-caps">{col.header}</span>
               )}
             </TableHead>
           ))}
@@ -186,14 +184,18 @@ export function PanelDataTable<Row>({
             className={cn(
               "border-b border-[var(--edge)] transition-colors",
               onRowClick &&
-                "cursor-pointer hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]",
+                "cursor-pointer hover:bg-[var(--edge)]",
             )}
           >
-            {columns.map((col) => (
+            {columns.map((col, colIndex) => (
               <TableCell
                 key={col.key}
                 className={cn(
-                  "text-[13px] text-[var(--midnight)]",
+                  "text-ui text-[var(--midnight)]",
+                  // Primary column: a long issue/agent title used to widen the
+                  // column until the trailing metadata columns were pushed out
+                  // of the panel. Cap it and ellipsize instead.
+                  colIndex === 0 && !col.width && "max-w-[42ch] truncate",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                 )}

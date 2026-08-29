@@ -73,7 +73,7 @@ export function LogRow({ entry }: LogRowProps) {
         </time>
         <span
           className={cn(
-            "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+            "rounded-sm px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-caps",
             levelBadgeClass(entry.level),
           )}
           data-level={levelLabel}

@@ -45,14 +45,14 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
 
   return (
     <article
-      className={`relative rounded-2xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
+      className={`relative rounded-xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
         installed
           ? "border-[var(--ok)]"
-          : "border-[var(--edge)] bg-card hover:-translate-y-0.5 hover:shadow-md hover:border-[var(--midnight-faint)]"
+          : "border-[var(--edge)] bg-card hover:shadow-md hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
       }`}
     >
       {installed && (
-        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--midnight)] font-bold">
+        <span className="absolute top-3 right-3.5 text-2xs tracking-caps text-[var(--midnight)] font-bold">
           INSTALLED
         </span>
       )}
@@ -68,15 +68,15 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           line-clamp — the ellipsis still lands at line 2 while lines 3+ stay
           visible ("across chat, email, SMS, an… voice."). The footer's
           `mt-auto` does the same spacing job without inflating this box. */}
-      <p className="text-[13px] text-muted-foreground leading-snug line-clamp-2">{tagline}</p>
+      <p className="text-ui text-muted-foreground leading-snug line-clamp-2">{tagline}</p>
       <div className="mt-auto flex items-center justify-between pt-2.5 border-t border-dashed border-[var(--edge)]">
-        <span className="text-[11.5px] italic text-muted-foreground">by {byline}</span>
+        <span className="text-caption italic text-muted-foreground">by {byline}</span>
         {isOwn ? (
           <button
             type="button"
             data-testid="manage-listing"
             onClick={() => openListingDetail(listing.listing_id)}
-            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--midnight)] hover:text-[var(--cream)] transition"
+            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-ui font-semibold hover:bg-[var(--midnight)] hover:text-[var(--cream)] transition"
           >
             Manage
           </button>
@@ -84,7 +84,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           <button
             type="button"
             disabled
-            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold opacity-70"
+            className="text-[var(--midnight)] border border-[var(--midnight)] bg-transparent px-3.5 py-1.5 rounded-full text-ui font-semibold opacity-70"
           >
             Hired ✓
           </button>
@@ -94,7 +94,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
           // instead of a button so there's nothing to click.
           <span
             data-testid="hire-restricted"
-            className="text-[11.5px] italic text-muted-foreground"
+            className="text-caption italic text-muted-foreground"
           >
             Ask your org admin to install
           </span>
@@ -103,7 +103,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
             type="button"
             onClick={() => setShowHire(true)}
             disabled={isHiring}
-            className="bg-[var(--midnight)] text-[var(--cream)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[var(--midnight-soft)] disabled:opacity-60"
+            className="bg-[var(--midnight)] text-[var(--cream)] px-3.5 py-1.5 rounded-full text-ui font-semibold hover:bg-[var(--midnight-soft)] disabled:opacity-50"
           >
             Hire
           </button>

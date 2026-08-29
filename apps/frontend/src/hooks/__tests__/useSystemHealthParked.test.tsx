@@ -67,6 +67,25 @@ describe("useSystemHealth parked", () => {
     expect(result.current.canRecover).toBe(false);
   });
 
+  it("a provisioning container beats the client park flag (no 'asleep' over a cold start)", () => {
+    // Observed on dev: /container/status said lifecycle="provisioning",
+    // container_substatus="auto_retry", parked=true while the sidebar pill
+    // showed the PARKED copy for 35s+. The contract already resolved that
+    // precedence — lifecycle is "provisioning", not "parked" — so the pill
+    // must follow it rather than the client's leading isParked flag.
+    gateway.isParked = true;
+    gateway.isConnected = false;
+    container = {
+      container_status: "provisioning",
+      container_substatus: "auto_retry",
+      lifecycle: "provisioning",
+      parked: true,
+    };
+    const { result } = renderHook(() => useSystemHealth());
+    expect(result.current.state).toBe("STARTING");
+    expect(result.current.reason).toBe("Restarting container...");
+  });
+
   it("a genuinely stopped (non-parked) box still maps to CONTAINER_DOWN", () => {
     gateway.isConnected = false;
     container = { container_status: "stopped", lifecycle: "provisioning" };

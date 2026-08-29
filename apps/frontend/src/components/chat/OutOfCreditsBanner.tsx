@@ -30,8 +30,8 @@ export function OutOfCreditsBanner() {
   if (!isCreditsExhausted(balance)) return null;
 
   return (
-    <div className="bg-destructive/10 border-b border-destructive/20 px-4 py-2 text-sm flex items-center justify-between">
-      <span className="text-destructive">
+    <div className="bg-cream border-b border-err px-4 py-2 text-ui text-err flex items-center justify-between">
+      <span>
         You&apos;re out of Claude credits. Top up to keep chatting.
       </span>
       {/*
@@ -45,7 +45,7 @@ export function OutOfCreditsBanner() {
       */}
       <Link
         href="/chat?provider=bedrock_claude"
-        className="rounded-md bg-destructive px-3 py-1 text-destructive-foreground text-xs"
+        className="underline"
       >
         Top up now
       </Link>

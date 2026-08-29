@@ -36,23 +36,23 @@ describe("InboxToolbar", () => {
   test("clicking a tab fires onTabChange with the right value", () => {
     const onTabChange = vi.fn();
     render(<InboxToolbar {...baseProps} onTabChange={onTabChange} />);
-    fireEvent.click(screen.getByRole("tab", { name: /unread/i }));
+    // Radix activates a tab on mousedown, not on the synthetic click event.
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /unread/i }));
     expect(onTabChange).toHaveBeenCalledWith("unread");
   });
 
   test("active tab gets the active styling", () => {
-    // Editorial retheme: active tab uses inline `style={{background:
-    // var(--cream-deep), color: var(--midnight)}}` rather than amber Tailwind
-    // classes. Assert via the inline style attribute and aria-selected.
+    // The tab bar is `PanelTabs variant="pill"`, so the active segment is
+    // marked by Radix's data-state rather than an inline background.
     const { rerender } = render(<InboxToolbar {...baseProps} tab="mine" />);
     const mineBtn = screen.getByRole("tab", { name: /mine/i });
     expect(mineBtn).toHaveAttribute("aria-selected", "true");
-    expect(mineBtn.getAttribute("style") ?? "").toMatch(/--cream-deep/);
+    expect(mineBtn).toHaveAttribute("data-state", "active");
 
     rerender(<InboxToolbar {...baseProps} tab="recent" />);
     const recentBtn = screen.getByRole("tab", { name: /recent/i });
     expect(recentBtn).toHaveAttribute("aria-selected", "true");
-    expect(recentBtn.getAttribute("style") ?? "").toMatch(/--cream-deep/);
+    expect(recentBtn).toHaveAttribute("data-state", "active");
   });
 
   test("typing in search fires onSearchChange (each keystroke)", () => {

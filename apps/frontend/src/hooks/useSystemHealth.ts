@@ -143,7 +143,18 @@ export function useSystemHealth(): SystemHealth {
   if (pushState) {
     state = pushState.state as HealthState;
     reason = pushState.reason;
-  } else if (isParked || container?.lifecycle === "parked") {
+  } else if (
+    (isParked || container?.lifecycle === "parked") &&
+    // PRECEDENCE: the composed contract's `lifecycle` wins over the client's
+    // park flag. `parked: true` rides alongside `lifecycle: "provisioning"`
+    // whenever a parked box is being (re)provisioned, and `isParked` leads the
+    // backend by ~3min — so without this guard the pill said "Agents asleep"
+    // for 35s+ over a container that was actively coming up, contradicting the
+    // provisioning UI on the same screen. Falling through hands the state to
+    // the `container_status === "provisioning"` branch below, which reads its
+    // copy off the same contract (`container_substatus`).
+    container?.lifecycle !== "provisioning"
+  ) {
     // Client-driven park (isParked) OR backend-reflected park (lifecycle).
     // isParked leads by ~3min: between the client closing its socket and
     // the backend's disconnect-armed teardown flipping the row to

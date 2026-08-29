@@ -262,7 +262,7 @@ export function NewIssueDialog({
             value={priority}
             onChange={(e) => setPriority(e.target.value as IssuePriority)}
             disabled={submitting}
-            className="w-full rounded px-3 py-2 text-sm"
+            className="w-full rounded-sm px-3 py-2 text-sm"
             style={selectStyle}
           >
             {PRIORITY_OPTIONS.map((opt) => (
@@ -285,7 +285,7 @@ export function NewIssueDialog({
             value={status}
             onChange={(e) => setStatus(e.target.value as IssueStatus)}
             disabled={submitting}
-            className="w-full rounded px-3 py-2 text-sm"
+            className="w-full rounded-sm px-3 py-2 text-sm"
             style={selectStyle}
           >
             {STATUS_OPTIONS.map((opt) => (
@@ -310,7 +310,7 @@ export function NewIssueDialog({
           <div
             role="radiogroup"
             aria-labelledby="new-issue-workmode-label"
-            className="flex gap-1 rounded p-1"
+            className="flex gap-1 rounded-sm p-1"
             style={selectStyle}
           >
             {WORK_MODE_OPTIONS.map((opt) => {
@@ -323,7 +323,7 @@ export function NewIssueDialog({
                   aria-checked={active}
                   onClick={() => setWorkMode(opt.value)}
                   disabled={submitting}
-                  className="flex-1 rounded px-3 py-1.5 text-sm font-medium transition-colors"
+                  className="flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
                   style={{
                     background: active ? "var(--midnight)" : "transparent",
                     color: active ? "var(--cream)" : "var(--midnight)",
@@ -352,7 +352,7 @@ export function NewIssueDialog({
               value={assigneeAgentId}
               onChange={(e) => setAssigneeAgentId(e.target.value)}
               disabled={submitting}
-              className="w-full rounded px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-sm"
               style={selectStyle}
             >
               <option value="">Unassigned</option>
@@ -378,7 +378,7 @@ export function NewIssueDialog({
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
               disabled={submitting}
-              className="w-full rounded px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-sm"
               style={selectStyle}
             >
               <option value="">No project</option>
@@ -412,7 +412,7 @@ export function NewIssueDialog({
               value={goalId}
               onChange={(e) => setGoalId(e.target.value)}
               disabled={submitting}
-              className="w-full rounded px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-sm"
               style={selectStyle}
             >
               <option value="">No goal</option>

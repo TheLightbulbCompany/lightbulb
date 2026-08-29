@@ -106,12 +106,12 @@ function PrimaryListing({ listing }: { listing: HireListing }) {
 
   return (
     <article aria-label={listing.name} className="rounded-lg border border-border bg-card p-3">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[.09em] text-[var(--midnight-muted)]">
+      <div className="mb-1.5 text-2xs font-medium uppercase tracking-caps text-[var(--midnight-muted)]">
         Recommended
       </div>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[15px] font-semibold">{listing.name}</div>
+          <div className="text-sm font-semibold">{listing.name}</div>
           {listing.summary && (
             <div className="text-sm text-muted-foreground">{listing.summary}</div>
           )}
@@ -159,7 +159,7 @@ function AlternativeRow({ listing, onPromote }: { listing: HireListing; onPromot
           aria-label={`Make ${listing.name} the recommendation`}
           className="chat-hire-alt-btn group flex w-full items-baseline justify-between gap-2.5 py-1.5 text-left"
         >
-          <span className="min-w-0 truncate text-[13px] leading-[1.5]">
+          <span className="min-w-0 truncate text-ui leading-snug">
             <span className="font-medium text-[var(--midnight-soft)] group-hover:text-[var(--midnight)]">
               {listing.name}
             </span>
@@ -167,7 +167,7 @@ function AlternativeRow({ listing, onPromote }: { listing: HireListing; onPromot
               <span className="text-[var(--midnight-muted)]"> — {listing.summary}</span>
             )}
           </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-[var(--midnight-muted)]">
+          <span className="shrink-0 text-caption tabular-nums text-[var(--midnight-muted)]">
             {priceLabel(listing.price_cents)}
           </span>
         </button>
@@ -204,7 +204,7 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            className="inline-flex items-center gap-1.5 text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
+            className="inline-flex items-center gap-1.5 text-ui text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
           >
             <ChevronRight
               aria-hidden
@@ -225,7 +225,7 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
               </ul>
               {/* --midnight-faint is non-text-only (3.37:1 on cream), so this
                   reuses --midnight-muted rather than the mock's literal token. */}
-              <div className="mt-1.5 text-[11.5px] italic text-[var(--midnight-muted)]">
+              <div className="mt-1.5 text-caption italic text-[var(--midnight-muted)]">
                 Picking one promotes it to Recommended. It does not deploy.
               </div>
             </>

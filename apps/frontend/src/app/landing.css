@@ -6,12 +6,12 @@
  * with the legacy landing classes still used by /marketplace, which keep
  * their original styles.
  *
- * Motion contract:
- *   [data-ld-reveal]        — single element, animated in by ScrollManager (GSAP)
- *   [data-ld-reveal-group]  — children stagger in
- *   .ld-line > .ld-line-inner — masked headline lines (hero intro timeline)
- * All initial hidden states are applied by GSAP at runtime, never in CSS,
- * so the page renders fully without JavaScript.
+ * Motion contract: curves and clocks come from the token layer in
+ * globals.css — `var(--ease-out)`, `var(--dur-fast|base|slow|strike)`.
+ * `--dur-strike` (700ms) is the lamp's clock: every surface the strike
+ * repaints eases on it, and `Scene.tsx`'s STRIKE_MS is the same number in
+ * the R3F loop. Hover motion lives inside `@media (hover: hover) and
+ * (pointer: fine)`; every reduce block drops transforms and keeps opacity.
  */
 
 /* ---------------------------------------------------------------- shell */
@@ -19,21 +19,8 @@
 .ld-page {
   background: var(--cream);
   color: var(--midnight);
-  font-family: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif;
   overflow-x: clip;
-}
-
-.ld-progress {
-  position: fixed;
-  top: 0;
-  left: 0;
-  height: 2px;
-  width: 100%;
-  transform: scaleX(0);
-  transform-origin: left;
-  background: var(--midnight);
-  z-index: 120;
-  pointer-events: none;
 }
 
 /* mono micro-labels used everywhere */
@@ -52,12 +39,6 @@
   max-width: 1240px;
   margin: 0 auto;
   padding: 88px 48px;
-}
-
-.ld-section--full {
-  max-width: none;
-  padding-left: 0;
-  padding-right: 0;
 }
 
 .ld-kicker {
@@ -79,18 +60,12 @@
   background: var(--midnight);
 }
 
-.ld-kicker .ld-kicker-index {
-  margin-left: auto;
-  color: var(--midnight-muted);
-  letter-spacing: 0.1em;
-}
-
 .ld-h2 {
   font-family: var(--font-lora-serif), Georgia, serif;
   font-weight: 500;
   font-size: clamp(34px, 5vw, 58px);
   line-height: 1.05;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--tracking-display);
   color: var(--midnight);
   max-width: 16ch;
 }
@@ -113,33 +88,6 @@
   font-weight: 600;
 }
 
-/* hairline section divider with mono caption */
-.ld-rule {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: 0 48px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.ld-rule::before,
-.ld-rule::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--edge);
-}
-
-.ld-rule span {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-  white-space: nowrap;
-}
-
 /* -------------------------------------------------------------- buttons */
 
 .ld-btn {
@@ -155,23 +103,36 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   border: 1px solid var(--midnight);
-  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.35s ease, background 0.2s ease;
+  transition: transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) ease, background var(--dur-base) ease,
+    opacity var(--dur-base) ease;
 }
 
-.ld-btn:hover {
-  background: var(--cream-deep);
-  transform: translateY(-2px);
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--midnight) 22%, transparent);
+/* Hover MOTION only on a real pointer — a tap on touch fires :hover and the
+   lift sticks until the next tap elsewhere. */
+@media (hover: hover) and (pointer: fine) {
+  .ld-btn:hover {
+    /* Was `var(--cream-deep)`, which never touched `color` (--cream): in
+       either room the label painted onto its own hover ground and vanished.
+       A darker step of the same ground keeps the cream label legible. */
+    background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
+    transform: translateY(-2px);
+    box-shadow: 0 14px 34px color-mix(in srgb, var(--midnight) 22%, transparent);
+  }
+
+  .ld-btn:hover .ld-btn-arrow {
+    transform: translateX(4px);
+  }
+}
+
+/* After the hover rule, so a press wins over the lift. */
+.ld-btn:active {
+  transform: scale(0.97);
 }
 
 .ld-btn .ld-btn-arrow {
   display: inline-block;
-  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.ld-btn:hover .ld-btn-arrow {
-  transform: translateX(4px);
+  transition: transform var(--dur-base) var(--ease-out);
 }
 
 .ld-btn--ghost {
@@ -185,1060 +146,6 @@
   border-color: var(--midnight-faint);
   box-shadow: none;
   color: var(--midnight);
-}
-
-/* ----------------------------------------------------------------- hero */
-
-.ld-hero {
-  position: relative;
-  min-height: min(100svh, 940px);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 130px 48px 0;
-  max-width: none;
-  /* faint baseline grid, fades toward the bottom */
-  background-image: linear-gradient(
-      to bottom,
-      transparent,
-      transparent 70%,
-      var(--cream) 100%
-    ),
-    repeating-linear-gradient(
-      to right,
-      rgba(26, 26, 26, 0.035) 0,
-      rgba(26, 26, 26, 0.035) 1px,
-      transparent 1px,
-      transparent 120px
-    );
-}
-
-.ld-hero-inner {
-  position: relative;
-  z-index: 1;
-  max-width: 1240px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.ld-hero-topline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 28px;
-}
-
-.ld-hero-topline .ld-mono b {
-  color: var(--midnight);
-  font-weight: 600;
-  letter-spacing: 0.16em;
-}
-
-.ld-hero-h1 {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-weight: 500;
-  font-size: clamp(52px, 9.2vw, 132px);
-  line-height: 0.98;
-  letter-spacing: -0.025em;
-  color: var(--midnight);
-  margin: 0 0 28px;
-}
-
-.ld-hero-h1 em {
-  font-style: italic;
-  color: var(--midnight);
-}
-
-/* masked line reveal scaffolding */
-.ld-line {
-  display: block;
-  overflow: hidden;
-  padding-bottom: 0.08em; /* keep descenders inside the mask */
-  margin-bottom: -0.08em;
-}
-
-.ld-line-inner {
-  display: block;
-  will-change: transform;
-}
-
-.ld-hero-row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 48px;
-}
-
-.ld-hero-sub {
-  max-width: 46ch;
-  font-size: 17px;
-  line-height: 1.65;
-  color: var(--midnight-soft);
-}
-
-.ld-hero-sub strong {
-  color: var(--midnight);
-  font-weight: 600;
-}
-
-.ld-hero-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 14px;
-  flex-shrink: 0;
-}
-
-.ld-hero-ctas {
-  display: flex;
-  gap: 12px;
-}
-
-.ld-hero-fine {
-  font-size: 12.5px;
-  color: var(--midnight-muted);
-}
-
-.ld-hero-fine a {
-  color: var(--midnight);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.ld-hero-fine a:hover {
-  color: var(--cream-deep);
-}
-
-/* bottom strip: scroll cue + ticker */
-.ld-hero-foot {
-  position: relative;
-  z-index: 1;
-  max-width: 1240px;
-  width: 100%;
-  margin: 44px auto 0;
-  padding-bottom: 24px;
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  border-bottom: 1px solid var(--edge);
-}
-
-.ld-scroll-cue {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.ld-scroll-cue .ld-cue-line {
-  width: 1px;
-  height: 26px;
-  background: var(--midnight-faint);
-  overflow: hidden;
-  position: relative;
-}
-
-.ld-scroll-cue .ld-cue-line::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: -100%;
-  width: 100%;
-  height: 100%;
-  background: var(--midnight);
-  animation: ld-cue 2.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
-@keyframes ld-cue {
-  0% { top: -100%; }
-  55% { top: 100%; }
-  100% { top: 100%; }
-}
-
-/* ---------------------------------------------------------------- ticker */
-
-.ld-ticker {
-  flex: 1;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
-  mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
-}
-
-.ld-ticker-track {
-  display: flex;
-  width: max-content;
-  animation: ld-ticker 36s linear infinite;
-}
-
-.ld-ticker:hover .ld-ticker-track {
-  animation-play-state: paused;
-}
-
-.ld-ticker-track > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 28px;
-  padding-right: 28px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-  white-space: nowrap;
-}
-
-.ld-ticker-track i {
-  font-style: normal;
-  color: var(--midnight);
-}
-
-@keyframes ld-ticker {
-  to { transform: translateX(-50%); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ld-ticker-track { animation: none; }
-  .ld-scroll-cue .ld-cue-line::after { animation: none; }
-  .ld-const-node,
-  .ld-const svg line,
-  .ld-listing,
-  .ld-agent-card {
-    transition: none;
-  }
-}
-
-/* -------------------------------------------------------------- features */
-
-.ld-features .ld-feat-list {
-  margin-top: 44px;
-  border-top: 1px solid var(--edge);
-}
-
-.ld-feat-row {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 5fr) minmax(0, 6fr);
-  gap: 32px;
-  align-items: baseline;
-  padding: 36px 0;
-  border-bottom: 1px solid var(--edge);
-  position: relative;
-  transition: background 0.3s ease;
-}
-
-.ld-feat-row:hover {
-  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--midnight) 2%, transparent), transparent);
-}
-
-.ld-feat-num {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--midnight-muted);
-}
-
-.ld-feat-row h3 {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: clamp(24px, 2.6vw, 34px);
-  font-weight: 500;
-  line-height: 1.1;
-  color: var(--midnight);
-}
-
-.ld-feat-row h3 em {
-  font-style: italic;
-  color: var(--midnight);
-}
-
-.ld-feat-row p {
-  font-size: 15.5px;
-  line-height: 1.65;
-  color: var(--midnight-soft);
-  max-width: 48ch;
-}
-
-/* skills marquee */
-.ld-skills {
-  margin-top: 52px;
-  display: grid;
-  grid-template-columns: minmax(0, 4fr) minmax(0, 7fr);
-  gap: 48px;
-  align-items: center;
-}
-
-.ld-skills-lede h3 {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: clamp(22px, 2.4vw, 30px);
-  font-weight: 500;
-  color: var(--midnight);
-}
-
-.ld-skills-lede h3 em {
-  font-style: italic;
-  color: var(--midnight);
-}
-
-.ld-skills-lede p {
-  margin-top: 10px;
-  font-size: 14.5px;
-  line-height: 1.6;
-  color: var(--midnight-soft);
-}
-
-.ld-skills-rows {
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  -webkit-mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
-  mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
-}
-
-.ld-chip-track {
-  display: flex;
-  gap: 12px;
-  width: max-content;
-  animation: ld-ticker 32s linear infinite;
-}
-
-.ld-chip-track--reverse {
-  animation-direction: reverse;
-  animation-duration: 38s;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ld-chip-track { animation: none; }
-}
-
-.ld-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  border-radius: 999px;
-  border: 1px solid var(--edge);
-  background: var(--cream);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--midnight-soft);
-  white-space: nowrap;
-}
-
-.ld-chip .ld-chip-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--brass);
-}
-
-.ld-chip .ld-chip-tag {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--midnight);
-  background: var(--cream-deep);
-  padding: 2px 7px;
-  border-radius: 99px;
-}
-
-.ld-chip--ghost {
-  border-style: dashed;
-  color: var(--midnight-muted);
-  background: transparent;
-}
-
-/* ----------------------------------------------------------- isolation */
-
-.ld-iso-section {
-  position: relative;
-}
-
-.ld-iso {
-  position: relative;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 34px;
-  align-items: center;
-  padding: 46px 48px;
-  border-radius: 20px;
-  background: var(--midnight);
-  color: var(--cream);
-}
-
-/* a soft moss bloom in the corner, same language as the hero pod */
-.ld-iso::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.5;
-  background: radial-gradient(
-    520px 300px at 88% -20%,
-    rgba(182, 130, 53, 0.4),
-    transparent 60%
-  );
-}
-
-.ld-iso-icon {
-  position: relative;
-  z-index: 1;
-  width: 62px;
-  height: 62px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--cream) 10%, transparent);
-  display: grid;
-  place-items: center;
-  color: var(--cream);
-  flex-shrink: 0;
-}
-
-.ld-iso-body {
-  position: relative;
-  z-index: 1;
-}
-
-.ld-iso-kicker {
-  display: block;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--brass); /* labels on a midnight band are brass (§06 Decided) */
-  margin-bottom: 12px;
-}
-
-.ld-iso-body h3 {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: clamp(24px, 2.8vw, 34px);
-  font-weight: 500;
-  line-height: 1.1;
-  color: var(--cream);
-  margin-bottom: 12px;
-}
-
-.ld-iso-body h3 em {
-  /* Lora italic carries the emphasis; it inherits the heading's colour. */
-  font-style: italic;
-}
-
-.ld-iso-body p {
-  font-size: 15px;
-  line-height: 1.65;
-  color: #ded5c2;
-  max-width: 62ch;
-}
-
-.ld-iso-body p strong {
-  color: #f6ead0;
-  font-weight: 600;
-}
-
-.ld-iso-pill {
-  position: relative;
-  z-index: 1;
-  white-space: nowrap;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--brass);
-  border: 1px solid color-mix(in srgb, var(--cream) 22%, transparent);
-  padding: 11px 16px;
-  border-radius: 999px;
-}
-
-@media (max-width: 820px) {
-  .ld-iso {
-    grid-template-columns: 1fr;
-    gap: 20px;
-    padding: 34px 26px;
-  }
-  .ld-iso-pill {
-    justify-self: start;
-  }
-}
-
-/* ----------------------------------------------------------------- team */
-
-.ld-team-stage {
-  margin-top: 44px;
-  position: relative;
-  border: 1px solid var(--edge);
-  border-radius: 22px;
-  background:
-    radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--midnight) 4%, transparent), transparent 70%),
-    var(--cream);
-  padding: 64px 48px 56px;
-  overflow: hidden;
-}
-
-.ld-team-stage .ld-frame-label,
-.ld-inbox .ld-frame-label {
-  position: absolute;
-  top: 18px;
-  left: 22px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-}
-
-.ld-team-stage .ld-frame-meta,
-.ld-inbox .ld-frame-meta {
-  position: absolute;
-  top: 16px;
-  right: 22px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--midnight);
-}
-
-.ld-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--brass);
-}
-
-.ld-dot--live {
-  animation: ld-dot-pulse 1.6s ease-in-out infinite;
-}
-
-.ld-dot--idle {
-  background: var(--midnight-faint);
-}
-
-@keyframes ld-dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(182, 130, 53, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(182, 130, 53, 0); }
-}
-
-.ld-const {
-  position: relative;
-  height: 480px;
-  margin: 0 auto;
-  max-width: 920px;
-}
-
-.ld-const svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.ld-const svg line {
-  stroke: var(--edge);
-  stroke-width: 1;
-  transition: stroke 0.5s ease, opacity 0.3s ease, stroke-width 0.3s ease;
-}
-
-.ld-const svg line.active {
-  stroke: var(--brass);
-  stroke-width: 1.8;
-}
-
-.ld-const svg line.is-dimmed {
-  opacity: 0.24;
-}
-
-.ld-const-node {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  transition: opacity 0.25s ease, filter 0.25s ease, transform 0.25s ease;
-}
-
-.ld-const-node--agent {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-}
-
-.ld-const-node--agent:focus-visible .ld-puck,
-.ld-const-node--agent.is-active .ld-puck {
-  outline: 2px solid var(--brass);
-  outline-offset: 4px;
-  border-color: color-mix(in srgb, var(--midnight) 35%, transparent);
-  box-shadow: 0 16px 38px color-mix(in srgb, var(--midnight) 18%, transparent);
-}
-
-.ld-const-node.is-dimmed {
-  opacity: 0.34;
-  filter: saturate(0.7);
-}
-
-.ld-const-node--agent.is-active {
-  z-index: 4;
-  transform: translate(-50%, -50%) scale(1.04);
-}
-
-.ld-puck {
-  width: 48px;
-  height: 48px;
-  border-radius: 15px;
-  background: var(--cream);
-  border: 1px solid var(--edge);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--midnight);
-  box-shadow: 0 8px 22px rgba(26, 26, 26, 0.08);
-}
-
-.ld-puck--lead {
-  width: 72px;
-  height: 72px;
-  border-radius: 22px;
-  background: var(--midnight);
-  border-color: var(--midnight);
-  color: var(--cream);
-  box-shadow: 0 18px 44px color-mix(in srgb, var(--midnight) 30%, transparent);
-}
-
-.ld-puck--lead span {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-style: italic;
-  font-size: 30px;
-  font-weight: 500;
-}
-
-.ld-puck-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--midnight);
-}
-
-.ld-puck-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-}
-
-.ld-const-pulse {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--brass);
-  pointer-events: none;
-}
-
-.ld-agent-card {
-  position: absolute;
-  z-index: 5;
-  width: min(280px, calc(100% - 28px));
-  padding: 18px 18px 16px;
-  border: 1px solid color-mix(in srgb, var(--midnight) 16%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--cream) 96%, transparent);
-  box-shadow: 0 24px 68px rgba(26, 26, 26, 0.14);
-  color: var(--midnight);
-  pointer-events: auto;
-}
-
-.ld-agent-card--left {
-  right: clamp(12px, 9%, 80px);
-}
-
-.ld-agent-card--right {
-  left: clamp(12px, 9%, 80px);
-}
-
-.ld-agent-card--center {
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.ld-agent-card--below {
-  top: 24px;
-}
-
-.ld-agent-card--above {
-  bottom: 24px;
-}
-
-.ld-agent-eyebrow {
-  margin: 0 0 8px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--midnight);
-}
-
-.ld-agent-card h3 {
-  margin: 0 0 8px;
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: 21px;
-  font-weight: 500;
-  color: var(--midnight);
-}
-
-.ld-agent-card h3 span {
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--midnight);
-}
-
-.ld-agent-card p:not(.ld-agent-eyebrow) {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--midnight-soft);
-}
-
-.ld-agent-card a {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--midnight);
-}
-
-.ld-agent-card a:hover,
-.ld-agent-card a:focus-visible {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.ld-agent-roster-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--midnight);
-}
-
-.ld-agent-roster-note::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--brass);
-}
-
-/* -------------------------------------------------- teams inbox mock */
-
-.ld-inbox {
-  margin-top: 14px;
-  position: relative;
-  border: 1px solid var(--edge);
-  border-radius: 22px;
-  background: var(--cream);
-  padding: 52px 22px 22px;
-  overflow: hidden;
-}
-
-.ld-inbox-body {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 16px;
-  align-items: start;
-}
-
-/* issue list (left pane) */
-.ld-ib-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ld-ib-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-  border: 1px solid var(--edge-soft);
-  border-radius: 14px;
-  background: var(--cream);
-}
-
-.ld-ib-item.is-active {
-  border-color: color-mix(in srgb, var(--midnight) 35%, transparent);
-  background: var(--cream);
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--midnight) 7%, transparent);
-}
-
-.ld-ib-id {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--midnight-muted);
-  white-space: nowrap;
-}
-
-.ld-ib-item.is-active .ld-ib-id {
-  /* --brass is brass now (2.9:1 on cream, §06 names it a fail).
-     Midnight carries the active state; weight does the rest. */
-  color: var(--midnight);
-  font-weight: 600;
-}
-
-.ld-ib-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--midnight);
-  line-height: 1.3;
-}
-
-.ld-ib-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.ld-ib-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: var(--cream-deep);
-  border: 1px solid var(--edge);
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
-  font-weight: 600;
-  color: var(--midnight);
-  flex-shrink: 0;
-}
-
-.ld-ib-avatar--lead {
-  background: var(--midnight);
-  border-color: var(--midnight);
-  color: var(--cream);
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-style: italic;
-  font-size: 13px;
-}
-
-.ld-ib-avatar--you {
-  background: var(--cream-deep);
-  border-color: color-mix(in srgb, var(--midnight) 20%, transparent);
-  color: var(--midnight);
-  font-size: 8px;
-  letter-spacing: 0.04em;
-}
-
-.ld-chip-status {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 9px;
-  border-radius: 99px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.ld-chip-status--live {
-  background: var(--cream-deep);
-  color: var(--midnight);
-}
-
-.ld-chip-status--done {
-  background: var(--cream-deeper);
-  color: var(--midnight-muted);
-}
-
-.ld-chip-status--warn {
-  background: rgba(196, 122, 29, 0.12);
-  color: var(--warn);
-}
-
-/* thread (right pane) */
-.ld-ib-thread {
-  border: 1px solid var(--edge-soft);
-  border-radius: 16px;
-  padding: 18px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  background: var(--cream);
-}
-
-.ld-ib-thread-hd {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--edge-soft);
-}
-
-.ld-ib-thread-title {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: 17px;
-  font-weight: 500;
-  color: var(--midnight);
-  margin-right: auto;
-}
-
-.ld-ib-msg {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.ld-ib-author {
-  display: block;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--midnight);
-  margin-bottom: 2px;
-}
-
-.ld-ib-author i {
-  font-style: normal;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-  font-weight: 400;
-}
-
-.ld-ib-msg p {
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--midnight-soft);
-}
-
-.ld-ib-tag {
-  display: inline-block;
-  margin-top: 6px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--midnight);
-  background: var(--cream-deep);
-  padding: 3px 8px;
-  border-radius: 6px;
-}
-
-.ld-ib-attach {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  color: var(--midnight-soft);
-  border: 1px solid var(--edge);
-  background: var(--cream);
-  padding: 5px 10px;
-  border-radius: 8px;
-}
-
-/* the human-in-the-loop moment */
-.ld-approval {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid rgba(196, 122, 29, 0.3);
-  background: rgba(196, 122, 29, 0.05);
-  border-radius: 14px;
-  padding: 14px 16px;
-}
-
-.ld-approval-kicker {
-  display: block;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--warn);
-  margin-bottom: 3px;
-}
-
-.ld-approval p {
-  font-size: 13px;
-  color: var(--midnight);
-  line-height: 1.45;
-}
-
-.ld-approval-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.ld-approve-btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 16px;
-  border-radius: 999px;
-  background: var(--midnight);
-  color: var(--cream);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.ld-approve-btn--ghost {
-  background: transparent;
-  color: var(--midnight-soft);
-  border: 1px solid var(--edge);
-}
-
-.ld-inbox-captions {
-  display: flex;
-  justify-content: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-top: 22px;
-}
-
-.ld-inbox-captions span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-}
-
-.ld-inbox-captions span::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--brass);
 }
 
 /* ----------------------------------------------------------- marketplace */
@@ -1269,7 +176,7 @@
   color: var(--midnight);
   border-bottom: 1px solid color-mix(in srgb, var(--midnight) 30%, transparent);
   padding-bottom: 4px;
-  transition: border-color 0.25s ease, color 0.25s ease;
+  transition: border-color var(--dur-base) ease, color var(--dur-base) ease;
 }
 
 .ld-mkt-link:hover {
@@ -1293,20 +200,39 @@
   background: var(--cream);
   border: 1px solid var(--edge);
   color: var(--midnight);
-  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.3s ease, border-color 0.3s ease;
+  transition: transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 
-.ld-listing:hover {
-  transform: translateY(-6px);
-  border-color: var(--midnight-faint);
-  box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .ld-listing:hover {
+    transform: translateY(-6px);
+    border-color: var(--midnight-faint);
+    box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+  }
 }
 
 .ld-listing-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* The monogram puck. Only the marketplace shelf still uses it. */
+.ld-puck {
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  background: var(--cream);
+  border: 1px solid var(--edge);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--midnight);
+  box-shadow: 0 8px 22px rgba(26, 26, 26, 0.08);
 }
 
 .ld-listing .ld-puck {
@@ -1357,8 +283,8 @@
 
 .ld-listing-tag {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.12em;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--midnight-muted);
   border: 1px solid var(--edge);
@@ -1422,12 +348,14 @@
   border: 1px solid var(--edge);
   background: var(--cream);
   position: relative;
-  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.4s ease;
+  transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) ease;
 }
 
-.ld-price-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+@media (hover: hover) and (pointer: fine) {
+  .ld-price-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
+  }
 }
 
 .ld-price-card--hi {
@@ -1441,7 +369,7 @@
 
 .ld-price-card .ld-pc-tag {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
+  font-size: var(--text-2xs);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--midnight);
@@ -1531,7 +459,7 @@
 
 .ld-pc-trial {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
+  font-size: var(--text-2xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--midnight);
@@ -1564,113 +492,6 @@
 .ld-teams-copy p {
   color: var(--midnight-muted);
   margin: 4px 0 0;
-}
-
-/* ------------------------------------------------------------------ faq */
-
-.ld-faq-list {
-  margin-top: 40px;
-  max-width: 760px;
-  border-top: 1px solid var(--edge);
-}
-
-.ld-faq-item {
-  border-bottom: 1px solid var(--edge);
-  cursor: pointer;
-}
-
-.ld-faq-q {
-  display: flex;
-  align-items: baseline;
-  gap: 22px;
-  padding: 30px 0;
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-size: clamp(18px, 2vw, 23px);
-  font-weight: 500;
-  color: var(--midnight);
-  transition: color 0.25s ease;
-}
-
-.ld-faq-item:hover .ld-faq-q {
-  color: var(--midnight);
-}
-
-.ld-faq-q .ld-faq-num {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--midnight-muted);
-  flex-shrink: 0;
-  transition: color 0.25s ease;
-}
-
-.ld-faq-item.open .ld-faq-q .ld-faq-num,
-.ld-faq-item:hover .ld-faq-q .ld-faq-num {
-  color: var(--midnight);
-}
-
-.ld-faq-q .ld-faq-icon {
-  margin-left: auto;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  position: relative;
-  align-self: center;
-}
-
-.ld-faq-icon::before,
-.ld-faq-icon::after {
-  content: "";
-  position: absolute;
-  background: var(--midnight-muted);
-  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s, background 0.2s;
-}
-
-.ld-faq-icon::before {
-  width: 14px;
-  height: 1.5px;
-  top: 10px;
-  left: 4px;
-}
-
-.ld-faq-icon::after {
-  width: 1.5px;
-  height: 14px;
-  top: 4px;
-  left: 10.5px;
-}
-
-.ld-faq-item:hover .ld-faq-icon::before,
-.ld-faq-item:hover .ld-faq-icon::after {
-  background: var(--midnight);
-}
-
-.ld-faq-item.open .ld-faq-icon::after {
-  transform: rotate(90deg);
-  opacity: 0;
-}
-
-.ld-faq-a-wrapper {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.5s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.ld-faq-item.open .ld-faq-a-wrapper {
-  grid-template-rows: 1fr;
-}
-
-.ld-faq-a-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.ld-faq-a {
-  padding: 0 60px 30px 33px;
-  font-size: 15px;
-  line-height: 1.7;
-  color: var(--midnight-soft);
-  max-width: 60ch;
 }
 
 /* --------------------------------------------------------------- footer */
@@ -1737,7 +558,7 @@
 
 .ld-footer-col span {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
+  font-size: var(--text-2xs);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
@@ -1788,20 +609,14 @@
 .ld-footer-base,
 .ld-footer-base a {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: color-mix(in srgb, var(--cream) 64%, transparent) /* 64%: 6.5:1 on midnight, 5.0:1 once the dark room inverts it */;
 }
 
 .ld-footer-base a:hover {
   color: var(--cream);
-}
-
-.ld-footer-base .ld-footer-legal {
-  display: flex;
-  gap: 18px;
-  flex-wrap: wrap;
 }
 
 /* ------------------------------------------------------------ responsive */
@@ -1811,19 +626,10 @@
     padding: 72px 32px;
   }
 
-  .ld-hero {
-    padding: 120px 32px 0;
-  }
-
-  .ld-rule {
-    padding: 0 32px;
-  }
-
   .ld-shelf,
   .ld-price-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-
 
   .ld-footer {
     padding: 72px 32px 32px;
@@ -1835,145 +641,11 @@
     padding: 56px 20px;
   }
 
-  .ld-hero {
-    padding: 110px 20px 0;
-    min-height: auto;
-  }
-
-  .ld-hero-topline {
-    margin-bottom: 30px;
-  }
-
-  .ld-hero-topline .ld-mono {
-    white-space: nowrap;
-  }
-
-  .ld-hero-topline .ld-mono + .ld-mono {
-    display: none;
-  }
-
-  .ld-hero-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 28px;
-  }
-
-  .ld-hero-actions {
-    align-items: flex-start;
-  }
-
-  .ld-hero-ctas {
-    flex-wrap: wrap;
-  }
-
-  .ld-hero-foot {
-    margin-top: 48px;
-  }
-
-  .ld-rule {
-    padding: 0 20px;
-  }
-
-
-  .ld-feat-row {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    padding: 32px 0;
-  }
-
-  .ld-skills {
-    grid-template-columns: 1fr;
-    gap: 28px;
-    margin-top: 48px;
-  }
-
-  .ld-team-stage {
-    padding: 56px 12px 40px;
-  }
-
-  .ld-team-stage .ld-frame-meta,
-.ld-inbox .ld-frame-meta {
-    display: none;
-  }
-
-  .ld-inbox {
-    padding: 48px 14px 14px;
-  }
-
-  .ld-inbox .ld-frame-meta {
-    display: none;
-  }
-
-  .ld-inbox-body {
-    grid-template-columns: 1fr;
-  }
-
-  .ld-ib-list {
-    flex-direction: row;
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
-
-  .ld-ib-item {
-    min-width: 200px;
-  }
-
-  .ld-approval {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .ld-const {
-    height: 390px;
-  }
-
-  .ld-agent-card {
-    left: 14px;
-    right: 14px;
-    bottom: 14px;
-    top: auto;
-    width: auto;
-    transform: none;
-  }
-
-  .ld-agent-card--left,
-  .ld-agent-card--right,
-  .ld-agent-card--center {
-    left: 14px;
-    right: 14px;
-    transform: none;
-  }
-
-  .ld-agent-card--below,
-  .ld-agent-card--above {
-    top: auto;
-    bottom: 14px;
-  }
-
   .ld-puck {
     width: 42px;
     height: 42px;
     border-radius: 13px;
     font-size: 11px;
-  }
-
-  .ld-puck--lead {
-    width: 58px;
-    height: 58px;
-    border-radius: 18px;
-  }
-
-  .ld-puck--lead span {
-    font-size: 24px;
-  }
-
-  .ld-puck-name {
-    font-size: 11px;
-  }
-
-  .ld-puck-status {
-    display: none;
   }
 
   .ld-mkt-head {
@@ -1990,10 +662,6 @@
   .ld-price-grid {
     grid-template-columns: 1fr;
     margin-top: 36px;
-  }
-
-  .ld-faq-a {
-    padding: 0 30px 26px 33px;
   }
 
   .ld-footer {
@@ -2013,17 +681,9 @@
 }
 
 @media (max-width: 480px) {
-  .ld-hero-h1 {
-    font-size: clamp(44px, 13.5vw, 64px);
-  }
-
   .ld-btn {
     padding: 14px 22px;
     font-size: 14px;
-  }
-
-  .ld-const {
-    height: 350px;
   }
 }
 
@@ -2114,7 +774,7 @@
   font-weight: 500; /* Lora Medium — the wordmark's weight; the owner does not want a bold display */
   font-size: clamp(38px, 5.2vw, 66px);
   line-height: 1.04;
-  letter-spacing: -0.01em; /* §05 display sets tight */
+  letter-spacing: var(--tracking-display); /* §05 display sets tight */
   color: var(--midnight);
   margin: 0;
   text-wrap: balance;
@@ -2133,7 +793,8 @@
   background: var(--cream-deep);
   border: 1px solid var(--edge);
   box-shadow: 0 18px 44px color-mix(in srgb, var(--midnight) 7%, transparent);
-  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease,
+    background var(--dur-fast) ease;
 }
 
 .ld-ask:focus-within {
@@ -2177,6 +838,9 @@
   box-shadow: 0 12px 30px rgba(240, 195, 78, 0.32);
 }
 
+/* Enablement at 3 characters used to be an untransitioned opacity jump. The
+   fade is on .ld-btn's own transition list (`opacity var(--dur-base)`), so it
+   reads as the light reaching the button rather than a state flip. */
 .ld-ask .ld-btn:disabled {
   opacity: 0.45;
   transform: none;
@@ -2301,6 +965,38 @@
   color: var(--midnight-muted);
 }
 
+/* ONE entrance for the demo, and one for the transcript that arrives inside
+   it after hydration (MessageList is `ssr:false` — Prism + react-markdown are
+   not worth the landing page's first-load JS, and it used to pop into an empty
+   column). Both fade as a UNIT: no per-element stagger, so nothing shows up
+   out of reading order. */
+.ld-demo-body,
+.ld-demo-enter {
+  opacity: 1;
+  /* `none`, not `translateY(0)`: a settled transform would make these a
+     containing block for every position:fixed descendant, for a 300ms
+     entrance. It still interpolates — `none` is the identity transform. */
+  transform: none;
+  transition: opacity 300ms var(--ease-out), transform 300ms var(--ease-out);
+}
+
+@starting-style {
+  .ld-demo-body,
+  .ld-demo-enter {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* The demo is a PICTURE of the product, not a panel: its inner scrollers (the
+   mock roster, each panel's list, the transcript) swallowed the page's wheel —
+   a scroll over the demo scrolled the fake roster. They clip instead. */
+.ld-demo-body .sidebar-scroll,
+.ld-demo-body .overflow-y-auto,
+.ld-demo-body .overflow-auto {
+  overflow: hidden;
+}
+
 /* Three-panel dock — chat left (full height), Dashboard right-top, Inbox
    right-bottom, separated by hairline gaps like dockview's sashes. */
 .ld-dock {
@@ -2322,6 +1018,19 @@
 
 .ld-panel--left {
   grid-row: 1 / 3;
+}
+
+/* The left panel is keyed on the view (WorkspaceDemo), so a switch remounts
+   its body and this crossfade covers the swap instead of teleporting. */
+.ld-panel--left .ld-panel-body {
+  opacity: 1;
+  transition: opacity 150ms var(--ease-out);
+}
+
+@starting-style {
+  .ld-panel--left .ld-panel-body {
+    opacity: 0;
+  }
 }
 
 /* Dockview-style tab strip: light-gray container, active tab white. */
@@ -2450,6 +1159,13 @@
   .ld-funnel-mark {
     animation: none;
   }
+
+  /* Opacity stays (it aids comprehension); the 4px lift goes. */
+  .ld-demo-body,
+  .ld-demo-enter {
+    transform: none;
+    transition: opacity 300ms var(--ease-out);
+  }
 }
 
 /* ================================================================ */
@@ -2499,7 +1215,8 @@
     color-mix(in srgb, var(--bulb) 2%, transparent) 60%,
     transparent 78%
   );
-  transition: opacity 0.7s ease, filter 0.7s ease;
+  transition: opacity var(--dur-strike) var(--ease-out),
+    filter var(--dur-strike) var(--ease-out);
 }
 
 .ld-lamp-glass {
@@ -2508,22 +1225,22 @@
   fill: var(--bulb);
   stroke: var(--midnight);
   stroke-width: 4;
-  transition: fill 0.5s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.5s ease;
+  transition: fill var(--dur-strike) var(--ease-out), stroke var(--dur-strike) var(--ease-out);
 }
 .ld-lamp-fil {
   fill: var(--midnight);
   stroke: var(--midnight);
   stroke-width: 3.4;
   stroke-linejoin: round;
-  transition: fill 0.5s ease, stroke 0.5s ease;
+  transition: fill var(--dur-strike) var(--ease-out), stroke var(--dur-strike) var(--ease-out);
 }
-.ld-lamp-collar { fill: var(--midnight); transition: fill 0.5s ease; }
+.ld-lamp-collar { fill: var(--midnight); transition: fill var(--dur-strike) var(--ease-out); }
 .ld-lamp-cord {
   fill: none;
   stroke: var(--midnight);
   stroke-width: 2.4;
   opacity: 0.55;
-  transition: stroke 0.5s ease;
+  transition: stroke var(--dur-strike) var(--ease-out);
 }
 .ld-lamp-pull { pointer-events: auto; cursor: pointer; fill: var(--brass); }
 
@@ -2573,27 +1290,77 @@
 [data-lb-theme="dark"] .ld-lamp-glow { opacity: 0.08; }
 [data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
 
-.ld-page { transition: background 0.5s cubic-bezier(0.22, 1, 0.36, 1), color 0.5s ease; }
+.ld-page {
+  transition: background-color var(--dur-strike) var(--ease-out),
+    color var(--dur-strike) var(--ease-out);
+}
 
 /* The theme flips custom properties on .ld-page; descendants that consume
    them would otherwise snap. For the strike's duration (the store holds
-   `data-lb-theming` on <html> for 800ms) every surface on the landing page
-   eases on the same clock as the hero's wall — and only then, so component
-   hover transitions are untouched the rest of the time. The !important is
-   what lets this window beat a component's own `transition` list. */
+   `data-lb-theming` on <html> for 800ms — keep the numbers below inside that
+   window) the surfaces a strike can actually SEE ease on the same clock as
+   the hero's wall: the nav, the funnel and its descendants, and the demo's
+   band (one solid fill — its interior is masked instead, below). Scoped to
+   those rather than `.ld-page *`, because the lamp is only reachable from the
+   hero: the marketplace, pricing and footer flip unobserved, and the demo's
+   ~300 nodes no longer each run a transition. The !important is what lets
+   this window beat a component's own `transition` list. */
 [data-lb-theming] .ld-page,
-[data-lb-theming] .ld-page * {
+[data-lb-theming] .ld-demo,
+[data-lb-theming] :is(.landing-nav, .ld-funnel),
+[data-lb-theming] :is(.landing-nav, .ld-funnel) * {
   transition:
-    background-color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    fill 0.7s cubic-bezier(0.22, 1, 0.36, 1),
-    stroke 0.7s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    background-color var(--dur-strike) var(--ease-out),
+    color var(--dur-strike) var(--ease-out),
+    border-color var(--dur-strike) var(--ease-out),
+    box-shadow var(--dur-strike) var(--ease-out),
+    opacity var(--dur-strike) var(--ease-out),
+    fill var(--dur-strike) var(--ease-out),
+    stroke var(--dur-strike) var(--ease-out) !important;
 }
-/* Never the WebGL element: its wall already tweens in-scene. */
-[data-lb-theming] .ld-hero-canvas,
+
+/* Text must never cross its own ground. Foreground and background were
+   interpolating on the same curve and met at ~350ms: the headline, the nav
+   links and "Grow it instead" disappeared into the wall mid-strike. So type
+   BLINKS instead — out in 150ms, `color` snapping while it is at zero (the
+   `color 0s … 150ms` below is that snap: a zero-length transition fired on a
+   delay), then back over 250ms. Chosen over the blur mask because this type
+   is 66px Lora display, where a 2px blur reads as a focus pull rather than a
+   crossfade. `:not(:disabled)` keeps the 0.45-opacity Start button from
+   flashing enabled. */
+[data-lb-theming] :is(.landing-nav, .ld-funnel)
+  :is(h1, h2, h3, p, a, button, span, label, em, strong, input):not(:disabled) {
+  transition:
+    color 0s linear 150ms,
+    background-color var(--dur-strike) var(--ease-out),
+    border-color var(--dur-strike) var(--ease-out),
+    box-shadow var(--dur-strike) var(--ease-out),
+    fill var(--dur-strike) var(--ease-out),
+    stroke var(--dur-strike) var(--ease-out) !important;
+  animation: ld-strike-text 400ms var(--ease-out) both;
+}
+
+@keyframes ld-strike-text {
+  0% { opacity: 1; }
+  37.5% { opacity: 0; } /* 150ms — the colour snaps here, unseen */
+  100% { opacity: 1; }
+}
+
+/* The demo takes the same mask at the CONTAINER level rather than on its ~300
+   nodes: the window blinks out, its whole interior (card grounds AND type)
+   swaps in one frame while it is invisible, and it blinks back over the band,
+   which is the one surface in there still easing. Deliberately no transition
+   inside .ld-demo-window — a card that eases while its label snaps is the
+   same crossing bug one level down. */
+[data-lb-theming] .ld-demo-window {
+  animation: ld-strike-text 400ms var(--ease-out) both;
+}
+
+/* Never the WebGL element: its wall already tweens in-scene. The canvas's own
+   first-frame fade (below) is the one exception — it must still transition. */
+[data-lb-theming] .ld-hero-canvas {
+  transition: opacity 400ms var(--ease-out) !important;
+}
 [data-lb-theming] .ld-hero-canvas * { transition: none !important; }
 
 /* The pendulum writes `transform: rotate(...)` inline on every frame, so
@@ -2603,7 +1370,13 @@
 @media (prefers-reduced-motion: reduce) {
   .ld-lamp { transform: none !important; }
   .ld-page, .ld-lamp-glow { transition: none; }
-  [data-lb-theming] .ld-page, [data-lb-theming] .ld-page * { transition: none !important; }
+  [data-lb-theming] .ld-page,
+  [data-lb-theming] .ld-demo,
+  [data-lb-theming] :is(.landing-nav, .ld-funnel),
+  [data-lb-theming] :is(.landing-nav, .ld-funnel) * { transition: none !important; }
+  /* The strike still flips; a reduce user just gets it without the dip. */
+  [data-lb-theming] :is(.landing-nav, .ld-funnel) *,
+  [data-lb-theming] .ld-demo-window { animation: none; }
 }
 
 @media (max-width: 720px) {
@@ -2620,9 +1393,18 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  /* The scene is `ssr:false` and draws nothing until it has a size, so the
+     first frame landed 50–1500ms after the headline with a hard cut. Scene.tsx
+     sets data-ready from inside the first rendered frame. */
+  opacity: 0;
+  transition: opacity 400ms var(--ease-out);
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 140px), transparent 100%);
 }
+.ld-hero-canvas[data-ready] {
+  opacity: 1;
+}
+
 /* !important: R3F writes the drawing-buffer size inline in px on the canvas. */
 .ld-hero-canvas canvas { display: block; width: 100% !important; height: 100% !important; }
 
@@ -2677,9 +1459,9 @@
    0.45 cream measured 3.91:1. */
 [data-lb-theme="dark"] .ld-ask input::placeholder { color: color-mix(in srgb, var(--midnight) 62%, transparent); }
 .ld-funnel-h1, .ld-ask .ld-btn {
-  transition: color 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-              background-color 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-              box-shadow 0.6s ease;
+  transition: color var(--dur-strike) var(--ease-out),
+              background-color var(--dur-strike) var(--ease-out),
+              box-shadow var(--dur-strike) var(--ease-out);
 }
 @media (prefers-reduced-motion: reduce) {
   .ld-funnel-h1, .ld-ask .ld-btn { transition: none; }

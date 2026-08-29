@@ -43,6 +43,7 @@ import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
 import { useGetStartedDerived } from "@/components/chat/shell/useGetStartedDerived";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -274,10 +275,10 @@ export function ChatLayout({
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <Link href="/settings" className="sidebar-settings-link">
-                <Settings size={18} />
+                <Settings size={16} />
               </Link>
               <button className="mobile-hamburger" onClick={() => setSidebarOpen(false)} aria-label="Close menu" style={{ display: sidebarOpen ? "flex" : undefined }}>
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
           </div>
@@ -311,7 +312,7 @@ export function ChatLayout({
               disabled={!chatReady}
               title={chatReady ? undefined : "Available once your workspace is ready"}
             >
-              <Plus size={13} />
+              <Plus size={12} />
               Agent
             </button>
             <span className="create-pill__divider" aria-hidden="true" />
@@ -323,7 +324,7 @@ export function ChatLayout({
               disabled={!chatReady}
               title={chatReady ? undefined : "Available once your workspace is ready"}
             >
-              <Plus size={13} />
+              <Plus size={12} />
               Task
             </button>
           </div>
@@ -394,16 +395,21 @@ export function ChatLayout({
         <div className="main-area" style={{ gridArea: "main" }}>
           <div className="main-header">
             <button className="mobile-hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-              <Menu size={22} />
+              <Menu size={20} />
             </button>
             {onOpenFile && (
-              <button
-                onClick={() => { capture("file_browser_opened"); onOpenFile?.(""); }}
-                className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
-                title="Browse workspace files"
-              >
-                <FolderOpen size={18} />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => { capture("file_browser_opened"); onOpenFile?.(""); }}
+                    aria-label="Browse workspace files"
+                    className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
+                  >
+                    <FolderOpen size={16} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Browse workspace files</TooltipContent>
+              </Tooltip>
             )}
             {/* Active-agent quick actions — inspector / work / pause-resume —
                 so the user can act on the agent they're chatting with without
@@ -412,45 +418,61 @@ export function ChatLayout({
                 structural actions (Delete, Reports-to) stay in the inspector. */}
             {currentAgentId && (
               <div className="flex items-center gap-1" aria-label="Agent actions">
-                <button
-                  type="button"
-                  onClick={() => openAgentInspector?.(currentAgentId)}
-                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
-                  title="Open agent inspector"
-                  aria-label="Open agent inspector"
-                >
-                  <SlidersHorizontal size={18} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAgentIssues?.(currentAgentId)}
-                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
-                  title="See this agent's work"
-                  aria-label="See this agent's work"
-                >
-                  <ListTodo size={18} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void handleTogglePauseResume(); }}
-                  disabled={agentActionBusy}
-                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)] disabled:opacity-50"
-                  title={currentAgentPaused ? "Resume agent" : "Pause agent"}
-                  aria-label={currentAgentPaused ? "Resume agent" : "Pause agent"}
-                >
-                  {currentAgentPaused ? <Play size={18} /> : <Pause size={18} />}
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => openAgentInspector?.(currentAgentId)}
+                      className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded-sm"
+                      aria-label="Open agent inspector"
+                    >
+                      <SlidersHorizontal size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Open agent inspector</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => openAgentIssues?.(currentAgentId)}
+                      className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded-sm"
+                      aria-label="See this agent's work"
+                    >
+                      <ListTodo size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>See this agent&apos;s work</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => { void handleTogglePauseResume(); }}
+                      disabled={agentActionBusy}
+                      className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 rounded-sm disabled:opacity-50"
+                      aria-label={currentAgentPaused ? "Resume agent" : "Pause agent"}
+                    >
+                      {currentAgentPaused ? <Play size={16} /> : <Pause size={16} />}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{currentAgentPaused ? "Resume agent" : "Pause agent"}</TooltipContent>
+                </Tooltip>
               </div>
             )}
             <div style={{ flex: 1 }} />
-            <button
-              onClick={() => openSupport()}
-              className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 mr-1"
-              title="Get help / report a problem"
-              aria-label="Get help"
-            >
-              <HelpCircle size={18} />
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => openSupport()}
+                  className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 mr-1"
+                  aria-label="Get help"
+                >
+                  <HelpCircle size={16} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Get help / report a problem</TooltipContent>
+            </Tooltip>
             <UserButton
               appearance={{
                 elements: {

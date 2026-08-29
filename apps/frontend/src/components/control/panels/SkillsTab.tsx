@@ -216,7 +216,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -226,7 +226,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -238,7 +238,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
+            <h2 className="font-editorial-serif text-title">
               Skill Store
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
@@ -259,7 +259,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               + Create custom skill
             </Button>
             <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw size={16} />
             </Button>
           </div>
         </div>
@@ -289,7 +289,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* Search bar */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--midnight-muted)]" />
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--midnight-muted)]" />
           <Input
             placeholder="Search skills..."
             className="pl-10 h-10 text-sm bg-cream-deep border-[var(--edge)] rounded-lg"
@@ -331,7 +331,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {installedSkills.length > 0 && activeCategory !== "Installed" && (
           <div className="space-y-3">
             <h3
-              className="text-sm font-semibold text-[var(--midnight)] tracking-wide"
+              className="text-sm font-semibold text-[var(--midnight)] tracking-caps"
               style={{ fontFamily: "'Lora', serif" }}
             >
               Installed
@@ -369,7 +369,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {availableSkills.length > 0 && activeCategory !== "Installed" && (
           <div className="space-y-3">
             <h3
-              className="text-sm font-semibold text-[var(--midnight)] tracking-wide"
+              className="text-sm font-semibold text-[var(--midnight)] tracking-caps"
               style={{ fontFamily: "'Lora', serif" }}
             >
               Available
@@ -396,9 +396,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               className="flex items-center gap-2 text-sm font-semibold text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors w-full text-left"
               style={{ fontFamily: "'Lora', serif" }}
             >
-              <ChevronDown
+              <ChevronDown size={16}
                 className={cn(
-                  "h-3.5 w-3.5 transition-transform",
+                  "transition-transform",
                   unsupportedCollapsed && "-rotate-90",
                 )}
               />
@@ -417,10 +417,10 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   {unsupportedSkills.map((skill) => (
                     <div
                       key={skill.skillKey || skill.name}
-                      className="rounded-xl border border-[var(--edge)] bg-cream/60 p-3 opacity-60"
+                      className="rounded-xl border border-[var(--edge)] bg-cream p-3 opacity-60"
                     >
                       <div className="flex items-center gap-3">
-                        <span className="text-lg flex-shrink-0 grayscale">
+                        <span className="text-title shrink-0 grayscale">
                           {skill.emoji || "🧩"}
                         </span>
                         <div className="min-w-0 flex-1">
@@ -430,14 +430,14 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                             >
                               {skill.name}
                             </h3>
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
-                              <Monitor className="h-2.5 w-2.5" />
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
+                              <Monitor size={12} strokeWidth={1.75} />
                               Desktop Only
                             </span>
                           </div>
                           {(skill.missing?.bins?.length ?? 0) > 0 && (
-                            <p className="text-[11px] text-[var(--midnight-muted)] mt-0.5">
-                              Requires: {skill.missing.bins.join(", ")}
+                            <p className="text-caption text-[var(--midnight-muted)] mt-0.5">
+                              Requires: {skill.missing.bins.join(",")}
                             </p>
                           )}
                         </div>
@@ -467,7 +467,7 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   return (
     <Link
       href="/chat?panel=integrations"
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] flex-shrink-0"
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] shrink-0"
       title="Connect this account under Integrations"
     >
       works with {integration.label}
@@ -547,7 +547,7 @@ function SkillCard({
         {/* Top row: icon + info + badge + actions */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
-            <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
+            <span className="text-2xl shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3
@@ -555,7 +555,7 @@ function SkillCard({
                 >
                   {skill.name}
                 </h3>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-ok/10 text-ok flex-shrink-0">
+                <span className="border border-ok inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream text-ok shrink-0">
                   Installed
                 </span>
                 <IntegrationChip skillName={skill.name} />
@@ -568,12 +568,12 @@ function SkillCard({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {skill.always ? (
               // Managed/required skills have no toggle. Explain why, so it doesn't
               // read as "I can't modify this and don't know why".
               <span
-                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-cream-deep text-[var(--midnight-muted)] cursor-help"
+                className="inline-flex items-center px-2.5 py-1 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] cursor-help"
                 title="This skill is always on — it's managed by Lightbulb and can't be turned off."
               >
                 Always on
@@ -584,7 +584,7 @@ function SkillCard({
                 disabled={toggleLoading}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:border-[var(--midnight-faint)] transition-colors"
               >
-                {toggleLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Disable"}
+                {toggleLoading ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Disable"}
               </button>
             )}
           </div>
@@ -593,7 +593,7 @@ function SkillCard({
         {/* Action error — surfaced instead of being swallowed */}
         {actionError && (
           <div className="flex items-start gap-1.5 text-xs text-err">
-            <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+            <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0 mt-0.5" />
             <span>{actionError}</span>
           </div>
         )}
@@ -603,19 +603,19 @@ function SkillCard({
           <div className="space-y-1">
             {(skill.missing?.bins?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing: {skill.missing.bins.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.env?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing env: {skill.missing.env.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.config?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing config: {skill.missing.config.join(", ")}</span>
               </div>
             )}
@@ -637,9 +637,9 @@ function SkillCard({
                   disabled={installLoading !== null}
                 >
                   {installLoading === spec.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                   ) : (
-                    <Download className="h-3 w-3" />
+                    <Download size={12} strokeWidth={1.75} />
                   )}
                   {spec.label || `Install via ${spec.kind}`}
                 </Button>
@@ -655,7 +655,7 @@ function SkillCard({
     <div className="rounded-xl border border-[var(--edge)] bg-cream p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
+          <span className="text-2xl shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h3
@@ -675,14 +675,14 @@ function SkillCard({
             {hasMissing && (
               <div className="mt-2 space-y-0.5">
                 {(skill.missing?.bins?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-[11px] text-warn">
-                    <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />
+                  <div className="flex items-center gap-1 text-caption text-warn">
+                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                     <span>Needs: {skill.missing.bins.join(", ")}</span>
                   </div>
                 )}
                 {(skill.missing?.env?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-[11px] text-warn">
-                    <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />
+                  <div className="flex items-center gap-1 text-caption text-warn">
+                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                     <span>Needs env: {skill.missing.env.join(", ")}</span>
                   </div>
                 )}
@@ -691,7 +691,7 @@ function SkillCard({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Install dependency buttons */}
           {skill.install?.filter((s) => s.kind !== "brew").length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
             <>
@@ -702,10 +702,10 @@ function SkillCard({
                     key={spec.id}
                     onClick={() => handleInstall(spec)}
                     disabled={installLoading !== null}
-                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-warn text-warn bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] hover:bg-[color-mix(in_srgb,var(--warn)_16%,var(--cream))] transition-colors"
+                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-warn text-warn bg-cream hover:bg-cream-deep transition-colors"
                   >
                     {installLoading === spec.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                     ) : (
                       <>{spec.label || `Install ${spec.kind}`}</>
                     )}
@@ -720,7 +720,7 @@ function SkillCard({
             disabled={toggleLoading || skill.always}
             className="px-4 py-1.5 rounded-full text-xs font-medium bg-[var(--midnight)] text-cream hover:opacity-90 transition-colors disabled:opacity-50"
           >
-            {toggleLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Install"}
+            {toggleLoading ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Install"}
           </button>
         </div>
       </div>
@@ -728,7 +728,7 @@ function SkillCard({
       {/* Action error — surfaced instead of being swallowed */}
       {actionError && (
         <div className="mt-2 flex items-start gap-1.5 text-xs text-err">
-          <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0 mt-0.5" />
           <span>{actionError}</span>
         </div>
       )}

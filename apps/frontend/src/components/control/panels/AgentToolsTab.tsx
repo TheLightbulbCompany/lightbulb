@@ -244,7 +244,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
   }, [callRpc, agentId, localProfile, localAlsoAllow, localDeny, mutateConfig]);
 
   if (catalogLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)] mt-4" />;
+    return <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)] mt-4" />;
   }
 
   if (catalogError) {
@@ -252,7 +252,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
       <div className="mt-4 space-y-2">
         <p className="text-sm text-err">{catalogError.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutateCatalog()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -282,7 +282,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
             Disable All
           </Button>
           <Button variant="ghost" size="sm" onClick={handleReload}>
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           </Button>
           <Button
             variant="default"
@@ -291,9 +291,9 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
             disabled={saving || !dirty}
           >
             {saving ? (
-              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              <Loader2 size={12} strokeWidth={1.75} className="animate-spin mr-1" />
             ) : (
-              <Save className="h-3 w-3 mr-1" />
+              <Save size={12} strokeWidth={1.75} className="mr-1" />
             )}
             Save
           </Button>
@@ -302,10 +302,10 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
 
       {globalToolsConfig?.allow && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))]">
-          <AlertCircle className="h-3 w-3 text-warn flex-shrink-0" />
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-warn">
+          <AlertCircle size={12} strokeWidth={1.75} className="text-warn shrink-0" />
           <span className="text-xs text-warn">
-            Global <code className="text-[10px] bg-[var(--cream-deep)] px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
+            Global <code className="text-2xs bg-[var(--cream-deep)] px-1 rounded-sm">tools.allow</code> is set — this may restrict available tools regardless of agent config.
           </span>
         </div>
       )}
@@ -347,7 +347,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
       {sections.map((section) => (
         <div key={section.id} className="space-y-1">
-          <h4 className="text-xs font-semibold text-[var(--midnight-muted)] uppercase tracking-wide">
+          <h4 className="label-caps text-[var(--midnight-muted)]">
             {section.label}
           </h4>
           <div className="space-y-0.5">
@@ -359,14 +359,14 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                   className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--cream-deep)] group"
                 >
                   <button
-                    className="flex-shrink-0 focus:outline-none"
+                    className="shrink-0"
                     onClick={() => toggleTool(tool.id)}
                     aria-label={`Toggle ${tool.label}`}
                   >
                     {allowed ? (
-                      <ToggleRight className="h-4 w-4 text-ok" />
+                      <ToggleRight size={16} className="text-ok" />
                     ) : (
-                      <ToggleLeft className="h-4 w-4 text-midnight-muted" />
+                      <ToggleLeft size={16} className="text-midnight-muted" />
                     )}
                   </button>
                   <div className="min-w-0 flex-1">
@@ -383,7 +383,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                     )}
                   </div>
                   {tool.source && (
-                    <span className="text-[10px] text-midnight-muted flex-shrink-0">
+                    <span className="text-2xs text-midnight-muted shrink-0">
                       {String(tool.source)}
                     </span>
                   )}

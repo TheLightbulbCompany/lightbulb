@@ -230,7 +230,7 @@ export function ConnectButton({
         </ol>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[var(--midnight-muted)]">Authorized redirect URI to register:</span>
-          <code className="break-all rounded bg-cream px-2 py-1 text-[11px] text-midnight border border-[var(--edge)]">
+          <code className="break-all rounded-sm bg-cream px-2 py-1 text-caption text-midnight border border-[var(--edge)]">
             {byoRedirectUri(provider)}
           </code>
         </div>

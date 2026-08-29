@@ -222,7 +222,7 @@ export default async function ListingDetail({
             {preview.tags.map((t) => (
               <span
                 key={t}
-                className="text-xs px-2 py-0.5 rounded bg-accent text-muted-foreground"
+                className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground"
               >
                 {t}
               </span>
@@ -255,7 +255,7 @@ export default async function ListingDetail({
               No moderation actions —{" "}
               <code className="font-mono text-muted-foreground">{preview.status}</code>
             </span>
-            <span className="text-[11px] text-muted-foreground max-w-[18rem]">
+            <span className="text-caption text-muted-foreground max-w-[18rem]">
               {preview.status === "published"
                 ? "Already live. Use Take down below to remove."
                 : preview.status === "taken_down"
@@ -311,7 +311,7 @@ export default async function ListingDetail({
                   <span className="flex items-center gap-2">
                     {fileFlags.length > 0 && (
                       <span
-                        className={`text-xs px-2 py-0.5 rounded border ${severityBadge(
+                        className={`text-xs px-2 py-0.5 rounded-sm border ${severityBadge(
                           fileFlags[0].severity,
                         )}`}
                       >
@@ -333,7 +333,7 @@ export default async function ListingDetail({
       {preview.format === "skillmd" && preview.skill_md_text != null && (
         <section className="rounded-lg border border-border bg-card p-5">
           <h2 className="text-sm font-semibold text-foreground mb-3">SKILL.md</h2>
-          <pre className="text-xs text-foreground whitespace-pre-wrap font-mono bg-background p-3 rounded overflow-x-auto">
+          <pre className="text-xs text-foreground whitespace-pre-wrap font-mono bg-background p-3 rounded-sm overflow-x-auto">
             {preview.skill_md_text}
           </pre>
         </section>
@@ -378,7 +378,7 @@ export default async function ListingDetail({
       {/* Manifest dump (always last, for completeness) */}
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="text-sm font-semibold text-foreground mb-3">Manifest</h2>
-        <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-background p-3 rounded overflow-x-auto">
+        <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-background p-3 rounded-sm overflow-x-auto">
           {JSON.stringify(preview.manifest, null, 2)}
         </pre>
       </section>

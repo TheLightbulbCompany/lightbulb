@@ -92,7 +92,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -110,7 +110,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       <div className="p-4 space-y-3">
         <p className="text-sm text-err">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -127,10 +127,10 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
         </div>
         <div className="flex items-center gap-1">
           <Button variant="outline" size="sm" onClick={() => setCreateStep("choose")}>
-            <Plus className="h-3.5 w-3.5 mr-1" /> New
+            <Plus size={16} className="mr-1" /> New
           </Button>
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           </Button>
         </div>
       </div>
@@ -178,16 +178,16 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                 setActiveTab("overview");
               }}
             >
-              <Bot className="h-3.5 w-3.5 flex-shrink-0" />
+              <Bot size={16} className="shrink-0" />
               <span className="truncate flex-1">
                 {agent.name || agent.id}
                 {agent.id === defaultId && (
-                  <span className="text-[10px] text-[var(--midnight-muted)] ml-1">(default)</span>
+                  <span className="text-2xs text-[var(--midnight-muted)] ml-1">(default)</span>
                 )}
               </span>
               {agent.id !== defaultId && (
                 <button
-                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-err"
+                  className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity duration-(--dur-fast) ease-out p-0.5 hover:text-err"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleDelete(agent.id);
@@ -196,9 +196,9 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                   aria-label={`Delete ${agent.name || agent.id}`}
                 >
                   {deleting === agent.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                   ) : (
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 size={12} strokeWidth={1.75} />
                   )}
                 </button>
               )}
@@ -232,7 +232,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                       )}
                       onClick={() => setActiveTab(tab.id)}
                     >
-                      <tab.icon className="h-3.5 w-3.5" />
+                      <tab.icon size={16} />
                       {tab.label}
                     </button>
                   ))}

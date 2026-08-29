@@ -146,7 +146,7 @@ export function AgentInspectorPanel({
             )}
             onClick={() => setActiveTab(tab.id)}
           >
-            <tab.icon className="h-3.5 w-3.5" />
+            <tab.icon size={16} />
             {tab.label}
           </button>
         ))}
@@ -168,7 +168,7 @@ export function AgentInspectorPanel({
               >
                 <h3
                   id="inspector-org-heading"
-                  className="text-[10px] uppercase tracking-wider text-[var(--midnight-muted)] mb-3"
+                  className="label-caps text-[var(--midnight-muted)] mb-3"
                 >
                   Organization
                 </h3>

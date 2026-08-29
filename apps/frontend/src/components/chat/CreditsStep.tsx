@@ -44,11 +44,10 @@ const SANS_FONT = { fontFamily: "var(--font-sans), sans-serif" } as const;
 
 const PRIMARY_BUTTON =
   "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-cream " +
-  "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
+  "transition-colors hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep";
 
 const TEXT_INPUT =
-  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)] " +
-  "focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring";
+  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)]";
 
 /**
  * Bedrock onboarding step: collect an initial Claude credit top-up.
@@ -187,7 +186,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
   if (awaitingBundledGrant) {
     return (
       <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center" style={SANS_FONT}>
-        <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+        <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
           Adding your Claude credits
         </h3>
         <p className="text-sm text-[var(--midnight-muted)]">
@@ -210,7 +209,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
-      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+      <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Add Claude credits
       </h3>
       <p className="text-sm text-[var(--midnight-muted)]">
@@ -249,7 +248,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
       />
 
       {!autoChargeEnabled && (
-        <label className="flex items-start gap-2 text-[13px] text-[var(--midnight-muted)]">
+        <label className="flex items-start gap-2 text-ui text-[var(--midnight-muted)]">
           <input
             type="checkbox"
             checked={optIn}

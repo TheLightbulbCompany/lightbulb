@@ -111,11 +111,11 @@ export function PickAgentStep({
 
   return (
     <div>
-      <p className="text-[14px] text-muted-foreground leading-snug mb-4">
+      <p className="text-sm text-muted-foreground leading-snug mb-4">
         Pick which agent in your workspace you&apos;d like to publish. The next
         step lets you choose which integrations ride along.
       </p>
-      <div className="mb-4 flex items-center justify-between rounded-2xl border border-[var(--edge)] bg-card px-3 py-2 text-[13px]">
+      <div className="mb-4 flex items-center justify-between rounded-xl border border-[var(--edge)] bg-card px-3 py-2 text-ui">
         <span className="text-muted-foreground">Already running OpenClaw somewhere else?</span>
         <button type="button" onClick={() => setImportOpen(true)} className="rounded-full border border-[var(--edge)] px-3 py-1 font-medium text-[var(--midnight)] hover:bg-[var(--midnight)]/5">
           Import from an OpenClaw backup
@@ -123,9 +123,9 @@ export function PickAgentStep({
       </div>
       <ImportBackupDialog open={importOpen} onOpenChange={setImportOpen} onImported={(id) => { setImportOpen(false); refresh(); onSelect(id); }} />
       {agents.length === 0 && (
-        <div className="rounded-2xl border border-dashed border-[var(--edge)] bg-card p-6 text-center">
-          <p className="text-[14px] font-medium text-[var(--midnight)]">No agents to publish yet.</p>
-          <p className="mt-1.5 text-[13px] leading-snug text-muted-foreground">
+        <div className="rounded-xl border border-dashed border-[var(--edge)] bg-card p-6 text-center">
+          <p className="text-sm font-medium text-[var(--midnight)]">No agents to publish yet.</p>
+          <p className="mt-1.5 text-ui leading-snug text-muted-foreground">
             If your workspace is still starting, give it a minute and reopen this step. Otherwise,
             build an agent first — then come back to put it on the marketplace.
           </p>
@@ -142,22 +142,22 @@ export function PickAgentStep({
               aria-disabled={isMain}
               tabIndex={isMain ? -1 : 0}
               onClick={() => !isMain && onSelect(agent.id)}
-              className={`flex items-center gap-3 p-3 rounded-2xl border bg-card cursor-pointer transition ${
+              className={`flex items-center gap-3 p-3 rounded-xl border bg-card cursor-pointer transition ${
                 isMain
                   ? "opacity-45 cursor-not-allowed bg-[var(--cream-deep)]"
                   : isSelected
                     ? "border-[var(--midnight)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--midnight)_8%,transparent)]"
-                    : "border-[var(--edge)] hover:border-[var(--midnight-faint)] hover:-translate-y-px"
+                    : "border-[var(--edge)] hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-px"
               }`}
               title={isMain ? "main agent can't be published" : undefined}
             >
-              <div className="w-9 h-9 rounded-[10px] bg-cream-deeper text-[var(--midnight)] font-editorial-serif font-semibold text-sm flex items-center justify-center">
+              <div className="w-9 h-9 rounded-md bg-cream-deeper text-[var(--midnight)] font-editorial-serif font-semibold text-sm flex items-center justify-center">
                 {(agent.identity?.name ?? agent.name ?? "?").slice(0, 2)}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-[14px] font-medium">{agentDisplayName(agent)}</div>
+                <div className="text-sm font-medium">{agentDisplayName(agent)}</div>
                 {isMain && (
-                  <div className="text-[11px] text-muted-foreground">core agent · not publishable</div>
+                  <div className="text-caption text-muted-foreground">core agent · not publishable</div>
                 )}
               </div>
             </div>
@@ -185,14 +185,14 @@ export function DetailsStep({
 
   return (
     <div>
-      <p className="text-[14px] text-muted-foreground leading-snug mb-4">
+      <p className="text-sm text-muted-foreground leading-snug mb-4">
         Help buyers find your agent. This is what they&apos;ll see in the marketplace.
       </p>
       <Field label="Public name">
         <input
           value={form.name}
           onChange={(e) => onChange({ name: e.target.value })}
-          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--midnight)] outline-0"
+          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full"
         />
       </Field>
       <Field label="One-line tagline" hint="Max 80 characters.">
@@ -200,7 +200,7 @@ export function DetailsStep({
           maxLength={80}
           value={form.tagline}
           onChange={(e) => onChange({ tagline: e.target.value })}
-          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--midnight)] outline-0"
+          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full"
         />
       </Field>
       <Field label="Description" hint="Markdown allowed.">
@@ -208,7 +208,7 @@ export function DetailsStep({
           rows={4}
           value={form.description}
           onChange={(e) => onChange({ description: e.target.value })}
-          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--midnight)] outline-0 min-h-[88px] resize-y"
+          className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full min-h-[88px] resize-y"
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
@@ -216,7 +216,7 @@ export function DetailsStep({
           <select
             value={form.category}
             onChange={(e) => onChange({ category: e.target.value })}
-            className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--midnight)] outline-0"
+            className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full"
           >
             {["Operations", "Sales", "Engineering", "Research", "Finance", "Marketing", "Personal"].map(
               (c) => (
@@ -230,7 +230,7 @@ export function DetailsStep({
             {form.tags.map((t) => (
               <span
                 key={t}
-                className="bg-cream-deeper text-[var(--midnight)] text-[12px] px-2.5 py-1 rounded-full inline-flex items-center gap-1.5"
+                className="bg-cream-deeper text-[var(--midnight)] text-xs px-2.5 py-1 rounded-full inline-flex items-center gap-1.5"
               >
                 {t}
                 <button
@@ -275,9 +275,9 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5 mb-3.5">
-      <label className="text-[12.5px] font-semibold text-[var(--midnight)]">{label}</label>
+      <label className="text-ui font-semibold text-[var(--midnight)]">{label}</label>
       {children}
-      {hint && <span className="text-[11.5px] text-muted-foreground">{hint}</span>}
+      {hint && <span className="text-caption text-muted-foreground">{hint}</span>}
     </div>
   );
 }
@@ -328,14 +328,14 @@ export function BundleStep({
 
   return (
     <div>
-      <p className="text-[14px] text-muted-foreground leading-snug mb-4">
+      <p className="text-sm text-muted-foreground leading-snug mb-4">
         Pick which integrations ride along with your agent. Buyers will need to
         fill in their own credentials for any MCP or configured skill.
       </p>
 
-      {isLoading && <div className="text-[13px] text-muted-foreground">Loading…</div>}
+      {isLoading && <div className="text-ui text-muted-foreground">Loading…</div>}
       {error && (
-        <div role="alert" className="text-[13px] text-[var(--err)] mb-3">
+        <div role="alert" className="text-ui text-[var(--err)] mb-3">
           Couldn&apos;t load preview: {error}
         </div>
       )}
@@ -343,26 +343,26 @@ export function BundleStep({
       {preview && (
         <>
           <section className="mb-5" data-testid="bundle-mcps">
-            <h4 className="text-[12.5px] font-semibold text-[var(--midnight)] mb-2">
+            <h4 className="text-ui font-semibold text-[var(--midnight)] mb-2">
               MCP servers
             </h4>
             {preview.available_mcps.length === 0 ? (
-              <p className="text-[12.5px] text-muted-foreground">
+              <p className="text-ui text-muted-foreground">
                 No MCP servers configured on your container.
               </p>
             ) : (
               <ul className="space-y-1.5">
                 {preview.available_mcps.map((name) => (
                   <li key={name}>
-                    <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+                    <label className="flex items-center gap-2 cursor-pointer text-ui">
                       <input
                         type="checkbox"
                         checked={form.bundleMcps.includes(name)}
                         onChange={() => toggleMcp(name)}
                         aria-label={`bundle MCP ${name}`}
                       />
-                      <span className="font-mono text-[12.5px]">{name}</span>
-                      <span className="text-[10.5px] px-1.5 py-0.5 rounded-full border border-[var(--warn)] text-[var(--warn)]">
+                      <span className="font-mono text-ui">{name}</span>
+                      <span className="text-2xs px-1.5 py-0.5 rounded-full border border-[var(--warn)] text-[var(--warn)]">
                         secrets scrubbed
                       </span>
                     </label>
@@ -373,12 +373,12 @@ export function BundleStep({
           </section>
 
           <section className="mb-5" data-testid="bundle-skills">
-            <h4 className="text-[12.5px] font-semibold text-[var(--midnight)] mb-2">
+            <h4 className="text-ui font-semibold text-[var(--midnight)] mb-2">
               Skills
             </h4>
             {preview.available_skills.length === 0 &&
             preview.auto_ship_skills.length === 0 ? (
-              <p className="text-[12.5px] text-muted-foreground">
+              <p className="text-ui text-muted-foreground">
                 This agent has no skills configured.
               </p>
             ) : (
@@ -387,16 +387,16 @@ export function BundleStep({
                   <ul className="space-y-1.5">
                     {preview.available_skills.map((s) => (
                       <li key={s.name}>
-                        <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+                        <label className="flex items-center gap-2 cursor-pointer text-ui">
                           <input
                             type="checkbox"
                             checked={form.bundleSkills.includes(s.name)}
                             onChange={() => toggleSkill(s.name)}
                             aria-label={`bundle skill ${s.name}`}
                           />
-                          <span className="font-mono text-[12.5px]">{s.name}</span>
+                          <span className="font-mono text-ui">{s.name}</span>
                           <span
-                            className={`text-[10.5px] px-1.5 py-0.5 rounded-full ${BUCKET_TONE[s.bucket]}`}
+                            className={`text-2xs px-1.5 py-0.5 rounded-full ${BUCKET_TONE[s.bucket]}`}
                             title={`bucket: ${s.bucket}`}
                           >
                             {BUCKET_LABEL[s.bucket]}
@@ -412,7 +412,7 @@ export function BundleStep({
                     className={preview.available_skills.length > 0 ? "mt-3" : ""}
                     data-testid="bundle-auto-ship-skills"
                   >
-                    <p className="text-[11.5px] text-muted-foreground mb-1.5">
+                    <p className="text-caption text-muted-foreground mb-1.5">
                       Skills in this agent&apos;s workspace ship automatically — no
                       selection needed.
                     </p>
@@ -420,7 +420,7 @@ export function BundleStep({
                       {preview.auto_ship_skills.map((name) => (
                         <span
                           key={name}
-                          className={`font-mono text-[11px] px-2 py-0.5 rounded-full ${BUCKET_TONE.workspace}`}
+                          className={`font-mono text-caption px-2 py-0.5 rounded-full ${BUCKET_TONE.workspace}`}
                         >
                           {name}
                         </span>
@@ -434,10 +434,10 @@ export function BundleStep({
 
           {preview.persona_files.length > 0 && (
             <section className="mb-2" data-testid="bundle-persona-files">
-              <h4 className="text-[12.5px] font-semibold text-[var(--midnight)] mb-1.5">
+              <h4 className="text-ui font-semibold text-[var(--midnight)] mb-1.5">
                 Personality files (always included)
               </h4>
-              <p className="text-[11.5px] text-muted-foreground mb-1.5">
+              <p className="text-caption text-muted-foreground mb-1.5">
                 These ship as authored. Review your wording before submitting —
                 anything you wrote, your buyer reads.
               </p>
@@ -445,7 +445,7 @@ export function BundleStep({
                 {preview.persona_files.map((name) => (
                   <span
                     key={name}
-                    className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-[var(--ok)] text-[var(--ok)]"
+                    className="font-mono text-caption px-2 py-0.5 rounded-full border border-[var(--ok)] text-[var(--ok)]"
                   >
                     {name}
                   </span>
@@ -469,10 +469,10 @@ export function BundleStep({
             className="mt-0.5"
           />
           <span>
-            <span className="block text-[12.5px] font-semibold text-[var(--midnight)]">
+            <span className="block text-ui font-semibold text-[var(--midnight)]">
               Enable ACP coding-harness delegation
             </span>
-            <span className="block text-[11.5px] text-muted-foreground leading-snug mt-0.5">
+            <span className="block text-caption text-muted-foreground leading-snug mt-0.5">
               Lets this agent hand off heavy coding subtasks to a coding harness.
               The harness is chosen by the buyer&apos;s inference provider —
               Bedrock / Anthropic run Claude Code, ChatGPT / OpenAI run Codex.
@@ -492,15 +492,15 @@ function SafetyFlagRow({ flag }: { flag: SafetyFlag }) {
         ? "text-[var(--warn)] border-[var(--warn)]"
         : "bg-cream-deep text-muted-foreground border-[var(--edge)]";
   return (
-    <li className={`border rounded-lg px-2.5 py-1.5 text-[12px] ${tone}`}>
+    <li className={`border rounded-lg px-2.5 py-1.5 text-xs ${tone}`}>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[11.5px]">{flag.pattern}</span>
-        <span className="font-mono text-[11px] opacity-80">
+        <span className="font-mono text-caption">{flag.pattern}</span>
+        <span className="font-mono text-caption opacity-80">
           {flag.file}
           {flag.line ? `:${flag.line}` : ""}
         </span>
       </div>
-      <div className="font-mono text-[11.5px] opacity-90 mt-0.5 break-all">
+      <div className="font-mono text-caption opacity-90 mt-0.5 break-all">
         {flag.snippet}
       </div>
     </li>
@@ -537,12 +537,12 @@ export function PricingStep({
 
   return (
     <div>
-      <p className="text-[14px] text-muted-foreground leading-snug mb-4">
+      <p className="text-sm text-muted-foreground leading-snug mb-4">
         Set what your work is worth. Price is hidden from the marketplace browse view —
         buyers only see it at install time.
       </p>
 
-      <div className="bg-cream-deep rounded-2xl p-1 flex mb-4">
+      <div className="bg-cream-deep rounded-xl p-1 flex mb-4">
         <button
           type="button"
           onClick={() => onChange({ priceTier: "free" })}
@@ -571,7 +571,7 @@ export function PricingStep({
         <div
           role="alert"
           data-testid="payout-setup-gate"
-          className="mb-4 rounded-xl border border-[var(--warn)] px-3.5 py-3 text-[13px] text-[var(--warn)] leading-snug"
+          className="mb-4 rounded-xl border border-[var(--warn)] px-3.5 py-3 text-ui text-[var(--warn)] leading-snug"
         >
           <strong className="block text-[var(--midnight)] mb-0.5">
             Set up payouts first.
@@ -583,7 +583,7 @@ export function PricingStep({
             type="button"
             onClick={startPayoutOnboarding}
             disabled={payoutBusy}
-            className="block mt-2 bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] disabled:opacity-60 text-[var(--cream)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold"
+            className="block mt-2 bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] disabled:opacity-50 text-[var(--cream)] px-3.5 py-1.5 rounded-full text-ui font-semibold"
           >
             {payoutBusy ? "Opening Stripe…" : "Set up payouts →"}
           </button>
@@ -591,14 +591,14 @@ export function PricingStep({
       )}
 
       {form.priceTier === "free" ? (
-        <div className="bg-card border border-[var(--edge)] rounded-xl p-4 text-muted-foreground text-[13.5px] leading-snug">
+        <div className="bg-card border border-[var(--edge)] rounded-xl p-4 text-muted-foreground text-ui leading-snug">
           <strong className="text-[var(--midnight)]">Free agents install instantly.</strong>
           <br />
           No payout setup needed. You can switch this listing to a premium tier anytime.
         </div>
       ) : (
         <>
-          <label className="block text-[12.5px] font-semibold text-[var(--midnight)] mb-1.5">
+          <label className="block text-ui font-semibold text-[var(--midnight)] mb-1.5">
             Price per install (USD)
           </label>
           <div className="flex items-center bg-cream-deep border border-[var(--edge)] rounded-xl px-3.5 py-3 gap-2 mb-2">
@@ -614,12 +614,12 @@ export function PricingStep({
               }
               className="font-editorial-serif text-2xl flex-1 outline-0 bg-transparent"
             />
-            <span className="text-[12px] text-muted-foreground">USD · one-time, perpetual license</span>
+            <span className="text-xs text-muted-foreground">USD · one-time, perpetual license</span>
           </div>
-          <p className="text-[11.5px] text-muted-foreground mb-3">
+          <p className="text-caption text-muted-foreground mb-3">
             Suggested range: $5–$20. Listings over $20 require Lightbulb approval.
           </p>
-          <div className="bg-card border border-[var(--edge)] rounded-xl px-4 py-3.5 text-[13px]">
+          <div className="bg-card border border-[var(--edge)] rounded-xl px-4 py-3.5 text-ui">
             <Row label="List price" value={`$${v.toFixed(2)}`} />
             <Row label="Stripe processing fee (2.9% + $0.30)" value={`−$${stripe.toFixed(2)}`} />
             <Row label="Lightbulb platform fee (15%)" value={`−$${platform.toFixed(2)}`} />
@@ -630,7 +630,7 @@ export function PricingStep({
               </span>
             </div>
           </div>
-          <p className="text-[12px] italic text-muted-foreground mt-3">
+          <p className="text-xs italic text-muted-foreground mt-3">
             Earnings accrue to your seller balance. Cash out anytime from My Listings.
           </p>
         </>
@@ -666,27 +666,27 @@ export function ReviewStep({ form }: { form: PublishForm }) {
 
   return (
     <div>
-      <p className="text-[14px] text-muted-foreground leading-snug mb-4">
+      <p className="text-sm text-muted-foreground leading-snug mb-4">
         Here&apos;s how your listing will appear. Submit when ready — listings go live after
         admin moderation (usually within 24h).
       </p>
-      <div className="bg-card border border-[var(--edge)] rounded-2xl p-5">
+      <div className="bg-card border border-[var(--edge)] rounded-xl p-5">
         <div className="font-editorial-serif text-xl">{form.name || "Untitled"}</div>
-        <div className="text-[12px] text-muted-foreground italic mt-0.5">by you</div>
-        <p className="text-[13.5px] text-muted-foreground leading-snug mt-2">{form.tagline || "—"}</p>
+        <div className="text-xs text-muted-foreground italic mt-0.5">by you</div>
+        <p className="text-ui text-muted-foreground leading-snug mt-2">{form.tagline || "—"}</p>
         {form.tags.length > 0 && (
           <div className="flex gap-1.5 flex-wrap mt-3">
             {form.tags.map((t) => (
               <span
                 key={t}
-                className="bg-cream-deep text-muted-foreground text-[11px] px-2 py-0.5 rounded-full"
+                className="bg-cream-deep text-muted-foreground text-caption px-2 py-0.5 rounded-full"
               >
                 {t}
               </span>
             ))}
           </div>
         )}
-        <div className="flex justify-between text-[12.5px] text-muted-foreground mt-3 pt-3 border-t border-dashed border-[var(--edge)]">
+        <div className="flex justify-between text-ui text-muted-foreground mt-3 pt-3 border-t border-dashed border-[var(--edge)]">
           <span data-testid="review-bundle-summary">
             Bundled: {mcpCount} MCP{mcpCount === 1 ? "" : "s"} · {skillCount} skill
             {skillCount === 1 ? "" : "s"} · {personaCount} persona file
@@ -702,7 +702,7 @@ export function ReviewStep({ form }: { form: PublishForm }) {
         <div
           role="status"
           data-testid="review-config-patch-warning"
-          className="mt-3 rounded-xl border border-[var(--warn)] px-3.5 py-2.5 text-[12.5px] text-[var(--warn)] leading-snug"
+          className="mt-3 rounded-xl border border-[var(--warn)] px-3.5 py-2.5 text-ui text-[var(--warn)] leading-snug"
         >
           Heads up — installing this listing will patch your buyer&apos;s
           openclaw.json (MCPs / configured skills). Buyers will need to fill in
@@ -716,10 +716,10 @@ export function ReviewStep({ form }: { form: PublishForm }) {
           aria-label="Safety scan findings"
           data-testid="review-safety-flags"
         >
-          <h4 className="text-[12.5px] font-semibold text-[var(--midnight)] mb-1.5">
+          <h4 className="text-ui font-semibold text-[var(--midnight)] mb-1.5">
             Safety scan: {safetyFlags.length} finding{safetyFlags.length === 1 ? "" : "s"}
           </h4>
-          <p className="text-[11.5px] text-muted-foreground mb-2">
+          <p className="text-caption text-muted-foreground mb-2">
             Found these patterns in your listing files. Trust check before submit
             — edit the source, then come back to re-snapshot.
           </p>
@@ -731,7 +731,7 @@ export function ReviewStep({ form }: { form: PublishForm }) {
         </section>
       )}
 
-      <p className="text-[12px] text-muted-foreground leading-snug mt-3">
+      <p className="text-xs text-muted-foreground leading-snug mt-3">
         By publishing, you agree to the{" "}
         <a href="/terms" target="_blank" rel="noreferrer" className="text-[var(--midnight)] underline">
           Marketplace Terms
@@ -761,11 +761,11 @@ export function SuccessStep({
 }) {
   return (
     <div className="text-center py-8">
-      <div className="text-3xl mb-3">✓</div>
+      <div className="text-2xl mb-3">✓</div>
       <h3 className="font-editorial-serif text-2xl mb-2">
         {mode === "resubmit" ? "Resubmitted for review." : "Submitted for review."}
       </h3>
-      <p className="text-[14px] text-muted-foreground mb-4">
+      <p className="text-sm text-muted-foreground mb-4">
         You&apos;ll get a notification when it&apos;s live — usually within 24 hours.
       </p>
       <button

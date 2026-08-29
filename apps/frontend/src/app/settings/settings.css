@@ -1,14 +1,39 @@
+/* The one genuinely floating bar in the app: sticky at top 0 with the whole
+ * settings page scrolling underneath it. So it is built as a material, not as
+ * a bar with a line under it — the hard `--edge` rule is replaced by a 14px
+ * scroll-edge fade (::after) that only exists where content actually passes
+ * beneath. `--z-chrome` keeps it under dialog overlays; at the old z-50 it
+ * tied with them. */
 .settings-topbar {
   position: sticky;
   top: 0;
-  z-index: 50;
+  z-index: var(--z-chrome);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 32px;
-  background: color-mix(in srgb, var(--cream) 95%, transparent);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--cream) 80%, transparent);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+.settings-topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 14px;
+  background: linear-gradient(var(--cream), transparent);
+  pointer-events: none;
+}
+/* No translucency to lean on — fall back to the solid ground. The fade stays:
+   it is a gradient, not a blur, and reads correctly either way. */
+@media (prefers-reduced-transparency: reduce) {
+  .settings-topbar {
+    background: var(--cream);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 .settings-topbar-left {
   display: flex;
@@ -19,7 +44,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--text-sm);
   color: var(--midnight-soft);
 }
 .settings-topbar-breadcrumb svg { color: var(--midnight-faint); }
@@ -38,7 +63,7 @@
   gap: 6px;
   padding: 10px 18px;
   min-height: 44px;
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 600;
   font-family: inherit;
   color: var(--cream);
@@ -47,7 +72,7 @@
   border-radius: 999px;
   cursor: pointer;
   text-decoration: none;
-  transition: background 200ms ease-out;
+  transition: background var(--dur-base) var(--ease-out);
 }
 .settings-btn-back-chat:hover { background: var(--midnight-soft); }
 
@@ -80,9 +105,10 @@
   margin-bottom: 0;
 }
 .settings-nav-section-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--midnight-label);
   padding: 0 16px;
@@ -102,12 +128,12 @@
   gap: 10px;
   padding: 10px 16px;
   min-height: 44px;
-  border-radius: 10px;
-  font-size: 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--midnight-soft);
   cursor: pointer;
-  transition: color 150ms ease-out, background 150ms ease-out;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
   user-select: none;
 }
 .settings-nav-item:hover {
@@ -127,26 +153,26 @@
   font-family: var(--font-sans);
   background: var(--cream);
   color: var(--midnight);
-  line-height: 1.5;
+  line-height: 1.4;
   min-width: 0;
 }
 .settings-page-title {
-  font-family: var(--font-serif), 'Lora', serif;
-  font-size: 28px;
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--midnight);
   margin-bottom: 4px;
-  line-height: 1.3;
+  line-height: 1.15;
 }
 .settings-page-desc {
-  font-size: 14px;
+  font-size: var(--text-sm);
   color: var(--midnight-soft);
   margin-bottom: 32px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .settings-panel {
-  animation: settingsPanelFadeIn 200ms ease-out;
+  animation: settingsPanelFadeIn var(--dur-base) var(--ease-out);
 }
 @keyframes settingsPanelFadeIn {
   from { opacity: 0; transform: translateY(4px); }
@@ -156,7 +182,7 @@
 .settings-card {
   background: var(--cream);
   border: 1px solid var(--edge);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   padding: 28px;
   margin-bottom: 24px;
 }
@@ -167,22 +193,22 @@
   margin-bottom: 24px;
 }
 .settings-card-title {
-  font-size: 16px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--midnight);
   line-height: 1.4;
 }
 .settings-card-desc {
-  font-size: 13px;
+  font-size: var(--text-ui);
   color: var(--midnight-muted);
   margin-top: 2px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .settings-btn-outline {
   padding: 10px 18px;
   min-height: 44px;
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 600;
   font-family: inherit;
   color: var(--midnight);
@@ -190,7 +216,7 @@
   border: 1px solid color-mix(in srgb, var(--midnight) 20%, transparent);
   border-radius: 999px;
   cursor: pointer;
-  transition: background 200ms ease-out, border-color 200ms ease-out;
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
 }
 .settings-btn-outline:hover {
   background: color-mix(in srgb, var(--midnight) 5%, transparent);
@@ -203,7 +229,7 @@
 .settings-btn-save {
   padding: 10px 24px;
   min-height: 44px;
-  font-size: 14px;
+  font-size: var(--text-sm);
   font-weight: 700;
   font-family: inherit;
   color: var(--cream);
@@ -211,7 +237,7 @@
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  transition: background 200ms ease-out;
+  transition: background var(--dur-base) var(--ease-out);
 }
 .settings-btn-save:hover { background: var(--midnight-soft); }
 .settings-btn-save:disabled {
@@ -233,28 +259,29 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-serif), 'Lora', serif;
-  font-size: 24px;
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--cream);
   flex-shrink: 0;
 }
 .settings-profile-name {
-  font-size: 18px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--midnight);
   margin-bottom: 2px;
   line-height: 1.4;
 }
 .settings-profile-email {
-  font-size: 14px;
+  font-size: var(--text-sm);
   color: var(--midnight-soft);
 }
 .settings-profile-badge {
   display: inline-block;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--midnight);
   background: color-mix(in srgb, var(--midnight) 8%, transparent);
@@ -275,23 +302,23 @@
 .settings-plan-row:last-child { border-bottom: none; padding-bottom: 0; }
 .settings-plan-row:first-child { padding-top: 0; }
 .settings-plan-label {
-  font-size: 13px;
+  font-size: var(--text-ui);
   color: var(--midnight-soft);
   margin-bottom: 4px;
   line-height: 1.4;
 }
 .settings-plan-value {
-  font-size: 16px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--midnight);
   line-height: 1.4;
 }
 .settings-price {
-  font-family: var(--font-serif), 'Lora', serif;
-  font-size: 24px;
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
 }
 .settings-period {
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 400;
   color: var(--midnight-muted);
 }
@@ -300,19 +327,19 @@
 .settings-usage-bar-bg {
   height: 6px;
   background: var(--edge);
-  border-radius: 3px;
+  border-radius: 999px;
   overflow: hidden;
 }
 .settings-usage-bar-fill {
   height: 100%;
-  border-radius: 3px;
-  transition: width 400ms ease-out;
+  border-radius: 999px;
+  transition: width var(--dur-slow) var(--ease-out);
 }
 .settings-usage-text {
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--midnight-muted);
   margin-top: 4px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .settings-toggle-row {
@@ -325,16 +352,16 @@
 }
 .settings-toggle-row:last-child { border-bottom: none; }
 .settings-toggle-label {
-  font-size: 14px;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--midnight);
   margin-bottom: 2px;
   line-height: 1.4;
 }
 .settings-toggle-desc {
-  font-size: 13px;
+  font-size: var(--text-ui);
   color: var(--midnight-muted);
-  line-height: 1.5;
+  line-height: 1.4;
 }
 .settings-toggle-switch {
   position: relative;
@@ -360,8 +387,8 @@
   cursor: pointer;
   inset: 0;
   background: var(--midnight-faint);
-  border-radius: 14px;
-  transition: background 200ms ease-out;
+  border-radius: 999px;
+  transition: background var(--dur-base) var(--ease-out);
 }
 .settings-toggle-slider::before {
   content: '';
@@ -372,9 +399,9 @@
   height: 22px;
   border-radius: 50%;
   background: var(--cream);
-  transition: transform 200ms ease-out;
+  transition: transform var(--dur-base) var(--ease-out);
   will-change: transform;
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--midnight) 15%, transparent);
+  box-shadow: var(--shadow-hair);
 }
 .settings-toggle-switch input:checked + .settings-toggle-slider {
   background: var(--midnight);
@@ -383,9 +410,9 @@
   transform: translateX(20px);
 }
 .settings-toggle-switch input:focus-visible + .settings-toggle-slider {
-  outline: 2px solid var(--midnight);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
-  border-radius: 14px;
+  border-radius: 999px;
 }
 
 .settings-tier-grid {
@@ -401,13 +428,13 @@
   flex-direction: column;
   background: var(--cream);
   border: 1px solid var(--edge);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   padding: 28px 24px;
-  transition: border-color 200ms ease-out, box-shadow 200ms ease-out, transform 200ms ease-out;
+  transition: border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
 }
 .settings-tier-card:hover {
   border-color: var(--midnight-faint);
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--midnight) 4%, transparent);
+  box-shadow: var(--shadow-lift);
 }
 .settings-tier-card.current {
   border-color: color-mix(in srgb, var(--midnight) 40%, transparent);
@@ -415,21 +442,21 @@
 }
 .settings-tier-card.popular {
   border-color: color-mix(in srgb, var(--midnight) 30%, transparent);
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--midnight) 6%, transparent);
+  box-shadow: var(--shadow-pop);
 }
 .settings-tier-name {
-  font-size: 16px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--midnight);
   margin-bottom: 6px;
 }
 .settings-tier-price {
-  font-family: var(--font-serif), 'Lora', serif;
-  font-size: 30px;
+  font-family: var(--font-serif), Lora, serif;
+  font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--midnight);
   margin-bottom: 20px;
-  line-height: 1.1;
+  line-height: 1.15;
   min-height: 40px;
   display: flex;
   align-items: baseline;
@@ -437,14 +464,14 @@
 }
 .settings-tier-price span {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--text-ui);
   color: var(--midnight-muted);
 }
 .settings-tier-features {
   list-style: none;
   padding: 0;
   margin: 0 0 24px;
-  font-size: 13px;
+  font-size: var(--text-ui);
   color: var(--midnight-soft);
   line-height: 1.6;
   flex: 1 1 auto;
@@ -469,9 +496,10 @@
   position: absolute;
   top: -10px;
   left: 16px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--cream);
   background: var(--midnight);
@@ -490,17 +518,12 @@
   padding: 8px 12px 8px 24px;
   min-height: 40px;
   border: 1px solid var(--edge);
-  border-radius: 10px;
-  font-size: 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
   font-family: inherit;
   color: var(--midnight);
   background: var(--cream);
-  transition: border-color 200ms ease-out, box-shadow 200ms ease-out;
-}
-.settings-overage-input:focus {
-  border-color: var(--midnight);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--midnight) 8%, transparent);
-  outline: none;
+  transition: border-color var(--dur-base) var(--ease-out);
 }
 .settings-overage-input-wrap {
   position: relative;
@@ -511,7 +534,7 @@
   left: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 14px;
+  font-size: var(--text-sm);
   color: var(--midnight-muted);
   pointer-events: none;
 }
@@ -521,18 +544,18 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-ui);
   margin-bottom: 16px;
+  background: var(--cream);
+  border: 1px solid;
 }
 .settings-alert-error {
-  background: color-mix(in srgb, var(--err) 5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--err) 20%, transparent);
+  border-color: var(--err);
   color: var(--err);
 }
 .settings-alert-success {
-  background: color-mix(in srgb, var(--ok) 5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ok) 20%, transparent);
+  border-color: var(--ok);
   color: var(--ok);
 }
 
@@ -569,22 +592,15 @@
   .settings-nav-item {
     padding: 8px 14px;
     min-height: 36px;
-    font-size: 13px;
+    font-size: var(--text-ui);
   }
   .settings-main {
     padding: 24px 16px;
   }
-  .settings-page-title { font-size: 22px; }
+  .settings-page-title { font-size: var(--text-title); }
   .settings-card { padding: 20px 16px; }
   .settings-card-header { flex-direction: column; align-items: flex-start; gap: 12px; }
   .settings-tier-grid { grid-template-columns: 1fr; }
   .settings-profile-row { flex-direction: column; text-align: center; }
   .settings-profile-avatar-lg { margin: 0 auto; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-  }
 }

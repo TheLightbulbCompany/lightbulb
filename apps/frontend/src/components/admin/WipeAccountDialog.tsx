@@ -137,7 +137,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
           <ErrorBanner error={previewError} variant="error" />
         ) : resultSteps ? (
           <div className="space-y-2">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
               Result
             </h3>
             <StepList steps={resultSteps} />
@@ -145,7 +145,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         ) : previewSteps ? (
           <div className="space-y-4">
             <div className="space-y-2">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
                 Will delete
               </h3>
               <StepList steps={previewSteps} />
@@ -153,7 +153,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
             <div className="space-y-1">
               <label
                 htmlFor="wipe-confirm-email"
-                className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
               >
                 Type{" "}
                 <span className="font-mono font-semibold text-foreground">{email}</span>{" "}
@@ -205,7 +205,7 @@ function StepList({ steps }: { steps: WipeStep[] }) {
       {steps.map((step, i) => (
         <li
           key={`${step.system}-${step.action}-${i}`}
-          className="flex items-start justify-between gap-3 rounded px-2 py-1.5 text-xs"
+          className="flex items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-xs"
         >
           <div className="min-w-0 break-all">
             <div className="font-mono text-foreground">

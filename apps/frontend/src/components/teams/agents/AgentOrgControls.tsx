@@ -63,7 +63,7 @@ export function AgentOrgControls({
   return (
     <div className="flex flex-col gap-6">
       <section className="editorial-card p-4 flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">Origin</span>
+        <span className="label-caps text-[var(--midnight-muted)]">Origin</span>
         <span className="text-sm font-medium text-[var(--midnight)]">{agent.origin ?? "Custom"}</span>
         {marketplaceLabel ? (
           <span className="text-xs text-[var(--midnight-muted)]" title={`Listing ${agent.marketplace?.listingId}`}>
@@ -74,7 +74,7 @@ export function AgentOrgControls({
 
       {/* Reporting line — editable here */}
       <section className="editorial-card p-4 flex flex-col gap-2">
-        <h3 className="font-editorial-serif text-lg">Reports to</h3>
+        <h3 className="font-editorial-serif text-base">Reports to</h3>
         <ReportsToPicker
           agents={agents}
           agentId={agent.id}
@@ -148,7 +148,7 @@ export function AgentOrgControls({
           runtime session state, so it's two-step to avoid an accidental wipe.
           Neither dispatches an inference run, so no spend gate applies. */}
       <section className="editorial-card p-4 flex flex-col gap-2">
-        <h3 className="font-editorial-serif text-lg">Recovery</h3>
+        <h3 className="font-editorial-serif text-base">Recovery</h3>
         <p className="text-xs text-[var(--midnight-muted)]">
           Get a stuck agent unstuck without deleting it.
         </p>

@@ -82,7 +82,7 @@ export function ProvisioningActionsPanel({
         {notice ? <ErrorBanner error={notice} variant="info" /> : null}
 
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Retry provision
           </h3>
           <p className="text-xs text-muted-foreground">
@@ -103,7 +103,7 @@ export function ProvisioningActionsPanel({
         </div>
 
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Reset bootstrap
           </h3>
           <p className="text-xs text-muted-foreground">

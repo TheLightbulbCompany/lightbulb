@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Source_Sans_3, DM_Sans, Lora } from "next/font/google";
+import { Geist_Mono, Source_Sans_3, Lora } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
@@ -7,14 +7,10 @@ import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -27,12 +23,6 @@ const sourceSans = Source_Sans_3({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   display: "swap",
-});
-
-const dmSans = DM_Sans({
-  variable: "--font-dm-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "700"],
 });
 
 const lora = Lora({
@@ -95,7 +85,7 @@ export default function RootLayout({
       <html
         lang="en"
         suppressHydrationWarning
-        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable} ${geistSans.variable} ${dmSans.variable}`}
+        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable}`}
       >
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
@@ -106,7 +96,10 @@ export default function RootLayout({
               <PostHogProvider>
                 <DesktopAuthListener />
                 <SupportProvider>
-                  {children}
+                  {/* One provider for the whole app so the tooltip skip-delay
+                      grace is shared: after the first tooltip, neighbouring
+                      ones open instantly instead of re-waiting. */}
+                  <TooltipProvider>{children}</TooltipProvider>
                   {/* Toaster INSIDE SupportProvider so a toast's <ReportButton/>
                       (a custom-JSX sonner action) can resolve useSupport(). */}
                   <Toaster />

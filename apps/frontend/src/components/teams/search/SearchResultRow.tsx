@@ -120,17 +120,17 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
       style={{ borderColor: "var(--edge)", color: "var(--midnight)" }}
     >
       <span className="mt-0.5 shrink-0" style={{ color: "var(--midnight-muted)" }}>
-        {TypeIcon ? <TypeIcon size={15} /> : <Quote size={15} />}
+        {TypeIcon ? <TypeIcon size={16} /> : <Quote size={16} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           {issue?.identifier ? (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--midnight-muted)" }}>
+            <span className="shrink-0 font-mono text-caption tabular-nums" style={{ color: "var(--midnight-muted)" }}>
               {issue.identifier}
             </span>
           ) : null}
           {artifact?.issueIdentifier ? (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: "var(--midnight-muted)" }}>
+            <span className="shrink-0 font-mono text-caption tabular-nums" style={{ color: "var(--midnight-muted)" }}>
               {artifact.issueIdentifier}
             </span>
           ) : null}
@@ -148,9 +148,9 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
               className="mt-1.5 flex min-w-0 items-start gap-1.5 text-xs"
               style={{ color: "var(--midnight-muted)" }}
             >
-              <Icon size={13} className="mt-0.5 shrink-0" />
+              <Icon size={12} className="mt-0.5 shrink-0" />
               <span
-                className="shrink-0 rounded border px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                className="shrink-0 rounded-sm border px-1 py-0.5 label-caps"
                 style={{ borderColor: "var(--edge)", color: "var(--midnight-muted)" }}
               >
                 {label}

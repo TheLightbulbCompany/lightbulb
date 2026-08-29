@@ -127,10 +127,10 @@ export function AutomationGoogleAccount({
 
       {conflicted && (
         <div
-          className="flex flex-col gap-2 rounded-[var(--radius)] px-3 py-2.5"
+          className="flex flex-col gap-2 rounded-md px-3 py-2.5"
           style={{
-            border: "1px solid color-mix(in srgb, var(--warn) 30%, transparent)",
-            background: "color-mix(in srgb, var(--warn) 7%, transparent)",
+            border: "1px solid var(--warn)",
+            background: "var(--cream)",
           }}
         >
           <p className="text-xs leading-relaxed text-[var(--midnight-soft)]">

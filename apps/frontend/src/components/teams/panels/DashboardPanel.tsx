@@ -165,7 +165,7 @@ function RecentTaskRow({
       {updatedTs ? (
         <time
           dateTime={updatedTs}
-          className="shrink-0 text-[11px] tabular-nums"
+          className="shrink-0 text-caption tabular-nums"
           style={{ color: "var(--midnight-muted)" }}
         >
           {timeAgo(updatedTs)}
@@ -348,7 +348,7 @@ export function DashboardPanel() {
               href={teamsPanelUrl("issues")}
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
-              className="text-[11px] transition-colors hover:underline"
+              className="text-caption transition-colors hover:underline"
               style={{ color: "var(--midnight)" }}
             >
               View all →
@@ -398,7 +398,7 @@ export function DashboardPanel() {
               href={teamsPanelUrl("activity")}
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("activity"))}
-              className="text-[11px] transition-colors hover:underline"
+              className="text-caption transition-colors hover:underline"
               style={{ color: "var(--midnight)" }}
             >
               View all →

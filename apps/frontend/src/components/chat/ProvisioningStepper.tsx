@@ -179,6 +179,26 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   );
 }
 
+// The stepper's four short-lived holds — waiting on Clerk's `user`, on the
+// landing-brief replay, on billing — all replaced the entire chat surface with
+// an unlabelled centred spinner. On dev one of them sat there for 35s+ while
+// /container/status reported `lifecycle: "provisioning"`, so the owner saw a
+// bare spinner where the structured provisioning UI was supposed to be, and no
+// text anywhere said what was being waited on. One label, one live region, one
+// place to change it. (Motion is unchanged — same Loader2, same spin.)
+function StepperHold() {
+  return (
+    <div
+      className="flex-1 flex items-center justify-center gap-2 text-sm text-[var(--midnight-muted)]"
+      role="status"
+      aria-live="polite"
+    >
+      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+      <span>Getting your workspace ready…</span>
+    </div>
+  );
+}
+
 export function ProvisioningStepper({
   children,
   trigger = "onboarding",
@@ -774,11 +794,7 @@ export function ProvisioningStepper({
     awaitingBrief
   ) {
     if (briefReplaying) {
-      return (
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      );
+      return <StepperHold />;
     }
     // Keyed on the org-draft copy: the funnel reads its draft at mount, and
     // the landing-stash copy for org contexts happens after it has mounted —
@@ -793,11 +809,7 @@ export function ProvisioningStepper({
   // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
   // still routes to its card below.
   if (!userLoaded && gatePhase === "normal" && awaitingBrief && !isTerminalError) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <StepperHold />;
   }
 
   // A ready-but-not-onboarded container BELONGS to the first-run funnel above,
@@ -819,11 +831,7 @@ export function ProvisioningStepper({
   // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
   // resolves; an onboarded container falls through to children below.
   if (phase === "ready" && !user && awaitingBrief) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <StepperHold />;
   }
 
   // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
@@ -852,7 +860,7 @@ export function ProvisioningStepper({
       <>
         {children}
         {(teamsDegraded || firstRunFailed) && (
-          <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+          <div className="fixed bottom-4 right-4 z-(--z-toast) flex flex-col items-end gap-2">
             {firstRunFailed && (
               <FirstRunFailedNotice lastError={derived?.bootstrap.last_error ?? null} />
             )}
@@ -1102,7 +1110,7 @@ export function ProvisioningStepper({
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className="mb-2 text-[22px] font-normal text-[var(--midnight)]"
+            className="mb-2 text-title font-normal text-[var(--midnight)]"
             style={{ fontFamily: "var(--font-serif), serif" }}
           >
             {copy.title}
@@ -1400,11 +1408,7 @@ export function ProvisioningStepper({
   // out means the next thing a new trial user sees is the funnel, not a
   // payment step they don't need.
   if (billingLoading || gatePhase === "loading") {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <StepperHold />;
   }
 
   // Pre-signup user — render the three signup paths inline. Each card links
@@ -1942,7 +1946,7 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
               <summary className="cursor-pointer text-xs font-medium text-[var(--midnight-soft)]">
                 Technical details
               </summary>
-              <p className="mt-1 break-words font-mono text-[11px] leading-snug text-[var(--midnight-soft)]">
+              <p className="mt-1 break-words font-mono text-caption leading-snug text-[var(--midnight-soft)]">
                 {lastError}
               </p>
             </details>
@@ -1992,13 +1996,13 @@ function StepperDisplay({
         return (
           <div key={step.phase} className="flex items-center gap-3">
             {isErrorStep ? (
-              <XCircle className="h-5 w-5 text-err flex-shrink-0" />
+              <XCircle className="h-5 w-5 text-err shrink-0" />
             ) : isComplete ? (
-              <CheckCircle className="h-5 w-5 text-ok flex-shrink-0" />
+              <CheckCircle className="h-5 w-5 text-ok shrink-0" />
             ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] flex-shrink-0" />
+              <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] shrink-0" />
             ) : (
-              <Circle className="h-5 w-5 text-[var(--midnight-faint)] flex-shrink-0" />
+              <Circle className="h-5 w-5 text-[var(--midnight-faint)] shrink-0" />
             )}
             <span
               className={
@@ -2143,7 +2147,7 @@ function StarterCreditsPicker({
           aria-label="Starter Claude credits in dollars"
           onChange={(e) => setDraft(e.target.value)}
           onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] focus:border-[var(--midnight)] focus:outline-none disabled:opacity-50"
+          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] disabled:opacity-50"
         />
       </label>
     </div>
@@ -2235,7 +2239,7 @@ export function ProviderPicker({
               <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-serif), serif" fontStyle="italic" fontSize="52" fill="var(--cream)">8</text>
             </svg>
           )}
-          <h2 className="text-2xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
+          <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
             {heading ?? "One price. Three ways to power it."}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>

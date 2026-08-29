@@ -120,8 +120,7 @@ export function AgentCard({
             className="flex h-7 w-7 items-center justify-center rounded-full"
             style={{ backgroundColor: "var(--cream-deep)" }}
           >
-            <Bot
-              className="h-4 w-4"
+            <Bot size={16}
               style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             />
@@ -152,7 +151,7 @@ export function AgentCard({
       {/* Capabilities (freeform), two-line clamp */}
       {capabilities?.trim() ? (
         <div
-          className="text-[11px] leading-snug line-clamp-2"
+          className="text-caption leading-snug line-clamp-2"
           style={{ color: "var(--midnight-soft)" }}
         >
           {capabilities}
@@ -160,7 +159,7 @@ export function AgentCard({
       ) : null}
 
       {/* Footer: status text + last-active, pinned to the bottom edge */}
-      <div className="mt-auto flex items-center justify-between gap-2 text-[10px]">
+      <div className="mt-auto flex items-center justify-between gap-2 text-2xs">
         <span className="truncate" style={{ color: "var(--midnight-muted)" }} title={statusText}>
           {statusText}
         </span>

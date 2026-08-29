@@ -103,7 +103,7 @@ export function StartRungPicker({
 
   return (
     <div className="block">
-      <span className="text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
+      <span className="label-caps text-[var(--midnight-muted)]">
         {heading}
       </span>
       <div
@@ -135,7 +135,7 @@ export function StartRungPicker({
               tabIndex={active ? 0 : -1}
               onClick={() => onChange(r.value)}
               className={cn(
-                "flex items-start gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
+                "flex items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
                 active
                   ? "border-[var(--midnight)] bg-[var(--cream-deeper)]"
                   : "border-[var(--edge)] hover:bg-[var(--cream-deep)]",
@@ -150,7 +150,7 @@ export function StartRungPicker({
                   color: active ? "var(--midnight)" : "var(--midnight-muted)",
                 }}
               >
-                <Icon size={15} strokeWidth={1.75} />
+                <Icon size={16} strokeWidth={1.75} />
               </span>
               <span className="min-w-0 flex-1">
                 <span
@@ -611,7 +611,7 @@ function EventPicker({
   }
 
   const groupHeading = (text: string) => (
-    <div className="px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
+    <div className="px-3 pt-2 pb-1 label-caps text-[var(--midnight-muted)]">
       {text}
     </div>
   );
@@ -625,12 +625,12 @@ function EventPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex w-full items-center justify-between gap-2 rounded border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--midnight)]"
+          className="flex w-full items-center justify-between gap-2 rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--midnight)]"
         >
           <span className={cn("truncate", !selectedLabel && "text-[var(--midnight-muted)]")}>
             {selectedLabel ?? (multiple ? "Select events…" : "Select an event…")}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--midnight-muted)]" aria-hidden="true" />
+          <ChevronDown size={16} className="shrink-0 text-[var(--midnight-muted)]" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -649,7 +649,7 @@ function EventPicker({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search events…"
           aria-label="Search events"
-          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]"
+          className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 text-[var(--midnight)]"
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
@@ -662,7 +662,7 @@ function EventPicker({
           aria-label={multiple ? "Events" : "Event"}
           aria-multiselectable={multiple || undefined}
           onKeyDown={onListKeyDown}
-          className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
+          className="mt-1 max-h-[260px] overflow-y-auto rounded-sm border border-[var(--edge)] bg-[var(--cream)] pb-1"
         >
           {visible.length === 0 && (
             <p className="px-3 py-2 text-sm text-[var(--midnight-muted)]">
@@ -704,18 +704,18 @@ function EventPicker({
                   <span
                     aria-hidden="true"
                     className={cn(
-                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border",
                       values.includes(e.id)
                         ? "border-[var(--midnight)] bg-[var(--midnight)] text-[var(--cream)]"
                         : "border-[var(--edge)]",
                     )}
                   >
-                    {values.includes(e.id) && <Check size={10} strokeWidth={3} />}
+                    {values.includes(e.id) && <Check size={12} strokeWidth={3} />}
                   </span>
                 )}
                 <span className="truncate">{e.label}</span>
                 {!multiple && values.includes(e.id) && (
-                  <Check size={14} strokeWidth={2} className="ml-auto shrink-0 text-[var(--midnight)]" />
+                  <Check size={16} strokeWidth={2} className="ml-auto shrink-0 text-[var(--midnight)]" />
                 )}
               </button>
             </div>
@@ -834,7 +834,7 @@ export function ConnectedAppFields({
             value={ctl.topic}
             onChange={(e) => ctl.setTopic(e.target.value)}
             placeholder="projects/my-project/topics/isol8-gmail"
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 font-mono text-[var(--midnight)]"
           />
           <span className="text-xs text-[var(--midnight-muted)]">
             A topic in your own Google Cloud project — you&apos;ll wire it up after Create.
@@ -853,7 +853,7 @@ export function ConnectedAppFields({
             <input
               value={ctl.title}
               onChange={(e) => ctl.setTitleEdit(e.target.value)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
             />
           </label>
           <label className="block">
@@ -862,7 +862,7 @@ export function ConnectedAppFields({
               value={ctl.description}
               onChange={(e) => ctl.setDescriptionEdit(e.target.value)}
               rows={4}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
             />
           </label>
           <span className="-mt-2 text-xs text-[var(--midnight-muted)]">
@@ -873,7 +873,7 @@ export function ConnectedAppFields({
       )}
       {ctl.attachDisclosure && (
         <p
-          className="rounded px-3 py-2 text-xs text-[var(--midnight-soft)]"
+          className="rounded-sm px-3 py-2 text-xs text-[var(--midnight-soft)]"
           style={{
             border: "1px solid var(--edge)",
             background: "var(--cream-deep)",
@@ -1012,7 +1012,7 @@ export function ConnectedAppResultDialog({
                 value={ctl.whsecInput}
                 onChange={(e) => ctl.setWhsecInput(e.target.value)}
                 placeholder={result.secret_hint ?? "Signing secret"}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--midnight)]"
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 font-mono text-[var(--midnight)]"
               />
             </label>
             {ctl.whsecSaved ? (
@@ -1041,10 +1041,10 @@ export function ConnectedAppResultDialog({
         )}
         {ctl.err && (
           <div
-            className="text-[var(--err)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
             style={{
-              border: "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
-              background: "color-mix(in srgb, var(--err) 6%, transparent)",
+              border: "1px solid var(--err)",
+              background: "var(--cream)",
             }}
           >
             {ctl.err}

@@ -62,7 +62,7 @@ export function AgentsListPanel() {
       key: "role",
       header: "Role",
       cell: (a) => (
-        <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">
+        <span className="label-caps text-[var(--midnight-muted)]">
           {a.role}
         </span>
       ),
@@ -267,7 +267,7 @@ function CreateAgentDialog({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
@@ -276,7 +276,7 @@ function CreateAgentDialog({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Senior backend engineer"
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           />
         </label>
         <label className="block">
@@ -284,7 +284,7 @@ function CreateAgentDialog({
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             <option value="engineer">Engineer</option>
             <option value="ceo">CEO</option>
@@ -297,7 +297,7 @@ function CreateAgentDialog({
             aria-label="Reports to"
             value={reportsTo}
             onChange={(e) => setReportsTo(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             <option value="">No manager (top level)</option>
             {agents.map((a) => (
@@ -308,7 +308,7 @@ function CreateAgentDialog({
           </select>
         </label>
         {err && (
-          <div className="text-[var(--err)] text-sm border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] rounded px-3 py-2">
+          <div className="text-err text-ui border border-err bg-cream rounded-lg px-3 py-2">
             {err}
           </div>
         )}

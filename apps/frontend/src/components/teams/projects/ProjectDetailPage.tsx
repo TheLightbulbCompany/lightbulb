@@ -170,7 +170,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         >
           Projects
         </Link>
-        <ChevronRight className="h-3 w-3" />
+        <ChevronRight size={12} strokeWidth={1.75} />
         <span className="truncate" style={{ color: "var(--midnight-soft)" }}>
           {project.name}
         </span>

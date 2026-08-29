@@ -98,19 +98,19 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
       {selected.map((label) => (
         <span
           key={label.id}
-          className="group inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
+          className="group inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs"
           style={CHIP_STYLE}
         >
           <span className="truncate">{label.name}</span>
           <button
             type="button"
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+            className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity duration-(--dur-fast) ease-out group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
             style={{ color: "var(--midnight-muted)" }}
             aria-label={`Remove label ${label.name}`}
             title={`Remove label ${label.name}`}
             onClick={() => remove(label.id)}
           >
-            <X className="h-3 w-3" />
+            <X size={12} strokeWidth={1.75} />
           </button>
         </span>
       ))}
@@ -124,10 +124,10 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors hover:underline"
+            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs transition-colors hover:underline"
             style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           >
-            <Plus className="h-3 w-3" />
+            <Plus size={12} strokeWidth={1.75} />
             Add label
           </button>
         </PopoverTrigger>
@@ -153,7 +153,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
               }
             }}
             placeholder="Search or create labels..."
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+            className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search labels"
           />
@@ -166,14 +166,14 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
                     type="button"
                     onClick={() => toggle(label.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
                     <span className="truncate">{label.name}</span>
                     {isSelected && (
-                      <Check
-                        className="ml-auto h-3.5 w-3.5 shrink-0"
+                      <Check size={16}
+                        className="ml-auto shrink-0"
                         aria-hidden="true"
                       />
                     )}
@@ -192,9 +192,9 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
                   type="button"
                   onClick={() => void createAndApply()}
                   disabled={creating}
-                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]"
+                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]"
                 >
-                  <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <Plus size={16} className="shrink-0" aria-hidden="true" />
                   <span className="truncate">
                     {creating ? "Creating…" : `Create "${trimmedQuery}"`}
                   </span>

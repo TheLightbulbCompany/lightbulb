@@ -94,7 +94,7 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
               <span className="text-sm font-medium text-[var(--midnight)]">
                 Advanced — plugins
               </span>
-              <ChevronDown className={cn("h-4 w-4 text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
+              <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
             </button>
             {advancedOpen && (
               <div className="border-t border-[var(--edge)]">
@@ -111,7 +111,7 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
     <div className="bg-[var(--cream)] min-h-full">
       <div className="p-6 space-y-5">
         <div>
-          <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
+          <h2 className="font-editorial-serif text-title">
             Integrations
           </h2>
           <p
@@ -164,7 +164,7 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
             <span className="text-sm font-medium text-[var(--midnight)]">
               Advanced — plugins
             </span>
-            <ChevronDown className={cn("h-4 w-4 text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
+            <ChevronDown size={16} className={cn("text-[var(--midnight-muted)] transition-transform", !advancedOpen && "-rotate-90")} />
           </button>
           {advancedOpen && (
             <div className="border-t border-[var(--edge)]">

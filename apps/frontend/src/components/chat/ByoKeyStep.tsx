@@ -122,7 +122,7 @@ const PROVIDER_PILL =
 
 const PRIMARY_BUTTON =
   "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-cream " +
-  "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
+  "transition-colors hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep";
 
 export function ByoKeyStep({ onComplete }: Props) {
   const api = useApi();
@@ -189,7 +189,7 @@ export function ByoKeyStep({ onComplete }: Props) {
       className="flex flex-col gap-4 py-8 max-w-md mx-auto"
       style={SANS_FONT}
     >
-      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+      <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Bring your own API key
       </h3>
       <p className="text-sm text-[var(--midnight-muted)]">
@@ -233,7 +233,7 @@ export function ByoKeyStep({ onComplete }: Props) {
         required
         autoComplete="off"
         spellCheck={false}
-        className="rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring"
+        className="rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)]"
       />
 
       {error && <p className="text-sm text-[var(--err)]">{error}</p>}

@@ -67,7 +67,7 @@ export function UsagePanel() {
   if (accountLoading && usageLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -75,15 +75,15 @@ export function UsagePanel() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Usage</h2>
+        <h2 className="font-editorial-serif text-title">Usage</h2>
         <Button variant="ghost" size="sm" onClick={handleRefresh}>
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw size={16} />
         </Button>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] border border-[color-mix(in_srgb,var(--err)_35%,var(--cream))]">
-          <AlertCircle className="h-3.5 w-3.5 text-err flex-shrink-0" />
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-err">
+          <AlertCircle size={16} className="text-err shrink-0" />
           <span className="text-xs text-err">{error}</span>
           <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={handleRefresh}>
             Retry
@@ -122,7 +122,7 @@ export function UsagePanel() {
         <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">Billed this month</h3>
-            <span className="text-lg font-semibold font-mono">
+            <span className="font-mono text-title">
               {formatCents(spend.billed_month_to_date_cents ?? 0)}
             </span>
           </div>
@@ -132,7 +132,7 @@ export function UsagePanel() {
               <span className="font-mono">{formatCents(row.cents)}</span>
             </div>
           ))}
-          <p className="text-[10px] text-midnight-muted">
+          <p className="text-2xs text-midnight-muted">
             From your credits invoice — matches what you&apos;re charged.
           </p>
           <Link
@@ -160,16 +160,16 @@ export function UsagePanel() {
                     : ""}
                 </span>
               </div>
-              <div className="h-1.5 rounded bg-[var(--edge)]">
+              <div className="h-1.5 rounded-sm bg-[var(--edge)]">
                 <div
-                  className="h-1.5 rounded bg-[var(--midnight)]"
+                  className="h-1.5 rounded-sm bg-[var(--midnight)]"
                   style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }}
                 />
               </div>
             </div>
           ))}
-          <p className="text-[10px] text-midnight-muted">Included in your ChatGPT plan.</p>
-          <p className="text-[10px] text-midnight-muted">
+          <p className="text-2xs text-midnight-muted">Included in your ChatGPT plan.</p>
+          <p className="text-2xs text-midnight-muted">
             Rolling plan windows — separate from the monthly token totals below.
           </p>
         </div>
@@ -180,20 +180,20 @@ export function UsagePanel() {
           <h3 className="text-sm font-medium">Token Usage</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Input</div>
-              <div className="text-lg font-semibold">{formatTokens(usage.total_input_tokens)}</div>
+              <div className="label-caps">Input</div>
+              <div className="text-title tabular-nums">{formatTokens(usage.total_input_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Output</div>
-              <div className="text-lg font-semibold">{formatTokens(usage.total_output_tokens)}</div>
+              <div className="label-caps">Output</div>
+              <div className="text-title tabular-nums">{formatTokens(usage.total_output_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Cache Read</div>
-              <div className="text-lg font-semibold">{formatTokens(usage.total_cache_read_tokens)}</div>
+              <div className="label-caps">Cache Read</div>
+              <div className="text-title tabular-nums">{formatTokens(usage.total_cache_read_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-midnight-label">Cache Write</div>
-              <div className="text-lg font-semibold">{formatTokens(usage.total_cache_write_tokens)}</div>
+              <div className="label-caps">Cache Write</div>
+              <div className="text-title tabular-nums">{formatTokens(usage.total_cache_write_tokens)}</div>
             </div>
           </div>
           <div className="border-t border-[var(--edge)] pt-2 flex items-center justify-between text-xs text-[var(--midnight-muted)]">
@@ -205,18 +205,18 @@ export function UsagePanel() {
       {isOrgAdmin && usage && usage.by_member && usage.by_member.length > 0 && (
         <div className="rounded-lg border border-[var(--edge)] overflow-hidden">
           <div className="px-4 py-2 bg-[var(--cream-deep)] border-b border-[var(--edge)]">
-            <h3 className="text-sm font-medium">Usage by Member</h3>
+            <h3 className="text-base font-semibold">Usage by Member</h3>
           </div>
-          <table className="w-full text-xs">
+          <table className="w-full text-ui">
             <thead>
               <tr className="border-b border-[var(--edge)] text-[var(--midnight-muted)]">
-                <th className="text-left px-4 py-2 font-medium">Member</th>
-                <th className="text-right px-4 py-2 font-medium">Requests</th>
+                <th className="text-left px-4 py-2 label-caps">Member</th>
+                <th className="text-right px-4 py-2 label-caps">Requests</th>
               </tr>
             </thead>
             <tbody>
               {usage.by_member.map((member) => (
-                <tr key={member.user_id} className="border-b border-[var(--edge)]/50 hover:bg-[var(--cream-deep)]/50">
+                <tr key={member.user_id} className="border-b border-[var(--edge-soft)] hover:bg-[var(--cream-deep)]">
                   <td className="px-4 py-2">
                     <div>{member.display_name || member.email || member.user_id}</div>
                     {member.display_name && member.email && (

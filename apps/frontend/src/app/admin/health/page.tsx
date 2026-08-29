@@ -150,7 +150,7 @@ export default async function HealthPage() {
         {Object.keys(tasks).length === 0 ? (
           <p className="text-sm text-muted-foreground">No background tasks registered.</p>
         ) : (
-          <div className="overflow-hidden rounded border border-border">
+          <div className="overflow-hidden rounded-sm border border-border">
             {Object.entries(tasks).map(([name, state], idx) => (
               <div
                 key={name}
@@ -179,7 +179,7 @@ export default async function HealthPage() {
         {recentErrors.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent errors logged.</p>
         ) : (
-          <div className="overflow-x-auto rounded border border-border">
+          <div className="overflow-x-auto rounded-sm border border-border">
             <table className="w-full min-w-[720px] table-fixed text-xs sm:text-sm">
               <thead className="bg-secondary text-left text-muted-foreground">
                 <tr>

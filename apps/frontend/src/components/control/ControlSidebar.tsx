@@ -54,14 +54,14 @@ export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarPro
               key={key}
               variant="ghost"
               className={cn(
-                "w-full justify-start gap-2 font-normal transition-all h-auto py-1.5",
+                "w-full justify-start gap-2 font-normal h-auto py-1.5",
                 activePanel === key
                   ? "bg-cream text-[var(--midnight)] shadow-sm"
-                  : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-cream/60",
+                  : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-cream-deep",
               )}
               onClick={() => onPanelChange?.(key)}
             >
-              <Icon className="h-4 w-4 flex-shrink-0 opacity-70" />
+              <Icon size={16} className="shrink-0 opacity-70" />
               <span className="truncate">{label}</span>
             </Button>
           );

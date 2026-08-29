@@ -13,6 +13,7 @@ import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
 import { Chrome, FolderOpen, HelpCircle, CreditCard, RotateCcw } from "lucide-react";
 
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { capture } from "@/lib/analytics";
 import { useSupport } from "@/components/support/SupportProvider";
 import { openPanel } from "./workspaceController";
@@ -27,40 +28,58 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
   const { openSupport } = useSupport();
 
   return (
+    // Every button below keeps its aria-label — the tooltip is the hover
+    // affordance, never the accessible name.
     <div className="workspace-header">
-      <button
-        onClick={() => { capture("file_browser_opened"); openPanel("file-viewer"); }}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
-        title="Browse workspace files"
-        aria-label="Browse workspace files"
-      >
-        <FolderOpen size={18} />
-      </button>
-      <button
-        onClick={() => { capture("browser_view_opened"); openPanel("browser"); }}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
-        title="Watch your agents' browser"
-        aria-label="Watch your agents' browser"
-      >
-        <Chrome size={18} />
-      </button>
-      <button
-        onClick={onResetLayout}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
-        title="Reset workspace layout"
-        aria-label="Reset workspace layout"
-      >
-        <RotateCcw size={18} />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => { capture("file_browser_opened"); openPanel("file-viewer"); }}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
+            aria-label="Browse workspace files"
+          >
+            <FolderOpen size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Browse workspace files</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => { capture("browser_view_opened"); openPanel("browser"); }}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
+            aria-label="Watch your agents' browser"
+          >
+            <Chrome size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Watch your agents&rsquo; browser</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onResetLayout}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
+            aria-label="Reset workspace layout"
+          >
+            <RotateCcw size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Reset workspace layout</TooltipContent>
+      </Tooltip>
       <div style={{ flex: 1 }} />
-      <button
-        onClick={() => openSupport()}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 mr-1"
-        title="Get help / report a problem"
-        aria-label="Get help"
-      >
-        <HelpCircle size={18} />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => openSupport()}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] mr-1"
+            aria-label="Get help"
+          >
+            <HelpCircle size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Get help / report a problem</TooltipContent>
+      </Tooltip>
       <UserButton
         appearance={{
           elements: {
@@ -69,7 +88,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
         }}
       >
         <UserButton.MenuItems>
-          <UserButton.Link label="Settings" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings" />
+          <UserButton.Link label="Settings" labelIcon={<CreditCard size={16} />} href="/settings" />
         </UserButton.MenuItems>
       </UserButton>
     </div>

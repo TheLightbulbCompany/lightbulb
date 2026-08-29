@@ -109,24 +109,24 @@ export function DesktopPermissionsGate() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="desktop-permissions-title"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_45%,transparent)] px-4"
+      className="fixed inset-0 z-(--z-overlay) flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_45%,transparent)] px-4"
     >
       <div className="w-full max-w-[560px] rounded-lg border border-edge bg-[var(--cream)] p-5 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2
               id="desktop-permissions-title"
-              className="text-[20px] font-semibold text-midnight"
+              className="text-title font-semibold text-midnight"
             >
               Connect this Mac
             </h2>
-            <p className="mt-1 text-sm leading-5 text-[var(--midnight-muted)]">
+            <p className="mt-1 text-sm text-[var(--midnight-muted)]">
               Choose what agents can use on this computer. You can adjust file
               folders later in Settings.
             </p>
           </div>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-midnight text-[var(--cream)]">
-            <Check size={18} />
+            <Check size={16} />
           </div>
         </div>
 
@@ -147,26 +147,26 @@ export function DesktopPermissionsGate() {
                 aria-pressed={enabled}
               >
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-edge bg-[var(--cream)] text-midnight">
-                  <Icon size={17} />
+                  <Icon size={16} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium text-midnight">
                     {label}
                   </span>
-                  <span className="mt-0.5 block text-xs leading-4 text-[var(--midnight-muted)]">
+                  <span className="mt-0.5 block text-xs leading-snug text-[var(--midnight-muted)]">
                     {description}
                   </span>
                 </span>
                 <span
                   className={[
-                    "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border",
                     enabled
                       ? "border-midnight bg-midnight text-cream"
                       : "border-[var(--midnight-faint)] bg-transparent",
                   ].join(" ")}
                   aria-hidden="true"
                 >
-                  {enabled && <Check size={13} />}
+                  {enabled && <Check size={12} />}
                 </span>
               </button>
             );

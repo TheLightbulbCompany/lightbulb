@@ -142,12 +142,12 @@ const markdownComponents: Components = {
     return isBlock ? (
       <code className="font-mono">{children}</code>
     ) : (
-      <code className="rounded px-1 py-0.5 text-xs font-mono [overflow-wrap:anywhere]"
+      <code className="rounded-sm px-1 py-0.5 text-xs font-mono [overflow-wrap:anywhere]"
             style={{ background: "var(--edge)" }}>{children}</code>
     );
   },
   pre: ({ children }) => (
-    <pre className="rounded p-2 text-xs font-mono overflow-x-auto my-2"
+    <pre className="rounded-sm p-2 text-xs font-mono overflow-x-auto my-2"
          style={{ background: "var(--edge)" }}>{children}</pre>
   ),
   blockquote: ({ children }) => (

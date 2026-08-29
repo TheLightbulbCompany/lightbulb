@@ -93,7 +93,7 @@ export function IssueRunsSection({
           return (
             <li key={r.runId} className="flex items-center gap-2 px-3 py-2">
               <span
-                className="inline-flex flex-shrink-0 items-center gap-1.5 text-xs capitalize"
+                className="inline-flex shrink-0 items-center gap-1.5 text-xs capitalize"
                 style={{
                   color: activity === "stalled" ? "var(--warn)" : statusColor(r.status),
                 }}

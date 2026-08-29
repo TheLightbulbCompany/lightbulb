@@ -186,7 +186,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
           >
             Goals
           </Link>
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight size={12} strokeWidth={1.75} />
           <span className="truncate" style={{ color: "var(--midnight-soft)" }}>
             {goal.title}
           </span>
@@ -208,11 +208,11 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)]"
+                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)]"
                 style={{ color: "var(--midnight-muted)" }}
                 aria-label="Goal actions"
               >
-                <MoreHorizontal className="h-4 w-4" />
+                <MoreHorizontal size={16} />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -223,7 +223,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                   setDeleteOpen(true);
                 }}
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 size={16} />
                 Delete goal
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -252,7 +252,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             </p>
           ) : (
             <ul
-              className="flex flex-col rounded overflow-hidden"
+              className="flex flex-col rounded-sm overflow-hidden"
               style={{ border: "1px solid var(--edge)" }}
             >
               {childGoals.map((child) => (
@@ -277,7 +277,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                       {child.title}
                     </span>
                     <span
-                      className="text-[10px] uppercase tracking-wide shrink-0"
+                      className="label-caps shrink-0"
                       style={{ color: "var(--midnight-muted)" }}
                     >
                       {child.level}
@@ -305,7 +305,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             </p>
           ) : (
             <ul
-              className="flex flex-col rounded overflow-hidden"
+              className="flex flex-col rounded-sm overflow-hidden"
               style={{ border: "1px solid var(--edge)" }}
             >
               {linkedTasks.map((task) => (
@@ -354,7 +354,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             </p>
           ) : (
             <ul
-              className="flex flex-col rounded overflow-hidden"
+              className="flex flex-col rounded-sm overflow-hidden"
               style={{ border: "1px solid var(--edge)" }}
             >
               {linkedProjects.map((project) => (
@@ -371,8 +371,8 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     }
                     className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deep)]"
                   >
-                    <Target
-                      className="h-4 w-4 shrink-0"
+                    <Target size={16}
+                      className="shrink-0"
                       style={{ color: "var(--midnight-muted)" }}
                     />
                     <span
@@ -383,7 +383,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     </span>
                     {project.status && (
                       <span
-                        className="text-[10px] uppercase tracking-wide shrink-0"
+                        className="label-caps shrink-0"
                         style={{ color: "var(--midnight-muted)" }}
                       >
                         {project.status}

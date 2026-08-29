@@ -134,7 +134,7 @@ export default async function AdminOverviewPage() {
                 key={g.service_name}
                 href={`/admin/users/${encodeURIComponent(g.owner_id)}`}
                 title={`${g.owner_id} · ${g.service_name}`}
-                className="flex items-center justify-between rounded border border-border p-2 hover:bg-accent"
+                className="flex items-center justify-between rounded-sm border border-border p-2 hover:bg-accent"
               >
                 <span className="truncate text-xs text-muted-foreground">
                   {g.display_name ?? g.owner_id}

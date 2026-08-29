@@ -85,7 +85,7 @@ export function TeamBillingCard({
     <div
       data-testid="team-billing-card"
       style={{ fontFamily: "var(--font-sans), sans-serif" }}
-      className="w-full max-w-[440px] rounded-2xl border border-[var(--edge)] bg-cream px-4 py-5 text-left shadow-[0_1px_2px_color-mix(in_srgb,var(--midnight)_4%,transparent)] sm:p-7"
+      className="w-full max-w-[440px] rounded-xl border border-[var(--edge)] bg-cream px-4 py-5 text-left shadow-sm sm:p-7"
     >
       {/*
         Body copy used to hardcode its own gray, because the old --midnight-muted
@@ -94,8 +94,8 @@ export function TeamBillingCard({
         5.00:1 on cream, so the workaround is retired and this uses the token
         like everything around it.
       */}
-      <div className="text-base font-semibold leading-[1.4] text-[var(--midnight)]">Teams billing</div>
-      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--midnight-muted)]">
+      <div className="text-base font-semibold leading-snug text-[var(--midnight)]">Teams billing</div>
+      <p className="mt-1 text-ui leading-snug text-[var(--midnight-muted)]">
         {seatsKnown ? (
           <>
             ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
@@ -110,7 +110,7 @@ export function TeamBillingCard({
       {error && (
         <div
           role="alert"
-          className="mt-3 rounded-[10px] border border-err bg-cream px-3.5 py-2.5 text-[13px] leading-[1.5] text-[var(--err)]"
+          className="mt-3 rounded-lg border border-err bg-cream px-3.5 py-2.5 text-ui leading-snug text-[var(--err)]"
         >
           {error}
         </div>
@@ -118,7 +118,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--midnight-muted)]">
+          <p className="rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>
@@ -127,7 +127,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onManage)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[var(--edge)] px-[18px] py-2.5 text-[13px] font-semibold text-[var(--midnight)] transition-colors hover:border-[var(--midnight-faint)] hover:bg-[var(--cream-deep)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[var(--edge)] px-[18px] py-2.5 text-ui font-semibold text-[var(--midnight)] transition-colors hover:border-[var(--midnight-faint)] hover:bg-[var(--cream-deep)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Manage billing
           </button>
@@ -136,7 +136,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onSubscribe)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep"
           >
             {busy ? "Starting checkout…" : "Subscribe your team"}
           </button>

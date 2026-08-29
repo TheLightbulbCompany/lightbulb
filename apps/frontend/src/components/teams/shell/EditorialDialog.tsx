@@ -46,11 +46,11 @@ export function EditorialDialog({
         )}
       >
         <DialogHeader>
-          <DialogTitle className="font-editorial-serif text-[22px] leading-tight text-[var(--midnight)]">
+          <DialogTitle className="font-editorial-serif text-title leading-tight text-[var(--midnight)]">
             {title}
           </DialogTitle>
           {description ? (
-            <DialogDescription className="text-[13px] text-[var(--midnight-muted)]">
+            <DialogDescription className="text-ui text-[var(--midnight-muted)]">
               {description}
             </DialogDescription>
           ) : (

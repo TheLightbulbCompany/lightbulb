@@ -207,7 +207,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
           </dl>
 
           <div className="mt-4">
-            <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+            <div className="mb-2 text-xs uppercase tracking-caps text-muted-foreground">
               Seeded agents ({seededAgentIds.length})
             </div>
             {seededAgentIds.length > 0 ? (
@@ -280,7 +280,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       {/* 6. Gate + SFN */}
       <Card title="Gate & SFN execution">
         <div>
-          <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Gate</div>
+          <div className="mb-2 text-xs uppercase tracking-caps text-muted-foreground">Gate</div>
           {data.gate ? (
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
               <DefRow label="Code" value={data.gate.code ?? "—"} mono />
@@ -293,7 +293,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         </div>
 
         <div className="mt-4 border-t border-border pt-4">
-          <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+          <div className="mb-2 text-xs uppercase tracking-caps text-muted-foreground">
             SFN execution
           </div>
           {sfnReadError ? (

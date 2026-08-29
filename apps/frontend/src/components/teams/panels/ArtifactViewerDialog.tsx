@@ -100,7 +100,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
       <img
         src={state.url}
         alt={artifact.title}
-        className="mx-auto max-h-[60vh] max-w-full rounded"
+        className="mx-auto max-h-[60vh] max-w-full rounded-sm"
       />
     );
   }
@@ -109,7 +109,7 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
       <iframe
         src={state.url}
         title={artifact.title}
-        className="h-[60vh] w-full rounded border"
+        className="h-[60vh] w-full rounded-sm border"
         style={{ borderColor: "var(--edge)" }}
       />
     );
@@ -118,10 +118,10 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
     <a
       href={state.url}
       download={artifact.title || "attachment"}
-      className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm"
+      className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm"
       style={{ background: "var(--midnight)", color: "var(--cream)" }}
     >
-      <Download className="h-4 w-4" />
+      <Download size={16} />
       Download {artifact.title}
     </a>
   );
@@ -234,7 +234,7 @@ function WorkProductBody({
           className="inline-flex items-center gap-1.5 text-sm underline"
           style={{ color: "var(--midnight)" }}
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <ExternalLink size={16} />
           {wp.url}
         </a>
       ) : null}
@@ -286,19 +286,19 @@ export function ArtifactViewerDialog({
             <Link
               href={taskUrl}
               onClick={openTask}
-              className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm"
+              className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
-              <ExternalLink className="h-4 w-4" />
+              <ExternalLink size={16} />
               Open task
             </Link>
           ) : null}
           <button
             type="button"
             onClick={() => onRequestDelete(artifact)}
-            className="inline-flex items-center gap-1.5 rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
+            className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 size={16} />
             Delete
           </button>
         </>

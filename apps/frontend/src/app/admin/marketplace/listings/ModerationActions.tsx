@@ -179,7 +179,7 @@ export function ModerationActions({
               placeholder="Reason for rejection (required)…"
               rows={4}
               disabled={busy}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
               aria-label="Rejection notes"
             />
             <AlertDialogFooter>

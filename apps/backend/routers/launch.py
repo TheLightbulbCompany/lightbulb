@@ -155,9 +155,11 @@ async def connect_stripe(
 @router.patch("/entry", operation_id="launch_set_public")
 async def set_public(
     body: EntryPatchRequest,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
+    _rate_limit(request, "entry")
     # Same one-entry-per-owner rule as /join and /connect-stripe: an org
     # member flipping this would touch the org's row under their own identity.
     if auth.is_org_context and not auth.is_org_admin:

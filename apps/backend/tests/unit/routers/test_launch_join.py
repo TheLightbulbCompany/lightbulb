@@ -140,6 +140,15 @@ async def test_set_public_allowed_for_an_org_admin(configured, async_client_org_
     assert r.status_code == 200
 
 
+@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"public": True}))
+async def test_set_public_is_rate_limited_per_ip(configured, async_client):
+    body = {"public": True}
+    for _ in range(10):
+        assert (await async_client.patch("/api/v1/launch/entry", json=body)).status_code == 200
+    r = await async_client.patch("/api/v1/launch/entry", json=body)
+    assert r.status_code == 429 and r.headers["retry-after"] == "60"
+
+
 # --- leaderboard / me (unaffected by the split, still exercised here) -------
 
 

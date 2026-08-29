@@ -11,6 +11,7 @@ import { useLaunchRef } from "./useLaunchRef";
 
 const BLOCKED_COPY: Record<string, string> = {
   no_subscription: "Redeem your code or subscribe to join — the free month is the competition month.",
+  phase_ended: "The competition has ended.",
 };
 
 export function MyLaunchCard({ info }: { info: LaunchInfo }) {
@@ -19,6 +20,7 @@ export function MyLaunchCard({ info }: { info: LaunchInfo }) {
   const { data: me, mutate } = useSWR<LaunchMe>("/launch/me", (k: string) => api.get(k) as Promise<LaunchMe>);
   const attributed = React.useRef(false);
   const [publicBusy, setPublicBusy] = React.useState(false);
+  const [publicError, setPublicError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!me || !refCode || attributed.current) return;
@@ -41,9 +43,12 @@ export function MyLaunchCard({ info }: { info: LaunchInfo }) {
 
   const togglePublic = async (checked: boolean) => {
     setPublicBusy(true);
+    setPublicError(null);
     try {
       await api.patch("/launch/entry", { public: checked });
       await mutate();
+    } catch {
+      setPublicError("Couldn't update that — try again.");
     } finally {
       setPublicBusy(false);
     }
@@ -77,6 +82,7 @@ export function MyLaunchCard({ info }: { info: LaunchInfo }) {
             />
             Show my name on the board
           </label>
+          {publicError ? <p role="alert" className="lc-alert">{publicError}</p> : null}
           {me.entry?.refresh_error ? (
             <div style={{ marginTop: 16 }}>
               <p className="lc-alert">Couldn&apos;t refresh ({me.entry.refresh_error}) — reconnect with a fresh key.</p>

@@ -5,7 +5,10 @@ import { capture } from "@/lib/analytics";
 import { SITE_URL } from "@/lib/domain";
 
 export function ReferralLink({ code, link }: { code: string; link?: string }) {
-  // The root landing page hosts the waitlist form, so referral links point at the root.
+  // Fallback only — every caller today passes `link` (the backend's own
+  // `referral_link`). `?ref=` on the root is what `useLaunchRef` picks up and
+  // `POST /launch/referral` attributes on a post-drop sign-up, so the root is
+  // still the right fallback destination even with sign-up as the waitlist.
   const href = link ?? `${SITE_URL}/?ref=${code}`;
   const [copied, setCopied] = React.useState(false);
   const copy = async () => {

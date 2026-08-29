@@ -90,6 +90,16 @@ describe("MyLaunchCard", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith("/launch/entry", { public: false }));
   });
 
+  it("a failed PATCH reports an error instead of failing silently", async () => {
+    get.mockResolvedValue(me({ joined: true, has_key: true, entry: { display_name: "Ada", public: true, entered_at: "t", has_key: true, currency: "usd", baseline_cents: 10000, window_cents: 15000, delta_cents: 5000, refreshed_at: "t", refresh_error: null } }));
+    patch.mockRejectedValue(new Error("network blip"));
+    mount();
+    const checkbox = await screen.findByLabelText(/show my name on the board/i);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/launch/entry", { public: false }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't update/i);
+  });
+
   it("attributes a stored referral once and clears it on a resolved response", async () => {
     get.mockResolvedValue(me({}));
     post.mockResolvedValue({ attributed: true });

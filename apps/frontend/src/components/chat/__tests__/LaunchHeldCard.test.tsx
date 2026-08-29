@@ -1,8 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// LaunchHeldCard's own module imports `fetchLaunchInfo` from "@/lib/launch",
+// which reads BACKEND_URL from "@/lib/api" — preserve every other export via
+// importOriginal (mirrors src/__tests__/teams/RoutinesPanel.test.tsx) so that
+// read doesn't throw and fall the card back to its loading state.
 const get = vi.fn();
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get, post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() }) }));
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...actual, useApi: () => ({ get, post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() }) };
+});
 
 import type { BlockedPayload } from "@/hooks/useProvisioningState";
 import type { LaunchMe } from "@/lib/launch";

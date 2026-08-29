@@ -498,6 +498,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // The held-status card, not the generic gate copy.
     expect(screen.getByTestId("launch-held-card")).toHaveTextContent("You're on the list");
     expect(screen.queryByText(/Doors open Friday/)).not.toBeInTheDocument();
+    // The gate's own action, rendered as a link.
+    expect(screen.getByRole("link", { name: /see your spot/i })).toHaveAttribute("href", "/launch");
   });
 
   it.each([["trial_daily_cap"], ["trial_expired"]])(

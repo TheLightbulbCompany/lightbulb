@@ -1120,9 +1120,10 @@ export function ProvisioningStepper({
   // Pre-drop hold: a signed-up account with no container yet (Launch
   // Competition, see core/services/launch_hold.py). Render the held-status
   // card instead of the generic blocked card — same wrapper shape (logo
-  // centerpiece on the cream canvas) as team_billing_required below, minus
-  // that card's Check again / Contact support footer, which doesn't apply
-  // to a hold with no action to retry before the drop.
+  // centerpiece on the cream canvas) as team_billing_required below, but
+  // the footer is the gate's own action link ("See your spot" → /launch)
+  // rather than Check again / Contact support — there is nothing to retry
+  // before the drop.
   if (gatePhase === "blocked" && blocked && blocked.code === "launch_pending") {
     return (
       <div className="flex-1 flex items-center justify-center bg-[var(--cream)] px-6 py-12">
@@ -1131,6 +1132,11 @@ export function ProvisioningStepper({
             <Logo size="lg" href={null} />
           </div>
           <LaunchHeldCard blocked={blocked} />
+          <div className="mt-6 flex items-center gap-2">
+            <Button variant="outline" size="sm" className="rounded-full border-[var(--edge)]" asChild>
+              <a href={blocked.action.href}>{blocked.action.label}</a>
+            </Button>
+          </div>
         </div>
       </div>
     );

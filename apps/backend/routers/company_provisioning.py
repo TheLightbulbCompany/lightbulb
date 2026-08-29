@@ -61,6 +61,15 @@ def _slug(v: str) -> str:
     return v
 
 
+def _plain(v: str) -> str:
+    """Free text the owner READS on an approval card, or that becomes an env
+    value / a Secrets Manager-adjacent field. A newline splits whatever renders
+    it, so the same control-char rule the env values already get applies here."""
+    if _UNSAFE_RE.search(v):
+        raise ValueError("must not contain control characters")
+    return v
+
+
 def _url(v: str) -> str:
     """Every URL on this rail is rendered to the owner as a click target."""
     if not v:
@@ -76,6 +85,8 @@ class PairingBody(BaseModel):
     browser_url: str = Field(max_length=_MAX_URL)
     verification_code: str = Field(min_length=1, max_length=64)
     issue_id: str | None = Field(default=None, max_length=128)
+
+    _check_plain = field_validator("verification_code")(_plain)
 
     @field_validator("browser_url")
     @classmethod
@@ -112,6 +123,7 @@ class ConsentBody(BaseModel):
 
     _check_slug = field_validator("provider", "service")(_slug)
     _check_url = field_validator("terms_url")(_url)
+    _check_plain = field_validator("pricing")(_plain)
 
 
 @router.post("/u/{owner_id}/consent")
@@ -142,6 +154,7 @@ class LandedBody(BaseModel):
     dashboard_url: str | None = Field(default=None, max_length=_MAX_URL)
 
     _check_slug = field_validator("provider", "service")(_slug)
+    _check_plain = field_validator("resource_name")(_plain)
 
     @field_validator("resource_id")
     @classmethod

@@ -208,6 +208,44 @@ def test_landed_rejects_hostile_bodies(client, patch_body):
     land.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "route,body",
+    [
+        # Every free-text field the owner READS on a card, or that becomes a
+        # config value — a newline splits whatever renders or consumes it.
+        (
+            "pairing",
+            {"browser_url": "https://dashboard.stripe.com/x", "verification_code": "abc\ndef"},
+        ),
+        (
+            "consent",
+            {"provider": "posthog", "service": "analytics", "pricing": "$20/mo\rFREE"},
+        ),
+        (
+            "landed",
+            {
+                "provider": "posthog",
+                "service": "analytics",
+                "resource_id": "res_1",
+                "env": {"TOKEN": "v"},
+                "resource_name": "Northwind\x00analytics",
+            },
+        ),
+    ],
+)
+def test_control_characters_are_rejected_in_free_text(client, route, body):
+    with (
+        patch.object(mod.provisioning_approvals, "request_cli_pairing", AsyncMock(return_value="apr_1")) as pair,
+        patch.object(mod.provisioning_approvals, "request_provider_consent", AsyncMock(return_value="apr_1")) as cons,
+        patch.object(mod.provisioning_landing, "land_credentials", AsyncMock()) as land,
+    ):
+        resp = client.post(f"{BASE}/{route}", headers=HDRS, json=body)
+    assert resp.status_code == 422
+    pair.assert_not_awaited()
+    cons.assert_not_awaited()
+    land.assert_not_awaited()
+
+
 _ROUTES = (
     ("pairing", {"browser_url": "https://dashboard.stripe.com/x", "verification_code": "Z"}),
     ("consent", {"provider": "posthog", "service": "analytics"}),

@@ -10,78 +10,23 @@ decisions in front of the owner, in the surface they already use:
     the provider, the service, the terms link and the price, and approves.
     Only then may Friday pass ``--accept-tos``.
 
-Paperclip validates ``type`` against its own four-value enum, so both ride
-``request_board_approval`` and ``payload.isol8_action`` is what makes them ours
-— both for de-dup here and for the row action in the UI (same shape as P0a's
-``company_stripe_approval``).
-
-De-dup is on PENDING cards only: ``list_approvals`` is documented as "List
-pending approvals" (paperclip_admin_client.py:1152), so the backend never tries
-to infer "already approved" from it. Friday reads a card's outcome from her own
-Paperclip surface, which is where approvals live.
+Only the payloads live here — the filing sequence (company-id gate, cookie,
+dedupe, create) is ``board_cards.file_board_card``, shared with P0a's
+company-Stripe card.
 """
 
 from __future__ import annotations
 
-import logging
+from core.services.board_cards import file_board_card
 
-from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.company_stripe import resolve_company_name
-from core.services.paperclip_admin_client import shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
-
-logger = logging.getLogger(__name__)
-
-APPROVAL_TYPE = "request_board_approval"
 PAIR_MARKER = "stripe_cli_login"
 CONSENT_MARKER = "provider_consent"
-
-_PENDING = ("pending", "revision_requested")
-
-
-def _matches(approval: dict, marker: str, extra: dict | None = None) -> bool:
-    if approval.get("type") != APPROVAL_TYPE or approval.get("status") not in _PENDING:
-        return False
-    payload = approval.get("payload") or {}
-    if payload.get("isol8_action") != marker:
-        return False
-    return all(payload.get(k) == v for k, v in (extra or {}).items())
-
-
-async def _file(owner_id: str, *, marker: str, build_payload, issue_id: str | None, dedupe: dict | None) -> str | None:
-    """``build_payload(company_name) -> dict`` is called only once we know a
-    card actually needs filing — after the company-id gate AND the dedup
-    check — so a no-company or already-pending owner never triggers the
-    extra ``resolve_company_name`` lookup (matching ``company_stripe_approval``'s
-    ordering; a naive "resolve the name up front" ordering was tried and made
-    the no-company path issue a live, unmocked Paperclip company lookup)."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
-    if not company_id:
-        logger.info("provisioning_approvals: no Paperclip company for owner_id=%s", owner_id)
-        return None
-    admin = shared_admin_client()
-    cookie = await get_admin_session_cookie(admin._http)
-    existing = await admin.list_approvals(session_cookie=cookie, company_id=company_id)
-    approvals = existing if isinstance(existing, list) else (existing or {}).get("approvals") or []
-    for approval in approvals:
-        if _matches(approval, marker, dedupe):
-            return approval.get("id")
-    company_name = await resolve_company_name(owner_id)
-    body = {
-        "type": APPROVAL_TYPE,
-        "payload": {"isol8_action": marker, **build_payload(company_name)},
-        "issueIds": [issue_id] if issue_id else [],
-    }
-    created = await admin.create_approval(session_cookie=cookie, company_id=company_id, body=body)
-    return created.get("id")
 
 
 async def request_cli_pairing(
     *, owner_id: str, issue_id: str | None, browser_url: str, verification_code: str
 ) -> str | None:
-    return await _file(
+    return await file_board_card(
         owner_id,
         marker=PAIR_MARKER,
         build_payload=lambda company_name: {
@@ -97,7 +42,7 @@ async def request_cli_pairing(
 async def request_provider_consent(
     *, owner_id: str, issue_id: str | None, provider: str, service: str, terms_url: str, pricing: str
 ) -> str | None:
-    return await _file(
+    return await file_board_card(
         owner_id,
         marker=CONSENT_MARKER,
         build_payload=lambda company_name: {

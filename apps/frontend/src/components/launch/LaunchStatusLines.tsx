@@ -12,7 +12,7 @@ import { useCountdown } from "./useCountdown";
  * doors open — same account, same facts, two surfaces.
  */
 export function LaunchStatusLines({ me, dropAt }: { me: LaunchMe; dropAt: string }) {
-  const countdown = useCountdown(dropAt);
+  const countdown = useCountdown(dropAt) ?? "—";
   return (
     <div>
       {me.waitlist ? <p className="ld-lede">You&apos;re #{me.waitlist.position} on the list.</p> : null}

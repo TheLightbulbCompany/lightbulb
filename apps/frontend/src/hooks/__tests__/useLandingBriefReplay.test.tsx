@@ -2,7 +2,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
 const post = vi.fn();
-vi.mock("@/lib/api", () => ({ useApi: () => ({ post }) }));
+// A single stable object, not a fresh literal per call — `useApi()` is
+// `useMemo`'d in production (src/lib/api.ts), so the hook's effect (which
+// depends on `api`) must not spuriously re-fire on every render here.
+const apiMock = { post };
+vi.mock("@/lib/api", () => ({ useApi: () => apiMock }));
 
 // Mutable active-organization context, read at useOrganization() call time —
 // same pattern as the FirstRunFunnel tests. `orgLoaded: false` means the
@@ -190,18 +194,53 @@ describe("useLandingBriefReplay", () => {
     expect(result.current.replaying).toBe(true);
   });
 
-  it("hands back to the funnel when the POST fails", async () => {
+  it("hands back to the funnel when the POST fails, restoring the stash for a retry", async () => {
     post.mockRejectedValue({ status: 500 });
-    stash({ path: "grow", input: "acme.com", detail: "" });
+    const brief = { path: "grow", input: "acme.com", detail: "" };
+    stash(brief);
 
     const { result } = mount();
     await act(async () => {});
 
-    // Stash already gone (deleted at read), no retry loop: the in-chat
-    // funnel renders and the user retypes.
     expect(result.current.replaying).toBe(false);
     expect(post).toHaveBeenCalledTimes(1);
+    // Held users now sit on this path for days before the drop — losing the
+    // brief on a network blip is not acceptable, so it's put back.
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBe(JSON.stringify(brief));
+  });
+
+  it("a later render POSTs again after a failed attempt restored the stash", async () => {
+    post.mockRejectedValueOnce({ status: 500 });
+    stash({ path: "grow", input: "acme.com", detail: "" });
+
+    const { rerender } = mount();
+    await act(async () => {});
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).not.toBeNull();
+
+    post.mockResolvedValue({ status: "staged" });
+    // A gate-condition change re-fires the effect (firedRef was reset on failure).
+    rerender({ ...READY, awaitingBrief: false });
+    rerender(READY);
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBeNull();
+  });
+
+  it("does not clobber a newer stash written while the failed POST was restoring", async () => {
+    stash({ path: "grow", input: "acme.com", detail: "" });
+
+    // Simulate a fresh landing-hero write landing in the gap between the
+    // stash being read (and deleted) and the failure restore running.
+    const newer = JSON.stringify({ path: "new", input: "a newer idea", detail: "" });
+    post.mockImplementation(async () => {
+      window.sessionStorage.setItem(LANDING_BRIEF_STORAGE_KEY, newer);
+      throw { status: 500 };
+    });
+
+    mount();
+    await act(async () => {});
+
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBe(newer);
   });
 
   it("drops a stash whose JSON is valid but not an object", async () => {

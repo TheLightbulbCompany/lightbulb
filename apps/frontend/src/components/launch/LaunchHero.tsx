@@ -16,7 +16,7 @@ const HEADLINE: Record<LaunchInfo["phase"], React.ReactNode> = {
 export function LaunchHero({ info, children }: { info: LaunchInfo; children?: React.ReactNode }) {
   const target = info.phase === "waitlist" ? info.drop_at : info.phase === "activation" ? info.competition_start_at : info.competition_end_at;
   const label = info.phase === "waitlist" ? "until the drop" : info.phase === "activation" ? "until the competition starts" : info.phase === "live" ? "left" : "";
-  const countdown = useCountdown(target);
+  const countdown = useCountdown(target) ?? "—";
   return (
     <section className="ld-funnel" id="start">
       <div className="ld-funnel-in">

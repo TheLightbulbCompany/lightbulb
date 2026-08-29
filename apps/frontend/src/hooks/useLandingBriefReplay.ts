@@ -113,6 +113,9 @@ export function useLandingBriefReplay({
       return;
     }
     if (!raw) return;
+    // Narrowed to `string` here so the failure-path closure below (which TS
+    // cannot narrow a captured `let` inside) can restore it verbatim.
+    const rawStash: string = raw;
     firedRef.current = true;
     try {
       window.sessionStorage.removeItem(LANDING_BRIEF_STORAGE_KEY);
@@ -168,6 +171,19 @@ export function useLandingBriefReplay({
         setReplaying(false);
       } catch {
         setReplaying(false);
+        // The stash is already gone (deleted at read time) and firedRef is
+        // set — without recovery a rejected POST loses the brief for good,
+        // and held users now sit on this path for days before the drop.
+        // Put it back (unless something newer landed in the meantime) and
+        // clear firedRef so the next gate change retries.
+        try {
+          if (window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY) === null) {
+            window.sessionStorage.setItem(LANDING_BRIEF_STORAGE_KEY, rawStash);
+          }
+        } catch {
+          /* best-effort */
+        }
+        firedRef.current = false;
       }
     })();
   }, [api, gatePhase, blockedCode, awaitingBrief, isTerminalError, orgLoaded, organization, user]);

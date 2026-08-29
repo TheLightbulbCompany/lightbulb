@@ -232,6 +232,10 @@ export class LightbulbStage extends cdk.Stage {
       // configuration set on outbound sends (core/services/ses_email.py).
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
       stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
+      // Dev provisions out of Stripe's `testing` catalog partition so a dev
+      // experiment can never create a real provider resource out of the prod
+      // catalog. Prod reads and writes the real one.
+      stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

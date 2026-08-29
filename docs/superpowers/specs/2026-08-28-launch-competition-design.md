@@ -190,9 +190,12 @@ in-app/in-product surfaces carry the launch instead:
     → the public-board toggle (`PATCH /launch/entry`) plus `ConnectStripeForm`
     when `!has_key` (or on `refresh_error`), else the live delta.
 - `?ref=` is captured by `useLaunchRef` into `localStorage`. When signed in and
-  a stored ref exists → `POST /launch/referral` once, then clear. Referral
-  links are rendered as `flickmeon.ai/?ref=CODE` (`ReferralLink.tsx`) — the
-  root domain, since that's where sign-up (the waitlist) happens.
+  a stored ref exists → `POST /launch/referral` once. The stored code is
+  cleared only on a resolved response (`attributed` true OR false) — never on
+  a network/server error, which leaves it in place so the once-guard's next
+  mount can retry. Referral links are rendered as `flickmeon.ai/?ref=CODE`
+  (`ReferralLink.tsx`) — the root domain, since that's where sign-up (the
+  waitlist) happens.
 - `JoinForm`: display name + public toggle → `POST /launch/join`.
   `ConnectStripeForm`: restricted-key field with the four-step instructions
   (*Dashboard → Developers → API keys → Create restricted key → Balance:

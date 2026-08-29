@@ -48,11 +48,17 @@ marketplace payouts; Connect webhook secret + `account.updated` handler in
 `routers/marketplace_purchases.py`). Two doors, one code path:
 
 - **Create**: **Accounts v2** — `POST /v2/core/accounts` with the `merchant`
-  configuration (`card_payments` requested), `dashboard: full`, and
+  configuration (`card_payments` requested) **and, once Stripe enables it for
+  our platform, the `developer` configuration requesting the `projects`
+  capability** — Stripe's recommended Projects onboarding path (owner
+  decision 2026-08-29: follow the recommended path; the code ships behind
+  `STRIPE_PROJECTS_DEVELOPER_CONFIG`, default off, flipped when the field
+  exists for us), `dashboard: full`, and
   `defaults.responsibilities = {fees_collector: stripe, losses_collector:
   stripe}`; prefilled from the company name and the owner's Clerk email;
   hosted onboarding via v2 account links (`use_case.type =
-  account_onboarding`, `configurations: [merchant]`; single-use, ~10-minute
+  account_onboarding`, `configurations: [merchant]` plus `developer` under
+  the same flag; single-use, ~10-minute
   TTL, minted on click, never stored or emailed). Decided 2026-08-28: v2 is GA
   for all Stripe users (dahlia, 2026-04-22), our dev platform already serves
   `/v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient.v2.core`.
@@ -83,9 +89,10 @@ the merchant hosted onboarding (or `POST /v2/provisioning/kyc`);
 `contact_email` alone never satisfies it, and a return to our `return_url`
 proves nothing. **Verified 2026-08-29 in live mode:** an existing Express
 account of ours with no special configuration already answers `is_eligible:
-true, requirements: []`, so the `developer` configuration Stripe's guide
-recommends is not a precondition — and it is not enabled for our platform in
-any API version anyway. We do not use it.
+true, requirements: []`, so provisioning is not blocked while the `developer`
+configuration is still unavailable to us (`configuration.developer` is an
+unknown field for our platform under every API version — a cohort
+enablement Stripe has to switch on, plus the Accounts API version to pin).
 
 **When it appears: a Friday-raised approval card, never a gate before chat.**
 Friday raises it the first time a task needs money or infrastructure (or in
@@ -491,8 +498,9 @@ Review (Ads).
 ## 7. Owner actions (outside the repo)
 
 Create a Stripe **Sandbox** for dev (Dashboard → Sandboxes; then dev's
-Stripe secrets, prices, webhooks and Connect settings move to it) · Stripe's
-shared Slack channel only for §8 8 if a sandbox turns out not to be enrolled ·
+Stripe secrets, prices, webhooks and Connect settings move to it) · accept
+Stripe's shared Slack channel and ask §8 6 (developer configuration
+enablement) and §8 8 ·
 open a bundle.social Business
 account (confirm whether X needs our own app keys) · doola partner
 conversation (organizer semantics, compliance API, iFrame tier) · PostHog
@@ -509,9 +517,12 @@ Projects · decide Route 53 vs Projects registrars (P4).
    via Metronome.
 4. Per-agent phone numbers vs one per company.
 5. User/Aden asks: not yet checked against this design — collect and diff.
-6. ~~Developer configuration~~ — resolved 2026-08-29: not enabled for our
-   platform and not required (§3.1). Connect-existing Standard accounts:
-   eligibility is per account; check `GET /eligibility` at request time.
+6. Stripe (ask): enable the `developer` configuration / `projects`
+   capability for our platform, name the Accounts API version to pin, and
+   confirm `merchant` + `developer` coexist on one `dashboard: full`
+   account. Not blocking — eligibility already passes without it (§3.1).
+   Connect-existing Standard accounts: eligibility is per account; check
+   `GET /eligibility` at request time.
 7. ~~Hosted collection under `Stripe-Context`~~ — resolved 2026-08-29: works
    (§3.2 step 2).
 8. Stripe: which operations does a Project ephemeral key authenticate; is the

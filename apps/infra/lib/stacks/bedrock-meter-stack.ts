@@ -278,7 +278,7 @@ export class BedrockMeterStack extends cdk.Stack {
       const apiKeySecret = secretsmanager.Secret.fromSecretNameV2(
         this,
         `MetronomeApiKeySecret${idSuffix}`,
-        `isol8/${meterEnv}/metronome_api_key`,
+        `lightbulb/${meterEnv}/metronome_api_key`,
       );
       apiKeySecret.grantRead(fn);
       fn.addEnvironment("METRONOME_API_KEY_SECRET_ARN", apiKeySecret.secretArn);

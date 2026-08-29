@@ -283,8 +283,8 @@ describe("BedrockMeterStack", () => {
 
   test("per-env Metronome secrets referenced by name; NO bedrock_meter_token anywhere", () => {
     const all = JSON.stringify(template.toJSON());
-    expect(all).toContain("isol8/dev/metronome_api_key");
-    expect(all).toContain("isol8/prod/metronome_api_key");
+    expect(all).toContain("lightbulb/dev/metronome_api_key");
+    expect(all).toContain("lightbulb/prod/metronome_api_key");
     // The meter JWT is deleted outright — no resource may reference it.
     expect(all).not.toContain("bedrock_meter_token");
     expect(all).not.toContain("METER_TOKEN");

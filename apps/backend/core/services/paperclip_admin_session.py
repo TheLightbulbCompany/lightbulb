@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 _SESSION_TTL_SECONDS = 23 * 3600
 
 # AWS Secrets Manager naming convention. Per-env: dev →
-# ``isol8/dev/paperclip_admin_credentials``. Created by the bootstrap
+# ``lightbulb/dev/paperclip_admin_credentials``. Created by the bootstrap
 # script after sign-up; fields ``email`` + ``password`` (JSON).
 _SECRET_NAME_TEMPLATE = "lightbulb/{env}/paperclip_admin_credentials"
 

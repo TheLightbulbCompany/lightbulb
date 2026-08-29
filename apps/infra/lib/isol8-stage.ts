@@ -82,7 +82,7 @@ export class Isol8Stage extends cdk.Stage {
         // Deterministic by-name reference to the DEV stage's secret. AuthStack
         // creates it unconditionally in every env; before dev routing existed,
         // only prod's was ever read.
-        devSesIngestSecretName: "isol8/dev/ses_ingest_secret",
+        devSesIngestSecretName: "lightbulb/dev/ses_ingest_secret",
       });
       sesInbound.addDependency(auth);
       // No DnsStack dependency: mail lives on its own domain now, and this

@@ -57,8 +57,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     environment,
     vpc: network.vpc,
     kmsKeyArn: kmsKey.keyArn,
-    gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
-    cloudflareWarpEnrollmentSecretName: `isol8/${environment}/cloudflare-warp-enrollment`,
+    gogKeyringPasswordSecretName: `lightbulb/${environment}/gog-keyring-password`,
+    cloudflareWarpEnrollmentSecretName: `lightbulb/${environment}/cloudflare-warp-enrollment`,
   });
 
   const service = new ServiceStack(app, `Service-${environment}`, {
@@ -77,7 +77,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
       paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
-      gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
+      gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
@@ -246,7 +246,7 @@ describe("ServiceStack — gog file-keyring password", () => {
               ValueFrom: Match.objectLike({
                 "Fn::Join": Match.arrayWith([
                   Match.arrayWith([
-                    Match.stringLikeRegexp("isol8/dev/gog-keyring-password"),
+                    Match.stringLikeRegexp("lightbulb/dev/gog-keyring-password"),
                   ]),
                 ]),
               }),

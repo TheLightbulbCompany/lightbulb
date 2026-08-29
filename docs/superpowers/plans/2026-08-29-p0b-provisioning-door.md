@@ -41,7 +41,7 @@ Copied verbatim from the spec where the spec states them, and from Stripe's prev
 - **Any `apps/infra/lib/` change** must run `cd apps/infra && npx cdk synth` and commit the regenerated `.github/workflows/deploy.yml` in the same PR (CLAUDE.md).
 - **No `openclaw-version.json` bump** in this PR.
 - Commit after every task; push only when the owner says so; never `main`.
-- Tests: `cd apps/backend && uv run pytest <file> -v` + `uv run ruff check`; `cd apps/frontend && pnpm vitest run <file>`; `cd apps/infra && npx jest <file>`.
+- Tests: `cd apps/backend && uv run pytest <file> -v` + `uv run ruff check`; `cd apps/frontend && pnpm vitest run <file>`; **`cd apps/infra && pnpm vitest run <file>`** (`apps/infra/package.json`'s `test` script is `vitest run` — there is no jest here).
 
 ---
 
@@ -84,7 +84,7 @@ Each was checked in this worktree; the command is given so a reviewer can redo i
 - Modify/Delete: the pairing tests under `apps/backend/tests/unit/routers/`, `apps/backend/tests/unit/services/` and `apps/frontend/src/components/teams/inbox/__tests__/`
 
 **Interfaces:**
-- Removes: `provisioning_approvals.request_cli_pairing`, `provisioning_approvals.PAIR_MARKER`, `POST /api/v1/company/provisioning/u/{owner_id}/{pairing,consent,landed}`, `isol8-facts.json`'s `stripe_cli`, the `stripe_cli` field on `GET /resources`, `isStripeCliPairApproval`.
+- Removes: `provisioning_approvals.request_cli_pairing`, `provisioning_approvals.PAIR_MARKER`, `POST /api/v1/company/provisioning/u/{owner_id}/{pairing,consent,landed}`, `isol8-facts.json`'s `stripe_cli` AND `provisioned` (one fact list only — Task 10 writes `provisioning`), the `stripe_cli` field on `GET /resources`, `isStripeCliPairApproval`.
 - Keeps unchanged: everything in Verified fact 8 except the four names above.
 
 **The consent route goes too, and that is the point.** It was Friday telling us she was about to spend; the workflow now files that card itself from the snapshot it just read (Task 7), so a container-supplied consent card is a second, unverified writer of the same decision.
@@ -150,7 +150,7 @@ then side effects.
 """
 ```
 
-- [ ] **Step 6: Drop the `stripe_cli` fact and the `stripe_cli` field on `GET /resources`**
+- [ ] **Step 6: Drop both facts and the `stripe_cli` field on `GET /resources`**
 
 Nothing pairs any more, so the field is a dead name on the wire. In
 `apps/backend/routers/company_provisioning.py`'s `resources` route, change
@@ -187,7 +187,7 @@ In `apps/infra/openclaw/skills/lightbulb/SKILL.md` delete lines 327-471 (`## Set
 
 - [ ] **Step 9: Run everything that could have depended on the removals**
 
-Run: `cd apps/backend && uv run pytest tests/unit -q -k "provisioning or owner_facts or company_provisioning" && uv run ruff check . && cd ../frontend && pnpm vitest run src/components/teams/inbox src/components/settings && pnpm tsc --noEmit && cd ../infra && npx jest test/container-stack.test.ts`
+Run: `cd apps/backend && uv run pytest tests/unit -q -k "provisioning or owner_facts or company_provisioning" && uv run ruff check . && cd ../frontend && pnpm vitest run src/components/teams/inbox src/components/settings && pnpm tsc --noEmit && cd ../infra && pnpm vitest run test/container-stack.test.ts`
 Expected: all green. Any failure names a test that asserted a removed name — delete that assertion, do not re-add the name.
 
 - [ ] **Step 10: Commit**
@@ -381,6 +381,21 @@ async def test_create_resource_sends_the_current_field_names():
 
 
 @pytest.mark.asyncio
+async def test_the_catalog_partition_is_configuration_on_every_catalog_read(monkeypatch):
+    """dev reads `testing`, prod reads `prod`. Never a hardcoded literal."""
+    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_CATALOG", "testing")
+    raw = MagicMock(return_value={"object": "v2.list", "data": []})
+    with patch.object(mod, "_raw", raw):
+        await mod.catalog_services("acct_1", provider_name="posthog")
+        await mod.catalog_providers("acct_1")
+        await mod.create_resource("acct_1", service_ref="s", provider="p", project="proj_1",
+                                  name="n", configuration={}, catalog="testing")
+    assert "catalog=testing" in raw.call_args_list[0].args[1]
+    assert "catalog=testing" in raw.call_args_list[1].args[1]
+    assert raw.call_args_list[2].args[3]["catalog"] == "testing"
+
+
+@pytest.mark.asyncio
 async def test_account_request_uses_project_id_the_documented_exception():
     raw = MagicMock(return_value={"id": "ar_1", "status": "requested"})
     with patch.object(mod, "_raw", raw):
@@ -440,9 +455,24 @@ async def test_a_stripe_5xx_is_transport_shaped_so_reads_can_retry():
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_stripe_provisioning_client.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'core.services.stripe_provisioning'`.
 
-- [ ] **Step 3: Implement the client**
+- [ ] **Step 3: Add the one setting the client reads**
 
-No new settings: hosted collection is confirmed working under `Stripe-Context`, so there is no payment-mode flag to carry.
+In `apps/backend/core/config.py`, directly after `STRIPE_CONNECT_CLIENT_ID: str = ""` (line 407):
+
+```python
+    # Which Provider catalog partition this environment reads and writes:
+    # "prod" | "dev" | "testing" (spec.txt 4.2 / 4.4). Configuration, never a
+    # literal — dev runs "testing", prod runs "prod", and reading one partition
+    # while writing another provisions into a catalog the owner never saw.
+    #
+    # NOTE, verbatim from the guide: "Selecting a DEV or TESTING catalog
+    # doesn't mean 'no real charges.'"
+    STRIPE_PROJECTS_CATALOG: str = "prod"
+```
+
+No payment-mode flag: hosted collection is confirmed working under `Stripe-Context`, so there is nothing to switch.
+
+- [ ] **Step 4: Implement the client**
 
 ```python
 # apps/backend/core/services/stripe_provisioning.py
@@ -620,6 +650,7 @@ async def identity(account_id: str, *, project: str | None = None) -> dict:
 
 
 async def create_project(account_id: str, *, name: str, catalog: str | None = None) -> dict:
+    """`catalog` is `prod | dev | testing` — configuration, never a literal."""
     body: dict = {"name": name}
     if catalog:
         body["catalog"] = catalog
@@ -633,12 +664,20 @@ async def list_projects(account_id: str) -> list[dict]:
 # --- 4.2 Catalog (account context) -----------------------------------------
 
 async def catalog_providers(account_id: str) -> list[dict]:
-    return await paginate(account_id, f"{BASE}/catalog/providers", params={"limit": 100})
+    return await paginate(
+        account_id, f"{BASE}/catalog/providers",
+        params={"catalog": settings.STRIPE_PROJECTS_CATALOG, "limit": 100},
+    )
 
 
 async def catalog_services(account_id: str, *, provider_name: str | None = None) -> list[dict]:
+    """`catalog` selects the partition (`prod | dev | testing`). It is
+    configuration, never a literal — dev runs `testing` and prod runs `prod`,
+    and reading one partition while writing another is how you provision into a
+    catalog the owner never saw."""
     return await paginate(
-        account_id, f"{BASE}/catalog/services", params={"provider_name": provider_name, "limit": 100}
+        account_id, f"{BASE}/catalog/services",
+        params={"provider_name": provider_name, "catalog": settings.STRIPE_PROJECTS_CATALOG, "limit": 100},
     )
 
 
@@ -673,11 +712,14 @@ async def submit_account_request_information(account_id: str, request_id_: str, 
 # --- 4.4 Resources ----------------------------------------------------------
 
 async def create_resource(
-    account_id: str, *, service_ref: str, provider: str, project: str | None, name: str, configuration: dict
+    account_id: str, *, service_ref: str, provider: str, project: str | None, name: str,
+    configuration: dict, catalog: str | None = None,
 ) -> dict:
     body: dict = {"service_ref": service_ref, "provider": provider, "name": name, "configuration": configuration}
     if project:
         body["project"] = project
+    if catalog:
+        body["catalog"] = catalog
     return await request(account_id, "post", f"{BASE}/resources", body=body)
 
 
@@ -783,15 +825,15 @@ async def charges(account_id: str, *, start_time: str, end_time: str, livemode: 
     )
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 5: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_stripe_provisioning_client.py -v && uv run ruff check core/services/stripe_provisioning.py`
-Expected: 11 passed, ruff clean.
+Expected: 12 passed, ruff clean.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/backend/core/services/stripe_provisioning.py apps/backend/tests/unit/services/test_stripe_provisioning_client.py
+git add apps/backend/core/config.py apps/backend/core/services/stripe_provisioning.py apps/backend/tests/unit/services/test_stripe_provisioning_client.py
 git commit -m "feat(provisioning): Provisioning API client on the platform key + Stripe-Context"
 ```
 
@@ -809,7 +851,7 @@ git commit -m "feat(provisioning): Provisioning API client on the platform key +
 **Interfaces:**
 - Consumes (verified): `database-stack.ts:78-110`'s `createTable(id, suffix, schema)` helper, which sets `tableName: \`${tablePrefix(env)}${suffix}\`` = `lightbulb-{env}-provisioning-workflows`; `core/dynamodb.get_table("provisioning-workflows")`, `run_in_thread`, `utc_now_iso`.
 - Produces:
-  - `STATES`, `TERMINAL_STATES`, `OPEN_SWEEP_KEY = "open"`
+  - `STATES`, `TERMINAL_STATES`, `CANCELLABLE_STATES`, `OPEN_SWEEP_KEY = "open"`
   - `async def create(*, owner_id, action, provider_id, provider_name, service_ref, service_id, configuration, issue_id) -> dict`
   - `async def get(workflow_id) -> dict | None`
   - `async def list_for_owner(owner_id) -> list[dict]`
@@ -838,7 +880,7 @@ In `apps/infra/test/database-stack.test.ts`, inside the existing `describe` that
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd apps/infra && npx jest test/database-stack.test.ts -t "provisioning-workflows"`
+Run: `cd apps/infra && pnpm vitest run test/database-stack.test.ts -t "provisioning-workflows"`
 Expected: FAIL — no matching table.
 
 - [ ] **Step 3: Add the table**
@@ -878,7 +920,7 @@ Declare `public readonly provisioningWorkflowsTable: dynamodb.Table;` beside the
 
 - [ ] **Step 4: Run the infra test, then synth**
 
-Run: `cd apps/infra && npx jest test/database-stack.test.ts -t "provisioning-workflows" && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml`
+Run: `cd apps/infra && pnpm vitest run test/database-stack.test.ts -t "provisioning-workflows" && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml`
 Expected: test PASSES; `deploy.yml` unchanged (this adds a stack resource, not a pipeline step). If it IS modified, commit it in this task.
 
 - [ ] **Step 5: Write the failing repo tests**
@@ -1020,6 +1062,34 @@ async def test_patch_refuses_to_move_state(workflows_table):
 
 
 @pytest.mark.asyncio
+async def test_rejected_and_cancelled_are_terminal_and_leave_the_sweep(workflows_table):
+    """The owner saying no must stop the driver as firmly as success does."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    for state in ("rejected", "cancelled"):
+        row = await _new()
+        done = await repo.transition(row["workflow_id"], from_state="ask", to_state=state)
+        assert done["state"] == state
+        assert "sweep_key" not in done
+    assert await repo.list_open() == []
+    assert {"rejected", "cancelled"} <= repo.TERMINAL_STATES
+
+
+@pytest.mark.asyncio
+async def test_stale_is_open_not_terminal(workflows_table):
+    """A workflow the owner ignored keeps its ids and stays sweepable — the
+    next click re-mints the link rather than starting over."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    await repo.transition(row["workflow_id"], from_state="ask", to_state="awaiting_user_action")
+    stale = await repo.transition(row["workflow_id"], from_state="awaiting_user_action", to_state="stale")
+    assert stale["state"] == "stale"
+    assert stale["sweep_key"] == repo.OPEN_SWEEP_KEY
+    assert [r["workflow_id"] for r in await repo.list_open()] == [row["workflow_id"]]
+
+
+@pytest.mark.asyncio
 async def test_transition_rejects_an_unknown_state(workflows_table):
     from core.repositories import provisioning_workflow_repo as repo
 
@@ -1070,13 +1140,24 @@ STATES = (
     "awaiting_approval",
     "connecting_provider",
     "awaiting_user_action",
+    # The owner never came back. NON-terminal on purpose: the ids are still
+    # good and the next click re-mints the link (see the connect-link route).
+    "stale",
     "provisioning",
     "binding",
     "active",
     "failed",
     "requires_review",
+    # The owner said no, or withdrew the ask before anything was created.
+    "rejected",
+    "cancelled",
 )
-TERMINAL_STATES = frozenset({"active", "failed", "requires_review"})
+TERMINAL_STATES = frozenset({"active", "failed", "requires_review", "rejected", "cancelled"})
+
+# States where no state-changing Stripe POST can have happened yet, so the ask
+# can simply be withdrawn. `awaiting_user_action` is conditional — the route
+# checks for an account_request_id / resource_id as well.
+CANCELLABLE_STATES = frozenset({"ask", "awaiting_approval", "awaiting_user_action", "stale"})
 
 # The sparse GSI's partition value. Present while the workflow is open, REMOVEd
 # the moment it goes terminal, so `list_open` is a Query over exactly the rows
@@ -1213,7 +1294,7 @@ async def patch(workflow_id: str, fields: dict) -> dict | None:
 - [ ] **Step 8: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/repositories/test_provisioning_workflow_repo.py -v && uv run ruff check core/repositories/provisioning_workflow_repo.py`
-Expected: 7 passed, ruff clean.
+Expected: 9 passed, ruff clean.
 
 - [ ] **Step 9: Add the table to the chaos fixture**
 
@@ -1238,13 +1319,15 @@ git commit -m "feat(provisioning): durable provisioning-workflows table and repo
 - Test: `apps/backend/tests/unit/services/test_provisioning_workflow.py`
 
 **Interfaces:**
-- Consumes: every wrapper from Task 3; `provisioning_workflow_repo.{create,get,transition,patch}` (Task 4); `billing_repo.get_by_owner_id(owner_id)` → `company_stripe_account_id` (P0a); `provisioning_landing.land_credentials(*, owner_id, resource, env)` (`provisioning_landing.py:59`); `provisioning_approvals.*` (Task 6 fills these in — this task calls them through a module attribute so the tests patch them and Task 6 supplies the real payloads); `owner_facts.write_owner_facts`; `jsonschema.validate`.
+- Consumes: every wrapper from Task 2 (the client); `provisioning_workflow_repo.{create,get,transition,patch}` (Task 3); `billing_repo.get_by_owner_id(owner_id)` → `company_stripe_account_id` (P0a); `provisioning_landing.land_credentials(*, owner_id, resource, env)` (`provisioning_landing.py:59`); `provisioning_approvals.*` (Task 6 fills these in — this task calls them through a module attribute so the tests patch them and Task 6 supplies the real payloads); `owner_facts.write_owner_facts`; `jsonschema.validate`.
 - Produces:
-  - `class WorkflowRefused(RuntimeError)` with `.code` / `.message` — a refusal the caller renders (`not_eligible`, `requirements_pending`, `service_unavailable`, `invalid_configuration`, `no_company_stripe_account`).
+  - `class WorkflowRefused(RuntimeError)` with `.code` / `.message` / `.requirements` — a refusal the caller renders (`not_eligible`, `requirements_pending`, `service_unavailable`, `invalid_configuration`, `no_company_stripe_account`, `no_company`).
   - `async def start(*, owner_id, provider_name, service_id, configuration, issue_id) -> dict`
   - `async def advance(workflow: dict) -> dict` — one step; returns the row as it now stands.
-  - `async def on_approved(workflow_id: str, *, usage_limit: dict | None) -> dict | None`
+  - `async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None`
+  - `def resource_name_for(row) -> str`, `def safe_account_details(details) -> dict | None`, `def is_offerable(service, provider) -> bool`, `def is_transient(e) -> bool`, `def schema_is_empty(schema) -> bool`
   - `POLL_BASE_S = 2.0`, `POLL_MAX_S = 30.0`, `DEADLINE_S = 900`, `def poll_delay(attempts: int) -> float`
+  - `settings.STRIPE_PROJECTS_CATALOG` (Step 0 below) — the catalog partition, threaded into every catalog read plus `create_project` and `create_resource`.
 
 **The three hard rules, each with its own test.**
 
@@ -1257,6 +1340,52 @@ git commit -m "feat(provisioning): durable provisioning-workflows table and repo
 > **If the values come back as `PROVIDER_SERVICE_AVAILABILITY_AVAILABLE`:** `_AVAILABLE` below matches as written. **If they come back lower-cased (`available`):** add that spelling to `_AVAILABLE` — do not replace the constant, keep both, since the wire spelling is explicitly not stable.
 
 > **VERIFY (`provider_name` filter):** the catalog filter is `provider_name`, and spec.txt says "`name` and `provider_name` are catalog/display identifiers and are used only where an endpoint specifically declares `provider_name`", while write calls take `provider` = the `prvdr_…` id. Confirm with the same command that `provider_name=posthog` (the display name, lower-case) returns rows, and record whether the value is the provider's `name` verbatim. If the filter wants a different casing, normalise inside `catalog_services` only.
+
+- [ ] **Step 0: Wire the catalog partition per environment (infra)**
+
+`STRIPE_PROJECTS_CATALOG` exists from Task 2 with the safe default. This step
+gives dev the `testing` partition. It touches `apps/infra/lib/`, so it carries
+the synth rule.
+
+In `apps/infra/lib/stacks/service-stack.ts`, beside the other Stripe env vars
+(after `STRIPE_PROJECTS_DEVELOPER_CONFIG`'s neighbours, ~line 1583):
+
+```ts
+      // Provider catalog partition. dev reads/writes Stripe's `testing`
+      // partition, prod the real one. NOT a payment-mode switch — Stripe's own
+      // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
+      // charges.'"
+      STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
+```
+
+Add `stripeProjectsCatalog?: string;` to the service-stack props interface and
+thread it from `apps/infra/lib/isol8-stage.ts` beside the existing
+`stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],` (line 250):
+
+```ts
+      stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
+```
+
+Add an infra assertion in `apps/infra/test/service-stack.test.ts`:
+
+```ts
+  test("dev reads the testing catalog partition, prod reads prod", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "testing" }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+```
+
+(the existing suite builds a dev template; if it builds prod, assert `"prod"` instead — read the file's own fixture rather than guessing).
+
+Run: `cd apps/infra && pnpm vitest run test/service-stack.test.ts -t "catalog partition" && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml`
+Expected: test passes; commit `deploy.yml` in this task if it changed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1348,6 +1477,67 @@ async def test_start_snapshots_the_catalog_and_files_a_consent_card():
 
 
 @pytest.mark.asyncio
+async def test_two_concurrent_asks_make_one_workflow_and_one_card():
+    """Friday retrying after a timeout must not open a second card — or, once
+    approved, provision the same resource twice."""
+    open_row = _row(state="awaiting_approval")
+    with (
+        patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[open_row])),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        row = await mod.start(owner_id="org_a", provider_name="posthog", service_id="svc_analytics",
+                              configuration=CONFIG, issue_id=None)
+    assert row["workflow_id"] == "pwf_1"
+    create.assert_not_awaited()
+    mod.provisioning_approvals.request_provider_consent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_workflow_does_not_block_a_fresh_ask():
+    with (
+        patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[_row(state="rejected")])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        await mod.start(owner_id="org_a", provider_name="posthog", service_id="svc_analytics",
+                        configuration=CONFIG, issue_id=None)
+    create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_no_paperclip_company_fails_the_row_rather_than_leaving_it_open():
+    """A card nobody can approve is a workflow nobody can finish."""
+    mod.provisioning_approvals.request_provider_consent.return_value = None
+    with (
+        patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="failed"))) as move,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await mod.start(owner_id="org_a", provider_name="posthog", service_id="svc_analytics",
+                            configuration=CONFIG, issue_id=None)
+    assert exc.value.code == "no_company"
+    assert move.await_args.kwargs["to_state"] == "failed"
+
+
+def test_resource_name_is_unique_per_workflow_never_the_bare_service_ref():
+    a = mod.resource_name_for(_row(workflow_id="pwf_aaaaaa"))
+    b = mod.resource_name_for(_row(workflow_id="pwf_bbbbbb"))
+    assert a != b
+    assert a != "svc_analytics"
+    assert a.startswith("svc_analytics-")
+
+
+@pytest.mark.asyncio
 async def test_start_refuses_an_ineligible_account():
     with patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": False, "requirements": []})):
         with pytest.raises(mod.WorkflowRefused) as exc:
@@ -1418,7 +1608,7 @@ async def test_approval_with_unchanged_catalog_moves_to_connecting_provider():
         patch.object(mod.repo, "transition",
                      AsyncMock(return_value=_row(state="connecting_provider"))) as move,
     ):
-        out = await mod.on_approved("pwf_1", usage_limit=None)
+        out = await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
     assert out["state"] == "connecting_provider"
     assert move.await_args.kwargs["to_state"] == "connecting_provider"
 
@@ -1436,7 +1626,7 @@ async def test_catalog_drift_after_approval_files_a_fresh_card():
         patch.object(mod.repo, "transition",
                      AsyncMock(return_value=_row(state="awaiting_approval"))) as move,
     ):
-        out = await mod.on_approved("pwf_1", usage_limit=None)
+        out = await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
     assert out["state"] == "awaiting_approval"
     assert move.await_args.kwargs["to_state"] == "awaiting_approval"
     assert mod.provisioning_approvals.request_provider_consent.await_count == 1
@@ -1457,7 +1647,8 @@ async def test_paid_service_without_a_payment_profile_files_the_payment_card():
                      AsyncMock(return_value=_row(state="awaiting_user_action"))) as move,
     ):
         out = await mod.on_approved("pwf_1", usage_limit={"max_amount": 5000, "currency": "usd",
-                                                          "recurring_interval": "month"})
+                                                          "recurring_interval": "month"},
+                                    approved_by="user_admin")
     assert out["state"] == "awaiting_user_action"
     assert move.await_args.kwargs["fields"]["awaiting"] == "payment_setup"
     mod.provisioning_approvals.request_payment_setup.assert_awaited_once()
@@ -1496,8 +1687,128 @@ async def test_pending_auth_files_a_connect_card_and_waits():
     # The account request id is persisted BEFORE the card opens any redirect.
     assert patched.await_args_list[0].args[1]["account_request_id"] == "ar_1"
     assert move.await_args.kwargs["fields"]["awaiting"] == "provider_connect"
+    # The URL is NOT put on the card — the connect-link route mints it on click.
     kwargs = mod.provisioning_approvals.request_provider_connect.await_args.kwargs
-    assert kwargs["redirect_url"] == "https://provider.example/oauth"
+    assert "redirect_url" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_two_active_connections_stop_rather_than_guess():
+    """"The current API doesn't let Forge select among several same-Provider
+    connections. […] if the returned state is ambiguous, stop." """
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    two = [{"provider": "prvdr_1", "status": "active"}, {"provider": "prvdr_1", "status": "active"}]
+    with (
+        patch.object(mod.api, "list_provider_connections", AsyncMock(return_value=two)),
+        patch.object(mod.api, "create_resource", AsyncMock()) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "ambiguous_provider_connection"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_account_request_records_which_provider_account_exists():
+    """"Show returned account details so Ada knows which Provider account will
+    receive authentication, billing, security, and operational communications." """
+    row = _row(state="connecting_provider", account_request_id="ar_1",
+               approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    ar = {"id": "ar_1", "status": "complete", "provider_account_details": {
+        "id": "prv_acct_1", "display_name": "Northwind", "primary_email": "founder@example.com",
+        "link_action": "linked_existing",
+        "active_services": [{"service_id": "svc_analytics", "display_name": "Analytics", "status": "active"}]}}
+    with (
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value=ar)),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1", "status": "pending"})),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        await mod.advance(row)
+    saved = patched.await_args_list[0].args[1]["provider_account"]
+    assert saved["display_name"] == "Northwind"
+    assert saved["primary_email"] == "founder@example.com"
+    assert saved["link_action"] == "linked_existing"
+    # The provider-side account id is not ours to hand around.
+    assert "id" not in saved
+
+
+@pytest.mark.asyncio
+async def test_needs_information_records_which_endpoint_will_receive_it():
+    """The account-request and resource submit endpoints take different bodies;
+    the row must say which one this schema belongs to."""
+    base = _row(state="connecting_provider", account_request_id="ar_1",
+                approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    schema = {"type": "object", "properties": {"team": {"type": "string"}}}
+    with (
+        patch.object(mod.api, "get_account_request",
+                     AsyncMock(return_value={"id": "ar_1", "status": "needs_information",
+                                             "needs_information_schema": schema})),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_user_action"))) as move,
+    ):
+        await mod.advance(base)
+    assert move.await_args.kwargs["fields"]["information_target"] == "account_request"
+
+    res_row = _row(state="provisioning", resource_id="res_1", approval=base["approval"])
+    with (
+        patch.object(mod.api, "get_resource",
+                     AsyncMock(return_value={"id": "res_1", "status": "needs_information",
+                                             "needs_information_schema": schema})),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_user_action"))) as move2,
+    ):
+        await mod.advance(res_row)
+    assert move2.await_args.kwargs["fields"]["information_target"] == "resource"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_needs_information_schema_is_a_repoll_not_a_dead_end():
+    row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    with (
+        patch.object(mod.api, "get_resource",
+                     AsyncMock(return_value={"id": "res_1", "status": "needs_information",
+                                             "needs_information_schema": {"type": "object", "properties": {}}})),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})),
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "provisioning"
+    move.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reauth_clears_the_account_request_id_so_a_fresh_one_is_created():
+    """Without the clear, `advance` re-reads the OLD (complete) request forever
+    and the new one is never created."""
+    row = _row(state="binding", resource_id="res_1", account_request_id="ar_old",
+               approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    with (
+        patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+        patch.object(mod.api, "environment_info",
+                     AsyncMock(side_effect=ProvisioningError("provider_reauth_required", "reconnect"))),
+        patch.object(mod.repo, "transition",
+                     AsyncMock(return_value=_row(state="connecting_provider", account_request_id=None))) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    fields = move.await_args.kwargs["fields"]
+    assert fields["account_request_id"] is None
+    assert fields["error_code"] == "provider_reauth_required"
+
+
+@pytest.mark.asyncio
+async def test_approval_records_who_approved_and_when():
+    row = _row(state="awaiting_approval", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+    ):
+        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    fields = move.await_args.kwargs["fields"]
+    assert fields["approved_by"] == "user_admin"
+    assert fields["approved_at"]
 
 
 @pytest.mark.asyncio
@@ -1730,6 +2041,7 @@ from datetime import datetime, timedelta, timezone
 
 import jsonschema
 
+from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo
 from core.repositories import provisioning_workflow_repo as repo
@@ -1743,6 +2055,10 @@ logger = logging.getLogger(__name__)
 POLL_BASE_S = 2.0
 POLL_MAX_S = 30.0
 DEADLINE_S = 900  # 15 minutes, then requires_review with the ids kept.
+# How long a workflow may sit waiting on the OWNER before the poller gives up
+# and marks it `stale`. Days, not minutes: the card is in their Inbox and they
+# are allowed to think about it over a weekend.
+USER_ACTION_DEADLINE_S = 7 * 24 * 3600
 
 # spec.txt: the enum values "have no external_name annotation in the proto…
 # use the value returned by the endpoint and do not hard-code a lower-case wire
@@ -1821,16 +2137,30 @@ def snapshot_of(service: dict, provider: dict, configuration: dict) -> dict:
         "kind": service.get("kind"),
         "pricing_type": pricing.get("type"),
         "paid_pricing": pricing.get("paid_pricing") or [],
+        # The guide's "Collect informed approval" list, in full: provider name,
+        # description, website, PRIVACY POLICY and terms; service description,
+        # CATEGORIES, availability, scope, required configuration and
+        # CONSTRAINTS; the environment; who owns the payment method; and
+        # whether this creates new infrastructure or links existing.
         "terms_url": provider.get("tos_url"),
         "website_url": provider.get("website_url"),
+        "privacy_policy_url": provider.get("privacy_policy_url"),
+        "categories": service.get("categories") or [],
+        "constraints": service.get("constraints") or [],
         "description": service.get("description"),
+        # One company, one production Project (spec §3.2) — stated so the owner
+        # knows which deployment the credential lands in.
+        "environment": "Company — production",
+        # `resources/link` is not offered in P0b, so every approval is for NEW
+        # infrastructure and the card must say so rather than leave it implied.
+        "action": "creates new",
         "snapshot_at": utc_now_iso(),
     }
 
 
 def _drifted(before: dict, after: dict) -> bool:
     keys = ("service_ref", "configuration_schema", "availability", "scope", "kind",
-            "pricing_type", "paid_pricing", "terms_url")
+            "pricing_type", "paid_pricing", "terms_url", "privacy_policy_url", "constraints")
     return any(before.get(k) != after.get(k) for k in keys)
 
 
@@ -1846,7 +2176,7 @@ async def _account_id(owner_id: str) -> str:
 
 
 async def _read_catalog(account_id: str, provider_name: str, service_id: str) -> tuple[dict, dict]:
-    services = await api.catalog_services(account_id, provider_name=provider_name)
+    services = await api.catalog_services(account_id, provider_name=provider_name)  # catalog partition applied in the client
     service = next((s for s in services if s.get("service_id") == service_id), None)
     if service is None:
         raise WorkflowRefused("service_unavailable", f"{provider_name}/{service_id} is not in your catalog")
@@ -1857,6 +2187,14 @@ async def _read_catalog(account_id: str, provider_name: str, service_id: str) ->
     if not is_offerable(service, provider):
         raise WorkflowRefused("service_unavailable", f"{provider_name}/{service_id} is not available to you")
     return service, provider
+
+
+def schema_is_empty(schema: dict) -> bool:
+    """A `needs_information` payload with no fields yet. The provider has not
+    published the form — that is a RE-POLL, not a dead end. Treating it as
+    unrenderable parked healthy workflows in requires_review."""
+    props = (schema or {}).get("properties")
+    return not isinstance(props, dict) or not props
 
 
 def _renderable(schema: dict) -> bool:
@@ -1895,6 +2233,13 @@ async def start(*, owner_id: str, provider_name: str, service_id: str, configura
     except jsonschema.ValidationError as e:
         raise WorkflowRefused("invalid_configuration", e.message) from e
 
+    # One open workflow per (provider, service). Two asks in the same turn —
+    # or Friday retrying after a timeout — must not open a second card or, once
+    # approved, provision the resource twice.
+    existing = await _open_workflow_for(owner_id, provider["id"], service["service_id"])
+    if existing is not None:
+        return existing
+
     row = await repo.create(
         owner_id=owner_id,
         action="create_resource",
@@ -1907,8 +2252,15 @@ async def start(*, owner_id: str, provider_name: str, service_id: str, configura
     )
     snapshot = snapshot_of(service, provider, configuration or {})
     approval_id = await provisioning_approvals.request_provider_consent(
-        owner_id=owner_id, issue_id=issue_id, workflow_id=row["workflow_id"], snapshot=snapshot
+        owner_id=owner_id, issue_id=issue_id, workflow_id=row["workflow_id"], snapshot=snapshot,
+        limit_editable=await limit_is_editable(account_id),
     )
+    if approval_id is None:
+        # No Paperclip company ⇒ no Inbox ⇒ nobody can ever approve this. Fail
+        # the row rather than leaving an un-approvable workflow open forever.
+        await repo.transition(row["workflow_id"], from_state="ask", to_state="failed",
+                              fields={"error_code": "no_company"})
+        raise WorkflowRefused("no_company", "This owner has no company board to approve the request")
     moved = await repo.transition(
         row["workflow_id"], from_state="ask", to_state="awaiting_approval",
         fields={"approval": snapshot, "approval_id": approval_id},
@@ -1916,7 +2268,43 @@ async def start(*, owner_id: str, provider_name: str, service_id: str, configura
     return moved or row
 
 
-async def on_approved(workflow_id: str, *, usage_limit: dict | None) -> dict | None:
+async def limit_is_editable(account_id: str) -> bool:
+    """The owner may set the spending limit only while there is no Payment
+    profile yet; afterwards it is a live billing setting and belongs on the
+    account, not on a card. Never raises — a probe failure defaults to
+    read-only, which is the safe direction."""
+    try:
+        await api.payment_profile(account_id)
+    except ProvisioningError as e:
+        return e.code == "not_found"
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+async def _open_workflow_for(owner_id: str, provider_id: str, service_id: str) -> dict | None:
+    """An existing non-terminal workflow for the same pair, or None."""
+    for row in await repo.list_for_owner(owner_id):
+        if (
+            row.get("provider_id") == provider_id
+            and row.get("service_id") == service_id
+            and row.get("state") not in repo.TERMINAL_STATES
+        ):
+            return row
+    return None
+
+
+def resource_name_for(row: dict) -> str:
+    """A name unique per workflow.
+
+    NEVER the bare `service_ref`: two resources of the same service on one
+    provider account would be indistinguishable in the owner's own provider
+    dashboard, and `remove`'s typed confirmation would be ambiguous.
+    """
+    return f"{row['service_id']}-{row['workflow_id'][-6:]}"
+
+
+async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None:
     """The owner approved the consent card. Re-read the catalog before moving."""
     row = await repo.get(workflow_id)
     if not row or row.get("state") != "awaiting_approval":
@@ -1926,7 +2314,8 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None) -> dict | N
     fresh = snapshot_of(service, provider, row.get("configuration") or {})
     if _drifted(row.get("approval") or {}, fresh):
         approval_id = await provisioning_approvals.request_provider_consent(
-            owner_id=row["owner_id"], issue_id=row.get("issue_id"), workflow_id=workflow_id, snapshot=fresh
+            owner_id=row["owner_id"], issue_id=row.get("issue_id"), workflow_id=workflow_id, snapshot=fresh,
+            limit_editable=await limit_is_editable(account_id),
         )
         return await repo.transition(
             workflow_id, from_state="awaiting_approval", to_state="awaiting_approval",
@@ -1946,13 +2335,30 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None) -> dict | N
             )
             return await repo.transition(
                 workflow_id, from_state="awaiting_approval", to_state="awaiting_user_action",
-                fields={"awaiting": "payment_setup", "approval_id": approval_id, "usage_limit": limits},
+                fields={"awaiting": "payment_setup", "approval_id": approval_id, "usage_limit": limits,
+                        "approved_by": approved_by, "approved_at": utc_now_iso()},
             )
 
+    approved = {"approval": fresh, "approved_by": approved_by, "approved_at": utc_now_iso()}
+    if usage_limit:
+        approved["usage_limit"] = usage_limit
     return await repo.transition(
-        workflow_id, from_state="awaiting_approval", to_state="connecting_provider",
-        fields={"approval": fresh, "usage_limit": usage_limit} if usage_limit else {"approval": fresh},
+        workflow_id, from_state="awaiting_approval", to_state="connecting_provider", fields=approved
     )
+
+
+async def _reauth(row: dict) -> dict:
+    """The provider connection expired or vanished: "Create a new Account
+    request and ask the user to reconnect."
+
+    ``account_request_id`` is CLEARED, or ``advance`` would re-read the old
+    (already `complete`) request forever and never create the new one.
+    """
+    moved = await repo.transition(
+        row["workflow_id"], from_state=row["state"], to_state="connecting_provider",
+        fields={"error_code": "provider_reauth_required", "account_request_id": None, "awaiting": None},
+    )
+    return moved or {**row, "state": "connecting_provider", "account_request_id": None}
 
 
 async def _requires_review(row: dict, code: str) -> dict:
@@ -1982,15 +2388,46 @@ async def _ensure_project(account_id: str, row: dict) -> str:
     from core.services.company_stripe import resolve_company_name
 
     name = await resolve_company_name(row["owner_id"])
-    project = await api.create_project(account_id, name=name, catalog="prod")
+    project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
     await repo.patch(row["workflow_id"], {"project_id": project["id"]})
     return project["id"]
 
 
+def safe_account_details(details: dict | None) -> dict | None:
+    """What the owner is shown about the provider account that now exists:
+    "Show returned account details so Ada knows which Provider account will
+    receive authentication, billing, security, and operational
+    communications." Names and an e-mail — never a provider id or a token."""
+    if not details:
+        return None
+    return {
+        "display_name": (details.get("display_name") or "")[:200] or None,
+        "primary_email": (details.get("primary_email") or "")[:320] or None,
+        # `created` vs `linked_existing`: whether we made them a new account or
+        # attached to one they already had. The consent card promised one of
+        # these, so the owner must be able to see which happened.
+        "link_action": details.get("link_action"),
+        "active_services": [
+            {"service_id": svc.get("service_id"), "display_name": svc.get("display_name"),
+             "status": svc.get("status")}
+            for svc in (details.get("active_services") or [])[:20]
+        ],
+    }
+
+
 async def _connect_provider(account_id: str, row: dict) -> dict:
     connections = await api.list_provider_connections(account_id)
-    active = any(c.get("provider") == row["provider_id"] and c.get("status") == "active" for c in connections)
-    if active:
+    mine = [c for c in connections if c.get("provider") == row["provider_id"] and c.get("status") == "active"]
+    if len(mine) > 1:
+        # "The current API doesn't let Forge select among several same-Provider
+        # connections. Don't show a connection picker that the write API can't
+        # honor; if the returned state is ambiguous, stop."
+        return await _requires_review(row, "ambiguous_provider_connection")
+    if mine:
+        details = safe_account_details(mine[0].get("provider_account_details"))
+        if details:
+            await repo.patch(row["workflow_id"], {"provider_account": details})
+            row = {**row, "provider_account": details}
         return await _create_resource(account_id, row)
 
     project_id = await _ensure_project(account_id, row)
@@ -2001,6 +2438,8 @@ async def _connect_provider(account_id: str, row: dict) -> dict:
         # created the account request. Never repeat it.
         if is_transient(e):
             return await _requires_review(row, "uncertain_write")
+        if e.code == "provider_reauth_required":
+            return await _reauth(row)
         return await _fail(row, e.code, e.message)
     # Persist BEFORE opening any redirect (guide, Account request table).
     await repo.patch(row["workflow_id"], {"account_request_id": ar["id"]})
@@ -2010,11 +2449,15 @@ async def _connect_provider(account_id: str, row: dict) -> dict:
 async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
     status = ar.get("status")
     if status == "complete":
+        details = safe_account_details(ar.get("provider_account_details"))
+        if details:
+            await repo.patch(row["workflow_id"], {"provider_account": details})
+            row = {**row, "provider_account": details}
         return await _create_resource(account_id, row)
     if status == "pending_auth":
         approval_id = await provisioning_approvals.request_provider_connect(
             owner_id=row["owner_id"], issue_id=row.get("issue_id"), workflow_id=row["workflow_id"],
-            snapshot=row.get("approval") or {}, redirect_url=ar.get("redirect_url") or "",
+            snapshot=row.get("approval") or {},
         )
         return await repo.transition(
             row["workflow_id"], from_state=row["state"], to_state="awaiting_user_action",
@@ -2022,6 +2465,9 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
         ) or {**row, "state": "awaiting_user_action"}
     if status == "needs_information":
         schema = ar.get("needs_information_schema") or {}
+        if schema_is_empty(schema):
+            # The provider has not published the form yet — poll, don't park.
+            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
         approval_id = await provisioning_approvals.request_provider_information(
@@ -2030,7 +2476,8 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
         )
         return await repo.transition(
             row["workflow_id"], from_state=row["state"], to_state="awaiting_user_action",
-            fields={"awaiting": "provider_information", "approval_id": approval_id, "information_schema": schema},
+            fields={"awaiting": "provider_information", "approval_id": approval_id,
+                    "information_schema": schema, "information_target": "account_request"},
         ) or {**row, "state": "awaiting_user_action"}
     if status == "error":
         err = ar.get("error") or {}
@@ -2050,12 +2497,15 @@ async def _create_resource(account_id: str, row: dict) -> dict:
             service_ref=row["service_ref"],
             provider=row["provider_id"],
             project=project_id,
-            name=row.get("resource_name") or row["service_ref"],
+            name=resource_name_for(row),
             configuration=row.get("configuration") or {},
+            catalog=settings.STRIPE_PROJECTS_CATALOG,
         )
     except ProvisioningError as e:
         if is_transient(e):
             return await _requires_review(row, "uncertain_write")
+        if e.code == "provider_reauth_required":
+            return await _reauth(row)
         if e.code == "payment_method_required":
             return await _requires_review(row, "payment_method_required")
         return await _fail(row, e.code, e.message)
@@ -2070,11 +2520,7 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
         resource = await api.get_resource(account_id, row["resource_id"])
     except ProvisioningError as e:
         if e.code == "provider_reauth_required":
-            moved = await repo.transition(
-                row["workflow_id"], from_state=row["state"], to_state="connecting_provider",
-                fields={"error_code": "provider_reauth_required"},
-            )
-            return moved or {**row, "state": "connecting_provider"}
+            return await _reauth(row)
         if is_transient(e):
             # A READ is safe to repeat: keep the state, bump the attempt, let
             # the driver back off.
@@ -2089,6 +2535,8 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
         return await _fail(row, status, resource.get("error_message") or "")
     if status == "needs_information":
         schema = resource.get("needs_information_schema") or {}
+        if schema_is_empty(schema):
+            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
         approval_id = await provisioning_approvals.request_provider_information(
@@ -2097,7 +2545,8 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
         )
         moved = await repo.transition(
             row["workflow_id"], from_state=row["state"], to_state="awaiting_user_action",
-            fields={"awaiting": "provider_information", "approval_id": approval_id, "information_schema": schema},
+            fields={"awaiting": "provider_information", "approval_id": approval_id,
+                    "information_schema": schema, "information_target": "resource"},
         )
         return moved or {**row, "state": "awaiting_user_action"}
     # pending
@@ -2112,9 +2561,17 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     row = moved or {**row, "state": "binding"}
     snapshot = row.get("approval") or {}
     project_id = row.get("project_id") or await _ensure_project(account_id, row)
-    info = await api.environment_info(
-        account_id, project=project_id, provider=row["provider_id"], service=row["service_ref"], reveal=True
-    )
+    try:
+        info = await api.environment_info(
+            account_id, project=project_id, provider=row["provider_id"], service=row["service_ref"], reveal=True
+        )
+    except ProvisioningError as e:
+        # The connection can expire between `complete` and the credential read.
+        if e.code == "provider_reauth_required":
+            return await _reauth(row)
+        if is_transient(e):
+            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+        return await _fail(row, e.code, e.message)
     entry = next(
         (e for e in info.get("resource_access_configurations") or [] if e.get("resource_id") == row["resource_id"]),
         None,
@@ -2126,7 +2583,7 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
         "resource_id": row["resource_id"],
         "provider": row["provider_name"],
         "service": row["service_ref"],
-        "resource_name": resource.get("name") or row["service_ref"],
+        "resource_name": resource.get("name") or resource_name_for(row),
         "status": "active",
         "env_keys": sorted(env),
         "dashboard_url": None,  # deep links are minted on click, never stored
@@ -2135,6 +2592,10 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
         "project_id": project_id,
     }
     await land_credentials(owner_id=row["owner_id"], resource=pointer, env=env)
+    # Stamp the NAMES onto the workflow row too, so the facts file stays a
+    # single query and can never disagree with the pointer.
+    await repo.patch(row["workflow_id"], {"resource_name": pointer["resource_name"],
+                                          "env_keys": pointer["env_keys"]})
     done = await repo.transition(row["workflow_id"], from_state="binding", to_state="active")
     await write_owner_facts(row["owner_id"])
     logger.info(
@@ -2144,12 +2605,69 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     return done or {**row, "state": "active"}
 
 
+async def _poll_user_action(account_id: str, row: dict) -> dict:
+    """The owner is off doing something on a provider's or Stripe's page.
+
+    We still poll from the server — "Keep polling the Account request from the
+    server and restore the UI from the stored ID", and for the payment leg
+    "poll GET /v2/provisioning/payment_profile until the profile exists". A
+    browser that never comes back must not strand the workflow.
+    """
+    if row.get("awaiting") == "payment_setup":
+        try:
+            await api.payment_profile(account_id)
+        except ProvisioningError as e:
+            if e.code == "not_found":
+                return await _stale_if_expired(row)
+            if is_transient(e):
+                return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+            return await _fail(row, e.code, e.message)
+        moved = await repo.transition(
+            row["workflow_id"], from_state=row["state"], to_state="connecting_provider",
+            fields={"awaiting": None},
+        )
+        return moved or {**row, "state": "connecting_provider"}
+
+    if row.get("account_request_id"):
+        try:
+            ar = await api.get_account_request(account_id, row["account_request_id"])
+        except ProvisioningError as e:
+            if e.code == "provider_reauth_required":
+                return await _reauth(row)
+            if is_transient(e):
+                return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+            return await _fail(row, e.code, e.message)
+        if ar.get("status") in ("pending_auth", "requested", "needs_information"):
+            return await _stale_if_expired(row)
+        return await _handle_account_request(account_id, row, ar)
+
+    # `provider_information` with nothing to poll: the owner submits it through
+    # the owner route, which kicks the driver.
+    return await _stale_if_expired(row)
+
+
+async def _stale_if_expired(row: dict) -> dict:
+    """A workflow nobody came back to. NOT terminal: the ids stay good and the
+    next owner click re-mints the link, so this only stops the poller."""
+    if row.get("state") == "stale":
+        return row
+    updated = row.get("updated_at") or ""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=USER_ACTION_DEADLINE_S)).isoformat()
+    if updated and updated < cutoff:
+        moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="stale")
+        return moved or {**row, "state": "stale"}
+    return row
+
+
 async def advance(workflow: dict) -> dict:
-    """One step. Terminal and owner-blocked states are no-ops."""
+    """One step. Terminal states and `ask` are no-ops; everything else moves or
+    reports that it could not."""
     state = workflow.get("state")
-    if state in repo.TERMINAL_STATES or state in ("ask", "awaiting_approval", "awaiting_user_action"):
+    if state in repo.TERMINAL_STATES or state in ("ask", "awaiting_approval"):
         return workflow
     account_id = await _account_id(workflow["owner_id"])
+    if state in ("awaiting_user_action", "stale"):
+        return await _poll_user_action(account_id, workflow)
     if state == "connecting_provider":
         if workflow.get("account_request_id"):
             ar = await api.get_account_request(account_id, workflow["account_request_id"])
@@ -2167,7 +2685,7 @@ async def advance(workflow: dict) -> dict:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_provisioning_workflow.py -v && uv run ruff check core/services/provisioning_workflow.py`
-Expected: 21 passed, ruff clean. The four card functions are patched by the `cards` fixture; Task 6 implements them with these exact signatures.
+Expected: 31 passed, ruff clean. The four card functions are patched by the `cards` fixture; Task 6 implements them with these exact signatures.
 
 - [ ] **Step 5: Commit**
 
@@ -2190,13 +2708,13 @@ git commit -m "feat(provisioning): the backend-owned provisioning state machine"
 - Produces:
   - `async def kick(workflow_id: str) -> None` — start (or re-start) the driver task for one workflow; idempotent.
   - `async def resume_open_workflows() -> None` — the startup sweep.
-  - `IDLE_RECONCILE_S = 60`, `MAX_STEPS = 400`
+  - `IDLE_RECONCILE_S = 60` (the slow clock for owner-blocked states — a real loop delay, not a decorative constant), `MAX_STEPS = 400`
 
-Why a sweep at all: "No Provisioning webhook surface; use bounded polling", and a browser session, provider redirect, worker restart or deployment "must not lose an Account request ID, Resource ID, or uncertain write state". The sweep is the same shape as `main.py:266`'s `_resume_wake_resize_transitions`.
+Why a sweep at all: "No Provisioning webhook surface; use bounded polling", and a browser session, provider redirect, worker restart or deployment "must not lose an Account request ID, Resource ID, or uncertain write state". The sweep is the same shape as `main.py:266`'s `_resume_wake_resize_transitions`, and it resumes **owner-blocked rows too** — `awaiting_approval`, `awaiting_user_action` and `stale` are all non-terminal, so `list_open` returns them.
 
 The sweep also **reconciles the approval signal**: an owner may approve a card in Paperclip without the browser ever reaching our approve route (they approved from mobile, the request failed, the tab closed). For a row in `awaiting_approval` with an `approval_id`, the sweep reads the approval and, if Paperclip reports it approved, calls `provisioning_workflow.on_approved`.
 
-> **VERIFY (approved status spelling):** `get_approval` maps to `GET /api/approvals/{id}`; the value Paperclip uses for an approved card is not stated in this repo. Read one: `aws dynamodb ...` is not the source — instead approve a dev card and run the backend snippet in the dev checklist (Task 11 step 4) printing `await admin.get_approval(session_cookie=c, approval_id=…)`. **If the field is `status: "approved"`:** `_APPROVED` below matches. **If it is something else** (e.g. `state`, or `"accepted"`), extend `_APPROVED` and `_approval_is_approved` — keep both spellings rather than swapping, since P0a's `board_cards._PENDING` already assumes `("pending", "revision_requested")` on the same objects.
+> **VERIFY (approved/rejected status spelling):** `get_approval` maps to `GET /api/approvals/{id}`; the value Paperclip uses for an approved card is not stated in this repo. Read one: `aws dynamodb ...` is not the source — instead approve a dev card and run the backend snippet in the dev checklist (Task 11 step 4) printing `await admin.get_approval(session_cookie=c, approval_id=…)`. Approve one dev card and **reject another**, printing both. **If they are `status: "approved"` / `status: "rejected"`:** `_APPROVED` / `_REJECTED` match as written. **If either is something else** (e.g. `state`, `"accepted"`, `"declined"`), extend the frozensets — keep every spelling rather than swapping, since P0a's `board_cards._PENDING` already assumes `("pending", "revision_requested")` on the same objects.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2237,14 +2755,57 @@ async def test_run_advances_until_terminal_then_stops():
 
 
 @pytest.mark.asyncio
-async def test_run_stops_on_a_state_it_cannot_drive():
+async def test_run_keeps_driving_an_owner_blocked_state(monkeypatch):
+    """`awaiting_user_action` is DRIVEN, not abandoned — the guide says to keep
+    polling the Account request and the Payment profile from the server. The
+    old behaviour (return) stranded every workflow whose browser never came
+    back."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 3)
+    advance = AsyncMock(return_value=_row("awaiting_user_action"))
     with (
-        patch.object(mod, "advance", AsyncMock(return_value=_row("awaiting_user_action"))) as advance,
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("provisioning"))),
-        patch.object(mod, "_reconcile_approval", AsyncMock(return_value=None)),
+        patch.object(mod, "advance", advance),
+        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_user_action"))),
+    ):
+        await mod._run("pwf_1")
+    assert advance.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_stops_on_stale():
+    """`stale` keeps its ids but stops the poller; the next owner click kicks
+    it again."""
+    with (
+        patch.object(mod, "advance", AsyncMock(return_value=_row("stale"))) as advance,
+        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_user_action"))),
     ):
         await mod._run("pwf_1")
     assert advance.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_polls_an_unapproved_card_on_the_slow_clock(monkeypatch):
+    """Approve-from-mobile must resume without a deploy."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 3)
+    reconcile = AsyncMock(return_value=None)
+    with (
+        patch.object(mod, "_reconcile_approval", reconcile),
+        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_approval"))),
+        patch.object(mod, "advance", AsyncMock()) as advance,
+    ):
+        await mod._run("pwf_1")
+    assert reconcile.await_count == 3
+    advance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_stops_once_the_card_is_rejected():
+    with (
+        patch.object(mod, "_reconcile_approval", AsyncMock(return_value=_row("rejected"))),
+        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_approval"))),
+        patch.object(mod, "advance", AsyncMock()) as advance,
+    ):
+        await mod._run("pwf_1")
+    advance.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2306,6 +2867,38 @@ async def test_reconcile_resumes_a_card_the_owner_approved_elsewhere():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_records_a_rejection_as_a_terminal_state():
+    """A declined card must stop the workflow, not poll for a week."""
+    admin = MagicMock()
+    admin._http = object()
+    admin.get_approval = AsyncMock(return_value={"id": "apr_1", "status": "rejected"})
+    with (
+        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "on_approved", AsyncMock()) as resumed,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row("rejected"))) as move,
+    ):
+        out = await mod._reconcile_approval(_row("awaiting_approval", approval_id="apr_1"))
+    assert out["state"] == "rejected"
+    assert move.await_args.kwargs["to_state"] == "rejected"
+    resumed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_records_who_approved_when_it_came_from_paperclip():
+    admin = MagicMock()
+    admin._http = object()
+    admin.get_approval = AsyncMock(return_value={"id": "apr_1", "status": "approved", "payload": {}})
+    with (
+        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "on_approved", AsyncMock(return_value=_row("connecting_provider"))) as resumed,
+    ):
+        await mod._reconcile_approval(_row("awaiting_approval", approval_id="apr_1"))
+    assert resumed.await_args.kwargs["approved_by"] == "paperclip"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_leaves_a_still_pending_card_alone():
     admin = MagicMock()
     admin._http = object()
@@ -2359,16 +2952,26 @@ IDLE_RECONCILE_S = 60
 # 15-minute deadline, so it only ever catches a logic loop.
 MAX_STEPS = 400
 
-# Paperclip's approved spelling. Both are accepted because the repo does not
-# state it anywhere — see the VERIFY in the plan.
+# Paperclip's approved/rejected spellings. Several are accepted because the
+# repo does not state them anywhere — see the VERIFY in the plan.
 _APPROVED = frozenset({"approved", "accepted"})
+# Rejection is a real outcome, not silence: without it a declined card polls
+# for seven days and then goes stale, and the owner is never told it stopped.
+_REJECTED = frozenset({"rejected", "declined", "denied"})
 
 _TASKS: dict[str, asyncio.Task] = {}
 
 
-def _approval_is_approved(approval: dict | None) -> bool:
+def _approval_status(approval: dict | None) -> str | None:
     value = (approval or {}).get("status") or (approval or {}).get("state")
-    return isinstance(value, str) and value.lower() in _APPROVED
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    if lowered in _APPROVED:
+        return "approved"
+    if lowered in _REJECTED:
+        return "rejected"
+    return None
 
 
 async def _reconcile_approval(row: dict) -> dict | None:
@@ -2387,34 +2990,49 @@ async def _reconcile_approval(row: dict) -> dict | None:
     except Exception as e:  # noqa: BLE001 — reconcile is best-effort
         logger.warning("provisioning: approval read failed for %s: %s", row["workflow_id"], e)
         return None
-    if not _approval_is_approved(approval):
+    outcome = _approval_status(approval)
+    if outcome is None:
         return None
+    if outcome == "rejected":
+        return await repo.transition(
+            row["workflow_id"], from_state=row["state"], to_state="rejected",
+            fields={"error_code": "owner_rejected"},
+        )
     usage_limit = ((approval or {}).get("payload") or {}).get("usage_limit")
-    return await on_approved(row["workflow_id"], usage_limit=usage_limit)
+    return await on_approved(row["workflow_id"], usage_limit=usage_limit, approved_by="paperclip")
 
 
 async def _run(workflow_id: str) -> None:
+    """Drive one workflow until it is terminal, stale, or out of steps.
+
+    Owner-blocked states are DRIVEN, not abandoned: the guide says to keep
+    polling the Account request and the Payment profile from the server, and a
+    card approved on a phone must resume without waiting for a deploy. They
+    just poll on a slow clock (`IDLE_RECONCILE_S`) instead of the fast one.
+    """
     row = await repo.get(workflow_id)
     for _ in range(MAX_STEPS):
-        if row is None or row.get("state") in repo.TERMINAL_STATES:
-            return
-        if row.get("state") == "awaiting_approval":
-            moved = await _reconcile_approval(row)
-            if moved is None:
-                return  # the owner has not acted; the approve route will kick us
-            row = moved
-            continue
-        if row.get("state") in ("ask", "awaiting_user_action"):
+        if row is None or row.get("state") in repo.TERMINAL_STATES or row.get("state") == "stale":
             return
         before = row.get("state")
         try:
-            row = await advance(row)
+            if before == "awaiting_approval":
+                # Poll Paperclip, not Stripe: nothing moves until the owner
+                # approves or rejects the card.
+                moved = await _reconcile_approval(row)
+                row = moved if moved is not None else row
+            else:
+                row = await advance(row)
         except Exception:  # noqa: BLE001 — one bad step must not kill the task
-            logger.exception("provisioning: advance failed for %s", workflow_id)
+            logger.exception("provisioning: step failed for %s", workflow_id)
             row = await repo.get(workflow_id)
             continue
-        if row is not None and row.get("state") == before:
-            await asyncio.sleep(poll_delay(int(row.get("attempts") or 0)))
+        if row is None or row.get("state") != before:
+            continue
+        # Nothing moved. Owner-blocked states wait on a human, so they get the
+        # slow clock; an in-flight Stripe operation gets the backoff.
+        idle = before in ("awaiting_approval", "awaiting_user_action")
+        await asyncio.sleep(IDLE_RECONCILE_S if idle else poll_delay(int(row.get("attempts") or 0)))
 
 
 async def kick(workflow_id: str) -> None:
@@ -2456,7 +3074,7 @@ In `apps/backend/main.py`, directly after `await _resume_wake_resize_transitions
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_provisioning_driver.py -v && uv run python -c "import main" && uv run ruff check core/services/provisioning_driver.py main.py`
-Expected: 8 passed, import clean, ruff clean.
+Expected: 13 passed, import clean, ruff clean.
 
 - [ ] **Step 6: Commit**
 
@@ -2483,8 +3101,8 @@ git commit -m "feat(provisioning): per-workflow driver, startup sweep and approv
   ```
 - Produces (each returns the approval id, or `None` when the owner has no Paperclip company):
   - `CONSENT_MARKER = "provider_consent"` (unchanged), `CONNECT_MARKER = "provider_connect"`, `INFORMATION_MARKER = "provider_information"`, `PAYMENT_MARKER = "payment_setup"`
-  - `async def request_provider_consent(*, owner_id, issue_id, workflow_id, snapshot) -> str | None`
-  - `async def request_provider_connect(*, owner_id, issue_id, workflow_id, snapshot, redirect_url) -> str | None`
+  - `async def request_provider_consent(*, owner_id, issue_id, workflow_id, snapshot, limit_editable=True) -> str | None`
+  - `async def request_provider_connect(*, owner_id, issue_id, workflow_id, snapshot) -> str | None`
   - `async def request_provider_information(*, owner_id, issue_id, workflow_id, snapshot, schema, target) -> str | None`
   - `async def request_payment_setup(*, owner_id, issue_id, workflow_id, snapshot, usage_limit) -> str | None`
 
@@ -2547,6 +3165,39 @@ async def test_consent_card_carries_the_snapshot_and_an_editable_limit():
 
 
 @pytest.mark.asyncio
+async def test_consent_card_carries_every_disclosure_the_guide_requires():
+    """Each key here maps to one line of the guide's "Collect informed
+    approval" list. A missing one makes the approval uninformed."""
+    snap = {**SNAP, "privacy_policy_url": "https://posthog.com/privacy",
+            "categories": ["analytics"], "constraints": [{"type": "count", "count": {"at_most": 1}}],
+            "environment": "Company — production", "action": "creates new"}
+    with _filed() as filer:
+        await mod.request_provider_consent(owner_id="org_a", issue_id=None, workflow_id="pwf_1",
+                                           snapshot=snap, limit_editable=True)
+    p = _payload(filer)
+    assert p["website_url"] == "https://posthog.com"
+    assert p["privacy_policy_url"] == "https://posthog.com/privacy"
+    assert p["terms_url"] == "https://posthog.com/terms"
+    assert p["description"] == "Product analytics"
+    assert p["categories"] == ["analytics"]
+    assert p["availability"] == "PROVIDER_SERVICE_AVAILABILITY_AVAILABLE"
+    assert p["scope"] == "project"
+    assert p["constraints"] == [{"type": "count", "count": {"at_most": 1}}]
+    assert p["configuration"] == {"region": "us"}
+    assert p["environment"] == "Company — production"
+    assert p["payment_owner"] == "your card, on your Stripe account"
+    assert p["action"] == "creates new"
+
+
+@pytest.mark.asyncio
+async def test_the_limit_is_read_only_once_a_payment_profile_exists():
+    with _filed() as filer:
+        await mod.request_provider_consent(owner_id="org_a", issue_id=None, workflow_id="pwf_1",
+                                           snapshot=SNAP, limit_editable=False)
+    assert _payload(filer)["usage_limit_editable"] is False
+
+
+@pytest.mark.asyncio
 async def test_consent_card_shows_the_default_paid_price_verbatim():
     paid = {**SNAP, "pricing_type": "paid", "paid_pricing": [
         {"type": "freeform", "freeform": "$0/mo up to 1M events", "is_default": False},
@@ -2562,18 +3213,19 @@ async def test_consent_card_shows_the_default_paid_price_verbatim():
 
 
 @pytest.mark.asyncio
-async def test_connect_card_carries_the_redirect_url_and_nothing_else_bearer_like():
+async def test_connect_card_stores_no_url_at_all():
+    """A card can sit for days; the URL is minted on click by the connect-link
+    route. Storing it would be a stale bearer-ish URL in an Inbox."""
     with _filed() as filer:
         await mod.request_provider_connect(
             owner_id="org_a", issue_id=None, workflow_id="pwf_1", snapshot=SNAP,
-            redirect_url="https://provider.example/oauth?state=x",
         )
     assert filer.await_args.kwargs["marker"] == "provider_connect"
     p = _payload(filer)
     assert p["title"] == "Connect posthog for Northwind Ceramics"
-    assert p["redirect_url"] == "https://provider.example/oauth?state=x"
-    assert "checkout_session_url" not in p
-    assert "access_configuration" not in p
+    assert p["workflow_id"] == "pwf_1"
+    for leaked in ("redirect_url", "checkout_session_url", "access_configuration"):
+        assert leaked not in p
 
 
 @pytest.mark.asyncio
@@ -2610,7 +3262,7 @@ async def test_payment_card_carries_the_limit_and_never_a_checkout_url():
 async def test_every_card_dedupes_per_workflow_not_per_provider():
     for fn, kwargs in (
         (mod.request_provider_consent, {}),
-        (mod.request_provider_connect, {"redirect_url": "https://x"}),
+        (mod.request_provider_connect, {}),
         (mod.request_provider_information, {"schema": {"type": "object"}, "target": "resource"}),
         (mod.request_payment_setup, {"usage_limit": {"max_amount": 1, "currency": "usd",
                                                      "recurring_interval": "month"}}),
@@ -2690,22 +3342,47 @@ def _common(snapshot: dict, workflow_id: str) -> dict:
     }
 
 
-async def request_provider_consent(*, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict) -> str | None:
-    """"Before creating an Account request or Resource, show Ada: Provider name,
-    description, website, privacy policy, and terms of service […] the
-    applicable paid_pricing entry […] the configured usage limit"."""
+async def request_provider_consent(
+    *, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict, limit_editable: bool = True
+) -> str | None:
+    """The guide's "Collect informed approval" list, in full.
+
+    "Before creating an Account request or Resource, show Ada: Provider name,
+    description, website, privacy policy, and terms of service. Service
+    description, categories, availability, scope, required configuration, and
+    constraints. The applicable paid_pricing entry and any Service-specific
+    terms or acceptance text. The […] environment that will use the Resource.
+    The configured usage limit and who owns the payment method for a paid
+    Service. Whether an action links existing infrastructure or creates new
+    infrastructure."
+
+    Every one of those is a key below. Dropping one makes the approval
+    uninformed, which is the whole thing this card exists to be.
+    """
     return await file_board_card(
         owner_id,
         marker=CONSENT_MARKER,
         build_payload=lambda company_name: {
             **_common(snapshot, workflow_id),
             "title": f"Approve {snapshot.get('provider_name')} {snapshot.get('service_ref')} for {company_name}",
+            "privacy_policy_url": _text(snapshot.get("privacy_policy_url")),
+            "categories": list(snapshot.get("categories") or [])[:10],
+            "availability": snapshot.get("availability"),
+            "scope": snapshot.get("scope"),
+            "constraints": list(snapshot.get("constraints") or [])[:10],
             "configuration": snapshot.get("configuration") or {},
             "pricing_type": snapshot.get("pricing_type"),
             "price_display": _price_display(snapshot),
+            "environment": _text(snapshot.get("environment")) or "Company — production",
+            # Hosted collection: the owner's own card, on their own Stripe
+            # account. Lightbulb never holds it and takes no cut.
+            "payment_owner": "your card, on your Stripe account",
+            "action": snapshot.get("action") or "creates new",
             "level": "company",
             "usage_limit": DEFAULT_USAGE_LIMIT,
-            "usage_limit_editable": True,
+            # Editable only while there is no Payment profile; afterwards the
+            # limit is a live billing setting the card must not silently move.
+            "usage_limit_editable": bool(limit_editable),
         },
         issue_id=issue_id,
         dedupe={"workflow_id": workflow_id},
@@ -2713,17 +3390,23 @@ async def request_provider_consent(*, owner_id: str, issue_id: str | None, workf
 
 
 async def request_provider_connect(
-    *, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict, redirect_url: str
+    *, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict
 ) -> str | None:
     """`pending_auth`: "Open the returned redirect_url for the authenticated
-    user." Stripe owns the OAuth callback; we poll the Account request."""
+    user." Stripe owns the OAuth callback; we poll the Account request.
+
+    The URL is NOT on the card. A card can sit in an Inbox for days, and by the
+    time it is clicked the account request may have completed, errored, or gone
+    stale — so the button calls `POST /workflows/{id}/connect-link`, which
+    re-reads (or re-creates) the request and returns a URL minted for that
+    click. Nothing bearer-like is stored.
+    """
     return await file_board_card(
         owner_id,
         marker=CONNECT_MARKER,
         build_payload=lambda company_name: {
             **_common(snapshot, workflow_id),
             "title": f"Connect {snapshot.get('provider_name')} for {company_name}",
-            "redirect_url": redirect_url,
         },
         issue_id=issue_id,
         dedupe={"workflow_id": workflow_id},
@@ -2773,7 +3456,7 @@ async def request_payment_setup(
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_provisioning_approvals.py tests/unit/services/test_provisioning_workflow.py -v`
-Expected: 7 + 18 passed.
+Expected: 9 + 31 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -2795,7 +3478,9 @@ git commit -m "feat(provisioning): consent, connect, information and payment-set
 - Produces (spec §3.2 names these exactly):
   - `GET /api/v1/company/provisioning/u/{owner_id}/catalog?q=` → `{"services": [...], "eligible": bool, "requirements": [...]}`
   - `POST /api/v1/company/provisioning/u/{owner_id}/requests` body `{provider, service, configuration?, issue_id?, reason?}` → `{"workflow_id", "state", "message"}`
+  - `GET /api/v1/company/provisioning/u/{owner_id}/requests` → `{"requests": [...]}` (newest first)
   - `GET /api/v1/company/provisioning/u/{owner_id}/requests/{workflow_id}` → the same safe shape
+  - `DELETE /api/v1/company/provisioning/u/{owner_id}/requests/{workflow_id}` → withdraw an ask; 409 `cannot_cancel` once any state-changing POST has been made
 
 **What Friday may see.** Provider, service, description, `llm_context`, pricing display, tier, config schema, availability, scope — and workflow `state` + a safe message. **Never** a credential, a `checkout_session_url`, a `redirect_url`, a deep link, or a Stripe account id. `_safe_workflow` is the one serializer and there is a test that its output contains none of those keys.
 
@@ -2852,6 +3537,13 @@ def _account(monkeypatch):
         mod.billing_repo, "get_by_owner_id",
         AsyncMock(return_value={"owner_id": "org_a", "company_stripe_account_id": "acct_1"}),
     )
+
+
+@pytest.fixture(autouse=True)
+def facts(monkeypatch):
+    writer = AsyncMock()
+    monkeypatch.setattr(mod, "write_owner_facts", writer)
+    return writer
 
 
 def test_catalog_returns_policy_filtered_rows_with_llm_context_as_data(client):
@@ -2978,6 +3670,64 @@ def test_another_owners_workflow_is_a_404_not_a_403(client):
         assert client.get(f"{BASE}/requests/pwf_1", headers=HDRS).status_code == 404
 
 
+def test_requests_list_is_owner_scoped_and_newest_first(client):
+    rows = [{"workflow_id": "pwf_1", "owner_id": "org_a", "state": "active", "provider_name": "posthog",
+             "service_ref": "svc_analytics", "created_at": "2026-08-01T00:00:00Z"},
+            {"workflow_id": "pwf_2", "owner_id": "org_a", "state": "awaiting_approval",
+             "provider_name": "vercel", "service_ref": "svc_hosting", "created_at": "2026-08-02T00:00:00Z"}]
+    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=rows)):
+        resp = client.get(f"{BASE}/requests", headers=HDRS)
+    assert [r["workflow_id"] for r in resp.json()["requests"]] == ["pwf_2", "pwf_1"]
+
+
+def test_cancel_withdraws_an_ask_nothing_was_created_for(client, facts):
+    row = {"workflow_id": "pwf_1", "owner_id": "org_a", "state": "awaiting_approval",
+           "provider_name": "posthog", "service_ref": "svc_analytics"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.workflow_repo, "transition",
+                     AsyncMock(return_value={**row, "state": "cancelled"})) as move,
+    ):
+        resp = client.delete(f"{BASE}/requests/pwf_1", headers=HDRS)
+    assert resp.status_code == 200 and resp.json()["state"] == "cancelled"
+    assert move.await_args.kwargs["to_state"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"state": "awaiting_user_action", "account_request_id": "ar_1"},
+        {"state": "provisioning", "resource_id": "res_1"},
+        {"state": "binding", "resource_id": "res_1"},
+        {"state": "active", "resource_id": "res_1"},
+    ],
+)
+def test_cancel_refuses_once_a_state_changing_post_has_been_made(client, row):
+    """There is no idempotency contract and no undo: cancelling here would
+    orphan a real provider resource nobody is tracking."""
+    full = {"workflow_id": "pwf_1", "owner_id": "org_a", "provider_name": "posthog",
+            "service_ref": "svc_analytics", **row}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=full)),
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+    ):
+        resp = client.delete(f"{BASE}/requests/pwf_1", headers=HDRS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "cannot_cancel"
+    move.assert_not_awaited()
+
+
+def test_status_exposes_the_provider_account_names_only(client):
+    row = {"workflow_id": "pwf_1", "owner_id": "org_a", "state": "active", "provider_name": "posthog",
+           "service_ref": "svc_analytics",
+           "provider_account": {"display_name": "Northwind", "primary_email": "f@example.com",
+                                "link_action": "created", "active_services": []}}
+    with patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)):
+        body = client.get(f"{BASE}/requests/pwf_1", headers=HDRS).json()
+    assert body["provider_account"]["display_name"] == "Northwind"
+    assert body["provider_account"]["link_action"] == "created"
+
+
 def test_every_container_route_requires_the_hook_token(monkeypatch, client):
     from fastapi import HTTPException
 
@@ -2987,6 +3737,8 @@ def test_every_container_route_requires_the_hook_token(monkeypatch, client):
     assert client.post(f"{BASE}/requests", headers=HDRS,
                        json={"provider": "posthog", "service": "svc_analytics"}).status_code == 401
     assert client.get(f"{BASE}/requests/pwf_1", headers=HDRS).status_code == 401
+    assert client.get(f"{BASE}/requests", headers=HDRS).status_code == 401
+    assert client.delete(f"{BASE}/requests/pwf_1", headers=HDRS).status_code == 401
 
 
 def test_every_container_route_is_paid_only(monkeypatch, client):
@@ -3084,7 +3836,9 @@ def _safe_service(service: dict, provider: dict | None) -> dict:
 
 
 def _safe_workflow(row: dict) -> dict:
-    """The only shape a container ever sees. No Stripe ids, no URLs."""
+    """The only shape a container or a browser ever sees. No Stripe ids, no
+    URLs, no credentials — `provider_account` is already reduced to names and
+    an e-mail by `safe_account_details`."""
     return {
         "workflow_id": row.get("workflow_id"),
         "state": row.get("state"),
@@ -3092,6 +3846,9 @@ def _safe_workflow(row: dict) -> dict:
         "service": row.get("service_ref"),
         "awaiting": row.get("awaiting"),
         "error_code": row.get("error_code"),
+        # Which provider account now exists, and whether we made it or attached
+        # to one they already had (guide: show the returned account details).
+        "provider_account": row.get("provider_account"),
     }
 
 
@@ -3165,6 +3922,17 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     }
 
 
+@router.get("/u/{owner_id}/requests")
+async def container_requests(owner_id: str, request: Request):
+    """Friday enumerating her own asks. The facts file is the fast path; this
+    is the authoritative one when she needs a workflow_id she did not keep."""
+    await _require_hook_token(owner_id, request)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    rows = await workflow_repo.list_for_owner(owner_id)
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return {"requests": [_safe_workflow(r) for r in rows]}
+
+
 @router.get("/u/{owner_id}/requests/{workflow_id}")
 async def container_request_status(owner_id: str, workflow_id: str, request: Request):
     await _require_hook_token(owner_id, request)
@@ -3175,12 +3943,47 @@ async def container_request_status(owner_id: str, workflow_id: str, request: Req
     if not row or row.get("owner_id") != owner_id:
         raise HTTPException(status_code=404, detail={"code": "workflow_not_found"})
     return _safe_workflow(row)
+
+
+def _cancellable(row: dict) -> bool:
+    """Cancel is "withdraw the ask", never "undo the infrastructure".
+
+    Once ANY state-changing Stripe POST has been made — an account request or a
+    resource — the only exits are finishing, failing, or the owner's own
+    explicit `remove`. There is no idempotency contract to lean on and no
+    undo.
+    """
+    if row.get("state") not in workflow_repo.CANCELLABLE_STATES:
+        return False
+    return not row.get("account_request_id") and not row.get("resource_id")
+
+
+@router.delete("/u/{owner_id}/requests/{workflow_id}")
+async def container_cancel_request(owner_id: str, workflow_id: str, request: Request):
+    """Friday withdrawing her own ask — the task changed, the owner said no in
+    chat, she asked for the wrong service."""
+    await _require_hook_token(owner_id, request)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    row = await workflow_repo.get(workflow_id)
+    if not row or row.get("owner_id") != owner_id:
+        raise HTTPException(status_code=404, detail={"code": "workflow_not_found"})
+    if not _cancellable(row):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "cannot_cancel",
+                    "message": "This request is already being created — the owner can remove it afterwards"},
+        )
+    moved = await workflow_repo.transition(
+        workflow_id, from_state=row["state"], to_state="cancelled", fields={"error_code": "withdrawn_by_agent"}
+    )
+    await write_owner_facts(owner_id)
+    return _safe_workflow(moved or {**row, "state": "cancelled"})
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/routers/test_company_provisioning_container.py -v && uv run pytest tests/contract -q`
-Expected: 14 passed; the contract suite still green (the exclusion regex `^/api/v1/company/[a-z-]+/u/` already covers these — Verified fact 4).
+Expected: 21 passed; the contract suite still green (the exclusion regex `^/api/v1/company/[a-z-]+/u/` already covers these — Verified fact 4).
 
 - [ ] **Step 5: Commit**
 
@@ -3201,6 +4004,9 @@ git commit -m "feat(provisioning): container routes for catalog and provisioning
 - Produces (all Clerk-authed, org-admin + paid; `GET /resources` and the existing revoke are unchanged):
   - `GET /api/v1/company/provisioning/workflows` → `{"workflows": [...]}`
   - `POST /api/v1/company/provisioning/workflows/{id}/approve` body `{usage_limit?}` → `{"state": ...}`
+  - `POST /api/v1/company/provisioning/workflows/{id}/reject` → `{"state": "rejected"}`
+  - `POST /api/v1/company/provisioning/workflows/{id}/cancel` → `{"state": "cancelled"}`; 409 `cannot_cancel` once a state-changing POST has been made
+  - `POST /api/v1/company/provisioning/workflows/{id}/connect-link` → `{"redirect_url": ...}` (re-read or freshly created, minted per click, never stored)
   - `POST /api/v1/company/provisioning/workflows/{id}/information` body `{information: {...}}` → `{"state": ...}`
   - `POST /api/v1/company/provisioning/workflows/{id}/payment-link` → `{"checkout_session_url": ...}` (minted on click, returned once, never stored)
   - `POST /api/v1/company/provisioning/resources/{provider}/{resource_id}/dashboard-link` → `{"url": ..., "expires_time": ...}` (minted on click, never stored)
@@ -3373,6 +4179,131 @@ def test_remove_deprovisions_then_drops_our_copy(client, facts):
     facts.assert_awaited_once_with("org_a")
 
 
+def test_reject_is_terminal_and_refreshes_the_facts(client, facts):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.workflow_repo, "transition",
+                     AsyncMock(return_value={**WF, "state": "rejected"})) as move,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/reject")
+    assert resp.status_code == 200 and resp.json()["state"] == "rejected"
+    assert move.await_args.kwargs["to_state"] == "rejected"
+    facts.assert_awaited_once_with("org_a")
+
+
+def test_reject_is_org_admin_only(member_client):
+    assert member_client.post("/api/v1/company/provisioning/workflows/pwf_1/reject").status_code == 403
+
+
+def test_cancel_refuses_once_a_resource_exists(client):
+    row = {**WF, "state": "provisioning", "resource_id": "res_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/cancel")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "cannot_cancel"
+    move.assert_not_awaited()
+
+
+def test_connect_link_reuses_a_live_account_request(client):
+    row = {**WF, "state": "awaiting_user_action", "awaiting": "provider_connect",
+           "account_request_id": "ar_1", "provider_id": "prvdr_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request",
+                     AsyncMock(return_value={"id": "ar_1", "status": "pending_auth",
+                                             "redirect_url": "https://provider.example/oauth?fresh"})),
+        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.json()["redirect_url"] == "https://provider.example/oauth?fresh"
+    created.assert_not_awaited()
+
+
+def test_connect_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
+    """The driver stops on `stale` by design, so the click must move the row
+    back before kicking or nothing happens."""
+    row = {**WF, "state": "stale", "awaiting": "provider_connect",
+           "account_request_id": "ar_1", "provider_id": "prvdr_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request",
+                     AsyncMock(return_value={"id": "ar_1", "status": "pending_auth",
+                                             "redirect_url": "https://provider.example/oauth"})),
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert move.await_args.kwargs["from_state"] == "stale"
+    assert move.await_args.kwargs["to_state"] == "awaiting_user_action"
+
+
+def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
+    row = {**WF, "state": "stale", "awaiting": "provider_connect",
+           "account_request_id": "ar_old", "provider_id": "prvdr_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request",
+                     AsyncMock(return_value={"id": "ar_old", "status": "error"})),
+        patch.object(mod.api, "create_account_request",
+                     AsyncMock(return_value={"id": "ar_new", "status": "pending_auth",
+                                             "redirect_url": "https://provider.example/oauth?new"})) as created,
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.json()["redirect_url"] == "https://provider.example/oauth?new"
+    created.assert_awaited_once()
+    assert patched.await_args.args[1]["account_request_id"] == "ar_new"
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_information_submits_to_the_account_request_endpoint_for_that_target(client):
+    row = {**WF, "state": "awaiting_user_action", "awaiting": "provider_information",
+           "information_schema": {"type": "object", "properties": {"team": {"type": "string"}}},
+           "information_target": "account_request", "account_request_id": "ar_1", "resource_id": "res_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "submit_account_request_information",
+                     AsyncMock(return_value={"id": "ar_1", "status": "complete"})) as submit,
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as other,
+        patch.object(mod.workflow_repo, "transition",
+                     AsyncMock(return_value={**row, "state": "connecting_provider"})),
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/information",
+                           json={"information": {"team": "growth"}})
+    assert resp.status_code == 200
+    # Even though resource_id is ALSO set, the stored target decides.
+    assert submit.await_args.kwargs["information"] == {"team": "growth"}
+    other.assert_not_awaited()
+
+
+def test_information_409s_when_nothing_is_pending(client):
+    row = {**WF, "state": "provisioning", "information_target": None, "resource_id": None}
+    with patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/information",
+                           json={"information": {}})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_information_pending"
+
+
+def test_approve_records_the_clerk_user_id(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.provisioning_workflow, "on_approved",
+                     AsyncMock(return_value={**WF, "state": "connecting_provider"})) as approved,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert approved.await_args.kwargs["approved_by"] == "user_admin"
+
+
 def test_remove_is_org_admin_only(member_client):
     assert member_client.post("/api/v1/company/provisioning/resources/posthog/res_1/remove",
                               json={"confirm": "x"}).status_code == 403
@@ -3463,7 +4394,11 @@ async def approve_workflow(
     await _owner_workflow(owner_id, workflow_id)
     try:
         row = await provisioning_workflow.on_approved(
-            workflow_id, usage_limit=body.usage_limit.model_dump() if body.usage_limit else None
+            workflow_id,
+            usage_limit=body.usage_limit.model_dump() if body.usage_limit else None,
+            # Who signed for the spend. Money is org-admin-only, so this is the
+            # audit line for a limit the company will be billed against.
+            approved_by=auth.user_id,
         )
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
@@ -3490,22 +4425,35 @@ async def submit_information(
         jsonschema.validate(body.information or {}, schema)
     except jsonschema.ValidationError as e:
         raise HTTPException(status_code=422, detail={"code": "invalid_information", "message": e.message}) from e
+    # The two submit endpoints take DIFFERENT bodies (`information` vs
+    # `submitted_information`) against different objects, so the row says which
+    # one this schema came from. Never infer it from whichever id happens to be
+    # set — during a reauth both can be.
+    target = row.get("information_target")
+    target_id = row.get("account_request_id") if target == "account_request" else row.get("resource_id")
+    if target not in ("account_request", "resource") or not target_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "no_information_pending",
+                    "message": "This request is not waiting for information"},
+        )
     account_id = await _account_id_for(owner_id)
     try:
-        if row.get("information_target") == "account_request":
+        if target == "account_request":
             await api.submit_account_request_information(
-                account_id, row["account_request_id"], information=body.information
+                account_id, target_id, information=body.information
             )
             to_state = "connecting_provider"
         else:
             await api.submit_resource_information(
-                account_id, row["resource_id"], submitted_information=body.information
+                account_id, target_id, submitted_information=body.information
             )
             to_state = "provisioning"
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     moved = await workflow_repo.transition(
-        workflow_id, from_state="awaiting_user_action", to_state=to_state, fields={"awaiting": None}
+        workflow_id, from_state=row["state"], to_state=to_state,
+        fields={"awaiting": None, "information_target": None},
     )
     await provisioning_driver.kick(workflow_id)
     return _safe_workflow(moved or row)
@@ -3535,6 +4483,9 @@ async def payment_link(workflow_id: str, auth: Annotated[AuthContext, Depends(ge
         raise _stripe_failure(e) from e
     # `complete` is the platform-source path's answer; hosted collection
     # answers `checkout_initiated` with a URL.
+    if row.get("state") == "stale":
+        await workflow_repo.transition(workflow_id, from_state="stale", to_state="awaiting_user_action",
+                                       fields={"awaiting": "payment_setup"})
     if result.get("status") == "complete":
         await workflow_repo.patch(workflow_id, {"awaiting": None})
         await provisioning_driver.kick(workflow_id)
@@ -3566,6 +4517,88 @@ async def dashboard_link(
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     return {"url": link.get("url"), "expires_time": link.get("expires_time")}
+
+
+@router.post("/workflows/{workflow_id}/reject")
+async def reject_workflow(workflow_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """The owner said no. Terminal — the driver stops, and Friday's facts show
+    `rejected` so she does not ask again."""
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    row = await _owner_workflow(owner_id, workflow_id)
+    if row.get("state") in workflow_repo.TERMINAL_STATES:
+        return _safe_workflow(row)
+    moved = await workflow_repo.transition(
+        workflow_id, from_state=row["state"], to_state="rejected", fields={"error_code": "owner_rejected"}
+    )
+    await write_owner_facts(owner_id)
+    return _safe_workflow(moved or {**row, "state": "rejected"})
+
+
+@router.post("/workflows/{workflow_id}/cancel")
+async def cancel_workflow(workflow_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Withdraw an ask nothing was created for. Same fence as the container's
+    DELETE: once a state-changing POST has been made there is no undo, only
+    `remove`."""
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    row = await _owner_workflow(owner_id, workflow_id)
+    if not _cancellable(row):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "cannot_cancel",
+                    "message": "This request is already being created — remove the resource instead"},
+        )
+    moved = await workflow_repo.transition(
+        workflow_id, from_state=row["state"], to_state="cancelled", fields={"error_code": "withdrawn_by_owner"}
+    )
+    await write_owner_facts(owner_id)
+    return _safe_workflow(moved or {**row, "state": "cancelled"})
+
+
+@router.post("/workflows/{workflow_id}/connect-link")
+async def connect_link(workflow_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Mint the provider OAuth URL for THIS click.
+
+    Never served from the card: the account request may have advanced, errored,
+    or gone stale since it was filed. Re-read it; create a fresh account request
+    when the old one is unusable ("Create a new Account request and ask the user
+    to reconnect"). The URL is returned once and not stored.
+    """
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    row = await _owner_workflow(owner_id, workflow_id)
+    account_id = await _account_id_for(owner_id)
+    try:
+        ar = None
+        if row.get("account_request_id"):
+            ar = await api.get_account_request(account_id, row["account_request_id"])
+            if ar.get("status") in ("complete", "error"):
+                ar = None
+        if ar is None:
+            ar = await api.create_account_request(
+                account_id, provider=row["provider_id"], project_id=row.get("project_id")
+            )
+            await workflow_repo.patch(workflow_id, {"account_request_id": ar["id"]})
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    # The owner came back. Un-stale the row FIRST or the kick is a no-op: the
+    # driver stops on `stale` by design.
+    if row.get("state") == "stale":
+        await workflow_repo.transition(workflow_id, from_state="stale", to_state="awaiting_user_action",
+                                       fields={"awaiting": "provider_connect"})
+    await provisioning_driver.kick(workflow_id)
+    url = ar.get("redirect_url")
+    if not url:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "no_redirect_available",
+                    "message": "This provider connection does not need a browser step right now"},
+        )
+    return {"redirect_url": url}
 
 
 class RemoveBody(BaseModel):
@@ -3817,10 +4850,10 @@ git commit -m "feat(provisioning): developer configuration + projects capability
 - Test: `apps/backend/tests/unit/services/test_owner_facts_provisioning.py` (rewrite)
 
 **Interfaces:**
-- Consumes (verified, `owner_facts.py:50`): `def build_owner_facts(owner_id, billing_account, *, email_address=None, provisioned=None) -> dict` (after Task 1's edit); `provisioning_workflow_repo.list_for_owner(owner_id)` (Task 3).
-- Produces: `provisioning: [{provider, service, state}]` in the facts file.
+- Consumes (verified, `owner_facts.py:50`): `def build_owner_facts(owner_id, billing_account, *, email_address=None) -> dict` (after Task 1 removed both old parameters); `provisioning_workflow_repo.list_for_owner(owner_id)` (Task 3).
+- Produces: `provisioning: [{workflow_id, provider, service, state, resource_name?, env_keys?}]` in the facts file. `resource_name` and `env_keys` are stamped on the row by `_bind` (Task 4), so this stays ONE query and can never disagree with the pointer. **Names only — never a value.**
 
-**One extra query, and it is the workflow table, not the integrations table.** The facts file's job here is "don't ask twice" — so it must show a workflow the owner has not approved yet, which the `integrations` pointer only learns about at `active`. `list_for_owner` is one owner-partitioned Query on `owner-state-index`.
+**One extra query, and it is the workflow table, not the integrations table.** The facts file's job here is "don't ask twice" — so it must show a workflow the owner has not approved yet, `rejected`, or `cancelled`, none of which the `integrations` pointer knows about. `list_for_owner` is one owner-partitioned Query on `owner-state-index`, and `_bind` already stamped the names onto the row.
 
 **The skill's rules mirror Stripe's own agent skill** (`docs.stripe.com/.well-known/skills/stripe-projects/SKILL.md`), adapted to our routes: never display an environment variable's value, only its name; never fabricate a provider or service that is not in the catalog output; never tell the owner to go sign up somewhere manually — check the catalog first.
 
@@ -3843,12 +4876,38 @@ def test_default_is_an_empty_list():
     assert "stripe_cli" not in mod.build_owner_facts("org_a", {})
 
 
-def test_facts_carry_provider_service_and_state():
-    facts = mod.build_owner_facts(
-        "org_a", {"subscription_status": "active"},
-        provisioning=[{"provider": "posthog", "service": "svc_analytics", "state": "active"}],
-    )
-    assert facts["provisioning"] == [{"provider": "posthog", "service": "svc_analytics", "state": "active"}]
+def test_facts_carry_the_full_entry_shape():
+    entry = {"workflow_id": "pwf_1", "provider": "posthog", "service": "svc_analytics",
+             "state": "active", "resource_name": "svc_analytics-abc123",
+             "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]}
+    facts = mod.build_owner_facts("org_a", {"subscription_status": "active"}, provisioning=[entry])
+    assert facts["provisioning"] == [entry]
+
+
+@pytest.mark.asyncio
+async def test_names_only_never_a_value_and_rejected_survives():
+    rows = [
+        {"workflow_id": "pwf_1", "provider_name": "posthog", "service_ref": "svc_analytics",
+         "state": "active", "created_at": "2026-08-02T00:00:00Z",
+         "resource_name": "svc_analytics-abc123", "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
+         "approval": {"price_display": "$20/mo"}},
+        {"workflow_id": "pwf_2", "provider_name": "vercel", "service_ref": "svc_hosting",
+         "state": "rejected", "created_at": "2026-08-03T00:00:00Z"},
+    ]
+    written: dict = {}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
+        patch.object(mod, "_lookup_email_address", AsyncMock(return_value=None)),
+        patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)),
+        patch.object(mod, "get_workspace") as ws,
+    ):
+        ws.return_value.write_file.side_effect = lambda owner, name, body: written.update(body=body)
+        await mod.write_owner_facts("org_a")
+    body = written["body"]
+    assert "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN" in body     # the NAME is useful
+    assert "phc_" not in body                              # a value never is
+    assert '"state": "rejected"' in body                   # so Friday stops asking
+    assert "pwf_2" in body
 
 
 @pytest.mark.asyncio
@@ -3946,10 +5005,23 @@ async def _lookup_provisioning(owner_id: str) -> list[dict]:
         prior = newest.get(key)
         if prior is None or (row.get("created_at") or "") > (prior.get("created_at") or ""):
             newest[key] = row
-    return [
-        {"provider": p, "service": s, "state": newest[(p, s)].get("state")}
-        for (p, s) in sorted(newest)
-    ]
+    out = []
+    for pair in sorted(newest):
+        row = newest[pair]
+        entry = {
+            "workflow_id": row.get("workflow_id"),
+            "provider": pair[0],
+            "service": pair[1],
+            "state": row.get("state"),
+        }
+        # Present only once `active`: the NAMES of the variables that now exist.
+        # Never a value — the container reads those from its own environment.
+        if row.get("resource_name"):
+            entry["resource_name"] = row["resource_name"]
+        if row.get("env_keys"):
+            entry["env_keys"] = list(row["env_keys"])
+        out.append(entry)
+    return out
 ```
 
 - In `write_owner_facts`, replace the `_lookup_provisioned` call with `provisioning=await _lookup_provisioning(owner_id),`.
@@ -3967,17 +5039,37 @@ to go sign up manually. The platform creates the account **on their own Stripe
 identity**, they approve it once, and the credentials arrive as environment
 variables. You ask; the backend does the rest.
 
+**Two rails, and they are not the same thing.** The OAuth rail in
+**Integrations** lets you *act through* an account the owner already has (post
+to their X, read their Linear). This rail *creates a new account or resource on
+their identity* and hands you its credentials. Wanting to read data from a tool
+they already use is the OAuth rail, not this one.
+
 Read `~/.openclaw/isol8-facts.json` first — never ask twice. `provisioning` is a
-list of `{provider, service, state}`:
+list of `{workflow_id, provider, service, state}`, plus `resource_name` and
+`env_keys` once it is done:
 
 | state | what it means for you |
 |---|---|
 | `awaiting_approval` | the owner has a card in their Inbox; say you asked, move on |
 | `connecting_provider`, `provisioning`, `binding` | in flight; check again next turn |
 | `awaiting_user_action` | the owner has to click something; say so, move on |
-| `active` | done — the variables exist, use them |
+| `stale` | the owner never came back; mention it once, do not re-ask |
+| `active` | done — the variables in `env_keys` exist, use them |
 | `failed` | it did not work; tell the owner what you asked for |
+| `rejected` | **the owner said no.** Do not ask again for that provider+service unless they bring it up |
+| `cancelled` | withdrawn; you may ask again if the task still needs it |
 | `requires_review` | **stop and tell the owner** — something needs a human at Lightbulb |
+
+**When NOT to ask at all:**
+
+- The owner already said no to this provider+service (`rejected` above).
+- The owner is on the free plan — every route here answers `402`. Tell them what
+  it would unlock; do not retry.
+- The need is *reading* from a tool they already use — that is Integrations
+  (the OAuth rail), not this.
+- A marketplace agent's own listing says it needs a service — that is the
+  listing's setup step, not a provisioning ask.
 
 **Step 1 — see what actually exists.** Never invent a provider or a service
 name; the catalog is the only source:
@@ -4012,7 +5104,20 @@ need the account, and say in your reply that you asked.
 ```bash
 curl -s -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
   "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/requests/<workflow_id>"
+# …or list everything you have asked for:
+curl -s -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/requests"
 ```
+
+**Changed your mind?** Withdraw an ask the owner has not acted on yet:
+
+```bash
+curl -s -X DELETE -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/requests/<workflow_id>"
+```
+
+A `409 cannot_cancel` means it is already being created — say so and let it
+finish; only the owner can remove a resource afterwards.
 
 At `active` the variables are in your environment. Use `$THE_VARIABLE_NAME` —
 **say the name, never the value**, in chat, in an issue, in a work product, in
@@ -4023,10 +5128,15 @@ Rules that are not negotiable:
 - Never claim a provider or service that did not come back from the catalog.
 - Never tell the owner to sign up for something manually — check the catalog first.
 - Never print, echo, or paste a credential value. Names only.
-- A `409` means the door is shut (not eligible, not available, Stripe setup
-  unfinished) — read the message, tell the owner plainly, move on. A `422` is
-  your input; fix it against the schema. A `503` is Stripe being slow; try again
-  next turn. `requires_review` needs a human at Lightbulb — say so.
+- **What each failure means:**
+
+| code | what to do |
+|---|---|
+| `402` | free plan. Tell the owner what upgrading unlocks. **Do not retry.** |
+| `409` | the door is shut (not eligible, not available, Stripe setup unfinished, `cannot_cancel`). Read the message, tell the owner plainly, move on. |
+| `422` | your input. Fix it against that row's `configuration_schema` and try once. |
+| `429` | you are going too fast. Honour `Retry-After` if it is there, otherwise wait until your next turn. |
+| `503` / `5xx` | Stripe or the board is slow. Try again next turn — never in a loop. |
 - You cannot remove a provider account. Only the owner can, from Settings.
 
 Register a work product pointing at the new resource so the company has a
@@ -4036,7 +5146,7 @@ receipt for what was created.
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/services/test_owner_facts_provisioning.py -v && uv run pytest tests/unit -k owner_facts -q`
-Expected: 5 passed; the existing owner-facts tests still green.
+Expected: 6 passed; the existing owner-facts tests still green.
 
 - [ ] **Step 6: Commit**
 
@@ -4290,15 +5400,43 @@ describe("ApprovalRow — provisioning cards", () => {
     expect(approve).toHaveBeenCalledWith("apr_1");
   });
 
-  it("connect opens the redirect in a tab opened synchronously, and never auto-approves", async () => {
+  it("connect mints the URL on click, opens it synchronously, and never auto-approves", async () => {
+    post.mockResolvedValue({ redirect_url: "https://provider.example/oauth?fresh" });
     render(<ApprovalRow approval={row({
       isol8_action: "provider_connect", workflow_id: "pwf_1", provider: "posthog",
-      redirect_url: "https://provider.example/oauth",
     })} />);
     fireEvent.click(screen.getByText("Connect posthog"));
-    expect(window.open).toHaveBeenCalled();
+    expect(window.open).toHaveBeenCalled();   // opened BEFORE the await, for Safari
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/connect-link", {}),
+    );
     // The owner still has to come back and approve — opening a tab is not consent.
     expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("Reject on a provisioning card tells the backend, not just Paperclip", async () => {
+    post.mockResolvedValue({ state: "rejected" });
+    render(<ApprovalRow approval={row({
+      isol8_action: "provider_consent", workflow_id: "pwf_1", provider: "posthog",
+      service: "svc_analytics", usage_limit: { max_amount: 5000, currency: "usd",
+                                               recurring_interval: "month" },
+    })} />);
+    fireEvent.click(screen.getByText("Reject"));
+    fireEvent.click(screen.getByText("Confirm"));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/reject", {}),
+    );
+  });
+
+  it("a read-only limit renders as text, not an input", () => {
+    render(<ApprovalRow approval={row({
+      isol8_action: "provider_consent", workflow_id: "pwf_1", provider: "posthog",
+      service: "svc_analytics", usage_limit: { max_amount: 5000, currency: "usd",
+                                               recurring_interval: "month" },
+      usage_limit_editable: false,
+    })} />);
+    expect(screen.queryByLabelText(/Spending limit/)).toBeNull();
+    expect(screen.getByText(/\$50\.00 \/ month/)).toBeInTheDocument();
   });
 
   it("payment mints the checkout URL on click and opens it", async () => {
@@ -4357,6 +5495,16 @@ export function isPaymentSetupApproval(a?: { payload?: Record<string, unknown> |
 }
 ```
 
+and add the three labels to the existing `ACTION_LABEL` map (line 49) so the row
+title is not the generic "Board Approval" — `approvalLabel` reads it via
+`Object.hasOwn(ACTION_LABEL, action)`:
+
+```ts
+  [PROVIDER_CONNECT_ACTION]: "Connect Provider",
+  [PROVIDER_INFORMATION_ACTION]: "Provider Needs Info",
+  [PAYMENT_SETUP_ACTION]: "Payment Setup",
+```
+
 2. **`ApprovalRow.tsx`** — extend the existing `isCompanyStripeApproval(...) ? … :` chain with three branches, all using the P0a popup helper and none of them auto-approving:
 
 ```tsx
@@ -4366,13 +5514,20 @@ export function isPaymentSetupApproval(a?: { payload?: Record<string, unknown> |
               <EditorialButton
                 size="sm"
                 disabled={busy}
-                onClick={() => {
-                  // Synchronous open: window.open after an await is blocked in Safari.
-                  const w = openPendingTab();
-                  const url = String(approval.payload?.redirect_url ?? "");
-                  if (!w || !url) { closePendingTab(w); notifyError(POPUP_BLOCKED_MSG); return; }
-                  navigatePendingTab(w, url);
-                }}
+                onClick={() =>
+                  run(async () => {
+                    // Synchronous open: window.open after an await is blocked
+                    // in Safari. The URL itself is minted for THIS click.
+                    const w = openPendingTab();
+                    try {
+                      const r = (await api.post(
+                        `/company/provisioning/workflows/${approval.payload?.workflow_id}/connect-link`, {},
+                      )) as { redirect_url: string };
+                      if (!w || !r.redirect_url) { closePendingTab(w); notifyError(POPUP_BLOCKED_MSG); return; }
+                      navigatePendingTab(w, r.redirect_url);
+                    } catch (e) { closePendingTab(w); throw e; }
+                  })
+                }
               >
                 {`Connect ${String(approval.payload?.provider ?? "")}`}
               </EditorialButton>
@@ -4399,11 +5554,22 @@ export function isPaymentSetupApproval(a?: { payload?: Record<string, unknown> |
               <ProvisioningInformationForm approval={approval} busy={busy} run={run} approve={approve} />
 ```
 
-3. **Two small components in the same directory** — `ProvisioningConsentActions.tsx` (renders provider · service · `price_display` · a `Terms` link · a dollar input bound to `usage_limit.max_amount` in cents, then POSTs `/approve` with the edited limit and calls `approve(id)`) and `ProvisioningInformationForm.tsx` (the **constrained renderer**: `enum` → `<select>`, `string` → `<input type="text">`, `number`/`integer` → `<input type="number">`, `boolean` → `<input type="checkbox">`, anything else → a line saying this one needs Lightbulb, and no submit button; POSTs `/information` then `approve(id)`). Both use brand tokens only — no colour literals (`src/__tests__/brandTokens.test.ts` enforces it).
+3. **Two small components in the same directory** — `ProvisioningConsentActions.tsx` (renders the guide's full disclosure set from the payload: provider · service · `description` · `categories` · `price_display` · `environment` · `payment_owner` · `action` ("creates new"), with `Terms` and `Privacy` links; a dollar input bound to `usage_limit.max_amount` in cents **only when `usage_limit_editable`** — otherwise the limit renders as read-only text with "change this later in Money → Spend" — then POSTs `/approve` with the limit and calls `approve(id)`; its Reject path POSTs `/workflows/{id}/reject` before the existing `reject(id)` so the workflow stops instead of polling for a week) and `ProvisioningInformationForm.tsx` (the **constrained renderer**: `enum` → `<select>`, `string` → `<input type="text">`, `number`/`integer` → `<input type="number">`, `boolean` → `<input type="checkbox">`, anything else → a line saying this one needs Lightbulb, and no submit button; POSTs `/information` then `approve(id)`). Both use brand tokens only — no colour literals (`src/__tests__/brandTokens.test.ts` enforces it).
 
 4. **`CompanyAccountsSection.tsx`** — add a `useSWR("/company/provisioning/workflows")` block above the resources list rendering `provider · service · state` with the copy the tests assert (`"Waiting for your approval"`, `"…needs a look from Lightbulb…"`); turn "Open dashboard" from an `<a href>` into a `<button>` that POSTs `/dashboard-link` and opens the returned URL through the popup helper; and add "Remove" → a confirmation block with a labelled `Type the name` input, the sentence "This deletes it at {provider} and stops any charges for it", and a `Remove for good` button disabled until the typed value equals `resource_name` exactly. Keep the existing "Revoke" (our copy only) beside it — they are different actions and the copy must say so.
 
-5. **`ConnectionsList.tsx`** — under each provider row, when `connection.resources.length > 0`, render a "Resources" facet: one line per resource with `resource_name · service · level`. Keep the existing status dot and `ConnectButton` untouched — that is the "Account connected" facet.
+5. **`ConnectionsList.tsx`** — under each provider row, when `connection.resources.length > 0`, render a "Resources" facet: one line per resource with `resource_name · service · level`. Keep the existing status dot and `ConnectButton` untouched — that is the "Account connected" facet. When a provider has resources **and** its OAuth facet is `disconnected`, add one line offering the other rail:
+
+```tsx
+{connection.resources.length > 0 && connection.status === "disconnected" && (
+  <p className="text-sm text-[var(--muted-fg)]">
+    Also connect this account for reads — your agents can create things here, but
+    can&apos;t read your data back until you connect it.
+  </p>
+)}
+```
+
+That is spec §3.2's own point: Projects hands over PostHog's *write* token, and HogQL reads still need the OAuth rail. Use the app's muted text token, not a literal (`src/__tests__/brandTokens.test.ts` enforces it).
 
 - [ ] **Step 7: Run tests, typecheck, lint, brand scan**
 
@@ -4525,7 +5691,7 @@ git fetch origin
 git rebase --onto origin/feat/company-stripe-spine <the P0a base this branch was cut from>
 cd apps/backend && uv run pytest tests/unit tests/contract tests/chaos -q && uv run ruff check .
 cd ../frontend && pnpm vitest run && pnpm tsc --noEmit && pnpm lint
-cd ../infra && npx jest && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml
+cd ../infra && pnpm vitest run && npx cdk synth > /dev/null && git status --short .github/workflows/deploy.yml
 ```
 
 - [ ] **Step 6: Retitle PR #2164 and push**
@@ -4569,6 +5735,35 @@ Not the agent's to do, and the dev checklist blocks on them:
 
 > **VERIFY (ephemeral key scope):** `POST /v2/provisioning/projects/{project}/ephemeral_keys` returns a secret, expiry-bounded key the guide reserves for "a trusted server-side process". Nothing in P0b uses it. Once a sandbox project exists, check what it authenticates — it is the only candidate for ever giving a container its own credential, and that is a question for Stripe, not a design we may assume.
 
+- [ ] **Step 7b: Read this before touching the catalog partition**
+
+Two warnings from the guide, verbatim, because both are easy to get wrong in
+exactly the direction that costs money:
+
+> "Selecting a DEV or TESTING catalog doesn't mean 'no real charges.' Conversely,
+> don't use app environment=dev as a payment-mode switch."
+
+> **Real-charge warning** "A live paid validation can create Provider
+> infrastructure and real payment authorizations. Use an approved account, a low
+> explicit usage limit, and a Provider plan designated for the validation.
+> Require a human approval immediately before the write."
+
+So `STRIPE_PROJECTS_CATALOG=testing` on dev is a catalog selector, **not** a
+safety net. Dev verification uses **free services only**.
+
+**What cannot be verified until Stripe confirms the paid test cohort** — "Paid
+test provisioning isn't a generally available implication of Preview or
+DEV-catalog access":
+
+- the whole payment leg (`payment_method_requests`, the hosted checkout, the
+  `payment_setup` card, `payment_profile` polling, `update_limit`);
+- `rotate_credentials` (and its `pending` → `requires_review` branch);
+- `resources/link`, `attach` and `detach`;
+- anything that would create a real charge on the owner's card.
+
+Their unit tests stand; say plainly on the PR that their end-to-end path is
+unverified rather than implying it was exercised.
+
 - [ ] **Step 8: Verify on dev with Claude-in-Chrome (paid dev account, free resources only)**
 
 1. `https://dev.flickmeon.ai/settings/connections` → the Accounts section renders; a provider with no Projects resources shows only its OAuth facet.
@@ -4584,10 +5779,16 @@ Not the agent's to do, and the dev checklist blocks on them:
 11. **Remove:** type the resource name, confirm; the PostHog project is gone from the owner's own PostHog org, our pointer and secret are gone, and `Revoke` on a second resource removes only our copy while the provider resource survives.
 12. **402s:** every container route and every owner mutation returns 402 `routines_require_subscription` for a trial owner.
 13. **Nothing leaked:** grep the backend log group for the whole run — no `access_configuration`, no `checkout.stripe.com`, no `redirect_url`, no provider token.
+14. **Redirect recovery after browser-session loss** (the guide's own test step): at `pending_auth`, close the tab and the browser entirely, sign back in, and confirm the Inbox row still offers **Connect** and that clicking it mints a FRESH `redirect_url` from the stored account-request id — nothing is restored from the browser.
+15. **`reveal=false`:** confirm that a non-binding read path never asks for values — `grep -n "reveal=" apps/backend` shows `reveal=True` only inside `_bind`, and the run's logs contain no `access_configuration`.
+16. **`unlink` vs `remove`:** they are different verbs — `remove` "asks the Provider to deprovision the underlying infrastructure", `unlink` "removes the Provisioning association but does not necessarily delete provider infrastructure". P0b exposes only `remove` (owner-only, typed confirmation) and our own `Revoke`. Confirm on dev that the UI never offers `unlink`, and note on the PR that Stripe's `unlink` stays unexposed until there is a user need for it.
+17. **Rejection and cancellation:** reject one card → the workflow is `rejected` and the driver stops (no further Stripe calls in the log). Ask Friday to withdraw a second, unapproved ask → `cancelled`. Try to cancel a third that already has a `resource_id` → `409 cannot_cancel`.
+18. **Stale + resume:** file a card, do nothing, and confirm the row is still polled on the slow clock; then approve it from the **mobile app** (not the web Inbox) and confirm the sweep's reconcile resumes it with `approved_by="paperclip"` and no deploy.
+19. **Sandbox teardown:** when the run is done, remove every resource created in the sandbox (owner `remove`, then confirm in the provider's dashboard), delete the sandbox connected account, and note in the PR what was left standing if anything cannot be removed.
 
 - [ ] **Step 9: Report**
 
-Post the thirteen results and the resolution of every `VERIFY:` on the PR. Do not merge until the owner says so.
+Post the nineteen results and the resolution of every `VERIFY:` on the PR. Do not merge until the owner says so.
 
 - [ ] **Step 10: Commit**
 
@@ -4612,10 +5813,15 @@ git commit -m "test(provisioning): re-aim the export and wipe proofs at the back
 | Project = one per company, `catalog: prod` | 4 | `_ensure_project`, named from the Paperclip company |
 | Step 1 ask: eligibility → catalog → schema → snapshot → consent card | 4, 6 | five refusal codes, each tested |
 | Step 2 approve: catalog re-read, drift → fresh card, payment card | 4, 6, 8 | |
-| Step 3 connect: connections → account request → `pending_auth` / `needs_information` / `complete` / `error` | 4, 6 | id persisted before any redirect |
+| Step 3 connect: connections → account request → `pending_auth` / `needs_information` / `complete` / `error` | 4, 6 | id persisted before any redirect; `provider_account_details` captured; >1 active connection → `requires_review` (no picker) |
+| Owner-blocked states are polled from the server | 4, 5 | `advance` drives `awaiting_user_action`; the driver runs them on `IDLE_RECONCILE_S`; 7 days → `stale`, and the next click un-stales |
+| Rejection and cancellation | 3, 5, 7, 8 | `rejected` / `cancelled` terminal; reconcile reads a rejection; owner reject/cancel + container DELETE; 409 `cannot_cancel` once a POST was made |
+| Catalog partition is configuration | 2, 4 | `STRIPE_PROJECTS_CATALOG`; dev `testing`, prod `prod`, threaded into reads, `create_project` and `create_resource` |
 | Step 4 provision: create, persist id first, bounded backoff + deadline | 4 | `requires_review` keeps the ids |
 | Step 5 bind: `environment_info` select-by-`resource_id` → `land_credentials` → facts | 4 | |
 | Step 6 after: remove (owner-only, confirmed), deep links on click | 8 | rotation + `GET /charges` are P1 (Money → Spend) — declared below |
+| Informed approval, in full | 4, 6, 11 | every line of the guide's list is a payload key and a rendered element; limit editable only before a Payment profile exists |
+| `approved_by` / `approved_at` | 4, 8 | Clerk user id from the route; `"paperclip"` from the reconcile path |
 | No webhooks → task per workflow + startup sweep | 5 | |
 | No idempotency → a timed-out POST is never repeated | 4 | `is_transient` + `uncertain_write`, on every write path |
 | Branch on Provisioning error codes | 2, 4 | `payment_method_required`, `provider_reauth_required`, `invalid_resource_configuration`, `not_found` all handled |
@@ -4642,7 +5848,7 @@ Searched for `TBD`, `TODO`, `implement later`, `fill in`, `appropriate error han
 Five `VERIFY:` markers remain, each with the exact command and both branches:
 - Task 2 — `raw_request` on a real v2 path (SDK vs httpx), to be run with a **Sandbox** key.
 - Task 4 — the `availability` enum's wire spelling; and the `provider_name` catalog filter's expected casing.
-- Task 5 — Paperclip's "approved" status spelling on `GET /api/approvals/{id}`.
+- Task 5 — Paperclip's **approved AND rejected** status spellings on `GET /api/approvals/{id}` (approve one card, reject another, print both).
 - Task 12 — sandbox preview enrollment; `POST /kyc` as the requirements fallback; ephemeral-key scope.
 
 Three earlier VERIFYs are now **facts** and are written as such in "Verified facts": the developer configuration (does not exist for us → Task 9 flags it off), hosted payment collection (works → built), and test-mode availability (unavailable → sandbox).
@@ -4659,4 +5865,13 @@ Three earlier VERIFYs are now **facts** and are written as such in "Verified fac
 - **`usage_limit`** is the same `{max_amount, currency, recurring_interval}` shape on the consent card payload, the `ApproveBody`, the workflow row, and the client — with the client as the single place that stringifies `max_amount` for the wire, so no caller has to remember.
 - `build_owner_facts` gained one keyword-only parameter with a default, so `ecs_manager.write_user_configs`, `billing_service.change_provider` and `stripe_webhook_handlers.handle_subscription_state` are unaffected — Task 10's `-k owner_facts` run proves it.
 
-**One inconsistency found and fixed while writing:** Task 1 originally left `owner_facts`'s parameter as `provisioned: list[str]`, which Task 10 then changed to `provisioning: list[dict]` — two names for one field across two tasks. Task 1 now says explicitly that Task 10 replaces the value's shape, and Task 10's test asserts `"stripe_cli" not in …` so a half-applied rename fails loudly rather than silently shipping a dead key.
+**Inconsistencies found and fixed in this revision** (a scenario walk of the previous commit found each of them):
+
+1. `awaiting_user_action` was a dead end — the driver returned on it and `IDLE_RECONCILE_S` was a constant nothing read, so any workflow whose browser never came back was stranded with no poller and no expiry. `advance` now drives it, the driver runs owner-blocked states on the slow clock, and 7 days moves it to `stale` (non-terminal, ids kept). The old driver test *asserted* the stop; it is now the test that would fail if the stop came back.
+2. There was no way to say no. `rejected` and `cancelled` are now terminal states with an owner route each, a container `DELETE`, and a reconcile branch — and cancel is fenced to states where no state-changing Stripe POST has happened, because there is no undo.
+3. `information_target` was read by the route but written by nothing, so every `needs_information` submit would have gone to the resource endpoint — wrong half the time, and it dereferenced a `resource_id` that may not exist. Both transitions now write it and the route 409s when nothing is pending.
+4. `provider_reauth_required` was handled on one call site of three, and re-entering `connecting_provider` kept the old `account_request_id`, so `advance` would re-read the completed request forever. One `_reauth` helper now clears the id, and every call site routes through it.
+5. Two names for one field: Task 1 left `provisioned` behind while Task 10 wrote `provisioning`. Task 1 now deletes both old facts outright — there is ONE list.
+6. `_renderable` treated an empty `properties` as unrenderable, parking healthy workflows in `requires_review` the moment a provider published a `needs_information` with no fields yet. Empty is now a re-poll.
+7. The connect card stored a `redirect_url` that would be stale by the time anyone clicked it. The card carries no URL; the button mints one per click through `connect-link`, which also re-creates the account request when the old one errored — and un-stales the row first, or the kick would be a no-op against the driver's own `stale` stop.
+8. `apps/infra` runs **vitest**, not jest (`apps/infra/package.json` → `"test": "vitest run"`). Every infra command in the plan said `npx jest`; all four are fixed.

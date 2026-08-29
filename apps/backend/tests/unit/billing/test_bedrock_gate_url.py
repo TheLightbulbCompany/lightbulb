@@ -43,7 +43,7 @@ def test_reads_the_env_parameter_and_caches(monkeypatch):
         assert real_gate_url() == "https://gate.dev.example/"
         assert real_gate_url() == "https://gate.dev.example/"  # cached
         assert mk.call_count == 1
-    client.get_parameter.assert_called_once_with(Name="/isol8/dev/bedrock-gate-url")
+    client.get_parameter.assert_called_once_with(Name="/lightbulb/dev/bedrock-gate-url")
 
 
 def test_direct_value_is_break_glass_empty(monkeypatch):

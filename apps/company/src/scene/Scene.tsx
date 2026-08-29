@@ -194,6 +194,40 @@ function Driver({ bulb, mirror, n, frozen, bloomRef, onQualityDecline }: DriverP
   );
 }
 
+/**
+ * Sizes the canvas from its host and asks for frames. On a fresh load the Canvas
+ * can come up at the browser's default 300x150 — R3F's own measurement never
+ * lands — and under a demand loop nothing is drawn until a window resize forces
+ * one (the same bug the product's HeroLamp works around). So the host is
+ * measured here directly (mount, fonts ready, every host resize) and a frame
+ * requested each time. Mounted last inside the Canvas.
+ */
+function FirstFrames() {
+  const invalidate = useThree((s) => s.invalidate);
+  const setSize = useThree((s) => s.setSize);
+  const gl = useThree((s) => s.gl);
+  React.useEffect(() => {
+    const host = gl.domElement.parentElement;
+    const fit = () => {
+      if (host) {
+        const r = host.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) setSize(r.width, r.height);
+      }
+      invalidate();
+    };
+    fit();
+    const ids = [120, 400, 1200].map((ms) => window.setTimeout(fit, ms));
+    document.fonts?.ready.then(fit).catch(() => {});
+    const ro = host && typeof ResizeObserver !== "undefined" ? new ResizeObserver(fit) : null;
+    if (ro && host) ro.observe(host);
+    return () => {
+      ids.forEach((id) => window.clearTimeout(id));
+      ro?.disconnect();
+    };
+  }, [gl, setSize, invalidate]);
+  return null;
+}
+
 export default function Scene({ frozen = false }: { frozen?: boolean }) {
   const narrow = typeof window !== "undefined" && window.innerWidth < 640;
   const n = narrow ? 12_000 : 24_000;
@@ -213,6 +247,17 @@ export default function Scene({ frozen = false }: { frozen?: boolean }) {
     else setQuality(1);
   }, [dpr]);
 
+  // Workaround, root cause open (shared with the product's HeroLamp): on a
+  // fresh load the Canvas's own first measurement never reaches the renderer —
+  // the canvas stays at the browser's 300x150 default and R3F mounts none of
+  // the scene until it has a size. A window resize is the one path that
+  // demonstrably re-measures, so a few are dispatched after mount.
+  React.useEffect(() => {
+    const kick = () => window.dispatchEvent(new Event("resize"));
+    const ids = [50, 300, 1000].map((ms) => window.setTimeout(kick, ms));
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, []);
+
   return (
     <div id="gl" aria-hidden="true">
       <Canvas
@@ -230,6 +275,7 @@ export default function Scene({ frozen = false }: { frozen?: boolean }) {
             <Bloom ref={bloomRef} mipmapBlur luminanceThreshold={1.0} intensity={BLOOM_DARK} radius={0.6} />
           </EffectComposer>
         )}
+        <FirstFrames />
       </Canvas>
     </div>
   );

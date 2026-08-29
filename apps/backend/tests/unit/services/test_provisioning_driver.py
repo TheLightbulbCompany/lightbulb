@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,16 +129,31 @@ async def test_slow_ticks_do_not_count_toward_the_step_bound(monkeypatch):
     mod.repo.transition.assert_not_awaited()
 
 
+def _aged(days: float, state="awaiting_approval"):
+    created_at = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return _row(state, created_at=created_at)
+
+
 @pytest.mark.asyncio
-async def test_the_wall_clock_parks_a_row_nobody_ever_came_back_to(monkeypatch):
+async def test_the_wall_clock_parks_a_row_nobody_ever_came_back_to():
     """The bound that covers waiting: just past the state machine's own 7-day
-    stale deadline, so an owner-blocked row cannot poll forever."""
-    monkeypatch.setattr(mod, "MAX_WALL_S", 0)
-    mod.repo.get.return_value = _row("awaiting_approval")
+    stale deadline, so an owner-blocked row cannot poll forever. Measured from
+    the row, so it survives the restart that produced this task — a
+    task-anchored bound would reset on every deploy and never fire."""
+    mod.repo.get.return_value = _aged(9)
     with patch.object(mod, "_reconcile_approval", AsyncMock(return_value=None)) as reconcile:
         await mod._run("pwf_1")
-    reconcile.assert_not_awaited()
+    reconcile.assert_not_awaited()  # parked on the FIRST tick after the restart
     assert mod.repo.transition.await_args.kwargs["fields"] == {"error_code": "driver_wall_exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_a_row_still_inside_the_wall_clock_keeps_being_driven():
+    mod.repo.get.return_value = _aged(1)
+    with patch.object(mod, "_reconcile_approval", AsyncMock(side_effect=[None, _row("rejected")])) as reconcile:
+        await mod._run("pwf_1")
+    assert reconcile.await_count == 2
+    mod.repo.transition.assert_not_awaited()
 
 
 @pytest.mark.asyncio

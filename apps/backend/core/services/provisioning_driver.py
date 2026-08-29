@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -57,7 +57,9 @@ IDLE_RECONCILE_S = 60
 MAX_STEPS = 400
 # The bound that does cover waiting: just past the state machine's own 7-day
 # `stale` deadline, so a row nobody ever came back to is parked rather than
-# polled forever.
+# polled forever. Measured from the ROW's `created_at`, never from the task's
+# start — a task-anchored bound restarts on every deploy, and an abandoned row
+# outlives deploys by definition.
 MAX_WALL_S = 8 * 24 * 3600
 # Renewed at the top of every iteration, so this only has to outlast ONE
 # iteration: the 60s idle sleep plus a worst-case step of two chained Stripe
@@ -112,6 +114,15 @@ async def _reconcile_approval(row: dict) -> dict | None:
     return await on_approved(row["workflow_id"], usage_limit=row.get("usage_limit"), approved_by="paperclip")
 
 
+def _too_old(row: dict) -> bool:
+    """Has this WORKFLOW run out of wall-clock time? Read off the row, not off
+    the task: the task is replaced on every deploy, and the whole point of the
+    bound is to catch a row that outlived one."""
+    created_at = row.get("created_at") or ""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=MAX_WALL_S)).isoformat()
+    return bool(created_at) and created_at < cutoff
+
+
 async def _park(row: dict, code: str) -> None:
     logger.warning("provisioning: workflow %s parked by the driver (%s)", row["workflow_id"], code)
     await repo.transition(
@@ -123,7 +134,6 @@ async def _drive(workflow_id: str) -> None:
     """Step one workflow until it is terminal, out of steps, or out of time."""
     row = await repo.get(workflow_id)
     steps = 0
-    give_up_at = time.monotonic() + MAX_WALL_S
     while True:
         if row is None or row.get("state") in repo.TERMINAL_STATES:
             return
@@ -144,7 +154,7 @@ async def _drive(workflow_id: str) -> None:
         row = claimed
         before = row.get("state")
         slow = before in _SLOW_STATES
-        if time.monotonic() >= give_up_at:
+        if _too_old(row):
             return await _park(row, "driver_wall_exceeded")
         if not slow:
             if steps >= MAX_STEPS:

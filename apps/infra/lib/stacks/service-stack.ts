@@ -69,19 +69,35 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
  * feature-off. Synth is the only place to catch it before it ships. Both dates
  * null (feature off) is valid and stays valid.
  */
+// What the backend's `launch_phase.parse_iso` actually accepts: it swaps a
+// trailing `Z` for `+00:00` and hands the result to `datetime.fromisoformat`.
+// `new Date()` is far more permissive (it parses `09/18/2026`, space-separated
+// timestamps, etc.) — trusting it alone lets a schedule ship that synths clean
+// and then throws on the container-status poll door in production.
+const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
 export function validateLaunchSchedule(obj: unknown): void {
-  const file = obj as Record<string, { drop_at?: unknown; competition_start_at?: unknown }>;
+  const file = obj as Record<string, unknown>;
   for (const env of ["dev", "prod"] as const) {
     const e = file?.[env];
     if (!e) throw new Error(`launch-schedule.json: missing "${env}" block`);
+    if (typeof e !== "object" || Array.isArray(e)) {
+      throw new Error(
+        `launch-schedule.json: "${env}" block must be an object, got ${Array.isArray(e) ? "array" : typeof e}`,
+      );
+    }
+    const block = e as Record<"drop_at" | "competition_start_at", unknown>;
     const at = (k: "drop_at" | "competition_start_at"): number | null => {
-      const raw = e[k];
+      const raw = block[k];
       if (raw === null || raw === undefined) return null;
       // A number passes `new Date(n)` (epoch millis) but breaks the backend's
       // `parse_iso`, which calls `.replace()` on the value — a Python int has
       // no such method. Only a string is a valid instant here.
       if (typeof raw !== "string") {
         throw new Error(`launch-schedule.json: ${env}.${k} must be a string, got ${typeof raw}`);
+      }
+      if (!ISO_INSTANT_RE.test(raw)) {
+        throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);
       }
       const ms = new Date(raw).getTime();
       if (Number.isNaN(ms)) {

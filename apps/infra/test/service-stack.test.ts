@@ -242,6 +242,33 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(() => validateLaunchSchedule({ dev: { drop_at: null, competition_start_at: null } })).toThrow(
       /missing "prod" block/,
     );
+
+    // An env block must be a plain object — an array or a string silently
+    // reads every key as undefined (feature-off), which is not what a typo'd
+    // launch-schedule.json meant.
+    expect(() => validateLaunchSchedule({ ...off, dev: [] })).toThrow(/"dev" block must be an object, got array/);
+    expect(() => validateLaunchSchedule({ ...off, prod: "oops" })).toThrow(
+      /"prod" block must be an object, got string/,
+    );
+
+    // Timestamps are checked against the backend's ISO grammar, not just
+    // `new Date()` — `new Date()` happily parses formats `datetime.fromisoformat`
+    // (after the `Z`→`+00:00` swap) does not accept.
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "09/18/2026", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
+    expect(() =>
+      validateLaunchSchedule({
+        ...off,
+        prod: { drop_at: "2026-09-18 00:00 -04:00", competition_start_at: null },
+      }),
+    ).toThrow(/prod\.drop_at is not a valid date/);
+    expect(() =>
+      validateLaunchSchedule({
+        ...off,
+        dev: { drop_at: "2026-09-18T00:00:00-04:00", competition_start_at: null },
+      }),
+    ).not.toThrow();
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {

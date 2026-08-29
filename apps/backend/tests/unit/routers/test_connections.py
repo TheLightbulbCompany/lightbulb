@@ -1727,7 +1727,7 @@ class TestAwsSetup:
         mock_store.get = AsyncMock(side_effect=fake_get)
         mock_store.put = AsyncMock(side_effect=fake_put)
 
-        template_url = "https://isol8-dev-cfn-templates.s3.us-east-1.amazonaws.com/aws-connector.yaml"
+        template_url = "https://lightbulb-dev-cfn-templates.s3.us-east-1.amazonaws.com/aws-connector.yaml"
         monkeypatch.setattr(connections.settings, "CFN_TEMPLATE_URL", template_url)
 
         r = await async_client.get("/api/v1/connections/aws/aws-setup")

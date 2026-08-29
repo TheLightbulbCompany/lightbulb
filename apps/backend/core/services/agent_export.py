@@ -121,16 +121,25 @@ def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
 # pipelines/scripts/skills/docs + openclaw.json), so it must never reach a
 # buyer's workspace — shipping it both leaks the seller's users' attachments and
 # drags along stale snapshots of files that live canonically elsewhere.
+#
+# ``.projects`` / ``.stripe`` are the Stripe Projects vault and CLI session
+# (spec §3.6). They are ALREADY excluded twice — Friday runs the CLI in the EFS
+# root, a sibling of every workspace-{id}/, and the dotfile rule below drops
+# them at any depth. Naming them here is the greppable intent so a future
+# relaxation of that rule cannot quietly ship an owner's provider credentials
+# to a buyer.
 _SKIP_DIR_NAMES = frozenset(
     {
         "__pycache__",
         ".cache",
+        ".DS_Store",
         ".git",
+        ".projects",
         ".pytest_cache",
         ".ruff_cache",
+        ".stripe",
         ".venv",
         "node_modules",
-        ".DS_Store",
         "uploads",
     }
 )

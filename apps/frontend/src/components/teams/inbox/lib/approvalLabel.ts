@@ -15,8 +15,18 @@ const TYPE_LABEL: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
-  connect_stripe: "Connect Stripe",
 };
+
+/** Our company-Stripe card's payload marker. Paperclip validates `type`
+ *  against its own four-value enum, so the card is filed as
+ *  `request_board_approval` and this marker is what identifies it as ours. */
+const COMPANY_STRIPE_ACTION = "company_stripe";
+
+export function isCompanyStripeApproval(
+  approval?: { payload?: Record<string, unknown> | null } | null,
+): boolean {
+  return approval?.payload?.isol8_action === COMPANY_STRIPE_ACTION;
+}
 
 function firstNonEmptyString(...values: unknown[]): string | null {
   for (const value of values) {
@@ -49,7 +59,7 @@ export function approvalLabel(
   payload?: Record<string, unknown> | null,
 ): string {
   if (!type) return "Approval requested";
-  const base = TYPE_LABEL[type] ?? type;
+  const base = isCompanyStripeApproval({ payload }) ? "Connect Stripe" : (TYPE_LABEL[type] ?? type);
   const subject = approvalSubject(payload);
   return subject ? `${base}: ${subject}` : base;
 }

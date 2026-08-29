@@ -1,10 +1,12 @@
 """Friday asks the owner to set up the company's Stripe account.
 
-Files a Paperclip approval of type ``connect_stripe`` so it lands in the
-Teams inbox (and on the issue that needed it). The card is informational —
-the owner acts on it from the row's "Set up Stripe" button, which calls
-``POST /company/stripe/create`` and then approves the request. Never a gate:
-if the owner ignores it, chat keeps working.
+Files a Paperclip approval so it lands in the Teams inbox (and on the issue
+that needed it). Paperclip validates ``type`` against its own four-value enum,
+so the card rides ``request_board_approval`` and ``payload.isol8_action`` is
+what makes it ours — both for de-dup here and for the row action in the UI.
+The card is informational — the owner acts on it from the row's "Set up
+Stripe" button, which calls ``POST /company/stripe/create`` and then approves
+the request. Never a gate: if the owner ignores it, chat keeps working.
 """
 
 from __future__ import annotations
@@ -13,14 +15,16 @@ import logging
 
 from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.company_stripe import resolve_company_name
 from core.services.paperclip_admin_client import shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
-from routers.company_stripe import resolve_company_name
 
 logger = logging.getLogger(__name__)
 
-APPROVAL_TYPE = "connect_stripe"
+# Paperclip's enum: hire_agent | approve_ceo_strategy |
+# budget_override_required | request_board_approval. Anything else is a 400.
+APPROVAL_TYPE = "request_board_approval"
 ACTION_MARKER = "company_stripe"
 
 

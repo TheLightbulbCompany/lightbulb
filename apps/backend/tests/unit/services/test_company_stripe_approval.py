@@ -16,7 +16,7 @@ def _admin(existing: list[dict]):
 
 
 @pytest.mark.asyncio
-async def test_files_connect_stripe_approval():
+async def test_files_company_stripe_approval():
     admin = _admin(existing=[])
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
@@ -30,7 +30,9 @@ async def test_files_connect_stripe_approval():
         )
     assert approval_id == "apr_new"
     body = admin.create_approval.call_args.kwargs["body"]
-    assert body["type"] == "connect_stripe"
+    # Paperclip rejects any type outside its own enum; ours rides
+    # request_board_approval + the payload marker.
+    assert body["type"] == "request_board_approval"
     assert body["issueIds"] == ["iss_1"]
     assert body["payload"]["isol8_action"] == "company_stripe"
     assert body["payload"]["title"] == "Set up Northwind Ceramics on Stripe"
@@ -58,7 +60,7 @@ async def test_reuses_pending_request():
         existing=[
             {
                 "id": "apr_old",
-                "type": "connect_stripe",
+                "type": "request_board_approval",
                 "status": "pending",
                 "payload": {"isol8_action": "company_stripe"},
             }
@@ -72,3 +74,19 @@ async def test_reuses_pending_request():
     ):
         assert await mod.request_company_stripe(owner_id="org_a", issue_id=None, reason="x") == "apr_old"
     admin.create_approval.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ignores_unrelated_board_approval():
+    """A plain request_board_approval is somebody else's card — the marker,
+    not the type, is what makes one ours."""
+    admin = _admin(existing=[{"id": "apr_other", "type": "request_board_approval", "status": "pending", "payload": {}}])
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(mod, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
+    ):
+        assert await mod.request_company_stripe(owner_id="org_a", issue_id=None, reason="x") == "apr_new"
+    admin.create_approval.assert_awaited_once()

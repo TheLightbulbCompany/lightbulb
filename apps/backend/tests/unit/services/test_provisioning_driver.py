@@ -19,64 +19,63 @@ def _row(state="provisioning", **over):
 def _fast(monkeypatch):
     """No real sleeping in tests; the delay policy is tested in the workflow.
 
-    The lease is granted by default so each test exercises the step it names —
-    the lease itself has its own tests below.
+    `claim` is granted by default and echoes the row `repo.get` would return —
+    the real one re-reads the row (ReturnValues=ALL_NEW), and the loop drives
+    what the claim hands back. The lease itself has its own tests below.
     """
+
+    async def _claim(workflow_id, **_kw):
+        return await mod.repo.get(workflow_id)
+
     monkeypatch.setattr(mod, "poll_delay", lambda attempts: 0)
     monkeypatch.setattr(mod, "IDLE_RECONCILE_S", 0)
-    monkeypatch.setattr(mod.repo, "claim", AsyncMock(side_effect=lambda wid, **kw: _row()))
+    monkeypatch.setattr(mod.repo, "claim", AsyncMock(side_effect=_claim))
     monkeypatch.setattr(mod.repo, "release", AsyncMock(return_value=None))
     monkeypatch.setattr(mod.repo, "transition", AsyncMock(return_value=None))
+    monkeypatch.setattr(mod.repo, "get", AsyncMock(return_value=_row()))
     mod._TASKS.clear()
 
 
 @pytest.mark.asyncio
 async def test_run_advances_until_terminal_then_stops():
-    states = [_row("provisioning"), _row("binding"), _row("active")]
-    advance = AsyncMock(side_effect=states[1:])
-    with patch.object(mod, "advance", advance), patch.object(mod.repo, "get", AsyncMock(return_value=states[0])):
+    advance = AsyncMock(side_effect=[_row("binding"), _row("active")])
+    with patch.object(mod, "advance", advance):
         await mod._run("pwf_1")
     assert advance.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_run_keeps_driving_an_owner_blocked_state(monkeypatch):
+async def test_run_keeps_driving_an_owner_blocked_state():
     """`awaiting_user_action` is DRIVEN, not abandoned — the guide says to keep
     polling the Account request and the Payment profile from the server. The
     old behaviour (return) stranded every workflow whose browser never came
     back."""
-    monkeypatch.setattr(mod, "MAX_STEPS", 3)
-    advance = AsyncMock(return_value=_row("awaiting_user_action"))
-    with (
-        patch.object(mod, "advance", advance),
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_user_action"))),
-    ):
+    mod.repo.get.return_value = _row("awaiting_user_action")
+    advance = AsyncMock(side_effect=[_row("awaiting_user_action")] * 3 + [_row("active")])
+    with patch.object(mod, "advance", advance):
         await mod._run("pwf_1")
-    assert advance.await_count == 3
+    assert advance.await_count == 4
+    mod.repo.transition.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_run_keeps_driving_a_stale_row(monkeypatch):
+async def test_run_keeps_driving_a_stale_row():
     """`stale` is NOT terminal: the ids are still good and the next owner click
     re-mints the link, so the driver keeps polling it on the slow clock and the
     state machine — not the driver — decides what stale means."""
-    monkeypatch.setattr(mod, "MAX_STEPS", 3)
-    advance = AsyncMock(return_value=_row("stale"))
-    with patch.object(mod, "advance", advance), patch.object(mod.repo, "get", AsyncMock(return_value=_row("stale"))):
+    mod.repo.get.return_value = _row("stale")
+    advance = AsyncMock(side_effect=[_row("stale")] * 3 + [_row("active")])
+    with patch.object(mod, "advance", advance):
         await mod._run("pwf_1")
-    assert advance.await_count == 3
+    assert advance.await_count == 4
 
 
 @pytest.mark.asyncio
-async def test_run_polls_an_unapproved_card_on_the_slow_clock(monkeypatch):
+async def test_run_polls_an_unapproved_card_on_the_slow_clock():
     """Approve-from-mobile must resume without a deploy."""
-    monkeypatch.setattr(mod, "MAX_STEPS", 3)
-    reconcile = AsyncMock(return_value=None)
-    with (
-        patch.object(mod, "_reconcile_approval", reconcile),
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_approval"))),
-        patch.object(mod, "advance", AsyncMock()) as advance,
-    ):
+    mod.repo.get.return_value = _row("awaiting_approval")
+    reconcile = AsyncMock(side_effect=[None, None, _row("rejected")])
+    with patch.object(mod, "_reconcile_approval", reconcile), patch.object(mod, "advance", AsyncMock()) as advance:
         await mod._run("pwf_1")
     assert reconcile.await_count == 3
     advance.assert_not_awaited()
@@ -84,9 +83,9 @@ async def test_run_polls_an_unapproved_card_on_the_slow_clock(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_stops_once_the_card_is_rejected():
+    mod.repo.get.return_value = _row("awaiting_approval")
     with (
         patch.object(mod, "_reconcile_approval", AsyncMock(return_value=_row("rejected"))),
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("awaiting_approval"))),
         patch.object(mod, "advance", AsyncMock()) as advance,
     ):
         await mod._run("pwf_1")
@@ -94,51 +93,86 @@ async def test_run_stops_once_the_card_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_run_survives_one_bad_step_and_stops_after_the_step_bound(monkeypatch):
+async def test_a_failing_step_backs_off_instead_of_burning_the_budget(monkeypatch):
+    """A blip that looped at full speed would spend all 400 steps in
+    milliseconds and park a workflow whose only problem was a 500."""
     monkeypatch.setattr(mod, "MAX_STEPS", 3)
     advance = AsyncMock(side_effect=RuntimeError("boom"))
-    with patch.object(mod, "advance", advance), patch.object(mod.repo, "get", AsyncMock(return_value=_row())):
+    with patch.object(mod, "advance", advance), patch("asyncio.sleep", AsyncMock()) as slept:
         await mod._run("pwf_1")  # must not raise
     assert advance.await_count == 3
+    assert slept.await_count == 3
 
 
 @pytest.mark.asyncio
-async def test_running_out_of_steps_parks_the_row_for_review(monkeypatch):
-    """A row still moving after MAX_STEPS is a logic loop, not patience."""
-    monkeypatch.setattr(mod, "MAX_STEPS", 2)
-    with (
-        patch.object(mod, "advance", AsyncMock(return_value=_row("provisioning"))),
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("provisioning"))),
-    ):
+async def test_running_out_of_fast_steps_parks_the_row_for_review(monkeypatch):
+    """A row still polling after MAX_STEPS is a logic loop, not patience."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 3)
+    with patch.object(mod, "advance", AsyncMock(return_value=_row("provisioning"))) as advance:
         await mod._run("pwf_1")
+    assert advance.await_count == 3
     assert mod.repo.transition.await_args.kwargs["to_state"] == "requires_review"
     assert mod.repo.transition.await_args.kwargs["fields"] == {"error_code": "driver_steps_exceeded"}
 
 
 @pytest.mark.asyncio
-async def test_run_skips_a_row_another_instance_is_driving(monkeypatch):
-    """The lease, not the conditional transition, is what stops two instances
-    polling Stripe for one workflow during a rolling deploy's transient N=2."""
-    monkeypatch.setattr(mod, "MAX_STEPS", 2)
-    monkeypatch.setattr(mod.repo, "claim", AsyncMock(return_value=None))
-    with (
-        patch.object(mod, "advance", AsyncMock()) as advance,
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row())),
-    ):
+async def test_slow_ticks_do_not_count_toward_the_step_bound(monkeypatch):
+    """An owner is allowed a week to answer; MAX_STEPS bounds POLLING, and
+    counting a card the owner has not opened would park healthy workflows."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 1)
+    mod.repo.get.return_value = _row("awaiting_approval")
+    reconcile = AsyncMock(side_effect=[None] * 5 + [_row("rejected")])
+    with patch.object(mod, "_reconcile_approval", reconcile):
         await mod._run("pwf_1")
-    advance.assert_not_awaited()
+    assert reconcile.await_count == 6
+    mod.repo.transition.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_run_renews_the_lease_before_every_step_and_releases_it_at_the_end(monkeypatch):
-    monkeypatch.setattr(mod, "MAX_STEPS", 3)
-    with (
-        patch.object(mod, "advance", AsyncMock(return_value=_row("provisioning"))),
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row("provisioning"))),
-    ):
+async def test_the_wall_clock_parks_a_row_nobody_ever_came_back_to(monkeypatch):
+    """The bound that covers waiting: just past the state machine's own 7-day
+    stale deadline, so an owner-blocked row cannot poll forever."""
+    monkeypatch.setattr(mod, "MAX_WALL_S", 0)
+    mod.repo.get.return_value = _row("awaiting_approval")
+    with patch.object(mod, "_reconcile_approval", AsyncMock(return_value=None)) as reconcile:
         await mod._run("pwf_1")
-    assert mod.repo.claim.await_count == 3
+    reconcile.assert_not_awaited()
+    assert mod.repo.transition.await_args.kwargs["fields"] == {"error_code": "driver_wall_exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_run_waits_out_a_lease_another_instance_holds(monkeypatch):
+    """The lease, not the conditional transition, is what stops two instances
+    polling Stripe for one workflow during a rolling deploy's transient N=2 —
+    and a task that only ever waited must not park a row it never drove."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 1)
+    monkeypatch.setattr(mod.repo, "claim", AsyncMock(side_effect=[None, None, _row("active")]))
+    with patch.object(mod, "advance", AsyncMock()) as advance:
+        await mod._run("pwf_1")
+    advance.assert_not_awaited()
+    mod.repo.transition.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_drives_the_row_the_claim_returns(monkeypatch):
+    """The claim re-reads the row, so a move the owner route made while we were
+    sleeping is seen on this tick instead of being driven from a stale copy."""
+    monkeypatch.setattr(mod.repo, "claim", AsyncMock(return_value=_row("binding")))
+    mod.repo.get.return_value = _row("provisioning")
+    with patch.object(mod, "advance", AsyncMock(return_value=_row("active"))) as advance:
+        await mod._run("pwf_1")
+    assert advance.await_args.args[0]["state"] == "binding"
+
+
+@pytest.mark.asyncio
+async def test_run_renews_the_lease_every_iteration_and_releases_it_at_the_end(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_STEPS", 3)
+    with patch.object(mod, "advance", AsyncMock(return_value=_row("provisioning"))):
+        await mod._run("pwf_1")
+    # Three worked steps plus the tick that found the budget spent.
+    assert mod.repo.claim.await_count == 4
     assert mod.repo.claim.await_args.kwargs["owner"] == mod.INSTANCE_ID
+    assert mod.repo.claim.await_args.kwargs["ttl_s"] == mod.LEASE_S
     mod.repo.release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
 
 
@@ -168,9 +202,33 @@ async def test_kick_survives_a_task_that_raises():
 
     with patch.object(mod, "_run", _boom):
         await mod.kick("pwf_1")
-        task = mod._TASKS.get("pwf_1")
-        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(mod._TASKS.get("pwf_1"), return_exceptions=True)
     assert "pwf_1" not in mod._TASKS
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_keeps_failing_still_releases_and_deregisters(monkeypatch):
+    """The lease must not outlive the task that took it, whatever went wrong."""
+    monkeypatch.setattr(mod, "MAX_STEPS", 1)
+    with patch.object(mod, "advance", AsyncMock(side_effect=RuntimeError("boom"))):
+        await mod.kick("pwf_1")
+        await asyncio.gather(*list(mod._TASKS.values()), return_exceptions=True)
+    mod.repo.release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+    assert "pwf_1" not in mod._TASKS
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_every_driver_and_hands_its_lease_back(monkeypatch):
+    """The outgoing instance must release, not expire: otherwise the incoming
+    one is locked out of the rows it just swept in to take over."""
+    monkeypatch.setattr(mod, "IDLE_RECONCILE_S", 0.05)
+    mod.repo.get.return_value = _row("awaiting_approval")
+    with patch.object(mod, "_reconcile_approval", AsyncMock(return_value=None)):
+        await mod.kick("pwf_1")
+        await asyncio.sleep(0)  # let the task reach its first sleep
+        await mod.cancel_all()
+    mod.repo.release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+    assert mod._TASKS == {}
 
 
 @pytest.mark.asyncio
@@ -185,15 +243,18 @@ async def test_sweep_kicks_every_open_row():
 
 
 @pytest.mark.asyncio
-async def test_sweep_leaves_rows_another_instance_already_holds(monkeypatch):
+async def test_sweep_kicks_rows_another_instance_still_holds(monkeypatch):
+    """The outgoing instance is still alive and renewing when the incoming one
+    sweeps — a sweep that skipped held rows would skip every row, and it only
+    runs once. Waiting for the lease is the task's job."""
     rows = [_row("provisioning", workflow_id="pwf_1"), _row("binding", workflow_id="pwf_2")]
-    monkeypatch.setattr(mod.repo, "claim", AsyncMock(side_effect=[None, _row()]))
+    monkeypatch.setattr(mod.repo, "claim", AsyncMock(return_value=None))
     with (
         patch.object(mod.repo, "list_open", AsyncMock(return_value=rows)),
         patch.object(mod, "kick", AsyncMock()) as kick,
     ):
         await mod.resume_open_workflows()
-    assert [c.args[0] for c in kick.await_args_list] == ["pwf_2"]
+    assert [c.args[0] for c in kick.await_args_list] == ["pwf_1", "pwf_2"]
 
 
 @pytest.mark.asyncio
@@ -203,15 +264,14 @@ async def test_sweep_never_raises_when_the_table_is_unreachable():
 
 
 @pytest.mark.asyncio
-async def test_sweep_keeps_going_when_one_row_blows_up(monkeypatch):
+async def test_sweep_keeps_going_when_one_row_blows_up():
     rows = [_row("provisioning", workflow_id="pwf_1"), _row("binding", workflow_id="pwf_2")]
-    monkeypatch.setattr(mod.repo, "claim", AsyncMock(side_effect=[RuntimeError("throttled"), _row()]))
     with (
         patch.object(mod.repo, "list_open", AsyncMock(return_value=rows)),
-        patch.object(mod, "kick", AsyncMock()) as kick,
+        patch.object(mod, "kick", AsyncMock(side_effect=[RuntimeError("boom"), None])) as kick,
     ):
         await mod.resume_open_workflows()
-    assert [c.args[0] for c in kick.await_args_list] == ["pwf_2"]
+    assert [c.args[0] for c in kick.await_args_list] == ["pwf_1", "pwf_2"]
 
 
 def _admin(approval):
@@ -223,21 +283,21 @@ def _admin(approval):
 
 @pytest.mark.asyncio
 async def test_reconcile_resumes_a_card_the_owner_approved_elsewhere():
-    admin = _admin({"id": "apr_1", "status": "approved", "payload": {"usage_limit": {"max_amount": 5000}}})
+    admin = _admin({"id": "apr_1", "status": "approved"})
     with (
         patch.object(mod, "shared_admin_client", return_value=admin),
         patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-        patch.object(mod, "on_approved", AsyncMock(return_value=_row("connecting_provider"))) as resumed,
+        patch.object(mod, "on_approved", AsyncMock(return_value=_row("connecting_provider"))),
     ):
         out = await mod._reconcile_approval(_row("awaiting_approval", approval_id="apr_1"))
     assert out["state"] == "connecting_provider"
-    assert resumed.await_args.kwargs["usage_limit"] == {"max_amount": 5000}
 
 
 @pytest.mark.asyncio
-async def test_reconcile_falls_back_to_the_limit_the_card_was_filed_with():
-    """The owner approved without editing the amount."""
-    admin = _admin({"id": "apr_1", "status": "approved", "payload": {}})
+async def test_reconcile_uses_the_limit_the_card_was_filed_with():
+    """A Paperclip approver cannot edit a card's payload, so this path can only
+    honour the filed limit — an edited one arrives through the approve route."""
+    admin = _admin({"id": "apr_1", "status": "approved", "payload": {"usage_limit": {"max_amount": 5000}}})
     row = _row("awaiting_approval", approval_id="apr_1", usage_limit={"max_amount": 2000})
     with (
         patch.object(mod, "shared_admin_client", return_value=admin),
@@ -265,28 +325,8 @@ async def test_reconcile_records_a_rejection_as_a_terminal_state():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "status,expected",
-    [("accepted", "approved"), ("APPROVED", "approved"), ("declined", "rejected"), ("denied", "rejected")],
-)
-async def test_reconcile_accepts_every_spelling_paperclip_might_use(status, expected):
-    """The wire spelling is unverified (see the VERIFY in the plan), so every
-    plausible one is honoured rather than one guessed and the rest ignored."""
-    admin = _admin({"id": "apr_1", "status": status, "payload": {}})
-    with (
-        patch.object(mod, "shared_admin_client", return_value=admin),
-        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-        patch.object(mod, "on_approved", AsyncMock(return_value=_row("connecting_provider"))) as resumed,
-        patch.object(mod, "on_rejected", AsyncMock(return_value=_row("rejected"))) as declined,
-    ):
-        await mod._reconcile_approval(_row("awaiting_approval", approval_id="apr_1"))
-    assert (resumed.await_count == 1) == (expected == "approved")
-    assert (declined.await_count == 1) == (expected == "rejected")
-
-
-@pytest.mark.asyncio
 async def test_reconcile_records_who_approved_when_it_came_from_paperclip():
-    admin = _admin({"id": "apr_1", "status": "approved", "payload": {}})
+    admin = _admin({"id": "apr_1", "status": "approved"})
     with (
         patch.object(mod, "shared_admin_client", return_value=admin),
         patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
@@ -297,15 +337,18 @@ async def test_reconcile_records_who_approved_when_it_came_from_paperclip():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_leaves_a_still_pending_card_alone():
-    admin = _admin({"id": "apr_1", "status": "pending"})
+@pytest.mark.parametrize("status", ["pending", "revision_requested", None])
+async def test_reconcile_leaves_an_undecided_card_alone(status):
+    admin = _admin({"id": "apr_1", "status": status})
     with (
         patch.object(mod, "shared_admin_client", return_value=admin),
         patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
         patch.object(mod, "on_approved", AsyncMock()) as resumed,
+        patch.object(mod, "on_rejected", AsyncMock()) as declined,
     ):
         assert await mod._reconcile_approval(_row("awaiting_approval", approval_id="apr_1")) is None
     resumed.assert_not_awaited()
+    declined.assert_not_awaited()
 
 
 @pytest.mark.asyncio

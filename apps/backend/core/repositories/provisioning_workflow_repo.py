@@ -64,6 +64,11 @@ _PROTECTED_FIELDS = frozenset(
 )
 
 
+# One Query page. Bounds the sweep's memory, and is what makes the pagination
+# loop exercisable without a megabyte of fixtures.
+_PAGE_SIZE = 100
+
+
 def _table():
     return get_table("provisioning-workflows")
 
@@ -115,10 +120,24 @@ async def list_for_owner(owner_id: str) -> list[dict]:
 
 
 async def list_open() -> list[dict]:
-    resp = await run_in_thread(
-        _table().query, IndexName="open-sweep-index", KeyConditionExpression=Key("sweep_key").eq(OPEN_SWEEP_KEY)
-    )
-    return resp.get("Items", [])
+    """Every non-terminal workflow, PAGINATED: the startup sweep must resume all
+    of them, and a truncated Query would silently strand whatever fell off the
+    end of the first page."""
+    items: list[dict] = []
+    start_key = None
+    while True:
+        kwargs = {
+            "IndexName": "open-sweep-index",
+            "KeyConditionExpression": Key("sweep_key").eq(OPEN_SWEEP_KEY),
+            "Limit": _PAGE_SIZE,
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+        resp = await run_in_thread(_table().query, **kwargs)
+        items.extend(resp.get("Items", []))
+        start_key = resp.get("LastEvaluatedKey")
+        if not start_key:
+            return items
 
 
 async def transition(workflow_id: str, *, from_state: str, to_state: str, fields: dict | None = None) -> dict | None:

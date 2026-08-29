@@ -6,10 +6,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-# settings has no direct use in this module, but the name must stay bound here:
-# test_ops_launch.py patches ops_launch.settings.FRONTEND_URL on the shared
-# singleton that launch_service.referral_link reads at call time.
-from core.config import settings  # noqa: F401
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_service, readiness_state
@@ -29,25 +25,41 @@ def _activated_by_deadline(onboarding: dict, s: launch_phase.Schedule) -> bool:
     return launch_phase.parse_iso(raw) <= s.competition_start_at
 
 
+def _row_activated(row: dict, resolvable: set[str], activated: set[str]) -> bool | None:
+    uid = row.get("user_id")
+    if not uid:
+        return False  # nobody claimed this waitlist row
+    return uid in activated if uid in resolvable else None
+
+
 async def _compute(s: launch_phase.Schedule) -> dict:
-    waitlist, entries, funded = await asyncio.gather(
-        launch_waitlist_repo.list_all(), launch_entries_repo.list_all(), launch_waitlist_repo.count_pot_counted()
+    waitlist, entries, funded, signups = await asyncio.gather(
+        launch_waitlist_repo.list_all(),
+        launch_entries_repo.list_all(),
+        launch_waitlist_repo.count_pot_counted(),
+        # Same source as GET /launch's `signups` — the atomic position counter,
+        # not len(list_all()), which drifts if a row is ever hard-deleted.
+        launch_waitlist_repo.count(),
     )
-    per_entrant = launch_phase.constants()["pot_per_entrant_cents"]
-    signups = len(waitlist)
+    constants = launch_phase.constants()
+    per_entrant = constants["pot_per_entrant_cents"]
     competing = len(entries)
     on_board = sum(1 for e in entries if e.get("has_key"))
 
-    claimed = [w for w in waitlist if w.get("user_id")]
+    # Activation is only ever ASKED about the rows that can use the answer: the
+    # comped top slots and everyone who actually entered. An uncapped waitlist
+    # otherwise means one onboarding resolve per signup on every cache miss —
+    # thousands of reads for a sheet that shows two numbers off them.
+    resolvable = {w["user_id"] for w in waitlist if w.get("user_id") and int(w["position"]) <= s.comp_slots}
+    resolvable |= {e["owner_id"] for e in entries}
     sem = asyncio.Semaphore(8)
 
     async def _onb(owner_id: str) -> dict:
         async with sem:
             return await readiness_state.resolve_onboarding_state(owner_id)
 
-    onboarding = dict(
-        zip([w["user_id"] for w in claimed], await asyncio.gather(*[_onb(w["user_id"]) for w in claimed]))
-    )
+    ordered = sorted(resolvable)
+    onboarding = dict(zip(ordered, await asyncio.gather(*[_onb(uid) for uid in ordered])))
     activated = {uid for uid, o in onboarding.items() if _activated_by_deadline(o, s)}
 
     top = [w for w in waitlist if int(w["position"]) <= s.comp_slots]
@@ -134,6 +146,10 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         "public_pot_cents": launch_phase.pot_cents(signups),
         "funded_pot_cents": launch_phase.pot_cents(funded),
         "pot_counted": funded,
+        # The pot formula's own inputs, so the console renders the arithmetic
+        # it is showing instead of hardcoding "× $10 + $1,000".
+        "pot_front_cents": constants["pot_front_cents"],
+        "pot_per_entrant_cents": per_entrant,
         "referrals": {
             "signed_up": sum(int(w.get("referrals_signed_up", 0)) for w in waitlist),
             "paid": referrals_paid,
@@ -156,7 +172,10 @@ async def _compute(s: launch_phase.Schedule) -> dict:
                     "referral_link": launch_service.referral_link(w["referral_code"]),
                     "created_at": w.get("created_at"),
                     "user_id": w.get("user_id"),
-                    "activated": w.get("user_id") in activated,
+                    # None where activation was never resolved (see `resolvable`
+                    # above) — an unclaimed row is definitively not activated,
+                    # so it stays False rather than becoming an unknown.
+                    "activated": _row_activated(w, resolvable, activated),
                     "referred_by": w.get("referred_by"),
                     "referrals_signed_up": int(w.get("referrals_signed_up", 0)),
                     "referrals_paid": int(w.get("referrals_paid", 0)),

@@ -82,6 +82,7 @@ def deps():
         patch.object(ops_launch.launch_phase, "schedule", return_value=S),
         patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(return_value=waitlist)),
         patch.object(ops_launch.launch_waitlist_repo, "count_pot_counted", AsyncMock(return_value=2)),
+        patch.object(ops_launch.launch_waitlist_repo, "count", AsyncMock(return_value=3)),
         patch.object(ops_launch.launch_entries_repo, "list_all", AsyncMock(return_value=entries)),
         patch.object(
             ops_launch.readiness_state,
@@ -93,7 +94,7 @@ def deps():
             "get_by_owner_id",
             AsyncMock(side_effect=lambda o: {"stripe_subscription_id": f"sub_{o}"}),
         ),
-        patch.object(ops_launch.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
     ):
         ops_launch._cache.clear()
         yield
@@ -125,6 +126,60 @@ async def test_compute_counts_and_economics(deps):
     assert data["entries"][1]["refresh_error"] == "stripe_auth"
     row = next(r for r in data["waitlist_rows"] if r["email"] == "a@x.com")
     assert row["referral_link"] == "https://dev.flickmeon.ai/?ref=AAAA2345" and row["activated"] is True
+    # An unclaimed row is definitively not activated — never an unknown.
+    assert next(r for r in data["waitlist_rows"] if r["email"] == "b@x.com")["activated"] is False
+    # The pot formula's own inputs ride along so the console renders the sum.
+    assert data["pot_front_cents"] == 100_000 and data["pot_per_entrant_cents"] == 1_000
+
+
+async def test_signups_comes_from_the_counter_not_the_scan(deps):
+    """Same source as GET /launch — the atomic position counter."""
+    with patch.object(ops_launch.launch_waitlist_repo, "count", AsyncMock(return_value=41)):
+        ops_launch._cache.clear()
+        data, _, _ = await ops_launch.compute()
+    assert data["signups"] == 41 and data["waitlist"]["total"] == 3
+    assert data["public_pot_cents"] == 100_000 + 41 * 1_000
+
+
+async def test_onboarding_fanout_is_bounded_to_comped_slots_and_entrants():
+    """An uncapped waitlist must not mean one onboarding read per signup."""
+    slots = 220
+    sched = launch_phase.Schedule(DROP, DROP + timedelta(hours=72), DROP + timedelta(hours=72, days=30), slots, 72, 30)
+    waitlist = [
+        {"email": f"u{i}@x.com", "position": i, "referral_code": f"C{i:07d}", "user_id": f"u_{i}", "created_at": "t"}
+        for i in range(1, 501)
+    ]
+    entries = [
+        {"owner_id": f"u_{i}", "display_name": f"E{i}", "public": True, "has_key": False, "waitlist_position": i}
+        for i in (400, 401, 402)  # entrants who sat OUTSIDE the comped top slots
+    ]
+    calls: list[str] = []
+
+    async def _onb(owner_id: str) -> dict:
+        calls.append(owner_id)
+        return {"bootstrap_state": "not_started"}
+
+    with (
+        patch.object(ops_launch.launch_phase, "schedule", return_value=sched),
+        patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(return_value=waitlist)),
+        patch.object(ops_launch.launch_waitlist_repo, "count_pot_counted", AsyncMock(return_value=0)),
+        patch.object(ops_launch.launch_waitlist_repo, "count", AsyncMock(return_value=500)),
+        patch.object(ops_launch.launch_entries_repo, "list_all", AsyncMock(return_value=entries)),
+        patch.object(ops_launch.readiness_state, "resolve_onboarding_state", AsyncMock(side_effect=_onb)),
+        patch.object(ops_launch.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
+        patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+    ):
+        ops_launch._cache.clear()
+        data, state, _ = await ops_launch.compute()
+
+    assert state == "ok"
+    # top 220 positions ∪ 3 entry owners (all outside the top) = 223, never 500.
+    assert len(calls) <= slots + 3 and len(calls) == 223
+    assert data["signups"] == 500 and data["competing"] == 3
+    # Rows nobody asked about report null, not a fabricated False.
+    assert next(r for r in data["waitlist_rows"] if r["position"] == 1)["activated"] is False
+    assert next(r for r in data["waitlist_rows"] if r["position"] == 300)["activated"] is None
+    assert next(r for r in data["waitlist_rows"] if r["position"] == 400)["activated"] is False
 
 
 async def test_compute_is_cached_for_60s(deps):

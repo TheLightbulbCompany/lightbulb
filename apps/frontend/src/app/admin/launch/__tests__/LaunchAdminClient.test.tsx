@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 
 import type { LaunchOpsData } from "../../_lib/api";
-import { csvEscape, LaunchAdminClient } from "../LaunchAdminClient";
+import { csvEscape, LaunchAdminClient, waitlistCsv } from "../LaunchAdminClient";
 
 const data: LaunchOpsData = {
   generated_at: "t", phase: "live",
@@ -45,6 +45,8 @@ const data: LaunchOpsData = {
   public_pot_cents: 140000,
   funded_pot_cents: 125000,
   pot_counted: 24,
+  pot_front_cents: 100000,
+  pot_per_entrant_cents: 1000,
   referrals: { signed_up: 50, paid: 12, months_banked: 3 },
   economics: { paid_profit_cents: 66000, comp_cost_cents: 28000, referral_cost_cents: 33600, pnl_cents: 4400, aws_credits_cents: 500000, net_cents: 504400 },
   entries: [{ owner_id: "u1", display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null, comp_eligible: true }],
@@ -58,6 +60,8 @@ describe("LaunchAdminClient", () => {
     expect(screen.getByText("$1,400")).toBeInTheDocument();
     expect(screen.getByText("$1,250")).toBeInTheDocument();
     expect(screen.getByText("150 / 220")).toBeInTheDocument();
+    // The pot hint renders the schedule's own constants, not a hardcoded sum.
+    expect(screen.getByText("40 signed up × $10 + $1,000")).toBeInTheDocument();
     expect(screen.getByText("Ada")).toBeInTheDocument();
     expect(screen.getByText("+200%")).toBeInTheDocument();
     // "eligible", not "comped": redemption of the promo code is not observed.
@@ -90,6 +94,11 @@ describe("LaunchAdminClient", () => {
     fireEvent.click(screen.getByRole("button", { name: /export waitlist csv/i }));
     const blob = create.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("text/csv");
+  });
+
+  it("exports an unresolved activation as an em dash, never null", () => {
+    expect(waitlistCsv(data.waitlist_rows)).toContain(",true");
+    expect(waitlistCsv([{ ...data.waitlist_rows[0], activated: null }])).toContain(",—");
   });
 });
 

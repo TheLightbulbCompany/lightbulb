@@ -20,6 +20,16 @@ export function csvEscape(v: unknown): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+// `activated` is null for rows the sheet never resolved onboarding for (see
+// core/services/ops/launch.py) — an em dash, never "null" or a fabricated no.
+export function waitlistCsv(rows: LaunchOpsData["waitlist_rows"]): string {
+  const head = ["email", "position", "referral_link", "created_at", "activated"];
+  return [
+    head.join(","),
+    ...rows.map((r) => [r.email, r.position, r.referral_link, r.created_at, r.activated ?? "—"].map(csvEscape).join(",")),
+  ].join("\n");
+}
+
 export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
   const router = useRouter();
   const [note, setNote] = React.useState<string | null>(null);
@@ -42,9 +52,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
   };
 
   const exportCsv = () => {
-    const head = ["email", "position", "referral_link", "created_at", "activated"];
-    const lines = [head.join(","), ...data.waitlist_rows.map((r) => [r.email, r.position, r.referral_link, r.created_at, r.activated].map(csvEscape).join(","))];
-    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const blob = new Blob([waitlistCsv(data.waitlist_rows)], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -58,7 +66,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricStat label="public pot" value={formatMoney(data.public_pot_cents, "usd")} hint={`${data.signups} signed up × $10 + $1,000`} />
+        <MetricStat label="public pot" value={formatMoney(data.public_pot_cents, "usd")} hint={`${data.signups} signed up × ${formatMoney(data.pot_per_entrant_cents, "usd")} + ${formatMoney(data.pot_front_cents, "usd")}`} />
         <MetricStat label="funded pot" value={formatMoney(data.funded_pot_cents, "usd")} hint={`${data.pot_counted} first invoices landed`} />
         <MetricStat label="signed up" value={data.signups} />
         <MetricStat label="competing" value={data.competing} hint={`${cb.paid} paid · ${cb.comp_eligible} eligible · ${cb.public} public`} />

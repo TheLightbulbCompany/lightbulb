@@ -697,7 +697,9 @@ export interface LaunchOpsWaitlistRow {
   referral_link: string;
   created_at: string | null;
   user_id: string | null;
-  activated: boolean;
+  /** null where activation was never resolved — the sheet only asks about the
+   *  comped top slots and actual entrants (see core/services/ops/launch.py). */
+  activated: boolean | null;
   referred_by: string | null;
   referrals_signed_up: number;
   referrals_paid: number;
@@ -716,6 +718,8 @@ export interface LaunchOpsData {
   public_pot_cents: number;
   funded_pot_cents: number;
   pot_counted: number;
+  pot_front_cents: number;
+  pot_per_entrant_cents: number;
   referrals: { signed_up: number; paid: number; months_banked: number };
   economics: {
     paid_profit_cents: number;

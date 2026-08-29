@@ -42,6 +42,17 @@ async def test_second_join_returns_the_existing_row_untouched(table):
     assert again == first  # first write wins — display_name/public/waitlist_position did NOT change
 
 
+async def test_join_never_returns_none_when_the_winner_row_vanishes(table):
+    """The put lost the race, then the winning row was deleted before the read.
+    The declared `-> dict` return must not become None on that seam."""
+    from unittest.mock import AsyncMock
+
+    with patch.object(table, "get", AsyncMock(return_value=None)):
+        await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+        row = await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+    assert row is not None and row["owner_id"] == "user_1" and row["has_key"] is False
+
+
 async def test_set_key_connected_flips_has_key_and_stamps_baseline(table):
     await table.join("user_1", display_name="Ada", public=True, waitlist_position=None)
     await table.set_key_connected("user_1", currency="usd", baseline_cents=1000, baseline_at="2026-10-01T00:00:00Z")

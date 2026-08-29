@@ -34,13 +34,19 @@ def test_can_join_matrix(sched, billing, onboarding, expected):
     assert launch_service.can_join(s=sched, billing=billing, onboarding=onboarding, now=NOW) == expected
 
 
-async def test_resolve_email_prefers_jwt_then_users_row():
-    assert await launch_service.resolve_email(AuthContext(user_id="u1", email="J@X.com")) == "j@x.com"
+async def test_resolve_email_prefers_users_row_then_jwt():
+    # The users-table row WINS over a live JWT claim: launch_referral's pot and
+    # referral paths can only see the row, so a rename must never key the
+    # waitlist to an address the webhook can't look up.
     with patch(
-        "core.services.launch_service.user_repo.get", AsyncMock(return_value={"user_id": "u1", "email": "row@x.com"})
+        "core.services.launch_service.user_repo.get", AsyncMock(return_value={"user_id": "u1", "email": "Row@X.com"})
     ):
-        assert await launch_service.resolve_email(AuthContext(user_id="u1")) == "row@x.com"
+        assert await launch_service.resolve_email(AuthContext(user_id="u1", email="jwt@x.com")) == "row@x.com"
+    # No row (or no email on it) yet — the JWT claim is the fallback.
+    with patch("core.services.launch_service.user_repo.get", AsyncMock(return_value={"user_id": "u1"})):
+        assert await launch_service.resolve_email(AuthContext(user_id="u1", email="J@X.com")) == "j@x.com"
     with patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)):
+        assert await launch_service.resolve_email(AuthContext(user_id="u1", email="J@X.com")) == "j@x.com"
         assert await launch_service.resolve_email(AuthContext(user_id="u1")) is None
 
 
@@ -56,6 +62,7 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
     }
     with (
         patch("core.services.launch_service.launch_waitlist_repo") as wl,
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
         patch(
             "core.services.launch_service.billing_repo.get_by_owner_id",

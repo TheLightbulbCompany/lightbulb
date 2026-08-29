@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from botocore.exceptions import ClientError
+
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
@@ -33,11 +35,19 @@ def referral_link(code: str) -> str:
 
 
 async def resolve_email(auth: AuthContext) -> str | None:
-    if auth.email:
-        return auth.email.strip().lower()
+    """The users-table email FIRST, the live Clerk JWT claim only as fallback.
+
+    Order matters: the waitlist is keyed by email, and the pot/referral path
+    (``launch_referral._email_for_owner``) can only see the users-table value.
+    Preferring the JWT here would key a rename's waitlist row to an address
+    the webhook can never look up — one owner, two emails, a referral reward
+    that never lands.
+    """
     row = await user_repo.get(auth.user_id)
     email = (row or {}).get("email")
-    return email.strip().lower() if email else None
+    if email:
+        return email.strip().lower()
+    return auth.email.strip().lower() if auth.email else None
 
 
 def can_join(
@@ -180,13 +190,27 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
         raise LaunchRefused("mixed_currency") from None
     except launch_revenue.KeyRejected as e:
         raise LaunchRefused(e.reason) from None
+    baseline_at = utc_now_iso()
     await launch_revenue.store_key(owner_id, stripe_key)
-    await launch_entries_repo.set_key_connected(
-        owner_id, currency=currency, baseline_cents=baseline_cents, baseline_at=utc_now_iso()
-    )
-    updated = await launch_entries_repo.get(owner_id)
+    try:
+        await launch_entries_repo.set_key_connected(
+            owner_id, currency=currency, baseline_cents=baseline_cents, baseline_at=baseline_at
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # The entry was removed between the read above and this write (admin
+        # takedown mid-flight). Don't leave the key we just stored dangling
+        # with no owning row — that is exactly what routers/ops.py's delete
+        # orders its two writes to avoid.
+        await launch_revenue.delete_key(owner_id)
+        raise LaunchRefused("no_entry") from None
     logger.info("launch: %s connected Stripe (baseline=%s %s)", owner_id, baseline_cents, currency)
-    return _public_entry(updated)
+    # set_key_connected writes exactly these four fields, so the local merge is
+    # the same row a re-get would return — one less DynamoDB read.
+    return _public_entry(
+        {**entry, "has_key": True, "currency": currency, "baseline_cents": baseline_cents, "baseline_at": baseline_at}
+    )
 
 
 async def set_public(auth: AuthContext, s: Schedule, *, public: bool) -> dict:

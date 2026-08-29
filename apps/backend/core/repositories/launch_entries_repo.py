@@ -67,7 +67,10 @@ async def join(
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        return await get(owner_id)  # lost the race / already joined — the stored row is the truth
+        # Lost the race / already joined — the stored row is the truth. The
+        # `or` covers the row being deleted between the failed put and this
+        # read, so the declared `-> dict` return never lies.
+        return await get(owner_id) or _plain(item)
     return _plain(item)
 
 

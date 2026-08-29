@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from core.auth import AuthContext
 from core.services import launch_phase, launch_revenue, launch_service
@@ -23,6 +24,7 @@ def join_deps():
         patch(
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ACTIVATED)
         ),
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
         patch("core.services.launch_service.launch_waitlist_repo.get", AsyncMock(return_value={"position": 12})),
         patch("core.services.launch_service.launch_revenue.store_key", AsyncMock()) as store,
         patch(
@@ -142,6 +144,30 @@ async def test_connect_stripe_stores_only_after_validate_and_baseline_succeed(co
         await launch_service.connect_stripe(AuthContext(user_id="user_1"), S, stripe_key="rk_test_x")
     connect_deps["store"].assert_not_awaited()
     connect_deps["set_key"].assert_not_awaited()
+
+
+async def test_connect_stripe_revokes_the_key_when_the_entry_vanishes_mid_flight(connect_deps):
+    # Admin takedown between the read and the write: the key is already in
+    # Secrets Manager, and a dangling secret with no owning row is the one
+    # state the delete path is ordered to avoid.
+    connect_deps["set_key"].side_effect = ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no row"}}, "UpdateItem"
+    )
+    with patch("core.services.launch_service.launch_revenue.delete_key", AsyncMock()) as revoke:
+        with pytest.raises(launch_service.LaunchRefused) as e:
+            await launch_service.connect_stripe(AuthContext(user_id="user_1"), S, stripe_key="rk_test_x")
+    assert e.value.reason == "no_entry"
+    revoke.assert_awaited_once_with("user_1")
+
+
+async def test_connect_stripe_reraises_other_dynamo_errors(connect_deps):
+    connect_deps["set_key"].side_effect = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow down"}}, "UpdateItem"
+    )
+    with patch("core.services.launch_service.launch_revenue.delete_key", AsyncMock()) as revoke:
+        with pytest.raises(ClientError):
+            await launch_service.connect_stripe(AuthContext(user_id="user_1"), S, stripe_key="rk_test_x")
+    revoke.assert_not_awaited()
 
 
 async def test_connect_stripe_on_an_already_keyed_entry_replaces_the_key(connect_deps):

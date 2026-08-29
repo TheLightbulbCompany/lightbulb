@@ -58,13 +58,48 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
 // and inject the raw text as an env var (LAUNCH_SCHEDULE_JSON below), which
 // core/services/launch_phase.py::load_schedule_file() reads at runtime. The
 // file is the only thing a human edits; this env is transport, mirroring
-// OPENCLAW_UPSTREAM_VERSION. Validate it parses so a broken file fails synth
-// rather than shipping unparseable JSON to the container.
+// OPENCLAW_UPSTREAM_VERSION. Validated here so a broken file fails synth
+// rather than shipping a schedule the fleet only chokes on at runtime.
+
+/**
+ * Fails synth on a launch-schedule.json the backend cannot use.
+ *
+ * `launch_phase.schedule()` raises on both of these, and it is called from the
+ * container-status poll door — a bad date is a fleet-wide 500, not a quiet
+ * feature-off. Synth is the only place to catch it before it ships. Both dates
+ * null (feature off) is valid and stays valid.
+ */
+export function validateLaunchSchedule(obj: unknown): void {
+  const file = obj as Record<string, { drop_at?: string | null; competition_start_at?: string | null }>;
+  for (const env of ["dev", "prod"] as const) {
+    const e = file?.[env];
+    if (!e) throw new Error(`launch-schedule.json: missing "${env}" block`);
+    const at = (k: "drop_at" | "competition_start_at"): number | null => {
+      const raw = e[k];
+      if (raw === null || raw === undefined) return null;
+      const ms = new Date(raw).getTime();
+      if (Number.isNaN(ms)) {
+        throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);
+      }
+      return ms;
+    };
+    const drop = at("drop_at");
+    const start = at("competition_start_at");
+    // The backend treats "either date missing" as feature-off, so only a fully
+    // populated pair is checked for order.
+    if (drop !== null && start !== null && start <= drop) {
+      throw new Error(
+        `launch-schedule.json: ${env}.competition_start_at must be after ${env}.drop_at`,
+      );
+    }
+  }
+}
+
 const LAUNCH_SCHEDULE_JSON = fs.readFileSync(
   path.join(__dirname, "..", "..", "..", "..", "launch-schedule.json"),
   "utf8",
 );
-JSON.parse(LAUNCH_SCHEDULE_JSON);
+validateLaunchSchedule(JSON.parse(LAUNCH_SCHEDULE_JSON));
 
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency

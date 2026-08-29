@@ -9,7 +9,7 @@ import {
 import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { ServiceStack } from "../lib/stacks/service-stack";
+import { ServiceStack, validateLaunchSchedule } from "../lib/stacks/service-stack";
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -175,30 +175,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       ]),
     });
 
-    // The six retired per-field env names must be gone — the schedule now
-    // ships as one JSON blob, not individually-named env vars.
-    const retiredLaunchEnvNames = [
-      "LAUNCH_DROP_AT",
-      "LAUNCH_COMP_SLOTS",
-      "LAUNCH_ACTIVATION_WINDOW_HOURS",
-      "LAUNCH_COMPETITION_DAYS",
-      "LAUNCH_PRIZE_FRONT_CENTS",
-      "LAUNCH_POT_PER_ENTRANT_CENTS",
-    ];
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.not(
-            Match.arrayWith([
-              Match.objectLike({
-                Name: Match.stringLikeRegexp(`^(${retiredLaunchEnvNames.join("|")})$`),
-              }),
-            ]),
-          ),
-        }),
-      ]),
-    });
-
     // LAUNCH_SCHEDULE_JSON must be present and parse to an object with dev + prod keys.
     const found = template.findResources("AWS::ECS::TaskDefinition");
     const allContainers = Object.values(found).flatMap(
@@ -209,11 +185,57 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     const backendContainer = allContainers.find((c) =>
       c.Environment?.some((e) => e.Name === "STRIPE_FREE_MONTH_COUPON_ID"),
     );
+    expect(backendContainer).toBeDefined();
     const scheduleEnv = backendContainer?.Environment?.find((e) => e.Name === "LAUNCH_SCHEDULE_JSON");
     expect(scheduleEnv).toBeDefined();
     const parsed = JSON.parse(scheduleEnv!.Value);
     expect(parsed).toHaveProperty("dev");
     expect(parsed).toHaveProperty("prod");
+
+    // The six retired per-field env names must be gone from THAT container —
+    // asserted on the located backend container, because a `Match.not` inside
+    // `arrayWith` is satisfied by any other container in the template.
+    const retiredLaunchEnvNames = [
+      "LAUNCH_DROP_AT",
+      "LAUNCH_COMP_SLOTS",
+      "LAUNCH_ACTIVATION_WINDOW_HOURS",
+      "LAUNCH_COMPETITION_DAYS",
+      "LAUNCH_PRIZE_FRONT_CENTS",
+      "LAUNCH_POT_PER_ENTRANT_CENTS",
+    ];
+    const backendEnvNames = (backendContainer?.Environment ?? []).map((e) => e.Name);
+    for (const retired of retiredLaunchEnvNames) {
+      expect(backendEnvNames).not.toContain(retired);
+    }
+  });
+
+  test("validateLaunchSchedule fails synth on a date the backend cannot use", () => {
+    const off = { dev: { drop_at: null, competition_start_at: null }, prod: { drop_at: null, competition_start_at: null } };
+    // Feature off in both envs is the shipped default — must stay valid.
+    expect(() => validateLaunchSchedule(off)).not.toThrow();
+    expect(() =>
+      validateLaunchSchedule({
+        ...off,
+        dev: { drop_at: "2026-09-18T00:00:00-04:00", competition_start_at: "2026-09-21T00:00:00-04:00" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-32T00:00:00-04:00", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
+    expect(() =>
+      validateLaunchSchedule({ ...off, prod: { drop_at: null, competition_start_at: "not-a-date" } }),
+    ).toThrow(/prod\.competition_start_at is not a valid date/);
+    // start <= drop is what launch_phase.schedule() itself raises on.
+    expect(() =>
+      validateLaunchSchedule({
+        ...off,
+        prod: { drop_at: "2026-09-21T00:00:00-04:00", competition_start_at: "2026-09-18T00:00:00-04:00" },
+      }),
+    ).toThrow(/prod\.competition_start_at must be after prod\.drop_at/);
+    expect(() => validateLaunchSchedule({ dev: { drop_at: null, competition_start_at: null } })).toThrow(
+      /missing "prod" block/,
+    );
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {

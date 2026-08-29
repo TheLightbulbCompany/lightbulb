@@ -17,7 +17,7 @@ def _invoice(**over):
 @pytest.fixture
 def deps():
     with (
-        patch.object(ref.launch_phase, "schedule", return_value=object()),
+        patch.object(ref.launch_phase, "schedule", return_value=object()) as schedule,
         patch.object(ref, "billing_repo") as billing,
         patch.object(ref, "user_repo") as users,
         patch.object(ref, "launch_waitlist_repo") as wl,
@@ -46,7 +46,7 @@ def deps():
         wl.add_counter = AsyncMock(return_value=1)
         stripe_mod.Subscription.retrieve = MagicMock(return_value={"id": "sub_ref", "discount": None, "discounts": []})
         stripe_mod.Subscription.modify = MagicMock()
-        yield {"billing": billing, "wl": wl, "stripe": stripe_mod, "capture": capture}
+        yield {"billing": billing, "wl": wl, "stripe": stripe_mod, "capture": capture, "schedule": schedule}
 
 
 async def test_rewards_referrer_once_on_first_paid_invoice(deps):
@@ -67,6 +67,17 @@ async def test_zero_amount_invoice_still_marks_the_pot_but_grants_no_referral_re
     deps["wl"].mark_pot_counted.assert_awaited_once_with("payer@x.com")
     deps["wl"].mark_rewarded.assert_not_awaited()
     deps["stripe"].Subscription.modify.assert_not_called()
+
+
+async def test_a_malformed_schedule_never_fails_the_billing_webhook(deps, caplog):
+    # launch_phase.schedule() raises on a bad launch-schedule.json. The
+    # docstring's "a launch bug must never fail the billing webhook" only holds
+    # if that call is inside the try.
+    deps["schedule"].side_effect = ValueError("competition_start_at must be after drop_at")
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        await ref.on_invoice_paid(_invoice())  # no exception
+    assert "on_invoice_paid failed" in caplog.text
+    deps["wl"].mark_pot_counted.assert_not_awaited()
 
 
 async def test_mark_pot_counted_failure_does_not_abort_the_reward_path(deps, caplog):

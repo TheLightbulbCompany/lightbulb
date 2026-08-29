@@ -24,6 +24,10 @@ def _doors_open_copy(drop_at: datetime) -> str:
 
 
 async def pre_drop_gate(owner_id: str, *, owner_role: str = "admin", now: datetime | None = None) -> Gate | None:
+    # Deliberate fail-loud: a malformed launch-schedule.json raises here and
+    # 500s the poll rather than silently un-holding every signup. Only the DDB
+    # read below fails open. (The webhook path is the opposite — see
+    # launch_referral.on_invoice_paid.)
     s = launch_phase.schedule()
     if s is None:
         return None

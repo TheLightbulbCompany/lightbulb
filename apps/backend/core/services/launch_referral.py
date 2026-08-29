@@ -155,9 +155,14 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
 
 
 async def on_invoice_paid(invoice: dict) -> None:
-    if launch_phase.schedule() is None:
-        return  # the competition is not configured — the webhook does no launch reads at all
     try:
+        # Inside the try on purpose: schedule() raises on a malformed
+        # launch-schedule.json, and this handler's contract is that a launch
+        # bug never fails the billing webhook. Fail-loud lives at synth
+        # (service-stack.ts validateLaunchSchedule) and at the poll door
+        # (launch_hold.pre_drop_gate), not here.
+        if launch_phase.schedule() is None:
+            return  # the competition is not configured — the webhook does no launch reads at all
         customer = invoice.get("customer")
         if not customer:
             return

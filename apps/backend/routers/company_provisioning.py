@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from core.services import provisioning_approvals, provisioning_landing
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.repositories import integrations_repo
+from core.services import config_patcher, provisioning_approvals, provisioning_landing
+from core.services.config_patcher import ConfigPatchError
+from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers.agent_builder import _require_hook_token
 from routers.company_board import file_card
@@ -198,3 +203,71 @@ async def landed(owner_id: str, body: LandedBody, request: Request):
     await provisioning_landing.land_credentials(owner_id=owner_id, resource=resource, env=body.env)
     await write_owner_facts(owner_id)
     return resource
+
+
+# ---------------------------------------------------------------------------
+# Owner-facing (Clerk). Paid-only and org-admin-only for the mutation, exactly
+# like P0a's company-Stripe router. There is deliberately NO catalog or
+# provision route here: provisioning is Friday's job (spec §3.1's trigger
+# split), and the owner's surface is the two approval cards plus this list.
+# ---------------------------------------------------------------------------
+
+
+def _gate_admin(auth: AuthContext) -> None:
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+
+@router.get("/resources")
+async def resources(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    owner_id = resolve_owner_id(auth)
+    stripe_cli, rows = await provisioning_landing.provisioning_summary(owner_id)
+    return {"resources": rows, "stripe_cli": stripe_cli}
+
+
+@router.post("/resources/{provider}/{resource_id}/revoke")
+async def revoke(provider: str, resource_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Delete OUR credential copy and pointer.
+
+    Deliberately does NOT remove the provider resource: it is the owner's and
+    stays theirs (spec §3.6). Removing it is a separate, explicit action they
+    take in the provider's own dashboard.
+
+    The ``(owner, provider)`` Secrets Manager blob is SHARED with the OAuth
+    integrations rail (same as ``provisioning_landing`` — see its module
+    docstring), so this must never delete the whole blob: that would also
+    destroy an OAuth credential the owner connected separately. Instead it
+    reads the REVOKED resource's own ``env_keys``, drops only those names from
+    the blob, and only force-deletes the secret when nothing is left.
+    """
+    if not _NAME_RE.fullmatch(provider) or not _RESOURCE_ID_RE.fullmatch(resource_id):
+        raise HTTPException(status_code=422, detail="bad provider or resource id")
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id)
+
+    existing = await integrations_repo.list_provider_resources(owner_id, provider)
+    target = next((r for r in existing if r.get("resource_id") == resource_id), None)
+    env_keys = list((target or {}).get("env_keys") or [])
+
+    if env_keys:
+        blob = await integration_secret_store.get(owner_id, provider) or {}
+        for key in env_keys:
+            blob.pop(key, None)
+        if blob:
+            await integration_secret_store.put(owner_id, provider, blob)
+        else:
+            await integration_secret_store.delete(owner_id, provider)
+
+    await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
+
+    for key in env_keys:
+        try:
+            await config_patcher.delete_openclaw_config_path(owner_id, ["env", "vars", key])
+        except ConfigPatchError:
+            # No container config yet, or the path is already gone — the
+            # Secrets Manager copy is already durable, which is what matters.
+            pass
+
+    await write_owner_facts(owner_id)
+    return {"revoked": True}

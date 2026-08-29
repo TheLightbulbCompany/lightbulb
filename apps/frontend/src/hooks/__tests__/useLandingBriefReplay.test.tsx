@@ -209,6 +209,27 @@ describe("useLandingBriefReplay", () => {
     expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBe(JSON.stringify(brief));
   });
 
+  it("restores the stash and retries when the resolved response has an unexpected status", async () => {
+    post.mockResolvedValueOnce({ status: "weird" });
+    const brief = { path: "grow", input: "acme.com", detail: "" };
+    stash(brief);
+
+    const { result, rerender } = mount();
+    await act(async () => {});
+
+    // Not a success — must not be treated like "staged"/"already_submitted".
+    expect(result.current.replaying).toBe(false);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBe(JSON.stringify(brief));
+
+    post.mockResolvedValue({ status: "staged" });
+    // A gate-condition change re-fires the effect (firedRef was reset).
+    rerender({ ...READY, awaitingBrief: false });
+    rerender(READY);
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBeNull();
+  });
+
   it("a later render POSTs again after a failed attempt restored the stash", async () => {
     post.mockRejectedValueOnce({ status: 500 });
     stash({ path: "grow", input: "acme.com", detail: "" });

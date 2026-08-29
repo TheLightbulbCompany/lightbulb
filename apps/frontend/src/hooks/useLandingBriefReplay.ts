@@ -143,6 +143,22 @@ export function useLandingBriefReplay({
       return;
     }
 
+    // The stash is already gone (deleted at read time) and firedRef is set —
+    // without recovery an unsuccessful POST loses the brief for good, and
+    // held users now sit on this path for days before the drop. Put it back
+    // (unless something newer landed in the meantime) and clear firedRef so
+    // the next gate change retries.
+    const restoreStash = () => {
+      try {
+        if (window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY) === null) {
+          window.sessionStorage.setItem(LANDING_BRIEF_STORAGE_KEY, rawStash);
+        }
+      } catch {
+        /* best-effort */
+      }
+      firedRef.current = false;
+    };
+
     setReplaying(true);
     void (async () => {
       try {
@@ -168,22 +184,14 @@ export function useLandingBriefReplay({
           }
           return;
         }
+        // A resolved response with any other status is not a success — the
+        // brief must not be silently dropped, so it gets the same
+        // restore-and-retry treatment as a rejected POST.
         setReplaying(false);
+        restoreStash();
       } catch {
         setReplaying(false);
-        // The stash is already gone (deleted at read time) and firedRef is
-        // set — without recovery a rejected POST loses the brief for good,
-        // and held users now sit on this path for days before the drop.
-        // Put it back (unless something newer landed in the meantime) and
-        // clear firedRef so the next gate change retries.
-        try {
-          if (window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY) === null) {
-            window.sessionStorage.setItem(LANDING_BRIEF_STORAGE_KEY, rawStash);
-          }
-        } catch {
-          /* best-effort */
-        }
-        firedRef.current = false;
+        restoreStash();
       }
     })();
   }, [api, gatePhase, blockedCode, awaitingBrief, isTerminalError, orgLoaded, organization, user]);

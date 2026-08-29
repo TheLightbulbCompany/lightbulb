@@ -11,6 +11,7 @@ import logging
 import secrets
 from typing import Annotated
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
@@ -29,6 +30,14 @@ router = APIRouter()
 
 STATE_PROVIDER = "stripe_company"
 DASHBOARD_URL = "https://dashboard.stripe.com/"
+
+
+def _stripe_failure(e: stripe.error.StripeError) -> HTTPException:
+    logger.warning("company_stripe: Stripe call failed: %s", e)
+    return HTTPException(
+        status_code=502,
+        detail={"code": "stripe_error", "message": str(getattr(e, "user_message", None) or e)},
+    )
 
 
 def _gate_admin(auth: AuthContext) -> None:
@@ -81,16 +90,22 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
         raise HTTPException(status_code=409, detail="An existing Stripe account is already connected")
     if not account_id:
         company_name = await resolve_company_name(owner_id)
-        account_id = await company_stripe.create_company_account(
-            owner_id=owner_id, email=auth.email or "", company_name=company_name
-        )
+        try:
+            account_id = await company_stripe.create_company_account(
+                owner_id=owner_id, email=auth.email or "", company_name=company_name
+            )
+        except stripe.error.StripeError as e:
+            raise _stripe_failure(e) from e
         bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="created")
         if bound is None:
             # A concurrent create bound first; use the winner. The orphan shell
             # on Stripe is an empty account with no obligations.
             row = await billing_repo.get_by_owner_id(owner_id) or {}
             account_id = row.get("company_stripe_account_id") or account_id
-    url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+    try:
+        url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
     return {"account_id": account_id, "onboarding_url": url}
 
 
@@ -103,7 +118,10 @@ async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)
     account_id = row.get("company_stripe_account_id")
     if not account_id or row.get("company_stripe_source") != "created":
         raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
-    url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+    try:
+        url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
     return {"onboarding_url": url}
 
 
@@ -155,6 +173,9 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     account_id = row.get("company_stripe_account_id")
     if not account_id:
         raise HTTPException(status_code=409, detail="No Stripe account bound")
-    await company_stripe.deauthorize(account_id=account_id)
+    try:
+        await company_stripe.deauthorize(account_id=account_id)
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
     await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
     return {"disconnected": True}

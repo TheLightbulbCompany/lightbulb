@@ -162,6 +162,41 @@ def test_connect_callback_bad_state_redirects_with_error(client, monkeypatch):
     assert resp.headers["location"].endswith("&stripe_error=state")
 
 
+def test_create_maps_stripe_error_to_502_and_does_not_bind(client):
+    import stripe as stripe_mod
+
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
+        patch.object(
+            mod.company_stripe,
+            "create_company_account",
+            AsyncMock(side_effect=stripe_mod.error.InvalidRequestError("bad country", "country")),
+        ),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock()) as bind,
+    ):
+        resp = client.post("/api/v1/company/stripe/create")
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "stripe_error"
+    bind.assert_not_awaited()
+
+
+def test_disconnect_maps_stripe_error_and_keeps_binding(client):
+    import stripe as stripe_mod
+
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(
+            mod.company_stripe, "deauthorize", AsyncMock(side_effect=stripe_mod.error.APIConnectionError("down"))
+        ),
+        patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        resp = client.post("/api/v1/company/stripe/disconnect")
+    assert resp.status_code == 502
+    clear.assert_not_awaited()
+
+
 def test_disconnect_deauthorizes_and_clears(client):
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     with (

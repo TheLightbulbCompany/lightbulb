@@ -447,6 +447,29 @@ async def test_pending_auth_files_a_connect_card_and_waits():
 
 
 @pytest.mark.asyncio
+async def test_a_later_leg_card_nobody_can_answer_stops_instead_of_re_filing():
+    """No Paperclip company ⇒ no Inbox ⇒ the connect card cannot be filed. The
+    row must park in requires_review, not re-enter the poll loop and re-file
+    the card on every pass."""
+    mod.provisioning_approvals.request_provider_connect.return_value = None
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    with (
+        patch.object(mod.api, "list_provider_connections", AsyncMock(return_value=[])),
+        patch.object(
+            mod.api,
+            "create_account_request",
+            AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"}),
+        ),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["to_state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "no_company"
+
+
+@pytest.mark.asyncio
 async def test_two_active_connections_stop_rather_than_guess():
     """ "The current API doesn't let Forge select among several same-Provider
     connections. […] if the returned state is ambiguous, stop." """

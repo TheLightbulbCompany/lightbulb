@@ -378,7 +378,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
             # `max_amount` stays an int here: the client stringifies it (Stripe
             # rejects large numbers that are not strings), so doing it twice
             # would send a quoted quote.
-            limits = usage_limit or {"max_amount": 5000, "currency": "usd", "recurring_interval": "month"}
+            limits = usage_limit or dict(provisioning_approvals.DEFAULT_USAGE_LIMIT)
             approval_id = await provisioning_approvals.request_payment_setup(
                 owner_id=row["owner_id"],
                 issue_id=row.get("issue_id"),
@@ -386,6 +386,8 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
                 snapshot=fresh,
                 usage_limit=limits,
             )
+            if approval_id is None:
+                return await _no_board(row)
             return await repo.transition(
                 workflow_id,
                 from_state="awaiting_approval",
@@ -478,6 +480,16 @@ async def _requires_review(row: dict, code: str) -> dict:
         row.get("service_ref"),
     )
     return moved or {**row, "state": "requires_review"}
+
+
+async def _no_board(row: dict) -> dict:
+    """A later-leg card could not be filed — the owner has no Paperclip board,
+    so nobody can ever answer it. Park it for review instead of returning to
+    the poll loop, which would re-file the same un-fileable card forever.
+
+    ``start`` fails its row outright for the same cause; by this point Stripe
+    objects exist, so the row is kept for a human rather than closed."""
+    return await _requires_review(row, "no_company")
 
 
 async def _fail(row: dict, code: str, message: str = "") -> dict:
@@ -628,7 +640,12 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
             issue_id=row.get("issue_id"),
             workflow_id=row["workflow_id"],
             snapshot=row.get("approval") or {},
+            # Known after a reauth: the owner sees which account they are
+            # re-authorising rather than a bare provider name.
+            provider_account=row.get("provider_account"),
         )
+        if approval_id is None:
+            return await _no_board(row)
         return await repo.transition(
             row["workflow_id"],
             from_state=row["state"],
@@ -656,6 +673,8 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
             schema=schema,
             target="account_request",
         )
+        if approval_id is None:
+            return await _no_board(row)
         return await repo.transition(
             row["workflow_id"],
             from_state=row["state"],
@@ -754,6 +773,8 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
             schema=schema,
             target="resource",
         )
+        if approval_id is None:
+            return await _no_board(row)
         moved = await repo.transition(
             row["workflow_id"],
             from_state=row["state"],

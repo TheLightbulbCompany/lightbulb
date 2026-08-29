@@ -512,6 +512,18 @@ export class DatabaseStack extends cdk.Stack {
       "Description",
       "Paperclip Aurora master credentials",
     );
+    // The generated secret's logical id embeds the STACK's construct id
+    // (`devisol8devdatabasePaperclipDbSecret...`), so the isol8 -> lightbulb
+    // rename would give it a new logical id -- and CloudFormation would then
+    // try to CREATE a second secret under the same explicit `secretName`,
+    // which fails with AlreadyExists and rolls the stack back. Pinning the
+    // deployed id keeps it an update of the existing secret. Both values are
+    // the ids CloudFormation actually holds (list-stack-resources, 2026-08-29).
+    paperclipDbSecret.overrideLogicalId(
+      env === "prod"
+        ? "prodisol8proddatabasePaperclipDbSecret8743769B3fdaad7efa858a3daf9490cf0a702aeb"
+        : "devisol8devdatabasePaperclipDbSecretA2A261833fdaad7efa858a3daf9490cf0a702aeb",
+    );
 
     this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
 

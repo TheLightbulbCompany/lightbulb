@@ -25,6 +25,10 @@ import stripe
 from stripe import StripeClient
 
 from core.config import settings
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
 CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 
@@ -46,6 +50,22 @@ def _set_key() -> None:
     stripe.api_key = settings.STRIPE_SECRET_KEY
 
 
+async def resolve_company_name(owner_id: str) -> str:
+    """The Paperclip company name (the owner named it in Teams); falls back to
+    the owner id so a Stripe account is never created with an empty name.
+
+    Lives here, not in the router: the approval service needs it too, and a
+    service importing a router is an import cycle waiting to happen."""
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if not company_id:
+        return owner_id
+    admin = shared_admin_client()
+    cookie = await get_admin_session_cookie(admin._http)
+    company = await admin.get_company(session_cookie=cookie, company_id=company_id)
+    return (company or {}).get("name") or owner_id
+
+
 async def create_company_account(*, owner_id: str, email: str, company_name: str) -> str:
     """Create the account shell. ``identity`` carries only the country —
     entity type and everything else are collected by Stripe in hosted
@@ -53,17 +73,20 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     uuid4 idempotency key on purpose — a stable key would return a deleted
     account from Stripe's 24h cache; the router de-dups on the billing row."""
     client = _client()
+    params: dict = {
+        "display_name": company_name,
+        "dashboard": "full",
+        "identity": {"country": "us"},
+        "configuration": MERCHANT_CONFIGURATION,
+        "defaults": ACCOUNT_DEFAULTS,
+        "metadata": {"owner_id": owner_id, "kind": "company"},
+    }
+    # v2 rejects an empty contact_email; Stripe collects one in onboarding.
+    if email:
+        params["contact_email"] = email
     account = await asyncio.to_thread(
         client.v2.core.accounts.create,
-        {
-            "contact_email": email,
-            "display_name": company_name,
-            "dashboard": "full",
-            "identity": {"country": "us"},
-            "configuration": MERCHANT_CONFIGURATION,
-            "defaults": ACCOUNT_DEFAULTS,
-            "metadata": {"owner_id": owner_id, "kind": "company"},
-        },
+        params,
         options={"idempotency_key": f"company_account_create:{uuid.uuid4()}"},
     )
     return account.id

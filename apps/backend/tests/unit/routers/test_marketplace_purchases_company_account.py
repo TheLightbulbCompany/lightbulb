@@ -23,12 +23,15 @@ async def test_account_updated_for_company_account_writes_status_not_seller_flus
         ),
         patch.object(mod.billing_repo, "set_company_stripe_status", AsyncMock(return_value={})) as set_status,
         patch.object(mod, "_flush_seller_held_balance", AsyncMock()) as flush,
+        patch.object(mod, "write_owner_facts", AsyncMock()) as facts,
     ):
         await mod._handle_account_updated(account)
     set_status.assert_awaited_once_with(
         "org_a", account_id="acct_co", details_submitted=True, charges_enabled=True, payouts_enabled=False
     )
     flush.assert_not_awaited()
+    # The container decides whether to ask for Stripe off the facts file.
+    facts.assert_awaited_once_with("org_a")
 
 
 @pytest.mark.asyncio
@@ -54,9 +57,11 @@ async def test_account_deauthorized_clears_binding():
             mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value={"owner_id": "org_a"})
         ),
         patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock(return_value={})) as clear,
+        patch.object(mod, "write_owner_facts", AsyncMock()) as facts,
     ):
         await mod._handle_account_deauthorized("acct_co")
     clear.assert_awaited_once_with("org_a", account_id="acct_co")
+    facts.assert_awaited_once_with("org_a")
 
 
 @pytest.mark.asyncio
@@ -64,6 +69,7 @@ async def test_account_deauthorized_unknown_account_is_noop():
     with (
         patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
         patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+        patch.object(mod, "write_owner_facts", AsyncMock()),
     ):
         await mod._handle_account_deauthorized("acct_nobody")
         await mod._handle_account_deauthorized(None)

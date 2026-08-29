@@ -35,6 +35,19 @@ def _webhook_secrets(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _not_a_company_account(monkeypatch):
+    """`account.updated` now asks the billing GSI whether the account is a
+    company account before taking the seller path. Unpatched that is a live
+    DynamoDB Query. The seller cases in this file are all "not a company";
+    the company branch has its own file."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.repositories import billing_repo as _billing_repo
+
+    monkeypatch.setattr(_billing_repo, "get_by_company_stripe_account_id", _AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _no_existing_transfers(monkeypatch):
     """The flush adopts an existing Transfer for the purchase's group before
     creating one; default every test to "none found" so create-path

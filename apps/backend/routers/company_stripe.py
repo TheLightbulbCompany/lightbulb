@@ -20,11 +20,9 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
-from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import company_stripe
-from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+from core.services import company_stripe, company_stripe_approval
+from core.services.owner_facts import write_owner_facts
+from core.services.paperclip_admin_client import PaperclipApiError
 from routers.agent_builder import _require_hook_token
 from routers.teams._guards import require_always_on_entitlement
 
@@ -48,17 +46,17 @@ def _gate_admin(auth: AuthContext) -> None:
         require_org_admin(auth)
 
 
-async def resolve_company_name(owner_id: str) -> str:
-    """The Paperclip company name (the owner named it in Teams); falls back to
-    the owner id so a Stripe account is never created with an empty name."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
-    if not company_id:
-        return owner_id
-    admin = shared_admin_client()
-    cookie = await get_admin_session_cookie(admin._http)
-    company = await admin.get_company(session_cookie=cookie, company_id=company_id)
-    return (company or {}).get("name") or owner_id
+async def _sync_status(owner_id: str, account_id: str) -> None:
+    """Pull the account's real status right after a bind so the page is
+    correct before any webhook lands — a connected existing account is
+    usually already fully enabled. Best-effort: a Stripe failure here must
+    not fail the bind, and ``account.updated`` catches up either way."""
+    try:
+        status = await company_stripe.retrieve_status(account_id=account_id)
+    except stripe.error.StripeError as e:
+        logger.warning("company_stripe: status fetch failed for %s: %s", account_id, e)
+        return
+    await billing_repo.set_company_stripe_status(owner_id, account_id=account_id, **status)
 
 
 def _status_payload(row: dict | None) -> dict:
@@ -92,7 +90,7 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
     if account_id and row.get("company_stripe_source") == "connected":
         raise HTTPException(status_code=409, detail="An existing Stripe account is already connected")
     if not account_id:
-        company_name = await resolve_company_name(owner_id)
+        company_name = await company_stripe.resolve_company_name(owner_id)
         try:
             account_id = await company_stripe.create_company_account(
                 owner_id=owner_id, email=auth.email or "", company_name=company_name
@@ -105,6 +103,8 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
             # on Stripe is an empty account with no obligations.
             row = await billing_repo.get_by_owner_id(owner_id) or {}
             account_id = row.get("company_stripe_account_id") or account_id
+        await _sync_status(owner_id, account_id)
+        await write_owner_facts(owner_id)
     try:
         url = await company_stripe.create_company_onboarding_link(account_id=account_id)
     except stripe.error.StripeError as e:
@@ -161,7 +161,15 @@ async def connect_callback(code: str = Query(default=""), state: str = Query(def
         return _return("stripe_error=exchange")
     bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="connected")
     if bound is None:
+        # We hold an authorization on an account we are not going to use.
+        # Hand it back rather than leaving the platform attached to it.
+        try:
+            await company_stripe.deauthorize(account_id=account_id)
+        except Exception:  # noqa: BLE001 — the redirect must still happen
+            logger.exception("company_stripe: could not release %s after already_bound", account_id)
         return _return("stripe_error=already_bound")
+    await _sync_status(owner_id, account_id)
+    await write_owner_facts(owner_id)
     # `stripe_connect`, not `stripe`: RETURN_URL already carries `?stripe=return`
     # for hosted onboarding, and a duplicate key would hide this outcome.
     return _return("stripe_connect=connected")
@@ -181,7 +189,16 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e
     await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+    await write_owner_facts(owner_id)
     return {"disconnected": True}
+
+
+def _board_unavailable(owner_id: str, e: Exception) -> HTTPException:
+    logger.warning("company_stripe: could not reach the board owner_id=%s: %s", owner_id, e)
+    return HTTPException(
+        status_code=503,
+        detail={"code": "paperclip_unavailable", "message": "Could not reach the company board; try again later"},
+    )
 
 
 class RequestStripeBody(BaseModel):
@@ -196,16 +213,23 @@ async def request_from_container(owner_id: str, body: RequestStripeBody, request
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     if row.get("company_stripe_account_id"):
         return {"approval_id": None, "status": "connected"}
-    from core.services import company_stripe_approval
-
     try:
         approval_id = await company_stripe_approval.request_company_stripe(
             owner_id=owner_id, issue_id=body.issue_id, reason=body.reason
         )
-    except (PaperclipApiError, httpx.HTTPError) as e:
-        logger.warning("company_stripe: could not file connect_stripe approval owner_id=%s: %s", owner_id, e)
+    except httpx.HTTPError as e:
+        raise _board_unavailable(owner_id, e) from e
+    except PaperclipApiError as e:
+        # `retryable` is 5xx/429 — genuinely "the board is down". A 4xx is the
+        # board REFUSING this request; reporting that as an outage tells the
+        # agent to retry forever on something that will never succeed.
+        if e.retryable:
+            raise _board_unavailable(owner_id, e) from e
+        logger.warning("company_stripe: board rejected the request owner_id=%s: %s", owner_id, e)
         raise HTTPException(
-            status_code=503,
-            detail={"code": "paperclip_unavailable", "message": "Could not reach the company board; try again later"},
+            status_code=502,
+            detail={"code": "paperclip_rejected", "message": e.message},
         ) from e
-    return {"approval_id": approval_id, "status": "filed" if approval_id else "exists"}
+    # "no_company": the owner has no Paperclip company yet, so there is no
+    # board to file against — not a duplicate, not a failure.
+    return {"approval_id": approval_id, "status": "filed" if approval_id else "no_company"}

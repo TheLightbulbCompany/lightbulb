@@ -53,6 +53,15 @@ async def test_create_company_account_uses_v2_merchant_config_and_stripe_fees():
 
 
 @pytest.mark.asyncio
+async def test_create_company_account_omits_empty_contact_email():
+    """v2 rejects contact_email="" — send no key at all."""
+    create = MagicMock(return_value=SimpleNamespace(id="acct_new"))
+    with patch("core.services.company_stripe._client", return_value=_client_with(accounts_create=create)):
+        await company_stripe.create_company_account(owner_id="org_a", email="", company_name="Northwind Ceramics")
+    assert "contact_email" not in create.call_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_create_company_onboarding_link_v2():
     link = MagicMock(return_value=SimpleNamespace(url="https://accounts.stripe.com/r/acct_new#alu_x"))
     with patch("core.services.company_stripe._client", return_value=_client_with(links_create=link)):

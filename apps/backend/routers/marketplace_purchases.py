@@ -17,6 +17,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.config import settings
 from core.repositories import billing_repo, marketplace_repo
 from core.services import license_service, payout_service
+from core.services.owner_facts import write_owner_facts
 from core.services import webhook_dedup
 from core.services.webhook_dedup import WebhookDedupResult
 from schemas import marketplace as schemas
@@ -432,6 +433,9 @@ async def _handle_account_updated(account: dict) -> None:
             charges_enabled=bool(account.get("charges_enabled")),
             payouts_enabled=bool(account.get("payouts_enabled")),
         )
+        # The container reads `company_stripe` off the facts file; without this
+        # it keeps asking the owner to set up an account that just went live.
+        await write_owner_facts(company_row["owner_id"])
         return
 
     if not account.get("payouts_enabled"):
@@ -455,6 +459,7 @@ async def _handle_account_deauthorized(account_id: str | None) -> None:
     if row is None:
         return
     await billing_repo.clear_company_stripe_account(row["owner_id"], account_id=account_id)
+    await write_owner_facts(row["owner_id"])
 
 
 async def _flush_seller_held_balance(

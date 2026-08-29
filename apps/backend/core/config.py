@@ -396,6 +396,16 @@ class Settings(BaseSettings):
     STRIPE_CONNECT_REFRESH_URL: str = ""
     STRIPE_CONNECT_RETURN_URL: str = ""
 
+    # Company Stripe account (the owner's own business account on our Connect
+    # platform). Hosted onboarding bounces back to these; the Standard-OAuth
+    # "connect existing" flow returns to the backend callback, which must be
+    # registered verbatim as a redirect URI in Stripe → Connect settings.
+    STRIPE_COMPANY_REFRESH_URL: str = ""
+    STRIPE_COMPANY_RETURN_URL: str = ""
+    STRIPE_COMPANY_OAUTH_REDIRECT_URL: str = ""
+    # Connect platform client id (ca_…). Public, not a secret.
+    STRIPE_CONNECT_CLIENT_ID: str = ""
+
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
     # a platform-scoped one for checkout/refund events (they originate on the

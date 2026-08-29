@@ -174,6 +174,14 @@ export interface ServiceStackProps extends cdk.StackProps {
    * env/deploy where that stack isn't instantiated.
    */
   agentMailConfigurationSet?: string;
+  /**
+   * Connect platform client id (ca_…) for the Standard-OAuth "connect an
+   * existing Stripe account" flow. Public, not a secret — see
+   * STRIPE_CONNECT_CLIENT_ID_BY_ENV in isol8-stage.ts. Undefined/empty until
+   * the owner fills it in from Stripe → Connect settings; the backend setting
+   * defaults to "" so an unconfigured env just can't start that flow yet.
+   */
+  stripeConnectClientId?: string;
 }
 
 /**
@@ -1569,6 +1577,22 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? `https://${rootDomain}/marketplace/payouts/return`
           : `https://dev.${rootDomain}/marketplace/payouts/return`,
+      // Company Stripe account — owner's own business account on the same
+      // Connect platform. Return/refresh land on Settings → Connections; the
+      // OAuth redirect is the backend callback on the API host.
+      STRIPE_COMPANY_REFRESH_URL:
+        env === "prod"
+          ? `https://${rootDomain}/settings/connections?stripe=refresh`
+          : `https://dev.${rootDomain}/settings/connections?stripe=refresh`,
+      STRIPE_COMPANY_RETURN_URL:
+        env === "prod"
+          ? `https://${rootDomain}/settings/connections?stripe=return`
+          : `https://dev.${rootDomain}/settings/connections?stripe=return`,
+      STRIPE_COMPANY_OAUTH_REDIRECT_URL:
+        env === "prod"
+          ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
+          : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
+      STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

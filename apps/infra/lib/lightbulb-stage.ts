@@ -16,6 +16,19 @@ import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 import { resourcePrefix, tableName } from "./table-names";
 
+// Connect platform client id (ca_…) per environment, for the company Stripe
+// account's Standard-OAuth "connect an existing account" flow. Public, not a
+// secret — safe as a plain constant (contrast the STRIPE_*_PRICE_ID_{DEV,PROD}
+// values in app.ts, which are actual account identifiers read from GitHub
+// secrets at synth time). OWNER TODO: fill these in from the Stripe dashboard
+// (Connect → Settings) once the platform's Connect integration is registered;
+// empty means STRIPE_CONNECT_CLIENT_ID ships as "" and that OAuth flow can't
+// start yet.
+const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
+  dev: "",
+  prod: "",
+};
+
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
@@ -218,6 +231,7 @@ export class LightbulbStage extends cdk.Stage {
       // ServiceStack defaults this to an empty string, which stamps no
       // configuration set on outbound sends (core/services/ses_email.py).
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
+      stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

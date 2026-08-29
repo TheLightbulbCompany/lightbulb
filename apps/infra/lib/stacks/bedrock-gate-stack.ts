@@ -217,10 +217,28 @@ export class BedrockGateStack extends cdk.Stack {
       // the fleet break-glass lever: set the value to the literal string
       // "direct" (SSM forbids empty strings) to route new provisions straight
       // to bedrock-runtime, bypassing the gate.
+      const gateUrlParamDescription = `bedrock-gate Function URL (${gateEnv}) — backend runtime discovery; "direct" = break-glass to bedrock-runtime`;
       new ssm.StringParameter(this, `GateUrlParam${idSuffix}`, {
         parameterName: `/isol8/${gateEnv}/bedrock-gate-url`,
         stringValue: fnUrl.url,
-        description: `bedrock-gate Function URL (${gateEnv}) — backend runtime discovery; "direct" = break-glass to bedrock-runtime`,
+        description: gateUrlParamDescription,
+      });
+      // TRANSITIONAL — step 1 of 2 in the /isol8/ -> /lightbulb/ parameter move.
+      // `parameterName` is a CloudFormation replacement property, but unlike the
+      // Secrets Manager move this loses nothing: the value is CFN-derived, so a
+      // replacement re-publishes the correct URL. What it CANNOT survive is the
+      // reader flipping in the same deploy — the backend fails provisioning LOUDLY
+      // on a missing parameter (GateUrlUnavailable, deliberately no fallback), and
+      // nothing orders the gate stack ahead of the service stack. So the twin is
+      // published first and the old one is dropped once the reader has moved.
+      //
+      // BREAK-GLASS: while both exist, an operator setting the value to "direct"
+      // must set it on the parameter the DEPLOYED backend reads. That is
+      // /isol8/ until step 2 ships, /lightbulb/ after. See the runbook.
+      new ssm.StringParameter(this, `GateUrlParamLightbulb${idSuffix}`, {
+        parameterName: `/lightbulb/${gateEnv}/bedrock-gate-url`,
+        stringValue: fnUrl.url,
+        description: gateUrlParamDescription,
       });
 
       // --- Gateway IAM: invoke the owner's OWN AIP, nothing raw ----------------

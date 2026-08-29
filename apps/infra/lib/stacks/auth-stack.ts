@@ -44,8 +44,12 @@ export class AuthStack extends cdk.Stack {
     // KMS key for general encryption (EBS, EFS, DynamoDB)
     this.kmsKey = new kms.Key(this, "GeneralEncryptionKey", {
       enableKeyRotation: true,
-      description: `Isol8 ${env} general encryption key (EBS, EFS, DynamoDB)`,
-      alias: `isol8-${env}-general`,
+      description: `Lightbulb ${env} general encryption key (EBS, EFS, DynamoDB)`,
+      // Renaming an alias replaces the AWS::KMS::Alias resource ONLY — CFN
+      // creates the new alias, then deletes the old, and the KEY (with every
+      // grant and every ciphertext ever written under it) is untouched. Nothing
+      // references this alias by name; every consumer takes the key ARN.
+      alias: `lightbulb-${env}-general`,
     });
 
     // Helper to create a CDK-managed secret.

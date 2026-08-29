@@ -358,10 +358,14 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can read the bedrock-gate URL SSM parameter (single-parameter GetParameter, not a wildcard)", () => {
+  test("backend role can read the bedrock-gate URL SSM parameter (named parameters, not a wildcard)", () => {
     // The gate stack publishes each env's Function URL to
-    // /isol8/{env}/bedrock-gate-url; the backend discovers it at runtime and
-    // the parameter doubles as the break-glass lever ("direct" = bypass gate).
+    // /{isol8,lightbulb}/{env}/bedrock-gate-url; the backend discovers it at
+    // runtime and the parameter doubles as the break-glass lever ("direct" =
+    // bypass gate). Both names are granted for one cycle while the reader
+    // moves off the legacy prefix — see bedrock-gate-stack.ts. What matters
+    // here is that the scope stays a list of exact parameters, never a
+    // wildcard over /isol8/* or /lightbulb/*.
     //
     // Searched across BOTH inline and managed policies: the task role's
     // DefaultPolicy sits near CloudFormation's 10 KB limit, so CDK packs
@@ -376,8 +380,14 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           (s) =>
             s.Sid === "BedrockGateUrlParamRead" &&
             s.Action === "ssm:GetParameter" &&
-            s.Resource ===
+            Array.isArray(s.Resource) &&
+            (s.Resource as string[]).every((r) => !r.includes("*")) &&
+            (s.Resource as string[]).includes(
+              "arn:aws:ssm:us-east-1:877352799272:parameter/lightbulb/dev/bedrock-gate-url",
+            ) &&
+            (s.Resource as string[]).includes(
               "arn:aws:ssm:us-east-1:877352799272:parameter/isol8/dev/bedrock-gate-url",
+            ),
         ),
       ),
     );

@@ -2,12 +2,12 @@
 //
 // Web-only render types for useAgentChat and its helper modules.
 //
-// The WIRE types (ContentBlock, HistoryMessage) moved to @isol8/shared
+// The WIRE types (ContentBlock, HistoryMessage) moved to @lightbulb/shared
 // (packages/shared/src/chat/history.ts) — mobile had its own copy of them and
 // the pair had drifted. Re-exported here so existing imports are unaffected.
 
-export type { ContentBlock, HistoryMessage } from "@isol8/shared";
-import type { HistoryMessage } from "@isol8/shared";
+export type { ContentBlock, HistoryMessage } from "@lightbulb/shared";
+import type { HistoryMessage } from "@lightbulb/shared";
 
 /** Live tool tracking entry (private to useAgentChat). */
 export interface ToolStreamEntry {

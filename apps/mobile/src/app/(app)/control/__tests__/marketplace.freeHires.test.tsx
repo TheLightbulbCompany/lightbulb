@@ -21,15 +21,15 @@ jest.mock("expo-crypto", () => ({
   randomUUID: () => "00000000-0000-4000-8000-000000000000",
 }));
 
-// This suite pulls in the real @isol8/shared + lib/marketplace graph (for the
+// This suite pulls in the real @lightbulb/shared + lib/marketplace graph (for the
 // free_only assertion below). On a cold transform cache — i.e. CI — that lands
 // on whichever test renders first and blows the 5s default.
 jest.setTimeout(20000);
 
 // Records every REST path the real search hook builds (see the free_only test).
 const mockGetPaths: string[] = [];
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({
     get: async (path: string) => {
       mockGetPaths.push(path);

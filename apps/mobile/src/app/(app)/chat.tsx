@@ -10,7 +10,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { agentDisplayName, useAgents } from "@isol8/shared";
+import { agentDisplayName, useAgents } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";

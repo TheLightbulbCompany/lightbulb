@@ -1,6 +1,6 @@
 // apps/frontend/src/hooks/internal/toolBlockExtract.ts
 //
-// The block predicates and id/args resolvers moved to @isol8/shared
+// The block predicates and id/args resolvers moved to @lightbulb/shared
 // (packages/shared/src/chat/history.ts) — mobile had its own copy, and the two
 // had drifted (web's resolveToolUseId was missing the `toolCallId` spelling).
 // Re-exported here so existing imports and tests are unaffected.
@@ -8,8 +8,8 @@
 // `pairToolBlocks` stays web-side: it is web's within-message pairing model,
 // and mobile pairs across messages with its own map. Nothing else uses it.
 
-import type { ContentBlock } from "@isol8/shared";
-import { isToolResultBlock, isToolUseBlock, resolveToolUseId } from "@isol8/shared";
+import type { ContentBlock } from "@lightbulb/shared";
+import { isToolResultBlock, isToolUseBlock, resolveToolUseId } from "@lightbulb/shared";
 
 export {
   isTextBlock,
@@ -19,7 +19,7 @@ export {
   resolveMessageBlocks,
   resolveToolArgs,
   resolveToolUseId,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 export interface ToolBlockPair {
   toolUseId: string;

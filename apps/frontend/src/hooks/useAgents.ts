@@ -6,11 +6,11 @@ import {
   useAgents as useAgentsShared,
   type Agent,
   type AgentModelRef,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useGateway } from "@/hooks/useGateway";
 
-// Agent types + pure helpers moved to @isol8/shared (Phase 1 extraction);
+// Agent types + pure helpers moved to @lightbulb/shared (Phase 1 extraction);
 // re-exported so feature code keeps importing them from here. The hook body
 // followed them once mobile needed the same roster hardening (the empty-roster
 // latch + the become-reachable revalidation) — this wrapper binds the web

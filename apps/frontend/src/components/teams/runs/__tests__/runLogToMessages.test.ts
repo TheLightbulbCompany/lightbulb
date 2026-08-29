@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { pairToolBlocks } from "@/hooks/internal/toolBlockExtract";
-import { resolveMessageBlocks } from "@isol8/shared";
-import type { ContentBlock } from "@isol8/shared";
+import { resolveMessageBlocks } from "@lightbulb/shared";
+import type { ContentBlock } from "@lightbulb/shared";
 import { runLogToMessages } from "../runLogToMessages";
 
 /** Wrap an agent event the way the adapter writes it into the run log. */

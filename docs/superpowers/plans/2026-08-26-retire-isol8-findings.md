@@ -1386,13 +1386,13 @@ or `DELETE_FAILED`. Cloud Map namespaces own the two `.local` zones: deregister 
 ### B25 — `pnpm --filter` on a non-existent scope exits 0 (silent-green CI)
 
 Verified in this repo: `pnpm --filter @lightbulb/frontend run lint` →
-`No projects matched the filters` , **EXIT=0** (pnpm 9.15.0). Renaming `@isol8/*` in
+`No projects matched the filters` , **EXIT=0** (pnpm 9.15.0). Renaming `@lightbulb/*` in
 `package.json` without the same-PR edits to `frontend-ci.yml:62,65,72,78`,
 `mobile-ci.yml:65,68,71,74,77,80,85`, `infra-ci.yml:79` produces **fully green CI that ran
 nothing** — 12 steps across three gate workflows, including the infra synth and the entire
 mobile suite. After the rename, deliberately break one file and confirm the job goes red.
 
-The scope rename also touches `next.config.ts:55` `transpilePackages: ["@isol8/shared"]` —
+The scope rename also touches `next.config.ts:55` `transpilePackages: ["@lightbulb/shared"]` —
 `packages/shared` ships TS **source with no build step** and there is **no tsconfig path
 alias** (`apps/frontend/tsconfig.json:21-23` maps only `@/*`), so a miss fails `next build`
 on untranspiled TS and looks like a bundler bug. And it regenerates `pnpm-lock.yaml`, so it
@@ -1898,7 +1898,7 @@ not re-litigated as an oversight.
 | **`isol8-setup-seed.json` + `ISOL8_NATIVE_SETUP_SEED`** | `friday_identity.py:30,79,110`; fork `workspace.ts` (at tag `v2026.8.1-isol8.1`: `:99` filename, `:103` env) + 19 items in `workspace-native-seed.test.ts` | Cross-repo, fork-first (§3 B32) | The sentinel that suppresses OpenClaw's native setup wizard — lose it and **every agent re-onboards** | Dual read-path for one roll | With the fork release |
 | **`ISOL8_*` env names (16 distinct)** | 52 files / 173 hits. By count: `ISOL8_AGENTS_DIR`(30), `ISOL8_API_URL`(21), `ISOL8_OWNER_ID`(20), `ISOL8_CONFIG_LOCK_PROTOCOL`(20), `ISOL8_BRIDGE_URL`(14), `ISOL8_SYSTEM_SELLER_ID`(9), `ISOL8_PROXY_PORT`(8), `ISOL8_STATE_ROOT`(7), `ISOL8_API_BASE`(6), `ISOL8_WS_URL`(4), `ISOL8_CURATOR_EMAIL`(4), `ISOL8_CALLBACK_URL`(4), `ISOL8_REPO`(3), `ISOL8_THEME`(2), `ISOL8_LITESTREAM_CONFIG`(2), `ISOL8_APP_CMD`(2) | **Not one family.** `ISOL8_API_URL`/`ISOL8_OWNER_ID` are the genuine lockstep — set on the task def (`ecs_manager.py:2775,2783`), read by the baked plugin (`src/env.ts:30-34`, which **throws** on missing), by `isol8-mail.sh:16,25,26,48`, by the boot script (`:55`), and by agent-facing prose the model **executes** (`SKILL.md:134,204`; `onboarding_brief.py:266,272`; `AGENTS.md:82`). They bind to a **reprovision**, not a roll. `ISOL8_STATE_ROOT`/`LITESTREAM_CONFIG`/`APP_CMD` are **image-internal** (boot chain only). `ISOL8_AGENTS_DIR` is **bundle-internal and self-heals** via the fingerprint (risk L — refuted claim). `ISOL8_CONFIG_LOCK_PROTOCOL` belongs to the lock row. `ISOL8_SYSTEM_SELLER_ID`'s **value** `__isol8__` is stored in DDB | Only `ISOL8_SYSTEM_SELLER_ID` (a data value on every company-registry listing row) | Per-name | **Do the container-side set in one image roll bundled with the brand swap; accept both names in the plugin for one release.** Leave `PAPERCLIP_ISOL8_*` (3 names) to the next fork release. **Leave `__isol8__` alone** |
 | **Plugin / skill ids** (`isol8-marketplace`, skill dir `isol8`, `isol8-mail.sh`, `isol8.hire_suggestion`) | 20 files / 38 hits + the frontend consumer | The plugin **id** must match in three places or it does not load: `openclaw.plugin.json:2`, the on-disk dir the Dockerfile copies to (`Dockerfile:562-563` → `/app/dist/extensions/isol8-marketplace`), and the key the backend writes into `openclaw.json` (`containers/config.py:2074`) — and the committed `dist/` must be rebuilt. The skill **directory name is the skill id** and is written into already-materialized SOUL.md files. `isol8-mail.sh` is invoked by **absolute path from the backend** at two sites | `isol8.hire_suggestion` is a cross-artifact wire contract with unbounded skew (B31); published S3 slices bake the plugin id immutably (B30) | Dual-id for one release | **Image roll that carries the brand swap. Keep `isol8.hire_suggestion` forever** (or dual-accept → full fleet roll → drop). **Resolve the skill-dir-vs-frontmatter question first (C19)** |
-| **`@isol8/*` packages + root `package.json:2 "name": "isol8"` + cargo crate** | 96 files / 188 refs (**[V]** 50 occurrences across 28 files in the frontend slice alone); `Cargo.toml:2` + `Cargo.lock:2095` + `main.rs:4` + 4 integration tests | Mechanical find/replace + one `pnpm install` (regenerates the root lockfile, so it cannot land in an app-scoped PR) + `next.config.ts:55` `transpilePackages` + the 12 CI `--filter` invocations | none | Yes | **Bundle into the P3 flip PR** — but see §3 B25: the CI filters are a silent-green trap |
+| **`@lightbulb/*` packages + root `package.json:2 "name": "isol8"` + cargo crate** | 96 files / 188 refs (**[V]** 50 occurrences across 28 files in the frontend slice alone); `Cargo.toml:2` + `Cargo.lock:2095` + `main.rs:4` + 4 integration tests | Mechanical find/replace + one `pnpm install` (regenerates the root lockfile, so it cannot land in an app-scoped PR) + `next.config.ts:55` `transpilePackages` + the 12 CI `--filter` invocations | none | Yes | **Bundle into the P3 flip PR** — but see §3 B25: the CI filters are a silent-green trap |
 | **Storage keys / cookies / DOM event / `isol8-file://`** | 131 files carry an isol8-prefixed literal; 37 distinct browser/mobile keys, 2 cookies, 1 DOM event, 2 URI schemes | Mechanical. `desktopPermissions.ts:17` is a **CustomEvent name** — listener and dispatcher must move together. `layoutStorage.ts:18 LEGACY_KEY_PREFIX` must **keep** its historical value | Only `analytics.ts:170 isol8_attribution_v1` (marketing attribution zeroes) and `signupIntent.ts:20` (a live funnel step across the sign-up redirect) | Yes | **Free at P3** (the origin change wipes every store anyway); **costs a UI-state reset if deferred** |
 | **CloudWatch namespaces** — `Isol8`, `Isol8/Authorizer`, `Isol8/BedrockGate`, `Isol8/ECS` (live: 4, not 1) | `metrics.py:29,99`; `ops/gate_blocked.py:60,64`; `observability-stack.ts` ~23 sites incl. the `cloudwatch:namespace` IAM condition at `:1614`; `bedrock-gate/metrics.mjs:3,11`; `bedrock-usage-meter/index.py:257,268,276`; `websocket-authorizer/index.py:102`; `drift_monitor.py:58` (`Isol8/Billing`); `providers.yaml:1523` (inside an agent starter prompt) | CloudWatch has **no metric rename**. Alarms must flip in the same deploy as `:1614` or the task-stopped Lambda AccessDenies silently | All 226 alarms, both `isol8-{env}-orr` dashboards, and **all history** — any alarm whose evaluation window spans the cutover fires INSUFFICIENT_DATA | No | **Keep.** High friction, low value. `providers.yaml:1523`'s braces are **doubled** (`{{code, …}}`) to survive `.format` — a naive rewrite to single braces raises `KeyError` on the next trigger seed |
 | **SNS topics / SQS DLQ / SES config sets** | `observability-stack.ts:117,123` + 5 ARN consumers; `agent-mail-outbound-stack.ts:36,78,91` | All replacement properties. **SNS: every subscription dropped, email needs re-confirmation.** SQS: any un-replayed SES complaint destroyed. **SES config-set name is also filtered on in the EventBridge rule pattern (`:91`)** — the two must move together or complaint handling silently stops, and SES **rejects** a send naming a nonexistent config set | Alerting goes dark until someone clicks; queued complaints lost | No | **Keep** unless the account migration. Absent from the plan's row entirely |
@@ -1952,13 +1952,13 @@ desktop-build.yml:259,260        | prod chat URL + updater URL                  
 desktop-build.yml:362,367,368    | ISOL8_CALLBACK_URL/API_BASE/WS_URL (prod)        | →                     | P3/P6
 desktop-build.yml:372,375,384,385,388,390 | prod bundle path/DMG/rw/mnt/volname/ditto| as :183-201           | P3
 e2e-dev.yml:9                    | default: 'https://dev.isol8.co'                  | →dev.flickmeon.ai     | P2
-frontend-ci.yml:62,65,72,78      | pnpm --filter @isol8/frontend ×4                 | →@lightbulb/          | P6 (silent-green, B25)
+frontend-ci.yml:62,65,72,78      | pnpm --filter @lightbulb/frontend ×4                 | →@lightbulb/          | P6 (silent-green, B25)
 frontend-ci.yml:76               | secrets.CLERK_PUBLISHABLE_KEY — a THIRD Clerk secret name | confirm which instance | P3
 frontend-ci.yml:77               | NEXT_PUBLIC_API_URL: api-dev.isol8.co            | →                     | P2
-infra-ci.yml:79                  | pnpm --filter @isol8/infra run test              | →                     | P6 (silent-green)
+infra-ci.yml:79                  | pnpm --filter @lightbulb/infra run test              | →                     | P6 (silent-green)
 infra-ci.yml:100                 | comment naming isol8-wsl                         | →                     | P6
 infra-ci.yml:102-131             | the deploy.yml drift check (mechanism)           | —                     | —
-mobile-ci.yml:3,65,68,71,74,77,80,85 | 7 pnpm --filter @isol8/{shared,mobile} + 1 comment | →                | P6 (silent-green)
+mobile-ci.yml:3,65,68,71,74,77,80,85 | 7 pnpm --filter @lightbulb/{shared,mobile} + 1 comment | →                | P6 (silent-green)
 mobile-ota.yml:63                | EXPO_PUBLIC_API_URL https://api.isol8.co/api/v1  | →                     | P3
 mobile-ota.yml:64                | pk_live_Y2xlcmsuaXNvbDguY28k (base64 "clerk.isol8.co$") — INVISIBLE to any isol8 grep | →new pk_live_ | P3
 mobile-ota.yml:68                | EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID                 | →ai.flickmeon.…       | P3
@@ -1977,7 +1977,7 @@ apps/frontend/src/lib/githubReleases.ts:7,16,23,111 | ISOL8_REPO = "Isol8AI/isol
 apps/desktop/SIGNING.md:8        | "Isol8 is damaged" (derives from productName)    | →                     | P3
 apps/desktop/SIGNING.md:39       | app-specific-password label isol8-notarize       | →                     | P6
 apps/desktop/SIGNING.md:48,51,54,57,61,67 | gh secret set/list --repo Isol8AI/isol8 ×6 | →                   | P6
-apps/mobile/README.md:1,3,13,14,31,98,100,135 | @isol8/mobile, hosts, Expo org `isol8`, project @isol8/isol8-mobile, pnpm filter | → | P3 (Expo)/P6 (docs)
+apps/mobile/README.md:1,3,13,14,31,98,100,135 | @lightbulb/mobile, hosts, Expo org `isol8`, project @lightbulb/isol8-mobile, pnpm filter | → | P3 (Expo)/P6 (docs)
 apps/backend/deploy_dev_fast.sh:15 | REPO="Isol8AI/backend" — repo ARCHIVED         | DELETE the script     | P1
 GH secret NEXT_PUBLIC_API_URL_PROD | never mentioned in P3                          | →api.flickmeon.ai     | P3 step 1 (prod outage)
 gh vars CI_RUNNER / DEPLOY_RUNNER  | value = "isol8-wsl" (verified live)            | set BEFORE re-labelling| P6
@@ -2127,7 +2127,7 @@ openclaw-config-lock-recovery.ts:2,3,21,22 | .isol8-guard / .isol8-protocol ×2 
 openclaw-config-lock-recovery.ts:207 | ISOL8_CONFIG_LOCK_PROTOCOL test              | KEEP                 | P6
 apps/infra/aws/aws-connector.yaml:3,11,17,18,35,41,43,44,61,66-68 | the CUSTOMER-launched template; :41 RoleName | NEVER (display strings only) | P6
 apps/infra/aws/README.md:24   | "Because the role uses a fixed name (isol8-connector)…" | →                 | P3
-apps/infra/package.json:2, vitest.config.ts:7, paperclip/RUNBOOK.md, package-lock.json | @isol8/infra + prose | → | P6
+apps/infra/package.json:2, vitest.config.ts:7, paperclip/RUNBOOK.md, package-lock.json | @lightbulb/infra + prose | → | P6
 ```
 
 ### 6.3 `apps/infra/lambda/**`
@@ -2329,7 +2329,7 @@ plugins/aws-exec-profile/{index.ts:39,dist/index.js:30,dist/resolve.js:11,18,26-
 plugins/paperclip-exec-creds/dist/resolve.js:31 | "The file shape is Isol8-defined and locked" | →              | P3
 plugins/isol8-marketplace/ (DIR)     |                                                         | →lightbulb-marketplace | P6
   openclaw.plugin.json:2,3,4         | id; name "Isol8 Marketplace"; description               | id P6; labels P3| P3/P6
-  package.json:2 · package-lock.json:2,8 · .gitignore:2,6-8 | @isol8/marketplace-plugin + the REBUILD-dist warning | → | P6
+  package.json:2 · package-lock.json:2,8 · .gitignore:2,6-8 | @lightbulb/marketplace-plugin + the REBUILD-dist warning | → | P6
   src/env.ts:8,18,20,22,24,29,30,31,33,34 (+ dist/env.js:11,13,15,21,22,25,27 + dist/env.d.ts:7,17,19,21,26) | Isol8Env interface; {{ISOL8_BRIDGE_URL}}; env reads; the THROWS | → | P6
   src/index.ts:2,40,46,47,48,52,54 (+ dist/index.js:2,35,40,41,42,46,47) | header; "Isol8 API {status}"; plugin id; name; 3 tool descriptions the MODEL reads | id P6; text P3 | P3/P6
   src/index.ts:92,107 (+ dist/index.js:81,91) | kind "isol8.hire_suggestion"                | KEEP           | —
@@ -2360,7 +2360,7 @@ mobile/eas.json:14,29,38             | EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID ×3     
 mobile/eas.json:37                   | pk_live_Y2xlcmsuaXNvbDguY28k (base64) — must mirror mobile-ota.yml:64 | → | P3
 mobile/eas.json:45                   | ascAppId "6788944100"                                | →new ASC id    | P3
 mobile/eas.json:46-48                | ascApiKeyPath/IssuerId/KeyId SZ68D5WBR2 (team-scoped) | UNCHANGED      | —
-mobile/package.json:2,8,9,22         | @isol8/mobile; start:dev + start:prod hardcode BOTH hosts and BOTH keys; @isol8/shared | → | P2/P3/P6
+mobile/package.json:2,8,9,22         | @lightbulb/mobile; start:dev + start:prod hardcode BOTH hosts and BOTH keys; @lightbulb/shared | → | P2/P3/P6
 mobile/src/config/env.ts:11,23       | api-dev fallback (the mobile-ota:110 guard target); WEB_BILLING_URL | ←config | P1/P3
 mobile/src/lib/{webLinks.ts:5,22 · deepLink.ts:2,6,9,23,26,35 · providerAuthStatus.ts:2,43 · purchaseCta.ts:6,8 · teamsData.ts:13} | WEB_ORIGIN; 2 scheme/host REGEXES (deepLink.ts:35 is a security surface); prose | ←config | P1/P3
 mobile/src/lib/{aiConsent.ts:26-31 · pushDevice.ts:5,9} | KEY_PREFIX "isol8.aiConsent.v1." (its own docstring: "Renaming the key is the whole mechanism"); 2 push keys | rename WITH the disclosure text | P6
@@ -2380,7 +2380,7 @@ desktop/src-tauri/src/lib.rs:25,29-31,82,205,334,338,346,350,385-403,450,534,967
 desktop/src-tauri/src/file_access.rs:5,6,71,73-82,91,95,127,142,274-280 | the ~/Isol8 doc line; store_dir() HARDCODED "co.isol8.desktop" (does NOT follow identifier); the ~/Isol8 seed + allowlist; 5 inline test literals | → | P3
 desktop/src-tauri/src/{main.rs:4 · keychain.rs:4 · bootstrap.rs:49 · node_invoke.rs:85,298 · tray.rs:18,39 · screen.rs:95 · proxy.rs:56,157,177 · subprocess.rs:36,107,116,125 · node_client.rs:970,978,984 · pair_state.rs:13,142 · Info.plist:23,24} | crate ref; comments; 2 user/server-visible display names; tray label + tooltip; snapshot filename; ISOL8_PROXY_PORT; 4 inline test fixtures | → | P3/P6
 desktop/src-tauri/scripts/vendor-sidecars.sh:2,6,61,97,109,111,120,124 | 2 comments; isol8-openclaw-host-<triple>; isol8-browser-service-<triple>; ISOL8_PROXY_PORT ×3; **:120 OPENCLAW_HOME ".../co.isol8.desktop/openclaw" baked into a GENERATED shim** | :120 P3, rest P6 | P3/P6
-desktop/src-tauri/{Cargo.toml:2, Cargo.lock:2095} · package.json:2 | crate name ×2; @isol8/desktop | → | P6
+desktop/src-tauri/{Cargo.toml:2, Cargo.lock:2095} · package.json:2 | crate name ×2; @lightbulb/desktop | → | P6
 desktop/src-tauri/bin/** (untracked, regenerated) | isol8-browser-service-<triple> shim      | regen          | P6
 ```
 
@@ -2388,7 +2388,7 @@ desktop/src-tauri/bin/** (untracked, regenerated) | isol8-browser-service-<tripl
 
 ```
 next.config.ts:11,12,14-20,26,30,31,46 | the enforce-later note; the Termly/Turnstile warning; script-src/connect-src/frame-src (clerk + api + ws hosts; bv MISSING); Report-Only | derive per-env; ADD bv; KEEP 3 vendor origins | P1/P3
-next.config.ts:53-55                   | transpilePackages ["@isol8/shared"] + the no-build-step note | →       | P6
+next.config.ts:53-55                   | transpilePackages ["@lightbulb/shared"] + the no-build-step note | →       | P6
 next.config.ts:77-83,81,94,103,113,114,118,119 | the AASA content-type override + its silent-failure note; 3 comments; 2 company-host rewrite pairs | derive | P1/P3
 src/middleware.ts:10,22,59,65-67,88-91 | DEFAULT_ADMIN_HOSTS; the never-set env; the injectable 3rd param; the 404 (not redirect); PAPERCLIP_HOSTS ×2 | derive | P1/P2/P3
 src/app/api/desktop/update/[target]/[current_version]/route.ts:14,25,81-84,116-118,124,125,130 | comments; the SUFFIX-only bundle match; the host allowlist ×3 + the fallback pair; notes (always "") | ←env | P1
@@ -2419,7 +2419,7 @@ src/components/teams/** (16 files)      | provenance comments: InboxPage.tsx:189
 src/content/docs/{index.ts:28,30,33,38,45 · pages/{get-started.md:7,11,57,62 · browser-and-apps.md:31 · approvals-security-privacy.md:42 · skills-and-automations.md:30 · use-cases.md:3,7,31}} | 5 FAQ strings; a link whose TEXT names the domain; an agent-mail example; a support mailto; 5 brand strings | → | P3
 src/content/blog/posts/*.md (6)         | authors "The isol8 team"/"isol8", body copy, and webhook-event-reference.md:17,18,19 (3 links into a PRIVATE repo) | → | P3/P6
 packages/shared/{package.json:2 · src/index.ts:2 · api/{client.ts:35,208,245 · url.ts:5,6,7,33} · gateway/{useGatewayConnection.ts:29 · types.ts:2} · chat/history.ts:23} | the scope; 3 cookie-scope comments; 3 doc comments (the :33 REGEX is domain-agnostic); 2 comments; a fork ref | → | P3/P6
-@isol8/* import sites                   | 50 occurrences / 28 files (frontend) + 89 lines / 55 files (mobile, 37 import-only) | mechanical | P6
+@lightbulb/* import sites                   | 50 occurrences / 28 files (frontend) + 89 lines / 55 files (mobile, 37 import-only) | mechanical | P6
 apps/frontend/.env.example:10,13-20,35 · tests/e2e/.env.example:5,8 · vercel.json (ZERO refs) · playwright.config.ts:22 (BASE_URL-driven) | the dev host comment; the DEAD block; the admin-host typo; 2 e2e vars | → / DELETE / NO CHANGE | P1/P2
 public/{og-image.png (the Didone "8" source), src/app/icon.png, favicon.ico} · public/logos/{gcal,gmail,salesforce}.png (UNREFERENCED) | brand binaries; dead assets | P4 / DELETE | P3/P4
 ```
@@ -2427,7 +2427,7 @@ public/{og-image.png (the Didone "8" source), src/app/icon.png, favicon.ico} · 
 ### 6.8 Docs, context, memory, scratch
 
 ```
-CLAUDE.md (79 hit lines)  | :7,9,11,12,16,18,63,90,612 overview+fork+skill+facts · :67,76,77,402,450,455 @isol8/* · :94,97,98,123,141,754 DEV hosts (**P2**) · :105,107,112,132,148,282,283 skills paths + profile + secret + the bootstrap-admin note (KEEP :147-148) · :118 mailsac · :154,155,194,199,265,750,780 org+repo+bot+forks · :168 concurrency · :223-233 graphify · :245-247,251,252,261,510,512,513,514,537,770 hosts + headers + tables · :314,360,361,370,423,424,461,466,588,598,614,634,635,752,755,761,767,775,786,789,790,791,800,802,806 prefixes, lock files, secrets, admin hosts, PAPERCLIP_HOSTS, bundle ids, schemes, cert, stage file, API URLs · :38-49 the disposable-docs rule · :197,210 issue back-refs (LEAVE) | mixed | P2/P3/P6
+CLAUDE.md (79 hit lines)  | :7,9,11,12,16,18,63,90,612 overview+fork+skill+facts · :67,76,77,402,450,455 @lightbulb/* · :94,97,98,123,141,754 DEV hosts (**P2**) · :105,107,112,132,148,282,283 skills paths + profile + secret + the bootstrap-admin note (KEEP :147-148) · :118 mailsac · :154,155,194,199,265,750,780 org+repo+bot+forks · :168 concurrency · :223-233 graphify · :245-247,251,252,261,510,512,513,514,537,770 hosts + headers + tables · :314,360,361,370,423,424,461,466,588,598,614,634,635,752,755,761,767,775,786,789,790,791,800,802,806 prefixes, lock files, secrets, admin hosts, PAPERCLIP_HOSTS, bundle ids, schemes, cert, stage file, API URLs · :38-49 the disposable-docs rule · :197,210 issue back-refs (LEAVE) | mixed | P2/P3/P6
 CLAUDE.md — CORRECTIONS TO MAKE | the Apple-IAP "503s until set" claim is STALE (C13); "current pin v2026.813-isol8.3" is stale (paperclip-version.json:12 says isol8.6); the infra-tests-in-no-CI-job belief is corrected by infra-ci.yml | fix as part of this program | P1
 AGENTS.md (UNTRACKED, 41 hits) | a stale mirror + 3 dead facts                                    | DELETE         | P1
 docs/ — LIVING (18 files, code- or CLAUDE.md-referenced) | audit-2026-05-02-paperclip-routes.md (19) · runbooks/{admin-rollout.md (21 — DELETE, §2), bedrock-gate-break-glass.md (11), page-alarms.md (11), openclaw-config-lock-protocol-rollout.md (3)} · superpowers/plans/{2026-07-05-mobile-app-expo-ios.md (13), 2026-07-10-mobile-push-notifications.md (33 — also carries a STALE path `lib/stages/isol8-stage.ts`), 2026-07-17-platform-info-live-read.md (33 — :150-202 is a VERBATIM copy of the shipped SKILL.md; edit both or delete), 2026-07-24-onboarding-implementation-prompts.md (6), 2026-08-26-admin-gtm-dashboards.md (17, UNTRACKED)} · growth/2026-08-17-blitzscaling-strategy.md (9, UNTRACKED) · superpowers/research/2026-07-24-onboarding-current-state.md (4) · superpowers/specs/{2026-05-04-teams-realtime-design.md (2), 2026-05-30-multi-instance-backend-architecture-design.md (1), 2026-06-24-oauth-reprovision-stale-token-design.md (2), 2026-07-10-mobile-push-notifications-design.md (4), 2026-07-12-onboarding-aha-first-run-design.md (5), 2026-07-14-admin-account-wipe-design.md (7 — KEEP the bootstrap literals at :120), 2026-07-15-bedrock-gate-design.md (11 — :85 the 429 strings, :108 the role-name log filter), 2026-07-24-onboarding-architecture-design.md (4)} | rewrite | P2/P3/P6
@@ -2536,7 +2536,7 @@ ADMIN_HOSTS set.
 `isol8.co.evil.com` at `:50`) · `PaywallScreen.test.tsx` 16 (product id ×6 + copy) ·
 `webLinks.test.ts` 11 · `ProvisionGate.test.tsx` 10 (5 NEGATIVE regexes) ·
 `settings.test.tsx` 8 · `AiConsentGate.test.tsx` 2 · 23 more at 1-4 (18 of them
-`jest.mock("@isol8/shared")` only). `fingerprint.config.test.ts`: zero.
+`jest.mock("@lightbulb/shared")` only). `fingerprint.config.test.ts`: zero.
 
 **Desktop Rust** (4 files / 9 lines, absent from the plan): `keychain_test.rs:1,25` ·
 `pair_client_test.rs:1,12,29` · `proxy_test.rs:18` · `subprocess_test.rs:8,9,91`.
@@ -2610,8 +2610,8 @@ memory dir **428 files (275 with isol8, 1,136 line-hits, ~1.5 GB, + 137 `.jsonl`
 | repo-root pins + schema | 3 | ~13 | `openclaw-version.json`, `openclaw-version.schema.json`, `paperclip-version.json` |
 | `apps/backend/{core,routers,schemas,scripts}` + `main.py` | **154** | **662** | 79 `isol8.co` lines, of which **17 are code literals**; ~171 items; **48 files need an edit** |
 | `apps/backend/tests/**` | **164** | **954** | 65 files / 359 lines carry `isol8.co` |
-| `apps/frontend/**` + `packages/shared/**` | **210** | **728 occurrences** (647 matching lines) | 153 non-test + 57 test; `isol8.co` host literals **84 lines / 40 files**; `@isol8/*` **50 occurrences / 28 files**; ~196 substantive items after excluding scope refs and provenance comments |
-| `apps/mobile/**` | 82 | **276** | 89 `@isol8/*` import lines (37 import-only files) + 187 brand/domain/id items (119 non-test) |
+| `apps/frontend/**` + `packages/shared/**` | **210** | **728 occurrences** (647 matching lines) | 153 non-test + 57 test; `isol8.co` host literals **84 lines / 40 files**; `@lightbulb/*` **50 occurrences / 28 files**; ~196 substantive items after excluding scope refs and provenance comments |
+| `apps/mobile/**` | 82 | **276** | 89 `@lightbulb/*` import lines (37 import-only files) + 187 brand/domain/id items (119 non-test) |
 | `apps/desktop/**` | 23 | **104** | 94 non-test (~9 inline `#[cfg(test)]` fixtures) + 9 in `tests/` |
 | `~/dev/agent-fork` @ `v2026.8.1-isol8.1` | 12 | **48** | 4 test files / 23 items; + 10 local/17 remote branches, 17 tags |
 | `~/dev/paperclip-fork` | 17 | **67** | 5 test files / 17 items; + 17 local/18 remote branches, 27 tags |

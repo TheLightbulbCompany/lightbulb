@@ -1,13 +1,13 @@
 // apps/frontend/src/hooks/internal/chatHistoryFilters.ts
 //
-// The visibility filter itself now lives in @isol8/shared (packages/shared/
+// The visibility filter itself now lives in @lightbulb/shared (packages/shared/
 // src/chat/history.ts) because mobile had a hand-ported copy of it that drifted
 // — see that module's header. This file keeps the WEB-ONLY projection on top
 // of it and re-exports the predicates so existing imports and tests are
 // unaffected.
 
-import type { HistoryMessage } from "@isol8/shared";
-import { shouldHideHistoryMessage } from "@isol8/shared";
+import type { HistoryMessage } from "@lightbulb/shared";
+import { shouldHideHistoryMessage } from "@lightbulb/shared";
 import { mergeStandaloneToolResults } from "./toolResultMerge";
 
 export {
@@ -17,7 +17,7 @@ export {
   isSyntheticExecWrapper,
   isSyntheticTranscriptRepairToolResult,
   shouldHideHistoryMessage,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 export function projectChatHistoryMessages(
   messages: HistoryMessage[],

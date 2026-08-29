@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
-import { ApiError } from "@isol8/shared";
+import { ApiError } from "@lightbulb/shared";
 
 const mockGet = vi.fn();
 const mockPatch = vi.fn();

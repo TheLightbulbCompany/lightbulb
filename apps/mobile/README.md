@@ -1,4 +1,4 @@
-# @isol8/mobile
+# @lightbulb/mobile
 
 Native iOS app for Isol8, built with Expo + expo-router. Plan:
 `docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md` (scope: end-user
@@ -95,7 +95,7 @@ first `mobile-v*` build after the switch is the new fingerprint baseline.
 | `preview` | dev | internal-distribution device builds (pre-TestFlight QA) |
 | `production` | prod | TestFlight / App Store, auto-incrementing build number |
 
-Expo org **`isol8`** (project `@isol8/isol8-mobile`, id
+Expo org **`isol8`** (project `@lightbulb/isol8-mobile`, id
 `2def259d-5e79-462b-9b0f-3d01d666ba66`). CI auth is the `github-ci` robot; token
 in repo secret `EXPO_TOKEN` (rotate from expo.dev → isol8 → Access tokens).
 TestFlight currently ships from the personal Apple Developer account; move to the
@@ -132,7 +132,7 @@ decision, `PushRegistration`) is unit-tested with `jest-expo` +
 `@testing-library/react-native`, separate from the shared package's vitest suite:
 
 ```bash
-pnpm --filter @isol8/mobile test        # jest-expo runner
+pnpm --filter @lightbulb/mobile test        # jest-expo runner
 ```
 
 The `mobile-ci.yml` PR gate runs it alongside typecheck / lint / bundle. Native

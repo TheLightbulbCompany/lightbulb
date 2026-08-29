@@ -24,7 +24,7 @@
 // unchanged.
 "use client";
 
-import type { ContentBlock, HistoryMessage } from "@isol8/shared";
+import type { ContentBlock, HistoryMessage } from "@lightbulb/shared";
 
 // `data=` is matched with [\s\S]* so a payload containing newlines stays whole.
 const EVENT_RE = /^\[openclaw-gateway:event\]\s+run=(\S+)\s+stream=(\S+)\s+data=([\s\S]*)$/;

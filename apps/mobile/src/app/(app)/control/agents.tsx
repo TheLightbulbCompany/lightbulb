@@ -21,7 +21,7 @@ import {
   useAgents,
   useGatewayRpcMutation,
   type Agent,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { AgentMonogram, AgentStatusDot } from "../../../components/control/AgentMonogram";
 import { usePulse } from "../../../components/chat/usePulse";

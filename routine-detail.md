@@ -1,0 +1,1247 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]: ISOL8
+        - link [ref=e11] [cursor=pointer]:
+          - /url: /settings
+      - generic "Connected" [ref=e15]
+      - group "Create" [ref=e18]:
+        - button "New agent" [ref=e19] [cursor=pointer]: Agent
+        - button "New task" [ref=e22] [cursor=pointer]: Task
+      - generic [ref=e24]:
+        - generic [ref=e25]:
+          - generic [ref=e26]:
+            - generic [ref=e27]: My Agents
+            - generic [ref=e28]: "7"
+          - generic [ref=e2031] [cursor=pointer]:
+            - button "Friday, CEO" [ref=e2032]:
+              - generic [ref=e2033]: Fr
+              - generic [ref=e2035]:
+                - generic [ref=e2036]:
+                  - generic [ref=e2037]: Friday
+                  - generic [ref=e2038]: CEO
+                - generic [ref=e2039]: gpt-5.5
+            - generic [ref=e2040]:
+              - button "See Friday's work" [ref=e2041]
+              - button "Inspect Friday" [ref=e2045]
+              - button "Rename Friday" [ref=e2047]
+          - generic [ref=e2051] [cursor=pointer]:
+            - button "Atlas, Paused" [ref=e2052]:
+              - generic [ref=e2053]: At
+              - generic [ref=e2055]:
+                - generic [ref=e2056]: Atlas
+                - generic [ref=e2058]: Paused
+            - generic [ref=e2060]:
+              - button "See Atlas's work" [ref=e2061]
+              - button "Inspect Atlas" [ref=e2065]
+              - button "Rename Atlas" [ref=e2067]
+          - generic [ref=e2071] [cursor=pointer]:
+            - button "Forge, Paused" [ref=e2072]:
+              - generic [ref=e2073]: Fo
+              - generic [ref=e2075]:
+                - generic [ref=e2076]: Forge
+                - generic [ref=e2078]: Paused
+            - generic [ref=e2080]:
+              - button "See Forge's work" [ref=e2081]
+              - button "Inspect Forge" [ref=e2085]
+              - button "Rename Forge" [ref=e2087]
+              - button "Delete Forge" [ref=e2091]
+          - generic [ref=e2095] [cursor=pointer]:
+            - button "Gauge, Paused" [ref=e2096]:
+              - generic [ref=e2097]: Ga
+              - generic [ref=e2099]:
+                - generic [ref=e2100]: Gauge
+                - generic [ref=e2102]: Paused
+            - generic [ref=e2104]:
+              - button "See Gauge's work" [ref=e2105]
+              - button "Inspect Gauge" [ref=e2109]
+              - button "Rename Gauge" [ref=e2111]
+              - button "Delete Gauge" [ref=e2115]
+          - generic [ref=e2119] [cursor=pointer]:
+            - button "Pulse, Paused" [ref=e2120]:
+              - generic [ref=e2121]: Pu
+              - generic [ref=e2123]:
+                - generic [ref=e2124]: Pulse
+                - generic [ref=e2126]: Paused
+            - generic [ref=e2128]:
+              - button "See Pulse's work" [ref=e2129]
+              - button "Inspect Pulse" [ref=e2133]
+              - button "Rename Pulse" [ref=e2135]
+              - button "Delete Pulse" [ref=e2139]
+          - generic [ref=e2143] [cursor=pointer]:
+            - button "Tally, Paused" [ref=e2144]:
+              - generic [ref=e2145]: Ta
+              - generic [ref=e2147]:
+                - generic [ref=e2148]: Tally
+                - generic [ref=e2150]: Paused
+            - generic [ref=e2152]:
+              - button "See Tally's work" [ref=e2153]
+              - button "Inspect Tally" [ref=e2157]
+              - button "Rename Tally" [ref=e2159]
+              - button "Delete Tally" [ref=e2163]
+          - generic [ref=e2167] [cursor=pointer]:
+            - button "Vera, Paused" [ref=e2168]:
+              - generic [ref=e2169]: Ve
+              - generic [ref=e2171]:
+                - generic [ref=e2172]: Vera
+                - generic [ref=e2174]: Paused
+            - generic [ref=e2176]:
+              - button "See Vera's work" [ref=e2177]
+              - button "Inspect Vera" [ref=e2181]
+              - button "Rename Vera" [ref=e2183]
+              - button "Delete Vera" [ref=e2187]
+        - navigation "Company" [ref=e29]:
+          - generic [ref=e30]:
+            - button "Dashboard" [ref=e31]
+            - button "Search" [ref=e38]
+            - button "Inbox" [ref=e43]
+          - generic [ref=e48]:
+            - generic [ref=e49]: Work
+            - button "Tasks" [ref=e51]
+            - button "Automations" [ref=e56]
+            - button "Goals" [ref=e63]
+            - button "Projects" [ref=e69]
+          - generic [ref=e73]:
+            - generic [ref=e74]: Company
+            - button "Org chart" [ref=e76]
+            - button "Artifacts" [ref=e83]
+            - button "Activity" [ref=e90]
+        - generic [ref=e96]:
+          - generic [ref=e97]: Marketplace
+          - generic [ref=e98]:
+            - button "Browse" [ref=e99]
+            - button "Publish" [ref=e100]
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - generic [ref=e104]: IA
+          - generic [ref=e105]: Isol8 Admin
+          - generic [ref=e107]: Active
+        - generic [ref=e108]: isol8 v0.1
+    - generic [ref=e109]:
+      - generic [ref=e110]:
+        - button "Browse workspace files" [ref=e111]
+        - button "Watch your agents' browser" [ref=e114]
+        - button "Reset workspace layout" [ref=e120]
+        - button "Get help" [ref=e124]
+        - button "Open user menu" [ref=e129] [cursor=pointer]:
+          - img "Isol8 Admin's logo" [ref=e132]
+      - generic [ref=e147]:
+        - generic [ref=e153]:
+          - region "Automation" [ref=e2453]:
+            - tablist [ref=e158]:
+              - tab "Friday" [ref=e2192] [cursor=pointer]
+              - tab "Automations" [ref=e2193] [cursor=pointer]
+              - tab "Automation" [selected] [ref=e2454] [cursor=pointer]
+            - tabpanel "Automation" [ref=e2460]:
+              - generic [ref=e2463]:
+                - main [ref=e2464]:
+                  - navigation "Breadcrumb" [ref=e2465]:
+                    - link "Automations" [ref=e2466] [cursor=pointer]:
+                      - /url: /chat?panel=teams-routines
+                    - generic [ref=e2469]: Engineering intake
+                  - generic [ref=e2470]:
+                    - generic [ref=e2471]:
+                      - heading "Engineering intake" [level=1] [ref=e2472]
+                      - paragraph [ref=e2473]: "- **Owner / reviewer:** Forge / Friday. - **Trigger:** GitHub `issues`; process only actions `opened` or `reopened`. - **Variables:** `{{GITHUB_REPOSITORY}}=Isol8AI/isol8`, `{{DEFAULT_BRANCH}}=main`. - **Outcome:** Turn a real issue into verified triage and, when warranted, a reviewable code change. - **Inputs:** webhook payload, canonical GitHub issue, repository code/tests, related Paperclip work, and CI state. Exit immediately for every other GitHub action before applying a label or comment. - **Autonomous authority:** reproduce; classify; label/comment; create or reuse the Paperclip issue; implement on a worktree/branch; run proportional tests; open a PR; request reviews. Never merge, bypass CI, rewrite unrelated work, or mutate production directly. - **Authority edge:** security disclosure, destructive migration, pricing or billing semantics, customer-data exposure, or incompatible product choice. Use `ruleKey=engineering.product-authority`. - **Work product:** GitHub PR URL, triage comment URL, or named null outcome `no-code-change` with a falsifiable reason (duplicate, invalid, unsupported, or already fixed). - **KPI / proof:** canonical issue/PR state and CI; weekly merge rate for `forge/*` branches. - **Stop:** one triage disposition or one PR. The action filter is also the self-trigger fence."
+                    - button "Edit automation" [ref=e2474]: Edit
+                  - generic [ref=e2478]:
+                    - generic [ref=e2479]:
+                      - heading "Triggers" [level=2] [ref=e2480]
+                      - button "Add trigger" [ref=e2482]: Add
+                    - list [ref=e2484]:
+                      - listitem [ref=e2485]:
+                        - generic [ref=e2486]:
+                          - generic [ref=e2487]: webhook
+                          - generic [ref=e2488]:
+                            - generic [ref=e2489]: GitHub events (Isol8AI/isol8)
+                            - generic [ref=e2490]: 330e49ea37200d8cadf70ef8 · GitHub HMAC
+                          - generic [ref=e2491]: · paused
+                          - button "Rotate to a new random secret for GitHub events (Isol8AI/isol8)" [ref=e2492]
+                          - button "Set signing secret for GitHub events (Isol8AI/isol8)" [ref=e2496]
+                          - button "Delete GitHub events (Isol8AI/isol8)" [ref=e2501]
+                        - generic [ref=e2505]:
+                          - generic [ref=e2506]:
+                            - generic [ref=e2507]: Fire URL
+                            - button "Copy fire URL for GitHub events (Isol8AI/isol8)" [ref=e2508]
+                          - code [ref=e2512]: https://api.isol8.co/api/v1/hooks/t/org_3H3viGAfq2SXc9dIdcatmGXg8Td/330e49ea37200d8cadf70ef8
+                  - generic [ref=e2513]:
+                    - heading "Run history" [level=2] [ref=e2514]
+                    - paragraph [ref=e2516]: No runs yet.
+                  - generic [ref=e2517]:
+                    - heading "Revisions" [level=2] [ref=e2518]
+                    - list [ref=e2524]:
+                      - listitem [ref=e2525]:
+                        - generic [ref=e2526]: v4
+                        - generic [ref=e2527]: Created webhook trigger
+                        - generic [ref=e2528]: 2d ago
+                        - button "Restore revision 4" [ref=e2529]: Restore
+                      - listitem [ref=e2533]:
+                        - generic [ref=e2534]: v3
+                        - generic [ref=e2535]: Updated routine
+                        - generic [ref=e2536]: 2d ago
+                        - button "Restore revision 3" [ref=e2537]: Restore
+                      - listitem [ref=e2541]:
+                        - generic [ref=e2542]: v2
+                        - generic [ref=e2543]: Updated routine
+                        - generic [ref=e2544]: 2d ago
+                        - button "Restore revision 2" [ref=e2545]: Restore
+                      - listitem [ref=e2549]:
+                        - generic [ref=e2550]: v1
+                        - generic [ref=e2551]: Created routine
+                        - generic [ref=e2552]: 2d ago
+                        - button "Restore revision 1" [ref=e2553]: Restore
+                - complementary [ref=e2557]:
+                  - generic [ref=e2558]:
+                    - generic [ref=e2559]:
+                      - term [ref=e2560]:
+                        - generic [ref=e2561]: Status
+                      - definition [ref=e2562]:
+                        - generic [ref=e2563]:
+                          - generic "Paused" [ref=e2564]
+                          - generic [ref=e2565]: Paused
+                    - generic [ref=e2566]:
+                      - term [ref=e2567]:
+                        - generic [ref=e2568]: Assignee
+                      - definition [ref=e2569]:
+                        - link "Forge" [ref=e2570] [cursor=pointer]:
+                          - /url: /chat?panel=agent-inspector&agent=f293693d-1ec4-4dc3-bd3c-e54109e324bf
+                    - generic [ref=e2571]:
+                      - term [ref=e2572]:
+                        - generic [ref=e2573]: Reviewer
+                      - definition [ref=e2574]:
+                        - link "Friday" [ref=e2575] [cursor=pointer]:
+                          - /url: /chat?panel=agent-inspector&agent=d94a4048-8ab7-4ad9-84b1-df777dc93a35
+                    - generic [ref=e2576]:
+                      - term [ref=e2577]:
+                        - generic [ref=e2578]: Created
+                      - definition [ref=e2579]:
+                        - time [ref=e2580]: 2d ago
+                    - generic [ref=e2581]:
+                      - term [ref=e2582]:
+                        - generic [ref=e2583]: Updated
+                      - definition [ref=e2584]:
+                        - time [ref=e2585]: 2d ago
+          - generic [ref=e172]:
+            - region "Dashboard" [ref=e174]:
+              - tablist [ref=e177]:
+                - tab "Dashboard" [selected] [ref=e178] [cursor=pointer]
+              - tabpanel "Dashboard" [ref=e185]:
+                - generic [ref=e188]:
+                  - generic [ref=e189]:
+                    - generic [ref=e190]:
+                      - paragraph [ref=e191]: Operations
+                      - heading "Dashboard" [level=1] [ref=e192]
+                    - paragraph [ref=e194]: Last 14 days
+                  - region "Active agents" [ref=e195]:
+                    - heading "Agents" [level=2] [ref=e196]
+                    - generic [ref=e197]:
+                      - generic [ref=e198]:
+                        - generic [ref=e199]:
+                          - generic [ref=e201]:
+                            - generic [ref=e202]: FR
+                            - generic [ref=e204]: Friday
+                          - link "Run details bc79e542-17d7-4f37-afe7-d080df5beb99" [ref=e205] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=bc79e542-17d7-4f37-afe7-d080df5beb99
+                            - text: Details
+                        - generic [ref=e206]: Finished 20h ago
+                        - link "ISOA-135 — Daily company control" [ref=e207] [cursor=pointer]:
+                          - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                          - generic:
+                            - text: ISOA-135
+                            - generic [ref=e208]: — Daily company control
+                        - generic [ref=e209]: No activity captured.
+                      - generic [ref=e210]:
+                        - generic [ref=e211]:
+                          - generic [ref=e213]:
+                            - generic [ref=e214]: FR
+                            - generic [ref=e216]: Friday
+                          - link "Run details 3d7b2d68-0962-4dda-884c-b614318c7256" [ref=e217] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=3d7b2d68-0962-4dda-884c-b614318c7256
+                            - text: Details
+                        - generic [ref=e218]: Finished 1d ago
+                        - link "ISOA-133 — Reliability incident" [ref=e219] [cursor=pointer]:
+                          - /url: /chat?panel=teams-issue-detail&detailId=768903fb-c847-444a-9d86-fe177a05bdd7
+                          - generic:
+                            - text: ISOA-133
+                            - generic [ref=e220]: — Reliability incident
+                        - generic [ref=e221]: No activity captured.
+                      - generic [ref=e222]:
+                        - generic [ref=e223]:
+                          - generic [ref=e225]:
+                            - generic [ref=e226]: FO
+                            - generic [ref=e228]: Forge
+                          - link "Run details ae980216-a1e6-4b35-93a3-23040792cf4c" [ref=e229] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=ae980216-a1e6-4b35-93a3-23040792cf4c
+                            - text: Details
+                        - generic [ref=e230]: Finished 1d ago
+                        - link "ISOA-133 — Reliability incident" [ref=e231] [cursor=pointer]:
+                          - /url: /chat?panel=teams-issue-detail&detailId=768903fb-c847-444a-9d86-fe177a05bdd7
+                          - generic:
+                            - text: ISOA-133
+                            - generic [ref=e232]: — Reliability incident
+                        - generic [ref=e233]: "I'll start by loading the API key securely and calling the Paperclip API. The issue is already checked out per the harness.Agent verified. Now fetching the full issue and its comments.No comments. This is an on-demand reliability-incident run (routine origin), but no alarm payload was attached to the wake. Per the contract, my job is to inspect production alarm state via the buyer-authorized AWS read tier and either explain/contain an active alarm or record the named null outcome `no-remediat..."
+                      - generic [ref=e234]:
+                        - generic [ref=e235]:
+                          - generic [ref=e237]:
+                            - generic [ref=e238]: FR
+                            - generic [ref=e240]: Friday
+                          - link "Run details d29710c2-573a-4fd0-8093-1958bf1c2d65" [ref=e241] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=d29710c2-573a-4fd0-8093-1958bf1c2d65
+                            - text: Details
+                        - generic [ref=e242]: Finished 1d ago
+                        - link "ISOA-131 — Finance snapshot" [ref=e243] [cursor=pointer]:
+                          - /url: /chat?panel=teams-issue-detail&detailId=e8b332b8-f863-48b8-b777-e51d998b6684
+                          - generic:
+                            - text: ISOA-131
+                            - generic [ref=e244]: — Finance snapshot
+                        - generic [ref=e245]: "I'll work through this recovery. Let me load my Paperclip identity and gather the current state of the issue.I'm assigned this recovery (issue is `blocked`, reviewer is null). Let me check out the issue and gather the full picture — comments, work-products, and whether the reviewer Gauge is live on the roster.The picture is clear: Tally already completed and delivered the finance snapshot (primary work-product + `finance-snapshot` document). The **only** failure is the review stage — the revi..."
+                  - region "Key metrics" [ref=e246]:
+                    - link "Agents 7 0 running, 6 paused" [ref=e247] [cursor=pointer]:
+                      - /url: /chat?panel=teams-agents
+                      - generic [ref=e248]:
+                        - paragraph [ref=e250]: Agents
+                        - paragraph [ref=e254]: "7"
+                        - generic [ref=e255]: 0 running, 6 paused
+                    - link "Open Tasks 34 34 open, 4 blocked" [ref=e257] [cursor=pointer]:
+                      - /url: /chat?panel=teams-issues
+                      - generic [ref=e258]:
+                        - paragraph [ref=e260]: Open Tasks
+                        - paragraph [ref=e264]: "34"
+                        - generic [ref=e265]: 34 open, 4 blocked
+                    - link "Pending Approvals 0 Awaiting board review" [ref=e267] [cursor=pointer]:
+                      - /url: /chat?panel=teams-inbox
+                      - generic [ref=e268]:
+                        - paragraph [ref=e270]: Pending Approvals
+                        - paragraph [ref=e274]: "0"
+                        - generic [ref=e275]: Awaiting board review
+                  - region "Activity charts" [ref=e276]:
+                    - generic [ref=e277]:
+                      - generic [ref=e278]:
+                        - heading "Run Activity" [level=3] [ref=e279]
+                        - generic [ref=e280]: Last 14 days
+                      - generic [ref=e281]:
+                        - generic [ref=e282]:
+                          - 'generic "2026-08-05: 2 runs" [ref=e283]'
+                          - 'generic "2026-08-06: 9 runs" [ref=e286]'
+                          - 'generic "2026-08-07: 16 runs" [ref=e289]'
+                          - 'generic "2026-08-08: 3 runs" [ref=e293]'
+                          - 'generic "2026-08-09: 4 runs" [ref=e297]'
+                          - 'generic "2026-08-10: 1 runs" [ref=e300]'
+                          - 'generic "2026-08-11: 0 runs" [ref=e303]'
+                          - 'generic "2026-08-12: 0 runs" [ref=e305]'
+                          - 'generic "2026-08-13: 1 runs" [ref=e307]'
+                          - 'generic "2026-08-14: 4 runs" [ref=e310]'
+                          - 'generic "2026-08-15: 4 runs" [ref=e314]'
+                          - 'generic "2026-08-16: 36 runs" [ref=e318]'
+                          - 'generic "2026-08-17: 1 runs" [ref=e323]'
+                          - 'generic "2026-08-18: 0 runs" [ref=e326]'
+                        - generic [ref=e328]:
+                          - generic [ref=e329]: 8/5
+                          - generic [ref=e335]: 8/11
+                          - generic [ref=e342]: 8/18
+                    - generic [ref=e343]:
+                      - generic [ref=e344]:
+                        - heading "Issues by Priority" [level=3] [ref=e345]
+                        - generic [ref=e346]: Last 14 days
+                      - generic [ref=e347]:
+                        - generic [ref=e348]:
+                          - 'generic "2026-08-05: 0 issues" [ref=e349]'
+                          - 'generic "2026-08-06: 6 issues" [ref=e351]'
+                          - 'generic "2026-08-07: 3 issues" [ref=e355]'
+                          - 'generic "2026-08-08: 0 issues" [ref=e359]'
+                          - 'generic "2026-08-09: 11 issues" [ref=e361]'
+                          - 'generic "2026-08-10: 0 issues" [ref=e364]'
+                          - 'generic "2026-08-11: 0 issues" [ref=e366]'
+                          - 'generic "2026-08-12: 0 issues" [ref=e368]'
+                          - 'generic "2026-08-13: 3 issues" [ref=e370]'
+                          - 'generic "2026-08-14: 9 issues" [ref=e373]'
+                          - 'generic "2026-08-15: 22 issues" [ref=e377]'
+                          - 'generic "2026-08-16: 10 issues" [ref=e381]'
+                          - 'generic "2026-08-17: 1 issues" [ref=e387]'
+                          - 'generic "2026-08-18: 0 issues" [ref=e390]'
+                        - generic [ref=e392]:
+                          - generic [ref=e393]: 8/5
+                          - generic [ref=e399]: 8/11
+                          - generic [ref=e406]: 8/18
+                        - generic [ref=e407]:
+                          - generic [ref=e408]: Critical
+                          - generic [ref=e410]: High
+                          - generic [ref=e412]: Medium
+                          - generic [ref=e414]: Low
+                    - generic [ref=e416]:
+                      - generic [ref=e417]:
+                        - heading "Issues by Status" [level=3] [ref=e418]
+                        - generic [ref=e419]: Last 14 days
+                      - generic [ref=e420]:
+                        - generic [ref=e421]:
+                          - 'generic "2026-08-05: 0 issues" [ref=e422]'
+                          - 'generic "2026-08-06: 6 issues" [ref=e424]'
+                          - 'generic "2026-08-07: 3 issues" [ref=e430]'
+                          - 'generic "2026-08-08: 0 issues" [ref=e435]'
+                          - 'generic "2026-08-09: 11 issues" [ref=e437]'
+                          - 'generic "2026-08-10: 0 issues" [ref=e444]'
+                          - 'generic "2026-08-11: 0 issues" [ref=e446]'
+                          - 'generic "2026-08-12: 0 issues" [ref=e448]'
+                          - 'generic "2026-08-13: 3 issues" [ref=e450]'
+                          - 'generic "2026-08-14: 9 issues" [ref=e454]'
+                          - 'generic "2026-08-15: 22 issues" [ref=e459]'
+                          - 'generic "2026-08-16: 10 issues" [ref=e465]'
+                          - 'generic "2026-08-17: 1 issues" [ref=e471]'
+                          - 'generic "2026-08-18: 0 issues" [ref=e474]'
+                        - generic [ref=e476]:
+                          - generic [ref=e477]: 8/5
+                          - generic [ref=e483]: 8/11
+                          - generic [ref=e490]: 8/18
+                        - generic [ref=e491]:
+                          - generic [ref=e492]: To Do
+                          - generic [ref=e494]: In Review
+                          - generic [ref=e496]: Done
+                          - generic [ref=e498]: Blocked
+                          - generic [ref=e500]: Cancelled
+                          - generic [ref=e502]: Backlog
+                    - generic [ref=e504]:
+                      - generic [ref=e505]:
+                        - heading "Success Rate" [level=3] [ref=e506]
+                        - generic [ref=e507]: Last 14 days
+                      - generic [ref=e508]:
+                        - generic [ref=e509]:
+                          - 'generic "2026-08-05: 100% (2/2)" [ref=e510]'
+                          - 'generic "2026-08-06: 100% (9/9)" [ref=e512]'
+                          - 'generic "2026-08-07: 94% (15/16)" [ref=e514]'
+                          - 'generic "2026-08-08: 67% (2/3)" [ref=e516]'
+                          - 'generic "2026-08-09: 75% (3/4)" [ref=e518]'
+                          - 'generic "2026-08-10: 100% (1/1)" [ref=e520]'
+                          - 'generic "2026-08-11: 0% (0/0)" [ref=e522]'
+                          - 'generic "2026-08-12: 0% (0/0)" [ref=e524]'
+                          - 'generic "2026-08-13: 100% (1/1)" [ref=e526]'
+                          - 'generic "2026-08-14: 50% (2/4)" [ref=e528]'
+                          - 'generic "2026-08-15: 75% (3/4)" [ref=e530]'
+                          - 'generic "2026-08-16: 11% (4/36)" [ref=e532]'
+                          - 'generic "2026-08-17: 100% (1/1)" [ref=e534]'
+                          - 'generic "2026-08-18: 0% (0/0)" [ref=e536]'
+                        - generic [ref=e538]:
+                          - generic [ref=e539]: 8/5
+                          - generic [ref=e545]: 8/11
+                          - generic [ref=e552]: 8/18
+                  - region "Recent tasks" [ref=e553]:
+                    - generic [ref=e554]:
+                      - heading "Recent Tasks" [level=2] [ref=e555]
+                      - link "View all →" [ref=e556] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issues
+                    - generic [ref=e558]:
+                      - link "ISOA-135 Daily company control Friday 20h ago" [ref=e559] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e562]: ISOA-135
+                        - generic: Daily company control
+                        - generic [ref=e563]:
+                          - generic [ref=e564]: FR
+                          - generic [ref=e566]: Friday
+                        - time [ref=e567]: 20h ago
+                      - link "ISOA-131 Finance snapshot Gauge 1d ago" [ref=e568] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e8b332b8-f863-48b8-b777-e51d998b6684
+                        - generic [ref=e571]: ISOA-131
+                        - generic: Finance snapshot
+                        - generic [ref=e572]:
+                          - generic [ref=e573]: GA
+                          - generic [ref=e575]: Gauge
+                        - time [ref=e576]: 1d ago
+                      - link "ISOA-133 Reliability incident Friday 1d ago" [ref=e577] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=768903fb-c847-444a-9d86-fe177a05bdd7
+                        - generic [ref=e581]: ISOA-133
+                        - generic: Reliability incident
+                        - generic [ref=e582]:
+                          - generic [ref=e583]: FR
+                          - generic [ref=e585]: Friday
+                        - time [ref=e586]: 1d ago
+                      - 'link "ISOA-134 Reliability follow-up: retune noisy prod p99 alarms + backend single-task SPOF (from ISOA-133) 1d ago" [ref=e587] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=577d9757-2ef5-402d-962a-44f1af60679e
+                        - generic [ref=e590]: ISOA-134
+                        - generic: "Reliability follow-up: retune noisy prod p99 alarms + backend single-task SPOF (from ISOA-133)"
+                        - time [ref=e591]: 1d ago
+                      - link "ISOA-125 Prepare demo environment and seeded company state Forge 1d ago" [ref=e592] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=ac0b0ce4-943d-4118-aa0a-7f9ba339ca24
+                        - generic [ref=e595]: ISOA-125
+                        - generic: Prepare demo environment and seeded company state
+                        - generic [ref=e596]:
+                          - generic [ref=e597]: FO
+                          - generic [ref=e599]: Forge
+                        - time [ref=e600]: 1d ago
+                      - link "ISOA-116 Publish a live read-only Isol8 company board Forge 1d ago" [ref=e601] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=573e1673-6117-47ac-b19f-6466e6089894
+                        - generic [ref=e604]: ISOA-116
+                        - generic: Publish a live read-only Isol8 company board
+                        - generic [ref=e605]:
+                          - generic [ref=e606]: FO
+                          - generic [ref=e608]: Forge
+                        - time [ref=e609]: 1d ago
+                  - region "Recent activity" [ref=e610]:
+                    - generic [ref=e611]:
+                      - heading "Recent activity" [level=2] [ref=e612]
+                      - link "View all →" [ref=e613] [cursor=pointer]:
+                        - /url: /chat?panel=teams-activity
+                    - generic [ref=e615]:
+                      - generic [ref=e618]:
+                        - paragraph:
+                          - generic [ref=e620]:
+                            - generic [ref=e621]: AD
+                            - generic [ref=e623]: admin@isol8.co
+                          - text: routine.revision_created
+                          - generic [ref=e624]:
+                            - generic [ref=e625]: "routine:"
+                            - text: eecd9e…6ff0
+                        - generic [ref=e626]: 19h ago
+                      - generic [ref=e629]:
+                        - paragraph:
+                          - generic [ref=e631]:
+                            - generic [ref=e632]: AD
+                            - generic [ref=e634]: admin@isol8.co
+                          - text: routine.updated
+                          - generic [ref=e635]:
+                            - generic [ref=e636]: "routine:"
+                            - text: eecd9e…6ff0
+                        - generic [ref=e637]: 19h ago
+                      - generic [ref=e640]:
+                        - paragraph:
+                          - generic [ref=e642]:
+                            - generic [ref=e643]: FR
+                            - generic [ref=e645]: Friday
+                          - text: environment.lease_released
+                          - generic [ref=e646]:
+                            - generic [ref=e647]: "environment_lease:"
+                            - text: 3d9fa1…d3f7
+                        - generic [ref=e648]: 20h ago
+                      - link "System updatedissue:f69ec2…27e1 20h ago" [ref=e650] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e651]:
+                          - paragraph:
+                            - generic [ref=e653]:
+                              - generic [ref=e654]: SY
+                              - generic [ref=e656]: System
+                            - text: updated
+                            - generic [ref=e657]:
+                              - generic [ref=e658]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e659]: 20h ago
+                      - link "Friday commented onissue:f69ec2…27e1 20h ago" [ref=e661] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e662]:
+                          - paragraph:
+                            - generic [ref=e664]:
+                              - generic [ref=e665]: FR
+                              - generic [ref=e667]: Friday
+                            - text: commented on
+                            - generic [ref=e668]:
+                              - generic [ref=e669]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e670]: 20h ago
+                      - link "Friday updatedissue:f69ec2…27e1 20h ago" [ref=e672] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e673]:
+                          - paragraph:
+                            - generic [ref=e675]:
+                              - generic [ref=e676]: FR
+                              - generic [ref=e678]: Friday
+                            - text: updated
+                            - generic [ref=e679]:
+                              - generic [ref=e680]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e681]: 20h ago
+                      - link "Friday issue.work_product_createdissue:f69ec2…27e1 20h ago" [ref=e683] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e684]:
+                          - paragraph:
+                            - generic [ref=e686]:
+                              - generic [ref=e687]: FR
+                              - generic [ref=e689]: Friday
+                            - text: issue.work_product_created
+                            - generic [ref=e690]:
+                              - generic [ref=e691]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e692]: 20h ago
+                      - link "Friday issue.work_product_deletedissue:f69ec2…27e1 20h ago" [ref=e694] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e695]:
+                          - paragraph:
+                            - generic [ref=e697]:
+                              - generic [ref=e698]: FR
+                              - generic [ref=e700]: Friday
+                            - text: issue.work_product_deleted
+                            - generic [ref=e701]:
+                              - generic [ref=e702]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e703]: 20h ago
+                      - link "Friday issue.work_product_createdissue:f69ec2…27e1 20h ago" [ref=e705] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                        - generic [ref=e706]:
+                          - paragraph:
+                            - generic [ref=e708]:
+                              - generic [ref=e709]: FR
+                              - generic [ref=e711]: Friday
+                            - text: issue.work_product_created
+                            - generic [ref=e712]:
+                              - generic [ref=e713]: "issue:"
+                              - text: f69ec2…27e1
+                          - generic [ref=e714]: 20h ago
+                      - generic [ref=e717]:
+                        - paragraph:
+                          - generic [ref=e719]:
+                            - generic [ref=e720]: FR
+                            - generic [ref=e722]: Friday
+                          - text: decision.created
+                          - generic [ref=e723]:
+                            - generic [ref=e724]: "decision:"
+                            - text: 8ab724…1eb4
+                        - generic [ref=e725]: 20h ago
+            - region "Inbox" [ref=e727]:
+              - tablist [ref=e730]:
+                - tab "Inbox" [selected] [ref=e731] [cursor=pointer]
+              - tabpanel "Inbox" [ref=e738]:
+                - generic [ref=e741]:
+                  - generic [ref=e743]:
+                    - paragraph [ref=e744]: Inbox
+                    - heading "Inbox" [level=1] [ref=e745]
+                  - generic [ref=e746]:
+                    - button "Needs attention 15" [expanded] [ref=e747]:
+                      - generic [ref=e749]: Needs attention
+                      - generic [ref=e750]: "15"
+                    - list [ref=e751]:
+                      - listitem [ref=e752]:
+                        - generic:
+                          - generic:
+                            - generic: Pulse — heartbeat run failed
+                            - generic "12 occurrences" [ref=e755]: ×12
+                        - generic [ref=e756]: 2d ago
+                        - generic [ref=e757]:
+                          - link "View run e5c0aeb9-63b5-4016-a194-650b82f2b949" [ref=e758] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=e5c0aeb9-63b5-4016-a194-650b82f2b949
+                            - text: View
+                          - button "Retry" [ref=e759]
+                          - button "Dismiss" [ref=e760]
+                      - listitem [ref=e761]:
+                        - generic:
+                          - generic:
+                            - generic: Vera — heartbeat run failed
+                            - generic "3 occurrences" [ref=e764]: ×3
+                        - generic [ref=e765]: 2d ago
+                        - generic [ref=e766]:
+                          - link "View run d84fc805-a912-4b69-91dd-5f41e6f8f8b3" [ref=e767] [cursor=pointer]:
+                            - /url: /chat?panel=teams-run-detail&detailId=d84fc805-a912-4b69-91dd-5f41e6f8f8b3
+                            - text: View
+                          - button "Retry" [ref=e768]
+                          - button "Dismiss" [ref=e769]
+                  - generic [ref=e771]:
+                    - tablist "Inbox tabs" [ref=e772]:
+                      - tab "Mine" [ref=e773]
+                      - tab "Recent" [ref=e774]
+                      - tab "Unread" [ref=e775]
+                      - tab "All" [selected] [ref=e776]
+                    - generic [ref=e777]:
+                      - generic [ref=e778]:
+                        - searchbox "Search inbox" [ref=e780]
+                        - button "Filter" [ref=e782]
+                      - generic [ref=e783]:
+                        - button "New task" [ref=e784]
+                        - button "Mark all as read" [disabled] [ref=e787]
+                  - generic [ref=e788]:
+                    - heading "Today" [level=3] [ref=e789]
+                    - link "Daily company control Blocked · 0 unresolved blockers need attention ISOA-135 Issue actions Dismiss from inbox" [ref=e792] [cursor=pointer]:
+                      - /url: /chat?panel=teams-issue-detail&detailId=f69ec2cc-12f2-4689-bb92-3372e65227e1
+                      - generic [ref=e793]:
+                        - generic: Daily company control
+                        - generic [ref=e794]:
+                          - generic "Blocked · 0 unresolved blockers need attention" [ref=e796]
+                          - generic [ref=e797]: ISOA-135
+                      - button "Issue actions" [ref=e799]
+                      - button "Dismiss from inbox" [ref=e805]
+                    - heading "Earlier" [level=3] [ref=e809]
+                    - generic [ref=e810]:
+                      - link "Founder arming checklist — operating loops go-live Todo ISOA-130 Issue actions Dismiss from inbox" [ref=e812] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f6cd6d49-23f8-43c9-9930-65c6b7dcdae2
+                        - generic [ref=e813]:
+                          - generic: Founder arming checklist — operating loops go-live
+                          - generic [ref=e814]:
+                            - generic "Todo" [ref=e816]
+                            - generic [ref=e817]: ISOA-130
+                        - button "Issue actions" [ref=e819]
+                        - button "Dismiss from inbox" [ref=e825]
+                      - link "Prepare demo environment and seeded company state Backlog ISOA-125 Issue actions Dismiss from inbox" [ref=e830] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=ac0b0ce4-943d-4118-aa0a-7f9ba339ca24
+                        - generic [ref=e831]:
+                          - generic: Prepare demo environment and seeded company state
+                          - generic [ref=e832]:
+                            - generic "Backlog" [ref=e834]
+                            - generic [ref=e835]: ISOA-125
+                        - button "Issue actions" [ref=e837]
+                        - button "Dismiss from inbox" [ref=e843]
+                      - link "Publish a live read-only Isol8 company board Backlog ISOA-116 Issue actions Dismiss from inbox" [ref=e848] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=573e1673-6117-47ac-b19f-6466e6089894
+                        - generic [ref=e849]:
+                          - generic: Publish a live read-only Isol8 company board
+                          - generic [ref=e850]:
+                            - generic "Backlog" [ref=e852]
+                            - generic [ref=e853]: ISOA-116
+                        - button "Issue actions" [ref=e855]
+                        - button "Dismiss from inbox" [ref=e861]
+                      - link "Publish the webhook event reference as the first technical launch asset Backlog ISOA-118 Issue actions Dismiss from inbox" [ref=e866] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=4a67d5fb-ce2e-4475-8f67-cf647e4d9362
+                        - generic [ref=e867]:
+                          - generic: Publish the webhook event reference as the first technical launch asset
+                          - generic [ref=e868]:
+                            - generic "Backlog" [ref=e870]
+                            - generic [ref=e871]: ISOA-118
+                        - button "Issue actions" [ref=e873]
+                        - button "Dismiss from inbox" [ref=e879]
+                      - link "Activation funnel evidence pack for interview targeting Todo ISOA-129 Issue actions Dismiss from inbox" [ref=e884] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=4214ea44-7468-4797-8de6-25675f42aee4
+                        - generic [ref=e885]:
+                          - generic: Activation funnel evidence pack for interview targeting
+                          - generic [ref=e886]:
+                            - generic "Todo" [ref=e888]
+                            - generic [ref=e889]: ISOA-129
+                        - button "Issue actions" [ref=e891]
+                        - button "Dismiss from inbox" [ref=e897]
+                      - link "Exclusion list and deliverability guardrails review Todo ISOA-128 Issue actions Dismiss from inbox" [ref=e902] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=60ed7934-01c5-4113-90f6-095a73a00cd6
+                        - generic [ref=e903]:
+                          - generic: Exclusion list and deliverability guardrails review
+                          - generic [ref=e904]:
+                            - generic "Todo" [ref=e906]
+                            - generic [ref=e907]: ISOA-128
+                        - button "Issue actions" [ref=e909]
+                        - button "Dismiss from inbox" [ref=e915]
+                      - link "Verify event reference against live webhook deliveries Todo ISOA-127 Issue actions Dismiss from inbox" [ref=e920] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=30243e12-9518-40ff-9986-e2c8b8347706
+                        - generic [ref=e921]:
+                          - generic: Verify event reference against live webhook deliveries
+                          - generic [ref=e922]:
+                            - generic "Todo" [ref=e924]
+                            - generic [ref=e925]: ISOA-127
+                        - button "Issue actions" [ref=e927]
+                        - button "Dismiss from inbox" [ref=e933]
+                      - link "Draft public board narrative and publish copy Todo ISOA-126 Issue actions Dismiss from inbox" [ref=e938] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=7bb59f9d-7618-4cb3-be28-f7972a4ec423
+                        - generic [ref=e939]:
+                          - generic: Draft public board narrative and publish copy
+                          - generic [ref=e940]:
+                            - generic "Todo" [ref=e942]
+                            - generic [ref=e943]: ISOA-126
+                        - button "Issue actions" [ref=e945]
+                        - button "Dismiss from inbox" [ref=e951]
+                      - link "Prepare and publish the Show HN launch Todo ISOA-120 Issue actions Dismiss from inbox" [ref=e956] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=c565fba5-ae9c-4f5d-a541-c4cd6f889bee
+                        - generic [ref=e957]:
+                          - generic: Prepare and publish the Show HN launch
+                          - generic [ref=e958]:
+                            - generic "Todo" [ref=e960]
+                            - generic [ref=e961]: ISOA-120
+                        - button "Issue actions" [ref=e963]
+                        - button "Dismiss from inbox" [ref=e969]
+                      - link "Conduct five activation and churn interviews Todo ISOA-121 Issue actions Dismiss from inbox" [ref=e974] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=0a3f951d-5238-4978-bda1-ee2f782089a9
+                        - generic [ref=e975]:
+                          - generic: Conduct five activation and churn interviews
+                          - generic [ref=e976]:
+                            - generic "Todo" [ref=e978]
+                            - generic [ref=e979]: ISOA-121
+                        - button "Issue actions" [ref=e981]
+                        - button "Dismiss from inbox" [ref=e987]
+                      - link "Submit Sentry and Linear integration directory listings Todo ISOA-119 Issue actions Dismiss from inbox" [ref=e992] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=cddfffbe-5c0a-4bfa-8745-ee6517cd46b1
+                        - generic [ref=e993]:
+                          - generic: Submit Sentry and Linear integration directory listings
+                          - generic [ref=e994]:
+                            - generic "Todo" [ref=e996]
+                            - generic [ref=e997]: ISOA-119
+                        - button "Issue actions" [ref=e999]
+                        - button "Dismiss from inbox" [ref=e1005]
+                      - link "Prepare and run the first 50-founder outbound cohort Todo ISOA-117 Issue actions Dismiss from inbox" [ref=e1010] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=552989e0-ad49-47c1-a1fa-9dfe8a66e43d
+                        - generic [ref=e1011]:
+                          - generic: Prepare and run the first 50-founder outbound cohort
+                          - generic [ref=e1012]:
+                            - generic "Todo" [ref=e1014]
+                            - generic [ref=e1015]: ISOA-117
+                        - button "Issue actions" [ref=e1017]
+                        - button "Dismiss from inbox" [ref=e1023]
+                      - link "Record the 45-second issue-to-artifact demo Todo ISOA-115 Issue actions Dismiss from inbox" [ref=e1028] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=1e0d976e-a3c1-4d50-a76f-623d27a26a02
+                        - generic [ref=e1029]:
+                          - generic: Record the 45-second issue-to-artifact demo
+                          - generic [ref=e1030]:
+                            - generic "Todo" [ref=e1032]
+                            - generic [ref=e1033]: ISOA-115
+                        - button "Issue actions" [ref=e1035]
+                        - button "Dismiss from inbox" [ref=e1041]
+                      - link "Build live monitoring-to-Paperclip reliability pipeline In Review ISOA-122 Issue actions Dismiss from inbox" [ref=e1046] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=709130a3-5bea-424a-ad4c-b70b46a89602
+                        - generic [ref=e1047]:
+                          - generic: Build live monitoring-to-Paperclip reliability pipeline
+                          - generic [ref=e1048]:
+                            - generic "In Review" [ref=e1050]
+                            - generic [ref=e1051]: ISOA-122
+                        - button "Issue actions" [ref=e1053]
+                        - button "Dismiss from inbox" [ref=e1059]
+                      - link "[CRITICAL][cloudwatch] iso122-nonprod-controlled-test Done ISOA-124 Issue actions Dismiss from inbox" [ref=e1064] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e2c190f7-2ef7-4095-aa12-0c4339f76a4c
+                        - generic [ref=e1065]:
+                          - generic: "[CRITICAL][cloudwatch] iso122-nonprod-controlled-test"
+                          - generic [ref=e1066]:
+                            - generic "Done" [ref=e1068]
+                            - generic [ref=e1070]: ISOA-124
+                        - button "Issue actions" [ref=e1072]
+                        - button "Dismiss from inbox" [ref=e1078]
+                      - link "[MEDIUM][cloudwatch] iso122 controlled test Done ISOA-123 Issue actions Dismiss from inbox" [ref=e1083] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=20b11c02-38dc-4229-87d5-99bf3ce4b5d9
+                        - generic [ref=e1084]:
+                          - generic: "[MEDIUM][cloudwatch] iso122 controlled test"
+                          - generic [ref=e1085]:
+                            - generic "Done" [ref=e1087]
+                            - generic [ref=e1089]: ISOA-123
+                        - button "Issue actions" [ref=e1091]
+                        - button "Dismiss from inbox" [ref=e1097]
+                      - link "Repair affected OpenClaw config and rerun Telegram E2E Backlog ISOA-65 Issue actions Dismiss from inbox" [ref=e1102] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=4a9ccacb-e8d3-4b8e-b574-252604dfbb96
+                        - generic [ref=e1103]:
+                          - generic: Repair affected OpenClaw config and rerun Telegram E2E
+                          - generic [ref=e1104]:
+                            - generic "Backlog" [ref=e1106]
+                            - generic [ref=e1107]: ISOA-65
+                        - button "Issue actions" [ref=e1109]
+                        - button "Dismiss from inbox" [ref=e1115]
+                      - link "Fix Telegram connection failure in Connections Backlog ISOA-44 Issue actions Dismiss from inbox" [ref=e1120] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=8b11d98a-6380-47b0-81e6-2752bb53062e
+                        - generic [ref=e1121]:
+                          - generic: Fix Telegram connection failure in Connections
+                          - generic [ref=e1122]:
+                            - generic "Backlog" [ref=e1124]
+                            - generic [ref=e1125]: ISOA-44
+                        - button "Issue actions" [ref=e1127]
+                        - button "Dismiss from inbox" [ref=e1133]
+                      - link "Build production reliability loop from error to reviewed PR Cancelled ISOA-31 Issue actions Dismiss from inbox" [ref=e1138] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=c9f8b4ba-01e3-4828-9e22-1063cec762f4
+                        - generic [ref=e1139]:
+                          - generic: Build production reliability loop from error to reviewed PR
+                          - generic [ref=e1140]:
+                            - generic "Cancelled" [ref=e1142]
+                            - generic [ref=e1143]: ISOA-31
+                        - button "Issue actions" [ref=e1145]
+                        - button "Dismiss from inbox" [ref=e1151]
+                      - link "Fix Meta Page trigger picker resource listing Backlog ISOA-113 Issue actions Dismiss from inbox" [ref=e1156] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=560f08a5-d3c5-4247-b35a-c0c000a5b07d
+                        - generic [ref=e1157]:
+                          - generic: Fix Meta Page trigger picker resource listing
+                          - generic [ref=e1158]:
+                            - generic "Backlog" [ref=e1160]
+                            - generic [ref=e1161]: ISOA-113
+                        - button "Issue actions" [ref=e1163]
+                        - button "Dismiss from inbox" [ref=e1169]
+                      - 'link "Friday review: escalated admin inbox items from ISOA-101 Backlog ISOA-102 Issue actions Dismiss from inbox" [ref=e1174] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=fc7795e5-6308-49fa-a09a-afd9e8d30921
+                        - generic [ref=e1175]:
+                          - generic: "Friday review: escalated admin inbox items from ISOA-101"
+                          - generic [ref=e1176]:
+                            - generic "Backlog" [ref=e1178]
+                            - generic [ref=e1179]: ISOA-102
+                        - button "Issue actions" [ref=e1181]
+                        - button "Dismiss from inbox" [ref=e1187]
+                      - link "New Container E2E Test Done ISOA-11 Issue actions Dismiss from inbox" [ref=e1192] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=dbf8da0e-365a-48b1-9d2d-9bd0b4b3cdd1
+                        - generic [ref=e1193]:
+                          - generic: New Container E2E Test
+                          - generic [ref=e1194]:
+                            - generic "Done" [ref=e1196]
+                            - generic [ref=e1198]: ISOA-11
+                        - button "Issue actions" [ref=e1200]
+                        - button "Dismiss from inbox" [ref=e1206]
+                      - link "Regenerate affected OpenClaw config for Telegram connection Done ISOA-50 Issue actions Dismiss from inbox" [ref=e1211] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=d038af41-93f0-4800-af83-ac3685ca0fb0
+                        - generic [ref=e1212]:
+                          - generic: Regenerate affected OpenClaw config for Telegram connection
+                          - generic [ref=e1213]:
+                            - generic "Done" [ref=e1215]
+                            - generic [ref=e1217]: ISOA-50
+                        - button "Issue actions" [ref=e1219]
+                        - button "Dismiss from inbox" [ref=e1225]
+                      - link "Execute Intercom support-resolution loop Cancelled ISOA-62 Issue actions Dismiss from inbox" [ref=e1230] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=81d25ebe-2030-4552-b980-593982fa5c9b
+                        - generic [ref=e1231]:
+                          - generic: Execute Intercom support-resolution loop
+                          - generic [ref=e1232]:
+                            - generic "Cancelled" [ref=e1234]
+                            - generic [ref=e1235]: ISOA-62
+                        - button "Issue actions" [ref=e1237]
+                        - button "Dismiss from inbox" [ref=e1243]
+                      - link "Operationalize Isol8's first autonomous company loops Backlog ISOA-37 Issue actions Dismiss from inbox" [ref=e1248] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=a9f75492-0e1e-4e1b-88a7-a2c9277e3837
+                        - generic [ref=e1249]:
+                          - generic: Operationalize Isol8's first autonomous company loops
+                          - generic [ref=e1250]:
+                            - generic "Backlog" [ref=e1252]
+                            - generic [ref=e1253]: ISOA-37
+                        - button "Issue actions" [ref=e1255]
+                        - button "Dismiss from inbox" [ref=e1261]
+                      - link "Finance snapshot In Review ISOA-131 Issue actions Dismiss from inbox" [ref=e1266] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e8b332b8-f863-48b8-b777-e51d998b6684
+                        - generic [ref=e1267]:
+                          - generic: Finance snapshot
+                          - generic [ref=e1268]:
+                            - generic "In Review" [ref=e1270]
+                            - generic [ref=e1271]: ISOA-131
+                        - button "Issue actions" [ref=e1273]
+                        - button "Dismiss from inbox" [ref=e1279]
+                      - link "Reliability incident Done ISOA-133 Issue actions Dismiss from inbox" [ref=e1284] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=768903fb-c847-444a-9d86-fe177a05bdd7
+                        - generic [ref=e1285]:
+                          - generic: Reliability incident
+                          - generic [ref=e1286]:
+                            - generic "Done" [ref=e1288]
+                            - generic [ref=e1290]: ISOA-133
+                        - button "Issue actions" [ref=e1292]
+                        - button "Dismiss from inbox" [ref=e1298]
+                      - link "Activate operating-loop ownership and launch support E2E Todo ISOA-79 Issue actions Dismiss from inbox" [ref=e1303] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=204565b7-fdd0-425f-a530-e8e426561a25
+                        - generic [ref=e1304]:
+                          - generic: Activate operating-loop ownership and launch support E2E
+                          - generic [ref=e1305]:
+                            - generic "Todo" [ref=e1307]
+                            - generic [ref=e1308]: ISOA-79
+                        - button "Issue actions" [ref=e1310]
+                        - button "Dismiss from inbox" [ref=e1316]
+                      - link "Reframe Wednesday marketing learning around activated and paid outcomes Backlog ISOA-88 Issue actions Dismiss from inbox" [ref=e1321] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=b66417ab-80f9-49c4-8652-703962bbc740
+                        - generic [ref=e1322]:
+                          - generic: Reframe Wednesday marketing learning around activated and paid outcomes
+                          - generic [ref=e1323]:
+                            - generic "Backlog" [ref=e1325]
+                            - generic [ref=e1326]: ISOA-88
+                        - button "Issue actions" [ref=e1328]
+                        - button "Dismiss from inbox" [ref=e1334]
+                      - link "Produce weekly product/data scorecard from approved KPI contract Backlog ISOA-87 Issue actions Dismiss from inbox" [ref=e1339] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=35150075-2732-4563-8ae6-749455928fce
+                        - generic [ref=e1340]:
+                          - generic: Produce weekly product/data scorecard from approved KPI contract
+                          - generic [ref=e1341]:
+                            - generic "Backlog" [ref=e1343]
+                            - generic [ref=e1344]: ISOA-87
+                        - button "Issue actions" [ref=e1346]
+                        - button "Dismiss from inbox" [ref=e1352]
+                      - link "Implement loop-health guardrail based on expected artifacts Backlog ISOA-86 Issue actions Dismiss from inbox" [ref=e1357] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=7649719a-6841-48f9-be75-82a656f3aaa3
+                        - generic [ref=e1358]:
+                          - generic: Implement loop-health guardrail based on expected artifacts
+                          - generic [ref=e1359]:
+                            - generic "Backlog" [ref=e1361]
+                            - generic [ref=e1362]: ISOA-86
+                        - button "Issue actions" [ref=e1364]
+                        - button "Dismiss from inbox" [ref=e1370]
+                      - link "Implement audited owner-approved resolution path for board-only confirmations Backlog ISOA-82 Issue actions Dismiss from inbox" [ref=e1375] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=8cb66b13-bfbb-4c22-a81f-cf0e34c4c3f9
+                        - generic [ref=e1376]:
+                          - generic: Implement audited owner-approved resolution path for board-only confirmations
+                          - generic [ref=e1377]:
+                            - generic "Backlog" [ref=e1379]
+                            - generic [ref=e1380]: ISOA-82
+                        - button "Issue actions" [ref=e1382]
+                        - button "Dismiss from inbox" [ref=e1388]
+                      - 'link "Decision needed: Meta Page picker fix touches OAuth/Page-token materialization Done ISOA-111 Issue actions Dismiss from inbox" [ref=e1393] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=115482c5-9789-4566-b233-8b2f39cdf08c
+                        - generic [ref=e1394]:
+                          - generic: "Decision needed: Meta Page picker fix touches OAuth/Page-token materialization"
+                          - generic [ref=e1395]:
+                            - generic "Done" [ref=e1397]
+                            - generic [ref=e1399]: ISOA-111
+                        - button "Issue actions" [ref=e1401]
+                        - button "Dismiss from inbox" [ref=e1407]
+                      - link "Implement guarded Meta Page picker token materialization Backlog ISOA-114 Issue actions Dismiss from inbox" [ref=e1412] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=7f87ee6f-b9b1-44c0-8895-443433f52bf5
+                        - generic [ref=e1413]:
+                          - generic: Implement guarded Meta Page picker token materialization
+                          - generic [ref=e1414]:
+                            - generic "Backlog" [ref=e1416]
+                            - generic [ref=e1417]: ISOA-114
+                        - button "Issue actions" [ref=e1419]
+                        - button "Dismiss from inbox" [ref=e1425]
+                      - 'link "Decision needed: Meta Page trigger picker auth/resource-listing fix for GitHub #1795 Done ISOA-112 Issue actions Dismiss from inbox" [ref=e1430] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=2fac76c9-64f7-42ce-a801-ccd7e7edb4ff
+                        - generic [ref=e1431]:
+                          - generic: "Decision needed: Meta Page trigger picker auth/resource-listing fix for GitHub #1795"
+                          - generic [ref=e1432]:
+                            - generic "Done" [ref=e1434]
+                            - generic [ref=e1436]: ISOA-112
+                        - button "Issue actions" [ref=e1438]
+                        - button "Dismiss from inbox" [ref=e1444]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-109 Issue actions Dismiss from inbox" [ref=e1449] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=dd0f7a53-e5cc-46a5-8601-057b4b9d56c1
+                        - generic [ref=e1450]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1451]:
+                            - generic "Done" [ref=e1453]
+                            - generic [ref=e1455]: ISOA-109
+                        - button "Issue actions" [ref=e1457]
+                        - button "Dismiss from inbox" [ref=e1463]
+                      - 'link "Decision needed: Meta Ads Page trigger source and permissions Done ISOA-110 Issue actions Dismiss from inbox" [ref=e1468] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=1e3f3b32-5d4f-4f34-8af0-6b57d9a00dd3
+                        - generic [ref=e1469]:
+                          - generic: "Decision needed: Meta Ads Page trigger source and permissions"
+                          - generic [ref=e1470]:
+                            - generic "Done" [ref=e1472]
+                            - generic [ref=e1474]: ISOA-110
+                        - button "Issue actions" [ref=e1476]
+                        - button "Dismiss from inbox" [ref=e1482]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-105 Issue actions Dismiss from inbox" [ref=e1487] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=2bba52d9-bb1d-4e5d-a885-869d75959a41
+                        - generic [ref=e1488]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1489]:
+                            - generic "Done" [ref=e1491]
+                            - generic [ref=e1493]: ISOA-105
+                        - button "Issue actions" [ref=e1495]
+                        - button "Dismiss from inbox" [ref=e1501]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-108 Issue actions Dismiss from inbox" [ref=e1506] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=8c1aeb5f-b633-4b80-83b7-1222db35e386
+                        - generic [ref=e1507]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1508]:
+                            - generic "Done" [ref=e1510]
+                            - generic [ref=e1512]: ISOA-108
+                        - button "Issue actions" [ref=e1514]
+                        - button "Dismiss from inbox" [ref=e1520]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-104 Issue actions Dismiss from inbox" [ref=e1525] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=a9ddda70-14cb-4373-b60b-bf5595aa5268
+                        - generic [ref=e1526]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1527]:
+                            - generic "Done" [ref=e1529]
+                            - generic [ref=e1531]: ISOA-104
+                        - button "Issue actions" [ref=e1533]
+                        - button "Dismiss from inbox" [ref=e1539]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-106 Issue actions Dismiss from inbox" [ref=e1544] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=1d0bdf22-9d71-45af-a255-0573987e114c
+                        - generic [ref=e1545]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1546]:
+                            - generic "Done" [ref=e1548]
+                            - generic [ref=e1550]: ISOA-106
+                        - button "Issue actions" [ref=e1552]
+                        - button "Dismiss from inbox" [ref=e1558]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-107 Issue actions Dismiss from inbox" [ref=e1563] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=7733d7d7-1e59-4828-ae32-538d045462de
+                        - generic [ref=e1564]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1565]:
+                            - generic "Done" [ref=e1567]
+                            - generic [ref=e1569]: ISOA-107
+                        - button "Issue actions" [ref=e1571]
+                        - button "Dismiss from inbox" [ref=e1577]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-103 Issue actions Dismiss from inbox" [ref=e1582] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=81be99fb-73e2-48fa-9fa2-5afdccffdd58
+                        - generic [ref=e1583]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1584]:
+                            - generic "Done" [ref=e1586]
+                            - generic [ref=e1588]: ISOA-103
+                        - button "Issue actions" [ref=e1590]
+                        - button "Dismiss from inbox" [ref=e1596]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-99 Issue actions Dismiss from inbox" [ref=e1601] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=9473e191-5987-452f-a401-476bb88be3ed
+                        - generic [ref=e1602]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1603]:
+                            - generic "Done" [ref=e1605]
+                            - generic [ref=e1607]: ISOA-99
+                        - button "Issue actions" [ref=e1609]
+                        - button "Dismiss from inbox" [ref=e1615]
+                      - 'link "Google: New email (checked on a schedule) Done ISOA-101 Issue actions Dismiss from inbox" [ref=e1620] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=7127f93c-f655-4d98-99f5-02bbdc9e5748
+                        - generic [ref=e1621]:
+                          - generic: "Google: New email (checked on a schedule)"
+                          - generic [ref=e1622]:
+                            - generic "Done" [ref=e1624]
+                            - generic [ref=e1626]: ISOA-101
+                        - button "Issue actions" [ref=e1628]
+                        - button "Dismiss from inbox" [ref=e1634]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-100 Issue actions Dismiss from inbox" [ref=e1639] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=39032bcc-53e0-439e-8b9e-7d3dd73ebae0
+                        - generic [ref=e1640]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1641]:
+                            - generic "Done" [ref=e1643]
+                            - generic [ref=e1645]: ISOA-100
+                        - button "Issue actions" [ref=e1647]
+                        - button "Dismiss from inbox" [ref=e1653]
+                      - link "Nightly CEO progress Done ISOA-97 Issue actions Dismiss from inbox" [ref=e1658] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e9c7bfe8-d474-492f-b4a2-e419cb7384ad
+                        - generic [ref=e1659]:
+                          - generic: Nightly CEO progress
+                          - generic [ref=e1660]:
+                            - generic "Done" [ref=e1662]
+                            - generic [ref=e1664]: ISOA-97
+                        - button "Issue actions" [ref=e1666]
+                        - button "Dismiss from inbox" [ref=e1672]
+                      - link "Resolve finance DRI and source decisions for the unit-economics loop Blocked · 0 unresolved blockers need attention ISOA-89 Issue actions Dismiss from inbox" [ref=e1677] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=6f00c5dc-f202-43a4-885f-63de45cb4253
+                        - generic [ref=e1678]:
+                          - generic: Resolve finance DRI and source decisions for the unit-economics loop
+                          - generic [ref=e1679]:
+                            - generic "Blocked · 0 unresolved blockers need attention" [ref=e1681]
+                            - generic [ref=e1682]: ISOA-89
+                        - button "Issue actions" [ref=e1684]
+                        - button "Dismiss from inbox" [ref=e1690]
+                      - link "Community signal watch Done ISOA-98 Issue actions Dismiss from inbox" [ref=e1695] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=036c2f37-c807-4191-869c-bedf093303f1
+                        - generic [ref=e1696]:
+                          - generic: Community signal watch
+                          - generic [ref=e1697]:
+                            - generic "Done" [ref=e1699]
+                            - generic [ref=e1701]: ISOA-98
+                        - button "Issue actions" [ref=e1703]
+                        - button "Dismiss from inbox" [ref=e1709]
+                      - link "Investigate GitHub issue webhook assignment routing from smoke test Cancelled ISOA-96 Issue actions Dismiss from inbox" [ref=e1714] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=76c3b5ef-17cd-41ad-bd8e-51f35bd63c39
+                        - generic [ref=e1715]:
+                          - generic: Investigate GitHub issue webhook assignment routing from smoke test
+                          - generic [ref=e1716]:
+                            - generic "Cancelled" [ref=e1718]
+                            - generic [ref=e1719]: ISOA-96
+                        - button "Issue actions" [ref=e1721]
+                        - button "Dismiss from inbox" [ref=e1727]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-95 Issue actions Dismiss from inbox" [ref=e1732] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=48db9780-db90-4624-8e99-67b2144bdc6b
+                        - generic [ref=e1733]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1734]:
+                            - generic "Done" [ref=e1736]
+                            - generic [ref=e1738]: ISOA-95
+                        - button "Issue actions" [ref=e1740]
+                        - button "Dismiss from inbox" [ref=e1746]
+                      - 'link "GitHub: Issue opened or changed Done ISOA-94 Issue actions Dismiss from inbox" [ref=e1751] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=db45ab46-017e-459c-b996-f9a1dd241ab9
+                        - generic [ref=e1752]:
+                          - generic: "GitHub: Issue opened or changed"
+                          - generic [ref=e1753]:
+                            - generic "Done" [ref=e1755]
+                            - generic [ref=e1757]: ISOA-94
+                        - button "Issue actions" [ref=e1759]
+                        - button "Dismiss from inbox" [ref=e1765]
+                      - 'link "Google: Calendar changed Done ISOA-93 Issue actions Dismiss from inbox" [ref=e1770] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=4f34a8b1-d92a-4b4f-a10e-0de8e0b6f1ea
+                        - generic [ref=e1771]:
+                          - generic: "Google: Calendar changed"
+                          - generic [ref=e1772]:
+                            - generic "Done" [ref=e1774]
+                            - generic [ref=e1776]: ISOA-93
+                        - button "Issue actions" [ref=e1778]
+                        - button "Dismiss from inbox" [ref=e1784]
+                      - link "Set up Apollo CLI or MCP integration for Friday Backlog ISOA-92 Issue actions Dismiss from inbox" [ref=e1789] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=f15f73c1-9c4e-4910-a508-4ac0b17649c6
+                        - generic [ref=e1790]:
+                          - generic: Set up Apollo CLI or MCP integration for Friday
+                          - generic [ref=e1791]:
+                            - generic "Backlog" [ref=e1793]
+                            - generic [ref=e1794]: ISOA-92
+                        - button "Issue actions" [ref=e1796]
+                        - button "Dismiss from inbox" [ref=e1802]
+                      - link "Set up Apollo MCP integration for Friday Backlog ISOA-91 Issue actions Dismiss from inbox" [ref=e1807] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e2fd256d-321b-4d6f-8394-71f999e1c2bf
+                        - generic [ref=e1808]:
+                          - generic: Set up Apollo MCP integration for Friday
+                          - generic [ref=e1809]:
+                            - generic "Backlog" [ref=e1811]
+                            - generic [ref=e1812]: ISOA-91
+                        - button "Issue actions" [ref=e1814]
+                        - button "Dismiss from inbox" [ref=e1820]
+                      - link "Implement constant support intake operating-loop proof Cancelled ISOA-84 Issue actions Dismiss from inbox" [ref=e1825] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=d96d609f-6ced-4c41-8324-6700295da635
+                        - generic [ref=e1826]:
+                          - generic: Implement constant support intake operating-loop proof
+                          - generic [ref=e1827]:
+                            - generic "Cancelled" [ref=e1829]
+                            - generic [ref=e1830]: ISOA-84
+                        - button "Issue actions" [ref=e1832]
+                        - button "Dismiss from inbox" [ref=e1838]
+                      - link "Build support-to-Paperclip artifact hooks for the approved support loop Cancelled ISOA-85 Issue actions Dismiss from inbox" [ref=e1843] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=2f3149d7-7cf2-4070-99cb-21d9a4b65c19
+                        - generic [ref=e1844]:
+                          - generic: Build support-to-Paperclip artifact hooks for the approved support loop
+                          - generic [ref=e1845]:
+                            - generic "Cancelled" [ref=e1847]
+                            - generic [ref=e1848]: ISOA-85
+                        - button "Issue actions" [ref=e1850]
+                        - button "Dismiss from inbox" [ref=e1856]
+                      - link "Run controlled support-loop E2E with synthetic case Done ISOA-80 Issue actions Dismiss from inbox" [ref=e1861] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=e4b271ef-0147-432f-a019-da0482deedc6
+                        - generic [ref=e1862]:
+                          - generic: Run controlled support-loop E2E with synthetic case
+                          - generic [ref=e1863]:
+                            - generic "Done" [ref=e1865]
+                            - generic [ref=e1867]: ISOA-80
+                        - button "Issue actions" [ref=e1869]
+                        - button "Dismiss from inbox" [ref=e1875]
+                      - 'link "Platform Operations: fix Vera intake Lobster runtime boundary for ISOA-80 Done ISOA-83 Issue actions Dismiss from inbox" [ref=e1880] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=9e17579d-4f4f-47f6-b12f-f08b401e47ae
+                        - generic [ref=e1881]:
+                          - generic: "Platform Operations: fix Vera intake Lobster runtime boundary for ISOA-80"
+                          - generic [ref=e1882]:
+                            - generic "Done" [ref=e1884]
+                            - generic [ref=e1886]: ISOA-83
+                        - button "Issue actions" [ref=e1888]
+                        - button "Dismiss from inbox" [ref=e1894]
+                      - link "Design and approve Isol8-on-Isol8 business operating-loop architecture Done ISOA-68 Issue actions Dismiss from inbox" [ref=e1899] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=226bfdff-c1f7-4302-b695-1705ec58a0fd
+                        - generic [ref=e1900]:
+                          - generic: Design and approve Isol8-on-Isol8 business operating-loop architecture
+                          - generic [ref=e1901]:
+                            - generic "Done" [ref=e1903]
+                            - generic [ref=e1905]: ISOA-68
+                        - button "Issue actions" [ref=e1907]
+                        - button "Dismiss from inbox" [ref=e1913]
+                      - link "Unblock approved ISOA-68 board-only confirmation from cloud heartbeat Done ISOA-81 Issue actions Dismiss from inbox" [ref=e1918] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=134e847e-d8c1-4a68-9c50-c25330b983d2
+                        - generic [ref=e1919]:
+                          - generic: Unblock approved ISOA-68 board-only confirmation from cloud heartbeat
+                          - generic [ref=e1920]:
+                            - generic "Done" [ref=e1922]
+                            - generic [ref=e1924]: ISOA-81
+                        - button "Issue actions" [ref=e1926]
+                        - button "Dismiss from inbox" [ref=e1932]
+                      - link "Package first proven operating loop for the Marketplace Blocked · 1 unresolved blocker needs attention ISOA-34 Issue actions Dismiss from inbox" [ref=e1937] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=db7bdb10-a8c5-4b0e-a716-f5e576bbd8e2
+                        - generic [ref=e1938]:
+                          - generic: Package first proven operating loop for the Marketplace
+                          - generic [ref=e1939]:
+                            - generic "Blocked · 1 unresolved blocker needs attention" [ref=e1941]
+                            - generic [ref=e1942]: ISOA-34
+                        - button "Issue actions" [ref=e1944]
+                        - button "Dismiss from inbox" [ref=e1950]
+                      - link "Build customer support loop with Intercom and Vera Blocked · 1 unresolved blocker needs attention ISOA-33 Issue actions Dismiss from inbox" [ref=e1955] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=683277da-f4a9-468b-a965-2452a216d9ff
+                        - generic [ref=e1956]:
+                          - generic: Build customer support loop with Intercom and Vera
+                          - generic [ref=e1957]:
+                            - generic "Blocked · 1 unresolved blocker needs attention" [ref=e1959]
+                            - generic [ref=e1960]: ISOA-33
+                        - button "Issue actions" [ref=e1962]
+                        - button "Dismiss from inbox" [ref=e1968]
+                      - 'link "Reliability follow-up: retune noisy prod p99 alarms + backend single-task SPOF (from ISOA-133) Backlog ISOA-134 Issue actions Dismiss from inbox" [ref=e1973] [cursor=pointer]':
+                        - /url: /chat?panel=teams-issue-detail&detailId=577d9757-2ef5-402d-962a-44f1af60679e
+                        - generic [ref=e1974]:
+                          - generic: "Reliability follow-up: retune noisy prod p99 alarms + backend single-task SPOF (from ISOA-133)"
+                          - generic [ref=e1975]:
+                            - generic "Backlog" [ref=e1977]
+                            - generic [ref=e1978]: ISOA-134
+                        - button "Issue actions" [ref=e1980]
+                        - button "Dismiss from inbox" [ref=e1986]
+                      - link "Add Project cost-allocation tags to shared AWS infra (52.6% untagged) Todo ISOA-132 Issue actions Dismiss from inbox" [ref=e1991] [cursor=pointer]:
+                        - /url: /chat?panel=teams-issue-detail&detailId=86ac2457-71b0-4c12-8d08-e8296d9f9bb6
+                        - generic [ref=e1992]:
+                          - generic: Add Project cost-allocation tags to shared AWS infra (52.6% untagged)
+                          - generic [ref=e1993]:
+                            - generic "Todo" [ref=e1995]
+                            - generic [ref=e1996]: ISOA-132
+                        - button "Issue actions" [ref=e1998]
+                        - button "Dismiss from inbox" [ref=e2004]
+        - status [ref=e2008]: Automation opened
+        - alert [ref=e2009]
+  - region "Notifications alt+T"
+  - alert [ref=e4]

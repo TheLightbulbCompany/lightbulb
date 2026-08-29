@@ -41,7 +41,7 @@
  * `loading` probe that precedes a first cold start.
  *
  * Copy + timing (ideas, rotation cadence, soft-timeout budget, mm:ss format)
- * come from `@isol8/shared` so this and the web stepper can't drift.
+ * come from `@lightbulb/shared` so this and the web stepper can't drift.
  *
  * The 3-step rail is derived from `phase`/`substatus` ALONE — deliberately no
  * gateway-health RPC (web splits its "starting" window further using one).
@@ -67,7 +67,7 @@ import {
   PROVISION_IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS,
   formatProvisionElapsed,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { usePulse } from "../chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../config/theme";

@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react-native";
-import { GatewayRpcError } from "@isol8/shared";
+import { GatewayRpcError } from "@lightbulb/shared";
 
 // Mirrors the screen's bounds; both must trip, whichever comes first.
 const HISTORY_RETRY_WINDOW_MS = 60_000;
@@ -44,8 +44,8 @@ jest.mock("../../../../providers/gateway", () => ({
   useGateway: () => mockGateway,
 }));
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
 }));
 

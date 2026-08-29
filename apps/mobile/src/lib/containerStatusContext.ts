@@ -9,7 +9,7 @@
  * module's only runtime dependency is `react` (the `ContainerStatus` import
  * below is `import type`, erased at build time), so a consumer that only
  * needs the context — not the polling hook and everything it pulls in
- * (`@isol8/shared`, the platform adapter, Clerk) — doesn't pull those in
+ * (`@lightbulb/shared`, the platform adapter, Clerk) — doesn't pull those in
  * too, and a test that mocks `containerStatus.ts` wholesale to fake the poll
  * doesn't also have to fake this.
  */

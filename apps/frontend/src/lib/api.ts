@@ -7,10 +7,10 @@ import {
   fetchJsonWithStatus as fetchJsonWithStatusShared,
   type ApiCallOptions,
   type ApiMethods,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 import { recordRequestId } from "./requestIdLog";
 
-// The client implementation lives in @isol8/shared (extracted for the mobile
+// The client implementation lives in @lightbulb/shared (extracted for the mobile
 // app — see docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md). This
 // module is the web platform wrapper: it binds the Next.js env source, the
 // Clerk hook, and the request-id ring buffer, and preserves the historical

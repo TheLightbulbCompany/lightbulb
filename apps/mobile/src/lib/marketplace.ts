@@ -14,7 +14,7 @@ import {
   ApiError,
   createApiClient,
   type ApiMethods,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
 

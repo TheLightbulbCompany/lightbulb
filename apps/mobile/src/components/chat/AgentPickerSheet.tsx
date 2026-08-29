@@ -1,5 +1,5 @@
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
-import { agentDisplayName, type AgentsListResponse } from "@isol8/shared";
+import { agentDisplayName, type AgentsListResponse } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";

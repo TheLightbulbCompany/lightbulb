@@ -105,7 +105,7 @@ const BOARD_KEEPER_INTERVAL_MS = 20_000;
 
 /**
  * Event-driven revalidation is throttled per cache key, mirroring the gateway
- * RPC path (`useGatewayRpc` in @isol8/shared, which throttles the same way and
+ * RPC path (`useGatewayRpc` in @lightbulb/shared, which throttles the same way and
  * for the same reason). The read layer gives these zero protection on its own:
  * `mutate(predicate)` explicitly deletes SWR's concurrent-request markers, so
  * useTeamsApi's 15s `dedupingInterval` never applies and EVERY event becomes a

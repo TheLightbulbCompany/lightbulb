@@ -1,5 +1,5 @@
 {
-  "name": "@isol8/mobile",
+  "name": "@lightbulb/mobile",
   "main": "expo-router/entry",
   "version": "0.1.0",
   "private": true,
@@ -19,7 +19,7 @@
     "@expo-google-fonts/dm-sans": "^0.4.2",
     "@expo-google-fonts/lora": "^0.4.2",
     "@expo/vector-icons": "^15.1.1",
-    "@isol8/shared": "workspace:^",
+    "@lightbulb/shared": "workspace:^",
     "expo": "~57.0.4",
     "expo-apple-authentication": "~57.0.1",
     "expo-auth-session": "~57.0.2",

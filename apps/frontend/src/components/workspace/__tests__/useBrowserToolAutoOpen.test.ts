@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@isol8/shared";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 const openPanel = vi.fn();
 const getWorkspaceSnapshot = vi.fn(() => ({ ready: true, openPanelIds: [] as string[] }));

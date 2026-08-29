@@ -9,7 +9,7 @@ import { ROOT_DOMAIN } from "./src/lib/domain";
 // for both once the two environments sit on different domains.
 //
 // `apiOrigin` -> `wsOrigin` is the same api→ws hostname rewrite the client uses
-// (`@isol8/shared`'s deriveWebSocketUrl), inlined because next.config runs in
+// (`@lightbulb/shared`'s deriveWebSocketUrl), inlined because next.config runs in
 // plain Node before that package is transpiled.
 const apiOrigin = (() => {
   const raw = process.env.NEXT_PUBLIC_API_URL;
@@ -94,9 +94,9 @@ const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
 
-  // @isol8/shared ships TypeScript source (no build step) — Next must
+  // @lightbulb/shared ships TypeScript source (no build step) — Next must
   // transpile it like first-party code.
-  transpilePackages: ["@isol8/shared"],
+  transpilePackages: ["@lightbulb/shared"],
 
   // Rewrites barrel imports to direct module paths so one named import doesn't
   // drag in a package's whole surface. Only packages whose barrel actually

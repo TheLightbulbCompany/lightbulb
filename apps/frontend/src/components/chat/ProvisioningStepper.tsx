@@ -34,7 +34,7 @@ import {
   MIN_CREDITS_CENTS,
   formatUsdCents,
 } from "@/lib/creditAmounts";
-// Provisioning copy + timing live in @isol8/shared so the web and mobile
+// Provisioning copy + timing live in @lightbulb/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
 import {
@@ -44,7 +44,7 @@ import {
   formatProvisionElapsed as formatElapsed,
   deriveUIPhase,
   type UIPhase,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend

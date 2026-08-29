@@ -36,8 +36,8 @@ jest.mock("../../../../providers/gateway", () => ({
   }),
 }));
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
 }));
 

@@ -5,7 +5,7 @@ import { randomUUID } from "expo-crypto";
 import {
   useGatewayConnection,
   type GatewayConnectionValue,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { WS_URL } from "../config/env";
 import { useContainerWake } from "../lib/containerWake";

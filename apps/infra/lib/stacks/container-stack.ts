@@ -76,14 +76,8 @@ const ENV_CONFIG: Record<
 
 export class ContainerStack extends cdk.Stack {
   public readonly cluster: ecs.Cluster;
-  /** LEGACY, retiring. Nothing should be wired to this pair — see the
-   *  constructor comment. Both members go away with the block that creates
-   *  them, in the follow-up deploy. */
   public readonly cloudMapNamespace: servicediscovery.PrivateDnsNamespace;
   public readonly cloudMapService: servicediscovery.Service;
-  /** The live pair. Every consumer is wired here by isol8-stage. */
-  public readonly cloudMapNamespaceV2: servicediscovery.PrivateDnsNamespace;
-  public readonly cloudMapServiceV2: servicediscovery.Service;
   public readonly efsFileSystem: efs.FileSystem;
   public readonly efsSecurityGroup: ec2.SecurityGroup;
   public readonly containerSecurityGroup: ec2.SecurityGroup;
@@ -135,73 +129,28 @@ export class ContainerStack extends cdk.Stack {
       enableFargateCapacityProviders: true,
     });
 
-    // Cloud Map private DNS namespace — LEGACY, being retired.
+    // Cloud Map private DNS namespace.
     //
-    // Renaming this in place is impossible, and not for the reason you would
-    // guess. `name` is create-only so a rename is a replacement, and the
-    // replacement changes this stack's exported service ARN — which
-    // {env}-service imports. CloudFormation refuses:
+    // The construct ids stay "NamespaceV2"/"ContainerServiceV2" even though the
+    // TypeScript members are the plain names. Renaming a construct id changes
+    // the LOGICAL id, which CloudFormation reads as delete-and-recreate — it
+    // would destroy the live namespace every service is registered in, purely
+    // to make this file read more nicely. The V2 suffix is the scar from the
+    // rename; leave it.
     //
-    //   "Cannot update export isol8-{env}-container:ExportsOutputFnGetAtt
-    //    NamespaceContainerService34...Arn as it is in use by isol8-{env}-service"
+    // The retired `isol8-${env}.local` pair that used to live here is gone as of
+    // this change. It could not be renamed in place: `name` is create-only, so a
+    // rename is a replacement, and the replacement changed this stack's exported
+    // service ARN while {env}-service still imported it —
     //
-    // Stacks deploy container -> service in dependency order, so no single
-    // deploy can move the consumer off the export first. Two deploys is the
-    // floor: this one adds the replacement alongside and moves every consumer
-    // to it; the next DELETES this block once nothing registers here.
+    //   "Cannot update export ...NamespaceContainerService34...Arn
+    //    as it is in use by isol8-{env}-service"
     //
-    // DELETE THIS ENTIRE BLOCK once `list-namespaces` shows no per-user or
-    // Paperclip service registered in it. It is dead weight, not a fallback.
+    // Stacks deploy container -> service, so no single deploy could move the
+    // consumer off first. It took two: add alongside and move every consumer,
+    // then delete. Removing the old pair also drops the four exportValue pins
+    // that kept its exports published through the middle deploy.
     this.cloudMapNamespace = new servicediscovery.PrivateDnsNamespace(
-      this,
-      "Namespace",
-      {
-        name: `isol8-${props.environment}.local`,
-        vpc: props.vpc,
-        description: `Isol8 ${props.environment} service discovery namespace (retiring)`,
-      },
-    );
-
-    this.cloudMapService = this.cloudMapNamespace.createService(
-      "ContainerService",
-      {
-        dnsRecordType: servicediscovery.DnsRecordType.A,
-        dnsTtl: cdk.Duration.seconds(10),
-        description: `Isol8 ${props.environment} container service discovery (retiring)`,
-      },
-    );
-
-    // Pin the legacy exports through THIS deploy. Moving every consumer to the
-    // V2 pair leaves these four unreferenced, and CDK drops an export the
-    // moment nothing references it -- but stacks deploy container -> service,
-    // so container would delete them while the still-live service and paperclip
-    // stacks import them:
-    //
-    //   "Cannot delete export ... as it is in use by isol8-{env}-service"
-    //
-    // Same deadlock that blocked the in-place rename, just the delete verb
-    // instead of the update verb. exportValue keeps them published for one
-    // deploy while the consumers move off; the NEXT deploy drops these calls
-    // together with the constructs above, by which point nothing imports them.
-    // Verified against the live stack: all four are imported today --
-    // namespaceArn and both service attrs by {env}-service, namespaceId by
-    // {env}-paperclip.
-    this.exportValue(this.cloudMapNamespace.namespaceArn);
-    this.exportValue(this.cloudMapNamespace.namespaceId);
-    this.exportValue(this.cloudMapService.serviceArn);
-    this.exportValue(this.cloudMapService.serviceName);
-
-    // The replacement. New construct ids on purpose: reusing "Namespace" /
-    // "ContainerService" keeps the logical id, which is exactly the in-place
-    // replacement CloudFormation just refused.
-    //
-    // Every consumer is wired to THIS pair by isol8-stage, so a fresh provision
-    // registers here immediately. Existing per-user ECS services are
-    // backend-created and invisible to CloudFormation, so they keep the old
-    // registry ARN until scripts/migrate_cloud_map_registry.py re-points them
-    // (parked services) or they are reprovisioned (running ones). The provision
-    // path re-asserts the registry from then on.
-    this.cloudMapNamespaceV2 = new servicediscovery.PrivateDnsNamespace(
       this,
       "NamespaceV2",
       {
@@ -211,7 +160,7 @@ export class ContainerStack extends cdk.Stack {
       },
     );
 
-    this.cloudMapServiceV2 = this.cloudMapNamespaceV2.createService(
+    this.cloudMapService = this.cloudMapNamespace.createService(
       "ContainerServiceV2",
       {
         dnsRecordType: servicediscovery.DnsRecordType.A,

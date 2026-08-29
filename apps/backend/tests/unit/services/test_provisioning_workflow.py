@@ -2,8 +2,10 @@
 network and no fixtures beyond dicts shaped like spec.txt's objects."""
 
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -65,7 +67,14 @@ def account(monkeypatch):
     monkeypatch.setattr(
         mod.billing_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_a", "company_stripe_account_id": "acct_1"}),
+        # The company already has its ONE Provisioning Project.
+        AsyncMock(
+            return_value={
+                "owner_id": "org_a",
+                "company_stripe_account_id": "acct_1",
+                "company_stripe_project_id": "proj_1",
+            }
+        ),
     )
 
 
@@ -84,15 +93,28 @@ def cards(monkeypatch):
     monkeypatch.setattr(mod, "write_owner_facts", AsyncMock())
 
 
+def _no_network(*a, **k):
+    raise AssertionError("network")
+
+
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """Nothing here may reach DynamoDB or Stripe. Three calls are made by paths
-    under test without being their subject: the open-workflow lookup, the
-    non-state field writes, and the payment-profile probe behind the consent
-    card's editable spending limit. Tests that assert on them patch them."""
+    """Nothing here may reach DynamoDB, Stripe or Paperclip — a forgotten patch
+    fails loudly at the transport instead of hanging on a socket.
+
+    Above that, the calls made by paths under test without being their subject
+    get harmless defaults: the open-workflow lookup, the non-state field
+    writes, the payment-profile probe behind the consent card's editable
+    spending limit, and the two reconcile LISTs (no known projects, no known
+    resources). Tests that assert on any of them patch them."""
+    monkeypatch.setattr("core.dynamodb.get_table", _no_network)
+    monkeypatch.setattr(mod.api, "_raw", _no_network)
+    monkeypatch.setattr(httpx.AsyncClient, "send", _no_network)
     monkeypatch.setattr(mod.repo, "list_for_owner", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.repo, "patch", AsyncMock(return_value=None))
     monkeypatch.setattr(mod.api, "payment_profile", AsyncMock(side_effect=ProvisioningError("not_found", "no profile")))
+    monkeypatch.setattr(mod.api, "list_projects", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod.api, "list_resources", AsyncMock(return_value=[]))
 
 
 # --- start ------------------------------------------------------------------
@@ -127,9 +149,10 @@ async def test_start_snapshots_the_catalog_and_files_a_consent_card():
 
 
 @pytest.mark.asyncio
-async def test_two_concurrent_asks_make_one_workflow_and_one_card():
+async def test_a_sequential_re_ask_reuses_the_open_workflow_and_its_card():
     """Friday retrying after a timeout must not open a second card — or, once
-    approved, provision the same resource twice."""
+    approved, provision the same resource twice. Two SIMULTANEOUS asks can
+    still both miss (accepted residual — see the module docstring)."""
     open_row = _row(state="awaiting_approval")
     with (
         patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
@@ -379,12 +402,16 @@ async def test_active_connection_skips_straight_to_provisioning():
         patch.object(
             mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
         ),
-        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1", "status": "pending"})),
+        patch.object(
+            mod.api, "create_resource", AsyncMock(return_value={"id": "res_1", "status": "pending"})
+        ) as create,
         patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})),
         patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning", resource_id="res_1"))),
     ):
         out = await mod.advance(row)
     assert out["state"] == "provisioning"
+    # Nothing to reconcile with (no known resources) ⇒ it creates.
+    create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -675,7 +702,7 @@ async def test_a_stripe_5xx_on_a_READ_keeps_the_state_and_retries():
     """Preview flakiness: a 5xx is transient. It must not fail the workflow and
     must not turn into a repeated POST."""
     row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
-    err = ProvisioningError("provisioning_error", "api_error", http_status=500)
+    err = mod.api.TransientProvisioningError("provisioning_error", "api_error", http_status=500)
     with (
         patch.object(mod.api, "get_resource", AsyncMock(side_effect=err)),
         patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
@@ -690,7 +717,7 @@ async def test_a_stripe_5xx_on_a_READ_keeps_the_state_and_retries():
 @pytest.mark.asyncio
 async def test_a_stripe_5xx_on_a_WRITE_is_an_uncertain_write():
     row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
-    err = ProvisioningError("provisioning_error", "api_error", http_status=500)
+    err = mod.api.TransientProvisioningError("provisioning_error", "api_error", http_status=500)
     with (
         patch.object(
             mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
@@ -721,17 +748,21 @@ async def test_a_timed_out_create_is_never_repeated():
     """ "Don't automatically repeat a POST after a timeout or unknown network
     outcome. Mark the workflow requires_review." """
     row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
-    create = AsyncMock(side_effect=ProvisioningError("transport_error", "Could not reach Stripe; try again"))
+    create = AsyncMock(
+        side_effect=mod.api.TransientProvisioningError("transport_error", "Could not reach Stripe; try again")
+    )
+    parked = _row(state="requires_review", error_code="uncertain_write")
     with (
         patch.object(
             mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
         ),
         patch.object(mod.api, "create_resource", create),
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=parked)) as move,
+        patch.object(mod.repo, "get", AsyncMock(return_value=parked)),
     ):
         out = await mod.advance(row)
-        # Advancing the SAME row again must not fire a second create.
-        await mod.advance({**row, "state": "requires_review"})
+        # Advancing the row AS THE REPO NOW HAS IT must not fire a second create.
+        await mod.advance(await mod.repo.get("pwf_1"))
     assert out["state"] == "requires_review"
     assert create.await_count == 1
     assert move.await_args.kwargs["fields"]["error_code"] == "uncertain_write"
@@ -787,3 +818,309 @@ async def test_no_secret_reaches_the_log(caplog):
     ):
         await mod.advance(row)
     assert "phc_SECRET" not in caplog.text
+
+
+# --- the company Project ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_company_project_is_read_from_the_billing_row():
+    """One Project per COMPANY: a second workflow must not mint a second one."""
+    with (
+        patch.object(mod.api, "list_projects", AsyncMock()) as listed,
+        patch.object(mod.api, "create_project", AsyncMock()) as created,
+    ):
+        assert await mod._ensure_project("acct_1", _row()) == "proj_1"
+    listed.assert_not_awaited()
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_project_is_adopted_by_name(monkeypatch):
+    """A crash between `create_project` and the billing write leaves a Project
+    we own but never recorded: "retrieve known objects and reconcile"."""
+    monkeypatch.setattr(
+        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+    )
+    store = AsyncMock(return_value={"company_stripe_project_id": "proj_9"})
+    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", store)
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(
+            mod.api,
+            "list_projects",
+            AsyncMock(
+                return_value=[{"id": "proj_other", "name": "Someone Else"}, {"id": "proj_9", "name": "Northwind"}]
+            ),
+        ),
+        patch.object(mod.api, "create_project", AsyncMock()) as created,
+    ):
+        assert await mod._ensure_project("acct_1", _row()) == "proj_9"
+    created.assert_not_awaited()
+    assert store.await_args.kwargs["project_id"] == "proj_9"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_project_is_created_then_stored(monkeypatch):
+    monkeypatch.setattr(
+        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+    )
+    store = AsyncMock(return_value={"company_stripe_project_id": "proj_new"})
+    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", store)
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(
+            mod.api, "create_project", AsyncMock(return_value={"id": "proj_new", "name": "Northwind"})
+        ) as created,
+    ):
+        assert await mod._ensure_project("acct_1", _row()) == "proj_new"
+    assert created.await_args.kwargs["catalog"] == mod.settings.STRIPE_PROJECTS_CATALOG
+    assert store.await_args.kwargs["project_id"] == "proj_new"
+
+
+@pytest.mark.asyncio
+async def test_losing_the_project_race_adopts_the_winners_project(monkeypatch):
+    """The conditional write is the arbiter. The loser's Project is inert
+    metadata; using it anyway would split the company's credentials."""
+    monkeypatch.setattr(
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(side_effect=[{"company_stripe_account_id": "acct_1"}, {"company_stripe_project_id": "proj_winner"}]),
+    )
+    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", AsyncMock(return_value=None))
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(mod.api, "create_project", AsyncMock(return_value={"id": "proj_mine"})),
+    ):
+        assert await mod._ensure_project("acct_1", _row()) == "proj_winner"
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_project_create_parks_the_row(monkeypatch):
+    """`create_project` is a POST like any other: an unknown outcome must not
+    become a second Project on the next pass."""
+    monkeypatch.setattr(
+        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+    )
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(
+            mod.api,
+            "create_project",
+            AsyncMock(side_effect=mod.api.TransientProvisioningError("transport_error", "unreachable")),
+        ),
+        patch.object(mod.api, "list_provider_connections", AsyncMock(return_value=[])),
+        patch.object(mod.api, "create_account_request", AsyncMock()) as ar,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "uncertain_write"
+    ar.assert_not_awaited()
+
+
+# --- reconcile, races and scope ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_resource_from_an_uncertain_create_is_adopted_not_created_again():
+    """ "Retrieve known objects, and reconcile before issuing another create."
+    The workflow-unique name is what identifies ours."""
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    mine = {"id": "res_1", "name": mod.resource_name_for(row), "service_ref": "svc_analytics", "status": "pending"}
+    with (
+        patch.object(
+            mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
+        ),
+        patch.object(
+            mod.api, "list_resources", AsyncMock(return_value=[{"id": "res_other", "name": "someone-else"}, mine])
+        ),
+        patch.object(mod.api, "create_resource", AsyncMock()) as create,
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning", resource_id="res_1"))),
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "provisioning"
+    create.assert_not_awaited()
+    assert patched.await_args_list[0].args[1]["resource_id"] == "res_1"
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_moved_under_us_never_binds_twice():
+    """A None from the conditional transition means the row is not ours any
+    more — reading credentials or landing them again would be the duplicate."""
+    row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    winner = _row(state="active", resource_id="res_1")
+    with (
+        patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+        patch.object(mod.api, "environment_info", AsyncMock()) as env,
+        patch.object(mod, "land_credentials", AsyncMock()) as land,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=None)),
+        patch.object(mod.repo, "get", AsyncMock(return_value=winner)),
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "active"
+    env.assert_not_awaited()
+    land.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_only_a_project_scoped_service_binds_through_a_project():
+    """ "A project is supplied for scope=project; account-scoped resources are
+    placed at account level." Binding never mints one either way."""
+    env_info = {
+        "resource_access_configurations": [
+            {"resource_id": "res_1", "access_configuration_keys": ["K"], "access_configuration": {"K": "v"}}
+        ]
+    }
+    for scope, expected in (("project", "proj_1"), ("account", None)):
+        service = {**SERVICE, "scope": scope}
+        row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(service, PROVIDER, CONFIG))
+        with (
+            patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+            patch.object(mod.api, "environment_info", AsyncMock(return_value=env_info)) as info,
+            patch.object(mod, "land_credentials", AsyncMock()),
+            patch.object(mod.api, "create_project", AsyncMock()) as created,
+            patch.object(mod.repo, "transition", AsyncMock(side_effect=[_row(state="binding"), _row(state="active")])),
+        ):
+            await mod.advance(row)
+        assert info.await_args.kwargs["project"] == expected
+        assert info.await_args.kwargs["reveal"] is True
+        created.assert_not_awaited()
+
+
+# --- waiting on a person ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_connect_leg_polls_from_the_server_and_waits():
+    """ "Keep polling the Account request from the server" — a browser that
+    never comes back must not strand the workflow, and must not move it on."""
+    row = _row(
+        state="awaiting_user_action",
+        awaiting="provider_connect",
+        account_request_id="ar_1",
+        user_action_since=mod.utc_now_iso(),
+        approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
+    )
+    with (
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"})),
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "awaiting_user_action"
+    move.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_connect_leg_resumes_itself_when_the_owner_comes_back():
+    row = _row(
+        state="awaiting_user_action",
+        awaiting="provider_connect",
+        account_request_id="ar_1",
+        user_action_since=mod.utc_now_iso(),
+        approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
+    )
+    ar = {
+        "id": "ar_1",
+        "status": "complete",
+        "provider_account_details": {"display_name": "Northwind", "link_action": "created"},
+    }
+    with (
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value=ar)),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1", "status": "pending"})),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "provisioning"
+    assert patched.await_args_list[0].args[1]["provider_account"]["display_name"] == "Northwind"
+
+
+@pytest.mark.asyncio
+async def test_the_payment_leg_waits_for_the_profile_then_resumes():
+    row = _row(
+        state="awaiting_user_action",
+        awaiting="payment_setup",
+        user_action_since=mod.utc_now_iso(),
+        approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
+    )
+    # payment_profile 404s by default — the owner has not paid yet.
+    with patch.object(mod.repo, "transition", AsyncMock()) as move:
+        assert (await mod.advance(row))["state"] == "awaiting_user_action"
+    move.assert_not_awaited()
+
+    with (
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"card_last4": "4242"})),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move2,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    assert move2.await_args.kwargs["fields"] == {"awaiting": None, "user_action_since": None}
+
+
+@pytest.mark.asyncio
+async def test_a_week_with_no_answer_parks_the_row_stale_with_its_ids():
+    """`updated_at` moves on every transient poll; the owner's seven days are
+    measured from `user_action_since` or the row would never go stale."""
+    row = _row(
+        state="awaiting_user_action",
+        awaiting="provider_connect",
+        account_request_id="ar_1",
+        user_action_since=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat(),
+        updated_at=mod.utc_now_iso(),
+        approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
+    )
+    with (
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"})),
+        patch.object(
+            mod.repo, "transition", AsyncMock(return_value=_row(state="stale", account_request_id="ar_1"))
+        ) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "stale"
+    # Non-terminal, ids kept: the next owner click re-mints the link.
+    assert out["account_request_id"] == "ar_1"
+    assert move.await_args.kwargs["to_state"] == "stale"
+    assert not move.await_args.kwargs.get("fields")
+
+
+# --- transient reads --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_429_on_a_READ_backs_off_instead_of_failing():
+    """The client raises the transient subclass for a 429 too — a rate limit is
+    not a dead workflow, and re-deriving transience here would miss it."""
+    row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    err = mod.api.TransientProvisioningError("rate_limit", "slow down", http_status=429, retry_after=2.0)
+    with (
+        patch.object(mod.api, "get_resource", AsyncMock(side_effect=err)),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "provisioning"
+    assert patched.await_args.args[1]["attempts"] == 1
+    move.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_transient_read_in_connecting_provider_keeps_the_state():
+    row = _row(
+        state="connecting_provider", account_request_id="ar_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG)
+    )
+    with (
+        patch.object(
+            mod.api,
+            "get_account_request",
+            AsyncMock(side_effect=mod.api.TransientProvisioningError("rate_limit", "slow", http_status=429)),
+        ),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    assert patched.await_args.args[1]["attempts"] == 1
+    move.assert_not_awaited()

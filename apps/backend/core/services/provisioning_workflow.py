@@ -11,6 +11,13 @@ that produces it and every state move is conditional.
 ``advance`` is one step. The driver (``provisioning_driver``) decides when to
 call it; the sweep re-enters it after a restart. Nothing here sleeps.
 
+One residual race is ACCEPTED: two truly simultaneous ``start`` calls can both
+read no open workflow and create two rows. The window is the round trip between
+the read and the create, the loser's card is a duplicate the owner declines,
+and closing it would cost a conditional (owner, provider, service) uniqueness
+row. Sequential retries — the common case, Friday re-asking after a timeout —
+are covered.
+
 Nothing here logs a credential. The only place a revealed value exists is the
 local ``env`` dict handed to ``land_credentials``; the log lines carry workflow
 id, state, provider, service and error code.
@@ -92,11 +99,11 @@ def is_offerable(service: dict, provider: dict | None) -> bool:
 def is_transient(e: ProvisioningError) -> bool:
     """A failure worth RE-READING. Never worth re-POSTing.
 
-    `transport_error` is our own timeout/unreachable class; a Stripe 5xx is the
-    preview's own flakiness (features/identity returned 500 on 2026-08-29 while
-    eligibility worked).
+    The CLIENT decides: it raises ``TransientProvisioningError`` for a 5xx, a
+    429 and our own ``transport_error``. Re-deriving that from ``code`` and
+    ``http_status`` here would drift from it — the 429 was the one it missed.
     """
-    return e.code == "transport_error" or (e.http_status or 0) >= 500
+    return isinstance(e, api.TransientProvisioningError)
 
 
 def poll_delay(attempts: int) -> float:
@@ -153,6 +160,7 @@ def snapshot_of(service: dict, provider: dict, configuration: dict) -> dict:
 
 def _drifted(before: dict, after: dict) -> bool:
     keys = (
+        "provider_id",
         "service_ref",
         "configuration_schema",
         "availability",
@@ -388,6 +396,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
                     "usage_limit": limits,
                     "approved_by": approved_by,
                     "approved_at": utc_now_iso(),
+                    "user_action_since": utc_now_iso(),
                 },
             )
 
@@ -432,7 +441,12 @@ async def _reauth(row: dict) -> dict:
         row["workflow_id"],
         from_state=row["state"],
         to_state="connecting_provider",
-        fields={"error_code": "provider_reauth_required", "account_request_id": None, "awaiting": None},
+        fields={
+            "error_code": "provider_reauth_required",
+            "account_request_id": None,
+            "awaiting": None,
+            "user_action_since": None,
+        },
     )
     return moved or {**row, "state": "connecting_provider", "account_request_id": None}
 
@@ -461,17 +475,79 @@ async def _fail(row: dict, code: str, message: str = "") -> dict:
     return moved or {**row, "state": "failed"}
 
 
+async def _read_or_park(row: dict, awaitable) -> tuple:
+    """Run one Stripe READ. Returns ``(result, None)`` or ``(None, refusal_row)``.
+
+    A read is safe to repeat, so a transient failure only bumps the attempt and
+    lets the driver back off; an expired provider connection re-enters
+    ``connecting_provider``; anything else fails the workflow. Every read site
+    goes through here so no branch can quietly forget one of the three.
+    """
+    try:
+        return await awaitable, None
+    except ProvisioningError as e:
+        if e.code == "provider_reauth_required":
+            return None, await _reauth(row)
+        if is_transient(e):
+            return None, await _bump(row)
+        return None, await _fail(row, e.code, e.message)
+
+
+async def _bump(row: dict) -> dict:
+    """One more poll attempt, same state."""
+    return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+
+
+async def _company_project_id(owner_id: str) -> str | None:
+    """The company's ONE Provisioning Project, or None if it has none yet."""
+    return (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_project_id")
+
+
 async def _ensure_project(account_id: str, row: dict) -> str:
-    """One Project per company (spec §3.2), named for the company. Persisted on
-    the row before it is used for a write."""
-    if row.get("project_id"):
-        return row["project_id"]
+    """One Project per COMPANY (spec §3.2), named for the company.
+
+    The id lives on the BILLING row, not the workflow: `environment_info` is
+    scoped by project, so a second Project would split one company's
+    credentials across two. Order is read → adopt → create → store, because a
+    crash between the create and the store leaves a Project we own but never
+    recorded ("retrieve known objects and reconcile").
+    """
+    stored = await _company_project_id(row["owner_id"])
+    if stored:
+        return stored
     from core.services.company_stripe import resolve_company_name
 
     name = await resolve_company_name(row["owner_id"])
-    project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
-    await repo.patch(row["workflow_id"], {"project_id": project["id"]})
-    return project["id"]
+    mine = next((p for p in await api.list_projects(account_id) if p.get("name") == name), None)
+    project_id = (
+        mine["id"]
+        if mine
+        else (await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG))["id"]
+    )
+    if await billing_repo.set_company_stripe_project_id(row["owner_id"], project_id=project_id) is None:
+        # Lost the conditional write: another worker stored first, so THEIRS is
+        # the company's Project. A Project we created and lost with is inert
+        # metadata — no resources, no cost — and the adopt-by-name read above
+        # collects it on a later pass.
+        return await _company_project_id(row["owner_id"]) or project_id
+    return project_id
+
+
+async def _project_for(account_id: str, row: dict) -> tuple:
+    """``(project_id, refusal_row)`` for this workflow's scope.
+
+    An account-scoped service is placed at account level (spec 4.4), so it
+    neither needs nor mints a Project. Creating one is a POST like any other:
+    an unknown outcome parks the row rather than minting a second Project.
+    """
+    if (row.get("approval") or {}).get("scope") != "project":
+        return None, None
+    try:
+        return await _ensure_project(account_id, row), None
+    except ProvisioningError as e:
+        if is_transient(e):
+            return None, await _requires_review(row, "uncertain_write")
+        return None, await _fail(row, e.code, e.message)
 
 
 async def _connect_provider(account_id: str, row: dict) -> dict:
@@ -489,7 +565,9 @@ async def _connect_provider(account_id: str, row: dict) -> dict:
             row = {**row, "provider_account": details}
         return await _create_resource(account_id, row)
 
-    project_id = await _ensure_project(account_id, row)
+    project_id, refused = await _project_for(account_id, row)
+    if refused is not None:
+        return refused
     try:
         ar = await api.create_account_request(account_id, provider=row["provider_id"], project_id=project_id)
     except ProvisioningError as e:
@@ -500,7 +578,12 @@ async def _connect_provider(account_id: str, row: dict) -> dict:
         if e.code == "provider_reauth_required":
             return await _reauth(row)
         return await _fail(row, e.code, e.message)
-    # Persist BEFORE opening any redirect (guide, Account request table).
+    # Persist BEFORE opening any redirect (guide, Account request table). The
+    # window between the POST returning and this patch landing is the one place
+    # an id can be lost: account requests carry no name, so there is nothing to
+    # reconcile them by. A lost one strands a `connecting_provider` row that the
+    # next pass re-creates from — accepted, and the reason this patch is the
+    # very next statement after the create.
     await repo.patch(row["workflow_id"], {"account_request_id": ar["id"]})
     return await _handle_account_request(account_id, {**row, "account_request_id": ar["id"]}, ar)
 
@@ -524,13 +607,17 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
             row["workflow_id"],
             from_state=row["state"],
             to_state="awaiting_user_action",
-            fields={"awaiting": "provider_connect", "approval_id": approval_id},
+            fields={
+                "awaiting": "provider_connect",
+                "approval_id": approval_id,
+                "user_action_since": utc_now_iso(),
+            },
         ) or {**row, "state": "awaiting_user_action"}
     if status == "needs_information":
         schema = ar.get("needs_information_schema") or {}
         if schema_is_empty(schema):
             # The provider has not published the form yet — poll, don't park.
-            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+            return await _bump(row)
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
         approval_id = await provisioning_approvals.request_provider_information(
@@ -550,55 +637,64 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
                 "approval_id": approval_id,
                 "information_schema": schema,
                 "information_target": "account_request",
+                "user_action_since": utc_now_iso(),
             },
         ) or {**row, "state": "awaiting_user_action"}
     if status == "error":
         err = ar.get("error") or {}
         return await _fail(row, err.get("code") or "provider_failure", err.get("message") or "")
     # `requested`: persist and keep polling.
-    return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+    return await _bump(row)
 
 
 async def _create_resource(account_id: str, row: dict) -> dict:
     if row.get("resource_id"):
         return await _poll_resource(account_id, row)
-    snapshot = row.get("approval") or {}
-    project_id = await _ensure_project(account_id, row) if snapshot.get("scope") == "project" else None
-    try:
-        resource = await api.create_resource(
-            account_id,
-            service_ref=row["service_ref"],
-            provider=row["provider_id"],
-            project=project_id,
-            name=resource_name_for(row),
-            configuration=row.get("configuration") or {},
-            catalog=settings.STRIPE_PROJECTS_CATALOG,
-        )
-    except ProvisioningError as e:
-        if is_transient(e):
-            return await _requires_review(row, "uncertain_write")
-        if e.code == "provider_reauth_required":
-            return await _reauth(row)
-        if e.code == "payment_method_required":
-            return await _requires_review(row, "payment_method_required")
-        return await _fail(row, e.code, e.message)
+    project_id, refused = await _project_for(account_id, row)
+    if refused is not None:
+        return refused
+    name = resource_name_for(row)
+    # "Retrieve known objects, and reconcile before issuing another create": a
+    # create whose response we never saw may have made the resource, and the
+    # name is unique to this workflow, so it is what identifies ours.
+    known, refused = await _read_or_park(row, api.list_resources(account_id, project=project_id))
+    if refused is not None:
+        return refused
+    resource = next(
+        (r for r in known if r.get("name") == name and r.get("service_ref") in (None, row["service_ref"])),
+        None,
+    )
+    if resource is None:
+        try:
+            resource = await api.create_resource(
+                account_id,
+                service_ref=row["service_ref"],
+                provider=row["provider_id"],
+                project=project_id,
+                name=name,
+                configuration=row.get("configuration") or {},
+                catalog=settings.STRIPE_PROJECTS_CATALOG,
+            )
+        except ProvisioningError as e:
+            if is_transient(e):
+                return await _requires_review(row, "uncertain_write")
+            if e.code == "provider_reauth_required":
+                return await _reauth(row)
+            if e.code == "payment_method_required":
+                return await _requires_review(row, "payment_method_required")
+            return await _fail(row, e.code, e.message)
     deadline = (datetime.now(timezone.utc) + timedelta(seconds=DEADLINE_S)).isoformat()
     await repo.patch(row["workflow_id"], {"resource_id": resource["id"], "deadline_at": deadline})
-    moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="provisioning")
+    moved = await repo.transition(
+        row["workflow_id"], from_state=row["state"], to_state="provisioning", fields={"user_action_since": None}
+    )
     return moved or {**row, "state": "provisioning", "resource_id": resource["id"]}
 
 
 async def _poll_resource(account_id: str, row: dict) -> dict:
-    try:
-        resource = await api.get_resource(account_id, row.get("resource_id"))
-    except ProvisioningError as e:
-        if e.code == "provider_reauth_required":
-            return await _reauth(row)
-        if is_transient(e):
-            # A READ is safe to repeat: keep the state, bump the attempt, let
-            # the driver back off.
-            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
-        return await _fail(row, e.code, e.message)
+    resource, refused = await _read_or_park(row, api.get_resource(account_id, row.get("resource_id")))
+    if refused is not None:
+        return refused
 
     status = resource.get("status")
     if status == "complete":
@@ -609,7 +705,7 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
     if status == "needs_information":
         schema = resource.get("needs_information_schema") or {}
         if schema_is_empty(schema):
-            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+            return await _bump(row)
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
         approval_id = await provisioning_approvals.request_provider_information(
@@ -629,6 +725,7 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
                 "approval_id": approval_id,
                 "information_schema": schema,
                 "information_target": "resource",
+                "user_action_since": utc_now_iso(),
             },
         )
         return moved or {**row, "state": "awaiting_user_action"}
@@ -636,26 +733,33 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
     deadline = row.get("deadline_at")
     if deadline and deadline < utc_now_iso():
         return await _requires_review(row, "poll_deadline_exceeded")
-    return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+    return await _bump(row)
 
 
 async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="binding")
+    if moved is None:
+        # Someone else moved this row first (a sweep racing the live task, or a
+        # second binder). It is not ours any more: reading credentials or
+        # landing them again would be the duplicate the conditional exists to
+        # stop. Report the row as it now stands.
+        return await repo.get(row["workflow_id"]) or row
     # MERGED, not replaced: the transition's projection is the row as stored,
     # and `resource_id` is what selects our entry out of `environment_info`.
-    row = {**row, **(moved or {"state": "binding"})}
-    project_id = row.get("project_id") or await _ensure_project(account_id, row)
-    try:
-        info = await api.environment_info(
+    row = {**row, **moved}
+    # An account-scoped resource has no Project (spec 4.4), and binding NEVER
+    # mints one — by here the create already resolved it.
+    scope = (row.get("approval") or {}).get("scope")
+    project_id = await _company_project_id(row["owner_id"]) if scope == "project" else None
+    # The connection can expire between `complete` and the credential read.
+    info, refused = await _read_or_park(
+        row,
+        api.environment_info(
             account_id, project=project_id, provider=row["provider_id"], service=row["service_ref"], reveal=True
-        )
-    except ProvisioningError as e:
-        # The connection can expire between `complete` and the credential read.
-        if e.code == "provider_reauth_required":
-            return await _reauth(row)
-        if is_transient(e):
-            return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
-        return await _fail(row, e.code, e.message)
+        ),
+    )
+    if refused is not None:
+        return refused
     entry = next(
         (e for e in info.get("resource_access_configurations") or [] if e.get("resource_id") == row["resource_id"]),
         None,
@@ -706,25 +810,20 @@ async def _poll_user_action(account_id: str, row: dict) -> dict:
             if e.code == "not_found":
                 return await _stale_if_expired(row)
             if is_transient(e):
-                return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+                return await _bump(row)
             return await _fail(row, e.code, e.message)
         moved = await repo.transition(
             row["workflow_id"],
             from_state=row["state"],
             to_state="connecting_provider",
-            fields={"awaiting": None},
+            fields={"awaiting": None, "user_action_since": None},
         )
         return moved or {**row, "state": "connecting_provider"}
 
     if row.get("account_request_id"):
-        try:
-            ar = await api.get_account_request(account_id, row["account_request_id"])
-        except ProvisioningError as e:
-            if e.code == "provider_reauth_required":
-                return await _reauth(row)
-            if is_transient(e):
-                return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
-            return await _fail(row, e.code, e.message)
+        ar, refused = await _read_or_park(row, api.get_account_request(account_id, row["account_request_id"]))
+        if refused is not None:
+            return refused
         if ar.get("status") in ("pending_auth", "requested", "needs_information"):
             return await _stale_if_expired(row)
         return await _handle_account_request(account_id, row, ar)
@@ -739,9 +838,12 @@ async def _stale_if_expired(row: dict) -> dict:
     next owner click re-mints the link, so this only stops the poller."""
     if row.get("state") == "stale":
         return row
-    updated = row.get("updated_at") or ""
+    # `user_action_since`, never `updated_at`: a transient poll bumps `attempts`
+    # (and with it `updated_at`) every few seconds, which would reset the
+    # owner's seven days on every tick and the row would never go stale.
+    since = row.get("user_action_since") or ""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=USER_ACTION_DEADLINE_S)).isoformat()
-    if updated and updated < cutoff:
+    if since and since < cutoff:
         moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="stale")
         return moved or {**row, "state": "stale"}
     return row
@@ -758,8 +860,10 @@ async def advance(workflow: dict) -> dict:
         return await _poll_user_action(account_id, workflow)
     if state == "connecting_provider":
         if workflow.get("account_request_id"):
-            ar = await api.get_account_request(account_id, workflow["account_request_id"])
-            return await _handle_account_request(account_id, workflow, ar)
+            ar, refused = await _read_or_park(
+                workflow, api.get_account_request(account_id, workflow["account_request_id"])
+            )
+            return refused if refused is not None else await _handle_account_request(account_id, workflow, ar)
         return await _connect_provider(account_id, workflow)
     if state == "provisioning":
         # Always the READ: `provisioning` is only ever entered after the
@@ -767,6 +871,6 @@ async def advance(workflow: dict) -> dict:
         # the no-repeat rule exists to prevent.
         return await _poll_resource(account_id, workflow)
     if state == "binding":
-        resource = await api.get_resource(account_id, workflow["resource_id"])
-        return await _bind(account_id, workflow, resource)
+        resource, refused = await _read_or_park(workflow, api.get_resource(account_id, workflow.get("resource_id")))
+        return refused if refused is not None else await _bind(account_id, workflow, resource)
     return workflow

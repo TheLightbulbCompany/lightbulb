@@ -1294,6 +1294,11 @@ async def get_trial_daily_spend(owner_id: str, date: str) -> int:
 
 _COMPANY_STRIPE_FIELDS = (
     "company_stripe_account_id",
+    # The ONE Stripe Provisioning Project for this company. It lives here and
+    # not on a provisioning workflow row because every workflow must land in
+    # the SAME Project — `environment_info` is scoped by project, so a second
+    # Project splits the company's credentials in two.
+    "company_stripe_project_id",
     "company_stripe_source",
     "company_stripe_details_submitted",
     "company_stripe_charges_enabled",
@@ -1343,6 +1348,28 @@ async def set_company_stripe_account(owner_id: str, *, account_id: str, source: 
         owner_id,
         mutate,
         condition="attribute_exists(owner_id) AND attribute_not_exists(company_stripe_account_id)",
+        values={},
+    )
+
+
+async def set_company_stripe_project_id(owner_id: str, *, project_id: str) -> dict | None:
+    """Record the company's Provisioning Project, exactly once.
+
+    ``None`` = no billing row, or another worker got there first. The caller
+    re-reads and uses the winner's id; a Project it created and lost the race
+    with is inert metadata (no resources, no cost) and is adopted by name on a
+    later pass.
+    """
+    if not project_id:
+        raise ValueError("project_id must be non-empty")
+
+    def mutate(row: dict) -> None:
+        row["company_stripe_project_id"] = project_id
+
+    return await _write_company_stripe(
+        owner_id,
+        mutate,
+        condition="attribute_exists(owner_id) AND attribute_not_exists(company_stripe_project_id)",
         values={},
     )
 

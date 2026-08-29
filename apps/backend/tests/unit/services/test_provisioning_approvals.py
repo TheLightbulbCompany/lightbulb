@@ -41,48 +41,6 @@ def _board(admin, company_id="cmp_1"):
 
 
 @pytest.mark.asyncio
-async def test_pairing_card_carries_the_url_and_code():
-    admin = _admin([])
-    with _board(admin):
-        approval_id = await mod.request_cli_pairing(
-            owner_id="org_a",
-            issue_id="iss_1",
-            browser_url="https://dashboard.stripe.com/stripecli/confirm?t=abc",
-            verification_code="ABCD-EFGH",
-        )
-    assert approval_id == "apr_new"
-    body = admin.create_approval.call_args.kwargs["body"]
-    assert body["type"] == "request_board_approval"
-    assert body["issueIds"] == ["iss_1"]
-    assert body["payload"]["isol8_action"] == "stripe_cli_login"
-    assert body["payload"]["title"] == "Connect Stripe CLI for Northwind Ceramics"
-    assert body["payload"]["browser_url"] == "https://dashboard.stripe.com/stripecli/confirm?t=abc"
-    assert body["payload"]["verification_code"] == "ABCD-EFGH"
-
-
-@pytest.mark.asyncio
-async def test_pairing_card_dedupes_on_a_pending_card():
-    admin = _admin(
-        [
-            {
-                "id": "apr_old",
-                "type": "request_board_approval",
-                "status": "pending",
-                "payload": {"isol8_action": "stripe_cli_login"},
-            }
-        ]
-    )
-    with _board(admin):
-        assert (
-            await mod.request_cli_pairing(
-                owner_id="org_a", issue_id=None, browser_url="https://x", verification_code="Z"
-            )
-            == "apr_old"
-        )
-    admin.create_approval.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_consent_card_carries_provider_service_terms_and_pricing():
     admin = _admin([])
     with _board(admin):
@@ -147,8 +105,13 @@ async def test_no_paperclip_company_is_none_not_an_error():
         patch.object(board_cards, "shared_admin_client", return_value=admin),
     ):
         assert (
-            await mod.request_cli_pairing(
-                owner_id="org_a", issue_id=None, browser_url="https://x", verification_code="Z"
+            await mod.request_provider_consent(
+                owner_id="org_a",
+                issue_id=None,
+                provider="posthog",
+                service="analytics",
+                terms_url="https://posthog.com/terms",
+                pricing="free",
             )
             is None
         )

@@ -27,6 +27,22 @@ const vercelEnv = {
   VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
 };
 
+// Every job on the self-hosted box runs as the same user with the same $HOME,
+// and pnpm/action-setup's default `dest` is ~/setup-pnpm, which it deletes with
+// a recursive rm at the start of every run (install-pnpm/run.ts). Two jobs
+// setting pnpm up at the same moment race that removal and one dies with
+// "ENOTEMPTY: directory not empty, rmdir '/home/prasiddha/setup-pnpm/...'".
+// Structural rather than a rare interleaving: DeployVercelProd and
+// DeployCompanyProd share a `needs` set, so they start in the same second --
+// both at 07:12:17Z in run 33239214668, where VercelProd was the one that died.
+// `runner.temp` is per-runner-instance, so it keeps them apart. Same fix that
+// frontend-ci.yml and mobile-ci.yml already carry.
+const setupPnpmStep = () => ({
+  name: "Setup pnpm",
+  uses: "pnpm/action-setup@v4",
+  with: { dest: "${{ runner.temp }}/setup-pnpm" },
+});
+
 // The holding-company site (apps/company, thelightbulb.company) is a second
 // Vercel project: same token and org, its own project id. Like the frontend,
 // its Root Directory (apps/company) is a PROJECT SETTING on Vercel and the CLI
@@ -39,7 +55,7 @@ const COMPANY_DOMAIN = "thelightbulb.company";
 const companyVercelSteps = (prod: boolean) => [
   // Vercel needs no git credentials; do not leave the token in the checkout.
   { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
-  { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+  setupPnpmStep(),
   { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
   { name: "Install Vercel CLI", run: "npm install -g vercel" },
   { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
@@ -201,7 +217,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
     new GitHubActionStep("DeployVercelDev", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
-        { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+        setupPnpmStep(),
         { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
@@ -293,7 +309,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
-        { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+        setupPnpmStep(),
         { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },

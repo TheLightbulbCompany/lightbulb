@@ -43,6 +43,11 @@ PROVIDER = {
 CONFIG = {"region": "us", "organization_name": "Northwind"}
 
 
+def _approved(**over):
+    """A row past the consent card — `_project_for` reads the scope off it."""
+    return _row(approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG), **over)
+
+
 def _row(**over):
     base = {
         "workflow_id": "pwf_1",
@@ -56,7 +61,6 @@ def _row(**over):
         "configuration": CONFIG,
         "issue_id": "iss_1",
         "attempts": 0,
-        "project_id": "proj_1",
     }
     base.update(over)
     return base
@@ -107,8 +111,11 @@ def no_network(monkeypatch):
     writes, the payment-profile probe behind the consent card's editable
     spending limit, and the two reconcile LISTs (no known projects, no known
     resources). Tests that assert on any of them patch them."""
-    monkeypatch.setattr("core.dynamodb.get_table", _no_network)
-    monkeypatch.setattr(mod.api, "_raw", _no_network)
+    monkeypatch.setattr("core.repositories.billing_repo.get_table", _no_network)
+    monkeypatch.setattr("core.repositories.provisioning_workflow_repo.get_table", _no_network)
+    # `request`, not `_raw`: `request` turns a raw failure into a TRANSIENT
+    # error, which a poll would happily swallow as backoff.
+    monkeypatch.setattr(mod.api, "request", _no_network)
     monkeypatch.setattr(httpx.AsyncClient, "send", _no_network)
     monkeypatch.setattr(mod.repo, "list_for_owner", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.repo, "patch", AsyncMock(return_value=None))
@@ -830,9 +837,43 @@ async def test_the_company_project_is_read_from_the_billing_row():
         patch.object(mod.api, "list_projects", AsyncMock()) as listed,
         patch.object(mod.api, "create_project", AsyncMock()) as created,
     ):
-        assert await mod._ensure_project("acct_1", _row()) == "proj_1"
+        assert await mod._project_for("acct_1", _approved()) == ("proj_1", None)
     listed.assert_not_awaited()
     created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_account_scoped_service_needs_no_project():
+    account_scoped = _row(approval=mod.snapshot_of({**SERVICE, "scope": "account"}, PROVIDER, CONFIG))
+    with patch.object(mod.api, "create_project", AsyncMock()) as created:
+        assert await mod._project_for("acct_1", account_scoped) == (None, None)
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_transient_project_LIST_is_retried_not_parked(monkeypatch):
+    """Only the CREATE has an unknown outcome. A failed read is just a read."""
+    monkeypatch.setattr(
+        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+    )
+    row = _approved(state="connecting_provider")
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(
+            mod.api,
+            "list_projects",
+            AsyncMock(side_effect=mod.api.TransientProvisioningError("rate_limit", "slow", http_status=429)),
+        ),
+        patch.object(mod.api, "create_project", AsyncMock()) as created,
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        project_id, refused = await mod._project_for("acct_1", row)
+    assert project_id is None
+    assert refused["state"] == "connecting_provider"
+    assert patched.await_args.args[1]["attempts"] == 1
+    created.assert_not_awaited()
+    move.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -855,7 +896,7 @@ async def test_an_unrecorded_project_is_adopted_by_name(monkeypatch):
         ),
         patch.object(mod.api, "create_project", AsyncMock()) as created,
     ):
-        assert await mod._ensure_project("acct_1", _row()) == "proj_9"
+        assert await mod._project_for("acct_1", _approved()) == ("proj_9", None)
     created.assert_not_awaited()
     assert store.await_args.kwargs["project_id"] == "proj_9"
 
@@ -873,7 +914,7 @@ async def test_a_missing_project_is_created_then_stored(monkeypatch):
             mod.api, "create_project", AsyncMock(return_value={"id": "proj_new", "name": "Northwind"})
         ) as created,
     ):
-        assert await mod._ensure_project("acct_1", _row()) == "proj_new"
+        assert await mod._project_for("acct_1", _approved()) == ("proj_new", None)
     assert created.await_args.kwargs["catalog"] == mod.settings.STRIPE_PROJECTS_CATALOG
     assert store.await_args.kwargs["project_id"] == "proj_new"
 
@@ -892,7 +933,30 @@ async def test_losing_the_project_race_adopts_the_winners_project(monkeypatch):
         patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
         patch.object(mod.api, "create_project", AsyncMock(return_value={"id": "proj_mine"})),
     ):
-        assert await mod._ensure_project("acct_1", _row()) == "proj_winner"
+        assert await mod._project_for("acct_1", _approved()) == ("proj_winner", None)
+    # Reading back a write that landed in ANOTHER process: eventual consistency
+    # would hand us our own losing project.
+    assert mod.billing_repo.get_by_owner_id.await_args.kwargs["consistent_read"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_lost_race_with_no_visible_winner_retries_rather_than_using_ours(monkeypatch):
+    """Proceeding on our own losing Project would land this company's next
+    credential in a Project the winner never sees."""
+    monkeypatch.setattr(
+        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+    )
+    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", AsyncMock(return_value=None))
+    row = _approved(state="connecting_provider")
+    with (
+        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
+        patch.object(mod.api, "create_project", AsyncMock(return_value={"id": "proj_mine"})),
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+    ):
+        project_id, refused = await mod._project_for("acct_1", row)
+    assert project_id is None
+    assert refused["state"] == "connecting_provider"
+    assert patched.await_args.args[1]["attempts"] == 1
 
 
 @pytest.mark.asyncio
@@ -1001,6 +1065,7 @@ async def test_the_connect_leg_polls_from_the_server_and_waits():
         state="awaiting_user_action",
         awaiting="provider_connect",
         account_request_id="ar_1",
+        approval_id="apr_1",
         user_action_since=mod.utc_now_iso(),
         approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
     )
@@ -1011,6 +1076,8 @@ async def test_the_connect_leg_polls_from_the_server_and_waits():
         out = await mod.advance(row)
     assert out["state"] == "awaiting_user_action"
     move.assert_not_awaited()
+    # The card was filed when the row entered the state, and is not re-filed.
+    mod.provisioning_approvals.request_provider_connect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1068,6 +1135,7 @@ async def test_a_week_with_no_answer_parks_the_row_stale_with_its_ids():
         state="awaiting_user_action",
         awaiting="provider_connect",
         account_request_id="ar_1",
+        approval_id="apr_1",
         user_action_since=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat(),
         updated_at=mod.utc_now_iso(),
         approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
@@ -1124,3 +1192,87 @@ async def test_a_transient_read_in_connecting_provider_keeps_the_state():
     assert out["state"] == "connecting_provider"
     assert patched.await_args.args[1]["attempts"] == 1
     move.assert_not_awaited()
+
+
+# --- one card per question --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_information_leg_asks_once_and_never_restarts_the_clock():
+    """The row still carries the account_request_id from its connect leg. If
+    the poll followed that instead of what the row is WAITING for, every tick
+    would re-file the card and re-stamp the seven days."""
+    since = mod.utc_now_iso()
+    schema = {"type": "object", "properties": {"team": {"type": "string"}}}
+    row = _approved(
+        state="awaiting_user_action",
+        awaiting="provider_information",
+        information_target="resource",
+        approval_id="apr_1",
+        resource_id="res_1",
+        account_request_id="ar_1",
+        user_action_since=since,
+    )
+    with (
+        patch.object(
+            mod.api,
+            "get_resource",
+            AsyncMock(return_value={"id": "res_1", "status": "needs_information", "needs_information_schema": schema}),
+        ),
+        patch.object(mod.api, "get_account_request", AsyncMock()) as ar,
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+    ):
+        first = await mod.advance(row)
+        second = await mod.advance(first)
+    assert second["state"] == "awaiting_user_action"
+    assert second["user_action_since"] == since
+    move.assert_not_awaited()
+    ar.assert_not_awaited()
+    mod.provisioning_approvals.request_provider_information.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_information_leg_still_goes_stale_after_a_week():
+    schema = {"type": "object", "properties": {"team": {"type": "string"}}}
+    row = _approved(
+        state="awaiting_user_action",
+        awaiting="provider_information",
+        information_target="resource",
+        approval_id="apr_1",
+        resource_id="res_1",
+        user_action_since=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat(),
+    )
+    with (
+        patch.object(
+            mod.api,
+            "get_resource",
+            AsyncMock(return_value={"id": "res_1", "status": "needs_information", "needs_information_schema": schema}),
+        ),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="stale"))) as move,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "stale"
+    assert move.await_args.kwargs["to_state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_a_removed_namesake_is_never_adopted():
+    """`removed` and `errored` are terminal: adopting one would bind the owner
+    to a resource that no longer exists."""
+    row = _approved(state="connecting_provider")
+    dead = {"id": "res_dead", "name": mod.resource_name_for(row), "service_ref": "svc_analytics", "status": "removed"}
+    with (
+        patch.object(
+            mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
+        ),
+        patch.object(mod.api, "list_resources", AsyncMock(return_value=[dead])),
+        patch.object(
+            mod.api, "create_resource", AsyncMock(return_value={"id": "res_new", "status": "pending"})
+        ) as create,
+        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning", resource_id="res_new"))),
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "provisioning"
+    create.assert_awaited_once()
+    assert patched.await_args_list[0].args[1]["resource_id"] == "res_new"

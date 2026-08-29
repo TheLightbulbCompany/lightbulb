@@ -444,6 +444,8 @@ async def _evaluate_provision_gate_inner(
     """Return a Gate if provisioning should be blocked, else None.
 
     Layers (matches existing _assert_provision_allowed logic):
+    0. Launch Competition pre-drop hold — a signed-up account with no
+       container yet is held until the drop, before any billing layer runs.
     1. Subscription must be active or trialing (or legacy stripe_subscription_id present).
     2. For bedrock_claude: credit balance must be > 0.
     3. For chatgpt_oauth: OAuth tokens must exist for the connector — the
@@ -451,6 +453,13 @@ async def _evaluate_provision_gate_inner(
        irrelevant). Personal owners are their own connector.
     """
     owner_role = "admin" if is_admin else "member"
+
+    # Layer 0 — Launch Competition pre-drop hold. Lazy import: launch_hold
+    # imports Gate from this module, so a top-level import would cycle.
+    from core.services import launch_hold
+
+    if (g := await launch_hold.pre_drop_gate(owner_id, owner_role=owner_role)) is not None:
+        return g
 
     # Layer 1 — subscription.
     account = await billing_repo.get_by_owner_id(owner_id)

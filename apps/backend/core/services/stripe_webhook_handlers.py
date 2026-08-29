@@ -1271,6 +1271,10 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
 async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     event_data = event["data"]["object"]
     logger.info("Payment succeeded for customer %s", event_data.get("customer"))
+    # Launch Competition referral payout — best-effort, never raises.
+    from core.services import launch_referral
+
+    await launch_referral.on_invoice_paid(event_data)
     return None
 
 

@@ -307,3 +307,31 @@ describe("DatabaseStack — agent email + company identity tables", () => {
     });
   });
 });
+
+describe("DatabaseStack — launch competition tables", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates launch-waitlist keyed by email with a referral-code GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-launch-waitlist",
+      KeySchema: [{ AttributeName: "email", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "referral-code-index",
+          KeySchema: [{ AttributeName: "referral_code", KeyType: "HASH" }],
+        }),
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("creates launch-entries keyed by owner_id", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-launch-entries",
+      KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
+    });
+  });
+});

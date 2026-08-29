@@ -1,0 +1,13 @@
+{
+  "notes": [
+    "THE ONE PLACE the Launch Competition's dates and pot constants live. Read by the backend at runtime (core/services/launch_phase.py) and by the frontend at build time (apps/frontend/src/lib/launchSchedule.ts). Change a date = one commit; merge deploys dev, the prod promotion carries it.",
+    "Instants carry their offset. Owner: the drop is Thursday night at midnight Eastern (so Friday 00:00 -04:00); the competition starts Sunday night at midnight Eastern (Monday 00:00 -04:00). null = feature off (every /launch* route 404s, nothing is held, nothing refreshes).",
+    "pot_per_entrant_cents is the owner's pledge per person. The PUBLIC pot counts sign-ups; the FUNDED pot (admin) counts people whose first invoice has landed."
+  ],
+  "competition_days": 30,
+  "comp_slots": 220,
+  "pot_front_cents": 100000,
+  "pot_per_entrant_cents": 1000,
+  "dev": { "drop_at": null, "competition_start_at": null },
+  "prod": { "drop_at": null, "competition_start_at": null }
+}

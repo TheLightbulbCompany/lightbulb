@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { LaunchRefCapture } from "@/components/launch/LaunchRefCapture";
 import { Navbar } from "@/components/landing/Navbar";
 import { HeroFunnel } from "@/components/landing/HeroFunnel";
 import { WorkspaceDemo } from "@/components/landing/WorkspaceDemo";
@@ -22,6 +24,10 @@ export default function LandingPage() {
       <JsonLd data={organizationJsonLd} />
       <JsonLd data={websiteJsonLd} />
       <JsonLd data={softwareApplicationJsonLd} />
+      {/* Invisible: persists `/?ref=CODE` (the backend's referral link target). */}
+      <Suspense fallback={null}>
+        <LaunchRefCapture />
+      </Suspense>
       <Navbar />
       <HeroFunnel />
       <WorkspaceDemo />

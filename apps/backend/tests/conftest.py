@@ -248,3 +248,39 @@ def mock_settings():
         mock.API_V1_STR = "/api/v1"
         mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
         yield mock
+
+
+@pytest.fixture
+def launch_schedule():
+    """Patch launch-schedule.json in memory. Call with (drop_at, start_at) datetimes or None to turn the feature off."""
+    import os
+    from contextlib import contextmanager
+    from datetime import timedelta
+    from unittest.mock import patch
+
+    from core.services import launch_phase
+
+    @contextmanager
+    def _set(drop_at=None, start_at=None, *, comp_slots=220, competition_days=30):
+        env = {
+            "drop_at": drop_at.isoformat() if drop_at else None,
+            "competition_start_at": (start_at or (drop_at + timedelta(hours=72) if drop_at else None)).isoformat()
+            if drop_at
+            else None,
+        }
+        f = {
+            "competition_days": competition_days,
+            "comp_slots": comp_slots,
+            "pot_front_cents": 100_000,
+            "pot_per_entrant_cents": 1_000,
+            "dev": env,
+            "prod": {"drop_at": None, "competition_start_at": None},
+        }
+        with (
+            patch.dict(os.environ, {"LAUNCH_SCHEDULE_JSON": ""}, clear=False),
+            patch.object(launch_phase, "_FILE", f),
+            patch.object(launch_phase.settings, "ENVIRONMENT", "dev"),
+        ):
+            yield
+
+    return _set

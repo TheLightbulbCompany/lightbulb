@@ -25,6 +25,7 @@ import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
+import { LaunchHeldCard } from "@/components/chat/LaunchHeldCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 import {
@@ -758,6 +759,7 @@ export function ProvisioningStepper({
   // suppressed so the user isn't shown a form they already answered.
   const { replaying: briefReplaying, orgDraftVersion } = useLandingBriefReplay({
     gatePhase,
+    blockedCode: blocked?.code ?? null,
     awaitingBrief,
     isTerminalError,
   });
@@ -1111,6 +1113,31 @@ export function ProvisioningStepper({
           >
             {copy.desc}
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Pre-drop hold: a signed-up account with no container yet (Launch
+  // Competition, see core/services/launch_hold.py). Render the held-status
+  // card instead of the generic blocked card — same wrapper shape (logo
+  // centerpiece on the cream canvas) as team_billing_required below, but
+  // the footer is the gate's own action link ("See your spot" → /launch)
+  // rather than Check again / Contact support — there is nothing to retry
+  // before the drop.
+  if (gatePhase === "blocked" && blocked && blocked.code === "launch_pending") {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)] px-6 py-12">
+        <div className="flex w-full max-w-[440px] flex-col items-center">
+          <div className="mb-8 flex justify-center">
+            <Logo size="lg" href={null} />
+          </div>
+          <LaunchHeldCard blocked={blocked} />
+          <div className="mt-6 flex items-center gap-2">
+            <Button variant="outline" size="sm" className="rounded-full border-[var(--edge)]" asChild>
+              <a href={blocked.action.href}>{blocked.action.label}</a>
+            </Button>
+          </div>
         </div>
       </div>
     );

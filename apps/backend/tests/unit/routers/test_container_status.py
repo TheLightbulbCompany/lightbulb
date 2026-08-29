@@ -2323,3 +2323,23 @@ class TestProvisionTaskObservability:
             await asyncio.sleep(0)  # let the done-callback fire
 
         mock_metric.assert_called_once_with("container.provision", dimensions={"status": "error"})
+
+
+class TestLaunchPendingHold:
+    """The no-container branch of /status honors the Launch Competition
+    pre-drop hold BEFORE ensure_personal_trial_default — a held owner must
+    never get the 3-day trial clock stamped."""
+
+    @pytest.mark.asyncio
+    async def test_pre_drop_owner_is_402_launch_pending_and_no_trial_row_is_created(
+        self, async_client, launch_schedule
+    ):
+        with (
+            launch_schedule(datetime.now(timezone.utc) + timedelta(days=10)),
+            patch("routers.container.container_repo.get_by_owner_id", AsyncMock(return_value=None)),
+            patch("core.services.launch_hold.container_repo.get_by_owner_id", AsyncMock(return_value=None)),
+            patch("routers.container.ensure_personal_trial_default", AsyncMock()) as trial,
+        ):
+            r = await async_client.get("/api/v1/container/status")
+        assert r.status_code == 402 and r.json()["detail"]["blocked"]["code"] == "launch_pending"
+        trial.assert_not_awaited()

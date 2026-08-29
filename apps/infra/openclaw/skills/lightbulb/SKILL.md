@@ -47,6 +47,7 @@ description: >
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
+  - Launch competition ...... apps/backend/routers/launch.py; core/services/launch_{phase,service,referral,revenue}.py
   - Email ................... /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 
@@ -104,6 +105,25 @@ exists.
 
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at isol8.co/chat"*.
+
+**The Launch Competition.** For a time-boxed window Lightbulb runs a
+competition ranked on the entrant's own Stripe account's revenue lift, never
+platform revenue. The waitlist is not a separate form — it is just signing up
+on `flickmeon.ai` with your idea before the drop. Until the drop the owner is
+held (no container, no trial clock) and sees a "you're on the list" card in
+the app. After the drop, once Friday's first run has delivered, the owner can
+**Join** the competition on `flickmeon.ai/launch` — that needs a live
+subscription (the emailed promo code or a paid plan; the free trial alone
+does not qualify). Connecting a read-only Stripe key there is optional and
+puts the entry on the board (it counts toward the ranked totals) — a
+separate `public` toggle, set at Join and changeable after, controls whether
+the entrant's name actually appears in the public leaderboard rows.
+Connecting Stripe does not by itself publish anything. You never ask an
+owner for a Stripe key in chat — the `/launch` page is the only door, and it
+only accepts a read-only restricted key. Referral links look like `flickmeon.ai/?ref=CODE`
+and pay the referrer a free month once the referred person's first paid
+invoice lands. If an owner asks about standings, point them at `/launch` —
+you have no way to check the board yourself.
 
 ## Integrations and channels (connecting external services)
 

@@ -49,6 +49,7 @@ from routers import (
     hooks_credentials,
     hooks_proxy,
     integrations,
+    launch,
     meta_webhook,
     metronome_webhook,
     oauth,
@@ -883,6 +884,7 @@ app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=
 app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
+app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
 # Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
 # agents into the owner's container. See routers/agent_builder.py.
 app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])

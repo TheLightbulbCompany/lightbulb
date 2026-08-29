@@ -51,6 +51,93 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   ),
 );
 
+// launch-schedule.json (repo root) is the single source of the Launch
+// Competition's dates/pot constants. Same posture as OPENCLAW_VERSION above:
+// the backend image's Docker build context is apps/backend/, so the repo-root
+// file can't be COPY-d into the image directly. Read it here at synth time
+// and inject the raw text as an env var (LAUNCH_SCHEDULE_JSON below), which
+// core/services/launch_phase.py::load_schedule_file() reads at runtime. The
+// file is the only thing a human edits; this env is transport, mirroring
+// OPENCLAW_UPSTREAM_VERSION. Validated here so a broken file fails synth
+// rather than shipping a schedule the fleet only chokes on at runtime.
+
+/**
+ * Fails synth on a launch-schedule.json the backend cannot use.
+ *
+ * `launch_phase.schedule()` raises on both of these, and it is called from the
+ * container-status poll door — a bad date is a fleet-wide 500, not a quiet
+ * feature-off. Synth is the only place to catch it before it ships. Both dates
+ * null (feature off) is valid and stays valid.
+ */
+// What the backend's `launch_phase.parse_iso` actually accepts: it swaps a
+// trailing `Z` for `+00:00` and hands the result to `datetime.fromisoformat`.
+// `new Date()` is far more permissive (it parses `09/18/2026`, space-separated
+// timestamps, etc.) — trusting it alone lets a schedule ship that synths clean
+// and then throws on the container-status poll door in production.
+// Deliberately STRICTER than `parse_iso` in one way: an explicit offset is
+// required. `fromisoformat` would accept a naive timestamp and silently read it
+// as UTC — the exact "midnight ET" footgun this validator exists to catch.
+const ISO_INSTANT_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// `new Date()` NORMALIZES out-of-range fields (`24:00:00` rolls to the next
+// day, `2026-02-29` to March 1) where `fromisoformat` raises — so the grammar
+// match above is not enough; the fields themselves must be in range.
+function isoFieldsInRange(m: RegExpMatchArray): boolean {
+  const [, y, mo, d, hh, mm, ss] = m.map((v) => (v === undefined ? undefined : Number(v)));
+  if (hh! > 23 || mm! > 59 || (ss !== undefined && ss > 59)) return false;
+  const probe = new Date(Date.UTC(y!, mo! - 1, d!));
+  return probe.getUTCFullYear() === y && probe.getUTCMonth() === mo! - 1 && probe.getUTCDate() === d;
+}
+
+export function validateLaunchSchedule(obj: unknown): void {
+  const file = obj as Record<string, unknown>;
+  for (const env of ["dev", "prod"] as const) {
+    const e = file?.[env];
+    if (!e) throw new Error(`launch-schedule.json: missing "${env}" block`);
+    if (typeof e !== "object" || Array.isArray(e)) {
+      throw new Error(
+        `launch-schedule.json: "${env}" block must be an object, got ${Array.isArray(e) ? "array" : typeof e}`,
+      );
+    }
+    const block = e as Record<"drop_at" | "competition_start_at", unknown>;
+    const at = (k: "drop_at" | "competition_start_at"): number | null => {
+      const raw = block[k];
+      if (raw === null || raw === undefined) return null;
+      // A number passes `new Date(n)` (epoch millis) but breaks the backend's
+      // `parse_iso`, which calls `.replace()` on the value — a Python int has
+      // no such method. Only a string is a valid instant here.
+      if (typeof raw !== "string") {
+        throw new Error(`launch-schedule.json: ${env}.${k} must be a string, got ${typeof raw}`);
+      }
+      const m = raw.match(ISO_INSTANT_RE);
+      if (!m || !isoFieldsInRange(m)) {
+        throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);
+      }
+      const ms = new Date(raw).getTime();
+      if (Number.isNaN(ms)) {
+        throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);
+      }
+      return ms;
+    };
+    const drop = at("drop_at");
+    const start = at("competition_start_at");
+    // The backend treats "either date missing" as feature-off, so only a fully
+    // populated pair is checked for order.
+    if (drop !== null && start !== null && start <= drop) {
+      throw new Error(
+        `launch-schedule.json: ${env}.competition_start_at must be after ${env}.drop_at`,
+      );
+    }
+  }
+}
+
+const LAUNCH_SCHEDULE_JSON = fs.readFileSync(
+  path.join(__dirname, "..", "..", "..", "..", "launch-schedule.json"),
+  "utf8",
+);
+validateLaunchSchedule(JSON.parse(LAUNCH_SCHEDULE_JSON));
+
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
  * cycles. ServiceStack imports them locally via fromSecretNameV2, which
@@ -1548,6 +1635,14 @@ export class ServiceStack extends cdk.Stack {
         tableName(env, "marketplace-takedowns"),
       MARKETPLACE_SELLERS_TABLE:
         tableName(env, "marketplace-sellers"),
+      // Launch Competition dates/pot constants — read from launch-schedule.json
+      // at synth time (see the LAUNCH_SCHEDULE_JSON const near the top of this
+      // file, right after OPENCLAW_VERSION) and injected as raw JSON text.
+      // core/services/launch_phase.py::load_schedule_file() reads this env var
+      // at runtime, falling back to an ancestor-walk file read for local dev.
+      LAUNCH_SCHEDULE_JSON: LAUNCH_SCHEDULE_JSON,
+      // 100%-off-once coupon id from the Stripe console (live in prod, test in dev).
+      STRIPE_FREE_MONTH_COUPON_ID: "",
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
       // Deterministic public S3 URL of the hosted AWS connector
       // CloudFormation template. The connections aws-setup endpoint feeds this

@@ -5,7 +5,9 @@
  * stashes the visitor's answers in sessionStorage before redirecting into
  * Clerk signup; once /chat's ProvisioningStepper reaches the exact state
  * where the in-chat funnel would render, this hook submits the stash so the
- * user never re-answers.
+ * user never re-answers. The pre-drop launch hold ("launch_pending") counts
+ * as that state too — the endpoint is intake-only, so the idea must not die
+ * with sessionStorage while the account waits for the drop.
  *
  * The stash is deleted at READ time — a breakpoint remount re-enters the
  * firing state, and a duplicate automatic submit is worse than a lost stash
@@ -60,10 +62,13 @@ function parseBrief(raw: string): LandingBrief | null {
 
 export function useLandingBriefReplay({
   gatePhase,
+  blockedCode,
   awaitingBrief,
   isTerminalError,
 }: {
   gatePhase: ProvisioningPhase;
+  /** `blocked.code` when gatePhase is "blocked", else null. */
+  blockedCode?: string | null;
   awaitingBrief: boolean;
   isTerminalError: boolean;
 }): { replaying: boolean; orgDraftVersion: number } {
@@ -94,7 +99,12 @@ export function useLandingBriefReplay({
     // consumed: the POST itself doesn't need it, but the first-run metadata
     // mirror does, and a transiently-null user would silently skip it.
     if (!organization && !user) return;
-    if (gatePhase !== "normal" || !awaitingBrief || isTerminalError) return;
+    // A pre-drop held user is blocked with no container, but the stash must
+    // still land: POST /onboarding/brief is intake only (a pending-brief row),
+    // it needs no container, and it is what /launch/me's `idea` teaser reads
+    // back. Every OTHER blocked code is a real dead end for a brief.
+    const gateAllows = gatePhase === "normal" || (gatePhase === "blocked" && blockedCode === "launch_pending");
+    if (!gateAllows || !awaitingBrief || isTerminalError) return;
 
     let raw: string | null = null;
     try {
@@ -103,6 +113,9 @@ export function useLandingBriefReplay({
       return;
     }
     if (!raw) return;
+    // Narrowed to `string` here so the failure-path closure below (which TS
+    // cannot narrow a captured `let` inside) can restore it verbatim.
+    const rawStash: string = raw;
     firedRef.current = true;
     try {
       window.sessionStorage.removeItem(LANDING_BRIEF_STORAGE_KEY);
@@ -130,6 +143,22 @@ export function useLandingBriefReplay({
       return;
     }
 
+    // The stash is already gone (deleted at read time) and firedRef is set —
+    // without recovery an unsuccessful POST loses the brief for good, and
+    // held users now sit on this path for days before the drop. Put it back
+    // (unless something newer landed in the meantime) and clear firedRef so
+    // the next gate change retries.
+    const restoreStash = () => {
+      try {
+        if (window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY) === null) {
+          window.sessionStorage.setItem(LANDING_BRIEF_STORAGE_KEY, rawStash);
+        }
+      } catch {
+        /* best-effort */
+      }
+      firedRef.current = false;
+    };
+
     setReplaying(true);
     void (async () => {
       try {
@@ -155,12 +184,17 @@ export function useLandingBriefReplay({
           }
           return;
         }
+        // A resolved response with any other status is not a success — the
+        // brief must not be silently dropped, so it gets the same
+        // restore-and-retry treatment as a rejected POST.
         setReplaying(false);
+        restoreStash();
       } catch {
         setReplaying(false);
+        restoreStash();
       }
     })();
-  }, [api, gatePhase, awaitingBrief, isTerminalError, orgLoaded, organization, user]);
+  }, [api, gatePhase, blockedCode, awaitingBrief, isTerminalError, orgLoaded, organization, user]);
 
   return { replaying, orgDraftVersion };
 }

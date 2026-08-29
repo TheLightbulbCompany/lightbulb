@@ -139,26 +139,17 @@ describe("BedrockGateStack", () => {
     );
   });
 
-  test("publishes each env's gate URL to SSM under BOTH prefixes while the reader moves", () => {
+  test("publishes each env's gate URL to SSM at /lightbulb/{env}/bedrock-gate-url (backend runtime discovery + break-glass lever)", () => {
     // The backend reads this parameter at provision time — the exact name is
     // the contract. It is also the fleet break-glass lever: value "direct"
     // routes new provisions straight to bedrock-runtime.
-    //
-    // Both names are published for one cycle. The backend fails provisioning
-    // LOUDLY on a missing parameter (GateUrlUnavailable, no fallback by
-    // design) and nothing orders the gate stack ahead of the service stack, so
-    // flipping the reader in the same deploy that renames the parameter would
-    // open a window where provisioning hard-fails. The legacy name drops once
-    // the reader has moved.
-    template.resourceCountIs("AWS::SSM::Parameter", 4);
+    template.resourceCountIs("AWS::SSM::Parameter", 2);
     for (const gateEnv of ["dev", "prod"]) {
-      for (const prefix of ["isol8", "lightbulb"]) {
-        template.hasResourceProperties("AWS::SSM::Parameter", {
-          Name: `/${prefix}/${gateEnv}/bedrock-gate-url`,
-          Type: "String",
-          Value: Match.anyValue(),
-        });
-      }
+      template.hasResourceProperties("AWS::SSM::Parameter", {
+        Name: `/lightbulb/${gateEnv}/bedrock-gate-url`,
+        Type: "String",
+        Value: Match.anyValue(),
+      });
     }
   });
 

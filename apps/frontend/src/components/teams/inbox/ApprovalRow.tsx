@@ -6,10 +6,14 @@ import { ShieldQuestion } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError } from "@/lib/notify";
 import { useApi } from "@/lib/api";
+import { openInNewTab } from "@/components/settings/openInNewTab";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { approvalLabel } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
+
+const POPUP_BLOCKED_MSG =
+  "Your browser blocked the Stripe window — allow popups for this site and try again.";
 
 export function ApprovalRow({ approval }: { approval: Approval }) {
   const { approve, reject } = useApprovalMutations();
@@ -57,7 +61,10 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   onClick={() =>
                     run(async () => {
                       const r = (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
-                      window.open(r.onboarding_url, "_blank", "noopener");
+                      if (!openInNewTab(r.onboarding_url)) {
+                        notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                        return;
+                      }
                       await approve(approval.id);
                     })
                   }
@@ -70,7 +77,10 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   onClick={() =>
                     run(async () => {
                       const r = (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
-                      window.open(r.authorize_url, "_blank", "noopener");
+                      if (!openInNewTab(r.authorize_url)) {
+                        notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                        return;
+                      }
                       await approve(approval.id);
                     })
                   }

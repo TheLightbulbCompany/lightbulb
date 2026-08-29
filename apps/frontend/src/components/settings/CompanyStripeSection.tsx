@@ -4,6 +4,10 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
+import { openInNewTab } from "@/components/settings/openInNewTab";
+
+const POPUP_BLOCKED_MSG =
+  "Your browser blocked the Stripe window — allow popups for this site and try again.";
 
 type CompanyStripeStatus = {
   account_id: string | null;
@@ -18,7 +22,7 @@ const STATUS_PATH = "/company/stripe/status";
 
 export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   const api = useApi();
-  const { data, mutate, isLoading } = useSWR<CompanyStripeStatus>(
+  const { data, error, mutate, isLoading } = useSWR<CompanyStripeStatus>(
     STATUS_PATH,
     (p: string) => api.get(p) as Promise<CompanyStripeStatus>,
   );
@@ -54,9 +58,13 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
         </p>
       </div>
 
-      {isLoading && <p className="text-sm text-[var(--mute)]">Loading…</p>}
+      {error && !data && (
+        <p className="text-sm text-[#b63025]">Couldn&apos;t load Stripe status. Refresh to try again.</p>
+      )}
 
-      {!isLoading && !bound && (
+      {!error && isLoading && <p className="text-sm text-[var(--mute)]">Loading…</p>}
+
+      {!error && !isLoading && !bound && (
         <div className="flex flex-wrap gap-2">
           {canManage ? (
             <>
@@ -67,7 +75,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await createLink();
-                    window.open(r.onboarding_url, "_blank", "noopener");
+                    if (!openInNewTab(r.onboarding_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
                   })
                 }
               >
@@ -80,7 +88,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await connectStart();
-                    window.open(r.authorize_url, "_blank", "noopener");
+                    if (!openInNewTab(r.authorize_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
                   })
                 }
               >
@@ -120,7 +128,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await onboardingLink();
-                    window.open(r.onboarding_url, "_blank", "noopener");
+                    if (!openInNewTab(r.onboarding_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
                   })
                 }
               >

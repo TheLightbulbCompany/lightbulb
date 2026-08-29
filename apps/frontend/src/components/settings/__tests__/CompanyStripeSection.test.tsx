@@ -23,7 +23,12 @@ describe("CompanyStripeSection", () => {
   beforeEach(() => {
     get.mockReset();
     post.mockReset();
-    vi.spyOn(window, "open").mockImplementation(() => null);
+    // A non-null return represents a successful (non-popup-blocked) open —
+    // openInNewTab() treats only `null` as blocked, and a blocked open now
+    // routes through notifyApiError(), which needs a real "@/lib/api" mock
+    // shape (ApiError) this file doesn't provide. Popup-blocked handling
+    // itself is covered by ApprovalRow.connectStripe.test.tsx.
+    vi.spyOn(window, "open").mockImplementation(() => window);
   });
 
   it("offers both doors when nothing is bound", async () => {

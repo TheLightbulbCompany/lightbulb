@@ -31,8 +31,6 @@ name: mobile-ota
       # a change to the baked env (this file) must republish too — the
       # 2026-08-28 Clerk-key fix would otherwise never have reached devices
       - '.github/workflows/mobile-ota.yml'
-  # manual republish (a failed EAS upload, a fix that touched nothing under apps/mobile)
-  workflow_dispatch:
       - 'packages/shared/**'
       # Native-affecting files: a change confined to these needs a build, not an
       # OTA, so don't waste a publish. (Fingerprint still guards the mixed case.)

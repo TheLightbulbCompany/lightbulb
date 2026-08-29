@@ -115,7 +115,7 @@ export function PaywallScreen({
         // No token means nothing verifiable to send; treat as a failed purchase
         // rather than silently granting anything.
         if (!purchase.purchaseToken) {
-          setError("That purchase couldn't be confirmed. Contact support@isol8.co.");
+          setError("That purchase couldn't be confirmed. Contact support@thelightbulb.company.");
           setBusy(false);
           return;
         }
@@ -127,7 +127,7 @@ export function PaywallScreen({
           onPurchased();
         } catch {
           setError(
-            "Your purchase went through, but we couldn't activate it yet. Reopen the app, or contact support@isol8.co.",
+            "Your purchase went through, but we couldn't activate it yet. Reopen the app, or contact support@thelightbulb.company.",
           );
         } finally {
           setBusy(false);
@@ -300,7 +300,7 @@ export function PaywallScreen({
         // Purchases exist but none could be recorded — an honest failure beats
         // silence, since the customer is trying to recover something they paid
         // for and would otherwise assume it simply did not exist.
-        setError("We found a purchase but couldn't restore it. Contact support@isol8.co.");
+        setError("We found a purchase but couldn't restore it. Contact support@thelightbulb.company.");
       } else {
         setError("No previous purchase found on this Apple Account.");
       }

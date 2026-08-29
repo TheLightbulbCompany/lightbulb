@@ -280,7 +280,7 @@ export function FirstRunFunnel() {
                       <Text
                         style={styles.inlineLink}
                         accessibilityRole="link"
-                        onPress={() => void Linking.openURL("mailto:support@isol8.co")}
+                        onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
                       >
                         contact support
                       </Text>{" "}

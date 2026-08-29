@@ -421,7 +421,7 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.timeoutButton, pressed && styles.pressed]}
-              onPress={() => void Linking.openURL("mailto:support@isol8.co")}
+              onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
               accessibilityRole="button"
               accessibilityLabel="Contact support"
             >

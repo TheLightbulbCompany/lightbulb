@@ -406,6 +406,15 @@ class Settings(BaseSettings):
     # Connect platform client id (ca_…). Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
 
+    # Which Provider catalog partition this environment reads and writes:
+    # "prod" | "dev" | "testing" (spec.txt 4.2 / 4.4). Configuration, never a
+    # literal — dev runs "testing", prod runs "prod", and reading one partition
+    # while writing another provisions into a catalog the owner never saw.
+    #
+    # NOTE, verbatim from the guide: "Selecting a DEV or TESTING catalog
+    # doesn't mean 'no real charges.'"
+    STRIPE_PROJECTS_CATALOG: str = "prod"
+
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
     # a platform-scoped one for checkout/refund events (they originate on the

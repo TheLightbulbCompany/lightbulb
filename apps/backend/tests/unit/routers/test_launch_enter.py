@@ -5,7 +5,7 @@ import pytest
 
 from core.services import launch_service
 
-DROP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+DROP = datetime.now(timezone.utc) - timedelta(days=1)
 
 
 @pytest.fixture(autouse=True)
@@ -20,8 +20,8 @@ def _fresh_state():
 
 
 @pytest.fixture
-def configured():
-    with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", DROP):
+def configured(launch_schedule):
+    with launch_schedule(DROP):
         yield
 
 

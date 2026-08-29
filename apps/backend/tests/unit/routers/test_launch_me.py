@@ -3,12 +3,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-DROP = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+DROP = datetime.now(timezone.utc) - timedelta(days=1)
 
 
 @pytest.fixture
-def configured():
-    with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", DROP):
+def configured(launch_schedule):
+    with launch_schedule(DROP):
         yield
 
 

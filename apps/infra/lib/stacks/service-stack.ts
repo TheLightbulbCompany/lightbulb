@@ -51,6 +51,21 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   ),
 );
 
+// launch-schedule.json (repo root) is the single source of the Launch
+// Competition's dates/pot constants. Unlike OPENCLAW_VERSION above,
+// core/services/launch_phase.py reads this file directly at CONTAINER
+// RUNTIME — there are no LAUNCH_* env vars to inject instead. The backend
+// image's Docker build context is apps/backend/ too, so a Dockerfile COPY
+// can't reach the repo-root file; we stage a copy into that directory here
+// at synth time instead, and the Dockerfile's existing catch-all
+// `COPY --chown=appuser:appuser . .` ships it like any other backend source
+// file. The staged copy is gitignored (apps/backend/.gitignore) and
+// regenerated on every synth, so it never needs to be committed.
+fs.copyFileSync(
+  path.join(__dirname, "..", "..", "..", "..", "launch-schedule.json"),
+  path.join(__dirname, "..", "..", "..", "backend", "launch-schedule.json"),
+);
+
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
  * cycles. ServiceStack imports them locally via fromSecretNameV2, which
@@ -1548,15 +1563,10 @@ export class ServiceStack extends cdk.Stack {
         tableName(env, "marketplace-takedowns"),
       MARKETPLACE_SELLERS_TABLE:
         tableName(env, "marketplace-sellers"),
-      // Launch Competition. LAUNCH_DROP_AT EMPTY keeps the feature inert
-      // (every /launch route 404s). Set the ISO instant per env when the
-      // waitlist opens; the other values are the sheet's assumptions.
-      LAUNCH_DROP_AT: "",
-      LAUNCH_COMP_SLOTS: "220",
-      LAUNCH_ACTIVATION_WINDOW_HOURS: "72",
-      LAUNCH_COMPETITION_DAYS: "30",
-      LAUNCH_PRIZE_FRONT_CENTS: "100000",
-      LAUNCH_POT_PER_ENTRANT_CENTS: "1000",
+      // Launch Competition dates/pot constants live in launch-schedule.json at
+      // the repo root (core/services/launch_phase.py reads it directly at
+      // runtime — see the fs.copyFileSync note near the top of this file,
+      // right after OPENCLAW_VERSION), not as env vars.
       // 100%-off-once coupon id from the Stripe console (live in prod, test in dev).
       STRIPE_FREE_MONTH_COUPON_ID: "",
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,

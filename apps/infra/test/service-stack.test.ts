@@ -164,14 +164,24 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task env carries an EMPTY launch drop date — the feature is inert until an owner sets it", () => {
+  test("backend task env carries the Stripe free-month coupon id but no LAUNCH_* dates — those live in launch-schedule.json", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({ Name: "LAUNCH_DROP_AT", Value: "" }),
-            Match.objectLike({ Name: "LAUNCH_COMP_SLOTS", Value: "220" }),
+            Match.objectLike({ Name: "STRIPE_FREE_MONTH_COUPON_ID", Value: "" }),
           ]),
+        }),
+      ]),
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.not(
+            Match.arrayWith([
+              Match.objectLike({ Name: Match.stringLikeRegexp("^LAUNCH_") }),
+            ]),
+          ),
         }),
       ]),
     });

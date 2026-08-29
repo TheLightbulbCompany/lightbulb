@@ -9,8 +9,8 @@ DROP = datetime.now(timezone.utc) + timedelta(days=10)
 
 
 @pytest.fixture
-def configured():
-    with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", DROP.isoformat()):
+def configured(launch_schedule):
+    with launch_schedule(DROP):
         yield
 
 
@@ -25,8 +25,8 @@ def _fresh_bucket():
     launch._RESP_CACHE.clear()
 
 
-async def test_launch_info_404_when_unset(unauthenticated_async_client):
-    with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", ""):
+async def test_launch_info_404_when_unset(launch_schedule, unauthenticated_async_client):
+    with launch_schedule():
         r = await unauthenticated_async_client.get("/api/v1/launch")
     assert r.status_code == 404
 
@@ -78,9 +78,9 @@ async def test_join_waitlist_rate_limited_per_ip(mock_wl, configured, unauthenti
     assert r.status_code == 429 and r.headers["retry-after"] == "60"
 
 
-async def test_join_waitlist_closed_after_drop(configured, unauthenticated_async_client):
-    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    with patch("core.services.launch_phase.settings.LAUNCH_DROP_AT", past):
+async def test_join_waitlist_closed_after_drop(configured, launch_schedule, unauthenticated_async_client):
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    with launch_schedule(past):
         r = await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "a@x.com"})
     assert r.status_code == 409 and r.json()["detail"] == "waitlist_closed"
 

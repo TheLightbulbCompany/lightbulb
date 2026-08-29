@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 import time
 
-from core.config import settings
+# settings has no direct use in this module, but the name must stay bound here:
+# test_ops_launch.py patches ops_launch.settings.FRONTEND_URL on the shared
+# singleton that launch_service.referral_link reads at call time.
+from core.config import settings  # noqa: F401
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_service, readiness_state
@@ -28,7 +31,7 @@ def _activated_by_deadline(onboarding: dict, s: launch_phase.Schedule) -> bool:
 
 async def _compute(s: launch_phase.Schedule) -> dict:
     waitlist, entries = await asyncio.gather(launch_waitlist_repo.list_all(), launch_entries_repo.list_all())
-    per_entrant = settings.LAUNCH_POT_PER_ENTRANT_CENTS
+    per_entrant = launch_phase.constants()["pot_per_entrant_cents"]
 
     claimed = [w for w in waitlist if w.get("user_id")]
     sem = asyncio.Semaphore(8)
@@ -149,7 +152,11 @@ async def _compute(s: launch_phase.Schedule) -> dict:
 async def compute() -> tuple[dict | None, str, list[dict]]:
     s = launch_phase.schedule()
     if s is None:
-        return None, env.UNAVAILABLE, [{"domain": "launch", "reason": "LAUNCH_DROP_AT is not set"}]
+        return (
+            None,
+            env.UNAVAILABLE,
+            [{"domain": "launch", "reason": "launch-schedule.json has no drop_at for this env"}],
+        )
     hit = _cache.get("launch")
     if hit and time.monotonic() - hit[0] < _CACHE_TTL_S:
         return hit[1]

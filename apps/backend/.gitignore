@@ -88,3 +88,9 @@ openapi.json
 # Misc
 # ========================
 .ruff_cache/
+
+# launch-schedule.json is staged here at CDK synth time from the repo root
+# (apps/infra/lib/stacks/service-stack.ts) so the Docker build context — which
+# is this directory, not the repo root — picks it up. Never hand-edit or
+# commit the staged copy; edit the repo-root file instead.
+launch-schedule.json

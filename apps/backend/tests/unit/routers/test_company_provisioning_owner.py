@@ -68,47 +68,32 @@ def test_resources_returns_pointers_and_the_pairing_state(client):
     assert body["resources"][0]["resource_name"] == "Northwind analytics"
 
 
-def test_revoke_drops_only_the_landed_env_keys_from_the_shared_blob(client, facts):
-    """The (owner, provider) Secrets Manager blob is SHARED with the OAuth
-    integrations rail, so revoke must drop only the keys THIS resource
-    landed, never the whole blob — an unrelated OAuth credential (e.g.
-    ``access_token``) must survive."""
-    blob = {"access_token": "t", "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "p"}
-    with (
-        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[RES])),
-        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])) as drop,
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=dict(blob))),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
-    ):
+def test_revoke_delegates_to_the_service_and_writes_facts(client, facts):
+    """The router is a thin gate + delegate — the shared-blob-safe merge logic
+    lives in provisioning_landing.revoke_credentials (see its own tests)."""
+    with patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=True)) as revoke:
         resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/revoke")
     assert resp.status_code == 200
     assert resp.json() == {"revoked": True}
-    drop.assert_awaited_once_with("org_a", "posthog", "res_1")
-    sm_put.assert_awaited_once_with("org_a", "posthog", {"access_token": "t"})
-    sm_del.assert_not_awaited()
+    revoke.assert_awaited_once_with(owner_id="org_a", provider="posthog", resource_id="res_1")
     facts.assert_awaited_once_with("org_a")
 
 
-def test_revoke_deletes_the_secret_when_nothing_is_left(client):
-    """A blob holding only this resource's keys goes away entirely once they
-    are dropped."""
-    with (
-        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[RES])),
-        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])),
-        patch.object(
-            mod.integration_secret_store,
-            "get",
-            AsyncMock(return_value={"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "p"}),
-        ),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
-    ):
+def test_revoke_is_paid_only_with_the_provisioning_specific_message(client, monkeypatch):
+    entitlement = AsyncMock()
+    monkeypatch.setattr(mod, "require_always_on_entitlement", entitlement)
+    with patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=True)):
         resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/revoke")
     assert resp.status_code == 200
-    assert resp.json() == {"revoked": True}
-    sm_put.assert_not_awaited()
-    sm_del.assert_awaited_once_with("org_a", "posthog")
+    entitlement.assert_awaited_once_with("org_a", message=mod.PAID_MESSAGE)
+
+
+def test_revoke_returns_404_when_no_such_pointer_exists(client, facts):
+    with patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=False)):
+        resp = client.post("/api/v1/company/provisioning/resources/posthog/res_missing/revoke")
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "resource_not_found"
+    facts.assert_not_awaited()
 
 
 def test_revoke_is_org_admin_only(member_client):
@@ -116,7 +101,7 @@ def test_revoke_is_org_admin_only(member_client):
     assert resp.status_code == 403
 
 
-def test_revoke_is_paid_only(client, monkeypatch):
+def test_revoke_is_blocked_on_the_trial_plan(client, monkeypatch):
     from fastapi import HTTPException
 
     monkeypatch.setattr(
@@ -134,7 +119,15 @@ def test_revoke_is_paid_only(client, monkeypatch):
 
 
 def test_revoke_rejects_a_hostile_provider_segment(client):
-    with patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock()) as drop:
+    with patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock()) as revoke:
         resp = client.post("/api/v1/company/provisioning/resources/PostHog!/res_1/revoke")
     assert resp.status_code == 422
-    drop.assert_not_awaited()
+    revoke.assert_not_awaited()
+
+
+def test_revoke_rejects_a_hostile_resource_id_segment(client):
+    # Leading underscore fails _RESOURCE_ID_RE (must start [A-Za-z0-9]).
+    with patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock()) as revoke:
+        resp = client.post("/api/v1/company/provisioning/resources/posthog/_res1/revoke")
+    assert resp.status_code == 422
+    revoke.assert_not_awaited()

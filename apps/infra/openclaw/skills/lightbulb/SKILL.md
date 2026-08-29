@@ -334,7 +334,7 @@ in front of them, and stores what comes back.
 
 Read `~/.openclaw/isol8-facts.json` first — never ask twice:
 
-- `provisioned: ["posthog/project (Acme Analytics)", …]` — the owner already
+- `provisioned: ["posthog/analytics (Acme Analytics)", …]` — the owner already
   has these. Use them; never provision one of them again.
 - `stripe_cli: "paired"` — the CLI is connected here; skip to step 2.
 - `stripe_cli: "unpaired"` — start at step 1. The fact is derived from what has
@@ -378,28 +378,44 @@ approval wake — never by polling the backend; these routes file cards, they do
 not report on them. Say in your reply that you asked, and keep working on
 everything that does not need the account. This is never a gate.
 
-**Step 2 — get the owner's consent for the provider.** Once per
-provider+service, before you add anything. Read the provider's real terms and
-real price first: a card with a guessed price is worse than no card.
+**Step 2 — find the exact service, then get the owner's consent.** Once per
+provider+service, before you add anything.
+
+First find the real slug pair in the catalog. Never guess one — `add` takes
+`provider/service`, and a name you invented is a failed command at best:
+
+```bash
+stripe projects search postgres          # by name, description or category
+stripe projects catalog database         # a whole category
+stripe projects catalog posthog          # everything one provider offers
+stripe projects catalog --json           # structured, for parsing
+```
+
+Take the terms URL and the price from what the catalog prints for that service.
+Only if it shows none, fall back to the provider's own pricing page — a card
+with a guessed price is worse than no card. `posthog/analytics` below stands in
+for whatever pair the catalog actually named; never type a pair you did not
+read there.
 
 ```bash
 curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"provider":"posthog","service":"project","terms_url":"https://posthog.com/terms","pricing":"<what it costs, plainly>","issue_id":"'"$PAPERCLIP_TASK_ID"'"}' \
+  -d '{"provider":"posthog","service":"analytics","terms_url":"https://posthog.com/terms","pricing":"<what it costs, plainly>","issue_id":"'"$PAPERCLIP_TASK_ID"'"}' \
   "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/consent"
 ```
 
-`provider` and `service` are lowercase slugs, and must be the same pair you use
-in step 3. Wait for that card to be approved before step 3. `--accept-tos` is
-you saying the OWNER accepted — never pass it before their card is approved.
+`provider` and `service` are lowercase slugs, and must be the pair the catalog
+named. Wait for that card to be approved before step 3. **Never pass
+`--accept-tos` or `--confirm-paid-service` before their card is approved** —
+those two flags are you saying the OWNER accepted the terms and the price.
 
 **Step 3 — add the service, then report it.**
 
 ```bash
 stripe projects add --help                        # read this first; flags move between CLI versions
 [ -d .projects ] || stripe projects init --yes    # once per company
-stripe projects add posthog/project --accept-tos
-stripe projects env                               # whatever prints the credentials — check --help
+stripe projects add posthog/analytics --accept-tos --confirm-paid-service
+stripe projects env show --provider posthog       # the variable names and values it created
 ```
 
 Then POST exactly the `NAME=value` pairs the CLI printed:
@@ -407,7 +423,7 @@ Then POST exactly the `NAME=value` pairs the CLI printed:
 ```bash
 curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"provider":"posthog","service":"project","resource_id":"<id>","resource_name":"<name>",
+  -d '{"provider":"posthog","service":"analytics","resource_id":"<id>","resource_name":"<name>",
        "env":{"POSTHOG_API_KEY":"<value>"},"dashboard_url":"https://us.posthog.com/project/123"}' \
   "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/landed"
 ```
@@ -417,12 +433,18 @@ the next container restart if not immediately. From then on use
 `$POSTHOG_API_KEY`, never the value. Register a work product pointing at the new
 resource so the company has a receipt for what you created.
 
-The last line of each call is the HTTP status:
+The last line of each call is the HTTP status. The two shapes are different,
+so read the right one:
 
-- **200** — read `status` in the body: `filed` means the card is in the owner's
-  Inbox (say that you asked); `no_company` means the owner has no board yet, so
-  tell them plainly and try again on a later turn. `landed` returns the stored
-  pointer — names only, never values.
+- **200 from `/pairing` or `/consent`** — the body carries `status`: `filed`
+  means the card is in the owner's Inbox (say that you asked); `no_company`
+  means the owner has no board yet, so tell them plainly and try again on a
+  later turn.
+- **200 from `/landed`** — the body is the stored POINTER, a JSON object with
+  `resource_id`, `provider`, `service`, `env_keys`, `dashboard_url` and the
+  resource's own `status` (`active`). A 200 there IS success; there is no
+  `filed` or `no_company` on this route. Anything other than 200, read the
+  status line below. Names only, never values.
 - **401** — the hook token is wrong. Stop; do not retry.
 - **402** — the owner is not on a paid plan, and provisioning needs one. Tell
   them, and do not retry.

@@ -19,6 +19,8 @@ import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
+import { WaitlistForm } from "@/components/launch/WaitlistForm";
+import { useLaunchPhase } from "@/components/launch/useLaunchPhase";
 import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
 
@@ -48,6 +50,10 @@ export function HeroFunnel() {
   const router = useRouter();
   const [path, setPath] = React.useState<Path>("new");
   const [input, setInput] = React.useState("");
+  // While the Launch Competition waitlist is open, sign-ups are closed (Clerk
+  // Restricted) — the pill becomes the email capture and the idea funnel
+  // returns on drop day. `null` (feature off / loading) is the normal hero.
+  const waitlistOpen = useLaunchPhase() === "waitlist";
 
   // 3..2000 mirrors the backend BriefBody rules — an oversized stash would be
   // rejected by the replay hook AFTER signup, silently losing the brief.
@@ -82,44 +88,56 @@ export function HeroFunnel() {
           Watch it become a company.
         </h1>
 
-        <form className="ld-ask" onSubmit={submit}>
-          <input
-            maxLength={2000}
-            value={input}
-            onChange={(e) => {
-              const next = e.target.value;
-              // "Type an idea. Watch it become a company." — the first
-              // character IS the lightbulb moment. Only ever lights, never
-              // darkens; the lamp itself is the toggle.
-              if (next.length > 0) lightOn();
-              setInput(next);
-              stash(path, next);
-            }}
-            placeholder={COPY[path].placeholder}
-            aria-label={
-              path === "new" ? "Your idea" : "Your company's website"
-            }
-          />
-          <button type="submit" className="ld-btn" disabled={!canSubmit}>
-            Start <span className="ld-btn-arrow" aria-hidden="true">→</span>
-          </button>
-        </form>
+        {waitlistOpen ? (
+          <>
+            <WaitlistForm onInput={lightOn} />
+            <p className="ld-funnel-fine">
+              Join the waitlist. The first 220 get their competition month
+              free, and every friend who subscribes earns you a month.
+            </p>
+          </>
+        ) : (
+          <>
+            <form className="ld-ask" onSubmit={submit}>
+              <input
+                maxLength={2000}
+                value={input}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  // "Type an idea. Watch it become a company." — the first
+                  // character IS the lightbulb moment. Only ever lights, never
+                  // darkens; the lamp itself is the toggle.
+                  if (next.length > 0) lightOn();
+                  setInput(next);
+                  stash(path, next);
+                }}
+                placeholder={COPY[path].placeholder}
+                aria-label={
+                  path === "new" ? "Your idea" : "Your company's website"
+                }
+              />
+              <button type="submit" className="ld-btn" disabled={!canSubmit}>
+                Start <span className="ld-btn-arrow" aria-hidden="true">→</span>
+              </button>
+            </form>
 
-        <p className="ld-funnel-fine">
-          Your company gets a name, a working email address, and its first
-          three moves — in its own persistent, isolated container.
-        </p>
-        <button
-          type="button"
-          className="ld-funnel-swap"
-          onClick={() => {
-            const next: Path = path === "new" ? "grow" : "new";
-            setPath(next);
-            stash(next, input);
-          }}
-        >
-          {COPY[path].swap}
-        </button>
+            <p className="ld-funnel-fine">
+              Your company gets a name, a working email address, and its first
+              three moves — in its own persistent, isolated container.
+            </p>
+            <button
+              type="button"
+              className="ld-funnel-swap"
+              onClick={() => {
+                const next: Path = path === "new" ? "grow" : "new";
+                setPath(next);
+                stash(next, input);
+              }}
+            >
+              {COPY[path].swap}
+            </button>
+          </>
+        )}
       </div>
     </section>
   );

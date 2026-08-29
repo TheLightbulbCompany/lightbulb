@@ -19,15 +19,15 @@ const ERROR_COPY: Record<string, string> = {
  * state and renders NOTHING unless the launch is configured and the phase is
  * `waitlist`, so it can be left in place through the drop.
  */
-export function WaitlistForm() {
+export function WaitlistForm({ onInput }: { onInput?: () => void } = {}) {
   return (
     <React.Suspense fallback={null}>
-      <WaitlistFormInner />
+      <WaitlistFormInner onInput={onInput} />
     </React.Suspense>
   );
 }
 
-function WaitlistFormInner() {
+function WaitlistFormInner({ onInput }: { onInput?: () => void }) {
   const refCode = useLaunchRef();
   const [info, setInfo] = React.useState<LaunchInfo | null | undefined>(undefined);
   const [email, setEmail] = React.useState("");
@@ -85,7 +85,11 @@ function WaitlistFormInner() {
           required
           autoComplete="email"
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            // The hero's first keystroke lights the lamp; the form itself stays lamp-agnostic.
+            if (e.target.value.length > 0) onInput?.();
+            setEmail(e.target.value);
+          }}
           placeholder="you@company.com"
         />
         <button type="submit" className="ld-btn" disabled={busy || email.trim().length < 3}>

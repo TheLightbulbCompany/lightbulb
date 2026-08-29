@@ -13,6 +13,16 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
+// The hero reads the Launch Competition phase; `null` = no competition, the
+// normal hero. One test flips it to "waitlist" to prove the pill swaps.
+const { launchPhase } = vi.hoisted(() => ({ launchPhase: { value: null as string | null } }));
+vi.mock("@/components/launch/useLaunchPhase", () => ({
+  useLaunchPhase: () => launchPhase.value,
+}));
+vi.mock("@/components/launch/WaitlistForm", () => ({
+  WaitlistForm: () => <form aria-label="Join the waitlist" />,
+}));
+
 function readStash(): { path: string; input: string; detail: string } | null {
   const raw = window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY);
   return raw ? JSON.parse(raw) : null;
@@ -22,6 +32,20 @@ describe("HeroFunnel", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
     pushMock.mockClear();
+    launchPhase.value = null;
+  });
+
+  it("swaps the idea pill for the waitlist form while the waitlist is open", () => {
+    launchPhase.value = "waitlist";
+    render(<HeroFunnel />);
+    expect(screen.getByRole("form", { name: /join the waitlist/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Your idea")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Join the waitlist\./)).toBeInTheDocument();
+    // The headline is the product's, not the competition's — it stays.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Type an idea. Watch it become a company.",
+    );
   });
 
   it("renders the idea-to-company fold: eyebrow, headline, one microcopy line", () => {

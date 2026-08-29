@@ -2143,7 +2143,7 @@ function StarterCreditsPicker({
           aria-label="Starter Claude credits in dollars"
           onChange={(e) => setDraft(e.target.value)}
           onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] focus:border-[var(--midnight)] focus:outline-none disabled:opacity-50"
+          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] disabled:opacity-50"
         />
       </label>
     </div>

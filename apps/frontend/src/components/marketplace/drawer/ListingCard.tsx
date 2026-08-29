@@ -48,7 +48,7 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       className={`relative rounded-2xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
         installed
           ? "border-[var(--ok)]"
-          : "border-[var(--edge)] bg-card hover:-translate-y-0.5 hover:shadow-md hover:border-[var(--midnight-faint)]"
+          : "border-[var(--edge)] bg-card hover:shadow-md hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
       }`}
     >
       {installed && (

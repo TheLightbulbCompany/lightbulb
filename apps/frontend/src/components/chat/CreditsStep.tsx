@@ -44,11 +44,10 @@ const SANS_FONT = { fontFamily: "var(--font-sans), sans-serif" } as const;
 
 const PRIMARY_BUTTON =
   "rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-medium text-cream " +
-  "transition-colors hover:bg-[var(--midnight-soft)] disabled:opacity-50 disabled:hover:bg-[var(--midnight)]";
+  "transition-colors hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep";
 
 const TEXT_INPUT =
-  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)] " +
-  "focus:outline-none focus:border-[var(--midnight)] focus:ring-2 focus:ring-ring";
+  "rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2.5 text-sm text-[var(--midnight)]";
 
 /**
  * Bedrock onboarding step: collect an initial Claude credit top-up.

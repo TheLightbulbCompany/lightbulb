@@ -7,6 +7,7 @@ import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
@@ -106,7 +107,10 @@ export default function RootLayout({
               <PostHogProvider>
                 <DesktopAuthListener />
                 <SupportProvider>
-                  {children}
+                  {/* One provider for the whole app so the tooltip skip-delay
+                      grace is shared: after the first tooltip, neighbouring
+                      ones open instantly instead of re-waiting. */}
+                  <TooltipProvider>{children}</TooltipProvider>
                   {/* Toaster INSIDE SupportProvider so a toast's <ReportButton/>
                       (a custom-JSX sonner action) can resolve useSupport(). */}
                   <Toaster />

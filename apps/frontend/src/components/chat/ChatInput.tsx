@@ -9,6 +9,7 @@ import { parseSlashInput } from "@/lib/slashCommands";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommandMenu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const FALLBACK_MAX_TEXTAREA_HEIGHT = 200; // Matches Tailwind max-h-50 (12.5rem)
@@ -455,7 +456,6 @@ export function ChatInput({
                       <button
                         type="button"
                         aria-label="Retry queued message"
-                        title="Retry"
                         onClick={() => onRetryQueued!(q.id)}
                         className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
                       >
@@ -467,7 +467,6 @@ export function ChatInput({
                       <button
                         type="button"
                         aria-label="Steer queued message"
-                        title="Steer now"
                         onClick={() => onSteerQueued!(q.id)}
                         className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
                       >
@@ -568,27 +567,31 @@ export function ChatInput({
                   <Square className="h-3 w-3 fill-current" />
                 </Button>
               )}
-              <Button
-                type="button"
-                size="icon"
-                className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:bg-[var(--cream-deep)] disabled:text-[var(--midnight-faint)]"
-                onClick={handleSend}
-                disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
-                data-testid="send-button"
-                // While a run is in flight a send doesn't fire immediately —
-                // useAgentChat enqueues it and drains on the server run-ended
-                // signal. Surface that as a "Queue" affordance so the button's
-                // accessible label / tooltip reflects the actual action.
-                // Mirrors upstream OpenClaw web UI (chat/run-controls.ts).
-                aria-label={isStreaming ? "Queue message" : "Send message"}
-                title={isStreaming ? "Queue" : "Send"}
-              >
-                {isUploading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ArrowUp className="h-4 w-4" />
-                )}
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 rounded-full bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)]"
+                    onClick={handleSend}
+                    disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
+                    data-testid="send-button"
+                    // While a run is in flight a send doesn't fire immediately —
+                    // useAgentChat enqueues it and drains on the server run-ended
+                    // signal. Surface that as a "Queue" affordance so the button's
+                    // accessible label / tooltip reflects the actual action.
+                    // Mirrors upstream OpenClaw web UI (chat/run-controls.ts).
+                    aria-label={isStreaming ? "Queue message" : "Send message"}
+                  >
+                    {isUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ArrowUp className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{isStreaming ? "Queue" : "Send"}</TooltipContent>
+              </Tooltip>
             </div>
           </div>
         </div>

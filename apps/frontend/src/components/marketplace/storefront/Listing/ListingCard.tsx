@@ -37,7 +37,7 @@ export function ListingCard({ listing }: { listing: Listing }) {
       )}
       <div className="mt-5 flex items-center justify-between border-t border-[var(--edge)] pt-3 text-[12px] text-[var(--midnight-muted)]">
         <span className="font-mono uppercase tracking-[0.12em]">View detail</span>
-        <span className="font-bold text-[var(--midnight)] transition group-hover:translate-x-0.5">
+        <span className="font-bold text-[var(--midnight)] transition-[translate] duration-(--dur-fast) ease-out [@media(hover:hover)_and_(pointer:fine)]:group-hover:translate-x-0.5">
           →
         </span>
       </div>

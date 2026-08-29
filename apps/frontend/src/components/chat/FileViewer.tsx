@@ -7,6 +7,7 @@ import { FileContentViewer } from "@/components/chat/FileContentViewer";
 import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
 import { useApi } from "@/lib/api";
 import "./FileViewer.css";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const CONFIG_ALLOWLIST = [
   "SOUL.md",
@@ -192,24 +193,34 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
               {formatFileSize(file.size)} · {formatDate(file.modified_at)}
             </span>
             {file.content && (
-              <button
-                onClick={handleCopyContent}
-                className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
-                title="Copy file content"
-              >
-                <Copy className="h-4 w-4" />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={handleCopyContent}
+                    aria-label="Copy file content"
+                    className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Copy file content</TooltipContent>
+              </Tooltip>
             )}
           </>
         )}
 
-        <button
-          onClick={handleCloseRequested}
-          className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
-          title="Close file viewer"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={handleCloseRequested}
+              aria-label="Close file viewer"
+              className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Close file viewer</TooltipContent>
+        </Tooltip>
       </div>
 
       <div

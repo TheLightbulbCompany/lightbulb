@@ -4,7 +4,6 @@
   grid-template-areas: "sidebar main viewer";
   height: 100vh;
   overflow: hidden;
-  transition: grid-template-columns 200ms ease;
 }
 .app-shell.with-file-viewer {
   grid-template-columns: 0px 380px 1fr;
@@ -19,14 +18,14 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: opacity 150ms ease, visibility 0s linear 0s;
+  transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear 0s;
 }
 .app-shell.with-file-viewer .cream-sidebar {
   opacity: 0;
   pointer-events: none;
   border-right: none;
   visibility: hidden;
-  transition: opacity 150ms ease, visibility 0s linear 150ms;
+  transition: opacity var(--dur-base) var(--ease-out), visibility 0s linear var(--dur-base);
 }
 .sidebar-header {
   display: flex;
@@ -52,7 +51,7 @@
   font-size: 11px;
   font-weight: 700;
   text-decoration: none;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 /* The sidebar itself is --cream-deep, so hovering the pill TO --cream-deep
    dissolved its fill. --cream-deeper is the one remaining step that reads
@@ -75,7 +74,7 @@
 }
 .sidebar-settings-link {
   color: var(--midnight-muted);
-  transition: color 0.15s;
+  transition: color var(--dur-fast) ease;
   display: flex;
   align-items: center;
 }
@@ -98,7 +97,7 @@
   border-radius: 999px;
   border: none;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
   background: transparent;
   color: var(--midnight-muted);
 }
@@ -137,19 +136,29 @@
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) ease;
 }
 .create-pill__seg:hover:not(:disabled) {
   background: var(--midnight-soft);
 }
+.create-pill__seg:active:not(:disabled) {
+  transform: scale(0.97);
+}
 /* Disabled while the workspace is still provisioning — dimmed, no hover
    lightening, default cursor. */
 .create-pill__seg:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: default;
 }
+/* A midnight fill is a reversed ground: --ring resolves to midnight here and
+   would vanish. Repointing the token lets the ONE global :focus-visible recipe
+   apply as-is; the negative offset keeps the outline inside `overflow: hidden`. */
+.create-pill {
+  --ring: var(--cream);
+}
 .create-pill__seg:focus-visible {
-  outline: 2px solid var(--cream);
   outline-offset: -3px;
 }
 .create-pill__divider {
@@ -213,7 +222,7 @@
   padding: 8px 8px;
   border-radius: 10px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-fast) ease;
   position: relative;
   /* Column gap is 0 on purpose: any horizontal space BETWEEN the row button
      and the action cluster would be a dead zone, since neither the gap nor
@@ -258,11 +267,6 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
-}
-.agent-item__main:focus-visible {
-  outline: 2px solid var(--midnight);
-  outline-offset: 3px;
-  border-radius: 6px;
 }
 
 /* ── The duty rail ────────────────────────────────────────────────────────
@@ -458,7 +462,7 @@
   align-items: center;
   gap: 2px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast) var(--ease-out);
   flex-shrink: 0;
 }
 /* `:focus-within` is not a nicety here — the actions are `opacity: 0` until
@@ -487,7 +491,7 @@
   color: var(--midnight-muted);
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .agent-row-action:hover {
   background: var(--cream);
@@ -528,7 +532,7 @@
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .session-item:hover {
   background: var(--cream);
@@ -606,7 +610,7 @@
   color: var(--midnight-muted);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .session-new:hover {
   background: var(--cream);
@@ -705,7 +709,7 @@
   padding: 10px;
   margin: -6px;
   color: var(--midnight-muted);
-  transition: color 0.15s;
+  transition: color var(--dur-fast) ease;
 }
 .mobile-hamburger:hover {
   color: var(--midnight);

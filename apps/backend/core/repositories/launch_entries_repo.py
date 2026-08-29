@@ -48,7 +48,14 @@ async def join(
     """Put-if-absent: a NEW row starts un-keyed (``has_key=False``, zeroed
     revenue fields) — ``join`` never touches Stripe. An EXISTING row is
     returned untouched (first write wins), matching the router's 200-not-409
-    idempotency contract."""
+    idempotency contract.
+
+    If the winning row is deleted between the failed put and the read (the
+    race is real, not just theoretical — see the retry test), a bare
+    ``_plain(item)`` fallback would return an item DynamoDB never actually
+    holds. Instead the conditional put is retried ONCE: if it lands, the row
+    now IS ``item``; if it also loses the race, some other writer's row must
+    exist by now, so a second read is authoritative."""
     now = utc_now_iso()
     item: dict = {
         "owner_id": owner_id,
@@ -67,10 +74,21 @@ async def join(
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        # Lost the race / already joined — the stored row is the truth. The
-        # `or` covers the row being deleted between the failed put and this
-        # read, so the declared `-> dict` return never lies.
-        return await get(owner_id) or _plain(item)
+        # Lost the race / already joined — the stored row is the truth.
+        existing = await get(owner_id)
+        if existing is not None:
+            return existing
+        # The winner row vanished before this read. Retry once.
+        try:
+            await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(owner_id)")
+        except ClientError as e2:
+            if e2.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            existing2 = await get(owner_id)
+            if existing2 is None:
+                raise RuntimeError(f"launch_entries_repo.join: row for {owner_id} vanished across two reads") from e2
+            return existing2
+        return _plain(item)
     return _plain(item)
 
 

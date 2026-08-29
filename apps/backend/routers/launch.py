@@ -103,12 +103,17 @@ async def launch_me(auth: AuthContext = Depends(get_current_user), s: Schedule =
 @router.post("/referral", operation_id="launch_attribute_referral")
 async def attribute_referral(
     body: ReferralAttributeRequest,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
     """Attribute a post-drop sign-up who arrived via ``/?ref=``.
     Refused once the caller has a live subscription — attribution must
-    precede the first payment, which is what pays the referrer."""
+    precede the first payment, which is what pays the referrer. Rate-limited:
+    it writes to the waitlist table with a caller-supplied code, and the
+    `{attributed}` response confirms code existence — an unlimited caller
+    could enumerate referral codes."""
+    _rate_limit(request, "referral")
     from core.auth import resolve_owner_id
 
     email = await launch_service.resolve_email(auth)

@@ -91,12 +91,16 @@ def test_pot_reads_the_file(configured):
     }
 
 
-def test_real_file_parses_and_is_off_by_default():
+def test_real_file_is_off_by_default():
+    """The committed launch-schedule.json must ship with both dates null in
+    BOTH envs — a stray date must not ship silently. Date-order validation
+    itself is covered separately by test_schedule_rejects_start_before_drop,
+    which exercises it against a configured (non-null) schedule."""
     f = launch_phase.load_schedule_file()
     for env in ("dev", "prod"):
         assert set(f[env]) == {"drop_at", "competition_start_at"}
-        if f[env]["drop_at"] is not None:
-            assert launch_phase.parse_iso(f[env]["competition_start_at"]) > launch_phase.parse_iso(f[env]["drop_at"])
+        assert f[env]["drop_at"] is None
+        assert f[env]["competition_start_at"] is None
 
 
 def test_load_schedule_file_prefers_env_var_over_the_ancestor_walk_file(monkeypatch):

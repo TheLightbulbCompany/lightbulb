@@ -6,6 +6,15 @@ import pytest
 DROP = datetime.now(timezone.utc) - timedelta(days=1)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_state():
+    from routers import launch
+
+    launch._RATE.clear()
+    yield
+    launch._RATE.clear()
+
+
 @pytest.fixture
 def configured(launch_schedule):
     with launch_schedule(DROP):
@@ -40,3 +49,20 @@ async def test_referral_refused_once_subscribed(mock_billing, configured, async_
     mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
     r = await async_client.post("/api/v1/launch/referral", json={"ref": "K7QX2MPP"})
     assert r.status_code == 200 and r.json() == {"attributed": False}
+
+
+@patch("routers.launch.launch_waitlist_repo")
+@patch("routers.launch.billing_repo")
+@patch("routers.launch.launch_service.resolve_email", AsyncMock(return_value="me@x.com"))
+async def test_referral_is_rate_limited_per_ip(mock_billing, mock_wl, configured, async_client):
+    # It writes to the waitlist table with a caller-supplied code, and the
+    # {attributed} response confirms code existence — enumeration risk
+    # without a limit. Mirrors test_join_is_rate_limited_per_ip.
+    mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+    mock_wl.join = AsyncMock(return_value={"email": "me@x.com"})
+    mock_wl.attribute = AsyncMock(return_value=True)
+    body = {"ref": "K7QX2MPP"}
+    for _ in range(10):
+        assert (await async_client.post("/api/v1/launch/referral", json=body)).status_code == 200
+    r = await async_client.post("/api/v1/launch/referral", json=body)
+    assert r.status_code == 429 and r.headers["retry-after"] == "60"

@@ -42,15 +42,36 @@ async def test_second_join_returns_the_existing_row_untouched(table):
     assert again == first  # first write wins — display_name/public/waitlist_position did NOT change
 
 
-async def test_join_never_returns_none_when_the_winner_row_vanishes(table):
-    """The put lost the race, then the winning row was deleted before the read.
-    The declared `-> dict` return must not become None on that seam."""
+async def test_join_retries_the_put_once_when_the_winner_row_vanishes_then_persists(table):
+    """The put lost the race, then the winning row was deleted before the
+    read. A bare `_plain(item)` fallback would hand back an item DynamoDB
+    never holds — instead the conditional put is retried once, and this
+    time it lands for real."""
     from unittest.mock import AsyncMock
 
-    with patch.object(table, "get", AsyncMock(return_value=None)):
-        await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+    real_table = table._table()
+    real_put_item = real_table.put_item
+    calls = {"n": 0}
+
+    def flaky_put_item(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException", "Message": "boom"}}, "PutItem")
+        return real_put_item(**kwargs)
+
+    with (
+        patch.object(table, "_table", return_value=real_table),
+        patch.object(table, "get", AsyncMock(return_value=None)),
+        patch.object(real_table, "put_item", side_effect=flaky_put_item),
+    ):
         row = await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+
+    assert calls["n"] == 2  # the retry actually happened
     assert row is not None and row["owner_id"] == "user_1" and row["has_key"] is False
+    # Bypass the patched `get` — prove the retried put actually persisted,
+    # not just that `join` returned a locally-built dict.
+    persisted = real_table.get_item(Key={"owner_id": "user_1"})["Item"]
+    assert persisted["owner_id"] == "user_1"
 
 
 async def test_set_key_connected_flips_has_key_and_stamps_baseline(table):

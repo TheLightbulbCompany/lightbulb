@@ -28,7 +28,6 @@ const ONE = {
     resource_name: "Northwind analytics", env_keys: ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
     dashboard_url: "https://us.posthog.com/project/1", level: "company",
   }],
-  stripe_cli: "paired",
 };
 
 describe("CompanyAccountsSection", () => {
@@ -39,13 +38,10 @@ describe("CompanyAccountsSection", () => {
     notifyError.mockReset();
   });
 
-  it("says the CLI is not connected when nothing is provisioned", async () => {
-    get.mockResolvedValue({ resources: [], stripe_cli: "unpaired" });
+  it("shows an empty message when nothing is provisioned", async () => {
+    get.mockResolvedValue({ resources: [] });
     renderSection(true);
-    expect(await screen.findByText("Stripe CLI: not connected")).toBeInTheDocument();
-    // No owner-side pairing button: pairing starts from the agent's card.
-    expect(screen.queryByText("Pair Stripe CLI")).toBeNull();
-    expect(screen.getByText(/Ask your agents/)).toBeInTheDocument();
+    expect(await screen.findByText(/Ask your agents/)).toBeInTheDocument();
   });
 
   it("renders one row per resource with its level and a dashboard link", async () => {
@@ -56,7 +52,6 @@ describe("CompanyAccountsSection", () => {
     expect(screen.getByText("Northwind analytics")).toBeInTheDocument();
     expect(screen.getByText("Company-level")).toBeInTheDocument();
     expect(screen.getByText("Open dashboard")).toHaveAttribute("href", "https://us.posthog.com/project/1");
-    expect(screen.getByText("Stripe CLI: connected")).toBeInTheDocument();
   });
 
   it("falls back to the provider homepage when there is no dashboard url", async () => {

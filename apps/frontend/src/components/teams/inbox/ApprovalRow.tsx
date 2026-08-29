@@ -13,17 +13,15 @@ import {
   approvalLabel,
   isCompanyStripeApproval,
   isProviderConsentApproval,
-  isStripeCliPairApproval,
 } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
 
-// Both P0b payloads are agent-authored, so their URLs are untrusted: the
-// pairing card only ever opens Stripe's own dashboard, and Terms only ever
-// links over https. Anything else renders as inert text.
-const STRIPE_DASHBOARD_PREFIX = "https://dashboard.stripe.com/";
+// The consent card's payload is agent-authored, so its Terms link is
+// untrusted: it only ever renders when it's an https:// URL. Anything else
+// renders as inert text.
 
 function payloadString(payload: Record<string, unknown> | null | undefined, key: string): string {
   const value = payload?.[key];
@@ -83,18 +81,6 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     });
   }
 
-  /** No API round trip here — the URL is already in the payload, so the tab
-   *  opens and navigates inside the click's user-activation task. */
-  function openTab(url: string) {
-    const w = openPendingTab();
-    if (!w) {
-      notifyError(POPUP_BLOCKED_MSG);
-      return;
-    }
-    navigatePendingTab(w, url);
-  }
-
-  const pairUrl = payloadString(approval.payload, "browser_url");
   const termsUrl = payloadString(approval.payload, "terms_url");
 
   return (
@@ -134,25 +120,6 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   }
                 >
                   Connect existing
-                </EditorialButton>
-              </>
-            ) : isStripeCliPairApproval(approval) ? (
-              <>
-                <span className="text-sm text-[var(--midnight)]">
-                  Code:{" "}
-                  <strong className="select-all font-mono">
-                    {payloadString(approval.payload, "verification_code")}
-                  </strong>
-                </span>
-                {pairUrl.startsWith(STRIPE_DASHBOARD_PREFIX) ? (
-                  <EditorialButton size="sm" disabled={busy} onClick={() => openTab(pairUrl)}>
-                    Open Stripe
-                  </EditorialButton>
-                ) : pairUrl ? (
-                  <span className="break-all text-xs text-[var(--midnight-muted)]">{pairUrl}</span>
-                ) : null}
-                <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
-                  Approve
                 </EditorialButton>
               </>
             ) : isProviderConsentApproval(approval) ? (

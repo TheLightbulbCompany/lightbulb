@@ -33,7 +33,7 @@ type Resource = {
   level: string;
 };
 
-type AccountsPayload = { resources: Resource[]; stripe_cli: "paired" | "unpaired" };
+type AccountsPayload = { resources: Resource[] };
 
 const PATH = "/company/provisioning/resources";
 
@@ -104,10 +104,6 @@ export function CompanyAccountsSection({ canManage }: { canManage: boolean }) {
 
       {!error && !isLoading && (
         <>
-          <p className="text-sm text-[var(--midnight-muted)] mb-3">
-            {data?.stripe_cli === "paired" ? "Stripe CLI: connected" : "Stripe CLI: not connected"}
-          </p>
-
           {note && <p className="text-sm text-[var(--midnight-muted)] mb-3">{note}</p>}
 
           {(data?.resources.length ?? 0) === 0 ? (

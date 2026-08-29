@@ -817,32 +817,6 @@ RUN set -eux; \
     rm -rf /tmp/compile-warm /tmp/compile-warm-home; \
     chown -R node:node /var/tmp/openclaw-compile-cache
 
-# ---- Stripe CLI (the provisioning rail) ----
-# Friday runs this binary herself, in /home/node/.openclaw — the per-user EFS
-# mount. That is deliberate on two counts: the CLI session under
-# $XDG_CONFIG_HOME survives task replacement, and `.projects/` lands at the EFS
-# ROOT, a sibling of every workspace-{agent_id}/, so it can never ride into a
-# marketplace artifact. The backend never invokes this binary.
-#
-# Version-pinned with the sha256 from the release's own
-# stripe-linux-checksums.txt, same posture as litestream below. amd64 only:
-# Fargate tasks here are x86_64.
-#
-# The `projects` PLUGIN is deliberately NOT installed here. At runtime
-# XDG_CONFIG_HOME is /home/node/.openclaw/.config (container-stack.ts:940) —
-# the per-user EFS mount — which shadows whatever the image baked under the
-# build user's config dir. The bundled skill has Friday run
-# `stripe plugin install projects` once; it is idempotent.
-ARG STRIPE_CLI_VERSION=1.50.6
-ARG STRIPE_CLI_SHA256=7d020f23d4c91d3e0e6e89fd5729ad8885da243fa55d9a70aa74cd19cb05b9fa
-RUN set -eux; \
-    curl -fsSL -o /tmp/stripe.tgz \
-      "https://github.com/stripe/stripe-cli/releases/download/v${STRIPE_CLI_VERSION}/stripe_${STRIPE_CLI_VERSION}_linux_x86_64.tar.gz"; \
-    echo "${STRIPE_CLI_SHA256}  /tmp/stripe.tgz" | sha256sum -c -; \
-    tar -xzf /tmp/stripe.tgz -C /usr/local/bin stripe; \
-    rm /tmp/stripe.tgz; \
-    stripe --version
-
 # ---- Litestream + local-SQLite boot chain ----
 # Every environment runs this chain — the per-env storage gate was removed once
 # dev proved the layout, so any tag pinned in openclaw-version.json MUST be

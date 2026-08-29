@@ -28,16 +28,9 @@ export function isCompanyStripeApproval(
   return approval?.payload?.isol8_action === COMPANY_STRIPE_ACTION;
 }
 
-/** P0b's two provisioning cards, filed under the same enum for the same
- *  reason: the payload marker is what identifies them as ours. */
-const STRIPE_CLI_PAIR_ACTION = "stripe_cli_login";
+/** P0b's provisioning consent card, filed under the same enum for the same
+ *  reason: the payload marker is what identifies it as ours. */
 const PROVIDER_CONSENT_ACTION = "provider_consent";
-
-export function isStripeCliPairApproval(
-  approval?: { payload?: Record<string, unknown> | null } | null,
-): boolean {
-  return approval?.payload?.isol8_action === STRIPE_CLI_PAIR_ACTION;
-}
 
 export function isProviderConsentApproval(
   approval?: { payload?: Record<string, unknown> | null } | null,
@@ -48,7 +41,6 @@ export function isProviderConsentApproval(
 /** Row label per marker — beats a growing ternary chain over the predicates. */
 const ACTION_LABEL: Record<string, string> = {
   [COMPANY_STRIPE_ACTION]: "Connect Stripe",
-  [STRIPE_CLI_PAIR_ACTION]: "Pair Stripe CLI",
   [PROVIDER_CONSENT_ACTION]: "Approve provider",
 };
 

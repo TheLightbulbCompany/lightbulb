@@ -58,12 +58,12 @@ def facts(monkeypatch):
     return writer
 
 
-def test_resources_returns_pointers_and_the_pairing_state(client):
+def test_resources_returns_pointers(client):
     with patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=("paired", [RES]))):
         resp = client.get("/api/v1/company/provisioning/resources")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["stripe_cli"] == "paired"
+    assert set(body.keys()) == {"resources"}
     assert body["resources"][0]["level"] == "company"
     assert body["resources"][0]["resource_name"] == "Northwind analytics"
 

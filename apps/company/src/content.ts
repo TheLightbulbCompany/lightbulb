@@ -6,44 +6,58 @@ export const CHAPTERS = [
   { id: "strike", shape: "brain" },
   { id: "ai", shape: "network" },
   { id: "goose", shape: "town" },
-  { id: "ventures", shape: "growth" },
   { id: "physical", shape: "gear" },
+  { id: "ventures", shape: "growth" },
   { id: "vision", shape: "brain" },
 ] as const satisfies ReadonlyArray<{ id: string; shape: ShapeName }>;
 
+/**
+ * The products, in page order — a maturity gradient, and honest about it. The
+ * `stage` is the bulb's own vocabulary for how far along an idea is; `idea`
+ * marks the ones that are not products yet, which the page renders lighter.
+ */
 export const PRODUCTS = [
   {
     id: "ai",
     index: "02",
-    tag: "Live",
+    stage: "Lit",
+    note: "live",
     name: "Lightbulb AI",
-    sub: "a team of agents — live",
+    sub: "a team of agents — lit",
     href: "https://flickmeon.ai",
     blurb:
-      "An AI company in a box. Your own team of agents — a CEO, a recruiter, and whoever you hire next — running around the clock.",
+      "An AI company in a box. Sign up and you get a team of agents — a CEO, a recruiter, and whoever they hire next — working for you around the clock. Our first product, and the one that pays for the rest.",
   },
   {
     id: "goose",
     index: "03",
-    tag: "Building",
+    stage: "Warming up",
+    note: "in development",
     name: "GooseTown",
-    sub: "a town run by agents — building",
-    blurb: "A living world run by agents. A place to watch what a society of minds does when nobody is typing.",
-  },
-  {
-    id: "ventures",
-    index: "04",
-    tag: "Next",
-    name: "Ventures",
-    sub: "what compounds — next",
-    blurb: "Capital and craft for the founders lighting the next room. Small cheques, real help, no theatre.",
+    sub: "a town of agents — warming up",
+    blurb:
+      "A town run entirely by AI agents: a place to watch what a society of minds does when nobody is typing. Part experiment, part entertainment. We're still building it, and it still surprises us.",
   },
   {
     id: "physical",
-    index: "05",
-    tag: "Next",
+    index: "04",
+    stage: "A spark",
+    note: "an idea, honestly",
     name: "Physical AI",
-    sub: "ideas that leave the screen — next",
-    blurb: "Ideas that leave the screen. Machines that can be handed a task and trusted to do it.",
+    sub: "machines — a spark",
+    idea: true,
+    blurb:
+      "Ideas that leave the screen: machines you can hand a task and trust. We haven't started. It's on this page because we want to be held to it.",
+  },
+  {
+    id: "ventures",
+    index: "05",
+    stage: "Sketched",
+    note: "not yet",
+    name: "Ventures",
+    sub: "a fund — sketched",
+    idea: true,
+    blurb:
+      "Eventually, a fund. Small cheques and real help for founders lighting rooms of their own — once we've earned the right to. That's a few chapters away.",
   },
 ] as const;

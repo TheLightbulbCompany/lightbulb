@@ -156,7 +156,7 @@ export class PaperclipStack extends cdk.Stack {
     const paperclipExtendedRepo = ecr.Repository.fromRepositoryName(
       this,
       "PaperclipExtendedRepo",
-      "isol8/paperclip-extended",
+      "lightbulb/paperclip-extended",
     );
     const paperclipEnvCfg =
       env === "dev" || env === "prod" ? PAPERCLIP_VERSION[env] : undefined;

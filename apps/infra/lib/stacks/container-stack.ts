@@ -475,7 +475,7 @@ export class ContainerStack extends cdk.Stack {
     //
     // Initialized BEFORE the container task def so the image-selection
     // expression below can dereference it.
-    // The ECR repo `isol8/openclaw-extended` is account-scoped and holds
+    // The ECR repo `lightbulb/openclaw-extended` is account-scoped and holds
     // images for both dev and prod. It outlives any individual stack — when
     // we tear down container-stack to clean up state, the repo (and its
     // image history) MUST survive. Originally CDK created it with
@@ -491,7 +491,7 @@ export class ContainerStack extends cdk.Stack {
     this.openclawExtendedRepo = ecr.Repository.fromRepositoryName(
       this,
       "OpenclawExtendedRepo",
-      "isol8/openclaw-extended",
+      "lightbulb/openclaw-extended",
     );
 
     if (props.environment === "dev") {
@@ -533,7 +533,7 @@ export class ContainerStack extends cdk.Stack {
       const paperclipExtendedRepo = ecr.Repository.fromRepositoryName(
         this,
         "PaperclipExtendedRepoForBuilder",
-        "isol8/paperclip-extended",
+        "lightbulb/paperclip-extended",
       );
       paperclipExtendedRepo.grantPullPush(builderRole);
     }

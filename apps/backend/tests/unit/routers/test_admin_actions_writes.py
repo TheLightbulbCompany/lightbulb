@@ -300,7 +300,7 @@ class TestContainerForceApplyImageUpdate:
         ):
             res = await async_client.post(
                 "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "ecr/isol8/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce"},
+                json={"new_image": "ecr/lightbulb/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce"},
             )
         assert res.status_code == 200
         body = res.json()

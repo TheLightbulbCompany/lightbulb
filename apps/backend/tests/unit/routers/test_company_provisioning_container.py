@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+from core.repositories import billing_repo  # noqa: E402
 from core.services.paperclip_admin_client import PaperclipApiError  # noqa: E402
 from main import app  # noqa: E402
 from routers import company_provisioning as mod  # noqa: E402
@@ -31,8 +32,8 @@ def _hook(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _paid(monkeypatch):
-    """Autonomy is paid-only; every route reads the billing row first."""
-    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=_PAID_ROW))
+    """Autonomy is paid-only; the shared guard reads the billing row first."""
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=_PAID_ROW))
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +100,27 @@ def test_board_outage_is_503_and_rejection_is_502(client):
     with patch.object(mod.provisioning_approvals, "request_provider_consent", AsyncMock(side_effect=retryable)):
         resp = client.post(f"{BASE}/consent", headers=HDRS, json={"provider": "posthog", "service": "analytics"})
     assert resp.status_code == 503
+
+
+def test_consent_files_the_card(client):
+    with patch.object(mod.provisioning_approvals, "request_provider_consent", AsyncMock(return_value="apr_2")) as ask:
+        resp = client.post(
+            f"{BASE}/consent",
+            headers=HDRS,
+            json={
+                "provider": "posthog",
+                "service": "analytics",
+                "terms_url": "https://posthog.com/terms",
+                "pricing": "$0 up to 1M events/mo",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"approval_id": "apr_2", "status": "filed"}
+    kwargs = ask.await_args.kwargs
+    assert kwargs["provider"] == "posthog"
+    assert kwargs["service"] == "analytics"
+    assert kwargs["terms_url"] == "https://posthog.com/terms"
+    assert kwargs["pricing"] == "$0 up to 1M events/mo"
 
 
 @pytest.mark.parametrize("bad", ["http://terms.example.com", "ftp://x", "javascript:alert(1)"])
@@ -168,7 +190,14 @@ def test_the_stored_pointer_carries_env_keys_and_no_values(client):
         {"env": {f"K{i}": "v" for i in range(40)}},  # too many
         {"env": {"K": "x" * 20000}},  # absurd value
         {"env": {"K": ""}},  # empty value
+        {"env": {"K": "a\nb"}},  # control char in a value
         {"dashboard_url": "http://us.posthog.com"},  # not https
+        {"dashboard_url": "https://us.posthog.com/ 1"},  # whitespace in a URL
+        # `$` also matches before a trailing newline, so `re.match` would let
+        # these through into a secret name, a URL path and the container env.
+        {"provider": "posthog\n"},
+        {"resource_id": "res_1\n"},
+        {"env": {"TOKEN\n": "v"}},
     ],
 )
 def test_landed_rejects_hostile_bodies(client, patch_body):
@@ -199,7 +228,7 @@ def test_every_container_route_requires_the_hook_token(monkeypatch, client):
 @pytest.mark.parametrize("path,body", _ROUTES)
 def test_every_container_route_is_paid_only(monkeypatch, client, path, body):
     """A trial owner's container cannot provision: no card filed, nothing landed."""
-    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=_TRIAL_ROW))
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=_TRIAL_ROW))
     with (
         patch.object(mod.provisioning_approvals, "request_cli_pairing", AsyncMock()) as pair,
         patch.object(mod.provisioning_approvals, "request_provider_consent", AsyncMock()) as consent,

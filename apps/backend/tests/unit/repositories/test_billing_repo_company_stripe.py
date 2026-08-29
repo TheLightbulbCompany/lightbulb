@@ -98,3 +98,30 @@ async def test_clear_company_stripe_account(billing_table):
     row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
     assert "company_stripe_account_id" not in row
     assert "company_stripe_source" not in row
+
+
+@pytest.mark.asyncio
+async def test_set_company_stripe_project_id_stores_once(billing_table):
+    """One Provisioning Project per company: the conditional write is the
+    arbiter when two provisioning workers race to create it."""
+    from core.repositories import billing_repo
+
+    row = await billing_repo.set_company_stripe_project_id("org_a", project_id="proj_1")
+    assert row["company_stripe_project_id"] == "proj_1"
+    assert row["plan"] == "flat"  # untouched field survives the diff write
+
+    assert await billing_repo.set_company_stripe_project_id("org_a", project_id="proj_2") is None
+    assert billing_table.get_item(Key={"owner_id": "org_a"})["Item"]["company_stripe_project_id"] == "proj_1"
+    assert await billing_repo.set_company_stripe_project_id("org_missing", project_id="proj_1") is None
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_company_account_drops_the_project_pointer(billing_table):
+    """Deauthorization unbinds everything company-Stripe, the Project included:
+    a pointer into an account we can no longer reach is worse than none."""
+    from core.repositories import billing_repo
+
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    await billing_repo.set_company_stripe_project_id("org_a", project_id="proj_1")
+    row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
+    assert "company_stripe_project_id" not in row

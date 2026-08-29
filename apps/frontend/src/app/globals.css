@@ -991,7 +991,7 @@
 }
 
 .legal-content h1 {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
   font-weight: 700;
   color: var(--midnight);
@@ -1000,7 +1000,7 @@
 }
 
 .legal-content h2 {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-title);
   font-weight: 700;
   color: var(--midnight);
@@ -1114,7 +1114,7 @@
 }
 
 .support-header h1 {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
   font-weight: 700;
   color: var(--midnight);
@@ -1232,7 +1232,7 @@
 /* Marketplace drawer: freshly-installed agent slide-in (Task 16).
    Transform + opacity only — the keyframe used to animate `background` too,
    which repaints the row on every frame for a flash nobody asked for. */
-@keyframes slideIn {
+@keyframes agent-arrive {
   from {
     opacity: 0;
     transform: translateY(-8px) scale(0.96);
@@ -1243,7 +1243,7 @@
   }
 }
 .agent-item.new-arrival {
-  animation: slideIn var(--dur-slow) var(--ease-out) both;
+  animation: agent-arrive var(--dur-slow) var(--ease-out) both;
 }
 /* Its own reduce rule: the arrival still needs to register, minus the move. */
 @media (prefers-reduced-motion: reduce) {

@@ -182,7 +182,7 @@ function AgentRunCard({
           href={teamsDetailUrl("run", run.id)}
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
           aria-label={`Run details ${run.id}`}
-          className="flex-shrink-0 text-caption hover:underline"
+          className="shrink-0 text-caption hover:underline"
           style={{ color: "var(--midnight-muted)" }}
         >
           Details

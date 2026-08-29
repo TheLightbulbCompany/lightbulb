@@ -76,7 +76,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
             className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-cream p-4"
           >
             <span
-              className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${
+              className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                 connected ? "bg-[var(--ok)]" : "bg-[var(--midnight-faint)]"
               }`}
               aria-hidden="true"
@@ -85,7 +85,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium text-midnight">{connection.display_name}</p>
                 {connection.actor && KIND_LABELS[connection.actor] && (
-                  <span className="flex-shrink-0 rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-2xs font-medium text-[var(--midnight-muted)]">
+                  <span className="shrink-0 rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-2xs font-medium text-[var(--midnight-muted)]">
                     {KIND_LABELS[connection.actor]}
                   </span>
                 )}

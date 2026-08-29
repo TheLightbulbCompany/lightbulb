@@ -46,8 +46,8 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded-sm transition-colors"
         >
-          {expanded ? <ChevronDown className="h-3 w-3 text-[var(--midnight-muted)] flex-shrink-0" /> : <ChevronRight className="h-3 w-3 text-[var(--midnight-muted)] flex-shrink-0" />}
-          {expanded ? <FolderOpen className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" /> : <FolderClosed className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" />}
+          {expanded ? <ChevronDown className="h-3 w-3 text-[var(--midnight-muted)] shrink-0" /> : <ChevronRight className="h-3 w-3 text-[var(--midnight-muted)] shrink-0" />}
+          {expanded ? <FolderOpen className="h-4 w-4 text-[var(--midnight-muted)] shrink-0" /> : <FolderClosed className="h-4 w-4 text-[var(--midnight-muted)] shrink-0" />}
           <span className="truncate">{entry.name}</span>
         </button>
         {expanded && (
@@ -82,11 +82,11 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       }`}
       title={isMissing ? "Click to create this file" : undefined}
     >
-      <span className="w-3 flex-shrink-0" />
+      <span className="w-3 shrink-0" />
       {isMissing ? (
-        <FileWarning className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" />
+        <FileWarning className="h-4 w-4 text-[var(--midnight-muted)] shrink-0" />
       ) : (
-        renderFileIcon(entry.name, "h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0")
+        renderFileIcon(entry.name, "h-4 w-4 text-[var(--midnight-muted)] shrink-0")
       )}
       <span className={`truncate ${isMissing ? "italic" : ""}`}>{entry.name}</span>
     </button>

@@ -11,9 +11,12 @@ import { cn } from "@/lib/utils"
  * primitives directly — the aliases resolve to exactly those primitives on
  * cream AND flip correctly under `.dark`, which /admin applies.
  * Focus comes from the one global `:focus-visible` outline; only the
- * aria-invalid (validation, not focus) treatment is carried here. */
+ * aria-invalid (validation, not focus) treatment is carried here.
+ * Icons default to 16px unless sized: lucide writes `size={12|20}` as width/
+ * height attributes with no `size-*` class, so those two scale steps are
+ * excluded from the default rather than being forced back to 16. */
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full border border-transparent text-sm font-semibold transition-[color,background-color,border-color,box-shadow,transform,scale] duration-(--dur-fast) ease-out active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 aria-invalid:ring-destructive/20 aria-invalid:border-destructive",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full border border-transparent text-sm font-semibold transition-[color,background-color,border-color,box-shadow,transform,scale] duration-(--dur-fast) ease-out active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-']):not([width='12']):not([width='20'])]:size-4 shrink-0 [&_svg]:shrink-0 aria-invalid:ring-destructive/20 aria-invalid:border-destructive",
   {
     variants: {
       variant: {

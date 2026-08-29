@@ -354,7 +354,7 @@ function ListingRow({
           </span>
         </div>
       </div>
-      <div className="flex flex-col items-end gap-2 flex-shrink-0">
+      <div className="flex flex-col items-end gap-2 shrink-0">
         <span
           className={`text-2xs tracking-caps uppercase font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${pillTone}`}
         >

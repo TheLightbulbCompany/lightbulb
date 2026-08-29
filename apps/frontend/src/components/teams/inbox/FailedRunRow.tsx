@@ -55,13 +55,13 @@ export function FailedRunRow({
 
   return (
     <li className="flex items-center gap-2 px-3 py-2">
-      <AlertTriangle size={16} className="flex-shrink-0" style={{ color: "var(--err)" }} />
+      <AlertTriangle size={16} className="shrink-0" style={{ color: "var(--err)" }} />
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-[var(--midnight)]">{title}</span>
           {count > 1 && (
             <span
-              className="flex-shrink-0 rounded-sm px-1.5 py-0.5 text-caption font-medium tabular-nums"
+              className="shrink-0 rounded-sm px-1.5 py-0.5 text-caption font-medium tabular-nums"
               style={{
                 color: "var(--err)",
                 background: "var(--cream)",

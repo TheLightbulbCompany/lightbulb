@@ -115,7 +115,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
   const isLobster = file.name.endsWith(".lobster");
   const editor = (
     <div ref={isLobster ? undefined : rootRef} className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] shrink-0">
         <span className="text-xs text-[var(--midnight-muted)]">{file.name}</span>
         <div className="flex items-center gap-2">
           {dirty && <span className="text-2xs text-warn font-medium">unsaved</span>}
@@ -164,7 +164,7 @@ function LobsterTabbedViewer({
           of the viewer's header band; active state is a flat green underline. */}
       <TabsList
         variant="line"
-        className="flex-shrink-0 w-full justify-start gap-1 bg-[var(--cream-deep)] border-b border-[var(--edge)] px-2 py-1"
+        className="shrink-0 w-full justify-start gap-1 bg-[var(--cream-deep)] border-b border-[var(--edge)] px-2 py-1"
       >
         {/* Radix activates a trigger on pointer-down, not on a bare click;
             the explicit onClick keeps switching reliable under both real

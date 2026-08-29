@@ -189,7 +189,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
         {selectedPath && file && (
           <>
             <Breadcrumbs path={relativeFilePath ?? selectedPath} onNavigate={() => {}} />
-            <span className="text-xs text-[var(--midnight-muted)] flex-shrink-0 ml-2">
+            <span className="text-xs text-[var(--midnight-muted)] shrink-0 ml-2">
               {formatFileSize(file.size)} · {formatDate(file.modified_at)}
             </span>
             {file.content && (
@@ -198,7 +198,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
                   <button
                     onClick={handleCopyContent}
                     aria-label="Copy file content"
-                    className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
+                    className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors shrink-0 ml-2"
                   >
                     <Copy className="h-4 w-4" />
                   </button>
@@ -214,7 +214,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             <button
               onClick={handleCloseRequested}
               aria-label="Close file viewer"
-              className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors flex-shrink-0 ml-2"
+              className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors shrink-0 ml-2"
             >
               <X className="h-4 w-4" />
             </button>

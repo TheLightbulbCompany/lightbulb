@@ -1996,13 +1996,13 @@ function StepperDisplay({
         return (
           <div key={step.phase} className="flex items-center gap-3">
             {isErrorStep ? (
-              <XCircle className="h-5 w-5 text-err flex-shrink-0" />
+              <XCircle className="h-5 w-5 text-err shrink-0" />
             ) : isComplete ? (
-              <CheckCircle className="h-5 w-5 text-ok flex-shrink-0" />
+              <CheckCircle className="h-5 w-5 text-ok shrink-0" />
             ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] flex-shrink-0" />
+              <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight)] shrink-0" />
             ) : (
-              <Circle className="h-5 w-5 text-[var(--midnight-faint)] flex-shrink-0" />
+              <Circle className="h-5 w-5 text-[var(--midnight-faint)] shrink-0" />
             )}
             <span
               className={

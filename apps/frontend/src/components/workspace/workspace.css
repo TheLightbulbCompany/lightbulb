@@ -227,7 +227,7 @@
   position: absolute;
   inset: auto 0 0 0;
   height: 2px;
-  background: currentColor;
+  background: currentcolor;
   pointer-events: none;
 }
 

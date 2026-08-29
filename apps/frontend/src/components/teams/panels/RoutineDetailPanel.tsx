@@ -595,7 +595,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                 <li key={t.id} className="flex flex-col gap-1.5 text-sm">
                   <div className="flex items-center gap-2">
                     <span
-                      className="label-caps font-mono px-1.5 py-0.5 rounded-sm flex-shrink-0"
+                      className="label-caps font-mono px-1.5 py-0.5 rounded-sm shrink-0"
                       style={{ background: "var(--edge)", color: "var(--midnight)" }}
                     >
                       {t.kind}
@@ -738,7 +738,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                   >
                     <div className="flex items-center gap-2">
                       <span
-                        className="label-caps px-1.5 py-0.5 rounded-sm flex-shrink-0"
+                        className="label-caps px-1.5 py-0.5 rounded-sm shrink-0"
                         style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
                       >
                         {r.source}
@@ -753,7 +753,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                         <LiveRunDot decorative testId={`routine-run-live-dot-${r.id}`} />
                       )}
                       <span
-                        className="text-xs capitalize flex-shrink-0"
+                        className="text-xs capitalize shrink-0"
                         style={{ color: runStatusColor(r.status) }}
                       >
                         {r.status.replace(/_/g, " ")}
@@ -775,7 +775,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       )}
                       <span className="flex-1" />
                       {when && (
-                        <span className="text-xs text-[var(--midnight-muted)] flex-shrink-0">
+                        <span className="text-xs text-[var(--midnight-muted)] shrink-0">
                           {timeAgo(when)}
                         </span>
                       )}
@@ -806,7 +806,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                   style={{ borderBottom: "1px solid var(--edge)" }}
                 >
                   {rev.revisionNumber != null && (
-                    <span className="font-mono text-xs text-[var(--midnight-muted)] flex-shrink-0">
+                    <span className="font-mono text-xs text-[var(--midnight-muted)] shrink-0">
                       v{rev.revisionNumber}
                     </span>
                   )}
@@ -815,7 +815,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                   </span>
                   <span className="flex-1" />
                   {rev.createdAt && (
-                    <span className="text-xs text-[var(--midnight-muted)] flex-shrink-0">
+                    <span className="text-xs text-[var(--midnight-muted)] shrink-0">
                       {timeAgo(rev.createdAt)}
                     </span>
                   )}
@@ -823,7 +823,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     type="button"
                     disabled={busy}
                     onClick={() => restoreRevision(rev.id)}
-                    className="inline-flex items-center gap-1 text-xs text-[var(--midnight)] hover:underline disabled:opacity-50 flex-shrink-0"
+                    className="inline-flex items-center gap-1 text-xs text-[var(--midnight)] hover:underline disabled:opacity-50 shrink-0"
                     aria-label={`Restore revision ${rev.revisionNumber ?? rev.id}`}
                   >
                     <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />

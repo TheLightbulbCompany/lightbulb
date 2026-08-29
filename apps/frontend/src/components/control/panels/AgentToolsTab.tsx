@@ -303,7 +303,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
       {globalToolsConfig?.allow && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-warn">
-          <AlertCircle size={12} strokeWidth={1.75} className="text-warn flex-shrink-0" />
+          <AlertCircle size={12} strokeWidth={1.75} className="text-warn shrink-0" />
           <span className="text-xs text-warn">
             Global <code className="text-2xs bg-[var(--cream-deep)] px-1 rounded-sm">tools.allow</code> is set — this may restrict available tools regardless of agent config.
           </span>
@@ -359,7 +359,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                   className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--cream-deep)] group"
                 >
                   <button
-                    className="flex-shrink-0"
+                    className="shrink-0"
                     onClick={() => toggleTool(tool.id)}
                     aria-label={`Toggle ${tool.label}`}
                   >
@@ -383,7 +383,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
                     )}
                   </div>
                   {tool.source && (
-                    <span className="text-2xs text-midnight-muted flex-shrink-0">
+                    <span className="text-2xs text-midnight-muted shrink-0">
                       {String(tool.source)}
                     </span>
                   )}

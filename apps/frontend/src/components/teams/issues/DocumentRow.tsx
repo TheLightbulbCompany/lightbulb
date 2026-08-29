@@ -180,9 +180,9 @@ export function DocumentRow({
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <Chevron size={16} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
+          <Chevron size={16} className="shrink-0" style={{ color: "var(--midnight-muted)" }} />
           <span
-            className="label-caps font-mono px-1.5 py-0.5 rounded-sm flex-shrink-0"
+            className="label-caps font-mono px-1.5 py-0.5 rounded-sm shrink-0"
             style={{ background: "var(--edge)", color: "var(--midnight)" }}
           >
             {doc.key}
@@ -193,14 +193,14 @@ export function DocumentRow({
             <span className="flex-1" />
           )}
           {when && (
-            <span className="text-xs text-[var(--midnight-muted)] flex-shrink-0">
+            <span className="text-xs text-[var(--midnight-muted)] shrink-0">
               updated {timeAgo(when)}
               {agentName ? ` · ${agentName}` : ""}
             </span>
           )}
         </button>
         {reviewEnabled ? (
-          <div className="flex flex-shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -301,7 +301,7 @@ export function DocumentRow({
             </div>
 
             {reviewEnabled && panelOpen ? (
-              <div className="w-full lg:w-80 lg:flex-shrink-0">
+              <div className="w-full lg:w-80 lg:shrink-0">
                 <DocumentAnnotationPanel
                   issueId={issueId!}
                   documentKey={doc.key}

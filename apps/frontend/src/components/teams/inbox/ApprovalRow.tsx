@@ -40,7 +40,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex items-center gap-2">
-        <ShieldQuestion size={16} className="flex-shrink-0" style={{ color: "var(--midnight)" }} />
+        <ShieldQuestion size={16} className="shrink-0" style={{ color: "var(--midnight)" }} />
         <span className="min-w-0 flex-1 truncate text-ui text-[var(--midnight)]">{title}</span>
         {approval.createdAt && (
           <span className="shrink-0 whitespace-nowrap text-caption text-[var(--midnight-muted)]">{timeAgo(approval.createdAt)}</span>

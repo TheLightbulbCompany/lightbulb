@@ -38,7 +38,7 @@ type UserData = {
   byo_provider?: ByoProvider | null;
 };
 
-const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center flex-shrink-0";
+const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deep)] flex items-center justify-center shrink-0";
 const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
 const EYEBROW = "label-caps";
 

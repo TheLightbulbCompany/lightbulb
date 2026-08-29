@@ -37,7 +37,7 @@ export function MarketplaceDrawer() {
         {/* HEADER */}
         <div className="px-6 py-3.5 border-b border-[var(--edge)] bg-[var(--cream)] flex items-center justify-between gap-3.5">
           {isPublish ? <PublishHeader /> : isDetail ? <DetailHeader /> : <DefaultHeader />}
-          <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             {showActions && (
               <>
                 <button

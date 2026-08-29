@@ -367,7 +367,7 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="flex items-center gap-2">
           {group.issue?.identifier ? (
-            <span className="flex-shrink-0 font-mono text-caption" style={{ color: "var(--midnight-muted)" }}>
+            <span className="shrink-0 font-mono text-caption" style={{ color: "var(--midnight-muted)" }}>
               {group.issue.identifier}
             </span>
           ) : null}

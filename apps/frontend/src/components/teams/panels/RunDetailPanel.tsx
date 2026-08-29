@@ -407,14 +407,14 @@ export function RunDetailPanel({ runId }: { runId: string }) {
                   style={{ borderBottom: "1px solid var(--edge)" }}
                 >
                   <span
-                    className="flex-shrink-0 label-caps"
+                    className="shrink-0 label-caps"
                     style={{ color: e.level === "error" ? "var(--err)" : e.level === "warn" ? "var(--warn)" : "var(--midnight-muted)" }}
                   >
                     {e.eventType ?? "event"}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[var(--midnight)]">{e.message ?? ""}</span>
                   {e.createdAt && (
-                    <span className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }}>
+                    <span className="shrink-0" style={{ color: "var(--midnight-muted)" }}>
                       {timeAgo(e.createdAt)}
                     </span>
                   )}

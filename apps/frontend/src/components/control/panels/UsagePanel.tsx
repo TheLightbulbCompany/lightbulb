@@ -83,7 +83,7 @@ export function UsagePanel() {
 
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-err">
-          <AlertCircle size={16} className="text-err flex-shrink-0" />
+          <AlertCircle size={16} className="text-err shrink-0" />
           <span className="text-xs text-err">{error}</span>
           <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={handleRefresh}>
             Retry

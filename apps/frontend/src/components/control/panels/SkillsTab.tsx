@@ -420,7 +420,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                       className="rounded-xl border border-[var(--edge)] bg-cream p-3 opacity-60"
                     >
                       <div className="flex items-center gap-3">
-                        <span className="text-title flex-shrink-0 grayscale">
+                        <span className="text-title shrink-0 grayscale">
                           {skill.emoji || "🧩"}
                         </span>
                         <div className="min-w-0 flex-1">
@@ -430,7 +430,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                             >
                               {skill.name}
                             </h3>
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
                               <Monitor size={12} strokeWidth={1.75} />
                               Desktop Only
                             </span>
@@ -467,7 +467,7 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   return (
     <Link
       href="/chat?panel=integrations"
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] flex-shrink-0"
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] shrink-0"
       title="Connect this account under Integrations"
     >
       works with {integration.label}
@@ -547,7 +547,7 @@ function SkillCard({
         {/* Top row: icon + info + badge + actions */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
-            <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
+            <span className="text-2xl shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3
@@ -555,7 +555,7 @@ function SkillCard({
                 >
                   {skill.name}
                 </h3>
-                <span className="border border-ok inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream text-ok flex-shrink-0">
+                <span className="border border-ok inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream text-ok shrink-0">
                   Installed
                 </span>
                 <IntegrationChip skillName={skill.name} />
@@ -568,7 +568,7 @@ function SkillCard({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {skill.always ? (
               // Managed/required skills have no toggle. Explain why, so it doesn't
               // read as "I can't modify this and don't know why".
@@ -593,7 +593,7 @@ function SkillCard({
         {/* Action error — surfaced instead of being swallowed */}
         {actionError && (
           <div className="flex items-start gap-1.5 text-xs text-err">
-            <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
+            <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0 mt-0.5" />
             <span>{actionError}</span>
           </div>
         )}
@@ -603,19 +603,19 @@ function SkillCard({
           <div className="space-y-1">
             {(skill.missing?.bins?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing: {skill.missing.bins.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.env?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing env: {skill.missing.env.join(", ")}</span>
               </div>
             )}
             {(skill.missing?.config?.length ?? 0) > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                 <span>Missing config: {skill.missing.config.join(", ")}</span>
               </div>
             )}
@@ -655,7 +655,7 @@ function SkillCard({
     <div className="rounded-xl border border-[var(--edge)] bg-cream p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
+          <span className="text-2xl shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h3
@@ -676,13 +676,13 @@ function SkillCard({
               <div className="mt-2 space-y-0.5">
                 {(skill.missing?.bins?.length ?? 0) > 0 && (
                   <div className="flex items-center gap-1 text-caption text-warn">
-                    <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                     <span>Needs: {skill.missing.bins.join(", ")}</span>
                   </div>
                 )}
                 {(skill.missing?.env?.length ?? 0) > 0 && (
                   <div className="flex items-center gap-1 text-caption text-warn">
-                    <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
                     <span>Needs env: {skill.missing.env.join(", ")}</span>
                   </div>
                 )}
@@ -691,7 +691,7 @@ function SkillCard({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Install dependency buttons */}
           {skill.install?.filter((s) => s.kind !== "brew").length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
             <>
@@ -728,7 +728,7 @@ function SkillCard({
       {/* Action error — surfaced instead of being swallowed */}
       {actionError && (
         <div className="mt-2 flex items-start gap-1.5 text-xs text-err">
-          <AlertTriangle size={12} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
+          <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0 mt-0.5" />
           <span>{actionError}</span>
         </div>
       )}

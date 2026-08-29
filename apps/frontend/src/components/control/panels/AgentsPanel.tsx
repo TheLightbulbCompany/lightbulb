@@ -178,7 +178,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                 setActiveTab("overview");
               }}
             >
-              <Bot size={16} className="flex-shrink-0" />
+              <Bot size={16} className="shrink-0" />
               <span className="truncate flex-1">
                 {agent.name || agent.id}
                 {agent.id === defaultId && (

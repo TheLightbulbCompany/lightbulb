@@ -199,9 +199,9 @@ export function McpServersTab(props: { agentId?: string }) {
           {status && (
             <div className={`flex items-center gap-1.5 text-xs ${status.type === "error" ? "text-destructive" : "text-ok"}`}>
               {status.type === "error" ? (
-                <AlertCircle size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                <AlertCircle size={12} strokeWidth={1.75} className="shrink-0" />
               ) : (
-                <CheckCircle2 size={12} strokeWidth={1.75} className="flex-shrink-0" />
+                <CheckCircle2 size={12} strokeWidth={1.75} className="shrink-0" />
               )}
               {status.message}
             </div>
@@ -227,7 +227,7 @@ export function McpServersTab(props: { agentId?: string }) {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <Server size={16} className="text-muted-foreground flex-shrink-0" />
+                  <Server size={16} className="text-muted-foreground shrink-0" />
                   <h4 className="text-sm font-medium truncate">{name}</h4>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1 font-mono">
@@ -243,7 +243,7 @@ export function McpServersTab(props: { agentId?: string }) {
                       size="sm"
                       className="h-7 w-7 p-0"
                       onClick={() => handleEdit(name)}
-                      aria-label="Edit"
+                      aria-label={`Edit ${name}`}
                     >
                       <Pencil size={12} strokeWidth={1.75} />
                     </Button>
@@ -258,7 +258,7 @@ export function McpServersTab(props: { agentId?: string }) {
                       className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                       onClick={() => handleRemove(name)}
                       disabled={deleting !== null}
-                      aria-label="Remove"
+                      aria-label={`Remove ${name}`}
                     >
                       {deleting === name ? (
                         <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />

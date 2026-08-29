@@ -161,7 +161,7 @@ export function PluginsTab() {
             <div key={row.id} className="rounded-xl border border-[var(--edge)] bg-cream p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <Package size={20} className="text-[var(--midnight-muted)] flex-shrink-0 mt-0.5" />
+                  <Package size={20} className="text-[var(--midnight-muted)] shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3
@@ -169,11 +169,11 @@ export function PluginsTab() {
                       >
                         {row.id}
                       </h3>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
                         {row.kind}
                       </span>
                       {row.locked && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] flex-shrink-0">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
                           Managed
                         </span>
                       )}
@@ -186,7 +186,7 @@ export function PluginsTab() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <span className={cn("text-xs font-medium", row.enabled ? "text-ok" : "text-[var(--midnight-muted)]")}>
                     {row.enabled ? "Enabled" : "Disabled"}
                   </span>

@@ -157,7 +157,7 @@
   min-width: 0;
 }
 .settings-page-title {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--midnight);
@@ -259,7 +259,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--cream);
@@ -314,7 +314,7 @@
   line-height: 1.4;
 }
 .settings-price {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
 }
 .settings-period {
@@ -451,7 +451,7 @@
   margin-bottom: 6px;
 }
 .settings-tier-price {
-  font-family: var(--font-serif), 'Lora', serif;
+  font-family: var(--font-serif), Lora, serif;
   font-size: var(--text-2xl);
   font-weight: 400;
   color: var(--midnight);

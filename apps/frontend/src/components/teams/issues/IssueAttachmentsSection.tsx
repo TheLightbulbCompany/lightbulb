@@ -44,9 +44,9 @@ function AttachmentRow({
       className="flex items-center gap-2 px-3 py-2"
       style={{ border: "1px solid var(--edge)", borderRadius: 6 }}
     >
-      <Paperclip size={16} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
+      <Paperclip size={16} className="shrink-0" style={{ color: "var(--midnight-muted)" }} />
       <span className="flex-1 truncate text-sm text-[var(--midnight)]">{name}</span>
-      <span className="text-xs flex-shrink-0" style={{ color: "var(--midnight-muted)" }}>
+      <span className="text-xs shrink-0" style={{ color: "var(--midnight-muted)" }}>
         {formatBytes(attachment.byteSize)}
         {attachment.createdAt ? ` · ${timeAgo(attachment.createdAt)}` : ""}
       </span>
@@ -55,7 +55,7 @@ function AttachmentRow({
         onClick={() => void download()}
         disabled={busy !== null}
         aria-label={`Download ${name}`}
-        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
         style={{ color: "var(--midnight-muted)" }}
       >
         <Download size={16} />
@@ -65,7 +65,7 @@ function AttachmentRow({
         onClick={() => void remove()}
         disabled={busy !== null}
         aria-label={`Delete ${name}`}
-        className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)] disabled:opacity-50"
         style={{ color: "var(--err)" }}
       >
         <Trash2 size={16} />

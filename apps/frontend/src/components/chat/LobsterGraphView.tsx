@@ -89,7 +89,7 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1 px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
+      <div className="flex items-center gap-1 px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] shrink-0">
         <Tooltip>
           <TooltipTrigger asChild>
             <button className={iconBtn} aria-label="Zoom in" onClick={() => setScale((s) => Math.min(s + 0.2, 3))}>

@@ -21,7 +21,7 @@ import type {
 
 /** Icon per work-product type. Falls back to a generic file glyph. */
 function TypeIcon({ type }: { type: string }) {
-  const common = { size: 14, className: "flex-shrink-0", style: { color: "var(--midnight-muted)" } };
+  const common = { size: 14, className: "shrink-0", style: { color: "var(--midnight-muted)" } };
   switch (type) {
     case "preview_url":
       return <Globe {...common} />;
@@ -66,7 +66,7 @@ function Pill({
           : "var(--midnight-soft)";
   return (
     <span
-      className="label-caps px-1.5 py-0.5 rounded-sm flex-shrink-0"
+      className="label-caps px-1.5 py-0.5 rounded-sm shrink-0"
       style={{ border: `1px solid var(--edge)`, color }}
     >
       {children}
@@ -127,7 +127,7 @@ function WorkProductRow({
             target="_blank"
             rel="noreferrer"
             aria-label={`Open ${wp.title}`}
-            className="inline-flex items-center gap-1 text-xs flex-shrink-0 rounded-sm px-1.5 py-1 transition-colors hover:bg-[var(--cream-deep)]"
+            className="inline-flex items-center gap-1 text-xs shrink-0 rounded-sm px-1.5 py-1 transition-colors hover:bg-[var(--cream-deep)]"
             style={{ color: "var(--midnight)" }}
           >
             <ExternalLink size={12} strokeWidth={1.75} />

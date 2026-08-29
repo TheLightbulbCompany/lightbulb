@@ -107,7 +107,7 @@ function GoalRow({
             <span className="font-medium text-[var(--midnight)]">{node.title}</span>
             {node.status && (
               <span
-                className="label-caps px-1.5 py-0.5 rounded-sm flex-shrink-0"
+                className="label-caps px-1.5 py-0.5 rounded-sm shrink-0"
                 style={{ background: "var(--edge)", color: goalStatusColor(node.status) }}
               >
                 {node.status}

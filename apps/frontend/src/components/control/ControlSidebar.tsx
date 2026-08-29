@@ -61,7 +61,7 @@ export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarPro
               )}
               onClick={() => onPanelChange?.(key)}
             >
-              <Icon size={16} className="flex-shrink-0 opacity-70" />
+              <Icon size={16} className="shrink-0 opacity-70" />
               <span className="truncate">{label}</span>
             </Button>
           );

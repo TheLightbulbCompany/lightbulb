@@ -451,6 +451,21 @@ async def _reauth(row: dict) -> dict:
     return moved or {**row, "state": "connecting_provider", "account_request_id": None}
 
 
+def _already_waiting(row: dict, awaiting: str, target: str | None = None) -> bool:
+    """The row is already parked on THIS question, with a card already filed.
+
+    Polling a provider that still says `needs_information` must not re-file the
+    card in the owner's Inbox — nor restart their seven days by re-stamping
+    `user_action_since`, which is exactly what a same-state re-transition did.
+    """
+    return (
+        row.get("state") == "awaiting_user_action"
+        and row.get("awaiting") == awaiting
+        and (target is None or row.get("information_target") == target)
+        and bool(row.get("approval_id"))
+    )
+
+
 async def _requires_review(row: dict, code: str) -> dict:
     moved = await repo.transition(
         row["workflow_id"], from_state=row["state"], to_state="requires_review", fields={"error_code": code}
@@ -503,51 +518,60 @@ async def _company_project_id(owner_id: str) -> str | None:
     return (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_project_id")
 
 
-async def _ensure_project(account_id: str, row: dict) -> str:
-    """One Project per COMPANY (spec §3.2), named for the company.
+async def _project_for(account_id: str, row: dict) -> tuple:
+    """``(project_id, refusal_row)`` — one Project per COMPANY (spec §3.2).
+
+    An account-scoped service is placed at account level (spec 4.4), so it
+    neither needs nor mints a Project.
 
     The id lives on the BILLING row, not the workflow: `environment_info` is
     scoped by project, so a second Project would split one company's
     credentials across two. Order is read → adopt → create → store, because a
     crash between the create and the store leaves a Project we own but never
     recorded ("retrieve known objects and reconcile").
-    """
-    stored = await _company_project_id(row["owner_id"])
-    if stored:
-        return stored
-    from core.services.company_stripe import resolve_company_name
 
-    name = await resolve_company_name(row["owner_id"])
-    mine = next((p for p in await api.list_projects(account_id) if p.get("name") == name), None)
-    project_id = (
-        mine["id"]
-        if mine
-        else (await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG))["id"]
-    )
-    if await billing_repo.set_company_stripe_project_id(row["owner_id"], project_id=project_id) is None:
-        # Lost the conditional write: another worker stored first, so THEIRS is
-        # the company's Project. A Project we created and lost with is inert
-        # metadata — no resources, no cost — and the adopt-by-name read above
-        # collects it on a later pass.
-        return await _company_project_id(row["owner_id"]) or project_id
-    return project_id
-
-
-async def _project_for(account_id: str, row: dict) -> tuple:
-    """``(project_id, refusal_row)`` for this workflow's scope.
-
-    An account-scoped service is placed at account level (spec 4.4), so it
-    neither needs nor mints a Project. Creating one is a POST like any other:
-    an unknown outcome parks the row rather than minting a second Project.
+    READS and the CREATE are handled differently on purpose: a failed read is
+    simply retried on the next tick, and only the create has an outcome we
+    cannot know, which is the one case worth parking the row for.
     """
     if (row.get("approval") or {}).get("scope") != "project":
         return None, None
-    try:
-        return await _ensure_project(account_id, row), None
-    except ProvisioningError as e:
-        if is_transient(e):
-            return None, await _requires_review(row, "uncertain_write")
-        return None, await _fail(row, e.code, e.message)
+    stored = await _company_project_id(row["owner_id"])
+    if stored:
+        return stored, None
+    from core.services.company_stripe import resolve_company_name
+
+    name = await resolve_company_name(row["owner_id"])
+    known, refused = await _read_or_park(row, api.list_projects(account_id))
+    if refused is not None:
+        return None, refused
+    mine = next((p for p in known if p.get("name") == name), None)
+    if mine:
+        project_id = mine["id"]
+    else:
+        try:
+            project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
+        except ProvisioningError as e:
+            if is_transient(e):
+                return None, await _requires_review(row, "uncertain_write")
+            return None, await _fail(row, e.code, e.message)
+        project_id = project["id"]
+    if await billing_repo.set_company_stripe_project_id(row["owner_id"], project_id=project_id) is None:
+        # Lost the conditional write: another worker stored first, so THEIRS is
+        # the company's Project. Strongly consistent — this reads back a write
+        # that just landed from another process.
+        winner = (await billing_repo.get_by_owner_id(row["owner_id"], consistent_read=True) or {}).get(
+            "company_stripe_project_id"
+        )
+        if not winner:
+            # The write was refused and there is still no id (no billing row
+            # yet, most likely). Falling back to OURS would put this company's
+            # next credential in a Project the winner never sees, so retry
+            # instead. A Project we created and lost with is inert metadata —
+            # no resources, no cost — and the adopt-by-name read collects it.
+            return None, await _bump(row)
+        return winner, None
+    return project_id, None
 
 
 async def _connect_provider(account_id: str, row: dict) -> dict:
@@ -597,6 +621,8 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
             row = {**row, "provider_account": details}
         return await _create_resource(account_id, row)
     if status == "pending_auth":
+        if _already_waiting(row, "provider_connect"):
+            return row
         approval_id = await provisioning_approvals.request_provider_connect(
             owner_id=row["owner_id"],
             issue_id=row.get("issue_id"),
@@ -620,6 +646,8 @@ async def _handle_account_request(account_id: str, row: dict, ar: dict) -> dict:
             return await _bump(row)
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
+        if _already_waiting(row, "provider_information", "account_request"):
+            return row
         approval_id = await provisioning_approvals.request_provider_information(
             owner_id=row["owner_id"],
             issue_id=row.get("issue_id"),
@@ -661,7 +689,15 @@ async def _create_resource(account_id: str, row: dict) -> dict:
     if refused is not None:
         return refused
     resource = next(
-        (r for r in known if r.get("name") == name and r.get("service_ref") in (None, row["service_ref"])),
+        (
+            r
+            for r in known
+            if r.get("name") == name
+            and r.get("service_ref") in (None, row["service_ref"])
+            # `removed`/`errored` are terminal: adopting one would bind an
+            # owner to a resource that no longer exists. Create a fresh one.
+            and r.get("status") not in ("removed", "errored")
+        ),
         None,
     )
     if resource is None:
@@ -708,6 +744,8 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
             return await _bump(row)
         if not _renderable(schema):
             return await _requires_review(row, "unrenderable_schema")
+        if _already_waiting(row, "provider_information", "resource"):
+            return row
         approval_id = await provisioning_approvals.request_provider_information(
             owner_id=row["owner_id"],
             issue_id=row.get("issue_id"),
@@ -731,7 +769,10 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
         return moved or {**row, "state": "awaiting_user_action"}
     # pending
     deadline = row.get("deadline_at")
-    if deadline and deadline < utc_now_iso():
+    # Only while WE are the ones waiting. A row parked on the owner's answer can
+    # sit for days; billing the provider's 15-minute budget for that time would
+    # park it the moment they finally submit the form.
+    if row.get("state") == "provisioning" and deadline and deadline < utc_now_iso():
         return await _requires_review(row, "poll_deadline_exceeded")
     return await _bump(row)
 
@@ -803,12 +844,27 @@ async def _poll_user_action(account_id: str, row: dict) -> dict:
     "poll GET /v2/provisioning/payment_profile until the profile exists". A
     browser that never comes back must not strand the workflow.
     """
-    if row.get("awaiting") == "payment_setup":
+    moved = await _poll_awaited_leg(account_id, row)
+    # Still waiting afterwards? Then the only question left is whether they are
+    # ever coming back. Asked ONCE, here, so no leg can forget it.
+    return await _stale_if_expired(moved) if moved.get("state") == "awaiting_user_action" else moved
+
+
+async def _poll_awaited_leg(account_id: str, row: dict) -> dict:
+    """Whichever object knows the answer — chosen by what the row is WAITING
+    for, never by which ids happen to be on it.
+
+    A resource-information row still carries the `account_request_id` from its
+    connect leg; polling that (already `complete`) request instead would walk
+    forward into the resource poll on every tick.
+    """
+    awaiting = row.get("awaiting")
+    if awaiting == "payment_setup":
         try:
             await api.payment_profile(account_id)
         except ProvisioningError as e:
             if e.code == "not_found":
-                return await _stale_if_expired(row)
+                return row  # no card on file yet — keep waiting
             if is_transient(e):
                 return await _bump(row)
             return await _fail(row, e.code, e.message)
@@ -820,17 +876,16 @@ async def _poll_user_action(account_id: str, row: dict) -> dict:
         )
         return moved or {**row, "state": "connecting_provider"}
 
+    if awaiting == "provider_information" and row.get("information_target") == "resource":
+        return await _poll_resource(account_id, row)
+
     if row.get("account_request_id"):
         ar, refused = await _read_or_park(row, api.get_account_request(account_id, row["account_request_id"]))
-        if refused is not None:
-            return refused
-        if ar.get("status") in ("pending_auth", "requested", "needs_information"):
-            return await _stale_if_expired(row)
-        return await _handle_account_request(account_id, row, ar)
+        return refused if refused is not None else await _handle_account_request(account_id, row, ar)
 
-    # `provider_information` with nothing to poll: the owner submits it through
-    # the owner route, which kicks the driver.
-    return await _stale_if_expired(row)
+    # A card with nothing to poll: the owner submits it through the owner
+    # route, which kicks the driver.
+    return row
 
 
 async def _stale_if_expired(row: dict) -> dict:

@@ -5,7 +5,11 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+from core.services import board_cards  # noqa: E402
 from core.services import company_stripe_approval as mod  # noqa: E402
+
+# The filing sequence moved to `board_cards.file_board_card`, so its
+# collaborators are patched THERE; `mod` still owns the billing pre-check.
 
 
 def _admin(existing: list[dict]):
@@ -20,10 +24,10 @@ async def test_files_company_stripe_approval():
     admin = _admin(existing=[])
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
-        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-        patch.object(mod, "shared_admin_client", return_value=admin),
-        patch.object(mod, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
+        patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
+        patch.object(board_cards, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(board_cards, "shared_admin_client", return_value=admin),
+        patch.object(board_cards, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
     ):
         approval_id = await mod.request_company_stripe(
             owner_id="org_a", issue_id="iss_1", reason="Need to sell the first product"
@@ -48,7 +52,7 @@ async def test_skips_when_already_connected():
             "get_by_owner_id",
             AsyncMock(return_value={"owner_id": "org_a", "company_stripe_account_id": "acct_x"}),
         ),
-        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(board_cards, "shared_admin_client", return_value=admin),
     ):
         assert await mod.request_company_stripe(owner_id="org_a", issue_id=None, reason="x") is None
     admin.create_approval.assert_not_awaited()
@@ -68,9 +72,9 @@ async def test_reuses_pending_request():
     )
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
-        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
+        patch.object(board_cards, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(board_cards, "shared_admin_client", return_value=admin),
     ):
         assert await mod.request_company_stripe(owner_id="org_a", issue_id=None, reason="x") == "apr_old"
     admin.create_approval.assert_not_awaited()
@@ -83,10 +87,10 @@ async def test_ignores_unrelated_board_approval():
     admin = _admin(existing=[{"id": "apr_other", "type": "request_board_approval", "status": "pending", "payload": {}}])
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
-        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-        patch.object(mod, "shared_admin_client", return_value=admin),
-        patch.object(mod, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
+        patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock(return_value="cmp_1")),
+        patch.object(board_cards, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(board_cards, "shared_admin_client", return_value=admin),
+        patch.object(board_cards, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
     ):
         assert await mod.request_company_stripe(owner_id="org_a", issue_id=None, reason="x") == "apr_new"
     admin.create_approval.assert_awaited_once()

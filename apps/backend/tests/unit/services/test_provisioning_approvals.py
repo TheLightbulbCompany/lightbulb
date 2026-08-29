@@ -6,7 +6,11 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+from core.services import board_cards  # noqa: E402
 from core.services import provisioning_approvals as mod  # noqa: E402
+
+# The filing sequence moved to `board_cards.file_board_card`, so its
+# collaborators are patched THERE; `mod` still owns the payloads.
 
 
 def _admin(existing):
@@ -25,10 +29,14 @@ def _board(admin, company_id="cmp_1"):
     # empirically. `_board` is a context manager itself instead, entered as
     # `with _board(admin):`.
     with ExitStack() as stack:
-        stack.enter_context(patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value=company_id)))
-        stack.enter_context(patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")))
-        stack.enter_context(patch.object(mod, "shared_admin_client", return_value=admin))
-        stack.enter_context(patch.object(mod, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")))
+        stack.enter_context(
+            patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock(return_value=company_id))
+        )
+        stack.enter_context(patch.object(board_cards, "get_admin_session_cookie", AsyncMock(return_value="cookie")))
+        stack.enter_context(patch.object(board_cards, "shared_admin_client", return_value=admin))
+        stack.enter_context(
+            patch.object(board_cards, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics"))
+        )
         yield
 
 
@@ -135,8 +143,8 @@ async def test_consent_dedupe_is_per_provider_service_not_global():
 async def test_no_paperclip_company_is_none_not_an_error():
     admin = _admin([])
     with (
-        patch.object(mod, "resolve_company_id_for_owner", AsyncMock(return_value=None)),
-        patch.object(mod, "shared_admin_client", return_value=admin),
+        patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock(return_value=None)),
+        patch.object(board_cards, "shared_admin_client", return_value=admin),
     ):
         assert (
             await mod.request_cli_pairing(

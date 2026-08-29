@@ -9,6 +9,7 @@ import { UserButton } from "@clerk/nextjs";
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { CompanyStripeSection } from "@/components/settings/CompanyStripeSection";
+import { CompanyAccountsSection } from "@/components/settings/CompanyAccountsSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
@@ -192,6 +193,10 @@ function ConnectionsPageInner() {
 
               <div className="mb-4">
                 <CompanyStripeSection canManage={canManage} />
+              </div>
+
+              <div className="mb-4">
+                <CompanyAccountsSection canManage={canManage} />
               </div>
 
               <ConnectionsList canManage={canManage} />

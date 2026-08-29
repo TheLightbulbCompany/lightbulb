@@ -342,13 +342,21 @@ def _skip(steps: list[WipeStep], system: str, action: str, detail: str) -> None:
     steps.append(WipeStep(system=system, action=action, status="skipped", detail=detail))
 
 
-async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str, billing_row: dict | None) -> None:
+async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str) -> None:
     """Step 8b: revoke the platform's link to the company's Stripe account.
 
     NEVER deletes the account — it is the owner's business account and keeps
     working as a normal Stripe account after we let go (spec §3.6).
+
+    Reads the billing row FRESH (strongly consistent) rather than taking the
+    ``_read_identifiers`` snapshot: everything above this step is slow (ECS,
+    EFS, Aurora), and an OAuth callback landing in that window binds an
+    account the snapshot cannot know about. Deauthorizing a stale id — or
+    skipping a live one and leaving the platform attached to the owner's
+    Stripe account after their account is gone — is the failure this avoids.
     """
-    account_id = (billing_row or {}).get("company_stripe_account_id")
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    account_id = row.get("company_stripe_account_id")
     if not account_id:
         _skip(steps, "stripe", "deauthorize_company_account", "no company_stripe_account_id on billing row")
         return
@@ -825,7 +833,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         _skip(steps, "stripe", "delete_stripe_customer", "no stripe_customer_id on billing row")
 
     # --- Step 8b: company Stripe account — deauthorize only ------------------
-    await _wipe_company_stripe(steps, owner_id=owner_id, billing_row=ids.billing)
+    await _wipe_company_stripe(steps, owner_id=owner_id)
 
     # --- Step 9 (spec #11, remaining tables) -------------------------------
     # containers + channel-links already removed inside step 3 above.

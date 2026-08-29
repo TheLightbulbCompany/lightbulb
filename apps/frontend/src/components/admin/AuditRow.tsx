@@ -77,7 +77,7 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       )}
       <span
         className={cn(
-          "rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+          "rounded-sm px-2 py-0.5 text-2xs font-semibold uppercase tracking-caps",
           isError
             ? "border border-err text-err"
             : "border border-ok text-ok",
@@ -87,7 +87,7 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       </span>
       {isPanic ? (
         <span
-          className="rounded border border-warn px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn"
+          className="rounded-sm border border-warn px-2 py-0.5 text-2xs font-semibold uppercase tracking-caps text-warn"
           title="Audit row failed to write to DynamoDB; see CloudWatch"
         >
           {"audit panic \u2014 see CloudWatch"}

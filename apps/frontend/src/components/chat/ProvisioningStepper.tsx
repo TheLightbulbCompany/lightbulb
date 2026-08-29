@@ -860,7 +860,7 @@ export function ProvisioningStepper({
       <>
         {children}
         {(teamsDegraded || firstRunFailed) && (
-          <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+          <div className="fixed bottom-4 right-4 z-(--z-toast) flex flex-col items-end gap-2">
             {firstRunFailed && (
               <FirstRunFailedNotice lastError={derived?.bootstrap.last_error ?? null} />
             )}
@@ -1110,7 +1110,7 @@ export function ProvisioningStepper({
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className="mb-2 text-[22px] font-normal text-[var(--midnight)]"
+            className="mb-2 text-title font-normal text-[var(--midnight)]"
             style={{ fontFamily: "var(--font-serif), serif" }}
           >
             {copy.title}
@@ -1946,7 +1946,7 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
               <summary className="cursor-pointer text-xs font-medium text-[var(--midnight-soft)]">
                 Technical details
               </summary>
-              <p className="mt-1 break-words font-mono text-[11px] leading-snug text-[var(--midnight-soft)]">
+              <p className="mt-1 break-words font-mono text-caption leading-snug text-[var(--midnight-soft)]">
                 {lastError}
               </p>
             </details>
@@ -2239,7 +2239,7 @@ export function ProviderPicker({
               <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-serif), serif" fontStyle="italic" fontSize="52" fill="var(--cream)">8</text>
             </svg>
           )}
-          <h2 className="text-2xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
+          <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
             {heading ?? "One price. Three ways to power it."}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>

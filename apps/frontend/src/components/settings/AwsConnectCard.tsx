@@ -183,7 +183,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
     <div className="flex flex-col gap-1">
       <span className="text-xs text-[var(--midnight-muted)]">{label}</span>
       <div className="flex items-center gap-1">
-        <code className="flex-1 break-all rounded bg-cream px-2 py-1 text-[11px] text-midnight border border-[var(--edge)]">
+        <code className="flex-1 break-all rounded-sm bg-cream px-2 py-1 text-caption text-midnight border border-[var(--edge)]">
           {value}
         </code>
         <Button
@@ -193,7 +193,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
           onClick={() => void copy(id, value)}
           aria-label={`Copy ${label}`}
         >
-          {copied === id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied === id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         </Button>
       </div>
     </div>
@@ -239,10 +239,10 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
           </Button>
         </div>
         {scope === "read_only" && (
-          <span className="text-[11px] text-[var(--midnight-muted)]">broader — includes data-plane reads</span>
+          <span className="text-caption text-[var(--midnight-muted)]">broader — includes data-plane reads</span>
         )}
         {scope === "power_user" && (
-          <span className="text-[11px] text-[var(--midnight-muted)]">read + write; excludes IAM / Organizations</span>
+          <span className="text-caption text-[var(--midnight-muted)]">read + write; excludes IAM / Organizations</span>
         )}
       </div>
 
@@ -266,7 +266,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
               Advanced / manual setup
             </summary>
             <div className="mt-2 flex flex-col gap-2">
-              <span className="text-[11px] text-[var(--midnight-muted)]">
+              <span className="text-caption text-[var(--midnight-muted)]">
                 Only needed if you deploy the role manually (e.g. via Terraform) instead of the
                 one-click button below.
               </span>
@@ -286,16 +286,16 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
               onClick={() => window.open(quickCreateUrl, "_blank", "noopener,noreferrer")}
               aria-label="Create role in AWS"
             >
-              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+              <ExternalLink className="mr-1.5 h-3 w-3" />
               Create role in AWS
             </Button>
           ) : (
             <div className="flex flex-col gap-1">
               <Button size="sm" variant="outline" disabled aria-label="Create role in AWS">
-                <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                <ExternalLink className="mr-1.5 h-3 w-3" />
                 Create role in AWS
               </Button>
-              <span className="text-[11px] text-[var(--midnight-muted)]">
+              <span className="text-caption text-[var(--midnight-muted)]">
                 AWS role template coming soon — paste an existing read-only role ARN below.
               </span>
             </div>

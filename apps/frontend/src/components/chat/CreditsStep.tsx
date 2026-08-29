@@ -186,7 +186,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
   if (awaitingBundledGrant) {
     return (
       <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center" style={SANS_FONT}>
-        <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+        <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
           Adding your Claude credits
         </h3>
         <p className="text-sm text-[var(--midnight-muted)]">
@@ -209,7 +209,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
-      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+      <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Add Claude credits
       </h3>
       <p className="text-sm text-[var(--midnight-muted)]">
@@ -248,7 +248,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
       />
 
       {!autoChargeEnabled && (
-        <label className="flex items-start gap-2 text-[13px] text-[var(--midnight-muted)]">
+        <label className="flex items-start gap-2 text-ui text-[var(--midnight-muted)]">
           <input
             type="checkbox"
             checked={optIn}

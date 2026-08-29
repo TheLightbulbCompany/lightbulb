@@ -134,7 +134,7 @@ export function MyListingsView() {
     return (
       <div className="editorial-card p-6 text-center" role="alert">
         <h4 className="font-editorial-serif text-xl mb-2">Couldn&apos;t load your listings.</h4>
-        <p className="text-[13px] text-muted-foreground mb-4">
+        <p className="text-ui text-muted-foreground mb-4">
           Something went wrong fetching your store — your listings are safe.
         </p>
         <button
@@ -189,7 +189,7 @@ export function MyListingsView() {
       <div className="flex items-end justify-between gap-3.5 flex-wrap mb-4">
         <div>
           <h3 className="font-editorial-serif text-2xl text-[var(--midnight)]">My listings</h3>
-          <div className="flex gap-6 mt-2 text-[13px] text-muted-foreground">
+          <div className="flex gap-6 mt-2 text-ui text-muted-foreground">
             <Stat label="active listings" value={activeCount.toString()} />
             <Stat label="total installs" value={totalInstalls.toLocaleString()} />
             <Stat
@@ -205,22 +205,22 @@ export function MyListingsView() {
         <button
           type="button"
           onClick={() => setView("publish")}
-          className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold"
+          className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-ui font-semibold"
         >
           + New listing
         </button>
       </div>
 
       {grouped.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-[var(--edge)] rounded-2xl bg-card">
+        <div className="text-center py-12 border border-dashed border-[var(--edge)] rounded-xl bg-card">
           <h4 className="font-editorial-serif text-xl mb-2">No listings yet.</h4>
-          <p className="text-[14px] text-muted-foreground mb-4">
+          <p className="text-sm text-muted-foreground mb-4">
             Open chat to publish your first agent.
           </p>
           <button
             type="button"
             onClick={() => setView("publish")}
-            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-5 py-2 rounded-full text-[14px] font-semibold"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-5 py-2 rounded-full text-sm font-semibold"
           >
             + Publish your agent
           </button>
@@ -265,12 +265,12 @@ function Stat({
           type="button"
           onClick={onAction}
           disabled={disabled}
-          className="block text-[12px] font-semibold text-[var(--midnight)] hover:underline disabled:opacity-60 mt-1"
+          className="block text-xs font-semibold text-[var(--midnight)] hover:underline disabled:opacity-50 mt-1"
         >
           {action}
         </button>
       )}
-      {note && <span className="block text-[11.5px] text-[var(--warn)] mt-0.5">{note}</span>}
+      {note && <span className="block text-caption text-[var(--warn)] mt-0.5">{note}</span>}
     </div>
   );
 }
@@ -340,13 +340,13 @@ function ListingRow({
       data-testid="my-listings-row"
       data-was-rejected={wasRejected ? "true" : undefined}
       onClick={onClick}
-      className={`w-full text-left bg-card border rounded-2xl p-5 flex items-start gap-4 hover:bg-cream-deep transition-colors ${
+      className={`w-full text-left bg-card border rounded-xl p-5 flex items-start gap-4 hover:bg-cream-deep transition-colors ${
         wasRejected ? "border-[var(--err)]" : "border-[var(--edge)]"
       }`}
     >
       <div className="flex-1 min-w-0">
         <div className="font-editorial-serif text-lg">{live.name}</div>
-        <div className="flex gap-3 text-[12.5px] text-muted-foreground mt-0.5">
+        <div className="flex gap-3 text-ui text-muted-foreground mt-0.5">
           <span>Updated {new Date(live.created_at).toLocaleDateString()}</span>
           <span>{installCount} installs</span>
           <span className="font-semibold text-[var(--midnight)]">
@@ -356,7 +356,7 @@ function ListingRow({
       </div>
       <div className="flex flex-col items-end gap-2 flex-shrink-0">
         <span
-          className={`text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${pillTone}`}
+          className={`text-2xs tracking-caps uppercase font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${pillTone}`}
         >
           {baseStatusLabel}
           {pendingLabel ? ` ${pendingLabel}` : ""}

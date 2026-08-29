@@ -35,7 +35,7 @@ function Fallback({ message, onViewCode }: { message: string; onViewCode?: () =>
       {onViewCode ? (
         <button
           onClick={onViewCode}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--edge)] hover:bg-[var(--cream-deep)] transition-colors"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-sm border border-[var(--edge)] hover:bg-[var(--cream-deep)] transition-colors"
         >
           <FileText className="h-3 w-3" /> View as code
         </button>
@@ -85,7 +85,7 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
   }
 
   const iconBtn =
-    "p-1 rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors disabled:opacity-50";
+    "p-1 rounded-sm text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors disabled:opacity-50";
 
   return (
     <div className="flex flex-col h-full">
@@ -114,9 +114,9 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
           </TooltipTrigger>
           <TooltipContent>Reset zoom</TooltipContent>
         </Tooltip>
-        <span className="text-[10px] text-[var(--midnight-muted)] ml-1">{Math.round(scale * 100)}%</span>
+        <span className="text-2xs text-[var(--midnight-muted)] ml-1">{Math.round(scale * 100)}%</span>
         <button
-          className="ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors"
+          className="ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded-sm text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors"
           aria-label="Copy mermaid source"
           onClick={() => navigator.clipboard?.writeText(result.mermaid)}
         >
@@ -127,7 +127,7 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
         {renderError ? (
           <div className="text-sm">
             <p className="text-err mb-2">Couldn&apos;t render the diagram.</p>
-            <pre className="text-xs bg-[var(--cream-deep)] p-3 rounded overflow-auto whitespace-pre-wrap">
+            <pre className="text-xs bg-[var(--cream-deep)] p-3 rounded-sm overflow-auto whitespace-pre-wrap">
               {result.mermaid}
             </pre>
           </div>

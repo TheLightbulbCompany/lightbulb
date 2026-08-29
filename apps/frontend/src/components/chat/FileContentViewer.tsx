@@ -92,7 +92,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         <img
           src={`data:${file.mime_type};base64,${file.content}`}
           alt={file.name}
-          className="max-w-full max-h-[80vh] object-contain rounded border border-[var(--edge)]"
+          className="max-w-full max-h-[80vh] object-contain rounded-sm border border-[var(--edge)]"
         />
       </div>
     );
@@ -118,11 +118,11 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
       <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
         <span className="text-xs text-[var(--midnight-muted)]">{file.name}</span>
         <div className="flex items-center gap-2">
-          {dirty && <span className="text-[10px] text-warn font-medium">unsaved</span>}
+          {dirty && <span className="text-2xs text-warn font-medium">unsaved</span>}
           <button
             onClick={handleSave}
             disabled={!dirty || saving || !onSave}
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded-sm bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
             Save

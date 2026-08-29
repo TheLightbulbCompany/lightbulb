@@ -374,7 +374,7 @@ export function ChatInput({
                 key={pf.id}
                 className="flex items-center gap-1.5 bg-cream-deep rounded-lg px-2.5 py-1.5 text-xs text-[var(--midnight-soft)]"
               >
-                <FileIcon className="h-3.5 w-3.5 shrink-0 text-[var(--midnight-muted)]" />
+                <FileIcon className="h-3 w-3 shrink-0 text-[var(--midnight-muted)]" />
                 <span className="truncate max-w-37.5">{pf.file.name}</span>
                 <span className="text-[var(--midnight-muted)]">{formatFileSize(pf.file.size)}</span>
                 <button
@@ -447,7 +447,7 @@ export function ChatInput({
                 >
                   <div className="flex items-center gap-2">
                     {stateLabel && (
-                      <span className="shrink-0 text-[0.65rem] uppercase tracking-wide text-[var(--midnight-muted)]">
+                      <span className="shrink-0 label-caps">
                         {stateLabel}
                       </span>
                     )}
@@ -496,7 +496,7 @@ export function ChatInput({
           </div>
         )}
 
-        <div className="relative flex flex-col rounded-2xl border border-[var(--edge)] bg-cream shadow-[0_1px_2px_color-mix(in_srgb,var(--midnight)_3%,transparent),0_4px_16px_color-mix(in_srgb,var(--midnight)_5%,transparent)] transition-[border-color,box-shadow] duration-200 focus-within:border-[var(--midnight)]/25 focus-within:shadow-[0_1px_2px_color-mix(in_srgb,var(--midnight)_3%,transparent),0_6px_24px_color-mix(in_srgb,var(--midnight)_8%,transparent)]">
+        <div className="relative flex flex-col rounded-xl border border-[var(--edge)] bg-cream shadow-sm transition-[border-color,box-shadow] duration-(--dur-base) focus-within:border-[var(--midnight)]/25 focus-within:shadow-md">
           <input
             ref={fileInputRef}
             type="file"
@@ -524,7 +524,7 @@ export function ChatInput({
               />
             )}
             {suggestedMessage && !input && (
-              <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-[15px] leading-6 text-[var(--midnight-muted)]">
+              <div className="pointer-events-none absolute inset-x-4 top-3 truncate text-sm text-[var(--midnight-muted)]">
                 {suggestedMessage}
                 <span className="ml-2 text-xs text-[var(--midnight-muted)]">[Tab]</span>
               </div>
@@ -536,7 +536,7 @@ export function ChatInput({
               onKeyDown={handleKeyDown}
               placeholder={suggestedMessage ? "" : "Ask anything"}
               rows={1}
-              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[15px] leading-6 text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none"
+              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none"
               disabled={isDisabled}
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />

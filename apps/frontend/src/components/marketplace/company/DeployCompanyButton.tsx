@@ -39,20 +39,20 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
   if (started) {
     return (
       <section className="editorial-card p-6" data-testid="deploy-started-card" role="status">
-        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
+        <div className="font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
           Deploy started
         </div>
         <h3 className="mt-2 font-editorial-serif text-2xl text-[var(--midnight)]">
           Deploying {company.name}
         </h3>
-        <p className="mt-3 text-sm leading-6 text-[var(--midnight-soft)]">
+        <p className="mt-3 text-sm leading-relaxed text-[var(--midnight-soft)]">
           Building {started.agentCount} {started.agentCount === 1 ? "agent" : "agents"}. They&apos;ll
           appear in your Teams roster in about a minute — enable their routines
           from Teams once they&apos;re up.
         </p>
         <Link
           href="/chat"
-          className="mt-5 inline-block font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--midnight)] underline"
+          className="mt-5 inline-block font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight)] underline"
         >
           Open Teams
         </Link>
@@ -83,7 +83,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
       <button
         onClick={deploy}
         disabled={loading}
-        className="editorial-btn editorial-btn--primary h-12 px-6 text-sm disabled:opacity-60"
+        className="editorial-btn editorial-btn--primary h-12 px-6 text-sm disabled:opacity-50"
       >
         {loading ? "Deploying…" : "Deploy company"}
       </button>

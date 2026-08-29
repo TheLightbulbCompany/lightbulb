@@ -95,7 +95,7 @@ function MyChannelsSectionInner() {
         const bots = data[provider];
         return (
           <div key={provider} className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">
+            <h3 className="text-xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
               {PROVIDER_LABELS[provider]}
             </h3>
             {bots.length === 0 ? (
@@ -153,7 +153,7 @@ function MyChannelsSectionInner() {
 
       {wizard && (
         <div
-          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-50"
+          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-(--z-overlay)"
           role="dialog"
           aria-modal="true"
           onClick={() => setWizard(null)}

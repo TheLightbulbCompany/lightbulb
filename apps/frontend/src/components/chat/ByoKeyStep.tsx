@@ -189,7 +189,7 @@ export function ByoKeyStep({ onComplete }: Props) {
       className="flex flex-col gap-4 py-8 max-w-md mx-auto"
       style={SANS_FONT}
     >
-      <h3 className="text-[22px] font-normal text-[var(--midnight)]" style={SERIF_FONT}>
+      <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
         Bring your own API key
       </h3>
       <p className="text-sm text-[var(--midnight-muted)]">

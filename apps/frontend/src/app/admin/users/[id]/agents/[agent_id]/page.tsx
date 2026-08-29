@@ -273,7 +273,7 @@ function Header({
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="space-y-1">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">
+        <p className="text-xs uppercase tracking-caps text-muted-foreground">
           <Link
             href={`/admin/users/${encodeURIComponent(userId)}/agents`}
             className="text-info hover:underline"
@@ -291,7 +291,7 @@ function Header({
       <div className="text-right text-xs text-muted-foreground">
         {lastActive ? (
           <>
-            <span className="block uppercase tracking-wide">Last active</span>
+            <span className="block uppercase tracking-caps">Last active</span>
             <span className="font-mono text-foreground" title={when.iso ?? undefined}>
               {when.label}
             </span>

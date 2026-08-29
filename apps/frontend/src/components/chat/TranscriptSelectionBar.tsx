@@ -220,7 +220,7 @@ export function TranscriptSelectionBar({
       role="toolbar"
       aria-label="Selection actions"
       style={{ position: "fixed", top: coords.top, left: coords.left }}
-      className="z-50 flex origin-bottom items-center rounded-lg border border-[var(--edge)] bg-[var(--cream)] p-1 transition-[opacity,scale] duration-(--dur-fast) ease-out starting:scale-[0.97] starting:opacity-0 motion-reduce:transition-[opacity]"
+      className="z-(--z-chrome) flex origin-bottom items-center rounded-lg border border-[var(--edge)] bg-[var(--cream)] p-1 transition-[opacity,scale] duration-(--dur-fast) ease-out starting:scale-[0.97] starting:opacity-0 motion-reduce:transition-[opacity]"
     >
       <button
         type="button"

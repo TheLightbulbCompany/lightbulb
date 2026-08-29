@@ -30,6 +30,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Pencil, Trash2, ListTodo, SlidersHorizontal } from "lucide-react";
 
 import { Monogram } from "@/components/agents/AgentIdentity";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { agentDisplayName, getAgentModelString, type Agent } from "@/hooks/useAgents";
@@ -368,41 +369,59 @@ export function AgentRoster({
             </button>
 
             <div className="agent-row-actions">
-              <button
-                type="button"
-                className="agent-row-action"
-                aria-label={`See ${name}'s work`}
-                title={`See ${name}'s work`}
-                onClick={() => onOpenWork(agent.id)}
-              >
-                <ListTodo size={13} />
-              </button>
-              <button
-                type="button"
-                className="agent-row-action"
-                aria-label={`Inspect ${name}`}
-                title={`Inspect ${name}`}
-                onClick={() => onInspect(agent.id)}
-              >
-                <SlidersHorizontal size={13} />
-              </button>
-              <button
-                type="button"
-                className="agent-row-action"
-                aria-label={`Rename ${name}`}
-                onClick={() => onRename(agent)}
-              >
-                <Pencil size={13} />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="agent-row-action"
+                    aria-label={`See ${name}'s work`}
+                    onClick={() => onOpenWork(agent.id)}
+                  >
+                    <ListTodo size={12} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{`See ${name}'s work`}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="agent-row-action"
+                    aria-label={`Inspect ${name}`}
+                    onClick={() => onInspect(agent.id)}
+                  >
+                    <SlidersHorizontal size={12} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{`Inspect ${name}`}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="agent-row-action"
+                    aria-label={`Rename ${name}`}
+                    onClick={() => onRename(agent)}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{`Rename ${name}`}</TooltipContent>
+              </Tooltip>
               {!isSeeded && agent.id !== defaultAgentId && (
-                <button
-                  type="button"
-                  className="agent-row-action agent-row-action--err"
-                  aria-label={`Delete ${name}`}
-                  onClick={() => onDelete(agent)}
-                >
-                  <Trash2 size={13} />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="agent-row-action agent-row-action--err"
+                      aria-label={`Delete ${name}`}
+                      onClick={() => onDelete(agent)}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{`Delete ${name}`}</TooltipContent>
+                </Tooltip>
               )}
             </div>
 

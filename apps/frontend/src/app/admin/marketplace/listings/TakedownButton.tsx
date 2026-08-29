@@ -139,7 +139,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-reason"
-                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
                 >
                   Reason
                 </label>
@@ -148,7 +148,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
                   value={reason}
                   onChange={(e) => setReason(e.target.value as Reason)}
                   disabled={busy}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
                 >
                   {REASONS.map((r) => (
                     <option key={r.value} value={r.value}>
@@ -161,7 +161,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-basis"
-                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
                 >
                   Basis ({MIN_BASIS_LENGTH}-{MAX_BASIS_LENGTH} chars)
                 </label>
@@ -173,7 +173,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
                   rows={4}
                   disabled={busy}
                   maxLength={MAX_BASIS_LENGTH}
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
                   aria-label="Takedown basis (recorded on audit log)"
                 />
                 <p className="text-xs text-muted-foreground">
@@ -190,7 +190,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
               <div className="space-y-1">
                 <label
                   htmlFor="takedown-confirm"
-                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
                 >
                   Type{" "}
                   <span className="font-mono font-semibold text-foreground">

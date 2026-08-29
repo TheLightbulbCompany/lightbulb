@@ -35,8 +35,8 @@ export function MarketplaceRestrictedView({
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
       </svg>
-      <div className="text-[18px] font-semibold text-[var(--midnight)]">{title}</div>
-      <div className="text-[14px] text-muted-foreground max-w-[320px]">{desc}</div>
+      <div className="text-base font-semibold text-[var(--midnight)]">{title}</div>
+      <div className="text-sm text-muted-foreground max-w-[320px]">{desc}</div>
     </div>
   );
 }

@@ -627,7 +627,7 @@ function MarketplaceProfileEditor() {
   }, [isLoaded, getToken]);
 
   if (loading) {
-    return <div className="text-[13px] text-muted-foreground">Loading your profile…</div>;
+    return <div className="text-ui text-muted-foreground">Loading your profile…</div>;
   }
 
   return (

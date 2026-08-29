@@ -74,7 +74,7 @@ function PropertiesDetails({
       <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
         Properties
       </summary>
-      <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-muted-foreground">
+      <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-caption text-muted-foreground">
         {JSON.stringify(properties, null, 2)}
       </pre>
     </details>
@@ -124,7 +124,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
         <div className="flex items-baseline justify-between">
           <h2
             id="recent-logs-heading"
-            className="text-sm font-medium uppercase tracking-wide text-muted-foreground"
+            className="text-sm font-medium uppercase tracking-caps text-muted-foreground"
           >
             Recent error logs (last 24h)
           </h2>
@@ -170,7 +170,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
       <section aria-labelledby="posthog-heading" className="space-y-3">
         <h2
           id="posthog-heading"
-          className="text-sm font-medium uppercase tracking-wide text-muted-foreground"
+          className="text-sm font-medium uppercase tracking-caps text-muted-foreground"
         >
           PostHog timeline
         </h2>

@@ -73,7 +73,7 @@ export function TrialBanner() {
   const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString();
 
   return (
-    <div className="bg-primary/10 border-b border-primary/20 px-4 py-2 text-sm flex items-center justify-between">
+    <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center justify-between">
       <span>
         Heads up — your free trial ends in{" "}
         <strong>
@@ -81,7 +81,7 @@ export function TrialBanner() {
         </strong>
         {daysLeft === 0 ? "" : ` (${chargeDate})`}, then $50/mo.
       </span>
-      <Link href="/settings?panel=billing" className="text-primary underline">
+      <Link href="/settings?panel=billing" className="underline">
         Manage
       </Link>
     </div>

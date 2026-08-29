@@ -47,11 +47,11 @@ export function SlashCommandMenu({
   return (
     <div
       role="listbox"
-      className="absolute bottom-full mb-2 left-0 right-0 max-h-80 overflow-y-auto rounded-2xl border border-[var(--edge)] bg-cream shadow-lg z-20"
+      className="absolute bottom-full mb-2 left-0 right-0 max-h-80 overflow-y-auto rounded-xl border border-[var(--edge)] bg-cream shadow-lg z-(--z-chrome)"
     >
       {sections.map((section, si) => (
         <div key={section.label} className="py-1">
-          <div className="px-3 py-1 text-[0.65rem] uppercase tracking-wide text-[var(--midnight-muted)]">
+          <div className="px-3 py-1 label-caps">
             {section.label}
           </div>
           {section.items.map((cmd, ii) => {
@@ -78,7 +78,7 @@ export function SlashCommandMenu({
           })}
         </div>
       ))}
-      <div className="px-3 py-1 text-[0.65rem] text-[var(--midnight-muted)] border-t border-[var(--edge)]">
+      <div className="px-3 py-1 text-2xs text-[var(--midnight-muted)] border-t border-[var(--edge)]">
         ↑↓ navigate · Tab fill · ↵ run · esc close
       </div>
     </div>

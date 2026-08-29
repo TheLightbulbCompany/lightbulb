@@ -136,7 +136,7 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
   if (!match) {
     // Inline code
     return (
-      <code className="bg-[var(--cream-deeper)] rounded px-1.5 py-0.5 text-sm text-[var(--midnight)]" {...props}>
+      <code className="bg-[var(--cream-deeper)] rounded-sm px-1.5 py-0.5 text-sm text-[var(--midnight)]" {...props}>
         {children}
       </code>
     );
@@ -411,9 +411,9 @@ export function ThinkingBlock({
         className="chat-thinking-trigger flex items-center gap-1.5 text-left text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] transition-colors"
       >
         {isExpanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          <ChevronDown className="h-3 w-3 shrink-0" />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+          <ChevronRight className="h-3 w-3 shrink-0" />
         )}
         <span className="text-sm italic">{label}</span>
       </button>
@@ -511,11 +511,11 @@ export function AgentHead({
     const settled = !streaming;
     return (
         <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-semibold text-[var(--midnight)] tracking-tight">
+            <span className="text-xs font-semibold text-[var(--midnight)]">
                 {name}
             </span>
             <span className="inline-flex items-center justify-center w-5 h-5">
-                <AgentGlyph state={state} size={18} />
+                <AgentGlyph state={state} size={16} />
             </span>
             {settled && (
                 <div className="flex items-center gap-0.5 ml-1">
@@ -732,7 +732,7 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <div className="relative text-sm leading-7 bg-[var(--cream-deep)] text-[var(--midnight)] rounded-2xl rounded-br-md px-4 py-2.5">
+        <div className="relative text-sm leading-relaxed bg-[var(--cream-deep)] text-[var(--midnight)] rounded-lg rounded-br-sm px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
       </div>
@@ -792,9 +792,9 @@ const ItemRenderer = React.memo(
   }) {
     if (item.kind === "divider") {
       return (
-        <div className="my-3 flex items-center gap-2 text-[11px] text-[var(--midnight-muted)]">
+        <div className="my-3 flex items-center gap-2 text-caption text-[var(--midnight-muted)]">
           <span className="flex-1 h-px bg-[var(--edge)]" />
-          <span className="uppercase tracking-wide">{item.label}</span>
+          <span className="uppercase tracking-caps">{item.label}</span>
           <span className="flex-1 h-px bg-[var(--edge)]" />
         </div>
       );
@@ -853,16 +853,16 @@ function BtwSideCard({
       <div className="flex items-center gap-1.5 mb-1.5">
         <span
           className={cn(
-            "text-[11px] font-semibold uppercase tracking-wide",
+            "label-caps",
             isError ? "text-[var(--err)]" : "text-[var(--midnight)]",
           )}
         >
           BTW
         </span>
-        <span className="text-[11px] text-[var(--midnight-muted)]">· not saved</span>
+        <span className="text-caption text-[var(--midnight-muted)]">· not saved</span>
       </div>
       {question && <div className="text-xs text-[var(--midnight-muted)] mb-1.5">{question}</div>}
-      <div className={cn("leading-7", isError ? "text-[var(--err)]" : "text-[var(--midnight-soft)]")}>
+      <div className={cn("leading-relaxed", isError ? "text-[var(--err)]" : "text-[var(--midnight-soft)]")}>
         <MarkdownContent content={text} onOpenFile={onOpenFile} />
       </div>
     </div>
@@ -1073,7 +1073,7 @@ function BubbleGroupImpl({
           streaming={Boolean(isStreaming && isLastAssistantGroup)}
           messageText={groupCopyText(group)}
         />
-        <div className="relative text-sm leading-7 text-[var(--midnight-soft)] w-full">
+        <div className="relative text-sm leading-relaxed text-[var(--midnight-soft)] w-full">
           {renderables.map((entry) =>
             entry.kind === "tool-run" ? (
               <ToolActivityTrace key={entry.key} calls={entry.calls} />
@@ -1320,7 +1320,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-50 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
+                className="text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-50 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

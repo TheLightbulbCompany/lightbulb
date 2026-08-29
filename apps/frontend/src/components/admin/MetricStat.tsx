@@ -19,7 +19,7 @@ export function MetricStat({
     <div>
       <div className={`text-2xl font-semibold tabular-nums ${VALUE_TONE[tone]}`}>{value}</div>
       <div className="text-xs text-muted-foreground">{label}</div>
-      {hint ? <div className="text-[10px] text-muted-foreground">{hint}</div> : null}
+      {hint ? <div className="text-2xs text-muted-foreground">{hint}</div> : null}
     </div>
   );
 }

@@ -77,14 +77,14 @@ function DeviceCodePanel({
         <li>
           Enter this code:
           <div className="mt-2 flex items-center gap-2">
-            <code className="bg-muted px-3 py-2 rounded font-mono text-lg tracking-widest">
+            <code className="bg-muted px-3 py-2 rounded-sm font-mono text-lg tracking-caps">
               {state.userCode}
             </code>
             <button
               type="button"
               onClick={() => copyCode(state.userCode)}
               aria-label="Copy code"
-              className="rounded border border-muted-foreground/20 px-2 py-1 text-xs hover:bg-muted"
+              className="rounded-sm border border-muted-foreground/20 px-2 py-1 text-xs hover:bg-muted"
             >
               {copied ? "Copied" : "Copy"}
             </button>

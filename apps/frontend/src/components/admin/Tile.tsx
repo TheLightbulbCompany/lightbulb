@@ -29,12 +29,12 @@ export function Tile({
 }) {
   const body = (
     <>
-      <div className="truncate text-xs uppercase tracking-wide text-muted-foreground" title={title}>
+      <div className="truncate text-xs uppercase tracking-caps text-muted-foreground" title={title}>
         {title}
       </div>
       {label ? <div className="mt-1 text-lg font-semibold text-foreground">{label}</div> : null}
       {sub ? (
-        <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={sub}>
+        <div className="mt-1 truncate font-mono text-2xs text-muted-foreground" title={sub}>
           {sub}
         </div>
       ) : null}

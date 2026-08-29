@@ -508,7 +508,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset23
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset23-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset23-step.sh
   Assets-FileAsset24:
     name: Publish Assets Assets-FileAsset24
     needs:
@@ -535,7 +535,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset24
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset24-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset24-step.sh
   Assets-FileAsset25:
     name: Publish Assets Assets-FileAsset25
     needs:
@@ -562,7 +562,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset25
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset25-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset25-step.sh
   Assets-FileAsset26:
     name: Publish Assets Assets-FileAsset26
     needs:
@@ -589,7 +589,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset26
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset26-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset26-step.sh
   Assets-FileAsset27:
     name: Publish Assets Assets-FileAsset27
     needs:
@@ -616,7 +616,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset27
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset27-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset27-step.sh
   Assets-FileAsset28:
     name: Publish Assets Assets-FileAsset28
     needs:
@@ -643,7 +643,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset28
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset28-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset28-step.sh
   Assets-FileAsset29:
     name: Publish Assets Assets-FileAsset29
     needs:
@@ -670,7 +670,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset29
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset29-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset29-step.sh
   Assets-FileAsset3:
     name: Publish Assets Assets-FileAsset3
     needs:
@@ -724,7 +724,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset30
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset30-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset30-step.sh
   Assets-FileAsset31:
     name: Publish Assets Assets-FileAsset31
     needs:
@@ -751,7 +751,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset31
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset31-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset31-step.sh
   Assets-FileAsset32:
     name: Publish Assets Assets-FileAsset32
     needs:
@@ -778,7 +778,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset32
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset32-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset32-step.sh
   Assets-FileAsset33:
     name: Publish Assets Assets-FileAsset33
     needs:
@@ -805,7 +805,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset33
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset33-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset33-step.sh
   Assets-FileAsset34:
     name: Publish Assets Assets-FileAsset34
     needs:
@@ -832,7 +832,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset34
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset34-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset34-step.sh
   Assets-FileAsset35:
     name: Publish Assets Assets-FileAsset35
     needs:
@@ -859,7 +859,7 @@ jobs:
           --only-show-errors
       - id: Publish
         name: Publish Assets-FileAsset35
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset35-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset35-step.sh
   Assets-FileAsset36:
     name: Publish Assets Assets-FileAsset36
     needs:
@@ -995,6 +995,276 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset4
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset4-step.sh
+  Assets-FileAsset40:
+    name: Publish Assets Assets-FileAsset40
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset40
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset40-step.sh
+  Assets-FileAsset41:
+    name: Publish Assets Assets-FileAsset41
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset41
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset41-step.sh
+  Assets-FileAsset42:
+    name: Publish Assets Assets-FileAsset42
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset42
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset42-step.sh
+  Assets-FileAsset43:
+    name: Publish Assets Assets-FileAsset43
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset43
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset43-step.sh
+  Assets-FileAsset44:
+    name: Publish Assets Assets-FileAsset44
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset44
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset44-step.sh
+  Assets-FileAsset45:
+    name: Publish Assets Assets-FileAsset45
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset45
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset45-step.sh
+  Assets-FileAsset46:
+    name: Publish Assets Assets-FileAsset46
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset46
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset46-step.sh
+  Assets-FileAsset47:
+    name: Publish Assets Assets-FileAsset47
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset47
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset47-step.sh
+  Assets-FileAsset48:
+    name: Publish Assets Assets-FileAsset48
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset48
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset48-step.sh
+  Assets-FileAsset49:
+    name: Publish Assets Assets-FileAsset49
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset49
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset49-step.sh
   Assets-FileAsset5:
     name: Publish Assets Assets-FileAsset5
     needs:
@@ -1022,6 +1292,276 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset5
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset5-step.sh
+  Assets-FileAsset50:
+    name: Publish Assets Assets-FileAsset50
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset50
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset50-step.sh
+  Assets-FileAsset51:
+    name: Publish Assets Assets-FileAsset51
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset51
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset51-step.sh
+  Assets-FileAsset52:
+    name: Publish Assets Assets-FileAsset52
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset52
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset52-step.sh
+  Assets-FileAsset53:
+    name: Publish Assets Assets-FileAsset53
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset53
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset53-step.sh
+  Assets-FileAsset54:
+    name: Publish Assets Assets-FileAsset54
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset54
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset54-step.sh
+  Assets-FileAsset55:
+    name: Publish Assets Assets-FileAsset55
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset55
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset55-step.sh
+  Assets-FileAsset56:
+    name: Publish Assets Assets-FileAsset56
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset56
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset56-step.sh
+  Assets-FileAsset57:
+    name: Publish Assets Assets-FileAsset57
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset57
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset57-step.sh
+  Assets-FileAsset58:
+    name: Publish Assets Assets-FileAsset58
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset58
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset58-step.sh
+  Assets-FileAsset59:
+    name: Publish Assets Assets-FileAsset59
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset59
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset59-step.sh
   Assets-FileAsset6:
     name: Publish Assets Assets-FileAsset6
     needs:
@@ -1049,6 +1589,168 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset6
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset6-step.sh
+  Assets-FileAsset60:
+    name: Publish Assets Assets-FileAsset60
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset60
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset60-step.sh
+  Assets-FileAsset61:
+    name: Publish Assets Assets-FileAsset61
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset61
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset61-step.sh
+  Assets-FileAsset62:
+    name: Publish Assets Assets-FileAsset62
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset62
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset62-step.sh
+  Assets-FileAsset63:
+    name: Publish Assets Assets-FileAsset63
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset63
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset63-step.sh
+  Assets-FileAsset64:
+    name: Publish Assets Assets-FileAsset64
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset64
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset64-step.sh
+  Assets-FileAsset65:
+    name: Publish Assets Assets-FileAsset65
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/ cdk.out/ --recursive
+          --only-show-errors
+      - id: Publish
+        name: Publish Assets-FileAsset65
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset65-step.sh
   Assets-FileAsset7:
     name: Publish Assets Assets-FileAsset7
     needs:
@@ -1206,6 +1908,487 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-agent-mail-outbound-Deploy:
+    name: Deploy devlightbulbdevagentmailoutboundB8217ED2
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset5
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-agent-mail-outbound
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-api-Deploy:
+    name: Deploy devlightbulbdevapi28206AEB
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset6
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-api
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset6.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-auth-Deploy:
+    name: Deploy devlightbulbdevauthCE68F0AB
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset7
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-auth
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset7.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-bedrock-gate-Deploy:
+    name: Deploy devlightbulbdevbedrockgate7FFA432A
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset8
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-bedrock-gate
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset8.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-bedrock-meter-Deploy:
+    name: Deploy devlightbulbdevbedrockmeterE45543B8
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset9
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-bedrock-meter
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset9.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-container-Deploy:
+    name: Deploy devlightbulbdevcontainerDB4B8BA2
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset10
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-container
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset10.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-database-Deploy:
+    name: Deploy devlightbulbdevdatabaseD4582FCD
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset11
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-database
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset11.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-dns-Deploy:
+    name: Deploy devlightbulbdevdns6DF44810
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset12
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-dns
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset12.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-network-Deploy:
+    name: Deploy devlightbulbdevnetworkA7A20077
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset13
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-network
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset13.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-observability-Deploy:
+    name: Deploy devlightbulbdevobservabilityD9C2ADBD
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset14
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-observability
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset14.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-paperclip-Deploy:
+    name: Deploy devlightbulbdevpaperclipF4A90004
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset15
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-paperclip
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset15.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-service-Deploy:
+    name: Deploy devlightbulbdevservice7D43CF36
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset16
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-service
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-ses-inbound-Deploy:
+    name: Deploy devlightbulbdevsesinbound37E21937
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset17
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-ses-inbound
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-isol8-dev-agent-mail-outbound-Deploy:
     name: Deploy devisol8devagentmailoutbound4D43997C
     permissions:
@@ -1213,7 +2396,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset5
+      - Assets-FileAsset18
       - dev-isol8-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -1240,7 +2423,7 @@ jobs:
         with:
           name: isol8-dev-agent-mail-outbound
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1251,8 +2434,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset6
-      - Assets-FileAsset7
+      - Assets-FileAsset19
+      - Assets-FileAsset20
       - dev-isol8-dev-dns-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -1279,7 +2462,7 @@ jobs:
         with:
           name: isol8-dev-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset6.outputs.asset-hash }}.json
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1290,12 +2473,12 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset8
-      - Assets-FileAsset9
+      - Assets-FileAsset21
+      - Assets-FileAsset22
       - Assets-FileAsset2
-      - Assets-FileAsset10
-      - Assets-FileAsset11
-      - Assets-FileAsset12
+      - Assets-FileAsset23
+      - Assets-FileAsset24
+      - Assets-FileAsset25
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -1324,7 +2507,7 @@ jobs:
         with:
           name: isol8-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset8.outputs.asset-hash }}.json
+            needs.Assets-FileAsset21.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1335,9 +2518,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset13
-      - Assets-FileAsset14
-      - Assets-FileAsset15
+      - Assets-FileAsset26
+      - Assets-FileAsset27
+      - Assets-FileAsset28
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1365,7 +2548,7 @@ jobs:
         with:
           name: isol8-dev-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset13.outputs.asset-hash }}.json
+            needs.Assets-FileAsset26.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1376,7 +2559,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
+      - Assets-FileAsset29
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1404,7 +2587,7 @@ jobs:
         with:
           name: isol8-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+            needs.Assets-FileAsset29.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1415,8 +2598,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
-      - Assets-FileAsset14
+      - Assets-FileAsset30
+      - Assets-FileAsset27
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1446,7 +2629,7 @@ jobs:
         with:
           name: isol8-dev-paperclip
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+            needs.Assets-FileAsset30.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1457,11 +2640,11 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset18
-      - Assets-FileAsset14
-      - Assets-FileAsset19
-      - Assets-FileAsset20
-      - Assets-FileAsset21
+      - Assets-FileAsset31
+      - Assets-FileAsset27
+      - Assets-FileAsset32
+      - Assets-FileAsset33
+      - Assets-FileAsset34
       - Assets-DockerAsset1
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1494,7 +2677,7 @@ jobs:
         with:
           name: isol8-dev-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+            needs.Assets-FileAsset31.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1505,7 +2688,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset22
+      - Assets-FileAsset35
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-paperclip-Deploy
       - dev-isol8-dev-network-Deploy
@@ -1537,7 +2720,7 @@ jobs:
         with:
           name: isol8-dev-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset22.outputs.asset-hash }}.json
+            needs.Assets-FileAsset35.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1549,6 +2732,19 @@ jobs:
     needs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1599,6 +2795,19 @@ jobs:
     needs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1665,11 +2874,24 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset23
+      - Assets-FileAsset36
       - Assets-FileAsset2
       - Assets-FileAsset3
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1705,7 +2927,7 @@ jobs:
         with:
           name: isol8-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset23.outputs.asset-hash }}.json
+            needs.Assets-FileAsset36.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1717,11 +2939,24 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset24
-      - Assets-FileAsset25
+      - Assets-FileAsset37
+      - Assets-FileAsset38
       - Assets-FileAsset2
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1757,7 +2992,7 @@ jobs:
         with:
           name: isol8-prod-bedrock-gate
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset24.outputs.asset-hash }}.json
+            needs.Assets-FileAsset37.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1769,12 +3004,25 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset26
-      - Assets-FileAsset15
-      - Assets-FileAsset27
+      - Assets-FileAsset39
+      - Assets-FileAsset28
+      - Assets-FileAsset40
       - Assets-FileAsset2
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1810,7 +3058,7 @@ jobs:
         with:
           name: isol8-prod-bedrock-meter
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset26.outputs.asset-hash }}.json
+            needs.Assets-FileAsset39.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1822,9 +3070,22 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset28
+      - Assets-FileAsset41
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1860,7 +3121,826 @@ jobs:
         with:
           name: isol8-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset28.outputs.asset-hash }}.json
+            needs.Assets-FileAsset41.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-agent-mail-outbound-Deploy:
+    name: Deploy prodlightbulbprodagentmailoutbound11CBAE48
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset42
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-agent-mail-outbound
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset42.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-api-Deploy:
+    name: Deploy prodlightbulbprodapiE47660F7
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset43
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-api
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset43.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-auth-Deploy:
+    name: Deploy prodlightbulbprodauth56599002
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset44
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-auth
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset44.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-bedrock-gate-Deploy:
+    name: Deploy prodlightbulbprodbedrockgate9916A3A6
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset45
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-bedrock-gate
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset45.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-bedrock-meter-Deploy:
+    name: Deploy prodlightbulbprodbedrockmeter78E13E6A
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset46
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-bedrock-meter
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset46.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-container-Deploy:
+    name: Deploy prodlightbulbprodcontainer8E71224D
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset47
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-container
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset47.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-database-Deploy:
+    name: Deploy prodlightbulbproddatabase10822FFE
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset48
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-database
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset48.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-dns-Deploy:
+    name: Deploy prodlightbulbproddnsFE00819F
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset49
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-dns
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset49.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-network-Deploy:
+    name: Deploy prodlightbulbprodnetworkE2A7D626
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset50
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-network
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset50.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-observability-Deploy:
+    name: Deploy prodlightbulbprodobservabilityC9356335
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset51
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-observability
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset51.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-paperclip-Deploy:
+    name: Deploy prodlightbulbprodpaperclipB0F082D5
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset52
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-paperclip
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset52.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-service-Deploy:
+    name: Deploy prodlightbulbprodservice9526E726
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset53
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-service
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset53.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-ses-inbound-Deploy:
+    name: Deploy prodlightbulbprodsesinbound545D542B
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset54
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
+      - dev-isol8-dev-agent-mail-outbound-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-paperclip-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-isol8-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-ses-inbound
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset54.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1872,10 +3952,23 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset29
+      - Assets-FileAsset55
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1911,7 +4004,7 @@ jobs:
         with:
           name: isol8-prod-agent-mail-outbound
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset29.outputs.asset-hash }}.json
+            needs.Assets-FileAsset55.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1923,11 +4016,24 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset30
-      - Assets-FileAsset7
+      - Assets-FileAsset56
+      - Assets-FileAsset20
       - prod-isol8-prod-dns-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -1963,7 +4069,7 @@ jobs:
         with:
           name: isol8-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset30.outputs.asset-hash }}.json
+            needs.Assets-FileAsset56.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1975,14 +4081,27 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset31
-      - Assets-FileAsset32
-      - Assets-FileAsset33
+      - Assets-FileAsset57
+      - Assets-FileAsset58
+      - Assets-FileAsset59
       - Assets-FileAsset2
-      - Assets-FileAsset15
+      - Assets-FileAsset28
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2018,7 +4137,7 @@ jobs:
         with:
           name: isol8-prod-ses-inbound
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset31.outputs.asset-hash }}.json
+            needs.Assets-FileAsset57.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2030,17 +4149,30 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset34
-      - Assets-FileAsset9
+      - Assets-FileAsset60
+      - Assets-FileAsset22
       - Assets-FileAsset2
-      - Assets-FileAsset10
-      - Assets-FileAsset11
-      - Assets-FileAsset12
+      - Assets-FileAsset23
+      - Assets-FileAsset24
+      - Assets-FileAsset25
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2076,7 +4208,7 @@ jobs:
         with:
           name: isol8-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset34.outputs.asset-hash }}.json
+            needs.Assets-FileAsset60.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2088,12 +4220,25 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset35
-      - Assets-FileAsset15
+      - Assets-FileAsset61
+      - Assets-FileAsset28
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2129,7 +4274,7 @@ jobs:
         with:
           name: isol8-prod-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset35.outputs.asset-hash }}.json
+            needs.Assets-FileAsset61.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2141,11 +4286,24 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset36
+      - Assets-FileAsset62
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2181,7 +4339,7 @@ jobs:
         with:
           name: isol8-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset36.outputs.asset-hash }}.json
+            needs.Assets-FileAsset62.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2193,13 +4351,26 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset37
+      - Assets-FileAsset63
       - prod-isol8-prod-database-Deploy
       - prod-isol8-prod-auth-Deploy
       - prod-isol8-prod-container-Deploy
       - prod-isol8-prod-network-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2235,7 +4406,7 @@ jobs:
         with:
           name: isol8-prod-paperclip
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset37.outputs.asset-hash }}.json
+            needs.Assets-FileAsset63.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2247,10 +4418,10 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset38
-      - Assets-FileAsset19
-      - Assets-FileAsset20
-      - Assets-FileAsset21
+      - Assets-FileAsset64
+      - Assets-FileAsset32
+      - Assets-FileAsset33
+      - Assets-FileAsset34
       - Assets-DockerAsset1
       - prod-isol8-prod-agent-mail-outbound-Deploy
       - prod-isol8-prod-database-Deploy
@@ -2260,6 +4431,19 @@ jobs:
       - prod-isol8-prod-api-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2295,7 +4479,7 @@ jobs:
         with:
           name: isol8-prod-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset38.outputs.asset-hash }}.json
+            needs.Assets-FileAsset64.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2307,7 +4491,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset39
+      - Assets-FileAsset65
       - prod-isol8-prod-database-Deploy
       - prod-isol8-prod-paperclip-Deploy
       - prod-isol8-prod-network-Deploy
@@ -2316,6 +4500,19 @@ jobs:
       - prod-isol8-prod-service-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2351,7 +4548,7 @@ jobs:
         with:
           name: isol8-prod-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset39.outputs.asset-hash }}.json
+            needs.Assets-FileAsset65.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2365,6 +4562,19 @@ jobs:
       - prod-isol8-prod-bedrock-gate-Deploy
       - prod-isol8-prod-bedrock-meter-Deploy
       - prod-isol8-prod-dns-Deploy
+      - prod-lightbulb-prod-agent-mail-outbound-Deploy
+      - prod-lightbulb-prod-api-Deploy
+      - prod-lightbulb-prod-auth-Deploy
+      - prod-lightbulb-prod-bedrock-gate-Deploy
+      - prod-lightbulb-prod-bedrock-meter-Deploy
+      - prod-lightbulb-prod-container-Deploy
+      - prod-lightbulb-prod-database-Deploy
+      - prod-lightbulb-prod-dns-Deploy
+      - prod-lightbulb-prod-network-Deploy
+      - prod-lightbulb-prod-observability-Deploy
+      - prod-lightbulb-prod-paperclip-Deploy
+      - prod-lightbulb-prod-service-Deploy
+      - prod-lightbulb-prod-ses-inbound-Deploy
       - prod-isol8-prod-agent-mail-outbound-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-ses-inbound-Deploy
@@ -2377,6 +4587,19 @@ jobs:
       - Build-Synth
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
@@ -2461,6 +4684,19 @@ jobs:
       - prod-isol8-prod-bedrock-gate-Deploy
       - prod-isol8-prod-bedrock-meter-Deploy
       - prod-isol8-prod-dns-Deploy
+      - prod-lightbulb-prod-agent-mail-outbound-Deploy
+      - prod-lightbulb-prod-api-Deploy
+      - prod-lightbulb-prod-auth-Deploy
+      - prod-lightbulb-prod-bedrock-gate-Deploy
+      - prod-lightbulb-prod-bedrock-meter-Deploy
+      - prod-lightbulb-prod-container-Deploy
+      - prod-lightbulb-prod-database-Deploy
+      - prod-lightbulb-prod-dns-Deploy
+      - prod-lightbulb-prod-network-Deploy
+      - prod-lightbulb-prod-observability-Deploy
+      - prod-lightbulb-prod-paperclip-Deploy
+      - prod-lightbulb-prod-service-Deploy
+      - prod-lightbulb-prod-ses-inbound-Deploy
       - prod-isol8-prod-agent-mail-outbound-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-ses-inbound-Deploy
@@ -2473,6 +4709,19 @@ jobs:
       - Build-Synth
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-bedrock-gate-Deploy
+      - dev-lightbulb-dev-bedrock-meter-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-lightbulb-dev-paperclip-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-ses-inbound-Deploy
       - dev-isol8-dev-agent-mail-outbound-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy

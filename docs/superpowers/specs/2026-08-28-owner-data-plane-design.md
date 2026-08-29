@@ -48,16 +48,11 @@ marketplace payouts; Connect webhook secret + `account.updated` handler in
 `routers/marketplace_purchases.py`). Two doors, one code path:
 
 - **Create**: **Accounts v2** — `POST /v2/core/accounts` with the `merchant`
-  configuration (`card_payments` requested) **and the `developer`
-  configuration requesting the `projects` capability** (the Provisioning
-  API's onboarding path; OPEN with Stripe whether both configurations coexist
-  on one `dashboard: full` account — their example uses `dashboard: none` —
-  see §8), `dashboard: full`, and
+  configuration (`card_payments` requested), `dashboard: full`, and
   `defaults.responsibilities = {fees_collector: stripe, losses_collector:
   stripe}`; prefilled from the company name and the owner's Clerk email;
   hosted onboarding via v2 account links (`use_case.type =
-  account_onboarding`, `configurations: [merchant, developer]` pending §8;
-  single-use, ~10-minute
+  account_onboarding`, `configurations: [merchant]`; single-use, ~10-minute
   TTL, minted on click, never stored or emailed). Decided 2026-08-28: v2 is GA
   for all Stripe users (dahlia, 2026-04-22), our dev platform already serves
   `/v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient.v2.core`.
@@ -84,8 +79,13 @@ Stripe Projects hangs providers off (`Stripe-Context: acct_…`); the billing
 profile with per-provider spend limits. Whether an account can provision is
 `GET /v2/provisioning/eligibility` — `is_eligible` plus `requirements` such as
 `representative.name`, `representative.dob`, `tos.stripe` — resolved through
-hosted onboarding (or `POST /v2/provisioning/kyc`); `contact_email` alone never
-satisfies it, and a return to our `return_url` proves nothing.
+the merchant hosted onboarding (or `POST /v2/provisioning/kyc`);
+`contact_email` alone never satisfies it, and a return to our `return_url`
+proves nothing. **Verified 2026-08-29 in live mode:** an existing Express
+account of ours with no special configuration already answers `is_eligible:
+true, requirements: []`, so the `developer` configuration Stripe's guide
+recommends is not a precondition — and it is not enabled for our platform in
+any API version anyway. We do not use it.
 
 **When it appears: a Friday-raised approval card, never a gate before chat.**
 Friday raises it the first time a task needs money or infrastructure (or in
@@ -163,10 +163,11 @@ snapshot on the workflow row. Stripe's "Provisioning workflow" = a
    payment profile → **payment card**: `POST /payment_method_requests` with
    only `usage_limits` (the owner's own card, collected on Stripe's hosted
    page — the `checkout_session_url` is opened from the card and never stored),
-   then poll `GET /payment_profile`. *Fallback if Stripe says hosted collection
-   is unavailable in platform context:* `payment_method_owner=platform` with
-   the owner's subscription PaymentMethod as `source_*` and the same limits,
-   passed through at cost on their Lightbulb invoice.
+   then poll `GET /payment_profile`. **Verified 2026-08-29:** this works under
+   `Stripe-Context` (`checkout_initiated` + a `checkout.stripe.com` URL);
+   `usage_limits.max_amount` is sent as a string. The platform-owned-source
+   variant (`payment_method_owner=platform`, our Customer/PaymentMethod,
+   pass-through billing) is the documented alternative we do not build.
 3. **Connect the provider** (`connecting_provider`). `GET
    /provider_connections`; none `active` → `POST /account_requests {provider,
    project_id}`. `pending_auth` → **Connect <Provider>** card whose button
@@ -223,11 +224,18 @@ resource completes, an offer to OAuth-connect *that* provider account (the
 `provider_account_details` e-mail) so reads work (§4.2 — PostHog is the case:
 Projects gives the site's write token, HogQL reads still need OAuth).
 
-Verified 2026-08-28 with our dev platform key: `posthog/analytics` is free
-tier (config `region` + `organization_name`); providers include Cloudflare,
-Vercel, Supabase, Neon, Clerk, PostHog, Twilio, Resend, AgentMail,
-Squarespace/Spaceship/WordPress.com (domains), Sentry, E2B. Paid *test*
-provisioning is cohort-gated — free resources only until Stripe confirms.
+Verified 2026-08-28/29: `posthog/analytics` is free tier (config `region` +
+`organization_name`); providers include Cloudflare, Vercel, Supabase, Neon,
+Clerk, PostHog, Twilio, Resend, AgentMail, Squarespace/Spaceship/
+WordPress.com (domains), Sentry, E2B; our **prod platform is enrolled**
+(live `eligibility`, `catalog`, `provider_connections` answer under
+`Stripe-Context`). The API **refuses legacy test mode**
+(`v2_api_not_supported_in_testmode`) — dev verification needs a Stripe
+**Sandbox** key; whether a sandbox inherits the platform's enrollment is
+checked first. Live `features` and `identity` returned 500 during the probe:
+the workflow never depends on them, and a Stripe 5xx is transient — reads
+retry, state-changing POSTs never do. Paid *test* provisioning is cohort-gated
+— free resources only until Stripe confirms.
 
 ### 3.3 Rails Projects does not reach
 
@@ -482,8 +490,10 @@ Review (Ads).
 
 ## 7. Owner actions (outside the repo)
 
-Accept Stripe's shared Slack channel (offered 2026-08-28) and put §8 6–8 to
-them · open a bundle.social Business
+Create a Stripe **Sandbox** for dev (Dashboard → Sandboxes; then dev's
+Stripe secrets, prices, webhooks and Connect settings move to it) · Stripe's
+shared Slack channel only for §8 8 if a sandbox turns out not to be enrolled ·
+open a bundle.social Business
 account (confirm whether X needs our own app keys) · doola partner
 conversation (organizer semantics, compliance API, iFrame tier) · PostHog
 partner registration if the Provisioning API is used for owners without
@@ -499,14 +509,14 @@ Projects · decide Route 53 vs Projects registrars (P4).
    via Metronome.
 4. Per-agent phone numbers vs one per company.
 5. User/Aden asks: not yet checked against this design — collect and diff.
-6. Stripe: can one Accounts v2 account carry both the `merchant` and
-   `developer` configurations with `dashboard: full`, and can a
-   connect-existing Standard account be given the `projects` capability?
-7. Stripe: is hosted payment collection (owner's own card, no `source_*`)
-   available under `Stripe-Context`, or is `payment_method_owner=platform`
-   the only path in the preview cohort?
-8. Stripe: which operations does a Project ephemeral key authenticate — and
-   is the paid *test* cohort enabled for our platform?
+6. ~~Developer configuration~~ — resolved 2026-08-29: not enabled for our
+   platform and not required (§3.1). Connect-existing Standard accounts:
+   eligibility is per account; check `GET /eligibility` at request time.
+7. ~~Hosted collection under `Stripe-Context`~~ — resolved 2026-08-29: works
+   (§3.2 step 2).
+8. Stripe: which operations does a Project ephemeral key authenticate; is the
+   paid *test* cohort enabled for our platform; does a Sandbox inherit the
+   platform's preview enrollment? (Ask only if the sandbox probe fails.)
 
 ## 9. Non-goals
 

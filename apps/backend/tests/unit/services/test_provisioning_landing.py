@@ -43,7 +43,10 @@ async def test_land_writes_secrets_manager_then_the_row_then_the_container():
             owner_id="org_a", resource=RES, env={"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_live_abc"}
         )
     assert order == ["sm", "row", "cfg"]
-    sm_put.assert_awaited_once_with("org_a", "posthog", {"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_live_abc"})
+    # NAMESPACED secret key: the bare (owner, "posthog") blob belongs to the
+    # OAuth rail. The repo call keeps the BARE provider — it namespaces the
+    # sort key itself.
+    sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_live_abc"})
     assert record.await_args.args[:2] == ("org_a", "posthog")
     assert record.await_args.args[2]["resource_id"] == "res_1"
     patch_cfg.assert_awaited_once_with("org_a", ["env", "vars", "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"], "phc_live_abc")
@@ -64,20 +67,19 @@ async def test_land_merges_new_env_with_what_the_provider_already_had():
 
 
 @pytest.mark.asyncio
-async def test_land_merges_the_blob_verbatim_including_non_string_oauth_fields():
-    """The (owner, provider) blob is SHARED with the OAuth rail — `stripe` and
-    `posthog` are registry providers too. Type-filtering the merge would drop
-    `expires_in: int | None` and break the store's documented round-trip."""
-    oauth_blob = {"access_token": "t", "expires_in": 3600, "meta": None}
+async def test_land_merges_the_blob_verbatim_including_non_string_fields():
+    """Merged with no type filter: the store documents a round-trip of the exact
+    dict, so a filter would silently drop any non-string field a landing adds."""
+    blob = {"a_token": "t", "expires_in": 3600, "meta": None}
     with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=oauth_blob)),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=blob)),
         patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
         patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock(return_value=[])),
         patch.object(mod.config_patcher, "set_openclaw_config_path", AsyncMock()),
     ):
         await mod.land_credentials(owner_id="org_a", resource=RES, env={"X": "1"})
     assert sm_put.await_args.args[2] == {
-        "access_token": "t",
+        "a_token": "t",
         "expires_in": 3600,
         "meta": None,
         "X": "1",
@@ -126,14 +128,14 @@ REVOKE_RES = {"resource_id": "res_1", "provider": "posthog", "env_keys": ["K"]}
 
 @pytest.mark.asyncio
 async def test_revoke_drops_only_the_landed_keys_then_config_then_the_pointer():
-    """The (owner, provider) blob is SHARED with the OAuth rail, so revoke must
-    drop only the keys THIS resource landed, never the whole blob — and the
-    pointer removal happens LAST so a retry after a config failure can still
-    find the keys."""
+    """Revoke drops only the keys THIS resource landed, never the whole blob
+    (one provider's blob holds every resource it landed) — and the pointer
+    removal happens LAST so a retry after a config failure can still find the
+    keys. The secret is addressed by the NAMESPACED key."""
     order: list[str] = []
     with (
         patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"access_token": "t", "K": "p"})),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"OTHER": "t", "K": "p"})),
         patch.object(
             mod.integration_secret_store, "put", AsyncMock(side_effect=lambda *a, **k: order.append("put"))
         ) as sm_put,
@@ -151,7 +153,7 @@ async def test_revoke_drops_only_the_landed_keys_then_config_then_the_pointer():
     ):
         result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
     assert result is True
-    sm_put.assert_awaited_once_with("org_a", "posthog", {"access_token": "t"})
+    sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"OTHER": "t"})
     sm_del.assert_not_awaited()
     del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "K"])
     drop.assert_awaited_once_with("org_a", "posthog", "res_1")
@@ -171,7 +173,28 @@ async def test_revoke_deletes_the_secret_when_nothing_is_left():
         result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
     assert result is True
     sm_put.assert_not_awaited()
-    sm_del.assert_awaited_once_with("org_a", "posthog")
+    sm_del.assert_awaited_once_with("org_a", "projects/posthog")
+
+
+@pytest.mark.asyncio
+async def test_revoke_keeps_an_env_name_a_sibling_resource_still_declares():
+    """Two resources of the same provider can land the same variable name.
+    Revoking one must not strip a name the other still declares — neither from
+    the blob nor from the container."""
+    a = {"resource_id": "res_a", "provider": "posthog", "env_keys": ["K", "ONLY_A"]}
+    b = {"resource_id": "res_b", "provider": "posthog", "env_keys": ["K"]}
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[a, b])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"K": "shared", "ONLY_A": "x"})),
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()) as del_cfg,
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])),
+    ):
+        assert await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_a") is True
+    sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"K": "shared"})
+    sm_del.assert_not_awaited()
+    del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "ONLY_A"])
 
 
 @pytest.mark.asyncio
@@ -247,20 +270,21 @@ async def test_revoke_swallows_a_missing_container_config():
     ):
         result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
     assert result is True
-    sm_del.assert_awaited_once_with("org_a", "posthog")
+    sm_del.assert_awaited_once_with("org_a", "projects/posthog")
     drop.assert_awaited_once_with("org_a", "posthog", "res_1")
 
 
 @pytest.mark.asyncio
-async def test_build_provisioned_env_reads_only_rows_with_the_projects_actor():
-    # Every row carries env_keys so that the ACTOR and STATUS filters are what
+async def test_build_provisioned_env_reads_only_namespaced_rows_with_the_projects_actor():
+    # Every row carries env_keys so that the PREFIX and ACTOR filters are what
     # exclude the last two — not an incidentally empty key list.
     keys = [{"resource_id": "r", "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]}]
     rows = [
-        {"provider": "posthog", "actor": "projects", "status": "connected", "provider_resources": keys},
-        # a normal integration, not ours
-        {"provider": "linear", "status": "connected", "provider_resources": keys},
-        {"provider": "vercel", "actor": "projects", "status": "disconnected", "provider_resources": keys},
+        {"provider": "projects/posthog", "actor": "projects", "provider_resources": keys},
+        # the OAuth rail's own row for the SAME provider — bare key, never ours
+        {"provider": "posthog", "provider_resources": keys},
+        # actor stamped but not namespaced: still not ours
+        {"provider": "vercel", "actor": "projects", "provider_resources": keys},
     ]
     with (
         patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)),
@@ -270,26 +294,24 @@ async def test_build_provisioned_env_reads_only_rows_with_the_projects_actor():
     ):
         env = await mod.build_provisioned_env("org_a")
     assert env == {"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc"}
-    assert sm_get.await_count == 1
+    # Read from the NAMESPACED blob, never the OAuth one.
+    sm_get.assert_awaited_once_with("org_a", "projects/posthog")
 
 
 @pytest.mark.asyncio
 async def test_build_provisioned_env_injects_only_the_names_the_row_declares():
-    """The blob is shared with the OAuth rail, so injecting all of it would put
-    access_token / refresh_token / client_secret into openclaw.json for any
-    provider connected on both rails."""
+    """openclaw.json gets exactly the variables the CLI landed — nothing else in
+    the blob leaks into the container's environment."""
     rows = [
         {
-            "provider": "posthog",
+            "provider": "projects/posthog",
             "actor": "projects",
-            "status": "connected",
             "provider_resources": [RES],
         }
     ]
     blob = {
         "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc",
-        "access_token": "oauth_secret",
-        "refresh_token": "oauth_refresh",
+        "some_other_field": "not_an_env_var",
     }
     with (
         patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)),
@@ -308,13 +330,16 @@ async def test_build_provisioned_env_never_fails_the_caller():
 @pytest.mark.asyncio
 async def test_summary_pairs_state_with_pointers():
     rows = [
-        {"provider": "posthog", "actor": "projects", "provider_resources": [RES]},
+        {"provider": "projects/posthog", "actor": "projects", "provider_resources": [RES]},
         {"provider": "linear"},
     ]
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)):
         state, resources = await mod.provisioning_summary("org_a")
     assert state == "paired"
     assert [r["resource_id"] for r in resources] == ["res_1"]
+    # The POINTER carries the bare provider — that is what /resources renders
+    # and what the revoke route takes back.
+    assert [r["provider"] for r in resources] == ["posthog"]
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "linear"}])):
         assert await mod.provisioning_summary("org_a") == ("unpaired", [])
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(side_effect=RuntimeError("ddb down"))):

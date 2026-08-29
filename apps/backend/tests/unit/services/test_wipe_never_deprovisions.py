@@ -13,8 +13,14 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.config import settings  # noqa: E402
 from core.services import account_wipe, entitlement_teardown, owner_secret_sweep  # noqa: E402
 from core.services.account_wipe import wipe_account  # noqa: E402
+from core.repositories import integrations_repo  # noqa: E402
 from core.services.company_stripe import deauthorize as real_company_stripe_deauthorize  # noqa: E402
+from core.services.credentials import integration_secret_store  # noqa: E402
 from tests.unit.services.test_account_wipe import OWNER_ID, wipe_mocks  # noqa: E402, F401
+
+# What this rail's blob is actually NAMED, computed the same way the writer
+# computes it — not a literal that could drift from the namespace helper.
+_PROJECTS_SECRET_NAME = integration_secret_store._secret_name(OWNER_ID, integrations_repo.projects_key("posthog"))
 
 
 # Tokenized so a future rewrite as ``["projects", "remove"]`` (the list form
@@ -47,6 +53,18 @@ def test_wipe_still_deletes_our_own_copies():
     assert "integrations_repo.delete_all_for_owner" in source
 
 
+def test_the_secret_sweep_prefix_covers_the_namespaced_projects_blob():
+    """The wipe does NOT enumerate providers — ``delete_owner_secrets`` lists
+    Secrets Manager by owner PREFIX. So the `projects/{provider}` namespace is
+    swept for free, exactly like ``oauth_app_store``'s `oauth-app/{provider}`,
+    and needs no prefix handling of its own. This is the assertion that fails
+    if either the namespace or the sweep prefix ever moves apart."""
+    prefixes = owner_secret_sweep.owner_secret_prefixes(OWNER_ID)
+    assert any(_PROJECTS_SECRET_NAME.startswith(prefix) for prefix in prefixes), (
+        f"{_PROJECTS_SECRET_NAME} is under none of {prefixes}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks):  # noqa: F811
     """Behavioural half of the two guards above: run the REAL ``wipe_account``
@@ -70,8 +88,8 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     # This return value simulates the owner's one Stripe-Projects-actor row --
     # `provider_resources`-shaped per `provisioning_landing.land_credentials`
     # -- being what got deleted.
-    wipe_mocks.integrations_delete.return_value = ["stripe"]
-    wipe_mocks.owner_secrets_delete.return_value = [f"lightbulb/dev/integrations/{OWNER_ID}/stripe"]
+    wipe_mocks.integrations_delete.return_value = [integrations_repo.projects_key("posthog")]
+    wipe_mocks.owner_secrets_delete.return_value = [_PROJECTS_SECRET_NAME]
     # Escape wipe_mocks' default full stub for just this one collaborator so
     # the real function body runs and can be caught reaching for more than
     # the P0a deauthorize.
@@ -89,9 +107,15 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
 
     assert all(s.status == "ok" for s in report.steps), report.steps
 
-    # Our copies go.
+    # Our copies go — including the rail's NAMESPACED row and blob, which ride
+    # the same two wholesale calls (row: `delete_all_for_owner` deletes each
+    # listed `row["provider"]`, so `projects/posthog` flows through; secret:
+    # the owner-prefix sweep, see the test above).
     wipe_mocks.owner_secrets_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.integrations_delete.assert_awaited_once_with(OWNER_ID)
+    details = {s.system: s.detail for s in report.steps}
+    assert integrations_repo.projects_key("posthog") in details["integrations"]
+    assert "1 owner secret(s)" in details["owner_secrets"]
 
     # The provider is never reached: no CLI revoke, no shell-out, and the
     # ONLY Stripe SDK call made anywhere in the wipe is the P0a Connect

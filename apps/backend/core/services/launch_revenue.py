@@ -22,7 +22,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import launch_entries_repo
 from core.secrets_manager import create_or_update_secret
-from core.services import launch_phase
+from core.services import key_service, launch_phase
 from core.services.launch_phase import Schedule
 
 logger = logging.getLogger(__name__)
@@ -100,8 +100,7 @@ async def sum_net_revenue(key: str, start: datetime, end: datetime) -> tuple[int
 
 
 def secret_name(owner_id: str) -> str:
-    env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/user-keys/{owner_id}/stripe-launch"
+    return key_service._secret_name(owner_id, "stripe-launch")
 
 
 def _sm():

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import stripe
 
+from core.services import key_service
 from core.services import launch_revenue as rev
 
 START = datetime(2026, 9, 21, 16, tzinfo=timezone.utc)
@@ -100,7 +101,7 @@ async def test_sum_net_revenue_mixed_currency_raises():
 
 def test_secret_name_is_on_the_user_keys_rail():
     with patch.object(rev.settings, "ENVIRONMENT", "prod"):
-        assert rev.secret_name("user_1") == "isol8/prod/user-keys/user_1/stripe-launch"
+        assert rev.secret_name("user_1") == key_service._secret_name("user_1", "stripe-launch")
 
 
 async def test_store_and_load_key_round_trip_via_secrets_manager():

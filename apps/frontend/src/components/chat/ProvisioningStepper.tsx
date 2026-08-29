@@ -759,6 +759,7 @@ export function ProvisioningStepper({
   // suppressed so the user isn't shown a form they already answered.
   const { replaying: briefReplaying, orgDraftVersion } = useLandingBriefReplay({
     gatePhase,
+    blockedCode: blocked?.code ?? null,
     awaitingBrief,
     isTerminalError,
   });

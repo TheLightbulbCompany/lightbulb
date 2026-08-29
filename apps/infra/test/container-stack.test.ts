@@ -202,7 +202,7 @@ describe("ContainerStack — dev", () => {
               Array.isArray(resources) &&
               resources.length === 3 &&
               resources.some(
-                (res) => typeof res === "string" && res.includes(":secret:isol8/dev/user-keys/*"),
+                (res) => typeof res === "string" && res.includes(":secret:lightbulb/dev/user-keys/*"),
               ) &&
               resources.some(
                 (res) =>

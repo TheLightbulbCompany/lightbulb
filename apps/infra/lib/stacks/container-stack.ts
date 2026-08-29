@@ -229,7 +229,7 @@ export class ContainerStack extends cdk.Stack {
         sid: "PerUserTaskSecrets",
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${props.environment}/user-keys/*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/user-keys/*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.gogKeyringPasswordSecretName}*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.cloudflareWarpEnrollmentSecretName}*`,
         ],

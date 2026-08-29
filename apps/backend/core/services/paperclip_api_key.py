@@ -21,7 +21,7 @@ Two design points worth knowing:
    ``write_user_configs`` run without any operator intervention.
 
 Storage: AWS Secrets Manager at
-``isol8/<env>/paperclip-agent-keys/<owner>/<paperclip_agent_id>``. The owner_id
+``lightbulb/<env>/paperclip-agent-keys/<owner>/<paperclip_agent_id>``. The owner_id
 is the container owner (Clerk user_id for personal, org_id for orgs). These keys
 are re-mintable, so a reprovision (or the clean-slate reset) recovers them.
 There is no per-agent index, so the Admin Account-Wipe teardown enumerates
@@ -56,22 +56,22 @@ logger = logging.getLogger(__name__)
 def _secret_name(owner_id: str, paperclip_agent_id: str) -> str:
     """Secrets Manager name for the per-agent Paperclip key. Must match the
     resource scope granted to the backend task role in ``service-stack.ts``
-    (``isol8/<env>/paperclip-agent-keys/*``)."""
+    (``lightbulb/<env>/paperclip-agent-keys/*``)."""
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/paperclip-agent-keys/{owner_id}/{paperclip_agent_id}"
+    return f"lightbulb/{env}/paperclip-agent-keys/{owner_id}/{paperclip_agent_id}"
 
 
 def _owner_prefix(owner_id: str) -> str:
     """Secrets Manager name prefix covering ALL of an owner's per-agent keys."""
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/paperclip-agent-keys/{owner_id}/"
+    return f"lightbulb/{env}/paperclip-agent-keys/{owner_id}/"
 
 
 async def list_owner_agent_key_secret_names(owner_id: str) -> list[str]:
     """Every per-agent Paperclip key secret name for an owner.
 
     There is no per-agent index (see module docstring), so we enumerate by the
-    Secrets Manager name prefix ``isol8/<env>/paperclip-agent-keys/<owner>/``.
+    Secrets Manager name prefix ``lightbulb/<env>/paperclip-agent-keys/<owner>/``.
     Read-only — drives the Admin Account-Wipe preview.
     """
     prefix = _owner_prefix(owner_id)

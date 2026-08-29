@@ -573,6 +573,14 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:DescribeSecret",
         ],
         resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/*`,
+          // The STATIC secrets (clerk_*, stripe_*, encryption_key, …) are
+          // CloudFormation-owned and still on the old prefix: `secretName` is a
+          // replacement property, so moving them would have CFN destroy each
+          // secret and create a new one with a GENERATED value — over the live
+          // Fernet, Clerk and Stripe keys. They move by their own import-based
+          // migration, not by editing this line. Until then this grant must
+          // span both prefixes or the execution role cannot read them at all.
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/*`,
         ],
       }),
@@ -596,7 +604,7 @@ export class ServiceStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ["secretsmanager:PutSecretValue"],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip_admin_credentials-*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip_admin_credentials-*`,
         ],
       }),
     );
@@ -660,7 +668,7 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:DescribeSecret",
         ],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/user-keys/*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/user-keys/*`,
         ],
       }),
     );
@@ -682,7 +690,7 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:DescribeSecret",
         ],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/integrations/*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/integrations/*`,
         ],
       }),
     );
@@ -704,7 +712,7 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:DescribeSecret",
         ],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip-agent-keys/*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip-agent-keys/*`,
         ],
       }),
     );
@@ -1270,6 +1278,14 @@ export class ServiceStack extends cdk.Stack {
         sid: "SecretsManagerForEcs",
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/*`,
+          // The STATIC secrets (clerk_*, stripe_*, encryption_key, …) are
+          // CloudFormation-owned and still on the old prefix: `secretName` is a
+          // replacement property, so moving them would have CFN destroy each
+          // secret and create a new one with a GENERATED value — over the live
+          // Fernet, Clerk and Stripe keys. They move by their own import-based
+          // migration, not by editing this line. Until then this grant must
+          // span both prefixes or the execution role cannot read them at all.
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/*`,
         ],
       }),

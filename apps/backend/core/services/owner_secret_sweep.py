@@ -8,9 +8,9 @@ tokens are still recoverable from Secrets Manager is not wiped.
 Both live under owner-scoped path prefixes, which is what makes a sweep
 possible without enumerating providers:
 
-    isol8/{env}/user-keys/{owner_id}/{provider}              key_service
-    isol8/{env}/integrations/{owner_id}/{provider}           integration_secret_store
-    isol8/{env}/integrations/{owner_id}/oauth-app/{provider} oauth_app_store
+    lightbulb/{env}/user-keys/{owner_id}/{provider}              key_service
+    lightbulb/{env}/integrations/{owner_id}/{provider}           integration_secret_store
+    lightbulb/{env}/integrations/{owner_id}/oauth-app/{provider} oauth_app_store
 
 Listing by prefix rather than iterating a provider registry is deliberate: a
 provider that has since been removed from the registry still has secrets on
@@ -38,8 +38,8 @@ def owner_secret_prefixes(owner_id: str) -> list[str]:
     """Every Secrets Manager name prefix that belongs to this owner."""
     env = settings.ENVIRONMENT or "dev"
     return [
-        f"isol8/{env}/user-keys/{owner_id}/",
-        f"isol8/{env}/integrations/{owner_id}/",
+        f"lightbulb/{env}/user-keys/{owner_id}/",
+        f"lightbulb/{env}/integrations/{owner_id}/",
     ]
 
 

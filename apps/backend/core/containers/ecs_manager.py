@@ -2480,7 +2480,7 @@ class EcsManager:
             # for the service. Either the task is still pulling the image
             # (provisioning) or it died and is being replaced (running →
             # zombie row). Logged so we can correlate against the
-            # /isol8/<env>/ecs-task-events log group to see whether the
+            # /lightbulb/<env>/ecs-task-events log group to see whether the
             # task was stopped, by whom, and why.
             logger.warning(
                 "resolve_running_container ip=None user=%s service=%s ddb_status=%s ddb_substatus=%s last_handshake=%s",
@@ -2572,7 +2572,7 @@ class EcsManager:
         ``{user_id, byo_provider}``) and turns it into a single ``secrets:``
         entry that the per-user task definition references.
         ``service-stack.ts`` already grants the backend
-        ``secretsmanager:GetSecretValue`` for ``isol8/{env}/user-keys/*``, so
+        ``secretsmanager:GetSecretValue`` for ``lightbulb/{env}/user-keys/*``, so
         the per-user ARN is reachable from the task IAM role.
         """
         if byo_provider not in {"openai", "anthropic"}:

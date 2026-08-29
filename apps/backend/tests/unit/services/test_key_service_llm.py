@@ -67,7 +67,7 @@ def _make_sm_mock(arn: str, *, present: bool = True) -> MagicMock:
 @pytest.mark.asyncio
 async def test_save_openai_llm_key_validates_then_pushes_to_secrets_manager():
     """Valid OpenAI key: validate 200, then push to Secrets Manager."""
-    fake_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:isol8/dev/user-keys/u_1/openai-AbCdEf"
+    fake_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:lightbulb/dev/user-keys/u_1/openai-AbCdEf"
 
     async def fake_get(self, url, **kwargs):  # noqa: ANN001 — httpx signature
         assert "openai.com" in url
@@ -96,7 +96,7 @@ async def test_save_openai_llm_key_validates_then_pushes_to_secrets_manager():
 @pytest.mark.asyncio
 async def test_save_overwrites_existing_secret_value():
     """When the secret already exists, put_secret_value is used (not create)."""
-    fake_arn = "arn:aws:secretsmanager:us-east-1:111:secret:isol8/dev/user-keys/u_ov/openai-X"
+    fake_arn = "arn:aws:secretsmanager:us-east-1:111:secret:lightbulb/dev/user-keys/u_ov/openai-X"
 
     async def fake_get(self, url, **kwargs):  # noqa: ANN001
         return _ok_models_response(httpx.Request("GET", url))
@@ -155,7 +155,7 @@ async def test_save_openai_llm_key_rejects_bad_key():
 @pytest.mark.asyncio
 async def test_save_anthropic_llm_key_validates():
     """Valid Anthropic key: validate via x-api-key header and store in SM."""
-    fake_arn = "arn:aws:secretsmanager:us-east-1:111:secret:isol8/dev/user-keys/u_2/anthropic-Z"
+    fake_arn = "arn:aws:secretsmanager:us-east-1:111:secret:lightbulb/dev/user-keys/u_2/anthropic-Z"
 
     seen_headers: dict[str, str] = {}
 

@@ -81,12 +81,12 @@ def fake_sm(monkeypatch):
 
 def test_secret_name_format(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
-    assert store._secret_name("org_1", "linear") == "isol8/prod/integrations/org_1/linear"
+    assert store._secret_name("org_1", "linear") == "lightbulb/prod/integrations/org_1/linear"
 
 
 def test_secret_name_defaults_to_dev(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "")
-    assert store._secret_name("org_1", "linear") == "isol8/dev/integrations/org_1/linear"
+    assert store._secret_name("org_1", "linear") == "lightbulb/dev/integrations/org_1/linear"
 
 
 @pytest.mark.asyncio

@@ -99,8 +99,14 @@ export class AuthStack extends cdk.Stack {
       // the same deploy that repoints consumers leaves a window where a task
       // restarting on the OLD task definition cannot read its secret (a secret
       // scheduled for deletion fails GetSecretValue immediately).
-      make(`${logicalId}Lightbulb`, "lightbulb");
-      return make(logicalId, "isol8");
+      // STEP 2 of 3 — consumers now take the lightbulb twin. The legacy
+      // construct stays declared for one more deploy: removing it in the SAME
+      // deploy that repoints consumers would leave a window where a task
+      // restarting on the OLD task definition cannot read its secret, because a
+      // secret scheduled for deletion fails GetSecretValue immediately.
+      const legacy = make(logicalId, "isol8");
+      void legacy;
+      return make(`${logicalId}Lightbulb`, "lightbulb");
     };
 
     const encryptionKey = createSecret("EncryptionKey", "encryption_key");

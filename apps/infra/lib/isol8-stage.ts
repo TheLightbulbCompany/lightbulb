@@ -104,7 +104,7 @@ export class Isol8Stage extends cdk.Stage {
         envName: env,
         apiDomain:
           env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
-        sesIngestSecretName: `isol8/${env}/ses_ingest_secret`,
+        sesIngestSecretName: `lightbulb/${env}/ses_ingest_secret`,
       });
       agentMailOutbound.addDependency(auth);
     }
@@ -170,13 +170,13 @@ export class Isol8Stage extends cdk.Stage {
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
       secretNames: {
-        clerkIssuer: `isol8/${env}/clerk_issuer`,
-        clerkSecretKey: `isol8/${env}/clerk_secret_key`,
-        clerkWebhookSecret: `isol8/${env}/clerk_webhook_secret`,
-        stripeSecretKey: `isol8/${env}/stripe_secret_key`,
-        stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
-        encryptionKey: `isol8/${env}/encryption_key`,
-        posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
+        clerkIssuer: `lightbulb/${env}/clerk_issuer`,
+        clerkSecretKey: `lightbulb/${env}/clerk_secret_key`,
+        clerkWebhookSecret: `lightbulb/${env}/clerk_webhook_secret`,
+        stripeSecretKey: `lightbulb/${env}/stripe_secret_key`,
+        stripeWebhookSecret: `lightbulb/${env}/stripe_webhook_secret`,
+        encryptionKey: `lightbulb/${env}/encryption_key`,
+        posthogProjectApiKey: `lightbulb/${env}/posthog_project_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,

@@ -4,7 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError } from "@/lib/notify";
-import { openInNewTab } from "@/components/settings/openInNewTab";
+import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -16,6 +16,7 @@ type CompanyStripeStatus = {
   charges_enabled: boolean;
   payouts_enabled: boolean;
   dashboard_url: string | null;
+  connect_configured: boolean;
 };
 
 const STATUS_PATH = "/company/stripe/status";
@@ -40,7 +41,33 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
     }
   }
 
+  /**
+   * Open the tab SYNCHRONOUSLY (the click is the only moment the browser
+   * lets us), then point it at the URL the API mints. Anything after the
+   * first `await` is outside the user-activation window and Safari refuses.
+   */
+  function openWith(fetchUrl: () => Promise<string>) {
+    const w = openPendingTab();
+    if (!w) {
+      notifyError(POPUP_BLOCKED_MSG);
+      return;
+    }
+    void run(async () => {
+      let url: string;
+      try {
+        url = await fetchUrl();
+      } catch (e) {
+        closePendingTab(w);
+        throw e;
+      }
+      navigatePendingTab(w, url);
+    });
+  }
+
   const bound = Boolean(data?.account_id);
+  // Both OAuth doors 503 without the platform client id, so don't offer the
+  // one that only exists there, and say why the exit is unavailable.
+  const connectConfigured = Boolean(data?.connect_configured);
 
   // The shared client returns `unknown`; narrow at the call site.
   const createLink = async () => (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
@@ -72,28 +99,20 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 type="button"
                 className="settings-btn-save"
                 disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const r = await createLink();
-                    if (!openInNewTab(r.onboarding_url)) notifyError(POPUP_BLOCKED_MSG);
-                  })
-                }
+                onClick={() => openWith(async () => (await createLink()).onboarding_url)}
               >
                 Set up Stripe
               </button>
-              <button
-                type="button"
-                className="settings-btn-outline"
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const r = await connectStart();
-                    if (!openInNewTab(r.authorize_url)) notifyError(POPUP_BLOCKED_MSG);
-                  })
-                }
-              >
-                Connect existing Stripe
-              </button>
+              {connectConfigured && (
+                <button
+                  type="button"
+                  className="settings-btn-outline"
+                  disabled={busy}
+                  onClick={() => openWith(async () => (await connectStart()).authorize_url)}
+                >
+                  Connect existing Stripe
+                </button>
+              )}
             </>
           ) : (
             <p className="text-sm text-[var(--mute)]">A workspace admin sets up Stripe.</p>
@@ -125,12 +144,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 type="button"
                 className="settings-btn-save"
                 disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const r = await onboardingLink();
-                    if (!openInNewTab(r.onboarding_url)) notifyError(POPUP_BLOCKED_MSG);
-                  })
-                }
+                onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
               >
                 Finish onboarding
               </button>
@@ -139,7 +153,8 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
               <button
                 type="button"
                 className="settings-btn-outline"
-                disabled={busy}
+                disabled={busy || !connectConfigured}
+                title={connectConfigured ? undefined : "Not available until Stripe Connect is configured"}
                 onClick={() => run(async () => { await api.post("/company/stripe/disconnect", {}); })}
               >
                 Disconnect

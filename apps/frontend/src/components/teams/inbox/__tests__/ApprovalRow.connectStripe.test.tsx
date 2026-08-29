@@ -16,6 +16,13 @@ const post = vi.fn();
 const get = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 
+// The two-phase tab: opened EMPTY and synchronously in the click handler,
+// then pointed at the URL the API mints (a `window.open` after an `await` is
+// blocked by Safari). `location.href` is where the tab actually lands.
+function fakeTab() {
+  return { opener: undefined, location: { href: "" }, close: vi.fn() };
+}
+
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
 
@@ -38,9 +45,11 @@ beforeEach(() => {
 });
 
 describe("ApprovalRow company_stripe", () => {
-  it("shows Set up Stripe / Connect existing (no Approve); Set up Stripe posts, opens the link, then approves", async () => {
-    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
-    vi.spyOn(window, "open").mockImplementation(() => ({ opener: undefined }) as unknown as Window);
+  it("shows Set up Stripe / Connect existing (no Approve); Set up Stripe posts, navigates the tab, then approves", async () => {
+    let resolvePost: (v: unknown) => void = () => {};
+    post.mockImplementation(() => new Promise((r) => { resolvePost = r; }));
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
     render(<ApprovalRow approval={A} />);
 
     expect(screen.getByText("Connect Stripe: Set up Northwind on Stripe")).toBeInTheDocument();
@@ -50,21 +59,55 @@ describe("ApprovalRow company_stripe", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
 
+    // Synchronously, before the API promise settles.
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+    expect(tab.location.href).toBe("");
+    expect(approve).not.toHaveBeenCalled();
+
+    resolvePost({ onboarding_url: "https://connect.stripe.com/setup/x" });
     await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/create", {}));
-    expect(window.open).toHaveBeenCalledWith("https://connect.stripe.com/setup/x", "_blank");
+    await waitFor(() => expect(tab.location.href).toBe("https://connect.stripe.com/setup/x"));
     await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));
   });
 
-  it("does not approve when the popup is blocked", async () => {
+  it("does not approve — or call the API — when the popup is blocked", async () => {
     post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
     vi.spyOn(window, "open").mockImplementation(() => null);
     render(<ApprovalRow approval={A} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
 
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/create", {}));
     await waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(post).not.toHaveBeenCalled();
     expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("closes the pending tab and does not approve when the API call fails", async () => {
+    post.mockRejectedValue(new Error("409"));
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    render(<ApprovalRow approval={A} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+
+    await waitFor(() => expect(tab.close).toHaveBeenCalled());
+    expect(notifyApiError).toHaveBeenCalled();
+    expect(tab.location.href).toBe("");
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("Connect existing navigates the tab to the authorize URL", async () => {
+    get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    render(<ApprovalRow approval={A} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect existing" }));
+
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/company/stripe/connect/start"));
+    await waitFor(() => expect(tab.location.href).toBe("https://connect.stripe.com/oauth/authorize?x"));
+    await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));
   });
 });
 

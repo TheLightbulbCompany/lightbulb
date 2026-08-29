@@ -6,7 +6,7 @@ import { ShieldQuestion } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError, notifyError } from "@/lib/notify";
 import { useApi } from "@/lib/api";
-import { openInNewTab } from "@/components/settings/openInNewTab";
+import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { approvalLabel, isCompanyStripeApproval } from "@/components/teams/inbox/lib/approvalLabel";
@@ -43,6 +43,31 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     }
   }
 
+  /**
+   * Open the tab SYNCHRONOUSLY (the click is the only moment the browser
+   * lets us), point it at the minted URL, and only then approve the card —
+   * a `window.open` after the `await` is blocked by Safari, and approving a
+   * hand-off the owner never saw is the failure that matters here.
+   */
+  function openThenApprove(fetchUrl: () => Promise<string>) {
+    const w = openPendingTab();
+    if (!w) {
+      notifyError(POPUP_BLOCKED_MSG);
+      return;
+    }
+    void run(async () => {
+      let url: string;
+      try {
+        url = await fetchUrl();
+      } catch (e) {
+        closePendingTab(w);
+        throw e;
+      }
+      navigatePendingTab(w, url);
+      await approve(approval.id);
+    });
+  }
+
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -59,14 +84,11 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   size="sm"
                   disabled={busy}
                   onClick={() =>
-                    run(async () => {
-                      const r = (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
-                      if (!openInNewTab(r.onboarding_url)) {
-                        notifyError(POPUP_BLOCKED_MSG);
-                        return;
-                      }
-                      await approve(approval.id);
-                    })
+                    openThenApprove(
+                      async () =>
+                        ((await api.post("/company/stripe/create", {})) as { onboarding_url: string })
+                          .onboarding_url,
+                    )
                   }
                 >
                   Set up Stripe
@@ -75,14 +97,11 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   size="sm"
                   disabled={busy}
                   onClick={() =>
-                    run(async () => {
-                      const r = (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
-                      if (!openInNewTab(r.authorize_url)) {
-                        notifyError(POPUP_BLOCKED_MSG);
-                        return;
-                      }
-                      await approve(approval.id);
-                    })
+                    openThenApprove(
+                      async () =>
+                        ((await api.get("/company/stripe/connect/start")) as { authorize_url: string })
+                          .authorize_url,
+                    )
                   }
                 >
                   Connect existing

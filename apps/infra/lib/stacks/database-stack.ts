@@ -42,6 +42,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
+  public readonly provisioningWorkflowsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
@@ -302,6 +303,33 @@ export class DatabaseStack extends cdk.Stack {
     this.integrationsTable = createTable("IntegrationsTable", "integrations", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
+    });
+
+    // The provisioning rail's durable workflow record. Stripe's Provisioning
+    // API has no webhooks and no idempotency contract, so a browser session,
+    // provider redirect, backend restart or deploy must never lose an account
+    // request id, a resource id, or an uncertain write (spec §3.5).
+    this.provisioningWorkflowsTable = createTable(
+      "ProvisioningWorkflowsTable",
+      "provisioning-workflows",
+      { partitionKey: { name: "workflow_id", type: dynamodb.AttributeType.STRING } },
+    );
+    // The owner's list, newest first within a state.
+    this.provisioningWorkflowsTable.addGlobalSecondaryIndex({
+      indexName: "owner-state-index",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // SPARSE, on purpose: `sweep_key` is written as "open" while a workflow is
+    // non-terminal and REMOVEd when it reaches a terminal state, so the
+    // startup sweep is one small Query rather than a table Scan, and a
+    // finished workflow costs the index nothing.
+    this.provisioningWorkflowsTable.addGlobalSecondaryIndex({
+      indexName: "open-sweep-index",
+      partitionKey: { name: "sweep_key", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "updated_at", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company

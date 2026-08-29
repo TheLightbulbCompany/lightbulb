@@ -361,3 +361,21 @@ describe("DatabaseStack — billing-accounts table", () => {
     });
   });
 });
+
+describe("DatabaseStack — provisioning-workflows table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("provisioning-workflows table with the owner and open-sweep indexes", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike({
+      TableName: Match.stringLikeRegexp("provisioning-workflows$"),
+      KeySchema: [{ AttributeName: "workflow_id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({ IndexName: "owner-state-index" }),
+        Match.objectLike({ IndexName: "open-sweep-index" }),
+      ]),
+    }));
+  });
+});

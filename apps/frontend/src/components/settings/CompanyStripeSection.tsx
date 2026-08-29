@@ -86,7 +86,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
       </div>
 
       {error && !data && (
-        <p className="text-sm text-[#b63025]">Couldn&apos;t load Stripe status. Refresh to try again.</p>
+        <p className="text-sm text-[var(--err)]">Couldn&apos;t load Stripe status. Refresh to try again.</p>
       )}
 
       {!error && isLoading && <p className="text-sm text-[var(--mute)]">Loading…</p>}
@@ -123,7 +123,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
       {!isLoading && bound && data && (
         <div className="flex flex-col gap-2">
           <dl className="text-sm text-[var(--mute)]">
-            <div className="flex gap-2"><dt>Account</dt><dd className="font-mono text-[#1c1917]">{data.account_id}</dd></div>
+            <div className="flex gap-2"><dt>Account</dt><dd className="font-mono text-[var(--midnight)]">{data.account_id}</dd></div>
             <div className="flex gap-2"><dt>Source</dt><dd>{data.source === "connected" ? "Connected existing account" : "Created by Lightbulb AI"}</dd></div>
             <div className="flex gap-2">
               <dt>Status</dt>

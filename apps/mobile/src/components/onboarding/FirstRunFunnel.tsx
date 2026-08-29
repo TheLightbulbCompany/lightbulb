@@ -394,7 +394,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.lg,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     padding: spacing.md,
     fontFamily: fonts.sans,
     fontSize: 14,

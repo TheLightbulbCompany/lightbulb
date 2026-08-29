@@ -95,11 +95,11 @@ function resolveManageUrl(href: string | null): string {
 function InterstitialGlyph({ pulse }: { pulse: boolean }) {
   const opacity = usePulse(pulse, 0.35);
   if (!pulse) {
-    return <LogoMark size={64} />;
+    return <LogoMark size={48} />;
   }
   return (
     <Animated.View style={{ opacity }}>
-      <LogoMark size={64} />
+      <LogoMark size={48} />
     </Animated.View>
   );
 }

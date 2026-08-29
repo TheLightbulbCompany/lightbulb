@@ -1079,7 +1079,7 @@ function AgentChat() {
                 <Feather
                   name="square"
                   size={14}
-                  color={!gateway.isConnected ? colors.placeholder : colors.white}
+                  color={colors.white}
                 />
               </Pressable>
             ) : (
@@ -1099,7 +1099,7 @@ function AgentChat() {
                   <Feather
                     name="arrow-up"
                     size={16}
-                    color={!hasDraft ? colors.placeholder : colors.white}
+                    color={colors.white}
                   />
                 )}
               </Pressable>
@@ -1254,7 +1254,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  sendDisabled: { backgroundColor: colors.creamPressed },
+  sendDisabled: { opacity: 0.5 },
 
   // Oversize-rejection banner (web sizeError row): danger-tinted, dismissible.
   sizeErrorRow: {

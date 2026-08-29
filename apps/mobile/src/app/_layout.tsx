@@ -3,7 +3,6 @@ import {
   Lora_400Regular,
   Lora_400Regular_Italic,
   Lora_500Medium,
-  Lora_700Bold,
   Lora_700Bold_Italic,
 } from "@expo-google-fonts/lora";
 import {
@@ -37,7 +36,6 @@ export default function RootLayout() {
     Lora_400Regular,
     Lora_400Regular_Italic,
     Lora_500Medium,
-    Lora_700Bold,
     Lora_700Bold_Italic,
   });
   // On font-load failure we still proceed — unknown fontFamily names fall

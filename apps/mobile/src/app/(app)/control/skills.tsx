@@ -119,17 +119,20 @@ const STATE_META: Record<
     text: colors.tool.running.text,
     border: colors.tool.running.border,
   },
+  // Available and unsupported are both neutral — mute is not a state — so they
+  // separate by surface step and ink, not by hue: available reads at full
+  // strength on the deeper step, unsupported recedes to `mute` on the lighter one.
   available: {
     label: "Available",
-    bg: colors.forestTint,
-    text: colors.forest,
-    border: colors.edgeForest,
+    bg: colors.creamDeepest,
+    text: colors.ink,
+    border: colors.edge,
   },
   unsupported: {
     label: "Desktop only",
-    bg: colors.tool.done.bg,
-    text: colors.tool.done.text,
-    border: colors.tool.done.border,
+    bg: colors.creamDeeper,
+    text: colors.mute,
+    border: colors.edge,
   },
 };
 
@@ -298,7 +301,7 @@ export default function SkillsPanel() {
             </View>
           ) : (
             <View style={styles.emptyWrap}>
-              <LogoMark size={64} />
+              <LogoMark size={48} />
               <Text style={styles.dim}>No skills found.</Text>
             </View>
           )

@@ -170,7 +170,7 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
   content: { padding: spacing.xl, gap: spacing.lg },
-  title: { ...type.display, fontFamily: fonts.loraBold },
+  title: { ...type.display },
   lede: { ...type.body, color: colors.inkSoft },
   card: {
     backgroundColor: colors.white,

@@ -13,7 +13,7 @@ export function AgentGlyph({ active }: { active: boolean }) {
   const pulse = usePulse(active, 0.3, 900);
   return (
     <Animated.View style={[styles.glyphBox, { opacity: pulse }]}>
-      <LogoMark size={20} />
+      <LogoMark size={15} decorative />
     </Animated.View>
   );
 }

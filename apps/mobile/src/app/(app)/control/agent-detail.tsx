@@ -664,7 +664,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   input: {
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -767,7 +767,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.forest,
   },
-  primaryButtonDisabled: { backgroundColor: colors.creamPressed },
+  primaryButtonDisabled: { opacity: 0.5 },
   primaryButtonText: {
     fontFamily: fonts.sansMedium,
     fontSize: 14,

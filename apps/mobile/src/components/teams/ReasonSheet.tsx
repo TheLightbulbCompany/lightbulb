@@ -140,7 +140,7 @@ const styles = StyleSheet.create({
   input: {
     minHeight: 72,
     maxHeight: 160,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -175,7 +175,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.danger,
   },
   submitPrimary: { backgroundColor: colors.forest },
-  submitDisabled: { backgroundColor: colors.creamDeepest },
+  // Fades the whole button — label, icon and busy spinner together.
+  submitDisabled: { opacity: 0.5 },
   submitText: {
     fontFamily: fonts.sansMedium,
     fontSize: 13,

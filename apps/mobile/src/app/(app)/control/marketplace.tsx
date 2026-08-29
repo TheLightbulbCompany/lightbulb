@@ -67,7 +67,7 @@ function ListingRow({ item }: { item: Listing }) {
             {item.name}
           </Text>
           <View style={[styles.priceBadge, !free && styles.priceBadgePaid]}>
-            <Text style={[styles.priceText, !free && styles.priceTextPaid]}>
+            <Text style={styles.priceText}>
               {price}
             </Text>
           </View>
@@ -150,7 +150,7 @@ export default function MarketplacePanel() {
         }
         ListEmptyComponent={
           <View style={styles.emptyWrap}>
-            <LogoMark size={64} />
+            <LogoMark size={48} />
             <Text style={styles.dim}>No listings</Text>
           </View>
         }
@@ -203,7 +203,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -270,22 +270,25 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
 
-  // Price badge — FREE (forest tint) vs paid ($ amount, gold).
+  // Price badge — one surface step for both; FREE takes the plain hairline,
+  // paid takes a brass rule. Brass is 2.94:1 on cream so it is the BORDER, not
+  // the type; the amount itself stays midnight.
   priceBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radii.xs,
-    backgroundColor: colors.forestTint,
+    backgroundColor: colors.creamDeeper,
+    borderWidth: 1,
+    borderColor: colors.edge,
   },
-  priceBadgePaid: { backgroundColor: colors.chip },
+  priceBadgePaid: { borderColor: colors.gold },
   priceText: {
     fontFamily: fonts.mono,
     fontSize: 9,
     lineHeight: 12,
     letterSpacing: 0.8,
-    color: colors.forest,
+    color: colors.ink,
   },
-  priceTextPaid: { color: colors.inkSoft },
 
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },

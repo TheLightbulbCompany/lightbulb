@@ -77,7 +77,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
               <Feather
                 name="arrow-up"
                 size={16}
-                color={canSend ? colors.white : colors.placeholder}
+                color={colors.white}
               />
             )}
           </Pressable>
@@ -148,5 +148,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  sendDisabled: { backgroundColor: colors.creamPressed },
+  sendDisabled: { opacity: 0.5 },
 });

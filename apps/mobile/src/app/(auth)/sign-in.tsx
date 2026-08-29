@@ -250,7 +250,6 @@ const styles = StyleSheet.create({
   // Lora wordmark, mirroring the web landing masthead.
   logo: {
     ...type.display,
-    fontFamily: fonts.loraBold,
     textAlign: "center",
     marginBottom: spacing.xl,
   },
@@ -285,7 +284,7 @@ const styles = StyleSheet.create({
   },
   // Inline "G" mark: a serif glyph in the accent color — no image asset.
   googleMark: {
-    fontFamily: fonts.loraBold,
+    fontFamily: fonts.loraMedium,
     fontSize: 17,
     lineHeight: 22,
     color: colors.forest,
@@ -308,7 +307,7 @@ const styles = StyleSheet.create({
   },
   dividerLabel: { ...type.caption },
   input: {
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radii.lg,

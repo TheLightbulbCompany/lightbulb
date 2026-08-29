@@ -230,7 +230,7 @@ export function BoardView() {
         SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
         ListEmptyComponent={
           <CenteredState
-            glyph={<LogoMark size={64} />}
+            glyph={<LogoMark size={48} />}
             title="No issues"
             detail="Issues on your board will show up here."
           />
@@ -284,7 +284,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     color: colors.sectionCount,
   },
-
 
   // States.
   centered: {

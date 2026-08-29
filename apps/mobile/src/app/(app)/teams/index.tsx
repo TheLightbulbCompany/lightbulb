@@ -862,7 +862,7 @@ function InboxView() {
         }
         ListEmptyComponent={
           <CenteredState
-            glyph={<LogoMark size={64} />}
+            glyph={<LogoMark size={48} />}
             title={emptyCopy.title}
             detail={emptyCopy.detail}
           />
@@ -967,7 +967,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,

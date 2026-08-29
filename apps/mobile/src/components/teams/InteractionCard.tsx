@@ -447,7 +447,7 @@ const styles = StyleSheet.create({
 
   actions: { flexDirection: "row", gap: spacing.sm },
   pressed: { opacity: 0.6 },
-  btnDisabled: { backgroundColor: colors.creamDeepest, borderColor: colors.creamDeepest },
+  btnDisabled: { opacity: 0.5 },
   acceptBtn: {
     flexDirection: "row",
     alignItems: "center",

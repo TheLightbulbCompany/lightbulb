@@ -241,7 +241,7 @@ export default function Chat() {
             <SkeletonGrid warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
-              <LogoMark size={64} />
+              <LogoMark size={48} />
               <Text style={styles.dim}>No agents yet.</Text>
             </View>
           )

@@ -200,7 +200,7 @@ export default function ChannelsPanel() {
   } else if (order.length === 0) {
     inner = (
       <View style={styles.emptyWrap}>
-        <LogoMark size={64} />
+        <LogoMark size={48} />
         <Text style={styles.dim}>No channels configured.</Text>
         <Text style={styles.dimSmall}>
           Set up Telegram, Discord, or Slack on flickmeon.ai.

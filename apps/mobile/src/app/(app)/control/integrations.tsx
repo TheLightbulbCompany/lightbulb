@@ -226,7 +226,7 @@ export default function IntegrationsPanel() {
   } else if (names.length === 0) {
     inner = (
       <View style={styles.emptyWrap}>
-        <LogoMark size={64} />
+        <LogoMark size={48} />
         <Text style={styles.dim}>No MCP servers connected.</Text>
         <Text style={styles.dimSmall}>
           Add Model Context Protocol servers on flickmeon.ai.

@@ -521,8 +521,8 @@ const styles = StyleSheet.create({
   idea: {
     // The registered italic FACE, not `fonts.lora` + `fontStyle: "italic"`:
     // RN matches a PostScript family name exactly, so asking a
-    // regular-only family to slant is a no-op on iOS (same reason
-    // `interstitialGlyph` and the empty states use this token).
+    // regular-only family to slant is a no-op on iOS (same reason the
+    // marketplace listing's `vibe` tagline uses this token).
     fontFamily: fonts.loraItalic,
     fontSize: 15,
     lineHeight: 21,

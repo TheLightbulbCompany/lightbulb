@@ -332,7 +332,7 @@ export default function SessionsPanel() {
             </View>
           ) : (
             <View style={styles.emptyWrap}>
-              <LogoMark size={64} />
+              <LogoMark size={48} />
               <Text style={styles.dim}>No sessions yet.</Text>
             </View>
           )

@@ -415,7 +415,7 @@ export default function AgentsPanel() {
             <SkeletonRows warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
-              <LogoMark size={64} />
+              <LogoMark size={48} />
               <Text style={styles.dim}>No agents yet.</Text>
             </View>
           )
@@ -604,7 +604,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   input: {
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -649,7 +649,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.forest,
   },
-  primaryButtonDisabled: { backgroundColor: colors.creamPressed },
+  primaryButtonDisabled: { opacity: 0.5 },
   primaryButtonText: {
     fontFamily: fonts.sansMedium,
     fontSize: 14,

@@ -19,8 +19,10 @@
  * deliberately absent. Add them when a midnight surface ships.
  *
  * State rules (§06): a state colour marks text, an icon, a border or a thin
- * rule — never a large fill. A ≤10% alpha wash behind a chip or banner is the
- * one exception, which is what the `rgba(…,.10)` tints below are.
+ * rule — never a large fill. Two exceptions: a ≤10% alpha wash behind a chip
+ * or banner (what the `rgba(…,.10)` tints below are), and THE destructive
+ * confirm, which may be solid `danger` the way web's `--destructive` button
+ * is — one per sheet, never a decorative fill.
  */
 import { Platform } from "react-native";
 import type { TextStyle } from "react-native";
@@ -127,11 +129,20 @@ const palette = {
   /** Initials-avatar text — primary ink. */
   avatarText: "#0F1A2B",
 
-  // Roster row overlays
-  rowPressed: "rgba(245,239,226,.85)",
-  rowActive: "rgba(245,239,226,.9)",
-  /** Active session row background — midnight at 8%. */
-  sessionActive: "rgba(15,26,43,.08)",
+  // Roster row overlays. These were cream-at-85/90% back when the ground was
+  // #faf7f2; on the manual's cream they are cream OVER cream, which composites
+  // to exactly the page colour and makes press feedback a no-op. A row that
+  // draws no background of its own can only be marked by a surface STEP.
+  /** Row press feedback — the one surface step. */
+  rowPressed: "#EFE8D9",
+  /** Row selected — the second step, so selected still reads under a press. */
+  rowActive: "#E7DECB",
+  /**
+   * Active session row background. Was midnight at 8%, which composited to
+   * rgb(227,222,211) and dropped the row's 11–12px `mute` metadata to 4.25:1.
+   * The surface step keeps it at 4.68:1.
+   */
+  sessionActive: "#EFE8D9",
   /** Modal backdrop scrim behind bottom sheets — midnight at 35%. */
   scrim: "rgba(15,26,43,.35)",
 
@@ -228,7 +239,6 @@ export const fonts = {
   lora: "Lora_400Regular",
   /** Display headings and the wordmark (§03: Lora Medium, never 700). */
   loraMedium: "Lora_500Medium",
-  loraBold: "Lora_700Bold",
   /** Prose italic — taglines, agent vibe lines. */
   loraItalic: "Lora_400Regular_Italic",
   /** Agent monograms. */

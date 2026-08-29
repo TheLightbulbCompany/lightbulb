@@ -10,7 +10,7 @@ import { LogoMark } from "../LogoMark";
 export function EmptyState({ agentName }: { agentName: string }) {
   return (
     <View style={styles.wrap}>
-      <LogoMark size={76} />
+      <LogoMark size={57} />
       <Text style={styles.name} numberOfLines={2}>
         {agentName}
       </Text>

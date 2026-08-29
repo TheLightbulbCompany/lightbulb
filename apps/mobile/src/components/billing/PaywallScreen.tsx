@@ -395,7 +395,7 @@ export function PaywallScreen({
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
   content: { padding: spacing.xl, gap: spacing.lg },
-  title: { ...type.display, fontFamily: fonts.loraBold, textAlign: "center" },
+  title: { ...type.display, textAlign: "center" },
   lede: { ...type.body, color: colors.inkSoft, textAlign: "center" },
   card: {
     backgroundColor: colors.white,

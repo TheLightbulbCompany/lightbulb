@@ -387,7 +387,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.forest,
   },
-  primaryButtonDisabled: { backgroundColor: colors.creamPressed },
+  primaryButtonDisabled: { opacity: 0.5 },
   primaryButtonText: {
     fontFamily: fonts.sansMedium,
     fontSize: 15,

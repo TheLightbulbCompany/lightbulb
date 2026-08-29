@@ -226,6 +226,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(() =>
       validateLaunchSchedule({ ...off, prod: { drop_at: null, competition_start_at: "not-a-date" } }),
     ).toThrow(/prod\.competition_start_at is not a valid date/);
+    // A number passes `new Date(n)` (epoch millis) but breaks the backend's
+    // `parse_iso`, which calls `.replace()` on the value — a Python int has
+    // no such method.
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: 1758168000000, competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at must be a string, got number/);
     // start <= drop is what launch_phase.schedule() itself raises on.
     expect(() =>
       validateLaunchSchedule({

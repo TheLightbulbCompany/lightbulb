@@ -70,13 +70,19 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
  * null (feature off) is valid and stays valid.
  */
 export function validateLaunchSchedule(obj: unknown): void {
-  const file = obj as Record<string, { drop_at?: string | null; competition_start_at?: string | null }>;
+  const file = obj as Record<string, { drop_at?: unknown; competition_start_at?: unknown }>;
   for (const env of ["dev", "prod"] as const) {
     const e = file?.[env];
     if (!e) throw new Error(`launch-schedule.json: missing "${env}" block`);
     const at = (k: "drop_at" | "competition_start_at"): number | null => {
       const raw = e[k];
       if (raw === null || raw === undefined) return null;
+      // A number passes `new Date(n)` (epoch millis) but breaks the backend's
+      // `parse_iso`, which calls `.replace()` on the value — a Python int has
+      // no such method. Only a string is a valid instant here.
+      if (typeof raw !== "string") {
+        throw new Error(`launch-schedule.json: ${env}.${k} must be a string, got ${typeof raw}`);
+      }
       const ms = new Date(raw).getTime();
       if (Number.isNaN(ms)) {
         throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);

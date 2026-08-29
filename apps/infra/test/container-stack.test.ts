@@ -399,6 +399,24 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("XDG_CONFIG_HOME sits on the per-user EFS mount so a CLI session survives task replacement", () => {
+    // The Stripe CLI writes its session under $XDG_CONFIG_HOME/stripe. That has
+    // to be inside /home/node/.openclaw (the EFS volume) or every task
+    // replacement un-pairs the owner. Same reason gog's keyring is there.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Environment: Match.arrayWith([{ Name: "XDG_CONFIG_HOME", Value: "/home/node/.openclaw/.config" }]),
+          MountPoints: Match.arrayWith([
+            Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("openclaw keeps the npm download cache on EFS but redirects the npx + uv extract storms to local /tmp", () => {
     // MCP servers spawn as npx/uvx children that inherit only HOME (not the
     // container env), so caches are relocated by symlinking the default

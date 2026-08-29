@@ -114,6 +114,32 @@ async def test_connect_stripe_allowed_for_an_org_admin(configured, async_client_
     assert r.status_code == 200
 
 
+# --- PATCH /entry -------------------------------------------------------------
+
+
+@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"display_name": "Ada", "public": False}))
+async def test_set_public_ok(configured, async_client):
+    r = await async_client.patch("/api/v1/launch/entry", json={"public": False})
+    assert r.status_code == 200 and r.json()["public"] is False
+
+
+@patch("routers.launch.launch_service.set_public", AsyncMock(side_effect=launch_service.LaunchRefused("no_entry")))
+async def test_set_public_refused_maps_to_400_reason(configured, async_client):
+    r = await async_client.patch("/api/v1/launch/entry", json={"public": True})
+    assert r.status_code == 400 and r.json()["detail"] == "no_entry"
+
+
+async def test_set_public_refused_for_an_org_member(configured, async_client_org_member):
+    r = await async_client_org_member.patch("/api/v1/launch/entry", json={"public": True})
+    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
+
+
+@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"public": True}))
+async def test_set_public_allowed_for_an_org_admin(configured, async_client_org_admin):
+    r = await async_client_org_admin.patch("/api/v1/launch/entry", json={"public": True})
+    assert r.status_code == 200
+
+
 # --- leaderboard / me (unaffected by the split, still exercised here) -------
 
 

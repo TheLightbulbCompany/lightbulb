@@ -5,6 +5,8 @@ for a caller. Entry is two explicit steps: `join()` creates the entry row
 once activation + a live subscription are in place, and `connect_stripe()`
 (optional) validates a pasted Stripe restricted key, computes the baseline,
 stores it on the BYO-key rail, and flips the entry onto the public board.
+`set_public()` is a third, independent step: flipping the board-visibility
+flag on an existing entry, retractable at any time.
 """
 
 from __future__ import annotations
@@ -70,6 +72,30 @@ def _public_entry(entry: dict | None) -> dict | None:
     }
 
 
+def _paperclip_repo():
+    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+    (the pattern every existing test double in this codebase already uses)
+    keeps working -- mirrors ``core.services.readiness_state._paperclip_repo``.
+    """
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    return PaperclipRepo(table_name="paperclip-companies")
+
+
+async def _pending_idea(owner_id: str) -> str | None:
+    """First 140 chars of a still-pending funnel answer, or None. A read
+    failure degrades to None -- /launch/me must not break because the idea
+    teaser couldn't be fetched (mirrors PaperclipRepo._has_pending_brief's
+    own degrade-to-default posture)."""
+    try:
+        item = await _paperclip_repo().get_pending_brief(owner_id)
+    except Exception:  # noqa: BLE001 — a degraded read must not break /launch/me
+        logger.info("launch_service: pending-brief read failed for owner %s", owner_id, exc_info=True)
+        return None
+    text = (item or {}).get("input")
+    return text[:140] if text else None
+
+
 async def me(auth: AuthContext, s: Schedule) -> dict:
     owner_id = resolve_owner_id(auth)
     email = await resolve_email(auth)
@@ -96,8 +122,11 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "activated": onboarding.get("bootstrap_state") == "delivered",
         "activated_at": onboarding.get("bootstrap_delivered_at"),
         "entry": _public_entry(entry),
-        "can_enter": ok,
+        "joined": entry is not None,
+        "has_key": bool(entry and entry.get("has_key")),
+        "can_join": ok,
         "reason": reason,
+        "idea": await _pending_idea(owner_id),
     }
 
 
@@ -157,6 +186,19 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
     )
     updated = await launch_entries_repo.get(owner_id)
     logger.info("launch: %s connected Stripe (baseline=%s %s)", owner_id, baseline_cents, currency)
+    return _public_entry(updated)
+
+
+async def set_public(auth: AuthContext, s: Schedule, *, public: bool) -> dict:
+    """Flip the privacy flag on an existing entry. ``public`` is a control the
+    entrant must be able to retract at any time -- independent of join/
+    connect_stripe, which only ever set it at entry time."""
+    owner_id = resolve_owner_id(auth)
+    entry = await launch_entries_repo.get(owner_id)
+    if not entry:
+        raise LaunchRefused("no_entry")
+    await launch_entries_repo.set_public(owner_id, public)
+    updated = await launch_entries_repo.get(owner_id)
     return _public_entry(updated)
 
 

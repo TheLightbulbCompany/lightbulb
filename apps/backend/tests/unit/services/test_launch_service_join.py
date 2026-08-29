@@ -154,6 +154,39 @@ async def test_connect_stripe_on_an_already_keyed_entry_replaces_the_key(connect
     connect_deps["set_key"].assert_awaited_once()
 
 
+# --- set_public() -----------------------------------------------------------
+
+
+async def test_set_public_flips_the_flag_on_an_existing_entry():
+    with (
+        patch(
+            "core.services.launch_service.launch_entries_repo.get",
+            AsyncMock(
+                side_effect=[
+                    {"owner_id": "user_1", "display_name": "Ada", "public": True},
+                    {"owner_id": "user_1", "display_name": "Ada", "public": False},
+                ]
+            ),
+        ) as get_mock,
+        patch("core.services.launch_service.launch_entries_repo.set_public", AsyncMock()) as set_mock,
+    ):
+        body = await launch_service.set_public(AuthContext(user_id="user_1"), S, public=False)
+    set_mock.assert_awaited_once_with("user_1", False)
+    assert get_mock.await_count == 2
+    assert body["public"] is False
+
+
+async def test_set_public_refuses_without_an_entry():
+    with (
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.set_public", AsyncMock()) as set_mock,
+    ):
+        with pytest.raises(launch_service.LaunchRefused) as e:
+            await launch_service.set_public(AuthContext(user_id="user_1"), S, public=True)
+    assert e.value.reason == "no_entry"
+    set_mock.assert_not_awaited()
+
+
 # --- rank / leaderboard ----------------------------------------------------
 
 

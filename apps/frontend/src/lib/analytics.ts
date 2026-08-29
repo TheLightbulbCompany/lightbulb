@@ -154,8 +154,8 @@ export type AnalyticsEvent =
   | "workspace_panel_opened"
 
   // Launch competition
-  | "launch_waitlist_joined"
-  | "launch_entered"
+  | "launch_joined"
+  | "launch_stripe_connected"
   | "launch_referral_copied";
 
 /**

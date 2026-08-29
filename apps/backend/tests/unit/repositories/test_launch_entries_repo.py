@@ -66,6 +66,18 @@ async def test_set_revenue_clears_error_and_stamps(table):
     assert "refresh_error" not in row and row["delta_cents"] == 10
 
 
+async def test_set_public_flips_the_flag(table):
+    await table.join("user_1", display_name="Ada", public=True, waitlist_position=None)
+    await table.set_public("user_1", False)
+    assert (await table.get("user_1"))["public"] is False
+    await table.set_public("user_1", True)
+    assert (await table.get("user_1"))["public"] is True
+    # A row that does not exist is not created.
+    with pytest.raises(ClientError):
+        await table.set_public("ghost", True)
+    assert await table.get("ghost") is None
+
+
 async def test_list_count_count_with_key_delete(table):
     await table.join("user_1", display_name="A", public=True, waitlist_position=None)
     await table.join("org_2", display_name="B", public=False, waitlist_position=3)

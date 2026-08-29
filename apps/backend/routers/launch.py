@@ -22,6 +22,7 @@ from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
 from schemas.launch import (
     ConnectStripeRequest,
+    EntryPatchRequest,
     JoinRequest,
     LaunchInfo,
     LeaderboardResponse,
@@ -148,6 +149,22 @@ async def connect_stripe(
         return await launch_service.connect_stripe(auth, s, stripe_key=body.stripe_key.strip())
     except launch_service.LaunchRefused as e:
         # The reason is a short enum; the key is never part of any response or log.
+        raise HTTPException(status_code=400, detail=e.reason)
+
+
+@router.patch("/entry", operation_id="launch_set_public")
+async def set_public(
+    body: EntryPatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+    s: Schedule = Depends(require_launch),
+) -> dict:
+    # Same one-entry-per-owner rule as /join and /connect-stripe: an org
+    # member flipping this would touch the org's row under their own identity.
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="org_admin_required")
+    try:
+        return await launch_service.set_public(auth, s, public=body.public)
+    except launch_service.LaunchRefused as e:
         raise HTTPException(status_code=400, detail=e.reason)
 
 

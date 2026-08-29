@@ -31,6 +31,10 @@ class ConnectStripeRequest(BaseModel):
     stripe_key: str = Field(min_length=20, max_length=200)
 
 
+class EntryPatchRequest(BaseModel):
+    public: bool
+
+
 class LeaderboardRow(BaseModel):
     rank: int
     display_name: str

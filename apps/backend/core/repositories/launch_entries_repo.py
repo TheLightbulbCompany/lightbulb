@@ -86,6 +86,20 @@ async def set_key_connected(owner_id: str, *, currency: str, baseline_cents: int
     )
 
 
+async def set_public(owner_id: str, public: bool) -> None:
+    """Flip the board-visibility flag on an existing entry. ``public`` is a
+    reserved DynamoDB word, hence the ``#pub`` alias (mirrors ``#hk`` above
+    for ``has_key``)."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET #pub = :p",
+        ConditionExpression="attribute_exists(owner_id)",
+        ExpressionAttributeNames={"#pub": "public"},
+        ExpressionAttributeValues={":p": bool(public)},
+    )
+
+
 async def set_revenue(
     owner_id: str,
     *,

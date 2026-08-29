@@ -5,16 +5,15 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { fetchLaunchInfo, type LaunchInfo } from "@/lib/launch";
+import { fetchLaunchInfo, formatMoney, type LaunchInfo } from "@/lib/launch";
 import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
 import { MyLaunchCard } from "./MyLaunchCard";
-import { WaitlistForm } from "./WaitlistForm";
 import "./launch.css";
 
-const RULES = [
+const rules = (info: LaunchInfo): string[] => [
   "Sign up and finish onboarding — Friday's first run has to complete.",
-  "Every entrant puts $10 into the pot; the first 220 on the waitlist get their month free.",
+  `Every entrant puts ${formatMoney(info.pot_per_entrant_cents, "USD")} into the pot; the first ${info.comp_slots} on the waitlist get their month free.`,
   "Connect a read-only Stripe key. The board ranks the dollar lift over your prior 30 days.",
   "Judges pick the winner from the board. Self-dealing gets you removed.",
 ];
@@ -44,11 +43,16 @@ export default function LaunchPage() {
       ) : (
         <>
           <LaunchHero info={info}>
-            {info.phase === "waitlist" ? <WaitlistForm /> : null}
-            {info.phase === "activation" ? (
+            {info.phase === "waitlist" || info.phase === "activation" ? (
               <div className="lc-actions" style={{ justifyContent: "center" }}>
                 <Link href="/sign-up" className="ld-btn">Sign up <span className="ld-btn-arrow" aria-hidden="true">→</span></Link>
-                <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>Got a code in your inbox? Finish onboarding first, then redeem it at checkout.</p>
+                {info.phase === "waitlist" ? (
+                  <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>
+                    Already signed up? <Link href="/sign-in">Sign in</Link>
+                  </p>
+                ) : (
+                  <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>Got a code in your inbox? Finish onboarding first, then redeem it at checkout.</p>
+                )}
               </div>
             ) : null}
           </LaunchHero>
@@ -70,7 +74,7 @@ export default function LaunchPage() {
           <section className="ld-section" id="rules">
             <p className="ld-kicker">How it works</p>
             <ol className="lc-steps" style={{ fontSize: 15, color: "var(--ink)" }}>
-              {RULES.map((r) => <li key={r}>{r}</li>)}
+              {rules(info).map((r) => <li key={r}>{r}</li>)}
             </ol>
           </section>
         </>

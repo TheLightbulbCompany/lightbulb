@@ -65,6 +65,7 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ACTIVATED)
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
     ):
         wl.join = AsyncMock(return_value=row)
         wl.claim_user = AsyncMock()
@@ -81,7 +82,8 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
         "free_months_banked": 1,
     }
     assert body["activated"] is True and body["activated_at"] == ACTIVATED["bootstrap_delivered_at"]
-    assert body["entry"] is None and body["can_enter"] is True and body["reason"] is None
+    assert body["entry"] is None and body["can_join"] is True and body["reason"] is None
+    assert body["joined"] is False and body["has_key"] is False and body["idea"] is None
 
 
 async def test_me_without_email_has_no_waitlist_block():
@@ -94,6 +96,67 @@ async def test_me_without_email_has_no_waitlist_block():
             "core.services.launch_service.readiness_state.resolve_onboarding_state",
             AsyncMock(return_value=NOT_ACTIVATED),
         ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(auth, _sched(-1))
-    assert body["waitlist"] is None and body["can_enter"] is False and body["reason"] == "no_subscription"
+    assert body["waitlist"] is None and body["can_join"] is False and body["reason"] == "no_subscription"
+
+
+async def test_me_reports_joined_has_key_from_the_entry_row():
+    auth = AuthContext(user_id="user_1")
+    entry = {"display_name": "Ada", "public": True, "has_key": True}
+    with (
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=entry)),
+        patch(
+            "core.services.launch_service.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "active"}),
+        ),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ACTIVATED)
+        ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+    ):
+        body = await launch_service.me(auth, _sched(-1))
+    assert body["joined"] is True and body["has_key"] is True
+
+
+async def test_me_idea_is_the_pending_briefs_input_truncated_to_140_chars():
+    auth = AuthContext(user_id="user_1")
+    long_input = "x" * 200
+    with (
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=NOT_ACTIVATED),
+        ),
+        patch("core.repositories.paperclip_repo.PaperclipRepo") as MockRepo,
+    ):
+        MockRepo.return_value.get_pending_brief = AsyncMock(
+            return_value={"input": long_input, "brief_state": "pending"}
+        )
+        body = await launch_service.me(auth, _sched(-1))
+    assert body["idea"] == long_input[:140] and len(body["idea"]) == 140
+
+
+async def test_me_idea_is_none_when_no_pending_brief_or_on_a_read_failure():
+    auth = AuthContext(user_id="user_1")
+    with (
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=NOT_ACTIVATED),
+        ),
+        patch("core.repositories.paperclip_repo.PaperclipRepo") as MockRepo,
+    ):
+        MockRepo.return_value.get_pending_brief = AsyncMock(return_value=None)
+        body = await launch_service.me(auth, _sched(-1))
+        assert body["idea"] is None
+
+        MockRepo.return_value.get_pending_brief = AsyncMock(side_effect=RuntimeError("boom"))
+        body = await launch_service.me(auth, _sched(-1))
+        assert body["idea"] is None

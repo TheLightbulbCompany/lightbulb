@@ -25,6 +25,7 @@ import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
+import { LaunchHeldCard } from "@/components/chat/LaunchHeldCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 import {
@@ -1111,6 +1112,25 @@ export function ProvisioningStepper({
           >
             {copy.desc}
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Pre-drop hold: a signed-up account with no container yet (Launch
+  // Competition, see core/services/launch_hold.py). Render the held-status
+  // card instead of the generic blocked card — same wrapper shape (logo
+  // centerpiece on the cream canvas) as team_billing_required below, minus
+  // that card's Check again / Contact support footer, which doesn't apply
+  // to a hold with no action to retry before the drop.
+  if (gatePhase === "blocked" && blocked && blocked.code === "launch_pending") {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)] px-6 py-12">
+        <div className="flex w-full max-w-[440px] flex-col items-center">
+          <div className="mb-8 flex justify-center">
+            <Logo size="lg" href={null} />
+          </div>
+          <LaunchHeldCard blocked={blocked} />
         </div>
       </div>
     );

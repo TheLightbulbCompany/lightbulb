@@ -172,6 +172,16 @@ window.matchMedia =
       dispatchEvent: vi.fn(),
     }) as unknown as MediaQueryList);
 
+// LaunchHeldCard fetches /launch/me and /launch itself (see its own test
+// file); stubbed here so this suite only asserts the connection — that
+// ProvisioningStepper routes blocked.code === "launch_pending" to it and
+// passes the blocked payload through.
+vi.mock("@/components/chat/LaunchHeldCard", () => ({
+  LaunchHeldCard: ({ blocked }: { blocked: { title: string } }) => (
+    <div data-testid="launch-held-card">{blocked.title}</div>
+  ),
+}));
+
 const useProvMock = useProvisioningState as ReturnType<typeof vi.fn>;
 
 describe("ProvisioningStepper blocked-state rendering", () => {
@@ -457,6 +467,37 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(card.className).toMatch(/bg-cream(?![-\w])/);
     // Same centerpiece footer the generic blocked card gets.
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
+  });
+
+  it("renders LaunchHeldCard (not the generic blocked card) for launch_pending", () => {
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "launch_pending",
+        title: "You're on the list",
+        message: "Doors open Friday, September 18 at 4:00 PM ET. Sign back in then and Friday runs your idea.",
+        action: {
+          kind: "link",
+          label: "See your spot",
+          href: "/launch",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    // The held-status card, not the generic gate copy.
+    expect(screen.getByTestId("launch-held-card")).toHaveTextContent("You're on the list");
+    expect(screen.queryByText(/Doors open Friday/)).not.toBeInTheDocument();
   });
 
   it.each([["trial_daily_cap"], ["trial_expired"]])(

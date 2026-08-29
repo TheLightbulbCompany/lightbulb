@@ -7,10 +7,12 @@ export interface LaunchInfo {
   drop_at: string;
   competition_start_at: string;
   competition_end_at: string;
+  signups: number;
+  competing: number;
+  on_board: number;
   pot_cents: number;
-  entrants: number;
-  waitlist_count: number;
   comp_slots: number;
+  pot_per_entrant_cents: number;
 }
 
 export interface LeaderboardRow {
@@ -25,6 +27,7 @@ export interface LaunchEntry {
   display_name: string;
   public: boolean;
   entered_at: string | null;
+  has_key: boolean;
   currency: string | null;
   baseline_cents: number;
   window_cents: number;
@@ -33,22 +36,27 @@ export interface LaunchEntry {
   refresh_error: string | null;
 }
 
+export interface LaunchWaitlist {
+  position: number;
+  referral_code: string;
+  in_comp_window: boolean;
+  referral_link: string;
+  referrals_signed_up: number;
+  referrals_paid: number;
+  free_months_banked: number;
+}
+
 export interface LaunchMe {
   phase: LaunchPhase;
-  waitlist: {
-    position: number;
-    referral_code: string;
-    in_comp_window: boolean;
-    referral_link: string;
-    referrals_signed_up: number;
-    referrals_paid: number;
-    free_months_banked: number;
-  } | null;
+  waitlist: LaunchWaitlist | null;
   activated: boolean;
   activated_at: string | null;
   entry: LaunchEntry | null;
-  can_enter: boolean;
+  joined: boolean;
+  has_key: boolean;
+  can_join: boolean;
   reason: string | null;
+  idea: string | null;
 }
 
 export const LAUNCH_REF_KEY = "launch_ref";
@@ -64,32 +72,10 @@ export async function fetchLaunchInfo(): Promise<LaunchInfo | null> {
   return (await res.json()) as LaunchInfo;
 }
 
-export async function fetchLeaderboard(): Promise<{ entrants: number; rows: LeaderboardRow[] }> {
+export async function fetchLeaderboard(): Promise<{ competing: number; on_board: number; rows: LeaderboardRow[] }> {
   const res = await fetch(`${BACKEND_URL}/launch/leaderboard`);
   if (!res.ok) throw new Error(`leaderboard_${res.status}`);
-  return (await res.json()) as { entrants: number; rows: LeaderboardRow[] };
-}
-
-export async function joinWaitlist(
-  email: string,
-  ref: string | null,
-): Promise<{ position: number; referral_code: string; in_comp_window: boolean }> {
-  const res = await fetch(`${BACKEND_URL}/launch/waitlist`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, ref: ref ?? undefined }),
-  });
-  if (!res.ok) {
-    let detail = `http_${res.status}`;
-    try {
-      const body = (await res.json()) as { detail?: unknown };
-      if (typeof body.detail === "string") detail = body.detail;
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new Error(detail);
-  }
-  return (await res.json()) as { position: number; referral_code: string; in_comp_window: boolean };
+  return (await res.json()) as { competing: number; on_board: number; rows: LeaderboardRow[] };
 }
 
 const SYMBOL: Record<string, string> = { usd: "$", eur: "€", gbp: "£", cad: "CA$", aud: "A$" };

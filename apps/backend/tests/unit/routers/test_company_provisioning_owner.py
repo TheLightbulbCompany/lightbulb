@@ -131,3 +131,668 @@ def test_revoke_rejects_a_hostile_resource_id_segment(client):
         resp = client.post("/api/v1/company/provisioning/resources/posthog/_res1/revoke")
     assert resp.status_code == 422
     revoke.assert_not_awaited()
+
+
+# --- owner answers: approve / reject / cancel / information / links / remove ---
+
+WF = {
+    "workflow_id": "pwf_1",
+    "owner_id": "org_a",
+    "state": "awaiting_approval",
+    "provider_id": "prvdr_1",
+    "provider_name": "posthog",
+    "service_ref": "analytics",
+    "service_id": "analytics",
+    "awaiting": None,
+    "error_code": None,
+    "approval": {"price_display": "$20/mo", "scope": "project"},
+}
+
+# Every owner-facing answer route, for the gate/ownership tests that apply to
+# all of them identically.
+WORKFLOW_ROUTES = [
+    ("POST", "/workflows/pwf_1/approve", {}),
+    ("POST", "/workflows/pwf_1/reject", None),
+    ("POST", "/workflows/pwf_1/cancel", None),
+    ("POST", "/workflows/pwf_1/information", {"information": {}}),
+    ("POST", "/workflows/pwf_1/payment-link", None),
+    ("POST", "/workflows/pwf_1/connect-link", None),
+]
+RESOURCE_ROUTES = [
+    ("POST", "/resources/posthog/res_1/dashboard-link", None),
+    ("POST", "/resources/posthog/res_1/remove", {"confirm": "x"}),
+]
+ALL_ROUTES = [("GET", "/workflows", None), *WORKFLOW_ROUTES, *RESOURCE_ROUTES]
+
+
+def _call(client, method, path, body):
+    url = f"/api/v1/company/provisioning{path}"
+    return client.get(url) if method == "GET" else client.post(url, json=body)
+
+
+@pytest.mark.parametrize(("method", "path", "body"), ALL_ROUTES)
+def test_every_owner_route_is_org_admin_only(member_client, method, path, body):
+    assert _call(member_client, method, path, body).status_code == 403
+
+
+@pytest.mark.parametrize(("method", "path", "body"), ALL_ROUTES)
+def test_every_owner_route_is_paid_only(client, monkeypatch, method, path, body):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        mod,
+        "require_always_on_entitlement",
+        AsyncMock(side_effect=HTTPException(status_code=402, detail={"blocked": True, "code": "needs_plan"})),
+    )
+    assert _call(client, method, path, body).status_code == 402
+
+
+@pytest.mark.parametrize(("method", "path", "body"), WORKFLOW_ROUTES)
+@pytest.mark.parametrize("row", [None, {**WF, "owner_id": "org_other"}])
+def test_a_missing_or_foreign_workflow_is_404_either_way(client, method, path, body, row):
+    with patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)):
+        resp = _call(client, method, path, body)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "workflow_not_found"
+
+
+@pytest.mark.parametrize(("method", "path", "body"), RESOURCE_ROUTES)
+def test_a_resource_this_owner_never_landed_is_404(client, method, path, body):
+    with patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[])):
+        resp = _call(client, method, path, body)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "resource_not_found"
+
+
+@pytest.mark.parametrize(("method", "path", "body"), RESOURCE_ROUTES)
+def test_resource_routes_reject_a_hostile_provider_segment(client, method, path, body):
+    with patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock()) as listed:
+        resp = _call(client, method, path.replace("posthog", "PostHog!"), body)
+    assert resp.status_code == 422
+    listed.assert_not_awaited()
+
+
+def test_workflows_list_is_owner_scoped_newest_first_and_safe(client):
+    old = {**WF, "workflow_id": "pwf_0", "created_at": "2026-01-01", "project_id": "proj_1"}
+    new = {**WF, "created_at": "2026-02-01", "project_id": "proj_1"}
+    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[old, new])) as listed:
+        resp = client.get("/api/v1/company/provisioning/workflows")
+    assert resp.status_code == 200
+    listed.assert_awaited_once_with("org_a")
+    rows = resp.json()["workflows"]
+    assert [r["workflow_id"] for r in rows] == ["pwf_1", "pwf_0"]
+    assert rows[0]["state"] == "awaiting_approval" and rows[0]["provider"] == "posthog"
+    # `_safe_workflow` is an allowlist — the row's ids and the approval
+    # snapshot never reach the browser.
+    assert "project_id" not in rows[0] and "approval" not in rows[0]
+
+
+# --- approve ---------------------------------------------------------------
+
+
+def test_approve_honours_an_edited_limit_records_the_signer_and_kicks(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.provisioning_workflow, "limit_is_editable", AsyncMock(return_value=True)),
+        patch.object(
+            mod.provisioning_workflow,
+            "on_approved",
+            AsyncMock(return_value={**WF, "state": "connecting_provider"}),
+        ) as approved,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/approve",
+            json={"usage_limit": {"max_amount": 2500, "currency": "usd", "recurring_interval": "month"}},
+        )
+    assert resp.status_code == 200 and resp.json()["state"] == "connecting_provider"
+    assert approved.await_args.kwargs["usage_limit"]["max_amount"] == 2500
+    assert approved.await_args.kwargs["approved_by"] == "user_admin"
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_approve_ignores_an_edited_limit_once_a_payment_profile_exists(client):
+    """The card said read-only, so the browser's number is not a second door on
+    a live billing setting — the row's own limit is what is signed for."""
+    row = {**WF, "usage_limit": {"max_amount": 5000, "currency": "usd", "recurring_interval": "month"}}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.provisioning_workflow, "limit_is_editable", AsyncMock(return_value=False)),
+        patch.object(mod.provisioning_workflow, "on_approved", AsyncMock(return_value=row)) as approved,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/approve",
+            json={"usage_limit": {"max_amount": 99000, "currency": "usd", "recurring_interval": "month"}},
+        )
+    assert approved.await_args.kwargs["usage_limit"]["max_amount"] == 5000
+
+
+def test_approve_without_a_limit_never_probes_the_payment_profile(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.provisioning_workflow, "limit_is_editable", AsyncMock()) as editable,
+        patch.object(mod.provisioning_workflow, "on_approved", AsyncMock(return_value=WF)) as approved,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert resp.status_code == 200
+    editable.assert_not_awaited()
+    assert approved.await_args.kwargs["usage_limit"] is None
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        {"max_amount": -5, "currency": "usd", "recurring_interval": "month"},
+        {"max_amount": 2500, "currency": "usd", "recurring_interval": "decade"},
+        {"max_amount": 2500, "currency": "eur", "recurring_interval": "month"},
+        {"max_amount": 100_001, "currency": "usd", "recurring_interval": "month"},
+    ],
+)
+def test_approve_rejects_a_nonsense_usage_limit(client, limit):
+    with patch.object(mod.provisioning_workflow, "on_approved", AsyncMock()) as approved:
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={"usage_limit": limit})
+    assert resp.status_code == 422
+    approved.assert_not_awaited()
+
+
+def test_approve_409s_when_the_card_was_already_answered(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**WF, "state": "connecting_provider"})),
+        patch.object(mod.provisioning_workflow, "on_approved", AsyncMock()) as approved,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "not_awaiting_approval"
+    approved.assert_not_awaited()
+
+
+def test_approve_maps_a_stripe_outage_to_503(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(
+            mod.provisioning_workflow,
+            "on_approved",
+            AsyncMock(side_effect=mod.api.TransientProvisioningError("api_error", "down")),
+        ),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert resp.status_code == 503 and resp.json()["detail"]["code"] == "stripe_unavailable"
+
+
+def test_approve_relays_a_workflow_refusal_as_409(client):
+    refused = mod.WorkflowRefused("service_unavailable", "gone from your catalog")
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.provisioning_workflow, "on_approved", AsyncMock(side_effect=refused)),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "service_unavailable"
+
+
+# --- reject / cancel -------------------------------------------------------
+
+
+def test_reject_is_terminal_and_refreshes_the_facts(client, facts):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(
+            mod.provisioning_workflow, "on_rejected", AsyncMock(return_value={**WF, "state": "rejected"})
+        ) as rejected,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/reject")
+    assert resp.status_code == 200 and resp.json()["state"] == "rejected"
+    rejected.assert_awaited_once_with("pwf_1")
+    facts.assert_awaited_once_with("org_a")
+
+
+def test_reject_409s_on_a_card_that_is_not_open(client, facts):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**WF, "state": "active"})),
+        patch.object(mod.provisioning_workflow, "on_rejected", AsyncMock()) as rejected,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/reject")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "not_awaiting_approval"
+    rejected.assert_not_awaited()
+    facts.assert_not_awaited()
+
+
+def test_cancel_withdraws_the_ask(client, facts):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(
+            mod.provisioning_workflow, "cancel", AsyncMock(return_value={**WF, "state": "cancelled"})
+        ) as cancelled,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/cancel")
+    assert resp.status_code == 200 and resp.json()["state"] == "cancelled"
+    cancelled.assert_awaited_once_with("pwf_1")
+    facts.assert_awaited_once_with("org_a")
+
+
+def test_cancel_refuses_once_something_exists_on_the_owners_stripe_account(client, facts):
+    refused = mod.WorkflowRefused("cannot_cancel", "This request has already started — review it instead")
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**WF, "state": "provisioning"})),
+        patch.object(mod.provisioning_workflow, "cancel", AsyncMock(side_effect=refused)),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/cancel")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "cannot_cancel"
+    facts.assert_not_awaited()
+
+
+# --- information -----------------------------------------------------------
+
+_SCHEMA = {"type": "object", "properties": {"team": {"type": "string"}}, "required": ["team"]}
+AR_INFO = {
+    **WF,
+    "state": "awaiting_user_action",
+    "awaiting": "provider_information",
+    "information_schema": _SCHEMA,
+    "information_target": "account_request",
+    "account_request_id": "ar_1",
+    "resource_id": "res_1",
+}
+RES_INFO = {**AR_INFO, "information_target": "resource"}
+
+
+def test_information_submits_to_the_resource_endpoint_for_that_target(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "submit_resource_information", AsyncMock(return_value={"id": "res_1"})) as submit,
+        patch.object(mod.api, "submit_account_request_information", AsyncMock()) as other,
+        patch.object(
+            mod.workflow_repo, "transition", AsyncMock(return_value={**RES_INFO, "state": "provisioning"})
+        ) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": "growth"}}
+        )
+    assert resp.status_code == 200 and resp.json()["state"] == "provisioning"
+    assert submit.await_args.args == ("acct_1", "res_1")
+    assert submit.await_args.kwargs["submitted_information"] == {"team": "growth"}
+    other.assert_not_awaited()
+    assert move.await_args.kwargs["to_state"] == "provisioning"
+    # The answered question's schema and the owner's clock go with it.
+    assert move.await_args.kwargs["fields"]["information_schema"] is None
+    assert move.await_args.kwargs["fields"]["user_action_since"] is None
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_information_submits_to_the_account_request_endpoint_for_that_target(client):
+    """`resource_id` is ALSO set — during a reauth both are. The stored target
+    decides, never whichever id happens to be there."""
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=AR_INFO)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "submit_account_request_information", AsyncMock(return_value={"id": "ar_1"})) as submit,
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as other,
+        patch.object(
+            mod.workflow_repo, "transition", AsyncMock(return_value={**AR_INFO, "state": "connecting_provider"})
+        ) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": "growth"}}
+        )
+    assert resp.status_code == 200
+    assert submit.await_args.args == ("acct_1", "ar_1")
+    assert submit.await_args.kwargs["information"] == {"team": "growth"}
+    other.assert_not_awaited()
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+def test_information_is_validated_against_the_stored_schema(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as submit,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": 7}}
+        )
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "invalid_information"
+    submit.assert_not_awaited()
+
+
+def test_information_409s_when_nothing_is_pending(client):
+    row = {**WF, "state": "provisioning", "awaiting": None, "information_target": None, "resource_id": "res_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as submit,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {}})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_information_pending"
+    submit.assert_not_awaited()
+
+
+def test_information_409s_when_the_target_id_is_missing(client):
+    with patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**RES_INFO, "resource_id": None})):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": "x"}}
+        )
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_information_pending"
+
+
+# --- payment link ----------------------------------------------------------
+
+PAYING = {
+    **WF,
+    "state": "awaiting_user_action",
+    "awaiting": "payment_setup",
+    "usage_limit": {"max_amount": 2500, "currency": "usd", "recurring_interval": "month"},
+}
+
+
+def test_payment_link_is_minted_on_click_and_never_stored(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=PAYING)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api,
+            "create_payment_method_request",
+            AsyncMock(
+                return_value={"status": "checkout_initiated", "checkout_session_url": "https://checkout.stripe.com/x"}
+            ),
+        ) as minted,
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
+    assert resp.json()["checkout_session_url"] == "https://checkout.stripe.com/x"
+    # The approved limit, not a default.
+    assert minted.await_args.kwargs == {"max_amount": 2500, "currency": "usd", "recurring_interval": "month"}
+    # Nothing bearer-like is written to the row.
+    for call in [*patched.await_args_list, *move.await_args_list]:
+        assert "checkout.stripe.com" not in str(call)
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_payment_link_falls_back_to_the_default_limit(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**PAYING, "usage_limit": None})),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "create_payment_method_request", AsyncMock(return_value={"status": "complete"})) as m,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
+    assert resp.json() == {"checkout_session_url": None, "status": "complete"}
+    assert m.await_args.kwargs["max_amount"] == mod.provisioning_approvals.DEFAULT_USAGE_LIMIT["max_amount"]
+
+
+def test_payment_link_409s_when_the_row_is_not_waiting_on_a_card(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.api, "create_payment_method_request", AsyncMock()) as minted,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_payment_pending"
+    minted.assert_not_awaited()
+
+
+def test_payment_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**PAYING, "state": "stale"})),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api, "create_payment_method_request", AsyncMock(return_value={"status": "checkout_initiated"})
+        ),
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
+    assert move.await_args.kwargs["from_state"] == "stale"
+    assert move.await_args.kwargs["to_state"] == "awaiting_user_action"
+    assert move.await_args.kwargs["fields"]["awaiting"] == "payment_setup"
+
+
+# --- connect link ----------------------------------------------------------
+
+CONNECTING = {
+    **WF,
+    "state": "awaiting_user_action",
+    "awaiting": "provider_connect",
+    "account_request_id": "ar_1",
+}
+
+
+def test_connect_link_reuses_a_live_account_request(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api,
+            "get_account_request",
+            AsyncMock(
+                return_value={
+                    "id": "ar_1",
+                    "status": "pending_auth",
+                    "redirect_url": "https://provider.example/oauth?fresh",
+                }
+            ),
+        ),
+        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.json() == {"redirect_url": "https://provider.example/oauth?fresh"}
+    created.assert_not_awaited()
+    # Minted per click: the URL never reaches the row.
+    for call in patched.await_args_list:
+        assert "provider.example" not in str(call)
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "account_request_id": "ar_old"})),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_old", "status": "error"})),
+        patch.object(
+            mod.api,
+            "create_account_request",
+            AsyncMock(
+                return_value={
+                    "id": "ar_new",
+                    "status": "pending_auth",
+                    "redirect_url": "https://provider.example/oauth?new",
+                }
+            ),
+        ) as created,
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_project_id": "p_1"})),
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.json()["redirect_url"] == "https://provider.example/oauth?new"
+    assert created.await_args.kwargs == {"provider": "prvdr_1", "project_id": "p_1"}
+    # Persisted before the URL is handed over — an account request has no name
+    # to reconcile a lost id by.
+    assert patched.await_args.args[1] == {"account_request_id": "ar_new"}
+
+
+def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
+    gone = mod.ProvisioningError("not_found", "no such account request")
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request", AsyncMock(side_effect=gone)),
+        patch.object(
+            mod.api,
+            "create_account_request",
+            AsyncMock(return_value={"id": "ar_new", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+        ) as created,
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
+        patch.object(mod.workflow_repo, "patch", AsyncMock()),
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.status_code == 200
+    created.assert_awaited_once()
+
+
+def test_connect_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
+    """The driver stops on `stale` by design, so the click must move the row
+    back — and restart the seven days — before kicking, or nothing happens."""
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "state": "stale"})),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api,
+            "get_account_request",
+            AsyncMock(return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+        ),
+        patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.status_code == 200
+    assert move.await_args.kwargs["from_state"] == "stale"
+    assert move.await_args.kwargs["to_state"] == "awaiting_user_action"
+    assert move.await_args.kwargs["fields"]["awaiting"] == "provider_connect"
+    assert move.await_args.kwargs["fields"]["user_action_since"]
+
+
+def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})),
+        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_redirect_available"
+    # A `complete` request is not one to replace — and the kick is what moves
+    # the row on from it.
+    created.assert_not_awaited()
+    kick.assert_awaited_once_with("pwf_1")
+
+
+def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
+        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+    ):
+        resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_connect_pending"
+    read.assert_not_awaited()
+
+
+# --- dashboard link --------------------------------------------------------
+
+POINTER = {"resource_id": "res_1", "provider": "posthog", "service": "analytics", "resource_name": "analytics-abc123"}
+
+
+def test_dashboard_link_is_minted_on_click_and_never_stored(client):
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api,
+            "catalog_providers",
+            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": ["dashboard"]}]),
+        ),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_project_id": "p_1"})),
+        patch.object(
+            mod.api,
+            "create_deep_link",
+            AsyncMock(
+                return_value={
+                    "purpose": "dashboard",
+                    "url": "https://app.posthog.com/x",
+                    "expires_time": "2026-08-29T12:00:00Z",
+                }
+            ),
+        ) as deep,
+        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock()) as recorded,
+    ):
+        resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
+    assert resp.json() == {"url": "https://app.posthog.com/x", "expires_time": "2026-08-29T12:00:00Z"}
+    # The provider ID, not the name, and the company's own project.
+    assert deep.await_args.kwargs["provider"] == "prvdr_1"
+    assert deep.await_args.kwargs["project"] == "p_1"
+    assert deep.await_args.kwargs["purpose"] == "dashboard"
+    recorded.assert_not_awaited()
+
+
+def test_dashboard_link_refuses_a_purpose_the_provider_does_not_advertise(client):
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(
+            mod.api,
+            "catalog_providers",
+            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": []}]),
+        ),
+        patch.object(mod.api, "create_deep_link", AsyncMock()) as deep,
+    ):
+        resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "deep_link_unsupported"
+    deep.assert_not_awaited()
+
+
+# --- remove ----------------------------------------------------------------
+
+
+def test_remove_needs_the_resource_name_typed_back(client, facts):
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.api, "remove_resource", AsyncMock()) as removed,
+        patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock()) as revoked,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": "wrong name"}
+        )
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "confirm_mismatch"
+    removed.assert_not_awaited()
+    revoked.assert_not_awaited()
+    facts.assert_not_awaited()
+
+
+def test_remove_deprovisions_at_the_provider_then_drops_our_copy(client, facts):
+    order = []
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "remove_resource", AsyncMock(side_effect=lambda *a: order.append("stripe"))) as removed,
+        patch.object(
+            mod.provisioning_landing,
+            "revoke_credentials",
+            AsyncMock(side_effect=lambda **k: order.append("ours") or True),
+        ) as revoked,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": " analytics-abc123 "}
+        )
+    assert resp.status_code == 200 and resp.json()["removed"] is True
+    # The 200 says what just happened to their infrastructure and their bill.
+    assert "deprovisioned" in resp.json()["message"] and "billing" in resp.json()["message"]
+    assert order == ["stripe", "ours"]
+    removed.assert_awaited_once_with("acct_1", "res_1")
+    revoked.assert_awaited_once_with(owner_id="org_a", provider="posthog", resource_id="res_1")
+    facts.assert_awaited_once_with("org_a")
+
+
+def test_remove_keeps_our_copy_when_the_provider_refuses(client, facts):
+    """Our pointer is the only thing that still names the resource, so it is
+    dropped only after the provider accepted the deprovision."""
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "remove_resource", AsyncMock(side_effect=mod.ProvisioningError("invalid_request", "no"))),
+        patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock()) as revoked,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": "analytics-abc123"}
+        )
+    assert resp.status_code == 502 and resp.json()["detail"]["code"] == "stripe_error"
+    revoked.assert_not_awaited()
+    facts.assert_not_awaited()

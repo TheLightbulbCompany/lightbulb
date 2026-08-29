@@ -16,14 +16,18 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
+import jsonschema
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.config import settings
+from core.dynamodb import utc_now_iso
+from core.repositories import billing_repo, integrations_repo
 from core.repositories import provisioning_workflow_repo as workflow_repo
-from core.services import provisioning_driver, provisioning_landing, provisioning_workflow
+from core.services import provisioning_approvals, provisioning_driver, provisioning_landing, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
 from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
@@ -81,16 +85,30 @@ def _url(v: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Owner-facing (Clerk). Paid-only and org-admin-only for the mutation, exactly
-# like P0a's company-Stripe router. There is deliberately NO catalog or
-# provision route here: provisioning is Friday's job (spec §3.1's trigger
-# split), and the owner's surface is the two approval cards plus this list.
+# Owner-facing (Clerk). Paid-only and org-admin-only, exactly like P0a's
+# company-Stripe router. There is deliberately NO catalog or provision route
+# here: provisioning is Friday's job (spec §3.1's trigger split), and the
+# owner's surface is the approval cards, the resource list, and the answers to
+# them at the bottom of this file.
 # ---------------------------------------------------------------------------
 
 
 def _gate_admin(auth: AuthContext) -> None:
     if auth.is_org_context:
         require_org_admin(auth)
+
+
+async def _owner_gate(auth: Annotated[AuthContext, Depends(get_current_user)]) -> str:
+    """The three lines every owner route below opens with: money is
+    org-admin-only (spec §3.6), the rail is paid-only, and the owner is the
+    org, never the member who clicked."""
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    return owner_id
+
+
+Owner = Annotated[str, Depends(_owner_gate)]
 
 
 @router.get("/resources")
@@ -388,3 +406,349 @@ async def container_cancel_request(owner_id: str, workflow_id: str, request: Req
     except WorkflowRefused as e:
         raise _refusal(e) from e
     return _safe_workflow(moved or {**row, "state": "cancelled"})
+
+
+# ---------------------------------------------------------------------------
+# Owner-facing answers (Clerk). Every button on an Inbox card and in
+# Settings -> Connections lands here.
+#
+# Nothing minted below is ever written to the row or logged: checkout URLs,
+# provider redirect URLs and deep links are short-lived and effectively
+# bearer-like ("Present it immediately and do not persist, cache, or log it"),
+# so each one is minted for THIS click and returned once.
+#
+# Order on every route: the gate (`Owner`), then ownership, then state, then
+# the body, then the side effect. Each one that hands work back to the state
+# machine ends with `provisioning_driver.kick`, so the owner's click moves the
+# row now rather than on the driver's next slow tick.
+# ---------------------------------------------------------------------------
+
+# $1,000 per interval. Not Stripe's ceiling — ours, so a fat-fingered limit
+# cannot authorise four figures of provider spend on the owner's own card.
+_MAX_USAGE_AMOUNT = 100_000
+
+REMOVED_MESSAGE = (
+    "{name} was deprovisioned at {provider} and its credentials were removed from your agents. "
+    "The provider stops billing your Stripe account for it; anything already used this period is still invoiced."
+)
+
+
+class UsageLimit(BaseModel):
+    """The spending cap the owner signs for. `usd`/week|month|year is the only
+    shape the payment profile is exercised with in P0b — widen it the day a
+    non-USD owner exists rather than forwarding an untested currency."""
+
+    max_amount: int = Field(gt=0, le=_MAX_USAGE_AMOUNT)
+    currency: Literal["usd"] = "usd"
+    recurring_interval: Literal["week", "month", "year"] = "month"
+
+
+class ApproveBody(BaseModel):
+    usage_limit: UsageLimit | None = None
+
+
+class InformationBody(BaseModel):
+    information: dict = Field(default_factory=dict)
+
+
+class RemoveBody(BaseModel):
+    confirm: str = Field(max_length=200)
+
+
+def _conflict(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": code, "message": message})
+
+
+async def _owned_resource(owner_id: str, provider: str, resource_id: str) -> dict:
+    """The pointer for one provisioned resource of this owner's, or 404 — the
+    same "missing and not yours are indistinguishable" rule as `_owned`."""
+    if not _NAME_RE.fullmatch(provider) or not _RESOURCE_ID_RE.fullmatch(resource_id):
+        raise HTTPException(status_code=422, detail="bad provider or resource id")
+    pointers = await integrations_repo.list_provider_resources(owner_id, provider)
+    pointer = next((p for p in pointers if p.get("resource_id") == resource_id), None)
+    if pointer is None:
+        raise HTTPException(status_code=404, detail={"code": "resource_not_found"})
+    return pointer
+
+
+async def _company_project_id(owner_id: str) -> str | None:
+    """The company's ONE Provisioning Project. It lives on the BILLING row, not
+    on the workflow — Connect deauth clears it there, in one place."""
+    return (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_project_id")
+
+
+async def _resumed(row: dict, awaiting: str) -> None:
+    """The owner came back to a `stale` row.
+
+    Un-stale it BEFORE the kick or the kick is a no-op: the driver stops on
+    `stale` by design. `user_action_since` restarts with it — the seven days
+    measure how long they have been away, and they are demonstrably back.
+    """
+    if row.get("state") == "stale":
+        await workflow_repo.transition(
+            row["workflow_id"],
+            from_state="stale",
+            to_state="awaiting_user_action",
+            fields={"awaiting": awaiting, "user_action_since": utc_now_iso()},
+        )
+
+
+@router.get("/workflows")
+async def list_workflows(owner_id: Owner):
+    """What the owner has been asked for, newest first — the Settings list and
+    the source of every card's live state."""
+    rows = await workflow_repo.list_for_owner(owner_id)
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return {"workflows": [_safe_workflow(r) for r in rows]}
+
+
+@router.post("/workflows/{workflow_id}/approve")
+async def approve_workflow(
+    workflow_id: str,
+    body: ApproveBody,
+    owner_id: Owner,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    """The owner approved the consent card. Records who signed and resumes.
+
+    A limit from the body is honoured only while the card said it was editable
+    — i.e. while no Payment profile exists. Afterwards it is a live billing
+    setting on the account, and a card must not silently move it.
+    """
+    row = await _owned(owner_id, workflow_id)
+    if row.get("state") != "awaiting_approval":
+        raise _conflict("not_awaiting_approval", "This request is not waiting for your approval")
+    usage_limit = row.get("usage_limit")
+    try:
+        if body.usage_limit is not None and await provisioning_workflow.limit_is_editable(
+            await provisioning_workflow.account_id_for(owner_id)
+        ):
+            usage_limit = body.usage_limit.model_dump()
+        moved = await provisioning_workflow.on_approved(
+            workflow_id,
+            usage_limit=usage_limit,
+            # Who signed for the spend. The audit line for a limit the company
+            # will be billed against.
+            approved_by=auth.user_id,
+        )
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    await provisioning_driver.kick(workflow_id)
+    return _safe_workflow(moved or row)
+
+
+@router.post("/workflows/{workflow_id}/reject")
+async def reject_workflow(workflow_id: str, owner_id: Owner):
+    """The owner said no. Terminal, and a clean stop: nothing exists on their
+    Stripe account yet, so there is nothing to unwind."""
+    row = await _owned(owner_id, workflow_id)
+    if row.get("state") != "awaiting_approval":
+        raise _conflict("not_awaiting_approval", "This request is not waiting for your approval")
+    moved = await provisioning_workflow.on_rejected(workflow_id)
+    await write_owner_facts(owner_id)
+    await provisioning_driver.kick(workflow_id)
+    return _safe_workflow(moved or {**row, "state": "rejected"})
+
+
+@router.post("/workflows/{workflow_id}/cancel")
+async def cancel_workflow(workflow_id: str, owner_id: Owner):
+    """Withdraw an ask nothing was created for. Same fence as the container's
+    DELETE: once a state-changing POST has been made there is no undo, only
+    `remove`."""
+    row = await _owned(owner_id, workflow_id)
+    try:
+        moved = await provisioning_workflow.cancel(workflow_id)
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    await write_owner_facts(owner_id)
+    await provisioning_driver.kick(workflow_id)
+    return _safe_workflow(moved or {**row, "state": "cancelled"})
+
+
+@router.post("/workflows/{workflow_id}/information")
+async def submit_information(workflow_id: str, body: InformationBody, owner_id: Owner):
+    """Provider-requested fields, validated against the schema WE stored — not
+    one the browser supplied.
+
+    The two submit endpoints take DIFFERENT bodies (`information` vs
+    `submitted_information`) against different objects, so the ROW says which
+    one this schema came from. Never inferred from whichever id happens to be
+    set: during a reauth both are.
+    """
+    row = await _owned(owner_id, workflow_id)
+    target = row.get("information_target")
+    target_id = row.get("account_request_id") if target == "account_request" else row.get("resource_id")
+    if row.get("awaiting") != "provider_information" or target not in ("account_request", "resource") or not target_id:
+        raise _conflict("no_information_pending", "This request is not waiting for information")
+    if len(body.information) > _MAX_CONFIG_KEYS:
+        raise _invalid(f"information may hold at most {_MAX_CONFIG_KEYS} fields")
+    try:
+        jsonschema.validate(body.information, row.get("information_schema") or {})
+    except jsonschema.ValidationError as e:
+        raise HTTPException(status_code=422, detail={"code": "invalid_information", "message": e.message}) from e
+    try:
+        account_id = await provisioning_workflow.account_id_for(owner_id)
+        if target == "account_request":
+            await api.submit_account_request_information(account_id, target_id, information=body.information)
+            to_state = "connecting_provider"
+        else:
+            await api.submit_resource_information(account_id, target_id, submitted_information=body.information)
+            to_state = "provisioning"
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    # The schema goes with the question it belonged to: a provider that asks
+    # again publishes a new one, and a leftover would validate the next answer
+    # against the wrong form.
+    moved = await workflow_repo.transition(
+        workflow_id,
+        from_state=row["state"],
+        to_state=to_state,
+        fields={
+            "awaiting": None,
+            "information_target": None,
+            "information_schema": None,
+            "user_action_since": None,
+        },
+    )
+    await provisioning_driver.kick(workflow_id)
+    return _safe_workflow(moved or {**row, "state": to_state})
+
+
+@router.post("/workflows/{workflow_id}/payment-link")
+async def payment_link(workflow_id: str, owner_id: Owner):
+    """Mint the hosted payment URL for THIS click and return it once.
+
+    The card carries no URL: by the time it is clicked the checkout session
+    behind an old one would be long expired.
+    """
+    row = await _owned(owner_id, workflow_id)
+    if row.get("awaiting") != "payment_setup":
+        raise _conflict("no_payment_pending", "This request is not waiting for a payment method")
+    # The limit the owner already approved. Merged over the default so a row
+    # written before the limit existed still names all three fields.
+    limit = {**provisioning_approvals.DEFAULT_USAGE_LIMIT, **(row.get("usage_limit") or {})}
+    try:
+        result = await api.create_payment_method_request(
+            await provisioning_workflow.account_id_for(owner_id),
+            max_amount=int(limit["max_amount"]),
+            currency=str(limit["currency"]),
+            recurring_interval=str(limit["recurring_interval"]),
+        )
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    await _resumed(row, "payment_setup")
+    await provisioning_driver.kick(workflow_id)
+    # `complete` is the answer when a card is already on file — no URL, and the
+    # driver's payment-profile poll is what moves the row on from here.
+    return {"checkout_session_url": result.get("checkout_session_url"), "status": result.get("status")}
+
+
+@router.post("/workflows/{workflow_id}/connect-link")
+async def connect_link(workflow_id: str, owner_id: Owner):
+    """Mint the provider OAuth URL for THIS click.
+
+    Never served from the card: the account request may have completed,
+    errored or vanished since it was filed. Re-read it, and create a fresh one
+    when the old one is unusable ("Create a new Account request and ask the
+    user to reconnect").
+    """
+    row = await _owned(owner_id, workflow_id)
+    if row.get("awaiting") != "provider_connect":
+        raise _conflict("no_connect_pending", "This request is not waiting for a provider connection")
+    try:
+        account_id = await provisioning_workflow.account_id_for(owner_id)
+        request_ = None
+        if row.get("account_request_id"):
+            try:
+                request_ = await api.get_account_request(account_id, row["account_request_id"])
+            except ProvisioningError as e:
+                # Gone, or the connection behind it expired: both are "make a
+                # new one", not "fail the click".
+                if e.code not in ("not_found", "provider_reauth_required"):
+                    raise
+            if (request_ or {}).get("status") == "error":
+                request_ = None
+        if request_ is None:
+            scope = (row.get("approval") or {}).get("scope")
+            request_ = await api.create_account_request(
+                account_id,
+                provider=row["provider_id"],
+                project_id=await _company_project_id(owner_id) if scope == "project" else None,
+            )
+            # Persisted BEFORE the URL is handed over: an account request
+            # carries no name, so an id lost here is unreconcilable.
+            await workflow_repo.patch(workflow_id, {"account_request_id": request_["id"]})
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    await _resumed(row, "provider_connect")
+    await provisioning_driver.kick(workflow_id)
+    if request_.get("status") != "pending_auth" or not request_.get("redirect_url"):
+        # `complete`, `requested` or `needs_information`: there is no browser
+        # step to take right now, and the kick above is what moves the row.
+        raise _conflict("no_redirect_available", "This provider connection does not need a browser step right now")
+    return {"redirect_url": request_["redirect_url"]}
+
+
+@router.post("/resources/{provider}/{resource_id}/dashboard-link")
+async def dashboard_link(provider: str, resource_id: str, owner_id: Owner):
+    """Short-lived, pre-authenticated, minted per click. Never persisted.
+
+    Only offered for a purpose the provider itself advertises: "Show an Open
+    Provider dashboard action only if the Provider advertises the requested
+    deep_link_purposes value."
+    """
+    await _owned_resource(owner_id, provider, resource_id)
+    try:
+        account_id = await provisioning_workflow.account_id_for(owner_id)
+        entry = next((p for p in await api.catalog_providers(account_id) if p.get("name") == provider), None)
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    if entry is None or "dashboard" not in (entry.get("deep_link_purposes") or []):
+        raise _conflict("deep_link_unsupported", "This provider does not offer a dashboard link")
+    try:
+        link = await api.create_deep_link(
+            account_id,
+            provider=entry["id"],
+            project=await _company_project_id(owner_id),
+            purpose="dashboard",
+            catalog=settings.STRIPE_PROJECTS_CATALOG,
+        )
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    return {"url": link.get("url"), "expires_time": link.get("expires_time")}
+
+
+@router.post("/resources/{provider}/{resource_id}/remove")
+async def remove_provider_resource(provider: str, resource_id: str, body: RemoveBody, owner_id: Owner):
+    """DEPROVISION the owner's provider infrastructure, then drop our copy.
+
+    The ONLY path in the codebase that reaches a provider (spec §3.6) — wipe,
+    entitlement teardown and revoke never do. The owner types the resource's
+    own name back, which is the "separate confirmation" the guide requires
+    alongside stating the billing and infrastructure effect.
+    """
+    pointer = await _owned_resource(owner_id, provider, resource_id)
+    expected = str(pointer.get("resource_name") or resource_id)
+    if body.confirm.strip() != expected:
+        raise _conflict("confirm_mismatch", f'Type "{expected}" to confirm that it is deprovisioned')
+    try:
+        await api.remove_resource(await provisioning_workflow.account_id_for(owner_id), resource_id)
+    except WorkflowRefused as e:
+        raise _refusal(e) from e
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    # Our copy goes only after the provider accepted the deprovision, so a
+    # failure never leaves a live resource we can no longer name.
+    await provisioning_landing.revoke_credentials(owner_id=owner_id, provider=provider, resource_id=resource_id)
+    await write_owner_facts(owner_id)
+    return {"removed": True, "message": REMOVED_MESSAGE.format(name=expected, provider=provider)}

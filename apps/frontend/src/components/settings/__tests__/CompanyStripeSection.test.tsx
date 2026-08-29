@@ -23,12 +23,11 @@ describe("CompanyStripeSection", () => {
   beforeEach(() => {
     get.mockReset();
     post.mockReset();
-    // A non-null return represents a successful (non-popup-blocked) open —
-    // openInNewTab() treats only `null` as blocked, and a blocked open now
-    // routes through notifyApiError(), which needs a real "@/lib/api" mock
-    // shape (ApiError) this file doesn't provide. Popup-blocked handling
-    // itself is covered by ApprovalRow.connectStripe.test.tsx.
-    vi.spyOn(window, "open").mockImplementation(() => window);
+    // A non-null return is a successful (non-popup-blocked) open —
+    // openInNewTab() treats only `null` as blocked, and then clears the new
+    // window's `opener`. Popup-blocked handling itself is covered by
+    // ApprovalRow.connectStripe.test.tsx.
+    vi.spyOn(window, "open").mockImplementation(() => ({ opener: undefined }) as unknown as Window);
   });
 
   it("offers both doors when nothing is bound", async () => {
@@ -44,7 +43,7 @@ describe("CompanyStripeSection", () => {
     renderSection(true);
     fireEvent.click(await screen.findByText("Set up Stripe"));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/create", {}));
-    expect(window.open).toHaveBeenCalledWith("https://connect.stripe.com/setup/x", "_blank", "noopener");
+    expect(window.open).toHaveBeenCalledWith("https://connect.stripe.com/setup/x", "_blank");
   });
 
   it("shows status and disconnect when bound", async () => {

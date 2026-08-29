@@ -4,12 +4,12 @@
 import { useState } from "react";
 import { ShieldQuestion } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
-import { notifyApiError } from "@/lib/notify";
+import { notifyApiError, notifyError } from "@/lib/notify";
 import { useApi } from "@/lib/api";
 import { openInNewTab } from "@/components/settings/openInNewTab";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
-import { approvalLabel } from "@/components/teams/inbox/lib/approvalLabel";
+import { approvalLabel, isCompanyStripeApproval } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
 
 const POPUP_BLOCKED_MSG =
@@ -53,7 +53,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         )}
         {isActionable && !rejecting && (
           <div className="flex shrink-0 gap-2">
-            {approval.type === "connect_stripe" ? (
+            {isCompanyStripeApproval(approval) ? (
               <>
                 <EditorialButton
                   size="sm"
@@ -62,7 +62,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                     run(async () => {
                       const r = (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
                       if (!openInNewTab(r.onboarding_url)) {
-                        notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                        notifyError(POPUP_BLOCKED_MSG);
                         return;
                       }
                       await approve(approval.id);
@@ -78,7 +78,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                     run(async () => {
                       const r = (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
                       if (!openInNewTab(r.authorize_url)) {
-                        notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                        notifyError(POPUP_BLOCKED_MSG);
                         return;
                       }
                       await approve(approval.id);

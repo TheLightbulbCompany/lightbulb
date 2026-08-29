@@ -3,7 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
-import { notifyApiError } from "@/lib/notify";
+import { notifyApiError, notifyError } from "@/lib/notify";
 import { openInNewTab } from "@/components/settings/openInNewTab";
 
 const POPUP_BLOCKED_MSG =
@@ -75,7 +75,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await createLink();
-                    if (!openInNewTab(r.onboarding_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                    if (!openInNewTab(r.onboarding_url)) notifyError(POPUP_BLOCKED_MSG);
                   })
                 }
               >
@@ -88,7 +88,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await connectStart();
-                    if (!openInNewTab(r.authorize_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                    if (!openInNewTab(r.authorize_url)) notifyError(POPUP_BLOCKED_MSG);
                   })
                 }
               >
@@ -128,7 +128,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 onClick={() =>
                   run(async () => {
                     const r = await onboardingLink();
-                    if (!openInNewTab(r.onboarding_url)) notifyApiError(new Error("Popup blocked"), POPUP_BLOCKED_MSG);
+                    if (!openInNewTab(r.onboarding_url)) notifyError(POPUP_BLOCKED_MSG);
                   })
                 }
               >

@@ -168,7 +168,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           disabled={!chatReady}
           title={chatReady ? undefined : "Available once your workspace is ready"}
         >
-          <Plus size={13} />
+          <Plus size={12} strokeWidth={1.75} />
           Agent
         </button>
         <span className="create-pill__divider" aria-hidden="true" />
@@ -180,7 +180,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           disabled={!chatReady}
           title={chatReady ? undefined : "Available once your workspace is ready"}
         >
-          <Plus size={13} />
+          <Plus size={12} strokeWidth={1.75} />
           Task
         </button>
       </div>

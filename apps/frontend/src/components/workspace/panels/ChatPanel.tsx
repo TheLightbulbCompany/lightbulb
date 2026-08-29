@@ -106,13 +106,13 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         <div className="flex-1" />
         {resolvedId && (
           <>
-            <button title="Inspect agent" onClick={() => openPanel("agent-inspector", { agent: resolvedId }, { pushUrl: true })}>
+            <button title="Inspect agent" aria-label="Inspect agent" className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" onClick={() => openPanel("agent-inspector", { agent: resolvedId }, { pushUrl: true })}>
               <SlidersHorizontal size={16} />
             </button>
-            <button title="Agent tasks" onClick={() => openPanel("teams-issues", { agent: resolvedId }, { pushUrl: true })}>
+            <button title="Agent tasks" aria-label="Agent tasks" className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" onClick={() => openPanel("teams-issues", { agent: resolvedId }, { pushUrl: true })}>
               <ListTodo size={16} />
             </button>
-            <button title={paused ? "Resume agent" : "Pause agent"} disabled={busy} onClick={togglePause}>
+            <button title={paused ? "Resume agent" : "Pause agent"} aria-label={paused ? "Resume agent" : "Pause agent"} className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" disabled={busy} onClick={togglePause}>
               {paused ? <Play size={16} /> : <Pause size={16} />}
             </button>
           </>

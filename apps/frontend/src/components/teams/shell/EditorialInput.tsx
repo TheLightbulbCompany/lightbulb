@@ -22,7 +22,7 @@ export const EditorialInput = forwardRef<HTMLInputElement, EditorialInputProps>(
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor={inputId}
-          className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--midnight-muted)]"
+          className="label-caps"
         >
           {label}
         </label>

@@ -27,39 +27,42 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
   const { openSupport } = useSupport();
 
   return (
+    // TODO(tooltip): swap title= for <Tooltip> from ui/tooltip once merged.
+    // Every button below keeps its aria-label either way — the tooltip is
+    // the hover affordance, never the accessible name.
     <div className="workspace-header">
       <button
         onClick={() => { capture("file_browser_opened"); openPanel("file-viewer"); }}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
+        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
         title="Browse workspace files"
         aria-label="Browse workspace files"
       >
-        <FolderOpen size={18} />
+        <FolderOpen size={16} />
       </button>
       <button
         onClick={() => { capture("browser_view_opened"); openPanel("browser"); }}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
+        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
         title="Watch your agents' browser"
         aria-label="Watch your agents' browser"
       >
-        <Chrome size={18} />
+        <Chrome size={16} />
       </button>
       <button
         onClick={onResetLayout}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1"
+        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
         title="Reset workspace layout"
         aria-label="Reset workspace layout"
       >
-        <RotateCcw size={18} />
+        <RotateCcw size={16} />
       </button>
       <div style={{ flex: 1 }} />
       <button
         onClick={() => openSupport()}
-        className="flex items-center justify-center text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors p-1 mr-1"
+        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] mr-1"
         title="Get help / report a problem"
         aria-label="Get help"
       >
-        <HelpCircle size={18} />
+        <HelpCircle size={16} />
       </button>
       <UserButton
         appearance={{

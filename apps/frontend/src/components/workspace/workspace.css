@@ -44,6 +44,11 @@
   min-height: 0;
 }
 
+/* The header is NOT floating chrome: it is `flex: none` above a sibling
+ * content column, and nothing scrolls under it (each dock panel scrolls
+ * inside its own slot). So it keeps a hard `--edge` rule — the static
+ * structural case the material rules explicitly allow — rather than a
+ * scroll-edge fade, which would only be a lie about what is behind it. */
 .workspace-header {
   flex: none;
   display: flex;
@@ -54,6 +59,18 @@
   padding: 0 16px;
   border-bottom: 1px solid var(--edge);
   background: var(--cream);
+}
+
+/* …but that rule and the sidebar header's own `border-bottom` (ChatLayout.css,
+ * shared with the mobile shell) sat at different heights — 56px here vs
+ * ~57px there — so the two hairlines met the sidebar's `border-right` as a
+ * pair of T-junctions a couple of pixels apart. Pinning the sidebar header to
+ * the same 56px inside THIS shell only (mobile's ChatLayout is untouched)
+ * collapses them into one continuous rule crossing one vertical rule. */
+.workspace-shell > .cream-sidebar > .sidebar-header {
+  height: 56px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* Banners stack at their natural height; the stepper/dock fills the rest.
@@ -136,4 +153,91 @@
 /* Org-chart pan/zoom canvas. */
 .workspace-panel-page .org-chart-viewport {
   height: calc(100cqh - 12.5rem);
+}
+
+/* ── Dockview brand theme ────────────────────────────────────────────────
+ *
+ * The dock ships with `themeLight`, whose off-the-shelf greys (a light-grey
+ * strip, a slightly darker hidden-tab fill and near-black text) are the most
+ * visible "not ours" surface on the primary screen. The theme object in
+ * WorkspaceShell.tsx sets `className` to the two-class string
+ * `"dockview-theme-light dockview-theme-lightbulb"` — dockview's Classnames
+ * helper splits the string on spaces and puts BOTH on `.dv-shell`, so the
+ * stock light theme still defines every `--dv-*` default and this block only
+ * repoints the ones that carry colour, tone or rhythm.
+ *
+ * The `.dv-shell` qualifier is deliberate: it makes this block (0,2,0) beat
+ * dockview's own `.dockview-theme-light` (0,1,0) regardless of which
+ * stylesheet the bundler emits first.
+ *
+ * Idiom: the tab strip is a `--cream-deep` rail carrying transparent tabs,
+ * with the ACTIVE tab marked by a 2px bottom edge and full-strength
+ * `--midnight` text — the same underline grammar as
+ * components/teams/shell/PanelTabs.tsx, so the dock strip and the in-panel
+ * tab strip read as siblings rather than two unrelated tab systems.
+ */
+.dv-shell.dockview-theme-lightbulb {
+  /* Grounds */
+  --dv-group-view-background-color: var(--cream);
+  --dv-tabs-and-actions-container-background-color: var(--cream-deep);
+  /* Tabs sit ON the rail (PanelTabs' `bg-transparent` triggers), so all four
+     group/visibility combinations share the rail's ground. */
+  --dv-activegroup-visiblepanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+
+  /* Text carries the whole active/inactive signal. The inactive GROUP's own
+     active tab steps down to --midnight-soft so "which group has focus" stays
+     readable without a second colour idiom. */
+  --dv-activegroup-visiblepanel-tab-color: var(--midnight);
+  --dv-activegroup-hiddenpanel-tab-color: var(--midnight-muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--midnight-soft);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--midnight-muted);
+
+  /* Rules and separators */
+  --dv-tab-divider-color: var(--edge);
+  --dv-separator-border: var(--edge);
+  --dv-tabs-container-scrollbar-color: var(--midnight-faint);
+
+  /* Rhythm: 36px strip on a 4px grid under the 56px workspace header;
+     13px is the product's UI step (--text-ui). Family inherits from body. */
+  --dv-tabs-and-actions-container-height: 36px;
+  --dv-tabs-and-actions-container-font-size: var(--text-ui);
+
+  /* Drag affordances. The drop-target wash and the sash highlight are the
+     same midnight at two strengths, so a drag reads as one gesture. */
+  --dv-drag-over-background-color: color-mix(in srgb, var(--midnight) 12%, transparent);
+  --dv-active-sash-color: color-mix(in srgb, var(--midnight) 28%, transparent);
+  --dv-active-sash-transition-duration: var(--dur-fast);
+
+  /* Tab close-button hover chip */
+  --dv-icon-hover-background-color: var(--cream-deeper);
+}
+
+/* Active-tab underline. `::before` (not the `::after` the stock dracula/nord
+   themes use) because `.dv-tab:focus-within::after` already owns that slot.
+   `currentColor` means the rule dims with the tab's own text colour when the
+   group loses focus — one declaration instead of a second selector. */
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab {
+  position: relative;
+}
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: currentColor;
+  pointer-events: none;
+}
+
+/* Hover on a hidden tab. Background only: switching tabs is core navigation
+   (100+/day) and must stay instant, so `color` is deliberately NOT in the
+   transition list — only the hover wash animates. */
+.dv-shell.dockview-theme-lightbulb .dv-tab {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.dv-shell.dockview-theme-lightbulb .dv-tab.dv-inactive-tab:hover {
+  background-color: var(--cream-deeper);
+  color: var(--midnight);
 }

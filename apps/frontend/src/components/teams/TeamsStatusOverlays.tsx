@@ -1,5 +1,7 @@
 "use client";
 
+import { Loader2 } from "lucide-react";
+
 // Workspace-status overlays for the inline Teams surface. The Teams panels
 // render inside the /chat shell (InlineTeamsPanel), which gates on
 // useTeamsWorkspaceStatus and shows one of these full-bleed overlays for the
@@ -20,8 +22,16 @@ export function ProvisioningOverlay() {
       <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
         <em className="italic">Setting up</em> your Teams workspace.
       </h1>
-      <p className="mt-3 text-sm text-[var(--midnight-soft)]">
-        This usually takes about 30 seconds. The page will refresh automatically.
+      {/* The spinner rides BESIDE the copy, never alone: this overlay is what a
+          Teams panel shows for the whole provisioning window, and a lone
+          spinner there says nothing about what is being waited on. */}
+      <p
+        className="mt-3 flex items-center gap-2 text-sm text-[var(--midnight-soft)]"
+        role="status"
+        aria-live="polite"
+      >
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+        <span>This usually takes about 30 seconds. The page will refresh automatically.</span>
       </p>
     </OverlayShell>
   );

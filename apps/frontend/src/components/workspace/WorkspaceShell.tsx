@@ -53,7 +53,18 @@ import {
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
 
-const ISOL8_THEME: DockviewTheme = { ...themeLight, name: "isol8", gap: 4 };
+// Brand dock theme. `className` is a SPACE-SEPARATED list (dockview's
+// Classnames helper splits it and toggles each on `.dv-shell`), so keeping
+// dockview's own `dockview-theme-light` alongside ours means the stock
+// stylesheet still supplies every `--dv-*` default and workspace.css's
+// `.dv-shell.dockview-theme-lightbulb` block only repoints the ~18 that
+// carry colour, tone or rhythm.
+const ISOL8_THEME: DockviewTheme = {
+  ...themeLight,
+  name: "lightbulb",
+  className: `${themeLight.className} dockview-theme-lightbulb`,
+  gap: 4,
+};
 
 // Only a teams DETAIL panel may swap itself for its list via leaveToList —
 // same id grammar as panelRegistry.durableParamsFor.

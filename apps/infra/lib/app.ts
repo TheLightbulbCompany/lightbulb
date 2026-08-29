@@ -33,7 +33,8 @@ const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_
 const COMPANY_DOMAIN = "thelightbulb.company";
 const COMPANY_DIR = "apps/company";
 const companyVercelSteps = (prod: boolean) => [
-  { name: "Checkout", uses: "actions/checkout@v4" },
+  // Vercel needs no git credentials; do not leave the token in the checkout.
+  { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
   { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
   { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
   { name: "Install Vercel CLI", run: "npm install -g vercel" },

@@ -103,4 +103,6 @@ footer .cols a { display: block; color: var(--fg-muted); text-decoration: none; 
   .prod { grid-template-columns: 1fr; align-content: end; padding-bottom: 12vh; }
   .rail, .scrub, #labels { display: none; }
   .nav .links { display: none; }
+  footer { grid-template-columns: 1fr; gap: 40px; }
+  footer .cols { justify-self: start; }
 }

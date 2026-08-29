@@ -17,6 +17,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Lint/test/build only — the token never needs to write.
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: "20"
 

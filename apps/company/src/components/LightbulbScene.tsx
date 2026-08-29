@@ -20,7 +20,11 @@ export function LightbulbScene() {
       setMode("off");
       return;
     }
-    setMode(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "frozen" : "scene");
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setMode(media.matches ? "frozen" : "scene");
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
   }, []);
   if (mode === "scene") return <Scene />;
   if (mode === "frozen") return <Scene frozen />;

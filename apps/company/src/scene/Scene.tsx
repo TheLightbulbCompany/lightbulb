@@ -84,6 +84,9 @@ function Driver({ bulb, mirror, n, frozen, bloomRef, onQualityDecline }: DriverP
       const tops = CHAPTERS.map((c) => document.getElementById(c.id)?.offsetTop ?? 0);
       timeline.current = buildTimeline(tops, max);
       if (frozen) progress.current = timeline.current.windows.at[1]; // the strike, held
+      // ScrollTrigger caches start/end at creation; a font swap that changes the
+      // page height would leave its `bottom bottom` stale against the new tops.
+      if (!frozen) ScrollTrigger.refresh();
       invalidate();
     };
     layout();

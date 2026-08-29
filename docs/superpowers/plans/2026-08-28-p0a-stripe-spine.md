@@ -974,7 +974,7 @@ def test_connect_callback_binds_and_redirects(client, monkeypatch):
     ):
         resp = client.get("/api/v1/company/stripe/connect/callback?code=ac_1&state=st_1", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "https://dev.example/settings/connections?stripe=return&stripe=connected"
+    assert resp.headers["location"] == "https://dev.example/settings/connections?stripe=return&stripe_connect=connected"
     bind.assert_awaited_once_with("org_a", account_id="acct_theirs", source="connected")
 
 
@@ -1150,7 +1150,9 @@ async def connect_callback(code: str = Query(default=""), state: str = Query(def
     bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="connected")
     if bound is None:
         return _return("stripe_error=already_bound")
-    return _return("stripe=connected")
+    # `stripe_connect`, not `stripe`: RETURN_URL already carries `?stripe=return`
+    # for hosted onboarding, and a duplicate key would hide this outcome.
+    return _return("stripe_connect=connected")
 
 
 @router.post("/disconnect")
@@ -1748,7 +1750,7 @@ Class names are the ones `apps/frontend/src/app/settings/settings.css` already d
 In `apps/frontend/src/app/settings/connections/page.tsx`:
 
 - Import `CompanyStripeSection` and render `<CompanyStripeSection canManage={canManage} />` directly above `<ConnectionsList canManage={canManage} />`, using the same `canManage` the page already derives from `useIsWorkspaceAdmin()`.
-- Extend `oauthReturnBanner(connected, error)` to also take `stripe: string | null` and `stripeError: string | null` (read from `searchParams.get("stripe")` / `searchParams.get("stripe_error")`): `stripe === "connected"` → success "Connected your Stripe account."; `stripe === "return"` → success "Stripe onboarding finished — status updates in a moment."; `stripeError` → error "Couldn't connect Stripe. Please try again." Strip those params the same way the page strips `connected`/`error`.
+- Extend `oauthReturnBanner(connected, error)` to also take `stripe: string | null`, `stripeConnect: string | null` and `stripeError: string | null` (read from `searchParams.get("stripe")` / `searchParams.get("stripe_connect")` / `searchParams.get("stripe_error")`): `stripeConnect === "connected"` → success "Connected your Stripe account."; `stripe === "return"` → success "Stripe onboarding finished — status updates in a moment."; `stripe === "refresh"` → no banner (the link expired; the section's "Finish onboarding" button mints a new one); `stripeError` → error "Couldn't connect Stripe. Please try again." Strip those params the same way the page strips `connected`/`error`.
 
 - [ ] **Step 5: Approval row**
 

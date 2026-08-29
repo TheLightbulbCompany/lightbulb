@@ -35,6 +35,12 @@ USAGE
     uv run python scripts/migrate_secret_prefix.py --env prod --verify   # exit 1 on any mismatch
     uv run python scripts/migrate_secret_prefix.py --env prod --apply --only-missing
 
+Pass 1 covers only the backend-owned prefixes; the CloudFormation-owned static
+secrets are copied in a later pass, AFTER their stack has created them at the
+new name (CreateSecret on a name that already exists fails the deploy):
+
+    --only user-keys/,integrations/,paperclip-agent-keys/,paperclip_admin_credentials
+
 Check $? UNPIPED — piping through head/tail gives you the pipe's exit code, not
 the verdict.
 """
@@ -91,10 +97,22 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="write; default is a read-only plan")
     ap.add_argument("--verify", action="store_true", help="hash-compare only; exit 1 on any mismatch")
     ap.add_argument("--only-missing", action="store_true", help="skip destinations that already exist")
+    ap.add_argument(
+        "--only",
+        help=(
+            "comma-separated substrings; copy only sources whose name contains one. "
+            "The CFN-owned static secrets must NOT be copied ahead of their stack "
+            "creating them at the new name — CreateSecret on an existing name fails "
+            "the deploy. Pass --only to restrict a run to the backend-owned prefixes."
+        ),
+    )
     args = ap.parse_args()
 
     sm = boto3.client("secretsmanager", region_name=args.region)
     names = _sources(sm, args.env)
+    if args.only:
+        wanted = [t.strip() for t in args.only.split(",") if t.strip()]
+        names = [n for n in names if any(t in n for t in wanted)]
     print(f"{len(names)} secrets under {OLD_PREFIX}{args.env}/\n")
 
     stats = {"same": 0, "created": 0, "updated": 0, "drift": 0, "missing": 0, "skipped": 0, "error": 0}

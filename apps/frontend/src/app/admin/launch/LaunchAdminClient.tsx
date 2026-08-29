@@ -68,10 +68,10 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <MetricStat label="public pot" value={formatMoney(data.public_pot_cents, "usd")} hint={`${data.signups} signed up × ${formatMoney(data.pot_per_entrant_cents, "usd")} + ${formatMoney(data.pot_front_cents, "usd")}`} />
         <MetricStat label="funded pot" value={formatMoney(data.funded_pot_cents, "usd")} hint={`${data.pot_counted} first invoices landed`} />
-        <MetricStat label="signed up" value={data.signups} />
+        <MetricStat label="signed up" value={data.signups} hint="sign-up counter — drives the public pot" />
         <MetricStat label="competing" value={data.competing} hint={`${cb.paid} paid · ${cb.comp_eligible} eligible · ${cb.public} public`} />
         <MetricStat label="on the board" value={data.on_board} />
-        <MetricStat label="waitlist" value={data.waitlist.total} hint={`${data.waitlist.top_slots_claimed} of top ${data.schedule.comp_slots} claimed`} />
+        <MetricStat label="waitlist rows" value={data.waitlist.total} hint={`rows on the sheet · ${data.waitlist.top_slots_claimed} of top ${data.schedule.comp_slots} claimed`} />
         <MetricStat label="top slots activated" value={`${data.waitlist.top_slots_activated} / ${data.schedule.comp_slots}`} />
         <MetricStat label="referrals signed up" value={data.referrals.signed_up} />
         <MetricStat label="referrals paid" value={data.referrals.paid} hint={`${data.referrals.months_banked} months banked`} />

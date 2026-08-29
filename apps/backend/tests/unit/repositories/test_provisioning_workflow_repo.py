@@ -175,3 +175,87 @@ async def test_transition_rejects_an_unknown_state(workflows_table):
     row = await _new()
     with pytest.raises(ValueError):
         await repo.transition(row["workflow_id"], from_state="ask", to_state="nonsense")
+
+
+@pytest.mark.asyncio
+async def test_claim_takes_an_unheld_row_and_renews_its_own_lease(workflows_table):
+    """The per-row lease: two backend instances run during a rolling deploy
+    (maxHealthyPercent: 200), so the driver claims before every step."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    held = await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
+    assert held["lease_owner"] == "host-a:1"
+    assert held["lease_until"] > held["created_at"]
+    # The holder may renew as often as it likes.
+    again = await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
+    assert again["lease_owner"] == "host-a:1"
+
+
+@pytest.mark.asyncio
+async def test_claim_refuses_a_row_another_instance_holds(workflows_table):
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    assert await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60) is not None
+    assert await repo.claim(row["workflow_id"], owner="host-b:2", ttl_s=60) is None
+
+
+@pytest.mark.asyncio
+async def test_claim_takes_over_an_expired_lease(workflows_table):
+    """The old instance died mid-step. Nothing else would ever move the row."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=-1)
+    taken = await repo.claim(row["workflow_id"], owner="host-b:2", ttl_s=60)
+    assert taken["lease_owner"] == "host-b:2"
+
+
+@pytest.mark.asyncio
+async def test_claim_reports_a_row_that_no_longer_exists(workflows_table):
+    from core.repositories import provisioning_workflow_repo as repo
+
+    assert await repo.claim("pwf_gone", owner="host-a:1", ttl_s=60) is None
+
+
+@pytest.mark.asyncio
+async def test_release_clears_only_your_own_lease(workflows_table):
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
+    # Someone else's release is a no-op, not a theft.
+    await repo.release(row["workflow_id"], owner="host-b:2")
+    assert (await repo.get(row["workflow_id"]))["lease_owner"] == "host-a:1"
+    await repo.release(row["workflow_id"], owner="host-a:1")
+    item = await repo.get(row["workflow_id"])
+    assert "lease_owner" not in item and "lease_until" not in item
+    # Releasing twice, or a row that vanished, is silent.
+    await repo.release(row["workflow_id"], owner="host-a:1")
+    await repo.release("pwf_gone", owner="host-a:1")
+
+
+@pytest.mark.asyncio
+async def test_terminal_transition_releases_the_lease(workflows_table):
+    """Nothing drives a terminal row, so its lease must not outlive it."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
+    done = await repo.transition(row["workflow_id"], from_state="ask", to_state="active")
+    assert "lease_owner" not in done and "lease_until" not in done
+    assert "sweep_key" not in done
+
+
+@pytest.mark.asyncio
+async def test_the_lease_cannot_be_forged_through_patch_or_transition(workflows_table):
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    with pytest.raises(ValueError):
+        await repo.patch(row["workflow_id"], {"lease_owner": "host-b:2"})
+    with pytest.raises(ValueError):
+        await repo.transition(
+            row["workflow_id"], from_state="ask", to_state="awaiting_approval", fields={"lease_until": "9999"}
+        )

@@ -18,6 +18,7 @@ a deep link, not a redirect URL.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -55,7 +56,12 @@ CANCELLABLE_STATES = frozenset({"ask", "awaiting_approval", "awaiting_user_actio
 # the sweep must resume.
 OPEN_SWEEP_KEY = "open"
 
-_PROTECTED_FIELDS = frozenset({"workflow_id", "owner_id", "state", "sweep_key", "created_at"})
+# The lease is written only by `claim`/`release` (and dropped by a terminal
+# `transition`). A `patch` able to set it could hand one instance a row another
+# is mid-step on, which is the whole thing the lease exists to prevent.
+_PROTECTED_FIELDS = frozenset(
+    {"workflow_id", "owner_id", "state", "sweep_key", "created_at", "lease_owner", "lease_until"}
+)
 
 
 def _table():
@@ -137,8 +143,10 @@ async def transition(workflow_id: str, *, from_state: str, to_state: str, fields
     expr = "SET " + ", ".join(sets)
     if to_state in TERMINAL_STATES:
         # Drop out of the sparse sweep index rather than writing a "closed"
-        # value nobody queries.
-        expr += " REMOVE sweep_key"
+        # value nobody queries, and drop the driver lease with it: nothing
+        # drives a terminal row, so a lingering lease would only make the next
+        # instance wait out a ttl before confirming there is nothing to do.
+        expr += " REMOVE sweep_key, lease_owner, lease_until"
     try:
         resp = await run_in_thread(
             _table().update_item,
@@ -180,3 +188,56 @@ async def patch(workflow_id: str, fields: dict) -> dict | None:
         ReturnValues="ALL_NEW",
     )
     return resp.get("Attributes")
+
+
+async def claim(workflow_id: str, *, owner: str, ttl_s: int) -> dict | None:
+    """Take, or renew, this row's driver lease. ``None`` when someone else holds it.
+
+    Rolling deploys run two backend instances (``maxHealthyPercent: 200``), and
+    one driver step is a READ plus a write, not a single conditional write — so
+    the conditional ``transition`` alone still lets both instances poll Stripe
+    for the same workflow and file the same card. The lease elects one driver
+    per row; the other skips it.
+
+    Time-bounded and never released by a crash: an instance that dies mid-step
+    simply lets its lease expire, and the next sweep picks the row up.
+
+    ``updated_at`` is deliberately untouched — it is the sweep index's sort key,
+    and renewing a lease is not a change to the workflow.
+    """
+    now = utc_now_iso()
+    until = (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
+    try:
+        resp = await run_in_thread(
+            _table().update_item,
+            Key={"workflow_id": workflow_id},
+            UpdateExpression="SET #lo = :me, #lu = :until",
+            ConditionExpression=(
+                "attribute_exists(workflow_id) AND (attribute_not_exists(#lu) OR #lu < :now OR #lo = :me)"
+            ),
+            ExpressionAttributeNames={"#lo": "lease_owner", "#lu": "lease_until"},
+            ExpressionAttributeValues={":me": owner, ":until": until, ":now": now},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return resp.get("Attributes")
+
+
+async def release(workflow_id: str, *, owner: str) -> None:
+    """Hand the row back early. Silent when the lease is not ours (or gone):
+    releasing what we do not hold is a no-op, never a theft."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"workflow_id": workflow_id},
+            UpdateExpression="REMOVE #lo, #lu",
+            ConditionExpression="#lo = :me",
+            ExpressionAttributeNames={"#lo": "lease_owner", "#lu": "lease_until"},
+            ExpressionAttributeValues={":me": owner},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise

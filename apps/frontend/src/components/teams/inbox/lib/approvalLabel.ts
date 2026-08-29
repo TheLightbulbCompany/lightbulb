@@ -83,9 +83,14 @@ export function approvalLabel(
   payload?: Record<string, unknown> | null,
 ): string {
   if (!type) return "Approval requested";
+  // Both keys come off an untrusted payload, so read them as OWN properties —
+  // a plain `map[key]` resolves "constructor"/"toString" to something that is
+  // not a label.
   const action = payload?.isol8_action;
-  const base =
-    (typeof action === "string" ? ACTION_LABEL[action] : undefined) ?? TYPE_LABEL[type] ?? type;
+  const byAction =
+    typeof action === "string" && Object.hasOwn(ACTION_LABEL, action) ? ACTION_LABEL[action] : undefined;
+  const byType = Object.hasOwn(TYPE_LABEL, type) ? TYPE_LABEL[type] : undefined;
+  const base = byAction ?? byType ?? type;
   const subject = approvalSubject(payload);
   return subject ? `${base}: ${subject}` : base;
 }

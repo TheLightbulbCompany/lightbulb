@@ -105,7 +105,23 @@ export class AuthStack extends cdk.Stack {
       // restarting on the OLD task definition cannot read its secret, because a
       // secret scheduled for deletion fails GetSecretValue immediately.
       const legacy = make(logicalId, "isol8");
-      void legacy;
+
+      // `.secretName` on these is NOT a literal — CDK derives it from the
+      // secret's Ref, so passing it cross-stack publishes a CFN Export. Nine of
+      // them are imported by isol8-{env}-paperclip and isol8-{env}-service.
+      // Pointing consumers at the twin stops those exports being produced, and
+      // AuthStack deploys BEFORE its consumers, so CloudFormation tries to
+      // delete an export that is still in use:
+      //
+      //   Delete canceled. Cannot delete export
+      //   isol8-dev-auth:ExportsOutputRefPaperclipEventsWebhookSecret… as it is
+      //   in use by isol8-dev-paperclip and isol8-dev-service.
+      //
+      // exportValue() keeps each legacy export published for the transitional
+      // deploy, so the consumers can move off it in the same run. The pins come
+      // out in step 3 together with the constructs themselves.
+      this.exportValue(legacy.secretArn);
+
       return make(`${logicalId}Lightbulb`, "lightbulb");
     };
 

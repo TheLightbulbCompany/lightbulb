@@ -74,7 +74,21 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
 // `new Date()` is far more permissive (it parses `09/18/2026`, space-separated
 // timestamps, etc.) — trusting it alone lets a schedule ship that synths clean
 // and then throws on the container-status poll door in production.
-const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+// Deliberately STRICTER than `parse_iso` in one way: an explicit offset is
+// required. `fromisoformat` would accept a naive timestamp and silently read it
+// as UTC — the exact "midnight ET" footgun this validator exists to catch.
+const ISO_INSTANT_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// `new Date()` NORMALIZES out-of-range fields (`24:00:00` rolls to the next
+// day, `2026-02-29` to March 1) where `fromisoformat` raises — so the grammar
+// match above is not enough; the fields themselves must be in range.
+function isoFieldsInRange(m: RegExpMatchArray): boolean {
+  const [, y, mo, d, hh, mm, ss] = m.map((v) => (v === undefined ? undefined : Number(v)));
+  if (hh! > 23 || mm! > 59 || (ss !== undefined && ss > 59)) return false;
+  const probe = new Date(Date.UTC(y!, mo! - 1, d!));
+  return probe.getUTCFullYear() === y && probe.getUTCMonth() === mo! - 1 && probe.getUTCDate() === d;
+}
 
 export function validateLaunchSchedule(obj: unknown): void {
   const file = obj as Record<string, unknown>;
@@ -96,7 +110,8 @@ export function validateLaunchSchedule(obj: unknown): void {
       if (typeof raw !== "string") {
         throw new Error(`launch-schedule.json: ${env}.${k} must be a string, got ${typeof raw}`);
       }
-      if (!ISO_INSTANT_RE.test(raw)) {
+      const m = raw.match(ISO_INSTANT_RE);
+      if (!m || !isoFieldsInRange(m)) {
         throw new Error(`launch-schedule.json: ${env}.${k} is not a valid date: ${JSON.stringify(raw)}`);
       }
       const ms = new Date(raw).getTime();

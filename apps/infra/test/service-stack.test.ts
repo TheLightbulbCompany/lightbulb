@@ -269,6 +269,24 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         dev: { drop_at: "2026-09-18T00:00:00-04:00", competition_start_at: null },
       }),
     ).not.toThrow();
+
+    // Grammar alone is not enough: `new Date()` NORMALIZES `24:00:00` (next
+    // day) and `2026-02-29` (March 1) where `fromisoformat` raises — both
+    // would synth clean and then 500 the fleet.
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T24:00:00Z", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-02-29T00:00:00Z", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T00:60:00Z", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
+    // Deliberately stricter than `parse_iso`: a naive timestamp (no offset)
+    // would be read as UTC by the backend — the "midnight ET" footgun.
+    expect(() =>
+      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T00:00:00", competition_start_at: null } }),
+    ).toThrow(/dev\.drop_at is not a valid date/);
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {

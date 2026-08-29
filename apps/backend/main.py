@@ -436,6 +436,14 @@ async def lifespan(app: FastAPI):
     set_shutting_down(False)
     await startup_containers()
     await _resume_wake_resize_transitions()
+    # No Provisioning webhooks: an open workflow's poller dies with the
+    # process, so re-enter every non-terminal row (same shape as the line
+    # above). Best-effort by construction — the sweep swallows its own errors,
+    # and its per-row lease keeps a rolling deploy's two instances from both
+    # driving the same workflow.
+    from core.services.provisioning_driver import resume_open_workflows
+
+    await resume_open_workflows()
     await _reconcile_trial_idle_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
 

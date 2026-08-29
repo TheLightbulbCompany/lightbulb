@@ -155,6 +155,15 @@ async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list
 # NAMES, dashboard URL. Never a value — credentials live in Secrets Manager
 # (integration_secret_store), never in DynamoDB (spec §3.5).
 #
+# NAMESPACED under `projects/{provider}`: the bare sort key belongs to the
+# OAuth integrations rail, and several providers (stripe, posthog, sentry,
+# cloudflare) exist on BOTH. Sharing the key would make every OAuth reader
+# (routers/connections.py, credentials/mcp_server.py, catalog_service.py)
+# treat a provisioned provider as OAuth-connected, 409 the OAuth start, and —
+# worst — let an OAuth Disconnect force-delete this rail's credentials.
+# `integration_secret_store` is namespaced with the SAME key for the same
+# reason: one blob per rail, never a shared one.
+#
 # UpdateExpression rather than put_status's put_item: put_status full-replaces
 # the item, so routing these through it would drop identity /
 # google_watch_channels / meta_webhook_bindings. Same reasoning as
@@ -162,10 +171,22 @@ async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list
 # ---------------------------------------------------------------------------
 
 PROJECTS_ACTOR = "projects"
+PROJECTS_KEY_PREFIX = "projects/"
+
+
+def projects_key(provider: str) -> str:
+    """The Stripe Projects rail's storage key for ``provider``.
+
+    The ONE place the namespace is spelled. Used for both the ``integrations``
+    sort key (here) and the Secrets Manager provider segment
+    (``provisioning_landing``) — a `/` is legal in a Secrets Manager name and
+    already used by ``oauth_app_store``'s ``oauth-app/{provider}``.
+    """
+    return f"{PROJECTS_KEY_PREFIX}{provider}"
 
 
 async def list_provider_resources(owner_id: str, provider: str) -> list[dict]:
-    row = await get(owner_id, provider)
+    row = await get(owner_id, projects_key(provider))
     return list((row or {}).get("provider_resources") or [])
 
 
@@ -173,7 +194,7 @@ async def _write_provider_resources(owner_id: str, provider: str, resources: lis
     now = int(time.time())
     await run_in_thread(
         _table().update_item,
-        Key={"owner_id": owner_id, "provider": provider},
+        Key={"owner_id": owner_id, "provider": projects_key(provider)},
         UpdateExpression=(
             "SET provider_resources = :r, actor = :a, #st = :s, updated_at = :now, "
             "connected_at = if_not_exists(connected_at, :now)"

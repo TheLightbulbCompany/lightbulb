@@ -4,12 +4,14 @@ Friday runs the Stripe CLI in her own container and POSTs the result to
 ``/company/provisioning/u/{owner}/landed``. This module is the platform's half.
 Three writes, in this order and for these reasons:
 
-1. **Secrets Manager** — ``isol8/{env}/integrations/{owner}/{provider}``, the
-   EXISTING integration store. Spec §3.5: backend copies of provider
-   credentials live here, "never DynamoDB". First, so a crash after this point
-   leaves a recoverable credential rather than a provider resource we forgot.
+1. **Secrets Manager** — ``lightbulb/{env}/integrations/{owner}/projects/{provider}``,
+   the EXISTING integration store, under this rail's OWN namespace. Spec §3.5:
+   backend copies of provider credentials live here, "never DynamoDB". First,
+   so a crash after this point leaves a recoverable credential rather than a
+   provider resource we forgot.
 2. **The integrations row** — POINTERS only (resource id, name, service,
-   status, env var NAMES, dashboard URL) plus ``actor: "projects"``.
+   status, env var NAMES, dashboard URL) plus ``actor: "projects"``, keyed
+   ``projects/{provider}``.
 3. **The container** — ``env.vars.<NAME>`` in openclaw.json, OpenClaw's
    documented "environment variable overrides merged into runtime process
    environment". Static env is the right class here: these are provider WRITE
@@ -18,12 +20,21 @@ Three writes, in this order and for these reasons:
    PROXY (``apps/infra/openclaw/plugins/aws-exec-profile``) instead — a named
    follow-up, deliberately NOT in P0b.
 
-The ``(owner, provider)`` Secrets Manager blob is SHARED with the OAuth
-integrations rail — ``_secret_name`` is the same name ``routers/connections.py``
-writes and ``credentials/mcp_server.py`` reads, and ``stripe``/``posthog`` are
-both registry providers (``credentials/providers.yaml``) AND providers this rail
-lands. So nothing here may assume the blob is its own: reads take only the names
-the row declares, and writes merge rather than replace.
+**Both storage keys are namespaced** via ``integrations_repo.projects_key`` —
+the ``integrations`` sort key AND the Secrets Manager provider segment. The
+BARE ``(owner, provider)`` key belongs to the OAuth integrations rail, and
+``stripe``/``posthog``/``sentry``/``cloudflare`` are registry providers
+(``credentials/providers.yaml``) as well as providers this rail lands. Sharing
+it made six OAuth readers treat a provisioned provider as OAuth-connected, 409
+the OAuth start, and — worst — let an OAuth Disconnect force-delete this rail's
+credentials. The namespaced key is invisible to those readers (it matches no
+registry provider), so nothing else has to change to stay correct.
+
+The blob is therefore this rail's own. The merge-rather-than-replace writes and
+the read-only-declared-names reads below STAY: one provider can hold several
+provisioned resources, so a second ``projects add`` must not blank the first's
+variables, and injecting the whole blob would put any future non-env field into
+openclaw.json.
 
 P0b ships no reconcile entry point for this rail (the integrations rail has
 ``mcp_server.reconcile_integrations``); a config write missed because the
@@ -47,19 +58,20 @@ logger = logging.getLogger(__name__)
 
 async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]) -> None:
     provider = resource["provider"]
-    # The Secrets Manager blob is per-(owner, provider) and a provider can hold
-    # several resources, so MERGE rather than replace — a second `projects add`
-    # for the same provider must not blank the first one's variables. A failing
-    # read propagates deliberately: writing without knowing what is already
-    # there would destroy credentials the provider only ever shows once.
+    key = integrations_repo.projects_key(provider)
+    # The blob is per-(owner, provider) and a provider can hold several
+    # resources, so MERGE rather than replace — a second `projects add` for the
+    # same provider must not blank the first one's variables. A failing read
+    # propagates deliberately: writing without knowing what is already there
+    # would destroy credentials the provider only ever shows once.
     #
-    # Merged VERBATIM, with no type filter: the same blob holds the OAuth rail's
-    # credential for this provider, whose fields are not all strings
-    # (``expires_in: int | None``). Dropping the non-strings would corrupt the
-    # round-trip the store documents.
-    existing = await integration_secret_store.get(owner_id, provider) or {}
+    # Merged VERBATIM, with no type filter: the store documents a round-trip of
+    # the exact dict, and a filter here would silently drop any non-string field
+    # a future landing adds.
+    existing = await integration_secret_store.get(owner_id, key) or {}
     merged = {**existing, **env}
-    await integration_secret_store.put(owner_id, provider, merged)
+    await integration_secret_store.put(owner_id, key, merged)
+    # The repo namespaces the sort key itself, so callers pass the bare provider.
     await integrations_repo.record_provider_resource(owner_id, provider, resource)
     try:
         for name, value in sorted(env.items()):
@@ -98,34 +110,35 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
     owner's and stays theirs (spec §3.6). Removing it is a separate, explicit
     action they take in the provider's own dashboard.
 
-    The ``(owner, provider)`` Secrets Manager blob is SHARED with the OAuth
-    integrations rail (see the module docstring above), so this must never
-    delete the whole blob — that would also destroy an OAuth credential the
-    owner connected separately. Instead it drops only the REVOKED resource's
-    own ``env_keys`` from the blob, and force-deletes the secret only when
-    nothing is left. ``get`` returning ``None`` (already gone) skips the
-    secret step entirely rather than writing back an empty dict.
+    One provider's blob holds every resource that provider landed, so this
+    drops only the REVOKED resource's own ``env_keys`` — minus any name a
+    SURVIVING resource of the same provider still declares, which would
+    otherwise be stripped out from under it — and force-deletes the secret
+    only when nothing is left. ``get`` returning ``None`` (already gone)
+    skips the secret step entirely rather than writing back an empty dict.
 
-    Order: trim the shared blob, then strip the same names from the
-    container's ``env.vars``, then remove the pointer LAST — so a retry
-    after a config-patch failure can still find the pointer's ``env_keys``
-    to finish the job.
+    Order: trim the blob, then strip the same names from the container's
+    ``env.vars``, then remove the pointer LAST — so a retry after a
+    config-patch failure can still find the pointer's ``env_keys`` to finish
+    the job.
     """
     resources = await integrations_repo.list_provider_resources(owner_id, provider)
     target = next((r for r in resources if r.get("resource_id") == resource_id), None)
     if target is None:
         return False
-    env_keys = list(target.get("env_keys") or [])
+    still_used = {name for r in resources if r.get("resource_id") != resource_id for name in r.get("env_keys") or []}
+    env_keys = [k for k in (target.get("env_keys") or []) if k not in still_used]
 
     if env_keys:
-        blob = await integration_secret_store.get(owner_id, provider)
+        secret_key = integrations_repo.projects_key(provider)
+        blob = await integration_secret_store.get(owner_id, secret_key)
         if blob is not None:
             for key in env_keys:
                 blob.pop(key, None)
             if blob:
-                await integration_secret_store.put(owner_id, provider, blob)
+                await integration_secret_store.put(owner_id, secret_key, blob)
             else:
-                await integration_secret_store.delete(owner_id, provider)
+                await integration_secret_store.delete(owner_id, secret_key)
         try:
             for key in env_keys:
                 # One locked RMW per var, same reasoning as land_credentials:
@@ -156,25 +169,28 @@ async def build_provisioned_env(owner_id: str) -> dict[str, str]:
     failure the ``integration_mcp_servers`` merge in ``build_openclaw_config_dict``
     exists to prevent. Best-effort: never fail a provision.
 
+    Rows are selected by BOTH the ``projects/`` key prefix and the ``actor``
+    stamp, so an OAuth row can never be read through here even if a future
+    writer stamps the actor by mistake.
+
     Only the names the row DECLARES (the union of its
     ``provider_resources[].env_keys``) are read out of the blob, never the blob
-    itself: it is shared with the OAuth rail, so a provider connected on both
-    would otherwise leak ``access_token``/``refresh_token``/``client_secret``
-    into openclaw.json.
+    itself — openclaw.json gets exactly the variables the CLI landed.
     """
     env: dict[str, str] = {}
     try:
         for row in await integrations_repo.list_for_owner(owner_id):
-            if row.get("actor") != integrations_repo.PROJECTS_ACTOR:
+            key = row.get("provider") or ""
+            if not key.startswith(integrations_repo.PROJECTS_KEY_PREFIX):
                 continue
-            if row.get("status", "connected") != "connected":
+            if row.get("actor") != integrations_repo.PROJECTS_ACTOR:
                 continue
             names = {
                 name for resource in row.get("provider_resources") or [] for name in resource.get("env_keys") or []
             }
             if not names:
                 continue
-            cred = await integration_secret_store.get(owner_id, row.get("provider") or "") or {}
+            cred = await integration_secret_store.get(owner_id, key) or {}
             for name in names:
                 value = cred.get(name)
                 if isinstance(value, str):
@@ -201,6 +217,11 @@ async def provisioning_summary(owner_id: str) -> tuple[str, list[dict]]:
     resources: list[dict] = []
     paired = False
     for row in rows:
+        # Same two-part selection as build_provisioned_env. The pointers inside
+        # carry the BARE provider (`posthog`), never the namespaced key — that
+        # is what /resources renders and what revoke takes back.
+        if not (row.get("provider") or "").startswith(integrations_repo.PROJECTS_KEY_PREFIX):
+            continue
         if row.get("actor") != integrations_repo.PROJECTS_ACTOR:
             continue
         paired = True

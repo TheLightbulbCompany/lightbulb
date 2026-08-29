@@ -39,7 +39,14 @@ Pass 1 covers only the backend-owned prefixes; the CloudFormation-owned static
 secrets are copied in a later pass, AFTER their stack has created them at the
 new name (CreateSecret on a name that already exists fails the deploy):
 
-    --only user-keys/,integrations/,paperclip-agent-keys/,paperclip_admin_credentials
+    --only user-keys/,integrations/,paperclip-agent-keys/
+
+`paperclip_admin_credentials` is NOT in pass 1. Its VALUE is backend-owned (the
+bootstrap script writes it) but its RESOURCE is CloudFormation-owned, and that
+is the half that matters here — copying it early is what rolled the dev auth
+stack back on 2026-08-29, taking all 17 twins with it. The `_is_cfn_owned`
+guard now refuses that create outright, so the rule is enforced rather than
+remembered.
 
 Check $? UNPIPED — piping through head/tail gives you the pipe's exit code, not
 the verdict.
@@ -76,6 +83,23 @@ def _read(sm, name: str) -> tuple[bytes, str | None] | None:
     except ClientError:
         kms = None
     return value, kms
+
+
+def _is_cfn_owned(sm, name: str) -> bool:
+    """True when CloudFormation owns this secret RESOURCE.
+
+    Load-bearing guard, not a nicety. A CFN-owned source has a twin that CFN
+    will create at the destination name, and ``CreateSecret`` on a name that
+    already exists FAILS THE DEPLOY and rolls the whole stack back — which then
+    deletes every other twin in it. Copying a CFN-owned secret ahead of its
+    stack is therefore not "early", it is a stack-wide outage. The destination
+    for one of these may only ever be SEEDED after CFN has made it.
+    """
+    try:
+        tags = sm.describe_secret(SecretId=name).get("Tags") or []
+    except ClientError:
+        return False
+    return any(t.get("Key") == "aws:cloudformation:stack-name" for t in tags)
 
 
 def _sources(sm, env: str) -> list[str]:
@@ -115,7 +139,7 @@ def main() -> int:
         names = [n for n in names if any(t in n for t in wanted)]
     print(f"{len(names)} secrets under {OLD_PREFIX}{args.env}/\n")
 
-    stats = {"same": 0, "created": 0, "updated": 0, "drift": 0, "missing": 0, "skipped": 0, "error": 0}
+    stats = {"same": 0, "created": 0, "updated": 0, "drift": 0, "missing": 0, "skipped": 0, "blocked": 0, "error": 0}
 
     for src in names:
         dst = NEW_PREFIX + src[len(OLD_PREFIX) :]
@@ -132,6 +156,13 @@ def main() -> int:
             if dst_val is not None and dst_val == src_val:
                 print(f"  same    {dst}  sha={_h(src_val)}")
                 stats["same"] += 1
+                continue
+            # BEFORE the plan/verify/apply split, so a dry run reports this too
+            # — a plan that says "create" for a name CloudFormation is about to
+            # create is the exact misreading that caused the rollback.
+            if dst_val is None and _is_cfn_owned(sm, src):
+                print(f"  BLOCKED {dst}  source is CloudFormation-owned and the twin does not exist yet")
+                stats["blocked"] += 1
                 continue
             if dst_val is not None and args.only_missing:
                 stats["skipped"] += 1
@@ -150,9 +181,19 @@ def main() -> int:
                 kw: dict = {"Name": dst, "SecretString": src_val.decode()}
                 if src_kms:
                     kw["KmsKeyId"] = src_kms
-                sm.create_secret(**kw)
-                print(f"  created {dst}  sha={_h(src_val)}")
-                stats["created"] += 1
+                try:
+                    sm.create_secret(**kw)
+                    print(f"  created {dst}  sha={_h(src_val)}")
+                    stats["created"] += 1
+                except sm.exceptions.ResourceExistsException:
+                    # The destination secret EXISTS but holds no version, so the
+                    # read above came back empty and looked like "absent". A
+                    # CloudFormation-minted twin lands in exactly this state when
+                    # its construct carries neither an initial value nor a
+                    # generate config. Seed it rather than failing the run.
+                    sm.put_secret_value(SecretId=dst, SecretString=src_val.decode())
+                    print(f"  seeded  {dst}  sha={_h(src_val)}")
+                    stats["updated"] += 1
             else:
                 sm.put_secret_value(SecretId=dst, SecretString=src_val.decode())
                 print(f"  updated {dst}  sha={_h(src_val)}")
@@ -162,7 +203,7 @@ def main() -> int:
             stats["error"] += 1
 
     print("\n" + "  ".join(f"{k}={v}" for k, v in stats.items() if v))
-    bad = stats["error"] + (stats["drift"] + stats["missing"] if args.verify else 0)
+    bad = stats["error"] + stats["blocked"] + (stats["drift"] + stats["missing"] if args.verify else 0)
     return 1 if bad else 0
 
 

@@ -46,7 +46,7 @@ def workflows_table():
             yield table
 
 
-async def _new(owner_id="org_a"):
+async def _new(owner_id="org_a", **kwargs):
     from core.repositories import provisioning_workflow_repo as repo
 
     return await repo.create(
@@ -58,6 +58,7 @@ async def _new(owner_id="org_a"):
         service_id="svc_analytics",
         configuration={"region": "us"},
         issue_id="iss_1",
+        **kwargs,
     )
 
 
@@ -73,6 +74,16 @@ async def test_create_starts_in_ask_and_is_open(workflows_table):
     assert row["configuration"] == {"region": "us"}
     assert row["workflow_id"].startswith("pwf_")
     assert row["created_at"] and row["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_create_persists_the_asking_agents_reason(workflows_table):
+    """The row is the memory: a re-filed card after a catalog drift still has
+    to say why, and the reason is not recoverable from the catalog."""
+    row = await _new(reason="The launch needs funnel numbers.")
+    assert row["reason"] == "The launch needs funnel numbers."
+    # Absent, it is stored empty rather than missing — no caller has to guard.
+    assert (await _new())["reason"] == ""
 
 
 @pytest.mark.asyncio

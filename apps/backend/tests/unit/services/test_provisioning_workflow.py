@@ -156,6 +156,31 @@ async def test_start_snapshots_the_catalog_and_files_a_consent_card():
 
 
 @pytest.mark.asyncio
+async def test_start_carries_the_asking_agents_reason_to_the_row_and_the_card():
+    """The catalog says WHAT the service is; only Friday can say what it is
+    for, and the owner is approving spend on her word. The row keeps it because
+    a drift re-file has to say why all over again."""
+    with (
+        patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        await mod.start(
+            owner_id="org_a",
+            provider_name="posthog",
+            service_id="svc_analytics",
+            configuration=CONFIG,
+            issue_id=None,
+            reason="The launch needs funnel numbers by Friday.",
+        )
+    assert create.await_args.kwargs["reason"] == "The launch needs funnel numbers by Friday."
+    card = mod.provisioning_approvals.request_provider_consent.await_args
+    assert card.kwargs["reason"] == "The launch needs funnel numbers by Friday."
+
+
+@pytest.mark.asyncio
 async def test_a_sequential_re_ask_reuses_the_open_workflow_and_its_card():
     """Friday retrying after a timeout must not open a second card — or, once
     approved, provision the same resource twice. Two SIMULTANEOUS asks can
@@ -172,6 +197,10 @@ async def test_a_sequential_re_ask_reuses_the_open_workflow_and_its_card():
             owner_id="org_a", provider_name="posthog", service_id="svc_analytics", configuration=CONFIG, issue_id=None
         )
     assert row["workflow_id"] == "pwf_1"
+    # In-memory only, so the caller can say "already asked" instead of claiming
+    # it filed a second card. Never written to the row.
+    assert row["reused"] is True
+    assert "reused" not in open_row
     create.assert_not_awaited()
     mod.provisioning_approvals.request_provider_consent.assert_not_awaited()
 
@@ -325,7 +354,11 @@ async def test_approval_with_unchanged_catalog_moves_to_connecting_provider():
 @pytest.mark.asyncio
 async def test_catalog_drift_after_approval_files_a_fresh_card():
     """ "If any approved value changed, require approval again." """
-    row = _row(state="awaiting_approval", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    row = _row(
+        state="awaiting_approval",
+        approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG),
+        reason="The launch needs funnel numbers.",
+    )
     now_paid = {
         **SERVICE,
         "pricing": {"type": "paid", "paid_pricing": [{"type": "freeform", "freeform": "$20/mo", "is_default": True}]},
@@ -340,6 +373,9 @@ async def test_catalog_drift_after_approval_files_a_fresh_card():
     assert out["state"] == "awaiting_approval"
     assert move.await_args.kwargs["to_state"] == "awaiting_approval"
     assert mod.provisioning_approvals.request_provider_consent.await_count == 1
+    # The same decision asked again: it must still say why.
+    refile = mod.provisioning_approvals.request_provider_consent.await_args
+    assert refile.kwargs["reason"] == "The launch needs funnel numbers."
 
 
 @pytest.mark.asyncio

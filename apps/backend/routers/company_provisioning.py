@@ -139,6 +139,9 @@ _MAX_ISSUE_ID = 128
 _MAX_REASON = 500
 
 FILED_MESSAGE = "Filed an approval card for your owner. Keep working on everything that does not need it."
+# One open workflow per (provider, service): asking twice is a no-op, not a
+# conflict. Friday retrying after a timeout must not be told the door is shut.
+REUSED_MESSAGE = "You already asked for this one — the same request is still open. Nothing new was filed."
 
 
 def _refusal(e: WorkflowRefused) -> HTTPException:
@@ -242,9 +245,8 @@ class ProvisionRequestBody(BaseModel):
     service: str = ""
     configuration: dict = Field(default_factory=dict)
     issue_id: str | None = None
-    # Accepted because Friday's prompt carries one; the consent card is built
-    # from the catalog snapshot, so it is validated and then dropped rather
-    # than rendered as agent prose the owner might read as ours.
+    # WHY she is asking. The catalog says what the service is; only Friday can
+    # say what it is for, and the owner is approving spend on her word.
     reason: str = ""
 
 
@@ -335,13 +337,19 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
             service_id=body.service,
             configuration=body.configuration,
             issue_id=body.issue_id,
+            reason=body.reason,
         )
     except WorkflowRefused as e:
         raise _refusal(e) from e
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await provisioning_driver.kick(row["workflow_id"])
-    return {**_safe_workflow(row), "message": FILED_MESSAGE}
+    reused = bool(row.get("reused"))
+    return {
+        **_safe_workflow(row),
+        "reused": reused,
+        "message": REUSED_MESSAGE if reused else FILED_MESSAGE,
+    }
 
 
 @router.get("/u/{owner_id}/requests")

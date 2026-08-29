@@ -137,6 +137,16 @@ def test_catalog_never_leaks_the_stripe_account_id(client):
     assert "acct_1" not in resp.text
 
 
+def test_catalog_stripe_outage_is_a_503_the_agent_can_retry(client):
+    """The catalog is three Stripe reads; an outage there is retryable too."""
+    with patch.object(
+        mod.api, "eligibility", AsyncMock(side_effect=TransientProvisioningError("transport_error", "no route"))
+    ):
+        resp = client.get(f"{BASE}/catalog", headers=HDRS)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "stripe_unavailable"
+
+
 def test_catalog_without_a_company_stripe_account_is_an_actionable_409(client, monkeypatch):
     monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"}))
     resp = client.get(f"{BASE}/catalog", headers=HDRS)
@@ -166,6 +176,7 @@ def test_request_starts_a_workflow_and_kicks_the_driver(client):
                 "service": "svc_analytics",
                 "configuration": {"region": "us"},
                 "issue_id": "iss_1",
+                "reason": "The launch needs funnel numbers.",
             },
         )
     assert resp.status_code == 200
@@ -174,7 +185,32 @@ def test_request_starts_a_workflow_and_kicks_the_driver(client):
     assert resp.json()["message"]
     assert start.await_args.kwargs["provider_name"] == "posthog"
     assert start.await_args.kwargs["configuration"] == {"region": "us"}
+    assert start.await_args.kwargs["reason"] == "The launch needs funnel numbers."
+    assert resp.json()["reused"] is False
     kick.assert_awaited_once_with("pwf_1")
+
+
+def test_asking_twice_reuses_the_open_workflow_instead_of_refusing(client):
+    """Friday retrying after a timeout is a no-op, not a conflict: `start`
+    hands back the open row and the message must not claim a second card."""
+    open_row = {
+        "workflow_id": "pwf_1",
+        "state": "awaiting_approval",
+        "provider_name": "posthog",
+        "service_ref": "svc_analytics",
+        "reused": True,
+    }
+    with (
+        patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=open_row)),
+        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+    ):
+        resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "posthog", "service": "svc_analytics"})
+    assert resp.status_code == 200
+    assert resp.json()["workflow_id"] == "pwf_1"
+    assert resp.json()["reused"] is True
+    assert resp.json()["message"] == mod.REUSED_MESSAGE
+    # The in-memory marker must not ride along inside the safe shape.
+    assert "reused" not in mod._safe_workflow(open_row)
 
 
 @pytest.mark.parametrize(
@@ -236,6 +272,8 @@ def test_a_stripe_refusal_is_a_502_not_worth_retrying(client):
         {"provider": "posthog\n", "service": "svc_analytics"},
         {"provider": "posthog", "service": "svc_analytics", "configuration": {"k": "x" * 2000}},
         {"provider": "posthog", "service": "svc_analytics", "configuration": {"k": "a\nb"}},
+        {"provider": "posthog", "service": "svc_analytics", "configuration": {"k" * 200: "v"}},
+        {"provider": "posthog", "service": "svc_analytics", "configuration": {"k\ney": "v"}},
         {"provider": "posthog", "service": "svc_analytics", "configuration": {"k": {"nested": 1}}},
         {"provider": "posthog", "service": "svc_analytics", "configuration": {"k": [1, 2]}},
         {"provider": "posthog", "service": "svc_analytics", "configuration": {str(i): i for i in range(26)}},

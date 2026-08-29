@@ -61,6 +61,34 @@ async def test_consent_card_carries_the_snapshot_and_an_editable_limit():
 
 
 @pytest.mark.asyncio
+async def test_consent_card_carries_the_asking_agents_reason():
+    """The owner is approving spend on an agent's word — they get to read the
+    sentence. Absent, it is empty, never missing: the card renders the key."""
+    with _filed() as filer:
+        await mod.request_provider_consent(
+            owner_id="org_a",
+            issue_id=None,
+            workflow_id="pwf_1",
+            snapshot=SNAP,
+            reason="The launch needs funnel numbers by Friday.",
+        )
+    assert _payload(filer)["reason"] == "The launch needs funnel numbers by Friday."
+
+    with _filed() as filer:
+        await mod.request_provider_consent(owner_id="org_a", issue_id=None, workflow_id="pwf_1", snapshot=SNAP)
+    assert _payload(filer)["reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_long_reason_is_capped_like_every_other_card_text():
+    with _filed() as filer:
+        await mod.request_provider_consent(
+            owner_id="org_a", issue_id=None, workflow_id="pwf_1", snapshot=SNAP, reason="x" * 5000
+        )
+    assert len(_payload(filer)["reason"]) == mod.MAX_TEXT
+
+
+@pytest.mark.asyncio
 async def test_consent_card_carries_every_disclosure_the_guide_requires():
     """Each key here maps to one line of the guide's "Collect informed
     approval" list. A missing one makes the approval uninformed."""

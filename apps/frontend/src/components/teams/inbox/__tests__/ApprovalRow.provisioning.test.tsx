@@ -67,6 +67,7 @@ describe("ApprovalRow stripe_cli_login", () => {
     expect(screen.getByText("wistful-quiet-abcd")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Stripe" }));
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
     expect(tab.location.href).toBe("https://dashboard.stripe.com/stripecli/confirm_auth?t=x");
     // The owner has to confirm the code in Stripe first — opening is not consent.
     expect(approve).not.toHaveBeenCalled();

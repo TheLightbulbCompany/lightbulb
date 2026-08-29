@@ -36,6 +36,7 @@ jobs:
         run: |-
           cd apps/infra
           npm ci
+          rm -rf cdk.out
           npx cdk synth
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4

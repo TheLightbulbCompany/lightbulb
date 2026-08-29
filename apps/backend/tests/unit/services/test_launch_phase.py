@@ -1,5 +1,6 @@
 """Phase math for the Launch Competition — pure functions over launch-schedule.json."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -96,3 +97,23 @@ def test_real_file_parses_and_is_off_by_default():
         assert set(f[env]) == {"drop_at", "competition_start_at"}
         if f[env]["drop_at"] is not None:
             assert launch_phase.parse_iso(f[env]["competition_start_at"]) > launch_phase.parse_iso(f[env]["drop_at"])
+
+
+def test_load_schedule_file_prefers_env_var_over_the_ancestor_walk_file(monkeypatch):
+    """LAUNCH_SCHEDULE_JSON (injected by service-stack.ts at synth time) must
+    win over reading launch-schedule.json off disk, so a running container
+    sees the env-supplied content, not whatever happens to be checked into
+    the repo root."""
+    payload = _file(dev={"drop_at": "2026-09-18T00:00:00-04:00", "competition_start_at": "2026-09-21T00:00:00-04:00"})
+    monkeypatch.setenv("LAUNCH_SCHEDULE_JSON", json.dumps(payload))
+    with patch.object(launch_phase, "_FILE", None):
+        result = launch_phase.load_schedule_file()
+    assert result == payload
+    assert "notes" not in result  # proves it did NOT fall through to the on-disk file
+
+
+def test_load_schedule_file_falls_back_to_file_when_env_is_empty(monkeypatch):
+    monkeypatch.setenv("LAUNCH_SCHEDULE_JSON", "")
+    with patch.object(launch_phase, "_FILE", None):
+        result = launch_phase.load_schedule_file()
+    assert "notes" in result  # only the real repo-root file carries this key

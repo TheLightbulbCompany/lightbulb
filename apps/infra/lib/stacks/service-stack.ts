@@ -52,19 +52,19 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
 );
 
 // launch-schedule.json (repo root) is the single source of the Launch
-// Competition's dates/pot constants. Unlike OPENCLAW_VERSION above,
-// core/services/launch_phase.py reads this file directly at CONTAINER
-// RUNTIME — there are no LAUNCH_* env vars to inject instead. The backend
-// image's Docker build context is apps/backend/ too, so a Dockerfile COPY
-// can't reach the repo-root file; we stage a copy into that directory here
-// at synth time instead, and the Dockerfile's existing catch-all
-// `COPY --chown=appuser:appuser . .` ships it like any other backend source
-// file. The staged copy is gitignored (apps/backend/.gitignore) and
-// regenerated on every synth, so it never needs to be committed.
-fs.copyFileSync(
+// Competition's dates/pot constants. Same posture as OPENCLAW_VERSION above:
+// the backend image's Docker build context is apps/backend/, so the repo-root
+// file can't be COPY-d into the image directly. Read it here at synth time
+// and inject the raw text as an env var (LAUNCH_SCHEDULE_JSON below), which
+// core/services/launch_phase.py::load_schedule_file() reads at runtime. The
+// file is the only thing a human edits; this env is transport, mirroring
+// OPENCLAW_UPSTREAM_VERSION. Validate it parses so a broken file fails synth
+// rather than shipping unparseable JSON to the container.
+const LAUNCH_SCHEDULE_JSON = fs.readFileSync(
   path.join(__dirname, "..", "..", "..", "..", "launch-schedule.json"),
-  path.join(__dirname, "..", "..", "..", "backend", "launch-schedule.json"),
+  "utf8",
 );
+JSON.parse(LAUNCH_SCHEDULE_JSON);
 
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
@@ -1563,10 +1563,12 @@ export class ServiceStack extends cdk.Stack {
         tableName(env, "marketplace-takedowns"),
       MARKETPLACE_SELLERS_TABLE:
         tableName(env, "marketplace-sellers"),
-      // Launch Competition dates/pot constants live in launch-schedule.json at
-      // the repo root (core/services/launch_phase.py reads it directly at
-      // runtime — see the fs.copyFileSync note near the top of this file,
-      // right after OPENCLAW_VERSION), not as env vars.
+      // Launch Competition dates/pot constants — read from launch-schedule.json
+      // at synth time (see the LAUNCH_SCHEDULE_JSON const near the top of this
+      // file, right after OPENCLAW_VERSION) and injected as raw JSON text.
+      // core/services/launch_phase.py::load_schedule_file() reads this env var
+      // at runtime, falling back to an ancestor-walk file read for local dev.
+      LAUNCH_SCHEDULE_JSON: LAUNCH_SCHEDULE_JSON,
       // 100%-off-once coupon id from the Stripe console (live in prod, test in dev).
       STRIPE_FREE_MONTH_COUPON_ID: "",
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,

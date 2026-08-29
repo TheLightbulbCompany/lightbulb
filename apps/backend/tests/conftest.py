@@ -253,6 +253,7 @@ def mock_settings():
 @pytest.fixture
 def launch_schedule():
     """Patch launch-schedule.json in memory. Call with (drop_at, start_at) datetimes or None to turn the feature off."""
+    import os
     from contextlib import contextmanager
     from datetime import timedelta
     from unittest.mock import patch
@@ -275,7 +276,11 @@ def launch_schedule():
             "dev": env,
             "prod": {"drop_at": None, "competition_start_at": None},
         }
-        with patch.object(launch_phase, "_FILE", f), patch.object(launch_phase.settings, "ENVIRONMENT", "dev"):
+        with (
+            patch.dict(os.environ, {"LAUNCH_SCHEDULE_JSON": ""}, clear=False),
+            patch.object(launch_phase, "_FILE", f),
+            patch.object(launch_phase.settings, "ENVIRONMENT", "dev"),
+        ):
             yield
 
     return _set

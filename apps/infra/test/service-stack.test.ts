@@ -164,7 +164,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task env carries the Stripe free-month coupon id but no LAUNCH_* dates — those live in launch-schedule.json", () => {
+  test("backend task env carries the Stripe free-month coupon id and the launch schedule as LAUNCH_SCHEDULE_JSON — never the retired per-field LAUNCH_* names", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
@@ -174,17 +174,46 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         }),
       ]),
     });
+
+    // The six retired per-field env names must be gone — the schedule now
+    // ships as one JSON blob, not individually-named env vars.
+    const retiredLaunchEnvNames = [
+      "LAUNCH_DROP_AT",
+      "LAUNCH_COMP_SLOTS",
+      "LAUNCH_ACTIVATION_WINDOW_HOURS",
+      "LAUNCH_COMPETITION_DAYS",
+      "LAUNCH_PRIZE_FRONT_CENTS",
+      "LAUNCH_POT_PER_ENTRANT_CENTS",
+    ];
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.not(
             Match.arrayWith([
-              Match.objectLike({ Name: Match.stringLikeRegexp("^LAUNCH_") }),
+              Match.objectLike({
+                Name: Match.stringLikeRegexp(`^(${retiredLaunchEnvNames.join("|")})$`),
+              }),
             ]),
           ),
         }),
       ]),
     });
+
+    // LAUNCH_SCHEDULE_JSON must be present and parse to an object with dev + prod keys.
+    const found = template.findResources("AWS::ECS::TaskDefinition");
+    const allContainers = Object.values(found).flatMap(
+      (td) =>
+        (td as { Properties: { ContainerDefinitions: Array<{ Environment?: Array<{ Name: string; Value: string }> }> } })
+          .Properties.ContainerDefinitions,
+    );
+    const backendContainer = allContainers.find((c) =>
+      c.Environment?.some((e) => e.Name === "STRIPE_FREE_MONTH_COUPON_ID"),
+    );
+    const scheduleEnv = backendContainer?.Environment?.find((e) => e.Name === "LAUNCH_SCHEDULE_JSON");
+    expect(scheduleEnv).toBeDefined();
+    const parsed = JSON.parse(scheduleEnv!.Value);
+    expect(parsed).toHaveProperty("dev");
+    expect(parsed).toHaveProperty("prod");
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {

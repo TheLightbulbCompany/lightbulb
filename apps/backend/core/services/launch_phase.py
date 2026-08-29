@@ -12,6 +12,7 @@ start) → live → ended.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,11 +43,17 @@ def parse_iso(value: str) -> datetime:
 
 
 def load_schedule_file() -> dict:
-    """Read launch-schedule.json by searching upward from this file (same
-    posture as core/openclaw_version.py — the backend image copies the file
-    into its build context; a hardcoded parents[N] would break in the container)."""
+    """Load the Launch Competition schedule. Prefers LAUNCH_SCHEDULE_JSON, the
+    raw file text injected as a container env var at CDK synth time (mirrors
+    OPENCLAW_UPSTREAM_VERSION — see the LAUNCH_SCHEDULE_JSON const in
+    service-stack.ts). Falls back to an ancestor-walk file read for local
+    dev / tests where the env var isn't set."""
     global _FILE
     if _FILE is not None:
+        return _FILE
+    raw_env = os.environ.get("LAUNCH_SCHEDULE_JSON")
+    if raw_env:
+        _FILE = json.loads(raw_env)
         return _FILE
     here = Path(__file__).resolve()
     for ancestor in here.parents:

@@ -77,51 +77,14 @@ export class AuthStack extends cdk.Stack {
               : {}),
         });
 
-      // TRANSITIONAL — step 1 of 3 in the isol8/ -> lightbulb/ secret-prefix move.
-      //
-      // `secretName` is a CloudFormation REPLACEMENT property, so renaming these
-      // in place would have CFN mint a new secret with a GENERATED value and then
-      // delete the old one — over the live Fernet, Clerk and Stripe keys. And
-      // pre-copying the values to the new name doesn't rescue it either: CFN's
-      // create then fails with `already exists`. So the move is add-before-remove,
-      // the same shape used for the ManagedBy tag and the Cloud Map namespace:
-      //
-      //   1. THIS — mint the twin at the new name. Nothing consumes it yet, so the
-      //      generated placeholder value is harmless. `migrate_secret_prefix.py`
-      //      then copies each real value across (PutSecretValue; CFN neither knows
-      //      nor cares about the value it seeded).
-      //   2. Repoint every consumer to the new name. Consumers hold plain NAME
-      //      strings and import via `fromSecretNameV2`, never an ISecret, so there
-      //      is no cross-stack export to deadlock on — see isol8-stage.ts.
-      //   3. Delete the legacy construct and this branch.
-      //
-      // Steps 2 and 3 are separate deploys on purpose: deleting the old secret in
-      // the same deploy that repoints consumers leaves a window where a task
-      // restarting on the OLD task definition cannot read its secret (a secret
-      // scheduled for deletion fails GetSecretValue immediately).
-      // STEP 2 of 3 — consumers now take the lightbulb twin. The legacy
-      // construct stays declared for one more deploy: removing it in the SAME
-      // deploy that repoints consumers would leave a window where a task
-      // restarting on the OLD task definition cannot read its secret, because a
-      // secret scheduled for deletion fails GetSecretValue immediately.
-      const legacy = make(logicalId, "isol8");
-
-      // `.secretName` on these is NOT a literal — CDK derives it from the
-      // secret's Ref, so passing it cross-stack publishes a CFN Export. Nine of
-      // them are imported by isol8-{env}-paperclip and isol8-{env}-service.
-      // Pointing consumers at the twin stops those exports being produced, and
-      // AuthStack deploys BEFORE its consumers, so CloudFormation tries to
-      // delete an export that is still in use:
-      //
-      //   Delete canceled. Cannot delete export
-      //   isol8-dev-auth:ExportsOutputRefPaperclipEventsWebhookSecret… as it is
-      //   in use by isol8-dev-paperclip and isol8-dev-service.
-      //
-      // exportValue() keeps each legacy export published for the transitional
-      // deploy, so the consumers can move off it in the same run. The pins come
-      // out in step 3 together with the constructs themselves.
-      this.exportValue(legacy.secretArn);
-
+      // The `Lightbulb` suffix on the logical id is load-bearing, not leftover
+      // naming: it is what CloudFormation already knows these resources by. The
+      // id was introduced when the secrets moved off the `isol8/` prefix (that
+      // move had to be add-before-remove — `secretName` is a REPLACEMENT
+      // property, so an in-place rename destroys the secret and mints a new one
+      // with a generated value). Renaming the id back would replace every secret
+      // and lose every live value, which is the exact outcome the three-step
+      // migration existed to avoid.
       return make(`${logicalId}Lightbulb`, "lightbulb");
     };
 

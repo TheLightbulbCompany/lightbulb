@@ -47,7 +47,14 @@ def format_provider_label(provider_choice: str | None, byo_provider: str | None)
     return f"unknown ({provider_choice})"
 
 
-def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_address: str | None = None) -> dict:
+def build_owner_facts(
+    owner_id: str,
+    billing_account: dict | None,
+    *,
+    email_address: str | None = None,
+    stripe_cli: str = "unpaired",
+    provisioned: list[str] | None = None,
+) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
 
@@ -94,6 +101,15 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         "provider": format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
         "company_stripe": company_stripe,
+        # The provisioning rail. "paired" means the owner completed
+        # `stripe login` in this container at least once — derived from the
+        # presence of landed resources, which is proof it worked. Friday's
+        # "don't ask twice" hint.
+        "stripe_cli": stripe_cli,
+        # "provider/service (name)" for what the owner already has on their
+        # OWN identity, so Friday never re-provisions what exists. Names only,
+        # never a credential.
+        "provisioned": list(provisioned or []),
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
         # TRI-STATE with `email_address` below, and load-bearing.
         #
@@ -136,6 +152,38 @@ async def _lookup_email_address(owner_id: str) -> str | None:
     return active[0].get("address")
 
 
+async def _lookup_provisioned(owner_id: str) -> tuple[str, list[str]]:
+    """``(stripe_cli, ["provider/service (name)", …])`` from the SHARED summary.
+
+    One query, two facts — the same helper the Accounts route reads, so the
+    file and the UI can never disagree about what the owner has.
+
+    Lazy import for the same reason as this module's other lazy imports: the
+    facts file must not pull in repos it does not otherwise need. Never raises:
+    the facts write must not depend on it.
+
+    Three fields are read out of a pointer, by name. The pointer also carries
+    ``env_keys``, and this file is readable by every agent in the container, so
+    the whitelist is the point — nothing that ever rides on a pointer can leak
+    into it.
+    """
+    try:
+        from core.services.provisioning_landing import provisioning_summary
+
+        state, resources = await provisioning_summary(owner_id)
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: provisioning summary failed for %s: %s", owner_id, e)
+        return "unpaired", []
+    labels = set()
+    for resource in resources:
+        provider, service = resource.get("provider"), resource.get("service")
+        if not provider or not service:
+            continue
+        name = (resource.get("resource_name") or "").strip()
+        labels.add(f"{provider}/{service} ({name})" if name else f"{provider}/{service}")
+    return state, sorted(labels)
+
+
 async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
     """Render + write the facts file. Best-effort: never raises.
 
@@ -151,7 +199,14 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if account_overrides:
             account = {**account, **account_overrides}
-        facts = build_owner_facts(owner_id, account, email_address=await _lookup_email_address(owner_id))
+        stripe_cli, provisioned = await _lookup_provisioned(owner_id)
+        facts = build_owner_facts(
+            owner_id,
+            account,
+            email_address=await _lookup_email_address(owner_id),
+            stripe_cli=stripe_cli,
+            provisioned=provisioned,
+        )
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

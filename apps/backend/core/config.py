@@ -296,7 +296,7 @@ class Settings(BaseSettings):
     """OVERRIDE for the bedrock-gate Function URL (tests / local dev only).
 
     Production resolution is RUNTIME discovery from SSM
-    (``/isol8/{env}/bedrock-gate-url``, published by the bedrock-gate CDK
+    (``/lightbulb/{env}/bedrock-gate-url``, published by the bedrock-gate CDK
     stack) via ``core.billing.bedrock_gate_url.gate_url`` — the gateway is the
     STANDARD Bedrock path, so nothing is wired through task env. When this
     override is set it wins over SSM; empty (the default) means "ask SSM"."""

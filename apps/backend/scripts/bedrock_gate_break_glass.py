@@ -8,7 +8,7 @@ This script is the escape hatch. Full procedure — BOTH steps are required — 
 
   1. Flip the SSM parameter to direct mode (config side)::
 
-         aws ssm put-parameter --name /isol8/{env}/bedrock-gate-url \\
+         aws ssm put-parameter --name /lightbulb/{env}/bedrock-gate-url \\
              --value direct --overwrite
 
   2. Re-grant direct invoke + re-render configs (this script)::

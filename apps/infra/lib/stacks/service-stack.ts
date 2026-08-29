@@ -574,14 +574,6 @@ export class ServiceStack extends cdk.Stack {
         ],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/*`,
-          // The STATIC secrets (clerk_*, stripe_*, encryption_key, …) are
-          // CloudFormation-owned and still on the old prefix: `secretName` is a
-          // replacement property, so moving them would have CFN destroy each
-          // secret and create a new one with a GENERATED value — over the live
-          // Fernet, Clerk and Stripe keys. They move by their own import-based
-          // migration, not by editing this line. Until then this grant must
-          // span both prefixes or the execution role cannot read them at all.
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/*`,
         ],
       }),
     );
@@ -854,7 +846,7 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // bedrock-gate URL discovery: the gate stack publishes each env's Function
-    // URL to /isol8/{env}/bedrock-gate-url and the backend reads it at runtime
+    // URL to /lightbulb/{env}/bedrock-gate-url and the backend reads it at runtime
     // (no cross-stack prop threading). The parameter doubles as the fleet
     // break-glass lever — value "direct" routes new provisions straight to
     // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
@@ -865,10 +857,6 @@ export class ServiceStack extends cdk.Stack {
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/bedrock-gate-url`,
-          // TRANSITIONAL — the gate stack publishes both names for one cycle so
-          // the reader can move without a window where the parameter is absent.
-          // Drops with the legacy parameter in step 2.
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/isol8/${env}/bedrock-gate-url`,
         ],
       }),
     );
@@ -1283,14 +1271,6 @@ export class ServiceStack extends cdk.Stack {
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/*`,
-          // The STATIC secrets (clerk_*, stripe_*, encryption_key, …) are
-          // CloudFormation-owned and still on the old prefix: `secretName` is a
-          // replacement property, so moving them would have CFN destroy each
-          // secret and create a new one with a GENERATED value — over the live
-          // Fernet, Clerk and Stripe keys. They move by their own import-based
-          // migration, not by editing this line. Until then this grant must
-          // span both prefixes or the execution role cannot read them at all.
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/*`,
         ],
       }),
     );

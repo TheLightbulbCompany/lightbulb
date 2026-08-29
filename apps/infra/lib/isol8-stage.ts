@@ -8,7 +8,6 @@ import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
 import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
-import { freezeCrossStackRefs } from "./freeze-cross-stack-refs";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
@@ -43,13 +42,13 @@ export class Isol8Stage extends cdk.Stage {
     const platformMailDomain =
       props.platformMailDomain ?? props.rootDomain ?? PLATFORM_MAIL_DOMAIN;
 
-    const auth = new AuthStack(this, `isol8-${env}-auth`, {
-      stackName: `isol8-${env}-auth`,
+    const auth = new AuthStack(this, `lightbulb-${env}-auth`, {
+      stackName: `lightbulb-${env}-auth`,
       environment: env,
     });
 
-    const dns = new DnsStack(this, `isol8-${env}-dns`, {
-      stackName: `isol8-${env}-dns`,
+    const dns = new DnsStack(this, `lightbulb-${env}-dns`, {
+      stackName: `lightbulb-${env}-dns`,
       environment: env,
       rootDomain,
     });
@@ -70,8 +69,8 @@ export class Isol8Stage extends cdk.Stage {
     // dev stage.
     let sesInbound: SesInboundStack | undefined;
     if (env === "prod") {
-      sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
-        stackName: `isol8-${env}-ses-inbound`,
+      sesInbound = new SesInboundStack(this, `lightbulb-${env}-ses-inbound`, {
+        stackName: `lightbulb-${env}-ses-inbound`,
         envName: env,
         // By-name import — same cross-stack-cycle-avoidance posture as every
         // other secret name threaded into ServiceStack below.
@@ -100,8 +99,8 @@ export class Isol8Stage extends cdk.Stage {
           : "";
     let agentMailOutbound: AgentMailOutboundStack | undefined;
     if (agentEmailDomain) {
-      agentMailOutbound = new AgentMailOutboundStack(this, `isol8-${env}-agent-mail-outbound`, {
-        stackName: `isol8-${env}-agent-mail-outbound`,
+      agentMailOutbound = new AgentMailOutboundStack(this, `lightbulb-${env}-agent-mail-outbound`, {
+        stackName: `lightbulb-${env}-agent-mail-outbound`,
         envName: env,
         apiDomain:
           env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
@@ -110,21 +109,21 @@ export class Isol8Stage extends cdk.Stage {
       agentMailOutbound.addDependency(auth);
     }
 
-    const network = new NetworkStack(this, `isol8-${env}-network`, {
-      stackName: `isol8-${env}-network`,
+    const network = new NetworkStack(this, `lightbulb-${env}-network`, {
+      stackName: `lightbulb-${env}-network`,
       environment: env,
       certificate: dns.certificate,
     });
 
-    const database = new DatabaseStack(this, `isol8-${env}-database`, {
-      stackName: `isol8-${env}-database`,
+    const database = new DatabaseStack(this, `lightbulb-${env}-database`, {
+      stackName: `lightbulb-${env}-database`,
       environment: env,
       kmsKey: auth.kmsKey,
       vpc: network.vpc,
     });
 
-    const container = new ContainerStack(this, `isol8-${env}-container`, {
-      stackName: `isol8-${env}-container`,
+    const container = new ContainerStack(this, `lightbulb-${env}-container`, {
+      stackName: `lightbulb-${env}-container`,
       environment: env,
       vpc: network.vpc,
       kmsKeyArn: auth.kmsKey.keyArn,
@@ -137,8 +136,8 @@ export class Isol8Stage extends cdk.Stage {
     });
 
     // ApiStack deploys BEFORE ServiceStack (no circular dependency)
-    const api = new ApiStack(this, `isol8-${env}-api`, {
-      stackName: `isol8-${env}-api`,
+    const api = new ApiStack(this, `lightbulb-${env}-api`, {
+      stackName: `lightbulb-${env}-api`,
       environment: env,
       rootDomain,
       vpc: network.vpc,
@@ -160,8 +159,8 @@ export class Isol8Stage extends cdk.Stage {
     });
 
     // ServiceStack replaces ComputeStack
-    const service = new ServiceStack(this, `isol8-${env}-service`, {
-      stackName: `isol8-${env}-service`,
+    const service = new ServiceStack(this, `lightbulb-${env}-service`, {
+      stackName: `lightbulb-${env}-service`,
       environment: env,
       rootDomain,
       platformMailDomain,
@@ -237,8 +236,8 @@ export class Isol8Stage extends cdk.Stage {
     // FastAPI via Cloud Map at
     // `http://paperclip.lightbulb-${env}.local:3100/`. T6 wires the public
     // host route on the existing ALB; T14 wires the FastAPI proxy router.
-    const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
-      stackName: `isol8-${env}-paperclip`,
+    const paperclip = new PaperclipStack(this, `lightbulb-${env}-paperclip`, {
+      stackName: `lightbulb-${env}-paperclip`,
       environment: env,
       rootDomain,
       vpc: network.vpc,
@@ -264,9 +263,9 @@ export class Isol8Stage extends cdk.Stage {
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     const observability = new ObservabilityStack(
       this,
-      `isol8-${env}-observability`,
+      `lightbulb-${env}-observability`,
       {
-        stackName: `isol8-${env}-observability`,
+        stackName: `lightbulb-${env}-observability`,
         envName: env,
         rootDomain,
         platformMailDomain,
@@ -306,8 +305,8 @@ export class Isol8Stage extends cdk.Stage {
     // CFN-level coupling to either env's auth stack, and the Lambdas have no
     // VPC, so the network stack is not involved at all.
     if (env === "prod") {
-      new BedrockMeterStack(this, `isol8-${env}-bedrock-meter`, {
-        stackName: `isol8-${env}-bedrock-meter`,
+      new BedrockMeterStack(this, `lightbulb-${env}-bedrock-meter`, {
+        stackName: `lightbulb-${env}-bedrock-meter`,
         envName: env,
       });
 
@@ -318,19 +317,15 @@ export class Isol8Stage extends cdk.Stage {
       // on the fixed function/table names. No stack dependencies — the billing,
       // fast-gate and dedup tables are referenced by NAME (ARN-by-convention),
       // and the Lambdas have no VPC (a Function URL cannot live in one).
-      new BedrockGateStack(this, `isol8-${env}-bedrock-gate`, {
-        stackName: `isol8-${env}-bedrock-gate`,
+      new BedrockGateStack(this, `lightbulb-${env}-bedrock-gate`, {
+        stackName: `lightbulb-${env}-bedrock-gate`,
         envName: env,
       });
     }
 
-    // TRANSITIONAL — step 2 of 3 of the isol8-* -> lightbulb-* stack rename.
-    // Must be the LAST thing the constructor does: it wraps every stack this
-    // stage owns, so any stack built after this call would be missed.
-    freezeCrossStackRefs(this, env);
 
     // --- Tags ---
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", env);
   }
 

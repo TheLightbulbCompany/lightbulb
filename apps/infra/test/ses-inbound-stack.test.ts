@@ -342,7 +342,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
   test("prod stage: the ses-inbound stack is created with SES resources", () => {
     const stacks = stageStacks("prod");
-    const sesStack = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    const sesStack = stacks.find((s) => s.node.id === "lightbulb-prod-ses-inbound");
     expect(sesStack).toBeDefined();
 
     const t = Template.fromStack(sesStack!);
@@ -354,7 +354,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
   test("dev stage: never gets a ses-inbound stack (prod-only, account-scoped rule set)", () => {
     const stacks = stageStacks("dev");
-    const sesStack = stacks.find((s) => s.node.id === "isol8-dev-ses-inbound");
+    const sesStack = stacks.find((s) => s.node.id === "lightbulb-dev-ses-inbound");
     expect(sesStack).toBeUndefined();
 
     // The account+region-scoped SINGLETON resources (SetActiveReceiptRuleSet
@@ -374,7 +374,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
   test("prod: the service stack's AGENT_EMAIL_DOMAIN is set live", () => {
     const stacks = stageStacks("prod");
-    const serviceStack = stacks.find((s) => s.node.id === "isol8-prod-service");
+    const serviceStack = stacks.find((s) => s.node.id === "lightbulb-prod-service");
     expect(serviceStack).toBeDefined();
     const t = Template.fromStack(serviceStack!);
     t.hasResourceProperties("AWS::ECS::TaskDefinition", {
@@ -394,7 +394,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     // unknown vars, so it was inert noise. The SES ingest Lambda uses its own
     // ATTACHMENTS_BUCKET (ses-inbound-stack), and the backend receives
     // attachment metadata in the webhook body instead.
-    const serviceStack = stageStacks("prod").find((s) => s.node.id === "isol8-prod-service");
+    const serviceStack = stageStacks("prod").find((s) => s.node.id === "lightbulb-prod-service");
     const rendered = JSON.stringify(Template.fromStack(serviceStack!).toJSON());
     expect(rendered).not.toContain("AGENT_EMAIL_ATTACHMENTS_BUCKET");
   });
@@ -406,7 +406,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     // the single prod-owned catch-all rule already receives
     // `{slug}.dev.isol8.co`. Only the domain and the Lambda's routing differ.
     const stacks = stageStacks("dev");
-    const serviceStack = stacks.find((s) => s.node.id === "isol8-dev-service");
+    const serviceStack = stacks.find((s) => s.node.id === "lightbulb-dev-service");
     expect(serviceStack).toBeDefined();
     const t = Template.fromStack(serviceStack!);
     t.hasResourceProperties("AWS::ECS::TaskDefinition", {
@@ -427,7 +427,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     // `*.isol8.co` matches `acme.isol8.co` but NOT `acme.dev.isol8.co`, so the
     // dev pair is required and lives in the prod stack, which owns mail DNS.
     const stacks = stageStacks("prod");
-    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    const ses = stacks.find((s) => s.node.id === "lightbulb-prod-ses-inbound");
     expect(ses).toBeDefined();
     const t = Template.fromStack(ses!);
     t.hasResourceProperties("AWS::Route53::RecordSet", {
@@ -444,7 +444,7 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
 
   test("the ingest Lambda carries the dev routing env so both backends are reachable", () => {
     const stacks = stageStacks("prod");
-    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    const ses = stacks.find((s) => s.node.id === "lightbulb-prod-ses-inbound");
     const t = Template.fromStack(ses!);
     const fns = Object.values(t.findResources("AWS::Lambda::Function")).filter(
       (fn: any) => fn.Properties?.Environment?.Variables?.RAW_MAIL_PREFIX != null,

@@ -129,7 +129,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
       ),
     );
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", envName);
   }
 }

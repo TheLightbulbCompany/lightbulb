@@ -392,10 +392,11 @@ stripe projects catalog --json           # structured, for parsing
 ```
 
 Take the terms URL and the price from what the catalog prints for that service.
-Only if it shows none, fall back to the provider's own pricing page — a card
-with a guessed price is worse than no card. `posthog/analytics` below stands in
-for whatever pair the catalog actually named; never type a pair you did not
-read there.
+If the catalog prints no price, take it from the provider's own pricing page;
+if it prints no terms URL, take the provider's own terms-of-service or legal
+page. Never leave either field empty and never guess — a card with a guessed
+price is worse than no card. `posthog/analytics` below stands in for whatever
+pair the catalog actually named; never type a pair you did not read there.
 
 ```bash
 curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \

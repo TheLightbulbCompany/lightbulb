@@ -10,21 +10,12 @@ class LaunchInfo(BaseModel):
     drop_at: str
     competition_start_at: str
     competition_end_at: str
+    signups: int
+    competing: int
+    on_board: int
     pot_cents: int
-    entrants: int
-    waitlist_count: int
     comp_slots: int
-
-
-class WaitlistJoinRequest(BaseModel):
-    email: str = Field(max_length=254)
-    ref: str | None = Field(default=None, max_length=16)
-
-
-class WaitlistJoinResponse(BaseModel):
-    position: int
-    referral_code: str
-    in_comp_window: bool
+    pot_per_entrant_cents: int
 
 
 class ReferralAttributeRequest(BaseModel):

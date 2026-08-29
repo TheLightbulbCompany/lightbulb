@@ -123,3 +123,19 @@ async def test_list_all_excludes_counter_row(table):
 def test_normalize_email_rejects_garbage(table):
     with pytest.raises(ValueError):
         table.normalize_email("not-an-email")
+
+
+async def test_mark_pot_counted_is_cas(table):
+    await table.join("a@example.com", referred_by=None, source="signup")
+    assert await table.mark_pot_counted("a@example.com") is True
+    assert await table.mark_pot_counted("a@example.com") is False
+
+
+async def test_count_pot_counted(table):
+    await table.join("a@example.com", referred_by=None, source="signup")
+    await table.join("b@example.com", referred_by=None, source="signup")
+    await table.join("c@example.com", referred_by=None, source="signup")
+    assert await table.count_pot_counted() == 0
+    await table.mark_pot_counted("a@example.com")
+    await table.mark_pot_counted("b@example.com")
+    assert await table.count_pot_counted() == 2

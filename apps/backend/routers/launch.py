@@ -25,8 +25,6 @@ from schemas.launch import (
     LaunchInfo,
     LeaderboardResponse,
     ReferralAttributeRequest,
-    WaitlistJoinRequest,
-    WaitlistJoinResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,39 +65,26 @@ def _rate_limit(request: Request, surface: str) -> None:
 @router.get("", response_model=LaunchInfo, operation_id="launch_info")
 async def launch_info(response: Response, s: Schedule = Depends(require_launch)) -> dict:
     async def _build() -> dict:
-        entrants = await launch_entries_repo.count()
-        waitlist_count = await launch_waitlist_repo.count()
+        signups = await launch_waitlist_repo.count()
+        competing = await launch_entries_repo.count()
+        # Task 4 switches this to launch_entries_repo.count_with_key() (entries
+        # with a stored Stripe key, i.e. actually able to compete).
+        on_board = await launch_entries_repo.count()
         return {
             "phase": launch_phase.phase(s),
             "drop_at": s.drop_at.isoformat(),
             "competition_start_at": s.competition_start_at.isoformat(),
             "competition_end_at": s.competition_end_at.isoformat(),
-            "pot_cents": launch_phase.pot_cents(entrants),
-            "entrants": entrants,
-            "waitlist_count": waitlist_count,
+            "signups": signups,
+            "competing": competing,
+            "on_board": on_board,
+            "pot_cents": launch_phase.pot_cents(signups),
             "comp_slots": s.comp_slots,
+            "pot_per_entrant_cents": launch_phase.constants()["pot_per_entrant_cents"],
         }
 
     response.headers["Cache-Control"] = "public, max-age=30"
     return await _cached("info", INFO_TTL_S, _build)
-
-
-@router.post("/waitlist", response_model=WaitlistJoinResponse, operation_id="launch_join_waitlist")
-async def join_waitlist(body: WaitlistJoinRequest, request: Request, s: Schedule = Depends(require_launch)) -> dict:
-    _rate_limit(request, "waitlist")
-    if launch_phase.phase(s) != "waitlist":
-        raise HTTPException(status_code=409, detail="waitlist_closed")
-    try:
-        email = launch_waitlist_repo.normalize_email(body.email)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid_email")
-    ref = (body.ref or "").strip().upper() or None
-    row = await launch_waitlist_repo.join(email, referred_by=ref, source="waitlist")
-    return {
-        "position": row["position"],
-        "referral_code": row["referral_code"],
-        "in_comp_window": row["position"] <= s.comp_slots,
-    }
 
 
 @router.get("/me", operation_id="launch_me")

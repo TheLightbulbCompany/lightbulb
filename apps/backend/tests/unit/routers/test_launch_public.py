@@ -1,4 +1,4 @@
-"""Unauthenticated Launch routes: /launch and /launch/waitlist."""
+"""Unauthenticated /launch route. Sign-up IS the waitlist now — no email form."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -40,49 +40,19 @@ async def test_launch_info_shape(mock_wl, mock_entries, configured, unauthentica
     assert r.status_code == 200
     body = r.json()
     assert body["phase"] == "waitlist"
-    assert body["waitlist_count"] == 42 and body["entrants"] == 3
-    assert body["pot_cents"] == 100_000 + 3 * 1_000
+    assert body["signups"] == 42
+    assert body["competing"] == 3
+    assert body["on_board"] == 3  # Task 4 switches this to count_with_key()
+    assert body["pot_cents"] == 100_000 + 42 * 1_000  # pot is driven by signups, not entrants
     assert body["comp_slots"] == 220
+    assert body["pot_per_entrant_cents"] == 1_000
     assert body["competition_start_at"] > body["drop_at"]
     assert r.headers["cache-control"] == "public, max-age=30"
 
 
-@patch("routers.launch.launch_waitlist_repo")
-async def test_join_waitlist_returns_position_and_code(mock_wl, configured, unauthenticated_async_client):
-    mock_wl.normalize_email.side_effect = lambda s: s.strip().lower()
-    mock_wl.join = AsyncMock(return_value={"email": "a@x.com", "position": 12, "referral_code": "ABCD2345"})
-    r = await unauthenticated_async_client.post(
-        "/api/v1/launch/waitlist", json={"email": " A@x.com", "ref": "K7QX2MPP"}
-    )
-    assert r.status_code == 200
-    assert r.json() == {"position": 12, "referral_code": "ABCD2345", "in_comp_window": True}
-    mock_wl.join.assert_awaited_once_with("a@x.com", referred_by="K7QX2MPP", source="waitlist")
-
-
-@patch("routers.launch.launch_waitlist_repo")
-async def test_join_waitlist_rejects_bad_email(mock_wl, configured, unauthenticated_async_client):
-    mock_wl.normalize_email.side_effect = ValueError("invalid_email")
-    r = await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "nope"})
-    assert r.status_code == 400 and r.json()["detail"] == "invalid_email"
-
-
-@patch("routers.launch.launch_waitlist_repo")
-async def test_join_waitlist_rate_limited_per_ip(mock_wl, configured, unauthenticated_async_client):
-    mock_wl.normalize_email.side_effect = lambda s: s
-    mock_wl.join = AsyncMock(return_value={"position": 1, "referral_code": "X"})
-    for _ in range(10):
-        assert (
-            await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "a@x.com"})
-        ).status_code == 200
+async def test_waitlist_post_route_is_gone(configured, unauthenticated_async_client):
     r = await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "a@x.com"})
-    assert r.status_code == 429 and r.headers["retry-after"] == "60"
-
-
-async def test_join_waitlist_closed_after_drop(configured, launch_schedule, unauthenticated_async_client):
-    past = datetime.now(timezone.utc) - timedelta(days=1)
-    with launch_schedule(past):
-        r = await unauthenticated_async_client.post("/api/v1/launch/waitlist", json={"email": "a@x.com"})
-    assert r.status_code == 409 and r.json()["detail"] == "waitlist_closed"
+    assert r.status_code in (404, 405)
 
 
 @patch("routers.launch.launch_entries_repo")

@@ -213,3 +213,32 @@ async def list_all() -> list[dict]:
 async def count() -> int:
     row = await run_in_thread(_table().get_item, Key={"email": COUNTER_KEY})
     return int((row.get("Item") or {}).get("position", 0))
+
+
+async def mark_pot_counted(email: str) -> bool:
+    """CAS guard: True exactly once per row, the first time it's counted toward the pot."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="SET pot_counted_at = :t",
+            ConditionExpression="attribute_exists(email) AND attribute_not_exists(pot_counted_at)",
+            ExpressionAttributeValues={":t": utc_now_iso()},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def count_pot_counted() -> int:
+    total = 0
+    kwargs: dict = {"FilterExpression": "attribute_exists(pot_counted_at)", "Select": "COUNT"}
+    while True:
+        page = await run_in_thread(_table().scan, **kwargs)
+        total += int(page.get("Count", 0))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return total
+        kwargs["ExclusiveStartKey"] = last

@@ -706,6 +706,19 @@ async def handle_clerk_webhook(request: Request):
                 # back to Clerk admin API. Logging is enough.
                 logger.exception("user_repo.put failed for user.created %s", user_id)
 
+            # Sign-up IS the waitlist now. Best-effort join, skipped when the
+            # feature is off (no launch-schedule.json drop configured for this
+            # env) or Clerk sent no email — never fails the webhook.
+            if email:
+                try:
+                    from core.repositories import launch_waitlist_repo
+                    from core.services import launch_phase
+
+                    if launch_phase.schedule() is not None:
+                        await launch_waitlist_repo.join(email, referred_by=None, source="signup")
+                except Exception:
+                    logger.exception("launch waitlist join failed for user.created %s", user_id)
+
             # Best-effort welcome email. send_welcome_email already swallows
             # its own errors, but we also guard here so a welcome blowup can
             # never 500 the webhook (which would trigger a Clerk retry storm).

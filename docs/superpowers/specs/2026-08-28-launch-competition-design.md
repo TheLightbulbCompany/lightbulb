@@ -208,7 +208,7 @@ in-app/in-product surfaces carry the launch instead:
 ## Drop-day runbook
 
 1. **Wk 0** — edit `launch-schedule.json`'s `dev` block (`drop_at` + `competition_start_at`), merge, verify `dev.flickmeon.ai` sign-up → held card → `/launch` with Claude-in-Chrome, then set `prod`, merge, promote via `workflow_dispatch`. No Clerk Restricted/Public step — sign-ups stay open throughout.
-2. **Drop** — Stripe live console: coupon 100% off / once → promotion code with `max_redemptions=220`, `expires_at=competition_start_at`; set `STRIPE_FREE_MONTH_COUPON_ID` (dev+prod); `/admin/launch` → Export CSV → send the launch email from the marketing tool.
+2. **Drop** — Stripe live console: coupon 100% off / once → promotion code with `max_redemptions=220`, `expires_at=competition_start_at`. Then set `STRIPE_FREE_MONTH_COUPON_ID` — **this is a CODE change**, not a console toggle: it is a literal in `apps/infra/lib/stacks/service-stack.ts`'s backend container env (`""` today), so it lands as a PR that dev-deploys on merge and reaches prod only via a `workflow_dispatch` promotion. Budget the deploy. Until it is set, `launch_referral` **banks** every earned free month (`free_months_banked`) and `_drain_banked` can never spend one — the rewards accrue and drain retroactively on the next paid invoice after the id ships. Finally: `/admin/launch` → Export CSV → send the launch email from the marketing tool.
 3. **Through competition start** — nothing. The promo code expires itself; the competition starts on the clock.
 4. **End** — `/admin/launch` → Refresh all; judges pick from the table; announce by email.
 

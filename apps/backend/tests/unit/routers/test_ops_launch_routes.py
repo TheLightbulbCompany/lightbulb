@@ -24,6 +24,16 @@ async def test_ops_launch_refresh_forces(admin_client):
     assert r.status_code == 200 and r.json() == {"refreshed": 7}
 
 
+@patch("core.services.launch_revenue.refresh_all", AsyncMock(return_value=7))
+async def test_ops_launch_refresh_drops_the_public_response_cache(admin_client):
+    # The admin cache is not the only one — /launch and /launch/leaderboard hold
+    # their own 20-30s response cache, and a judging-day refresh must land there.
+    with patch("routers.launch.clear_response_cache") as clear:
+        r = await admin_client.post("/api/v1/ops/launch/refresh")
+    assert r.status_code == 200
+    clear.assert_called_once()
+
+
 async def test_ops_launch_requires_admin(async_client):
     r = await async_client.get("/api/v1/ops/launch")
     assert r.status_code in (401, 403)
@@ -47,6 +57,18 @@ async def test_ops_launch_delete_entry_removes_row_and_key_in_order(admin_client
         r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
     assert r.status_code == 200 and r.json() == {"deleted": "user_1"}
     assert calls == ["key:user_1", "row:user_1"]
+
+
+async def test_ops_launch_delete_entry_drops_the_public_response_cache(admin_client):
+    # A taken-down entrant has to leave the public board now, not up to 30s later.
+    with (
+        patch("core.services.launch_revenue.delete_key", AsyncMock()),
+        patch("core.repositories.launch_entries_repo.delete", AsyncMock()),
+        patch("routers.launch.clear_response_cache") as clear,
+    ):
+        r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
+    assert r.status_code == 200
+    clear.assert_called_once()
 
 
 async def test_ops_launch_delete_entry_requires_admin(async_client):

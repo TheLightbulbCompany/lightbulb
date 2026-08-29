@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LaunchInfo(BaseModel):
@@ -25,6 +25,14 @@ class ReferralAttributeRequest(BaseModel):
 class JoinRequest(BaseModel):
     display_name: str = Field(min_length=2, max_length=40)
     public: bool = True
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        # Before, not after: the stored name is stripped anyway
+        # (launch_service.join), so a whitespace-only name has to fail the
+        # min_length check rather than pass it and land as "".
+        return v.strip() if isinstance(v, str) else v
 
 
 class ConnectStripeRequest(BaseModel):

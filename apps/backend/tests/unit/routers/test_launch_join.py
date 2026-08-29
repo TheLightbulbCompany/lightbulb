@@ -45,6 +45,12 @@ async def test_join_validates_body(configured, async_client):
     assert r.status_code == 422
 
 
+async def test_join_rejects_a_whitespace_only_display_name(configured, async_client):
+    # Stripped BEFORE min_length, or "  " passes the check and lands as "".
+    r = await async_client.post("/api/v1/launch/join", json={"display_name": "  ", "public": True})
+    assert r.status_code == 422
+
+
 @patch("routers.launch.launch_service.join", AsyncMock(return_value={"display_name": "Ada"}))
 async def test_join_is_rate_limited_per_ip(configured, async_client):
     body = {"display_name": "Ada", "public": True}

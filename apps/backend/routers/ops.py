@@ -54,6 +54,16 @@ async def get_launch(_auth: AuthContext = Depends(require_platform_admin)):
     return env.envelope(data, source_state=state, errors=errors)
 
 
+def _clear_public_launch_cache() -> None:
+    """The admin console's cache is not the only one — /launch and
+    /launch/leaderboard hold their own 20-30s response cache. Drop it too, so a
+    taken-down entrant leaves the public board now rather than up to 30s later.
+    Lazy import: routers.launch imports launch services this module doesn't."""
+    from routers.launch import clear_response_cache
+
+    clear_response_cache()
+
+
 @router.post("/launch/refresh")
 async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
     """Force-refresh every entrant's revenue now (judging day)."""
@@ -62,6 +72,7 @@ async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
 
     n = await launch_revenue.refresh_all(force=True)
     launch_ops.clear_cache()
+    _clear_public_launch_cache()
     return {"refreshed": n}
 
 
@@ -81,4 +92,5 @@ async def delete_launch_entry(owner_id: str, _auth: AuthContext = Depends(requir
     await launch_revenue.delete_key(owner_id)
     await launch_entries_repo.delete(owner_id)
     launch_ops.clear_cache()
+    _clear_public_launch_cache()
     return {"deleted": owner_id}

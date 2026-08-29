@@ -1,0 +1,100 @@
+import os
+from unittest.mock import patch
+
+import boto3
+import pytest
+from moto import mock_aws
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+@pytest.fixture
+def billing_table():
+    with mock_aws():
+        client = boto3.resource("dynamodb", region_name="us-east-1")
+        table = client.create_table(
+            TableName="test-billing-accounts",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+                {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+                {"AttributeName": "company_stripe_account_id", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "stripe-customer-index",
+                    "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "company-stripe-account-index",
+                    "KeySchema": [{"AttributeName": "company_stripe_account_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        with patch("core.dynamodb._table_prefix", "test-"), patch("core.dynamodb._dynamodb_resource", client):
+            table.put_item(
+                Item={"owner_id": "org_a", "owner_type": "org", "stripe_customer_id": "cus_a", "plan": "flat"}
+            )
+            yield table
+
+
+@pytest.mark.asyncio
+async def test_set_company_stripe_account_binds_once(billing_table):
+    from core.repositories import billing_repo
+
+    row = await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    assert row["company_stripe_account_id"] == "acct_1"
+    assert row["company_stripe_source"] == "created"
+    assert row["plan"] == "flat"  # untouched field survives the diff write
+
+    again = await billing_repo.set_company_stripe_account("org_a", account_id="acct_2", source="connected")
+    assert again is None
+    assert billing_table.get_item(Key={"owner_id": "org_a"})["Item"]["company_stripe_account_id"] == "acct_1"
+
+
+@pytest.mark.asyncio
+async def test_set_company_stripe_account_no_row_is_none(billing_table):
+    from core.repositories import billing_repo
+
+    assert await billing_repo.set_company_stripe_account("org_missing", account_id="acct_1", source="created") is None
+
+
+@pytest.mark.asyncio
+async def test_status_update_requires_matching_account(billing_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    row = await billing_repo.set_company_stripe_status(
+        "org_a", account_id="acct_1", details_submitted=True, charges_enabled=True, payouts_enabled=False
+    )
+    assert row["company_stripe_charges_enabled"] is True
+    assert row["company_stripe_payouts_enabled"] is False
+
+    stale = await billing_repo.set_company_stripe_status(
+        "org_a", account_id="acct_other", details_submitted=True, charges_enabled=True, payouts_enabled=True
+    )
+    assert stale is None
+
+
+@pytest.mark.asyncio
+async def test_get_by_company_stripe_account_id(billing_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
+    found = await billing_repo.get_by_company_stripe_account_id("acct_1")
+    assert found["owner_id"] == "org_a"
+    assert await billing_repo.get_by_company_stripe_account_id("acct_nope") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_company_stripe_account(billing_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    assert await billing_repo.clear_company_stripe_account("org_a", account_id="acct_zzz") is None
+    row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
+    assert "company_stripe_account_id" not in row
+    assert "company_stripe_source" not in row

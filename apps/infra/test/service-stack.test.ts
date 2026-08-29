@@ -87,6 +87,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
     agentMailConfigurationSet: "isol8-test-agent-mail",
+    stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
 
   return Template.fromStack(service);
@@ -162,6 +163,30 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         }),
       ]),
     });
+  });
+
+  test("dev reads the testing catalog partition, prod reads prod", () => {
+    // The provisioning rail reads the catalog AND writes resources into it, so
+    // a dev backend pointed at the prod partition would create real provider
+    // resources. Prod is the default when nothing threads the prop.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "testing" }),
+          ]),
+        }),
+      ]),
+    }));
+    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "prod" }),
+          ]),
+        }),
+      ]),
+    }));
   });
 
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {

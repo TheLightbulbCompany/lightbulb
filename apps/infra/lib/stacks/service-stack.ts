@@ -182,6 +182,16 @@ export interface ServiceStackProps extends cdk.StackProps {
    * defaults to "" so an unconfigured env just can't start that flow yet.
    */
   stripeConnectClientId?: string;
+  /**
+   * Provider catalog partition for the Stripe Projects provisioning rail:
+   * `prod | dev | testing`. Dev reads/writes Stripe's `testing` partition,
+   * prod the real one. NOT a payment-mode switch — Stripe's own caveat:
+   * "Selecting a DEV or TESTING catalog doesn't mean 'no real charges.'"
+   * Defaults to `prod`, the safe value for an env that forgot to set it:
+   * reading one partition while writing another provisions into a catalog
+   * the owner never saw.
+   */
+  stripeProjectsCatalog?: string;
 }
 
 /**
@@ -1593,6 +1603,11 @@ export class ServiceStack extends cdk.Stack {
           ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
           : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
       STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
+      // Provider catalog partition. dev reads/writes Stripe's `testing`
+      // partition, prod the real one. NOT a payment-mode switch — Stripe's own
+      // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
+      // charges.'"
+      STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

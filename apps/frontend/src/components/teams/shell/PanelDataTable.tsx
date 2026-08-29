@@ -81,12 +81,11 @@ export function PanelDataTable<Row>({
                 key={col.key}
                 style={col.width ? { width: col.width } : undefined}
                 className={cn(
-                  "text-[10px] font-semibold uppercase tracking-[0.12em]",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                 )}
               >
-                <span className="text-[var(--midnight-muted)]">{col.header}</span>
+                <span className="label-caps">{col.header}</span>
               </TableHead>
             ))}
           </TableRow>
@@ -140,7 +139,6 @@ export function PanelDataTable<Row>({
                   : undefined
               }
               className={cn(
-                "text-[10px] font-semibold uppercase tracking-[0.12em]",
                 col.align === "right" && "text-right",
                 col.align === "center" && "text-center",
               )}
@@ -149,7 +147,7 @@ export function PanelDataTable<Row>({
                 <button
                   type="button"
                   onClick={() => toggleSort(col)}
-                  className="inline-flex items-center gap-1 text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
+                  className="label-caps inline-flex items-center gap-1 transition-colors duration-(--dur-fast) ease-out hover:text-[var(--midnight)]"
                 >
                   {col.header}
                   {sortKey === col.key &&
@@ -160,7 +158,7 @@ export function PanelDataTable<Row>({
                     ))}
                 </button>
               ) : (
-                <span className="text-[var(--midnight-muted)]">{col.header}</span>
+                <span className="label-caps">{col.header}</span>
               )}
             </TableHead>
           ))}
@@ -189,11 +187,15 @@ export function PanelDataTable<Row>({
                 "cursor-pointer hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]",
             )}
           >
-            {columns.map((col) => (
+            {columns.map((col, colIndex) => (
               <TableCell
                 key={col.key}
                 className={cn(
                   "text-[13px] text-[var(--midnight)]",
+                  // Primary column: a long issue/agent title used to widen the
+                  // column until the trailing metadata columns were pushed out
+                  // of the panel. Cap it and ellipsize instead.
+                  colIndex === 0 && !col.width && "max-w-[42ch] truncate",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                 )}

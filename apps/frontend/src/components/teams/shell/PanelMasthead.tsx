@@ -23,6 +23,10 @@ export function PanelMasthead({
     <header
       className={cn(
         "flex flex-col gap-2 pb-2 sm:flex-row sm:items-end sm:justify-between",
+        // In-flow, not sticky: this scrolls WITH the panel body inside
+        // .workspace-panel-page, so nothing ever passes under it. A hard
+        // --edge rule is the right separator here; a scroll-edge fade would
+        // imply an overlap that does not exist.
         "border-b border-[var(--edge)]",
         className,
       )}
@@ -32,7 +36,7 @@ export function PanelMasthead({
           {title}
         </Heading>
         {overline !== title && (
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--midnight-muted)]">
+          <p className="label-caps">
             {overline}
           </p>
         )}

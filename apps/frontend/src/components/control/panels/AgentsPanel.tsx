@@ -187,7 +187,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               </span>
               {agent.id !== defaultId && (
                 <button
-                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-err"
+                  className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity duration-(--dur-fast) ease-out p-0.5 hover:text-err"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleDelete(agent.id);

@@ -158,8 +158,6 @@ async def on_invoice_paid(invoice: dict) -> None:
     if launch_phase.schedule() is None:
         return  # the competition is not configured — the webhook does no launch reads at all
     try:
-        if int(invoice.get("amount_paid") or 0) <= 0:
-            return
         customer = invoice.get("customer")
         if not customer:
             return
@@ -173,6 +171,15 @@ async def on_invoice_paid(invoice: dict) -> None:
             return
         payer_email = await _email_for_owner(owner_id)
         if not payer_email:
+            return
+        # The funded pot counts the FIRST Stripe invoice of ANY amount (redemption
+        # counts, not just paid amounts) — CAS makes duplicate invoices inert. This
+        # must never abort the referral reward path below, so it gets its own try/except.
+        try:
+            await launch_waitlist_repo.mark_pot_counted(payer_email)
+        except Exception:  # noqa: BLE001
+            logger.warning("launch_referral: mark_pot_counted failed for owner=%s", owner_id, exc_info=True)
+        if int(invoice.get("amount_paid") or 0) <= 0:
             return
         payer_row = await launch_waitlist_repo.get(payer_email)
         if not payer_row:

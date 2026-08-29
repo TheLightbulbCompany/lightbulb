@@ -1,8 +1,10 @@
 """Launch Competition — per-user composition and the entry flow.
 
 `me()` is the one place waitlist + billing + onboarding facts are combined
-for a caller. `enter()` (Task 8) validates the pasted Stripe restricted key,
-stores it on the BYO-key rail, computes the baseline and writes the entry.
+for a caller. Entry is two explicit steps: `join()` creates the entry row
+once activation + a live subscription are in place, and `connect_stripe()`
+(optional) validates a pasted Stripe restricted key, computes the baseline,
+stores it on the BYO-key rail, and flips the entry onto the public board.
 """
 
 from __future__ import annotations
@@ -12,13 +14,14 @@ from datetime import datetime, timedelta, timezone
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
+from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo, user_repo
 from core.services import launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
 
 logger = logging.getLogger(__name__)
 
-# trial_local can't enter: the $10 buy-in rides a subscription (paid or comped
+# trial_local can't join: the $10 buy-in rides a subscription (paid or comped
 # via the promo code), and a free-tier container has neither.
 LIVE_FOR_ENTRY = frozenset({"active", "trialing"})
 
@@ -35,7 +38,7 @@ async def resolve_email(auth: AuthContext) -> str | None:
     return email.strip().lower() if email else None
 
 
-def can_enter(
+def can_join(
     *, s: Schedule, billing: dict | None, onboarding: dict, now: datetime | None = None
 ) -> tuple[bool, str | None]:
     p = phase(s, now or datetime.now(timezone.utc))
@@ -57,6 +60,7 @@ def _public_entry(entry: dict | None) -> dict | None:
         "display_name": entry["display_name"],
         "public": bool(entry.get("public", True)),
         "entered_at": entry.get("entered_at"),
+        "has_key": bool(entry.get("has_key", False)),
         "currency": entry.get("currency"),
         "baseline_cents": entry.get("baseline_cents", 0),
         "window_cents": entry.get("window_cents", 0),
@@ -85,7 +89,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     billing = await billing_repo.get_by_owner_id(owner_id)
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
     entry = await launch_entries_repo.get(owner_id)
-    ok, reason = can_enter(s=s, billing=billing, onboarding=onboarding)
+    ok, reason = can_join(s=s, billing=billing, onboarding=onboarding)
     return {
         "phase": phase(s),
         "waitlist": waitlist,
@@ -97,51 +101,67 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     }
 
 
-class EnterRefused(Exception):
+class LaunchRefused(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
 
 
-async def enter(auth: AuthContext, s: Schedule, *, display_name: str, stripe_key: str, public: bool) -> dict:
+async def join(auth: AuthContext, s: Schedule, *, display_name: str, public: bool) -> dict:
+    """Step 1: create the entry row. Requires activation + a live
+    subscription; never touches Stripe. Idempotent — an owner who already has
+    an entry gets that row back untouched (see launch_entries_repo.join)."""
     owner_id = resolve_owner_id(auth)
     billing = await billing_repo.get_by_owner_id(owner_id)
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
-    ok, reason = can_enter(s=s, billing=billing, onboarding=onboarding)
+    ok, reason = can_join(s=s, billing=billing, onboarding=onboarding)
     if not ok:
-        raise EnterRefused(reason or "refused")
-    try:
-        await launch_revenue.validate_key(stripe_key)
-    except launch_revenue.KeyRejected as e:
-        raise EnterRefused(e.reason) from None
-    baseline_end = s.competition_start_at
-    baseline_start = baseline_end - timedelta(days=launch_revenue.BASELINE_DAYS)
-    try:
-        baseline_cents, currency = await launch_revenue.sum_net_revenue(stripe_key, baseline_start, baseline_end)
-    except launch_revenue.MixedCurrency:
-        raise EnterRefused("mixed_currency") from None
-    except launch_revenue.KeyRejected as e:
-        raise EnterRefused(e.reason) from None
-    await launch_revenue.store_key(owner_id, stripe_key)
+        raise LaunchRefused(reason or "refused")
     position = None
     email = await resolve_email(auth)
     if email:
         row = await launch_waitlist_repo.get(email)
         position = int(row["position"]) if row else None
-    entry = await launch_entries_repo.upsert(
-        owner_id,
-        display_name=display_name.strip(),
-        public=public,
-        waitlist_position=position,
-        currency=currency,
-        baseline_cents=baseline_cents,
+    entry = await launch_entries_repo.join(
+        owner_id, display_name=display_name.strip(), public=public, waitlist_position=position
     )
-    logger.info("launch: %s entered (position=%s baseline=%s %s)", owner_id, position, baseline_cents, currency)
+    logger.info("launch: %s joined (position=%s)", owner_id, position)
     return _public_entry(entry)
 
 
+async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> dict:
+    """Step 2 (optional): validate the pasted restricted key, compute the
+    baseline over [start-30d, start) — refined by the refresh path once the
+    window has actually closed, see launch_revenue._baseline_is_provisional —
+    store the key, then flip the entry onto the board. Requires an existing
+    entry; replaces any previously-connected key."""
+    owner_id = resolve_owner_id(auth)
+    entry = await launch_entries_repo.get(owner_id)
+    if not entry:
+        raise LaunchRefused("no_entry")
+    try:
+        await launch_revenue.validate_key(stripe_key)
+    except launch_revenue.KeyRejected as e:
+        raise LaunchRefused(e.reason) from None
+    baseline_end = s.competition_start_at
+    baseline_start = baseline_end - timedelta(days=launch_revenue.BASELINE_DAYS)
+    try:
+        baseline_cents, currency = await launch_revenue.sum_net_revenue(stripe_key, baseline_start, baseline_end)
+    except launch_revenue.MixedCurrency:
+        raise LaunchRefused("mixed_currency") from None
+    except launch_revenue.KeyRejected as e:
+        raise LaunchRefused(e.reason) from None
+    await launch_revenue.store_key(owner_id, stripe_key)
+    await launch_entries_repo.set_key_connected(
+        owner_id, currency=currency, baseline_cents=baseline_cents, baseline_at=utc_now_iso()
+    )
+    updated = await launch_entries_repo.get(owner_id)
+    logger.info("launch: %s connected Stripe (baseline=%s %s)", owner_id, baseline_cents, currency)
+    return _public_entry(updated)
+
+
 def rank(entries: list[dict]) -> list[dict]:
-    visible = [e for e in entries if e.get("public", True)]
+    visible = [e for e in entries if e.get("has_key")]
     visible.sort(key=lambda e: (-int(e.get("delta_cents", 0)), e.get("entered_at") or ""))
     rows = []
     for i, e in enumerate(visible, start=1):
@@ -164,4 +184,5 @@ def rank(entries: list[dict]) -> list[dict]:
 
 async def leaderboard(limit: int = 50) -> dict:
     entries = await launch_entries_repo.list_all()
-    return {"entrants": len(entries), "rows": rank(entries)[:limit]}
+    on_board = sum(1 for e in entries if e.get("has_key"))
+    return {"competing": len(entries), "on_board": on_board, "rows": rank(entries)[:limit]}

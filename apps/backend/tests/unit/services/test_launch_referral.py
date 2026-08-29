@@ -42,6 +42,7 @@ def deps():
         )
         wl.get_by_referral_code = AsyncMock(return_value=dict(REFERRER_ROW))
         wl.mark_rewarded = AsyncMock(return_value=True)
+        wl.mark_pot_counted = AsyncMock(return_value=True)
         wl.add_counter = AsyncMock(return_value=1)
         stripe_mod.Subscription.retrieve = MagicMock(return_value={"id": "sub_ref", "discount": None, "discounts": []})
         stripe_mod.Subscription.modify = MagicMock()
@@ -50,6 +51,7 @@ def deps():
 
 async def test_rewards_referrer_once_on_first_paid_invoice(deps):
     await ref.on_invoice_paid(_invoice())
+    deps["wl"].mark_pot_counted.assert_awaited_once_with("payer@x.com")
     deps["wl"].mark_rewarded.assert_awaited_once_with("payer@x.com")
     deps["wl"].add_counter.assert_any_await("ref@x.com", "referrals_paid", 1)
     deps["stripe"].Subscription.modify.assert_called_once_with(
@@ -58,10 +60,21 @@ async def test_rewards_referrer_once_on_first_paid_invoice(deps):
     deps["capture"].assert_called()
 
 
-async def test_zero_amount_invoice_does_nothing(deps):
+async def test_zero_amount_invoice_still_marks_the_pot_but_grants_no_referral_reward(deps):
+    """The funded pot counts the first invoice of ANY amount — the pot-count
+    fires before the amount_paid gate, which stays in place for the reward."""
     await ref.on_invoice_paid(_invoice(amount_paid=0))
+    deps["wl"].mark_pot_counted.assert_awaited_once_with("payer@x.com")
     deps["wl"].mark_rewarded.assert_not_awaited()
     deps["stripe"].Subscription.modify.assert_not_called()
+
+
+async def test_mark_pot_counted_failure_does_not_abort_the_reward_path(deps, caplog):
+    deps["wl"].mark_pot_counted = AsyncMock(side_effect=RuntimeError("ddb down"))
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        await ref.on_invoice_paid(_invoice())  # no exception
+    deps["wl"].mark_rewarded.assert_awaited_once_with("payer@x.com")
+    deps["stripe"].Subscription.modify.assert_called_once()
 
 
 async def test_cas_loss_means_no_double_reward(deps):
@@ -136,6 +149,7 @@ async def test_org_owner_is_skipped(deps):
     )
     await ref.on_invoice_paid(_invoice())
     deps["wl"].get.assert_not_awaited()
+    deps["wl"].mark_pot_counted.assert_not_awaited()
 
 
 async def test_never_raises(deps):

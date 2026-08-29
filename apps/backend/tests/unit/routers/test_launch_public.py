@@ -36,13 +36,14 @@ async def test_launch_info_404_when_unset(launch_schedule, unauthenticated_async
 async def test_launch_info_shape(mock_wl, mock_entries, configured, unauthenticated_async_client):
     mock_wl.count = AsyncMock(return_value=42)
     mock_entries.count = AsyncMock(return_value=3)
+    mock_entries.count_with_key = AsyncMock(return_value=1)
     r = await unauthenticated_async_client.get("/api/v1/launch")
     assert r.status_code == 200
     body = r.json()
     assert body["phase"] == "waitlist"
     assert body["signups"] == 42
     assert body["competing"] == 3
-    assert body["on_board"] == 3  # Task 4 switches this to count_with_key()
+    assert body["on_board"] == 1  # count_with_key() — entries with a stored Stripe key
     assert body["pot_cents"] == 100_000 + 42 * 1_000  # pot is driven by signups, not entrants
     assert body["comp_slots"] == 220
     assert body["pot_per_entrant_cents"] == 1_000
@@ -63,7 +64,9 @@ async def test_launch_info_is_served_from_the_cache_within_the_ttl(
     """The public read is a full table scan and the client controls Cache-Control."""
     mock_wl.count = AsyncMock(return_value=42)
     mock_entries.count = AsyncMock(return_value=3)
+    mock_entries.count_with_key = AsyncMock(return_value=1)
     first = await unauthenticated_async_client.get("/api/v1/launch")
     mock_entries.count = AsyncMock(side_effect=AssertionError("should be cached"))
+    mock_entries.count_with_key = AsyncMock(side_effect=AssertionError("should be cached"))
     second = await unauthenticated_async_client.get("/api/v1/launch")
     assert second.status_code == 200 and second.json() == first.json()

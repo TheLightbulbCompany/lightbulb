@@ -28,40 +28,36 @@ def table():
             yield repo
 
 
-async def test_upsert_creates_then_preserves_entered_at_and_revenue(table):
-    row = await table.upsert(
-        "user_1", display_name="Ada", public=True, waitlist_position=7, currency="usd", baseline_cents=1000
-    )
-    assert row["entered_at"] and row["delta_cents"] == 0 and row["window_cents"] == 0
-    await table.set_revenue("user_1", window_cents=2500, delta_cents=1500, currency="usd")
-    again = await table.upsert(
-        "user_1", display_name="Ada L.", public=False, waitlist_position=7, currency="usd", baseline_cents=1200
-    )
-    assert again["entered_at"] == row["entered_at"]
-    assert again["display_name"] == "Ada L." and again["public"] is False
-    assert again["baseline_cents"] == 1200 and again["window_cents"] == 2500
+async def test_join_creates_an_unkeyed_row(table):
+    row = await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+    assert row["entered_at"]
+    assert row["has_key"] is False
+    assert row["baseline_cents"] == 0 and row["window_cents"] == 0 and row["delta_cents"] == 0
+    assert row["display_name"] == "Ada" and row["public"] is True and row["waitlist_position"] == 7
 
 
-async def test_upsert_stamps_baseline_at_and_set_baseline_refinalises(table):
-    row = await table.upsert(
-        "user_1", display_name="Ada", public=True, waitlist_position=None, currency="usd", baseline_cents=100
-    )
-    assert row["baseline_at"]
-    await table.set_baseline("user_1", baseline_cents=999, currency="eur", baseline_at="2026-10-01T00:00:00Z")
-    again = await table.get("user_1")
-    assert again["baseline_cents"] == 999
-    assert again["currency"] == "eur"
-    assert again["baseline_at"] == "2026-10-01T00:00:00Z"
+async def test_second_join_returns_the_existing_row_untouched(table):
+    first = await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+    again = await table.join("user_1", display_name="Ada L.", public=False, waitlist_position=99)
+    assert again == first  # first write wins — display_name/public/waitlist_position did NOT change
+
+
+async def test_set_key_connected_flips_has_key_and_stamps_baseline(table):
+    await table.join("user_1", display_name="Ada", public=True, waitlist_position=None)
+    await table.set_key_connected("user_1", currency="usd", baseline_cents=1000, baseline_at="2026-10-01T00:00:00Z")
+    row = await table.get("user_1")
+    assert row["has_key"] is True
+    assert row["baseline_cents"] == 1000
+    assert row["currency"] == "usd"
+    assert row["baseline_at"] == "2026-10-01T00:00:00Z"
     # A row that does not exist is not created (the caller routes this through _record).
     with pytest.raises(ClientError):
-        await table.set_baseline("ghost", baseline_cents=1, currency="usd", baseline_at="t")
+        await table.set_key_connected("ghost", currency="usd", baseline_cents=1, baseline_at="t")
     assert await table.get("ghost") is None
 
 
 async def test_set_revenue_clears_error_and_stamps(table):
-    await table.upsert(
-        "user_1", display_name="Ada", public=True, waitlist_position=None, currency="usd", baseline_cents=0
-    )
+    await table.join("user_1", display_name="Ada", public=True, waitlist_position=None)
     await table.set_refresh_error("user_1", "stripe_auth")
     row = await table.get("user_1")
     assert row["refresh_error"] == "stripe_auth" and row["refreshed_at"]
@@ -70,12 +66,12 @@ async def test_set_revenue_clears_error_and_stamps(table):
     assert "refresh_error" not in row and row["delta_cents"] == 10
 
 
-async def test_list_count_delete(table):
-    await table.upsert(
-        "user_1", display_name="A", public=True, waitlist_position=None, currency="usd", baseline_cents=0
-    )
-    await table.upsert("org_2", display_name="B", public=False, waitlist_position=3, currency="eur", baseline_cents=5)
+async def test_list_count_count_with_key_delete(table):
+    await table.join("user_1", display_name="A", public=True, waitlist_position=None)
+    await table.join("org_2", display_name="B", public=False, waitlist_position=3)
+    await table.set_key_connected("org_2", currency="eur", baseline_cents=5, baseline_at="t")
     assert await table.count() == 2
+    assert await table.count_with_key() == 1
     assert {r["owner_id"] for r in await table.list_all()} == {"user_1", "org_2"}
     await table.delete("user_1")
     assert await table.get("user_1") is None

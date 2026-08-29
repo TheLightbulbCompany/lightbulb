@@ -1,4 +1,4 @@
-"""Lightbulb Launch Competition — waitlist, entry, leaderboard.
+"""Lightbulb Launch Competition — waitlist, join/connect, leaderboard.
 
 Every route 404s until launch-schedule.json's ``drop_at`` is set for this env
 (``require_launch``, backed by ``core.services.launch_phase.schedule()``), so
@@ -21,7 +21,8 @@ from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
 from schemas.launch import (
-    EnterRequest,
+    ConnectStripeRequest,
+    JoinRequest,
     LaunchInfo,
     LeaderboardResponse,
     ReferralAttributeRequest,
@@ -67,9 +68,7 @@ async def launch_info(response: Response, s: Schedule = Depends(require_launch))
     async def _build() -> dict:
         signups = await launch_waitlist_repo.count()
         competing = await launch_entries_repo.count()
-        # Task 4 switches this to launch_entries_repo.count_with_key() (entries
-        # with a stored Stripe key, i.e. actually able to compete).
-        on_board = await launch_entries_repo.count()
+        on_board = await launch_entries_repo.count_with_key()
         return {
             "phase": launch_phase.phase(s),
             "drop_at": s.drop_at.isoformat(),
@@ -115,23 +114,39 @@ async def attribute_referral(
     return {"attributed": bool(wrote)}
 
 
-@router.post("/enter", operation_id="launch_enter")
-async def enter(
-    body: EnterRequest,
+@router.post("/join", operation_id="launch_join")
+async def join(
+    body: JoinRequest,
     request: Request,
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
-    _rate_limit(request, "enter")
-    # One entry (and one stored key) per owner: an org member entering would
-    # overwrite the org's row and its key with their own.
+    _rate_limit(request, "join")
+    # One entry per owner: an org member joining would create the org's row
+    # under their own identity instead of the org's.
     if auth.is_org_context and not auth.is_org_admin:
         raise HTTPException(status_code=403, detail="org_admin_required")
     try:
-        return await launch_service.enter(
-            auth, s, display_name=body.display_name, stripe_key=body.stripe_key.strip(), public=body.public
-        )
-    except launch_service.EnterRefused as e:
+        return await launch_service.join(auth, s, display_name=body.display_name, public=body.public)
+    except launch_service.LaunchRefused as e:
+        raise HTTPException(status_code=400, detail=e.reason)
+
+
+@router.post("/connect-stripe", operation_id="launch_connect_stripe")
+async def connect_stripe(
+    body: ConnectStripeRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    s: Schedule = Depends(require_launch),
+) -> dict:
+    _rate_limit(request, "connect_stripe")
+    # One stored key per owner: an org member connecting would overwrite the
+    # org's key with their own.
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="org_admin_required")
+    try:
+        return await launch_service.connect_stripe(auth, s, stripe_key=body.stripe_key.strip())
+    except launch_service.LaunchRefused as e:
         # The reason is a short enum; the key is never part of any response or log.
         raise HTTPException(status_code=400, detail=e.reason)
 

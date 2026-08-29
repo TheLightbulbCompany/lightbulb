@@ -26,7 +26,7 @@ def repo():
     with patch.object(rev, "launch_entries_repo") as r:
         r.set_revenue = AsyncMock()
         r.set_refresh_error = AsyncMock()
-        r.set_baseline = AsyncMock()
+        r.set_key_connected = AsyncMock()
         yield r
 
 
@@ -91,9 +91,9 @@ async def test_refresh_all_skips_fresh_rows_unless_forced(repo):
     stale = (NOW - timedelta(minutes=70)).isoformat()
     repo.list_all = AsyncMock(
         return_value=[
-            {"owner_id": "a", "refreshed_at": fresh},
-            {"owner_id": "b", "refreshed_at": stale},
-            {"owner_id": "c"},
+            {"owner_id": "a", "has_key": True, "refreshed_at": fresh},
+            {"owner_id": "b", "has_key": True, "refreshed_at": stale},
+            {"owner_id": "c", "has_key": True},
         ]
     )
     with (
@@ -106,8 +106,26 @@ async def test_refresh_all_skips_fresh_rows_unless_forced(repo):
         assert await rev.refresh_all(force=True, now=NOW) == 3
 
 
+async def test_refresh_all_skips_entries_without_has_key(repo):
+    """Joined-but-never-connected entries have no Stripe key to read revenue
+    with — the sweep must skip them entirely, not just leave them stale."""
+    repo.list_all = AsyncMock(
+        return_value=[
+            {"owner_id": "a", "has_key": True},
+            {"owner_id": "b", "has_key": False},
+            {"owner_id": "c"},  # missing has_key entirely — also skipped
+        ]
+    )
+    with (
+        patch.object(rev, "refresh_entry", AsyncMock()) as one,
+        patch.object(rev.launch_phase, "schedule", return_value=S),
+    ):
+        assert await rev.refresh_all(force=True, now=NOW) == 1
+        assert {c.args[0]["owner_id"] for c in one.await_args_list} == {"a"}
+
+
 async def test_refresh_all_noop_outside_window(repo):
-    repo.list_all = AsyncMock(return_value=[{"owner_id": "a"}])
+    repo.list_all = AsyncMock(return_value=[{"owner_id": "a", "has_key": True}])
     with (
         patch.object(rev, "refresh_entry", AsyncMock()) as one,
         patch.object(rev.launch_phase, "schedule", return_value=S),
@@ -153,9 +171,9 @@ async def test_refresh_entry_finalises_a_baseline_computed_before_the_window_clo
     assert baseline_call.args[1] == S.competition_start_at - timedelta(days=rev.BASELINE_DAYS)
     assert baseline_call.args[2] == S.competition_start_at
     assert window_call.args[1] == S.competition_start_at and window_call.args[2] == NOW
-    assert repo.set_baseline.await_args.kwargs["baseline_cents"] == 9_000
-    assert repo.set_baseline.await_args.kwargs["currency"] == "usd"
-    assert repo.set_baseline.await_args.kwargs["baseline_at"]
+    assert repo.set_key_connected.await_args.kwargs["baseline_cents"] == 9_000
+    assert repo.set_key_connected.await_args.kwargs["currency"] == "usd"
+    assert repo.set_key_connected.await_args.kwargs["baseline_at"]
     # the recomputed baseline, not the provisional 5_000, drives this pass's delta
     assert repo.set_revenue.await_args.kwargs["baseline_prorated_cents"] == 2_950  # 9_000 × 9d20h/30d
     assert repo.set_revenue.await_args.kwargs["delta_cents"] == 12_000 - 2_950
@@ -168,7 +186,7 @@ async def test_refresh_entry_finalises_when_baseline_at_is_missing(repo):
     ):
         await rev.refresh_entry({"owner_id": "u1", "baseline_cents": 0}, S, now=NOW)
     assert summer.await_count == 2
-    repo.set_baseline.assert_awaited_once()
+    repo.set_key_connected.assert_awaited_once()
 
 
 async def test_refresh_entry_leaves_a_settled_baseline_alone(repo):
@@ -178,7 +196,7 @@ async def test_refresh_entry_leaves_a_settled_baseline_alone(repo):
     ):
         await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
     assert summer.await_count == 1
-    repo.set_baseline.assert_not_awaited()
+    repo.set_key_connected.assert_not_awaited()
 
 
 # --- Prorated baseline -------------------------------------------------------

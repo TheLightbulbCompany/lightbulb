@@ -3,9 +3,16 @@
 The entrant's Stripe restricted key is NOT here; it lives in Secrets Manager
 on the BYO-key rail (see core.services.launch_service). Revenue numbers are
 written by the hourly sweep (core.services.launch_revenue).
+
+Joining (``join``) and connecting Stripe (``set_key_connected``) are two
+separate writes: a row starts ``has_key=False`` at join time and flips True
+only once a validated key + baseline land — see launch_service.join vs
+launch_service.connect_stripe.
 """
 
 from __future__ import annotations
+
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
@@ -31,52 +38,51 @@ async def get(owner_id: str) -> dict | None:
     return _plain(resp.get("Item"))
 
 
-async def upsert(
+async def join(
     owner_id: str,
     *,
     display_name: str,
     public: bool,
     waitlist_position: int | None,
-    currency: str,
-    baseline_cents: int,
 ) -> dict:
+    """Put-if-absent: a NEW row starts un-keyed (``has_key=False``, zeroed
+    revenue fields) — ``join`` never touches Stripe. An EXISTING row is
+    returned untouched (first write wins), matching the router's 200-not-409
+    idempotency contract."""
     now = utc_now_iso()
-    resp = await run_in_thread(
-        _table().update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=(
-            "SET display_name = :n, #pub = :p, currency = :c, baseline_cents = :b, "
-            "baseline_at = :now, waitlist_position = :w, updated_at = :now, "
-            "entered_at = if_not_exists(entered_at, :now), "
-            "window_cents = if_not_exists(window_cents, :zero), "
-            "delta_cents = if_not_exists(delta_cents, :zero)"
-        ),
-        ExpressionAttributeNames={"#pub": "public"},
-        ExpressionAttributeValues={
-            ":n": display_name,
-            ":p": bool(public),
-            ":c": currency,
-            ":b": int(baseline_cents),
-            ":w": waitlist_position,
-            ":now": now,
-            ":zero": 0,
-        },
-        ReturnValues="ALL_NEW",
-    )
-    return _plain(resp["Attributes"])
+    item: dict = {
+        "owner_id": owner_id,
+        "display_name": display_name,
+        "public": bool(public),
+        "waitlist_position": waitlist_position,
+        "entered_at": now,
+        "updated_at": now,
+        "has_key": False,
+        "baseline_cents": 0,
+        "window_cents": 0,
+        "delta_cents": 0,
+    }
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(owner_id)")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return await get(owner_id)  # lost the race / already joined — the stored row is the truth
+    return _plain(item)
 
 
-async def set_baseline(owner_id: str, *, baseline_cents: int, currency: str, baseline_at: str) -> None:
-    """Finalise a baseline that was computed over a window still in the future.
-
-    ``baseline_at`` is the instant the numbers were read; the refresh pass
-    recomputes while it predates ``competition_start_at`` (see launch_revenue)."""
+async def set_key_connected(owner_id: str, *, currency: str, baseline_cents: int, baseline_at: str) -> None:
+    """Flips ``has_key`` True and (re)stamps the baseline. Also used by the
+    refresh path to finalise a baseline that was computed over a window still
+    in the future at connect time (see launch_revenue._baseline_is_provisional
+    — supersedes the old ``set_baseline``)."""
     await run_in_thread(
         _table().update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression="SET baseline_cents = :b, currency = :c, baseline_at = :a",
+        UpdateExpression="SET #hk = :t, baseline_cents = :b, currency = :c, baseline_at = :a",
         ConditionExpression="attribute_exists(owner_id)",
-        ExpressionAttributeValues={":b": int(baseline_cents), ":c": currency, ":a": baseline_at},
+        ExpressionAttributeNames={"#hk": "has_key"},
+        ExpressionAttributeValues={":t": True, ":b": int(baseline_cents), ":c": currency, ":a": baseline_at},
     )
 
 
@@ -134,6 +140,23 @@ async def count() -> int:
     # the leaderboard ever needs this on every public read at scale.
     total = 0
     kwargs: dict = {"Select": "COUNT"}
+    while True:
+        page = await run_in_thread(_table().scan, **kwargs)
+        total += int(page.get("Count", 0))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return total
+        kwargs["ExclusiveStartKey"] = last
+
+
+async def count_with_key() -> int:
+    total = 0
+    kwargs: dict = {
+        "Select": "COUNT",
+        "FilterExpression": "#hk = :t",
+        "ExpressionAttributeNames": {"#hk": "has_key"},
+        "ExpressionAttributeValues": {":t": True},
+    }
     while True:
         page = await run_in_thread(_table().scan, **kwargs)
         total += int(page.get("Count", 0))

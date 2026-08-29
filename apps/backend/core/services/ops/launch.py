@@ -30,8 +30,13 @@ def _activated_by_deadline(onboarding: dict, s: launch_phase.Schedule) -> bool:
 
 
 async def _compute(s: launch_phase.Schedule) -> dict:
-    waitlist, entries = await asyncio.gather(launch_waitlist_repo.list_all(), launch_entries_repo.list_all())
+    waitlist, entries, funded = await asyncio.gather(
+        launch_waitlist_repo.list_all(), launch_entries_repo.list_all(), launch_waitlist_repo.count_pot_counted()
+    )
     per_entrant = launch_phase.constants()["pot_per_entrant_cents"]
+    signups = len(waitlist)
+    competing = len(entries)
+    on_board = sum(1 for e in entries if e.get("has_key"))
 
     claimed = [w for w in waitlist if w.get("user_id")]
     sem = asyncio.Semaphore(8)
@@ -114,6 +119,15 @@ async def _compute(s: launch_phase.Schedule) -> dict:
             "public": sum(1 for e in entries if e.get("public", True)),
         },
         "pot_cents": launch_phase.pot_cents(len(entries)),
+        "signups": signups,
+        "competing": competing,
+        "on_board": on_board,
+        # Two pots (spec): the public number tracks the uncapped waitlist (what
+        # every visitor sees before the drop); the funded number is only backed
+        # by an actual Stripe invoice landing (see launch_referral.on_invoice_paid
+        # -> launch_waitlist_repo.mark_pot_counted, first invoice of any amount).
+        "public_pot_cents": launch_phase.pot_cents(signups),
+        "funded_pot_cents": launch_phase.pot_cents(funded),
         "referrals": {
             "signed_up": sum(int(w.get("referrals_signed_up", 0)) for w in waitlist),
             "paid": referrals_paid,

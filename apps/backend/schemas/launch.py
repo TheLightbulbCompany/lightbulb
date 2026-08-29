@@ -22,10 +22,13 @@ class ReferralAttributeRequest(BaseModel):
     ref: str = Field(min_length=4, max_length=16)
 
 
-class EnterRequest(BaseModel):
+class JoinRequest(BaseModel):
     display_name: str = Field(min_length=2, max_length=40)
-    stripe_key: str = Field(min_length=20, max_length=200)
     public: bool = True
+
+
+class ConnectStripeRequest(BaseModel):
+    stripe_key: str = Field(min_length=20, max_length=200)
 
 
 class LeaderboardRow(BaseModel):
@@ -37,5 +40,6 @@ class LeaderboardRow(BaseModel):
 
 
 class LeaderboardResponse(BaseModel):
-    entrants: int
+    competing: int
+    on_board: int
     rows: list[LeaderboardRow]

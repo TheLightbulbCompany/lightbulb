@@ -30,8 +30,8 @@ NOT_ACTIVATED = {"bootstrap_state": "sent", "bootstrap_delivered_at": None}
         (_sched(-10), {"subscription_status": "trialing"}, ACTIVATED, (True, None)),
     ],
 )
-def test_can_enter_matrix(sched, billing, onboarding, expected):
-    assert launch_service.can_enter(s=sched, billing=billing, onboarding=onboarding, now=NOW) == expected
+def test_can_join_matrix(sched, billing, onboarding, expected):
+    assert launch_service.can_join(s=sched, billing=billing, onboarding=onboarding, now=NOW) == expected
 
 
 async def test_resolve_email_prefers_jwt_then_users_row():

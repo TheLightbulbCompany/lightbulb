@@ -189,7 +189,7 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
             )
             await _record(
                 owner_id,
-                launch_entries_repo.set_baseline(
+                launch_entries_repo.set_key_connected(
                     owner_id,
                     baseline_cents=baseline_cents,
                     currency=baseline_currency,
@@ -240,6 +240,8 @@ async def refresh_all(*, force: bool = False, now: datetime | None = None) -> in
     entries = await launch_entries_repo.list_all()
     n = 0
     for entry in entries:
+        if not entry.get("has_key"):
+            continue  # joined but never connected Stripe — no key to read revenue with
         if not force and not _is_stale(entry, now):
             continue
         await refresh_entry(entry, s, now=now)

@@ -52,6 +52,7 @@ def deps():
             "owner_id": "u_a",
             "display_name": "A",
             "public": True,
+            "has_key": True,
             "waitlist_position": 1,
             "currency": "usd",
             "baseline_cents": 400,
@@ -64,6 +65,7 @@ def deps():
             "owner_id": "u_c",
             "display_name": "C",
             "public": False,
+            "has_key": False,
             "waitlist_position": 3,
             "currency": "usd",
             "baseline_cents": 0,
@@ -79,6 +81,7 @@ def deps():
     with (
         patch.object(ops_launch.launch_phase, "schedule", return_value=S),
         patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(return_value=waitlist)),
+        patch.object(ops_launch.launch_waitlist_repo, "count_pot_counted", AsyncMock(return_value=2)),
         patch.object(ops_launch.launch_entries_repo, "list_all", AsyncMock(return_value=entries)),
         patch.object(
             ops_launch.readiness_state,
@@ -103,6 +106,11 @@ async def test_compute_counts_and_economics(deps):
     # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comp-eligible. u_c: position 3 ⇒ paid.
     assert data["entrants"] == {"total": 2, "paid": 1, "comp_eligible": 1, "public": 1}
     assert data["pot_cents"] == 100_000 + 2 * 1_000
+    # signups (waitlist) vs competing (entries, joined) vs on_board (entries w/ has_key)
+    assert data["signups"] == 3 and data["competing"] == 2 and data["on_board"] == 1
+    # public pot tracks the uncapped waitlist; funded pot tracks first-invoice count
+    assert data["public_pot_cents"] == 100_000 + 3 * 1_000
+    assert data["funded_pot_cents"] == 100_000 + 2 * 1_000
     assert data["referrals"] == {"signed_up": 1, "paid": 1, "months_banked": 1}
     econ = data["economics"]
     assert econ["paid_profit_cents"] == 1 * (5000 - 1800 - 1000)

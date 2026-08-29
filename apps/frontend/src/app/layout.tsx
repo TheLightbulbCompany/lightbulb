@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Source_Sans_3, DM_Sans, Lora } from "next/font/google";
+import { Geist_Mono, Source_Sans_3, Lora } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
@@ -12,11 +12,6 @@ import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
@@ -28,12 +23,6 @@ const sourceSans = Source_Sans_3({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   display: "swap",
-});
-
-const dmSans = DM_Sans({
-  variable: "--font-dm-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "700"],
 });
 
 const lora = Lora({
@@ -96,7 +85,7 @@ export default function RootLayout({
       <html
         lang="en"
         suppressHydrationWarning
-        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable} ${geistSans.variable} ${dmSans.variable}`}
+        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable}`}
       >
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />

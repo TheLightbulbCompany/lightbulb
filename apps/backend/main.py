@@ -957,6 +957,11 @@ from routers import company_stripe  # noqa: E402
 
 app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
 
+# Provisioning rail — container-authed: pairing + consent cards, landed credentials.
+from routers import company_provisioning  # noqa: E402
+
+app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
+
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
 

@@ -160,7 +160,7 @@ jobs:
       with:
         projectPath: apps/desktop
         tagName: desktop-dev-v0.4.${{ github.run_number }}
-        releaseName: Isol8 Desktop [DEV] v0.4.${{ github.run_number }}
+        releaseName: Lightbulb Desktop [DEV] v0.4.${{ github.run_number }}
         releaseDraft: true
         prerelease: true
         args: --target aarch64-apple-darwin
@@ -180,10 +180,10 @@ jobs:
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
-        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
         VERSION="0.4.${{ github.run_number }}"
-        DMG="Isol8_${VERSION}_aarch64.dmg"
+        DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
@@ -196,9 +196,9 @@ jobs:
         MNT="$RUNNER_TEMP/isol8_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
-        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb" "$RW"
         hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
-        ditto "$APP" "$MNT/Isol8.app"
+        ditto "$APP" "$MNT/Lightbulb.app"
         ln -s /Applications "$MNT/Applications"
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"
@@ -353,7 +353,7 @@ jobs:
       with:
         projectPath: apps/desktop
         tagName: desktop-v0.4.${{ github.run_number }}
-        releaseName: Isol8 Desktop v0.4.${{ github.run_number }}
+        releaseName: Lightbulb Desktop v0.4.${{ github.run_number }}
         releaseDraft: true
         prerelease: false
         args: --target aarch64-apple-darwin
@@ -374,10 +374,10 @@ jobs:
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
-        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Isol8.app"
+        APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
         VERSION="0.4.${{ github.run_number }}"
-        DMG="Isol8_${VERSION}_aarch64.dmg"
+        DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
@@ -390,9 +390,9 @@ jobs:
         MNT="$RUNNER_TEMP/isol8_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
-        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Isol8" "$RW"
+        hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb" "$RW"
         hdiutil attach "$RW" -nobrowse -mountpoint "$MNT"
-        ditto "$APP" "$MNT/Isol8.app"
+        ditto "$APP" "$MNT/Lightbulb.app"
         ln -s /Applications "$MNT/Applications"
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"

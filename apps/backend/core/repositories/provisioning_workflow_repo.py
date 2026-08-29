@@ -83,6 +83,7 @@ async def create(
     service_id: str,
     configuration: dict,
     issue_id: str | None = None,
+    reason: str = "",
 ) -> dict:
     """Persist the intent BEFORE any Stripe write (guide: "Persist the intent
     to create or change a Resource before making the request")."""
@@ -99,6 +100,10 @@ async def create(
         "service_id": service_id,
         "configuration": configuration or {},
         "issue_id": issue_id,
+        # The asking agent's own sentence, kept so a re-filed card after a
+        # catalog drift still says why — the row is the memory, and the reason
+        # is not recoverable from the catalog.
+        "reason": reason or "",
         "attempts": 0,
         "created_at": now,
         "updated_at": now,

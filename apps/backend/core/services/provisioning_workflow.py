@@ -286,7 +286,13 @@ def safe_account_details(details: dict | None) -> dict | None:
 
 
 async def start(
-    *, owner_id: str, provider_name: str, service_id: str, configuration: dict, issue_id: str | None
+    *,
+    owner_id: str,
+    provider_name: str,
+    service_id: str,
+    configuration: dict,
+    issue_id: str | None,
+    reason: str = "",
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish."""
@@ -312,7 +318,9 @@ async def start(
     # approved, provision the resource twice.
     existing = await _open_workflow_for(owner_id, provider["id"], service["service_id"])
     if existing is not None:
-        return existing
+        # In-memory marker, never written to the row: the caller must not tell
+        # the owner a second card was filed when it reused the first.
+        return {**existing, "reused": True}
 
     row = await repo.create(
         owner_id=owner_id,
@@ -323,6 +331,7 @@ async def start(
         service_id=service["service_id"],
         configuration=configuration or {},
         issue_id=issue_id,
+        reason=reason,
     )
     snapshot = snapshot_of(service, provider, configuration or {})
     approval_id = await provisioning_approvals.request_provider_consent(
@@ -331,6 +340,7 @@ async def start(
         workflow_id=row["workflow_id"],
         snapshot=snapshot,
         limit_editable=await limit_is_editable(account_id),
+        reason=reason,
     )
     if approval_id is None:
         # No Paperclip company ⇒ no Inbox ⇒ nobody can ever approve this. Fail
@@ -363,6 +373,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
             workflow_id=workflow_id,
             snapshot=fresh,
             limit_editable=await limit_is_editable(account_id),
+            reason=row.get("reason", ""),
         )
         if approval_id is None:
             return await _no_board(row)

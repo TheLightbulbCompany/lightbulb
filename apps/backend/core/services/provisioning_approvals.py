@@ -67,7 +67,13 @@ def _common(snapshot: dict, workflow_id: str) -> dict:
 
 
 async def request_provider_consent(
-    *, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict, limit_editable: bool = True
+    *,
+    owner_id: str,
+    issue_id: str | None,
+    workflow_id: str,
+    snapshot: dict,
+    limit_editable: bool = True,
+    reason: str = "",
 ) -> str | None:
     """The guide's "Collect informed approval" list, in full.
 
@@ -95,6 +101,12 @@ async def request_provider_consent(
             "scope": snapshot.get("scope"),
             "constraints": list(snapshot.get("constraints") or [])[:10],
             "configuration": snapshot.get("configuration") or {},
+            # WHY the agent asked. The catalog says what the service is; only
+            # Friday can say what it is for, and an owner approving spend on an
+            # agent's word deserves to read that sentence. Capped and
+            # control-char-free at the route — it is agent prose, so the card
+            # renders it as hers, not as ours.
+            "reason": _text(reason),
             "pricing_type": snapshot.get("pricing_type"),
             "price_display": _price_display(snapshot),
             "environment": _text(snapshot.get("environment")) or "Company — production",

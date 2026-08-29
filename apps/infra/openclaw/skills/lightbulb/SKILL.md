@@ -314,11 +314,15 @@ try again on your next turn; never work around it. A 502 is different: the
 board REJECTED the request, so retrying changes nothing — tell the owner what
 it said, verbatim, and move on.
 
-This files a "Set up <company> on Stripe" card in the owner's Inbox. It is
-never a gate: keep working on everything that does not need money, and say
-in your reply that you asked. The owner keeps the account and 100% of the
-revenue; Lightbulb AI takes no fee. Never create the Stripe account in the
-browser yourself.
+A 200 is not always a card. Read `status` in the body: `filed` means a
+"Set up <company> on Stripe" card is now in the owner's Inbox — say in your
+reply that you asked; `connected` means the company already has its Stripe
+account and there is nothing to ask for; `no_company` means the owner has no
+board yet (the platform is still provisioning it) — tell the owner plainly
+and try again on a later turn. The card is never a gate: keep working on
+everything that does not need money. The owner keeps the account and 100% of
+the revenue; Lightbulb AI takes no fee. Never create the Stripe account in
+the browser yourself.
 
 ## Skills and self-improvement
 

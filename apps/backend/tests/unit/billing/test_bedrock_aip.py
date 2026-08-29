@@ -157,7 +157,7 @@ def aip_tables(monkeypatch):
         # container_repo resolves the containers table via
         # core.dynamodb.get_table("containers") -> table_name() which prepends
         # the module-level _table_prefix (cached at import from settings,
-        # default "isol8-dev-"). Setting the env var here is too late, so patch
+        # default "lightbulb-dev-"). Setting the env var here is too late, so patch
         # the cached prefix directly to "test-" -> "test-containers".
         monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
         # Reset the cached DDB resource so it is rebuilt INSIDE the moto mock
@@ -370,7 +370,7 @@ class TestEnsureAips:
             "arn:aws:bedrock:us-east-1:877352799272:inference-profile/us.anthropic.claude-opus-4-6-v1"
         )
         # Env-prefixed name, tag carries owner_id.
-        assert created["opus"]["inferenceProfileName"] == "isol8-dev-org_abc-opus"
+        assert created["opus"]["inferenceProfileName"] == "lightbulb-dev-org_abc-opus"
         tags = {t["key"]: t["value"] for t in created["opus"]["tags"]}
         assert tags["owner_id"] == "org_abc"
         assert tags["tier"] == "opus"
@@ -416,15 +416,15 @@ class TestEnsureAips:
             return {
                 "inferenceProfileSummaries": [
                     {
-                        "inferenceProfileName": "isol8-dev-org_abc-opus",
+                        "inferenceProfileName": "lightbulb-dev-org_abc-opus",
                         "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/opus-exist",
                     },
                     {
-                        "inferenceProfileName": "isol8-dev-org_abc-sonnet",
+                        "inferenceProfileName": "lightbulb-dev-org_abc-sonnet",
                         "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/sonnet-exist",
                     },
                     {
-                        "inferenceProfileName": "isol8-dev-org_abc-haiku",
+                        "inferenceProfileName": "lightbulb-dev-org_abc-haiku",
                         "inferenceProfileArn": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/haiku-exist",
                     },
                 ]

@@ -345,7 +345,18 @@ export class ApiStack extends cdk.Stack {
               tryBundle(outputDir: string): boolean {
                 try {
                   const srcDir = path.join(__dirname, "..", "..", "lambda", "websocket-authorizer");
-                  execSync(`pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q`, { stdio: "inherit" });
+                  // Target the LAMBDA's interpreter, not the host's. A bare
+                  // `pip3 install -t` resolves wheels for whatever Python the
+                  // runner has (3.14 on the self-hosted box), which shipped a
+                  // _cffi_backend.cpython-314 .so into a python3.12 function:
+                  // Runtime.ImportModuleError on every WebSocket connect. With
+                  // an explicit version/platform pip fetches manylinux cp312
+                  // binary wheels from any host, matching the Docker path.
+                  execSync(
+                    `pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q ` +
+                      "--only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.12",
+                    { stdio: "inherit" },
+                  );
                   for (const f of fs.readdirSync(srcDir)) {
                     // Files only: backend pytest imports index.py in place
                     // (tests/unit/test_ws_authorizer_*.py) and leaves a

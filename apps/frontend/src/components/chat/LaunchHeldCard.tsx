@@ -6,6 +6,7 @@ import type { BlockedPayload } from "@/hooks/useProvisioningState";
 import { fetchLaunchInfo } from "@/lib/launch";
 import type { LaunchMe } from "@/lib/launch";
 import { LaunchStatusLines } from "@/components/launch/LaunchStatusLines";
+import { useReferralAttribution } from "@/components/launch/useReferralAttribution";
 import "@/components/launch/launch.css";
 
 /**
@@ -19,6 +20,10 @@ export function LaunchHeldCard({ blocked }: { blocked: BlockedPayload }) {
   const api = useApi();
   const [me, setMe] = React.useState<LaunchMe | null>(null);
   const [dropAt, setDropAt] = React.useState<string | null>(null);
+  // Either read failing leaves the status lines unrenderable forever; fall back
+  // to the gate's own copy rather than a permanent "Loading…".
+  const [failed, setFailed] = React.useState(false);
+  useReferralAttribution(api, me);
 
   React.useEffect(() => {
     let alive = true;
@@ -27,7 +32,9 @@ export function LaunchHeldCard({ blocked }: { blocked: BlockedPayload }) {
       .then((m) => {
         if (alive) setMe(m as LaunchMe);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
     return () => {
       alive = false;
     };
@@ -37,10 +44,12 @@ export function LaunchHeldCard({ blocked }: { blocked: BlockedPayload }) {
     let alive = true;
     fetchLaunchInfo()
       .then((info) => {
-        if (alive) setDropAt(info?.drop_at ?? null);
+        if (!alive) return;
+        if (info?.drop_at) setDropAt(info.drop_at);
+        else setFailed(true);
       })
       .catch(() => {
-        if (alive) setDropAt(null);
+        if (alive) setFailed(true);
       });
     return () => {
       alive = false;
@@ -51,6 +60,8 @@ export function LaunchHeldCard({ blocked }: { blocked: BlockedPayload }) {
     <div className="lc-card" data-testid="launch-held-card">
       {me && dropAt ? (
         <LaunchStatusLines me={me} dropAt={dropAt} />
+      ) : failed ? (
+        <p className="ld-lede">{blocked.title}</p>
       ) : (
         <p className="lc-fine">Loading your status…</p>
       )}

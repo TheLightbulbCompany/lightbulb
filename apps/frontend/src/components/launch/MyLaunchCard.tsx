@@ -3,11 +3,12 @@
 import * as React from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
-import { LAUNCH_REF_KEY, formatMoney, type LaunchInfo, type LaunchMe } from "@/lib/launch";
+import { formatMoney, type LaunchInfo, type LaunchMe } from "@/lib/launch";
 import { ConnectStripeForm } from "./ConnectStripeForm";
 import { JoinForm } from "./JoinForm";
 import { LaunchStatusLines } from "./LaunchStatusLines";
 import { useLaunchRef } from "./useLaunchRef";
+import { useReferralAttribution } from "./useReferralAttribution";
 
 const BLOCKED_COPY: Record<string, string> = {
   no_subscription: "Redeem your code or subscribe to join — the free month is the competition month.",
@@ -16,30 +17,11 @@ const BLOCKED_COPY: Record<string, string> = {
 
 export function MyLaunchCard({ info }: { info: LaunchInfo }) {
   const api = useApi();
-  const refCode = useLaunchRef();
+  useLaunchRef(); // side effect: persists `?ref=` on `/launch?ref=CODE` too
   const { data: me, mutate } = useSWR<LaunchMe>("/launch/me", (k: string) => api.get(k) as Promise<LaunchMe>);
-  const attributed = React.useRef(false);
+  useReferralAttribution(api, me);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicError, setPublicError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (!me || !refCode || attributed.current) return;
-    if (me.waitlist && me.waitlist.referral_code === refCode) return;
-    attributed.current = true;
-    // Only clear the stored ref once we get a resolved response (attributed
-    // true OR false) — a thrown error (network blip, 5xx) must leave it in
-    // place so the once-guard's next mount can retry.
-    api
-      .post("/launch/referral", { ref: refCode })
-      .then(() => {
-        try {
-          window.localStorage.removeItem(LAUNCH_REF_KEY);
-        } catch {
-          /* storage unavailable */
-        }
-      })
-      .catch(() => undefined);
-  }, [me, refCode, api]);
 
   const togglePublic = async (checked: boolean) => {
     setPublicBusy(true);

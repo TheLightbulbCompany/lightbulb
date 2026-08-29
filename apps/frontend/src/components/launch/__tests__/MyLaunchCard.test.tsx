@@ -29,7 +29,7 @@ function mount(refCode: string | null = null, i: LaunchInfo = info) {
 }
 
 describe("MyLaunchCard", () => {
-  beforeEach(() => { get.mockReset(); post.mockReset(); patch.mockReset(); useLaunchRef.mockReturnValue(null); });
+  beforeEach(() => { get.mockReset(); post.mockReset(); patch.mockReset(); useLaunchRef.mockReturnValue(null); localStorage.clear(); });
 
   it("pre-drop: shows the shared status lines, not a form", async () => {
     get.mockResolvedValue(me({ phase: "waitlist", activated: false, can_join: false, reason: "phase_waitlist" }));

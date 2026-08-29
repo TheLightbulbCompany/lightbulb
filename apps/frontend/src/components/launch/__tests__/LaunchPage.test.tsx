@@ -49,6 +49,13 @@ describe("LaunchPage phases", () => {
     expect(screen.getByText("+50%")).toBeInTheDocument();
     expect(screen.getByText(/1 on the board · 2 competing/)).toBeInTheDocument();
   });
+  it("ended: the board still renders, the sign-up CTA is gone", async () => {
+    info.mockResolvedValue({ ...base, phase: "ended" });
+    board.mockResolvedValue({ competing: 2, on_board: 1, rows: [{ rank: 1, display_name: "Ada", delta_cents: 25000, pct: 0.5, currency: "usd" }] });
+    render(<LaunchPage />);
+    expect(await screen.findByText("Ada")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^sign up/i })).not.toBeInTheDocument();
+  });
   it("feature off: quiet message", async () => {
     info.mockResolvedValue(null);
     render(<LaunchPage />);

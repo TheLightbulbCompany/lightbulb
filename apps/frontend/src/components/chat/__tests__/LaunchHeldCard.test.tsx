@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // LaunchHeldCard's own module imports `fetchLaunchInfo` from "@/lib/launch",
@@ -6,13 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // importOriginal (mirrors src/__tests__/teams/RoutinesPanel.test.tsx) so that
 // read doesn't throw and fall the card back to its loading state.
 const get = vi.fn();
+const post = vi.fn();
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, useApi: () => ({ get, post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() }) };
+  return { ...actual, useApi: () => ({ get, post, put: vi.fn(), patch: vi.fn(), del: vi.fn() }) };
 });
 
 import type { BlockedPayload } from "@/hooks/useProvisioningState";
-import type { LaunchMe } from "@/lib/launch";
+import { LAUNCH_REF_KEY, type LaunchMe } from "@/lib/launch";
 import { LaunchHeldCard } from "../LaunchHeldCard";
 
 const blocked: BlockedPayload = {
@@ -49,7 +50,15 @@ describe("LaunchHeldCard", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     get.mockReset();
+    post.mockReset();
+    localStorage.clear();
   });
+
+  const okInfo = () =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ drop_at: "2026-09-18T16:00:00+00:00" }) }),
+    );
 
   it("renders position, idea and the referral link, plus the gate's fine print", async () => {
     get.mockResolvedValue(me({ idea: "A meal-planning agent for busy parents" }));
@@ -72,5 +81,33 @@ describe("LaunchHeldCard", () => {
     );
     render(<LaunchHeldCard blocked={blocked} />);
     expect(await screen.findByText(/Add your idea on drop day/)).toBeInTheDocument();
+  });
+
+  it("attributes a stored referral without a trip to /launch, and clears it on a resolved response", async () => {
+    get.mockResolvedValue(me());
+    post.mockResolvedValue({ attributed: false });
+    okInfo();
+    localStorage.setItem(LAUNCH_REF_KEY, "K7QX2MPP");
+    render(<LaunchHeldCard blocked={blocked} />);
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/referral", { ref: "K7QX2MPP" }));
+    await waitFor(() => expect(localStorage.getItem(LAUNCH_REF_KEY)).toBeNull());
+  });
+
+  it("does NOT clear the stored referral when the request throws", async () => {
+    get.mockResolvedValue(me());
+    post.mockRejectedValue(new Error("network blip"));
+    okInfo();
+    localStorage.setItem(LAUNCH_REF_KEY, "K7QX2MPP");
+    render(<LaunchHeldCard blocked={blocked} />);
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/referral", { ref: "K7QX2MPP" }));
+    expect(localStorage.getItem(LAUNCH_REF_KEY)).toBe("K7QX2MPP");
+  });
+
+  it("falls back to the gate copy when /launch/me fails, instead of loading forever", async () => {
+    get.mockRejectedValue(new Error("500"));
+    okInfo();
+    render(<LaunchHeldCard blocked={blocked} />);
+    expect(await screen.findByText("You're on the list")).toBeInTheDocument();
+    expect(screen.queryByText(/Loading your status/)).not.toBeInTheDocument();
   });
 });

@@ -121,6 +121,136 @@ async def test_land_never_puts_a_secret_value_in_dynamodb():
     assert record.await_args.args[2]["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
 
 
+REVOKE_RES = {"resource_id": "res_1", "provider": "posthog", "env_keys": ["K"]}
+
+
+@pytest.mark.asyncio
+async def test_revoke_drops_only_the_landed_keys_then_config_then_the_pointer():
+    """The (owner, provider) blob is SHARED with the OAuth rail, so revoke must
+    drop only the keys THIS resource landed, never the whole blob — and the
+    pointer removal happens LAST so a retry after a config failure can still
+    find the keys."""
+    order: list[str] = []
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"access_token": "t", "K": "p"})),
+        patch.object(
+            mod.integration_secret_store, "put", AsyncMock(side_effect=lambda *a, **k: order.append("put"))
+        ) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(
+            mod.config_patcher,
+            "delete_openclaw_config_path",
+            AsyncMock(side_effect=lambda *a, **k: order.append("cfg")),
+        ) as del_cfg,
+        patch.object(
+            mod.integrations_repo,
+            "remove_provider_resource",
+            AsyncMock(side_effect=lambda *a, **k: order.append("pointer") or []),
+        ) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
+    assert result is True
+    sm_put.assert_awaited_once_with("org_a", "posthog", {"access_token": "t"})
+    sm_del.assert_not_awaited()
+    del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "K"])
+    drop.assert_awaited_once_with("org_a", "posthog", "res_1")
+    assert order == ["put", "cfg", "pointer"]
+
+
+@pytest.mark.asyncio
+async def test_revoke_deletes_the_secret_when_nothing_is_left():
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"K": "p"})),
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()),
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])),
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
+    assert result is True
+    sm_put.assert_not_awaited()
+    sm_del.assert_awaited_once_with("org_a", "posthog")
+
+
+@pytest.mark.asyncio
+async def test_revoke_with_no_env_keys_only_removes_the_pointer():
+    res_no_keys = {"resource_id": "res_2", "provider": "posthog", "env_keys": []}
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[res_no_keys])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock()) as sm_get,
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()) as del_cfg,
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_2")
+    assert result is True
+    sm_get.assert_not_awaited()
+    sm_put.assert_not_awaited()
+    sm_del.assert_not_awaited()
+    del_cfg.assert_not_awaited()
+    drop.assert_awaited_once_with("org_a", "posthog", "res_2")
+
+
+@pytest.mark.asyncio
+async def test_revoke_missing_pointer_is_a_pure_no_op():
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock()) as sm_get,
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()) as del_cfg,
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock()) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_missing")
+    assert result is False
+    sm_get.assert_not_awaited()
+    sm_put.assert_not_awaited()
+    sm_del.assert_not_awaited()
+    del_cfg.assert_not_awaited()
+    drop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_skips_the_secret_step_when_the_blob_is_already_gone():
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=None)),
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()) as del_cfg,
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
+    assert result is True
+    sm_put.assert_not_awaited()
+    sm_del.assert_not_awaited()
+    del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "K"])
+    drop.assert_awaited_once_with("org_a", "posthog", "res_1")
+
+
+@pytest.mark.asyncio
+async def test_revoke_swallows_a_missing_container_config():
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"K": "p"})),
+        patch.object(mod.integration_secret_store, "put", AsyncMock()),
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(
+            mod.config_patcher,
+            "delete_openclaw_config_path",
+            AsyncMock(side_effect=mod.ConfigPatchError("no config")),
+        ),
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
+    assert result is True
+    sm_del.assert_awaited_once_with("org_a", "posthog")
+    drop.assert_awaited_once_with("org_a", "posthog", "res_1")
+
+
 @pytest.mark.asyncio
 async def test_build_provisioned_env_reads_only_rows_with_the_projects_actor():
     # Every row carries env_keys so that the ACTOR and STATUS filters are what

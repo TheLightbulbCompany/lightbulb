@@ -75,6 +75,10 @@ describe("deploy.yml prod promotion gate", () => {
     // mechanism, worth its own assertion.
     expect(jobs.has("prod-DeployVercelProd")).toBe(true);
     expect(jobLevelIf(jobs.get("prod-DeployVercelProd")!)).toBe(PROMOTE_IF);
+    // The holding-company site is a second GitHubActionStep in the prod stage,
+    // gated by its own patch line — a forgotten patch ships it on merge.
+    expect(jobs.has("prod-DeployCompanyProd")).toBe(true);
+    expect(jobLevelIf(jobs.get("prod-DeployCompanyProd")!)).toBe(PROMOTE_IF);
   });
 
   it("leaves dev, synth and asset jobs ungated", () => {

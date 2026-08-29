@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
+from core.services.paperclip_admin_client import PaperclipApiError  # noqa: E402
 from main import app  # noqa: E402
 from routers import company_stripe as mod  # noqa: E402
 
@@ -239,3 +240,20 @@ def test_request_from_container_already_connected(client):
         )
     assert resp.status_code == 200
     assert resp.json() == {"approval_id": None, "status": "connected"}
+
+
+def test_request_from_container_maps_paperclip_error_to_503(client):
+    with (
+        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch(
+            "core.services.company_stripe_approval.request_company_stripe",
+            AsyncMock(side_effect=PaperclipApiError("boom", 502, None)),
+        ),
+    ):
+        resp = client.post(
+            "/api/v1/company/stripe/u/org_a/request",
+            json={"issue_id": "iss_1", "reason": "x"},
+        )
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "paperclip_unavailable"

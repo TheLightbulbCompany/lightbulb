@@ -11,6 +11,7 @@ import logging
 import secrets
 from typing import Annotated
 
+import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -21,7 +22,7 @@ from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import company_stripe
-from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 from routers.agent_builder import _require_hook_token
@@ -197,7 +198,14 @@ async def request_from_container(owner_id: str, body: RequestStripeBody, request
         return {"approval_id": None, "status": "connected"}
     from core.services import company_stripe_approval
 
-    approval_id = await company_stripe_approval.request_company_stripe(
-        owner_id=owner_id, issue_id=body.issue_id, reason=body.reason
-    )
+    try:
+        approval_id = await company_stripe_approval.request_company_stripe(
+            owner_id=owner_id, issue_id=body.issue_id, reason=body.reason
+        )
+    except (PaperclipApiError, httpx.HTTPError) as e:
+        logger.warning("company_stripe: could not file connect_stripe approval owner_id=%s: %s", owner_id, e)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "paperclip_unavailable", "message": "Could not reach the company board; try again later"},
+        ) from e
     return {"approval_id": approval_id, "status": "filed" if approval_id else "exists"}

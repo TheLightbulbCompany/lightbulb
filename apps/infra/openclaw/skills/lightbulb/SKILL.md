@@ -303,6 +303,9 @@ curl -s -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
   "$ISOL8_API_URL/api/v1/company/stripe/u/$ISOL8_OWNER_ID/request"
 ```
 
+If the call returns 503, the board was unreachable — say so to the owner and
+try again on your next turn; never work around it.
+
 This files a "Set up <company> on Stripe" card in the owner's Inbox. It is
 never a gate: keep working on everything that does not need money, and say
 in your reply that you asked. The owner keeps the account and 100% of the

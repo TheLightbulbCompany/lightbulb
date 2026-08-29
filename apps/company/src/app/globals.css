@@ -78,8 +78,14 @@ p.lede { font-size: clamp(16px, 1.3vw, 20px); max-width: 34ch; color: var(--fg-m
 
 .prod { grid-template-columns: minmax(0, 34%) 1fr; column-gap: 40px; align-items: center; }
 .prod .idx { font-family: var(--font-mono), monospace; font-size: 11px; letter-spacing: 0.16em; color: var(--fg-muted); display: flex; gap: 14px; align-items: center; margin-bottom: 18px; }
-.prod .tag { padding: 3px 8px; border: 1px solid var(--rule); border-radius: 999px; font-size: 10px; }
-.prod .tag.live { border-color: var(--gold); color: var(--gold); }
+/* the stage word is the bulb's own vocabulary for maturity — Lit, Warming up, A spark, Sketched */
+.prod .stage { padding: 3px 8px; border: 1px solid var(--rule); border-radius: 999px; font-size: 10px; }
+.prod .stage-ai { border-color: var(--gold); color: var(--gold); }
+.prod .stage-goose { color: var(--fg); }
+.prod .note { text-transform: none; letter-spacing: 0.02em; opacity: 0.7; }
+/* idea-stage chapters carry less weight: smaller title, quieter copy */
+.prod.idea h2 { font-size: clamp(32px, 3.4vw, 56px); }
+.prod.idea p { max-width: 40ch; }
 .prod h2 { font-size: clamp(40px, 4.6vw, 76px); }
 .prod p { max-width: 36ch; color: var(--fg-muted); margin: 18px 0 0; }
 .prod a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--gold); }

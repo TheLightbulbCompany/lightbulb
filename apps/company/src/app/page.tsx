@@ -6,6 +6,9 @@ import { SunriseMark } from "@/components/Logo";
 const MAIL = "mailto:hello@thelightbulb.company";
 
 export default function Page() {
+  const products = PRODUCTS.filter((p) => !("idea" in p));
+  const ideas = PRODUCTS.filter((p) => "idea" in p);
+
   return (
     <>
       <LightbulbScene />
@@ -14,7 +17,9 @@ export default function Page() {
         <section className="hero" id="hero">
           <p className="eyebrow">The Lightbulb Company</p>
           <h1>The business of ideas.</h1>
-          <p className="lede">Every company starts in the dark. We build what comes after.</p>
+          <p className="lede">
+            A small company that builds companies. One idea at a time, from the first spark to the lights staying on.
+          </p>
         </section>
 
         <section className="strike" id="strike">
@@ -24,16 +29,18 @@ export default function Page() {
               Then someone <em>flicks it on.</em>
             </h2>
             <p className="lede" style={{ marginLeft: "auto" }}>
-              One idea, lit. Everything we make is a room that light reaches.
+              Every product here began as a private thought that wouldn&rsquo;t go away. This is what happened after.
             </p>
           </div>
         </section>
 
         {PRODUCTS.map((p) => (
-          <section className="prod" id={p.id} key={p.id}>
+          <section className={`prod${"idea" in p ? " idea" : ""}`} id={p.id} key={p.id}>
             <div>
               <div className="idx">
-                {p.index} <span className={`tag${p.tag === "Live" ? " live" : ""}`}>{p.tag}</span>
+                {p.index}
+                <span className={`stage stage-${p.id}`}>{p.stage}</span>
+                <span className="note">{p.note}</span>
               </div>
               <h2>{p.name}</h2>
               <p>
@@ -52,10 +59,11 @@ export default function Page() {
         <section className="vision" id="vision">
           <div>
             <p className="eyebrow">One bulb, many rooms</p>
-            <h2>Light is the only thing that gets bigger when you share it.</h2>
+            <h2>Most ideas die in the dark.</h2>
             <p className="lede">
-              The Lightbulb Company is a holding company for products that make people more capable. Each one starts
-              as a single idea, gets built by a small team, and stays lit long after launch.
+              Not for lack of light — for lack of someone to build them. The Lightbulb Company exists to be that
+              someone: a small team that takes one idea at a time from spark to switched-on, and stays to keep it
+              lit.
             </p>
           </div>
         </section>
@@ -74,8 +82,16 @@ export default function Page() {
         <div className="cols">
           <div>
             Products
-            {PRODUCTS.map((p) => (
+            {products.map((p) => (
               <a key={p.id} href={"href" in p ? p.href : `#${p.id}`}>
+                {p.name}
+              </a>
+            ))}
+          </div>
+          <div>
+            Next
+            {ideas.map((p) => (
+              <a key={p.id} href={`#${p.id}`}>
                 {p.name}
               </a>
             ))}

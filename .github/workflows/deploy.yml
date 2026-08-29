@@ -1574,19 +1574,19 @@ jobs:
       - name: Install Vercel CLI
         run: npm install -g vercel
       - name: Pull Vercel Settings
-        run: cd apps/company && vercel pull --yes --token=$VERCEL_TOKEN
+        run: vercel pull --yes --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Build Company Site
-        run: cd apps/company && vercel build --token=$VERCEL_TOKEN
+        run: vercel build --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Deploy to Vercel (Preview)
-        run: cd apps/company && vercel deploy --prebuilt --token=$VERCEL_TOKEN
+        run: vercel deploy --prebuilt --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -2403,23 +2403,21 @@ jobs:
       - name: Install Vercel CLI
         run: npm install -g vercel
       - name: Pull Vercel Settings
-        run: cd apps/company && vercel pull --yes --environment=production
-          --token=$VERCEL_TOKEN
+        run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Build Company Site
-        run: cd apps/company && vercel build --prod --token=$VERCEL_TOKEN
+        run: vercel build --prod --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_COMPANY }}
       - name: Deploy to Vercel (Production)
         id: company-deploy-prod
-        run: cd apps/company && DEPLOY_URL=$(vercel deploy --prebuilt --prod
-          --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >>
-          $GITHUB_OUTPUT
+        run: DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo
+          "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

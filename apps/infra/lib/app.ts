@@ -25,21 +25,22 @@ const vercelEnv = {
 };
 
 // The holding-company site (apps/company, thelightbulb.company) is a second
-// Vercel project: same token and org, its own project id. Unlike the frontend,
-// whose root directory is a project setting on Vercel, these steps run IN
-// apps/company, so the CLI builds that directory with no project-setting
-// dependency (pnpm still resolves the workspace from the repo root).
+// Vercel project: same token and org, its own project id. Like the frontend,
+// its Root Directory (apps/company) is a PROJECT SETTING on Vercel and the CLI
+// runs from the repo root — building inside apps/company instead makes the
+// output trace pnpm's store at a path relative to the app, and
+// `vercel deploy --prebuilt` then fails with "File does not exist:
+// node_modules/.pnpm/…" (reproduced 2026-08-29).
 const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID_COMPANY }}" };
 const COMPANY_DOMAIN = "thelightbulb.company";
-const COMPANY_DIR = "apps/company";
 const companyVercelSteps = (prod: boolean) => [
   // Vercel needs no git credentials; do not leave the token in the checkout.
   { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
   { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
   { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
   { name: "Install Vercel CLI", run: "npm install -g vercel" },
-  { name: "Pull Vercel Settings", run: `cd ${COMPANY_DIR} && vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
-  { name: "Build Company Site", run: `cd ${COMPANY_DIR} && vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
+  { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
+  { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
 ];
 
 // cdk-pipelines-github's `Runner` has a private constructor and its only
@@ -196,7 +197,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
     new GitHubActionStep("DeployCompanyDev", {
       jobSteps: [
         ...companyVercelSteps(false),
-        { name: "Deploy to Vercel (Preview)", run: `cd ${COMPANY_DIR} && vercel deploy --prebuilt --token=$VERCEL_TOKEN`, env: companyVercelEnv },
+        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --token=$VERCEL_TOKEN", env: companyVercelEnv },
       ],
     }),
   ],
@@ -311,7 +312,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: "Deploy to Vercel (Production)",
           id: "company-deploy-prod",
-          run: `cd ${COMPANY_DIR} && DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT`,
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: companyVercelEnv,
         },
         // Register before aliasing — the same SSO-wall trap as the product apex.

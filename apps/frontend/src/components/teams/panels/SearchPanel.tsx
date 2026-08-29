@@ -143,7 +143,7 @@ export function SearchPanel() {
             options={SORT_OPTIONS}
             value={sort}
             onValueChange={(v) => setSort(v as CompanySearchSort)}
-            className="h-8 w-[168px] text-[13px]"
+            className="h-8 w-[168px] text-ui"
           />
         }
       />
@@ -153,7 +153,7 @@ export function SearchPanel() {
           {parsed.pills.map((pill, i) => (
             <span
               key={`${pill.key}-${pill.value}-${i}`}
-              className="rounded-full border px-2 py-0.5 text-[11px] font-mono"
+              className="rounded-full border px-2 py-0.5 text-caption font-mono"
               style={{ borderColor: "var(--edge)", color: "var(--midnight-soft)" }}
             >
               {pill.label}
@@ -173,7 +173,7 @@ export function SearchPanel() {
       <section aria-label="Search results" className="min-w-0">
         {!active ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <SearchIcon size={28} style={{ color: "var(--midnight-muted)" }} />
+            <SearchIcon size={20} style={{ color: "var(--midnight-muted)" }} />
             <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               Search across tasks, comments, docs, artifacts, agents, and projects.
             </p>

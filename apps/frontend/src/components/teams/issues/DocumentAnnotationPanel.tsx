@@ -156,22 +156,22 @@ export function DocumentAnnotationPanel({
           type="button"
           onClick={onClose}
           aria-label="Close comments panel"
-          className="rounded p-1"
+          className="rounded-sm p-1"
           style={{ color: "var(--midnight-muted)" }}
         >
-          <X className="h-4 w-4" />
+          <X size={16} />
         </button>
       </div>
 
       {newCommentDisabled && newCommentDisabledReason ? (
-        <p className="px-3 py-1.5 text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+        <p className="px-3 py-1.5 text-caption" style={{ color: "var(--midnight-muted)" }}>
           {newCommentDisabledReason}
         </p>
       ) : null}
       {error ? (
         <p
           data-testid="document-annotation-error"
-          className="px-3 py-1.5 text-[11px]"
+          className="px-3 py-1.5 text-caption"
           style={{ color: "var(--err)" }}
         >
           {error}
@@ -203,14 +203,14 @@ export function DocumentAnnotationPanel({
                   <span
                     data-testid={`document-annotation-orphaned-${thread.id}`}
                     title="The text this comment was anchored to was edited or removed, so it can't be highlighted in the document."
-                    className="mx-3 mt-2 inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                    className="mx-3 mt-2 inline-flex w-fit items-center gap-1 rounded-sm px-1.5 py-0.5 label-caps"
                     style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
                   >
-                    <Unlink className="h-2.5 w-2.5" /> Anchor lost
+                    <Unlink size={12} strokeWidth={1.75} /> Anchor lost
                   </span>
                 ) : null}
                 <blockquote
-                  className="mx-3 mt-2 rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+                  className="mx-3 mt-2 rounded-sm px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
                   style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
                 >
                   {truncate(thread.selectedText, 119)}
@@ -220,10 +220,10 @@ export function DocumentAnnotationPanel({
                     {thread.comments.map((comment) => (
                       <div
                         key={comment.id}
-                        className="rounded px-2 py-1.5"
+                        className="rounded-sm px-2 py-1.5"
                         style={{ border: "1px solid var(--edge)" }}
                       >
-                        <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
+                        <div className="mb-0.5 flex items-center justify-between gap-2 text-caption">
                           <span className="font-medium" style={{ color: "var(--midnight)" }}>
                             {commentAuthor(comment, agents)}
                           </span>
@@ -242,7 +242,7 @@ export function DocumentAnnotationPanel({
                         setReplyDrafts((current) => ({ ...current, [thread.id]: e.target.value }))
                       }
                       placeholder="Reply…"
-                      className="w-full resize-y rounded px-2 py-1 text-sm"
+                      className="w-full resize-y rounded-md px-2 py-1 text-sm"
                       style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
                     />
                     <div className="flex items-center justify-end gap-2">
@@ -250,16 +250,16 @@ export function DocumentAnnotationPanel({
                         type="button"
                         onClick={() => toggleResolve(thread)}
                         disabled={busy}
-                        className="flex items-center gap-1 rounded px-2 py-1 text-xs disabled:opacity-50"
+                        className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs disabled:opacity-50"
                         style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
                       >
                         {thread.status === "resolved" ? (
                           <>
-                            <RotateCcw className="h-3 w-3" /> Reopen
+                            <RotateCcw size={12} strokeWidth={1.75} /> Reopen
                           </>
                         ) : (
                           <>
-                            <Check className="h-3 w-3" /> Resolve
+                            <Check size={12} strokeWidth={1.75} /> Resolve
                           </>
                         )}
                       </button>
@@ -267,7 +267,7 @@ export function DocumentAnnotationPanel({
                         type="button"
                         onClick={() => submitReply(thread.id)}
                         disabled={busy || !(replyDrafts[thread.id] ?? "").trim()}
-                        className="rounded px-2 py-1 text-xs disabled:opacity-50"
+                        className="rounded-sm px-2 py-1 text-xs disabled:opacity-50"
                         style={{ background: "var(--midnight)", color: "var(--cream)" }}
                       >
                         Reply
@@ -291,7 +291,7 @@ export function DocumentAnnotationPanel({
       {pendingAnchor ? (
         <div className="flex flex-col gap-2 px-3 py-2" style={{ borderTop: "1px solid var(--edge)" }}>
           <blockquote
-            className="rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+            className="rounded-sm px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
             style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
           >
             {truncate(pendingAnchor.selectedText, 159)}
@@ -303,7 +303,7 @@ export function DocumentAnnotationPanel({
             onChange={(e) => setComposer(e.target.value)}
             placeholder="Write a comment…"
             disabled={newCommentDisabled}
-            className="w-full resize-y rounded px-2 py-1 text-sm"
+            className="w-full resize-y rounded-md px-2 py-1 text-sm"
             style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
           />
           <div className="flex items-center justify-end gap-2">
@@ -313,7 +313,7 @@ export function DocumentAnnotationPanel({
                 onClearPendingAnchor();
                 setComposer("");
               }}
-              className="rounded px-2 py-1 text-xs"
+              className="rounded-sm px-2 py-1 text-xs"
               style={{ color: "var(--midnight-muted)" }}
             >
               Cancel
@@ -322,7 +322,7 @@ export function DocumentAnnotationPanel({
               type="button"
               onClick={createThread}
               disabled={busy || !composer.trim() || newCommentDisabled || !baseRevisionId}
-              className="rounded px-2 py-1 text-xs disabled:opacity-50"
+              className="rounded-sm px-2 py-1 text-xs disabled:opacity-50"
               style={{ background: "var(--midnight)", color: "var(--cream)" }}
             >
               {busy ? "Posting…" : "Comment"}

@@ -105,10 +105,10 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4 p-4">
-      <h3 className="flex items-center gap-2 text-sm font-semibold"><Mail className="h-4 w-4" /> Email</h3>
+      <h3 className="flex items-center gap-2 text-sm font-semibold"><Mail size={16} /> Email</h3>
       <div className="rounded-md border border-[var(--edge)] p-3 space-y-3">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">Address</div>
+          <div className="label-caps text-[var(--midnight-muted)]">Address</div>
           {row ? (
             <code className="text-sm">{row.address}</code>
           ) : (
@@ -116,7 +116,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
           )}
         </div>
         {row?.outbound_disabled && (
-          <div role="alert" className="rounded-md border border-[color-mix(in_srgb,var(--warn)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))] p-2 text-xs">
+          <div role="alert" className="rounded-lg border border-warn bg-cream px-3 py-2 text-ui">
             Outbound email is paused: a recipient reported a message as spam.
             <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
               Re-enable

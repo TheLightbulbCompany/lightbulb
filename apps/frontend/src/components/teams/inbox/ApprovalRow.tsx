@@ -40,13 +40,13 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex items-center gap-2">
-        <ShieldQuestion className="h-4 w-4 flex-shrink-0" style={{ color: "var(--midnight)" }} />
-        <span className="flex-1 truncate text-[var(--midnight)]">{title}</span>
+        <ShieldQuestion size={16} className="flex-shrink-0" style={{ color: "var(--midnight)" }} />
+        <span className="min-w-0 flex-1 truncate text-ui text-[var(--midnight)]">{title}</span>
         {approval.createdAt && (
-          <span className="text-xs text-[var(--midnight-muted)]">{timeAgo(approval.createdAt)}</span>
+          <span className="shrink-0 whitespace-nowrap text-caption text-[var(--midnight-muted)]">{timeAgo(approval.createdAt)}</span>
         )}
         {isActionable && !rejecting && (
-          <div className="flex gap-2">
+          <div className="flex shrink-0 gap-2">
             <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
               Approve
             </EditorialButton>
@@ -56,7 +56,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           </div>
         )}
         {!isActionable && (
-          <span className="text-xs capitalize text-[var(--midnight-muted)]">{approval.status}</span>
+          <span className="shrink-0 whitespace-nowrap text-caption capitalize text-[var(--midnight-muted)]">{approval.status}</span>
         )}
       </div>
       {isActionable && rejecting && (
@@ -78,7 +78,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
               }
             }}
             disabled={busy}
-            className="flex-1 min-w-0 bg-transparent outline-none"
+            className="flex-1 min-w-0 bg-transparent"
             style={{
               borderBottom: "1px solid var(--edge)",
               color: "var(--midnight)",

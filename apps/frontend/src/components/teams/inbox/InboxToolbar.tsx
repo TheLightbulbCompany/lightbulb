@@ -7,9 +7,8 @@
 //
 // The search/filters/actions cluster composes the editorial atom library —
 // `PanelToolbar` for the search-row scaffold, `EditorialButton` for the
-// primary "New task" CTA + secondary "Mark all as read" trigger. Tabs
-// retain their bespoke pill styling (does not match `PanelTabs`'s underline
-// look) and stay as raw <button role="tab"> elements.
+// primary "New task" CTA + secondary "Mark all as read" trigger, and
+// `PanelTabs variant="pill"` for the tab bar.
 
 "use client";
 
@@ -26,8 +25,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
-import { EditorialButton, PanelToolbar } from "@/components/teams/shell";
+import { EditorialButton, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
 import type { InboxTab } from "@/components/teams/shared/queryKeys";
 import type { IssueFilterState } from "@/components/teams/shared/lib/issueFilters";
@@ -185,7 +183,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
         onClick={onNewIssue}
         className="shrink-0"
       >
-        <Plus className="h-3 w-3" />
+        <Plus size={12} strokeWidth={1.75} />
         <span>New task</span>
       </EditorialButton>
 
@@ -225,11 +223,6 @@ export function InboxToolbar(props: InboxToolbarProps) {
     </>
   );
 
-  // Tab bar — bespoke pill styling, intentionally does not use PanelTabs
-  // (which renders an underline-style tab list).
-  // TODO(teams-ui-parity): migrate to PanelTabs once that atom supports a
-  // pill variant matching this forest-tint active style.
-  //
   // Promoted to its own always-visible row (it used to sit inline inside the
   // desktop-only toolbar row). Mobile had NO tab bar at all, which was
   // survivable while every tab was a view of the same issue list — but the
@@ -238,50 +231,20 @@ export function InboxToolbar(props: InboxToolbarProps) {
   // Scrolls horizontally rather than wrapping so the leading tab, which is
   // the one carrying a count, is always the one you see first.
   const tabsSlot = (
-    <div
-      role="tablist"
-      aria-label="Inbox tabs"
-      className="inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-md p-0.5"
-      style={{ background: "var(--cream-deep)" }}
-    >
-      {TABS.map((t) => {
-        const isActive = tab === t.value;
-        const badge = t.value === "approvals" ? attentionCount : 0;
-        return (
-          <button
-            key={t.value}
-            type="button"
-            role="tab"
-            aria-selected={isActive}
-            onClick={() => onTabChange(t.value)}
-            className={cn(
-              "flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-3 text-xs font-medium transition-colors",
-            )}
-            style={
-              isActive
-                ? {
-                    background: "var(--cream-deep)",
-                    color: "var(--midnight)",
-                  }
-                : { color: "var(--midnight-muted)" }
-            }
-          >
-            {t.label}
-            {badge > 0 && (
-              <span
-                // Forest, not red: these are answers owed, not incidents. The
-                // urgency of an individual decision is carried by its age in
-                // the list, not by shouting on the tab.
-                className="rounded-full px-1.5 text-[10px] font-semibold leading-4 tabular-nums"
-                style={{ background: "var(--midnight)", color: "var(--cream)" }}
-              >
-                {badge}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+    <PanelTabs
+      tabs={TABS.map((t) => ({
+        ...t,
+        // Forest, not red: these are answers owed, not incidents. The urgency
+        // of an individual decision is carried by its age in the list, not by
+        // shouting on the tab.
+        count: t.value === "approvals" ? attentionCount : undefined,
+      }))}
+      value={tab}
+      onValueChange={(v) => onTabChange(v as InboxTab)}
+      variant="pill"
+      ariaLabel="Inbox tabs"
+      className="max-w-full overflow-x-auto"
+    />
   );
 
   return (

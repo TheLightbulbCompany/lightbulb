@@ -26,13 +26,13 @@ export interface OutputFeedbackButtonsProps {
 }
 
 const ACTIVE_UP_STYLE = {
-  borderColor: "color-mix(in srgb, var(--ok) 45%, transparent)",
-  background: "color-mix(in srgb, var(--ok) 12%, transparent)",
+  borderColor: "var(--ok)",
+  background: "var(--cream)",
 } as const;
 
 const ACTIVE_DOWN_STYLE = {
-  borderColor: "color-mix(in srgb, var(--warn) 55%, transparent)",
-  background: "color-mix(in srgb, var(--warn) 12%, transparent)",
+  borderColor: "var(--warn)",
+  background: "var(--cream)",
 } as const;
 
 export function OutputFeedbackButtons({
@@ -98,7 +98,7 @@ export function OutputFeedbackButtons({
           style={visibleVote === "up" ? ACTIVE_UP_STYLE : undefined}
           onClick={() => handleVote("up")}
         >
-          <ThumbsUp className="mr-1.5 inline h-3.5 w-3.5" aria-hidden="true" />
+          <ThumbsUp size={16} className="mr-1.5 inline" aria-hidden="true" />
           Helpful
         </EditorialButton>
         <EditorialButton
@@ -110,7 +110,7 @@ export function OutputFeedbackButtons({
           style={visibleVote === "down" ? ACTIVE_DOWN_STYLE : undefined}
           onClick={() => handleVote("down")}
         >
-          <ThumbsDown className="mr-1.5 inline h-3.5 w-3.5" aria-hidden="true" />
+          <ThumbsDown size={16} className="mr-1.5 inline" aria-hidden="true" />
           Needs work
         </EditorialButton>
       </div>

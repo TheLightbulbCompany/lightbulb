@@ -5,7 +5,7 @@ import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
 const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
+const EYEBROW = "label-caps";
 
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
@@ -83,7 +83,7 @@ export function CreditsSection() {
       <div className={CARD}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Wallet className="h-3.5 w-3.5 text-[var(--midnight-muted)]" />
+            <Wallet size={16} className="text-[var(--midnight-muted)]" />
             <span className={EYEBROW}>BALANCE</span>
           </div>
           <button
@@ -92,7 +92,7 @@ export function CreditsSection() {
             aria-label="Refresh"
             className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           </button>
         </div>
         <div className="text-3xl font-semibold font-mono text-[var(--midnight)]">{balanceDisplay}</div>
@@ -115,7 +115,7 @@ export function CreditsSection() {
                 className={
                   "rounded-md border px-3 py-1.5 text-sm transition-colors " +
                   (active
-                    ? "border-[var(--midnight)] bg-[var(--midnight)]/5 text-[var(--midnight)]"
+                    ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]"
                     : "border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
                 }
               >

@@ -16,6 +16,7 @@ import {
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface McpServer {
   command: string;
@@ -139,7 +140,7 @@ export function McpServersTab(props: { agentId?: string }) {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 size={20} className="animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -147,9 +148,9 @@ export function McpServersTab(props: { agentId?: string }) {
   if (forbidden) {
     return (
       <div className="p-6 space-y-3">
-        <h2 className="text-lg font-semibold">MCP Servers</h2>
-        <div className="rounded-lg border border-border bg-card/30 p-6 text-center">
-          <Server className="h-8 w-8 mx-auto mb-2 text-muted-foreground/60" />
+        <h2 className="font-editorial-serif text-title">MCP Servers</h2>
+        <div className="rounded-lg border border-border bg-cream-deep p-6 text-center">
+          <Server size={20} className="mx-auto mb-2 text-[var(--midnight-faint)]" />
           <p className="text-sm font-medium">Org admins only.</p>
           <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
             MCP server entries carry per-server <code>env</code> secrets only
@@ -164,9 +165,9 @@ export function McpServersTab(props: { agentId?: string }) {
     <div className="p-6 space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">MCP Servers</h2>
+        <h2 className="font-editorial-serif text-title">MCP Servers</h2>
         <Button variant="ghost" size="sm" onClick={fetchServers}>
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw size={16} />
         </Button>
       </div>
 
@@ -176,7 +177,7 @@ export function McpServersTab(props: { agentId?: string }) {
           Add a new MCP server by pasting its configuration:
         </p>
         <textarea
-          className="w-full h-36 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+          className="w-full h-36 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y"
           placeholder={PLACEHOLDER_CONFIG}
           value={configInput}
           onChange={(e) => setConfigInput(e.target.value)}
@@ -189,18 +190,18 @@ export function McpServersTab(props: { agentId?: string }) {
             disabled={saving || !configInput.trim()}
           >
             {saving ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
             ) : (
-              <Plus className="h-3 w-3" />
+              <Plus size={12} strokeWidth={1.75} />
             )}
             Add Server
           </Button>
           {status && (
             <div className={`flex items-center gap-1.5 text-xs ${status.type === "error" ? "text-destructive" : "text-ok"}`}>
               {status.type === "error" ? (
-                <AlertCircle className="h-3 w-3 flex-shrink-0" />
+                <AlertCircle size={12} strokeWidth={1.75} className="flex-shrink-0" />
               ) : (
-                <CheckCircle2 className="h-3 w-3 flex-shrink-0" />
+                <CheckCircle2 size={12} strokeWidth={1.75} className="flex-shrink-0" />
               )}
               {status.message}
             </div>
@@ -210,7 +211,7 @@ export function McpServersTab(props: { agentId?: string }) {
 
       {/* Configured servers list */}
       <div className="space-y-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+        <h3 className="label-caps text-muted-foreground">
           Configured Servers ({serverEntries.length})
         </h3>
 
@@ -221,12 +222,12 @@ export function McpServersTab(props: { agentId?: string }) {
         {serverEntries.map(([name, server]) => (
           <div
             key={name}
-            className="rounded-lg border border-border p-4 space-y-2 bg-card/30"
+            className="rounded-lg border border-border p-4 space-y-2 bg-cream-deep"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <Server className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                  <Server size={16} className="text-muted-foreground flex-shrink-0" />
                   <h4 className="text-sm font-medium truncate">{name}</h4>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1 font-mono">
@@ -235,29 +236,39 @@ export function McpServersTab(props: { agentId?: string }) {
                 </p>
               </div>
               <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  onClick={() => handleEdit(name)}
-                  title="Edit"
-                >
-                  <Pencil className="h-3 w-3" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                  onClick={() => handleRemove(name)}
-                  disabled={deleting !== null}
-                  title="Remove"
-                >
-                  {deleting === name ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3 w-3" />
-                  )}
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      onClick={() => handleEdit(name)}
+                      aria-label="Edit"
+                    >
+                      <Pencil size={12} strokeWidth={1.75} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Edit</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                      onClick={() => handleRemove(name)}
+                      disabled={deleting !== null}
+                      aria-label="Remove"
+                    >
+                      {deleting === name ? (
+                        <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={12} strokeWidth={1.75} />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Remove</TooltipContent>
+                </Tooltip>
               </div>
             </div>
 
@@ -267,7 +278,7 @@ export function McpServersTab(props: { agentId?: string }) {
                 {Object.entries(server.env).map(([key, val]) => (
                   <span
                     key={key}
-                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted text-muted-foreground"
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-2xs font-mono bg-muted text-muted-foreground"
                   >
                     {key}: {val ? "set" : "not set"}
                   </span>

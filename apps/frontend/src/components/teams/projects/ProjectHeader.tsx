@@ -58,7 +58,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
   return (
     <div className="flex flex-col gap-2">
       <span
-        className="text-xs font-mono uppercase tracking-wide"
+        className="label-caps font-mono"
         style={{ color: "var(--midnight-muted)" }}
       >
         Project
@@ -79,7 +79,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
                 cancel();
               }
             }}
-            className="font-editorial-serif flex-1 min-w-0 bg-transparent outline-none text-2xl font-medium"
+            className="font-editorial-serif flex-1 min-w-0 bg-transparent text-2xl font-medium"
             style={{
               borderBottom: "1px solid var(--edge)",
               color: "var(--midnight)",
@@ -91,7 +91,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
             type="button"
             onClick={() => setEditing(true)}
             className={cn(
-              "font-editorial-serif flex-1 min-w-0 text-left text-2xl font-medium rounded px-1 -mx-1 transition-colors",
+              "font-editorial-serif flex-1 min-w-0 text-left text-2xl font-medium rounded-sm px-1 -mx-1 transition-colors",
               saving && "opacity-50",
             )}
             style={{ color: "var(--midnight)" }}

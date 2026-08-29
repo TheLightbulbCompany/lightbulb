@@ -24,6 +24,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type { Issue, IssueRelationIssueSummary } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 /** A removable "Blocked by" chip: links to the blocker, with a hover X that
  * opens a confirm dialog before removing (mirrors upstream's
@@ -62,20 +63,24 @@ function RemovableRelationChip({
         title={issue.title}
         aria-label={`Issue ${issueLabel}: ${issue.title}`}
       >
-        <button
-          type="button"
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
-          style={{ color: "var(--midnight-muted)" }}
-          aria-label={removeLabel}
-          title={removeLabel}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setConfirmOpen(true);
-          }}
-        >
-          <X className="h-3 w-3" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity duration-(--dur-fast) ease-out group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+              style={{ color: "var(--midnight-muted)" }}
+              aria-label={removeLabel}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
+            >
+              <X size={12} strokeWidth={1.75} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{removeLabel}</TooltipContent>
+        </Tooltip>
         {issue.identifier ? (
           <Link
             href={issueUrl}
@@ -235,7 +240,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition-colors hover:underline"
                   style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
                 >
-                  <Plus className="h-3 w-3" />
+                  <Plus size={12} strokeWidth={1.75} />
                   Add blocker
                 </button>
               </PopoverTrigger>
@@ -253,7 +258,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search issues..."
-                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+                  className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
                   style={{ borderBottom: "1px solid var(--edge)" }}
                   aria-label="Search issues to add as blockers"
                 />
@@ -270,7 +275,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                           type="button"
                           onClick={() => toggle(candidate.id)}
                           className={cn(
-                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
+                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
                             selected && "bg-[var(--cream-deeper)]",
                           )}
                         >
@@ -283,8 +288,8 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                             {candidate.title}
                           </span>
                           {selected && (
-                            <Check
-                              className="ml-auto h-3.5 w-3.5 shrink-0"
+                            <Check size={16}
+                              className="ml-auto shrink-0"
                               aria-hidden="true"
                             />
                           )}

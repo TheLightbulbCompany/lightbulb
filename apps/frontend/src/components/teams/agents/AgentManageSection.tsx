@@ -13,7 +13,7 @@ export { isSeededAgent } from "@/components/teams/agents/AgentOrgControls";
 function MetaRow({ label, value }: { label: string; value?: string | null }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">{label}</span>
+      <span className="label-caps text-[var(--midnight-muted)]">{label}</span>
       <span className="text-[var(--midnight)]">{value?.trim() ? value : "—"}</span>
     </div>
   );
@@ -36,7 +36,7 @@ export function AgentManageSection({
       {/* Read-only meta — edited in the agent's control panel */}
       <section className="editorial-card p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h3 className="font-editorial-serif text-lg">Profile</h3>
+          <h3 className="font-editorial-serif text-base">Profile</h3>
           <a
             href={`/chat?panel=agents&agent=${agent.id}`}
             onClick={(e) => handleShellLinkClick(e, `/chat?panel=agents&agent=${agent.id}`)}

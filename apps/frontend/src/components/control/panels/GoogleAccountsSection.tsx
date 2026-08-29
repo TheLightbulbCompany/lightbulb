@@ -137,7 +137,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
       {!error && !isLoading && (
         <>
           <div className="border-b border-[var(--edge)] px-5 py-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
+            <p className="label-caps text-[var(--midnight-muted)]">
               Connected accounts
             </p>
             {accounts.length === 0 ? (
@@ -145,7 +145,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                 No Google accounts connected yet.
               </p>
             ) : (
-              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded border border-[var(--edge)]">
+              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded-sm border border-[var(--edge)]">
                 {accounts.map((account) => {
                   const busy = busyKey === account.email;
                   // How many agents act as this account, so Disconnect is
@@ -190,7 +190,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
           </div>
 
           <div className="px-5 py-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
+            <p className="label-caps text-[var(--midnight-muted)]">
               Which account each agent acts as
             </p>
             <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--midnight-muted)]">
@@ -208,7 +208,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                 Connect a Google account to assign it to an agent.
               </p>
             ) : (
-              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded border border-[var(--edge)]">
+              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded-sm border border-[var(--edge)]">
                 {agents.map((agent) => {
                   const current = assignments[agent.id] ?? DEFAULT_OPTION;
                   const busy = busyKey === agent.id;

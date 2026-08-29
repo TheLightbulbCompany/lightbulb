@@ -78,7 +78,7 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
   if (children === null || children === undefined || children === "") return null;
   return (
     <div className="flex flex-col gap-0.5 px-3 py-2" style={{ borderBottom: "1px solid var(--edge)" }}>
-      <dt className="text-[10px] uppercase tracking-wide" style={{ color: "var(--midnight-muted)" }}>
+      <dt className="label-caps" style={{ color: "var(--midnight-muted)" }}>
         {label}
       </dt>
       <dd className="text-sm break-words text-[var(--midnight)]">{children}</dd>
@@ -313,10 +313,10 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
         {showWatchdog && (
           <section
-            className="flex flex-col gap-2 rounded px-3 py-2 text-sm"
+            className="flex flex-col gap-2 rounded-lg px-3 py-2 text-ui"
             style={{
-              border: `1px solid color-mix(in srgb, ${silenceLevel === "critical" ? "var(--err)" : "var(--warn)"} 35%, var(--edge))`,
-              background: `color-mix(in srgb, ${silenceLevel === "critical" ? "var(--err)" : "var(--warn)"} 8%, transparent)`,
+              border: `1px solid ${silenceLevel === "critical" ? "var(--err)" : "var(--warn)"}`,
+              background: "var(--cream)",
             }}
           >
             <p className="font-medium">
@@ -341,10 +341,10 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
         {(run.error || run.retryExhaustedReason || run.stderrExcerpt) && (
           <section
-            className="flex flex-col gap-1 rounded px-3 py-2 text-sm"
+            className="flex flex-col gap-1 rounded-sm px-3 py-2 text-sm"
             style={{
-              border: "1px solid color-mix(in srgb, var(--err) 35%, var(--edge))",
-              background: "color-mix(in srgb, var(--err) 8%, transparent)",
+              border: "1px solid var(--err)",
+              background: "var(--cream)",
             }}
           >
             {run.error && <p style={{ color: "var(--err)" }}>{run.error}</p>}
@@ -375,7 +375,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             // `flex-1 min-h-0`, so it needs a bounded flex parent — dropped into
             // an unbounded one it collapses to zero height.
             <div
-              className="flex max-h-[60vh] flex-col overflow-hidden rounded"
+              className="flex max-h-[60vh] flex-col overflow-hidden rounded-sm"
               style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
             >
               <MessageList
@@ -407,7 +407,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
                   style={{ borderBottom: "1px solid var(--edge)" }}
                 >
                   <span
-                    className="flex-shrink-0 uppercase tracking-wide"
+                    className="flex-shrink-0 label-caps"
                     style={{ color: e.level === "error" ? "var(--err)" : e.level === "warn" ? "var(--warn)" : "var(--midnight-muted)" }}
                   >
                     {e.eventType ?? "event"}

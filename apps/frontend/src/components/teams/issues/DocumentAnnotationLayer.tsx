@@ -215,7 +215,7 @@ export function DocumentAnnotationLayer({
         >
           <button
             type="button"
-            className="flex h-7 items-center gap-1 rounded px-2 text-xs disabled:opacity-50"
+            className="flex h-7 items-center gap-1 rounded-sm px-2 text-xs disabled:opacity-50"
             style={{ color: "var(--midnight)" }}
             disabled={newCommentDisabled}
             title={newCommentDisabled ? newCommentDisabledReason ?? undefined : "Comment on selection"}
@@ -225,7 +225,7 @@ export function DocumentAnnotationLayer({
               setToolbar(null);
             }}
           >
-            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
+            <MessageSquarePlus size={16} aria-hidden="true" />
             Comment
           </button>
         </div>

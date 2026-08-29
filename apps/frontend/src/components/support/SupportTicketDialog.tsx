@@ -87,7 +87,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_50%,transparent)] p-4"
+      className="fixed inset-0 z-(--z-overlay) flex items-center justify-center bg-[color-mix(in_srgb,var(--midnight)_50%,transparent)] p-4"
       role="dialog"
       aria-modal="true"
       onClick={onClose}
@@ -98,7 +98,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
       >
         {state === "sent" || state === "received" ? (
           <div className="text-center">
-            <h2 className="mb-2 text-lg font-semibold">
+            <h2 className="mb-2 font-editorial-serif text-title">
               {state === "sent" ? "Thanks — we got it" : "Couldn’t send that"}
             </h2>
             <p className="mb-6 text-sm text-[var(--midnight-muted)]">
@@ -126,14 +126,14 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
         ) : (
           <>
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Contact support</h2>
+              <h2 className="font-editorial-serif text-title">Contact support</h2>
               <button type="button" onClick={onClose} aria-label="Close" className="text-[var(--midnight-muted)] hover:text-midnight">
                 ✕
               </button>
             </div>
 
             {presetError ? (
-              <p className="mb-3 rounded-md bg-err/10 px-3 py-2 text-xs text-err">
+              <p className="border border-err mb-3 rounded-lg bg-cream px-3 py-2 text-ui text-err">
                 We&rsquo;ll attach the error details automatically.
               </p>
             ) : null}

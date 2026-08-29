@@ -30,11 +30,11 @@ export function SecretField({
           onClick={() => navigator.clipboard.writeText(value)}
           className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
-          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          <Copy size={16} aria-hidden="true" />
         </button>
       </div>
       <code
-        className="mt-1 block break-all rounded px-3 py-2 font-mono text-sm"
+        className="mt-1 block break-all rounded-sm px-3 py-2 font-mono text-sm"
         style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
       >
         {value}

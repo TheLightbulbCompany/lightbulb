@@ -31,12 +31,12 @@ export function PanelEmptyState({
       )}
     >
       <div className="flex h-12 w-12 items-center justify-center rounded-md bg-[var(--edge)]">
-        <Icon aria-hidden="true" className="h-6 w-6 text-[var(--midnight-muted)]" />
+        <Icon aria-hidden="true" size={20} className="text-[var(--midnight-muted)]" />
       </div>
-      <h2 className="font-editorial-serif text-[22px] italic leading-tight text-[var(--midnight)]">
+      <h2 className="font-editorial-serif text-title italic leading-tight text-[var(--midnight)]">
         {headline}
       </h2>
-      <p className="max-w-[360px] text-[13px] text-[var(--midnight-muted)]">
+      <p className="max-w-[360px] text-ui text-[var(--midnight-muted)]">
         {supporting}
       </p>
       {action && (

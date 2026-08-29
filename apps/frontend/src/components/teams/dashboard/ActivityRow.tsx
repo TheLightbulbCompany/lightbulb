@@ -162,7 +162,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
             ) : (
               <>
                 <span style={{ color: "var(--midnight-muted)" }}>{event.entityType}:</span>
-                <span className="font-mono text-[0.85em] tracking-tight">
+                <span className="font-mono text-[0.85em]">
                   {shortenId(event.entityId)}
                 </span>
               </>
@@ -171,7 +171,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
         )}
       </p>
       <span
-        className="text-[11px] shrink-0 pt-[3px] tabular-nums font-mono"
+        className="text-caption shrink-0 pt-[3px] tabular-nums font-mono"
         style={{ color: "var(--midnight-muted)" }}
       >
         {timeAgo(event.createdAt)}

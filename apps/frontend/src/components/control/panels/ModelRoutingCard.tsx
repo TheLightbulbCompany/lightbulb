@@ -15,7 +15,7 @@ import {
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
 const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-midnight-label";
+const EYEBROW = "label-caps";
 const SELECT_CLS =
   "rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1.5 text-sm text-[var(--midnight)] disabled:opacity-50 w-full";
 
@@ -129,7 +129,7 @@ export function ModelRoutingCard({ providerChoice }: { providerChoice?: Provider
         </label>
       </div>
 
-      {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--midnight-muted)]" />}
+      {saving && <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)]" />}
       {restartNotice && (
         <p className="text-xs text-[var(--midnight-muted)]">
           Applied — the agent gateway is restarting briefly; chat reconnects

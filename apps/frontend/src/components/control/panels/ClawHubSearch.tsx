@@ -146,9 +146,9 @@ export function ClawHubSearch({
           className="text-xs bg-[var(--midnight)] hover:opacity-90 text-cream shrink-0"
         >
           {loading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 size={16} className="animate-spin" />
           ) : (
-            <Search className="h-3.5 w-3.5 mr-1.5" />
+            <Search size={16} className="mr-1.5" />
           )}
           Search ClawHub for &ldquo;{trimmed}&rdquo;
         </Button>
@@ -186,9 +186,9 @@ export function ClawHubSearch({
                       >
                         {r.displayName || r.slug}
                       </h4>
-                      <span className="text-[11px] text-[var(--midnight-muted)] font-mono shrink-0">{r.slug}</span>
+                      <span className="text-caption text-[var(--midnight-muted)] font-mono shrink-0">{r.slug}</span>
                       {r.version && (
-                        <span className="text-[10px] text-[var(--midnight-muted)] shrink-0">v{r.version}</span>
+                        <span className="text-2xs text-[var(--midnight-muted)] shrink-0">v{r.version}</span>
                       )}
                     </div>
                     {r.summary && (
@@ -207,14 +207,14 @@ export function ClawHubSearch({
                     }
                   >
                     {isBusy ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <Loader2 size={16} className="animate-spin" />
                     ) : isInstalled ? (
                       <>
-                        <Check className="h-3.5 w-3.5 mr-1" /> Installed
+                        <Check size={16} className="mr-1" /> Installed
                       </>
                     ) : (
                       <>
-                        <Download className="h-3.5 w-3.5 mr-1" /> Install
+                        <Download size={16} className="mr-1" /> Install
                       </>
                     )}
                   </Button>
@@ -230,7 +230,7 @@ export function ClawHubSearch({
                     role={rowMsg.kind === "err" ? "alert" : undefined}
                   >
                     {rowMsg.kind === "err" && (
-                      <AlertTriangle className="h-3 w-3 inline mr-1 -mt-0.5" />
+                      <AlertTriangle size={12} strokeWidth={1.75} className="inline mr-1 -mt-0.5" />
                     )}
                     {rowMsg.text}
                   </p>
@@ -242,9 +242,9 @@ export function ClawHubSearch({
                     variant="outline"
                     disabled={isBusy}
                     onClick={() => install(r.slug, true)}
-                    className="text-xs border-warn text-warn hover:bg-[color-mix(in_srgb,var(--warn)_10%,var(--cream))]"
+                    className="text-ui border-warn text-warn hover:bg-cream-deep"
                   >
-                    <AlertTriangle className="h-3.5 w-3.5 mr-1.5" /> Install anyway — I understand the risk
+                    <AlertTriangle size={16} className="mr-1.5" /> Install anyway — I understand the risk
                   </Button>
                 )}
               </div>
@@ -260,7 +260,7 @@ export function ClawHubSearch({
         className="inline-flex items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
       >
         Browse the full registry on ClawHub
-        <ExternalLink className="h-3 w-3" />
+        <ExternalLink size={12} strokeWidth={1.75} />
       </a>
     </div>
   );

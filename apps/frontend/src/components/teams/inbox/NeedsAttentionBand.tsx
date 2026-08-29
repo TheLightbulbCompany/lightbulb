@@ -82,8 +82,8 @@ export function NeedsAttentionBand({
         role="alert"
         className="mb-4 rounded-md border px-3 py-2 text-sm"
         style={{
-          borderColor: "color-mix(in srgb, var(--err) 25%, transparent)",
-          background: "color-mix(in srgb, var(--err) 6%, transparent)",
+          borderColor: "var(--err)",
+          background: "var(--cream)",
           color: "var(--err)",
         }}
       >
@@ -104,11 +104,11 @@ export function NeedsAttentionBand({
         <div className="flex items-center gap-2 px-3 py-2">
           <span
             aria-hidden="true"
-            className="block h-3 w-3 animate-pulse rounded bg-[var(--cream-deep)]"
+            className="block h-3 w-3 animate-pulse rounded-sm bg-[var(--cream-deep)]"
           />
           <span
             aria-hidden="true"
-            className="block h-3 w-32 animate-pulse rounded bg-[var(--cream-deep)]"
+            className="block h-3 w-32 animate-pulse rounded-sm bg-[var(--cream-deep)]"
           />
         </div>
       </section>
@@ -140,7 +140,7 @@ export function NeedsAttentionBand({
         aria-expanded={!collapsed}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
-        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
         <span className="font-medium text-[var(--midnight)]">Agent failures</span>
         <span className="text-xs text-[var(--midnight-muted)]">{count}</span>
       </button>

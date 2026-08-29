@@ -75,7 +75,7 @@ function DateLabels({ days }: { days: string[] }) {
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
             <span
-              className="text-[9px] tabular-nums font-mono"
+              className="text-2xs tabular-nums font-mono"
               style={{ color: "var(--midnight-muted)" }}
             >
               {formatDayLabel(day)}
@@ -93,7 +93,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
       {items.map(item => (
         <span
           key={item.label}
-          className="flex items-center gap-1.5 text-[10px]"
+          className="flex items-center gap-1.5 text-2xs"
           style={{ color: "var(--midnight-muted)" }}
         >
           <span
@@ -119,7 +119,7 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
         </h3>
         {subtitle && (
           <span
-            className="text-[10px] tabular-nums"
+            className="text-2xs tabular-nums"
             style={{ color: "var(--midnight-muted)" }}
           >
             {subtitle}
@@ -192,11 +192,11 @@ export function RunActivityChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-sm transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} runs`}
             >
               {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
+                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-sm" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {entry.succeeded > 0 && (
                     <div
                       className="opacity-90 group-hover/bar:opacity-100 transition-opacity"
@@ -218,7 +218,7 @@ export function RunActivityChart(props: RunChartProps) {
                 </div>
               ) : (
                 <div
-                  className="rounded-[1px]"
+                  className="rounded-sm"
                   style={{ height: 2, backgroundColor: COLOR.emptyBar }}
                 />
               )}
@@ -266,18 +266,18 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-sm transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
+                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-sm" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
                     <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} />
                   ) : null)}
                 </div>
               ) : (
                 <div
-                  className="rounded-[1px]"
+                  className="rounded-sm"
                   style={{ height: 2, backgroundColor: COLOR.emptyBar }}
                 />
               )}
@@ -340,18 +340,18 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-sm transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${total} issues`}
             >
               {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]" style={{ height: `${heightPct}%`, minHeight: 3 }}>
+                <div className="flex flex-col-reverse gap-px overflow-hidden rounded-sm" style={{ height: `${heightPct}%`, minHeight: 3 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
                     <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--midnight-muted)" }} />
                   ) : null)}
                 </div>
               ) : (
                 <div
-                  className="rounded-[1px]"
+                  className="rounded-sm"
                   style={{ height: 2, backgroundColor: COLOR.emptyBar }}
                 />
               )}
@@ -383,14 +383,14 @@ export function SuccessRateChart(props: RunChartProps) {
           return (
             <div
               key={day}
-              className="group/bar flex-1 h-full flex flex-col justify-end rounded-[2px] transition-colors hover:bg-[color:var(--cream-deep)]"
+              className="group/bar flex-1 h-full flex flex-col justify-end rounded-sm transition-colors hover:bg-[color:var(--cream-deep)]"
               title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}
             >
               {entry.total > 0 ? (
-                <div className="rounded-[2px]" style={{ height: `${rate * 100}%`, minHeight: 3, backgroundColor: color }} />
+                <div className="rounded-sm" style={{ height: `${rate * 100}%`, minHeight: 3, backgroundColor: color }} />
               ) : (
                 <div
-                  className="rounded-[1px]"
+                  className="rounded-sm"
                   style={{ height: 2, backgroundColor: COLOR.emptyBar }}
                 />
               )}

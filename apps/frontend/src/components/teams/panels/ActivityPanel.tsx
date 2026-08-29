@@ -57,7 +57,7 @@ export function ActivityPanel() {
               aria-label="Filter by type"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              className="h-8 rounded border border-[var(--edge)] bg-[var(--cream)] px-2 text-xs text-[var(--midnight)]"
+              className="h-8 rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-2 text-xs text-[var(--midnight)]"
             >
               <option value="all">All types</option>
               {entityTypes.map((type) => (

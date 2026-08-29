@@ -132,15 +132,15 @@ export function IssueRow({
         selected
           ? undefined
           : {
-              borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
-              background: "color-mix(in srgb, var(--warn) 10%, transparent)",
+              borderColor: "var(--warn)",
+              background: "var(--cream)",
               color: "var(--warn)",
             }
       }
       title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
       aria-label="Productivity review open"
     >
-      <Eye className="h-2.5 w-2.5" aria-hidden />
+      <Eye size={12} strokeWidth={1.75} aria-hidden />
     </span>
   ) : null;
   const liveDot = live ? (
@@ -169,7 +169,7 @@ export function IssueRow({
       }
       onClick={handleOpen}
       className={cn(
-        "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
+        "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-ui no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected
           ? "hover:bg-transparent"
           : checklistCurrentStep
@@ -301,10 +301,10 @@ export function IssueRow({
                 onArchive();
               }}
               disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md !p-0 !border-0 text-[var(--midnight-muted)] opacity-0 transition-opacity hover:text-[var(--midnight)] group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+              className="inline-flex h-4 w-4 items-center justify-center rounded-md !p-0 !border-0 text-[var(--midnight-muted)] opacity-0 transition-opacity duration-(--dur-fast) ease-out hover:text-[var(--midnight)] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-50"
               aria-label="Dismiss from inbox"
             >
-              <X className="h-3.5 w-3.5" />
+              <X size={16} />
             </EditorialButton>
           ) : (
             <span className="inline-flex h-4 w-4" aria-hidden="true" />

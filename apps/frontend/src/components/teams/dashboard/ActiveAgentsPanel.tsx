@@ -85,7 +85,7 @@ function RunActivity({
   if (lines.length > 0) {
     return (
       <div
-        className="max-h-28 overflow-y-auto rounded-lg px-2.5 py-2 font-mono text-[10px] leading-relaxed"
+        className="max-h-28 overflow-y-auto rounded-lg px-2.5 py-2 font-mono text-2xs leading-relaxed"
         style={{
           background: "var(--cream-deeper)",
           color: "var(--midnight-soft)",
@@ -182,7 +182,7 @@ function AgentRunCard({
           href={teamsDetailUrl("run", run.id)}
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
           aria-label={`Run details ${run.id}`}
-          className="flex-shrink-0 text-[11px] hover:underline"
+          className="flex-shrink-0 text-caption hover:underline"
           style={{ color: "var(--midnight-muted)" }}
         >
           Details
@@ -190,7 +190,7 @@ function AgentRunCard({
       </div>
 
       {/* Live status line */}
-      <div className="text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+      <div className="text-caption" style={{ color: "var(--midnight-muted)" }}>
         {liveStatusLabel(run)}
       </div>
 

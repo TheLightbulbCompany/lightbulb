@@ -29,7 +29,7 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
         <span className="text-sm font-medium text-[var(--midnight)]">
           {account.name || account.accountId}
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-midnight-label">
+        <span className="label-caps">
           {account.accountId}
         </span>
       </div>
@@ -64,7 +64,7 @@ export function ChannelsStatusPanel() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Channels</h2>
+          <h2 className="font-editorial-serif text-title">Channels</h2>
           <p className="text-xs text-[var(--midnight-muted)]">
             Live connectivity for each linked messaging channel.
           </p>
@@ -75,14 +75,14 @@ export function ChannelsStatusPanel() {
           onClick={() => mutate()}
           className="text-xs gap-1.5"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw size={16} />
           Probe now
         </Button>
       </div>
 
       {isLoading && !data ? (
         <div className="flex items-center gap-2 text-sm text-[var(--midnight-muted)]">
-          <Loader2 className="h-4 w-4 animate-spin" /> Probing channels…
+          <Loader2 size={16} className="animate-spin" /> Probing channels…
         </div>
       ) : error || !data ? (
         // Undefined data means the container was unreachable — a different (and
@@ -93,7 +93,7 @@ export function ChannelsStatusPanel() {
           data-testid="channels-status-unavailable"
           className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center"
         >
-          <AlertTriangle className="h-5 w-5 mx-auto mb-2 text-warn" />
+          <AlertTriangle size={20} className="mx-auto mb-2 text-warn" />
           <p className="text-sm text-[var(--midnight-muted)]">
             Couldn&apos;t reach the container to probe channel status.
           </p>
@@ -103,13 +103,13 @@ export function ChannelsStatusPanel() {
             onClick={() => mutate()}
             className="mt-3 text-xs gap-1.5"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
             Try again
           </Button>
         </div>
       ) : channelOrder.length === 0 ? (
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center">
-          <Radio className="h-5 w-5 mx-auto mb-2 text-midnight-muted" />
+          <Radio size={20} className="mx-auto mb-2 text-midnight-muted" />
           <p className="text-sm text-[var(--midnight-muted)]">
             No channels configured. Link a channel from Settings to see status here.
           </p>
@@ -120,7 +120,7 @@ export function ChannelsStatusPanel() {
             const accounts = data?.channelAccounts?.[channelId] ?? [];
             return (
               <div key={channelId} className="space-y-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--midnight-muted)]">
+                <h3 className="label-caps text-[var(--midnight-muted)]">
                   {data?.channelLabels?.[channelId] ?? channelId}
                 </h3>
                 {accounts.length === 0 ? (

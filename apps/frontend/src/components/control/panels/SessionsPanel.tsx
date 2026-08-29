@@ -188,7 +188,7 @@ export function SessionsPanel() {
   if (isLoading && !rawData) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -200,7 +200,7 @@ export function SessionsPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-[var(--midnight)]">Sessions</h2>
+          <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Sessions</h2>
           <p className="text-xs text-[var(--midnight-muted)]">
             Active session keys and per-session overrides.
           </p>
@@ -212,9 +212,9 @@ export function SessionsPanel() {
           disabled={isLoading}
         >
           {isLoading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 size={16} className="animate-spin" />
           ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           )}
         </Button>
       </div>
@@ -222,7 +222,7 @@ export function SessionsPanel() {
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
-          <label className="text-[11px] text-[var(--midnight-muted)]">Active within (min)</label>
+          <label className="text-caption text-[var(--midnight-muted)]">Active within (min)</label>
           <Input
             type="number"
             className="h-8 w-28 text-xs"
@@ -232,7 +232,7 @@ export function SessionsPanel() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-[11px] text-[var(--midnight-muted)]">Limit</label>
+          <label className="text-caption text-[var(--midnight-muted)]">Limit</label>
           <Input
             type="number"
             className="h-8 w-28 text-xs"
@@ -263,14 +263,14 @@ export function SessionsPanel() {
 
       {/* Error */}
       {error && (
-        <div className="rounded-md border border-[color-mix(in_srgb,var(--err)_35%,var(--cream))] bg-[color-mix(in_srgb,var(--err)_10%,var(--cream))] p-3 text-sm text-err">
+        <div className="rounded-lg border border-err bg-cream px-3 py-2 text-ui text-err">
           {error.message}
         </div>
       )}
 
       {/* Store path */}
       {storePath && (
-        <p className="text-[11px] text-midnight-muted">Store: {storePath}</p>
+        <p className="text-caption text-midnight-muted">Store: {storePath}</p>
       )}
 
       {/* Table */}
@@ -278,18 +278,18 @@ export function SessionsPanel() {
         <p className="text-sm text-[var(--midnight-muted)]">No sessions found.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
+          <table className="w-full text-ui border-collapse">
             <thead>
               <tr className="border-b border-[var(--edge)] text-left text-[var(--midnight-muted)]">
-                <th className="py-2 pr-3 font-medium">Key</th>
-                <th className="py-2 pr-3 font-medium">Label</th>
-                <th className="py-2 pr-3 font-medium">Kind</th>
-                <th className="py-2 pr-3 font-medium">Updated</th>
-                <th className="py-2 pr-3 font-medium">Tokens</th>
-                <th className="py-2 pr-3 font-medium">Thinking</th>
-                <th className="py-2 pr-3 font-medium">Verbose</th>
-                <th className="py-2 pr-3 font-medium">Reasoning</th>
-                <th className="py-2 font-medium">Actions</th>
+                <th className="py-2 pr-3 label-caps">Key</th>
+                <th className="py-2 pr-3 label-caps">Label</th>
+                <th className="py-2 pr-3 label-caps">Kind</th>
+                <th className="py-2 pr-3 label-caps">Updated</th>
+                <th className="py-2 pr-3 label-caps">Tokens</th>
+                <th className="py-2 pr-3 label-caps">Thinking</th>
+                <th className="py-2 pr-3 label-caps">Verbose</th>
+                <th className="py-2 pr-3 label-caps">Reasoning</th>
+                <th className="py-2 label-caps">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -340,19 +340,19 @@ function SessionRow({
       : null;
 
   return (
-    <tr className="border-b border-[var(--edge)]/50 hover:bg-[var(--cream-deep)]/50 transition-colors">
+    <tr className="border-b border-[var(--edge-soft)] hover:bg-[var(--cream-deep)] transition-colors">
       {/* Key */}
-      <td className="py-2 pr-3 font-mono text-[11px] max-w-[180px]">
+      <td className="py-2 pr-3 font-mono text-caption max-w-[180px]">
         <div className="truncate">{s.key}</div>
         {displayName && (
-          <div className="text-[10px] text-midnight-muted truncate">{displayName}</div>
+          <div className="text-2xs text-midnight-muted truncate">{displayName}</div>
         )}
       </td>
 
       {/* Label (editable) */}
       <td className="py-2 pr-3">
         <input
-          className="bg-transparent border-b border-transparent hover:border-[var(--edge)] focus:border-[var(--midnight)] outline-none text-xs w-24 py-0.5 transition-colors text-[var(--midnight)]"
+          className="bg-transparent border-b border-transparent hover:border-[var(--edge)] text-xs w-24 py-0.5 transition-colors text-[var(--midnight)]"
           defaultValue={s.label ?? ""}
           placeholder="(optional)"
           disabled={disabled}
@@ -373,10 +373,10 @@ function SessionRow({
       <td className="py-2 pr-3">
         <span
           className={cn(
-            "inline-block px-1.5 py-0.5 rounded text-[10px] font-medium",
-            s.kind === "direct" && "bg-ok/10 text-ok",
-            s.kind === "group" && "bg-info/10 text-[var(--midnight)]",
-            s.kind === "global" && "bg-warn/10 text-warn",
+            "inline-block px-1.5 py-0.5 rounded-sm text-2xs font-medium",
+            s.kind === "direct" && "border border-ok bg-cream text-ok",
+            s.kind === "group" && "bg-cream text-[var(--midnight)]",
+            s.kind === "global" && "border border-warn bg-cream text-warn",
             (!s.kind || s.kind === "unknown") && "bg-[var(--cream-deep)] text-[var(--midnight-muted)]",
           )}
         >
@@ -397,7 +397,7 @@ function SessionRow({
       {/* Thinking */}
       <td className="py-2 pr-3">
         <select
-          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded-sm px-1 py-0.5 text-caption cursor-pointer text-[var(--midnight)]"
           value={thinking}
           disabled={disabled}
           onChange={(e) => {
@@ -418,7 +418,7 @@ function SessionRow({
       {/* Verbose */}
       <td className="py-2 pr-3">
         <select
-          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded-sm px-1 py-0.5 text-caption cursor-pointer text-[var(--midnight)]"
           value={verbose}
           disabled={disabled}
           onChange={(e) => {
@@ -436,7 +436,7 @@ function SessionRow({
       {/* Reasoning */}
       <td className="py-2 pr-3">
         <select
-          className="bg-cream-deep border border-[var(--edge)] rounded px-1 py-0.5 text-[11px] outline-none focus:border-[var(--midnight)] cursor-pointer text-[var(--midnight)]"
+          className="bg-cream-deep border border-[var(--edge)] rounded-sm px-1 py-0.5 text-caption cursor-pointer text-[var(--midnight)]"
           value={reasoning}
           disabled={disabled}
           onChange={(e) => {
@@ -460,7 +460,7 @@ function SessionRow({
           disabled={disabled}
           onClick={() => onDelete(s.key)}
         >
-          <Trash2 className="h-3 w-3" />
+          <Trash2 size={12} strokeWidth={1.75} />
         </Button>
       </td>
     </tr>

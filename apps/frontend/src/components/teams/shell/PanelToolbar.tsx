@@ -27,9 +27,9 @@ export function PanelToolbar({
     <div className={cn("flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between", className)}>
       <div className="flex flex-1 items-center gap-2">
         <div className="relative flex-1 max-w-[320px]">
-          <Search
+          <Search size={16}
             aria-hidden="true"
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--midnight-muted)]"
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--midnight-muted)]"
           />
           <input
             type="search"
@@ -37,7 +37,7 @@ export function PanelToolbar({
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder={searchPlaceholder}
             aria-label={searchAriaLabel ?? searchPlaceholder}
-            className="w-full rounded-md border border-[var(--edge)] bg-[var(--cream)] py-1.5 pl-7 pr-2 text-[13px] text-[var(--midnight)] outline-none transition-colors focus:border-[var(--midnight)] focus:ring-2 focus:ring-[var(--midnight)]/20"
+            className="w-full rounded-md border border-[var(--edge)] bg-[var(--cream)] py-1.5 pl-7 pr-2 text-ui text-[var(--midnight)] transition-colors"
           />
         </div>
         {filters && <div className="flex items-center gap-1.5">{filters}</div>}

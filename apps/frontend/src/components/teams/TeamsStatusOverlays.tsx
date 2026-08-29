@@ -19,7 +19,7 @@ function OverlayShell({ children }: { children: React.ReactNode }) {
 export function ProvisioningOverlay() {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
+      <h1 className="font-editorial-serif text-2xl leading-tight text-[var(--midnight)]">
         <em className="italic">Setting up</em> your Teams workspace.
       </h1>
       {/* The spinner rides BESIDE the copy, never alone: this overlay is what a
@@ -30,7 +30,7 @@ export function ProvisioningOverlay() {
         role="status"
         aria-live="polite"
       >
-        <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+        <Loader2 size={16} className="shrink-0 animate-spin" aria-hidden="true" />
         <span>This usually takes about 30 seconds. The page will refresh automatically.</span>
       </p>
     </OverlayShell>
@@ -40,7 +40,7 @@ export function ProvisioningOverlay() {
 export function SubscribeOverlay() {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
+      <h1 className="font-editorial-serif text-2xl leading-tight text-[var(--midnight)]">
         <em className="italic">Subscribe</em> to enable Teams.
       </h1>
       <p className="mt-3 text-sm text-[var(--midnight-soft)]">
@@ -54,11 +54,11 @@ export function SubscribeOverlay() {
 export function ErrorOverlay({ error }: { error: Error }) {
   return (
     <OverlayShell>
-      <h1 className="font-editorial-serif text-[28px] leading-tight text-[var(--midnight)]">
+      <h1 className="font-editorial-serif text-2xl leading-tight text-[var(--midnight)]">
         <em className="italic">Something</em> went wrong.
       </h1>
       <p
-        className="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--err)_20%,transparent)] bg-[color-mix(in_srgb,var(--err)_6%,transparent)] px-3 py-2 text-sm text-[var(--err)]"
+        className="mt-4 rounded-lg border border-err bg-cream px-3 py-2 text-ui text-err"
         role="alert"
       >
         {String(error.message ?? error)}

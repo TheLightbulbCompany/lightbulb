@@ -18,7 +18,7 @@ export function SkillProposalsPanel() {
   if (isLoading && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -27,7 +27,7 @@ export function SkillProposalsPanel() {
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">Failed to load proposals: {error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -39,11 +39,11 @@ export function SkillProposalsPanel() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <FileCheck className="h-5 w-5 text-[var(--midnight-muted)]" />
-          <h2 className="text-lg font-medium text-[var(--midnight)]">Skill Proposals</h2>
+          <FileCheck size={20} className="text-[var(--midnight-muted)]" />
+          <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Skill Proposals</h2>
         </div>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Reload
+          <RefreshCw size={16} className="mr-1.5" /> Reload
         </Button>
       </div>
 
@@ -62,8 +62,8 @@ export function SkillProposalsPanel() {
                   <p className="text-xs text-[var(--midnight-muted)]">{p.skillName} · {p.kind} · scan: {p.scanState}</p>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
-                  p.status === "pending" ? "bg-warn/10 text-warn" :
-                  p.status === "applied" ? "bg-ok/10 text-ok" :
+                  p.status === "pending" ? "border border-warn bg-cream text-warn" :
+                  p.status === "applied" ? "border border-ok bg-cream text-ok" :
                   "bg-cream-deep text-[var(--midnight-muted)]"
                 }`}>{p.status}</span>
               </button>
@@ -99,7 +99,7 @@ function ProposalDetail({ proposalId, onResolved }: { proposalId: string; onReso
     }
   };
 
-  if (isLoading && !data) return <div className="p-3"><Loader2 className="h-4 w-4 animate-spin text-[var(--midnight-muted)]" /></div>;
+  if (isLoading && !data) return <div className="p-3"><Loader2 size={16} className="animate-spin text-[var(--midnight-muted)]" /></div>;
   if (error && !data) return <p className="p-3 text-sm text-destructive">{error.message}</p>;
 
   const pending = data?.record.status === "pending";
@@ -113,10 +113,10 @@ function ProposalDetail({ proposalId, onResolved }: { proposalId: string; onReso
       {pending && (
         <div className="flex gap-2">
           <Button size="sm" disabled={busy !== null} onClick={() => act("apply")}>
-            <Check className="h-3.5 w-3.5 mr-1.5" /> {busy === "apply" ? "Applying…" : "Apply"}
+            <Check size={16} className="mr-1.5" /> {busy === "apply" ? "Applying…" : "Apply"}
           </Button>
           <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => act("reject")}>
-            <X className="h-3.5 w-3.5 mr-1.5" /> {busy === "reject" ? "Rejecting…" : "Reject"}
+            <X size={16} className="mr-1.5" /> {busy === "reject" ? "Rejecting…" : "Reject"}
           </Button>
         </div>
       )}

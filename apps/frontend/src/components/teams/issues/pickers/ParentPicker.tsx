@@ -130,7 +130,7 @@ export function ParentPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search issues..."
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+            className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search issues to set as parent"
           />
@@ -139,7 +139,7 @@ export function ParentPicker({
               <button
                 type="button"
                 onClick={() => select(null)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]"
+                className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
                 style={{ color: "var(--midnight-muted)" }}
               >
                 Clear parent
@@ -153,7 +153,7 @@ export function ParentPicker({
                     type="button"
                     onClick={() => select(candidate.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deep)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -166,8 +166,8 @@ export function ParentPicker({
                       {candidate.title}
                     </span>
                     {isSelected && (
-                      <Check
-                        className="ml-auto h-3.5 w-3.5 shrink-0"
+                      <Check size={16}
+                        className="ml-auto shrink-0"
                         aria-hidden="true"
                       />
                     )}

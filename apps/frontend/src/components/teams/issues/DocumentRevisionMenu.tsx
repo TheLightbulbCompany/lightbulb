@@ -58,13 +58,13 @@ export function DocumentRevisionMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          className="flex items-center gap-0.5 rounded-sm px-1.5 py-0.5 text-2xs font-medium tabular-nums"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           aria-label={`Revision history for ${documentKey}`}
           onClick={(e) => e.stopPropagation()}
         >
           {label}
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown size={12} strokeWidth={1.75} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -89,7 +89,7 @@ export function DocumentRevisionMenu({
         {hasHistory ? <DropdownMenuSeparator /> : null}
         {hasHistory ? (
           <DropdownMenuItem onSelect={onOpenDiff} className="gap-2 text-xs">
-            <GitCompare className="h-3.5 w-3.5" />
+            <GitCompare size={16} />
             Compare revisions…
           </DropdownMenuItem>
         ) : null}

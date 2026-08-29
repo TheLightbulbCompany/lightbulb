@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ShieldQuestion } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError } from "@/lib/notify";
+import { useApi } from "@/lib/api";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { approvalLabel } from "@/components/teams/inbox/lib/approvalLabel";
@@ -12,6 +13,7 @@ import type { Approval } from "@/components/teams/shared/types";
 
 export function ApprovalRow({ approval }: { approval: Approval }) {
   const { approve, reject } = useApprovalMutations();
+  const api = useApi();
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -47,9 +49,40 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
         )}
         {isActionable && !rejecting && (
           <div className="flex shrink-0 gap-2">
-            <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
-              Approve
-            </EditorialButton>
+            {approval.type === "connect_stripe" ? (
+              <>
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const r = (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
+                      window.open(r.onboarding_url, "_blank", "noopener");
+                      await approve(approval.id);
+                    })
+                  }
+                >
+                  Set up Stripe
+                </EditorialButton>
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const r = (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
+                      window.open(r.authorize_url, "_blank", "noopener");
+                      await approve(approval.id);
+                    })
+                  }
+                >
+                  Connect existing
+                </EditorialButton>
+              </>
+            ) : (
+              <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
+                Approve
+              </EditorialButton>
+            )}
             <EditorialButton variant="destructive" size="sm" disabled={busy} onClick={() => setRejecting(true)}>
               Reject
             </EditorialButton>

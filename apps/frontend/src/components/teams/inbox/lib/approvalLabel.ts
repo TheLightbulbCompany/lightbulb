@@ -15,6 +15,7 @@ const TYPE_LABEL: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  connect_stripe: "Connect Stripe",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {

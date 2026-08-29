@@ -74,6 +74,38 @@ async def test_join_retries_the_put_once_when_the_winner_row_vanishes_then_persi
     assert persisted["owner_id"] == "user_1"
 
 
+async def test_join_conflict_reads_use_consistent_read(table):
+    """Both conflict-resolution reads inside join() must pass ConsistentRead=True:
+    an eventually-consistent GetItem right after a ConditionalCheckFailedException
+    can miss the winning row and send the retried put down the doomsday path (or
+    a spurious 500), even though the row is really there."""
+    await table.join("user_1", display_name="Ada", public=True, waitlist_position=7)
+
+    real_table = table._table()
+    real_get_item = real_table.get_item
+    calls = []
+
+    def spy_get_item(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {}  # simulate the winner row looking vanished on the first (stale) read
+        return real_get_item(**kwargs)
+
+    def always_conflict_put(**kwargs):
+        raise ClientError({"Error": {"Code": "ConditionalCheckFailedException", "Message": "boom"}}, "PutItem")
+
+    with (
+        patch.object(table, "_table", return_value=real_table),
+        patch.object(real_table, "get_item", side_effect=spy_get_item),
+        patch.object(real_table, "put_item", side_effect=always_conflict_put),
+    ):
+        row = await table.join("user_1", display_name="Ada L.", public=False, waitlist_position=99)
+
+    assert len(calls) == 2  # both conflict-resolution reads fired
+    assert all(c.get("ConsistentRead") is True for c in calls)
+    assert row["owner_id"] == "user_1"
+
+
 async def test_set_key_connected_flips_has_key_and_stamps_baseline(table):
     await table.join("user_1", display_name="Ada", public=True, waitlist_position=None)
     await table.set_key_connected("user_1", currency="usd", baseline_cents=1000, baseline_at="2026-10-01T00:00:00Z")

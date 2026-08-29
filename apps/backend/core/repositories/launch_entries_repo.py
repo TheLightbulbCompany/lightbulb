@@ -33,8 +33,11 @@ def _plain(item: dict | None) -> dict | None:
     return out
 
 
-async def get(owner_id: str) -> dict | None:
-    resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id})
+async def get(owner_id: str, *, consistent: bool = False) -> dict | None:
+    kwargs: dict = {"Key": {"owner_id": owner_id}}
+    if consistent:
+        kwargs["ConsistentRead"] = True
+    resp = await run_in_thread(_table().get_item, **kwargs)
     return _plain(resp.get("Item"))
 
 
@@ -74,8 +77,11 @@ async def join(
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        # Lost the race / already joined — the stored row is the truth.
-        existing = await get(owner_id)
+        # Lost the race / already joined — the stored row is the truth. Consistent
+        # read: a stale eventually-consistent GetItem right after the conditional
+        # check failed can miss the winning row and send this down the retry path
+        # for nothing.
+        existing = await get(owner_id, consistent=True)
         if existing is not None:
             return existing
         # The winner row vanished before this read. Retry once.
@@ -84,7 +90,7 @@ async def join(
         except ClientError as e2:
             if e2.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
-            existing2 = await get(owner_id)
+            existing2 = await get(owner_id, consistent=True)
             if existing2 is None:
                 raise RuntimeError(f"launch_entries_repo.join: row for {owner_id} vanished across two reads") from e2
             return existing2

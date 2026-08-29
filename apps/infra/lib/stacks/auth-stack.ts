@@ -222,7 +222,7 @@ export class AuthStack extends cdk.Stack {
       // Placeholder string — bootstrap script overwrites with
       // {"email": "<ADMIN_EMAIL>", "password": "<32-byte-random>"}.
       { passwordLength: 16, excludePunctuation: true },
-      "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py — placeholder until then.",
+      "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py - placeholder until then.",
     );
 
     // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
@@ -242,7 +242,7 @@ export class AuthStack extends cdk.Stack {
       "GogKeyringPassword",
       "gog-keyring-password",
       { passwordLength: 64, excludePunctuation: true },
-      "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate — rotation orphans every existing keyring.",
+      "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate - rotation orphans every existing keyring.",
     );
 
     // Cloudflare Zero Trust enrollment for the per-user containers' WARP

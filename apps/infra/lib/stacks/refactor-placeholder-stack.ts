@@ -1,5 +1,4 @@
 import * as cdk from "aws-cdk-lib";
-import * as sns from "aws-cdk-lib/aws-sns";
 import { Construct } from "constructs";
 
 /**
@@ -45,8 +44,20 @@ export class RefactorPlaceholderStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: cdk.StackProps) {
     super(scope, id, props);
 
-    new sns.Topic(this, "RefactorPlaceholder", {
-      displayName: "Transitional placeholder — see refactor-placeholder-stack.ts",
-    });
+    // STEP 1.5 — the topic is REMOVED, leaving the stack on CDKMetadata alone.
+    //
+    // The topic did its job: it made the destination stacks creatable (CFN
+    // rejects a template with no resources). But it then BLOCKED the refactor.
+    // `cdk refactor` matches resources by their `aws:cdk:path`, and the topic's
+    // path is `<env>/lightbulb-<env>-<x>/RefactorPlaceholder/Resource` as
+    // deployed versus `<env>/isol8-<env>-<x>/RefactorPlaceholder/Resource` once
+    // it is re-attached to the renamed real stack — so refactor saw a delete
+    // plus an add, and it refuses any operation containing either. An
+    // --override-file cannot express it: overrides key on
+    // `<stack>.<logicalId>`, which is IDENTICAL on both sides here.
+    //
+    // Removing it makes the destination stacks empty from refactor's point of
+    // view, because refactor ignores CDKMetadata entirely (it never appears in
+    // a refactor diff). That is what turns step 2 into a pure move.
   }
 }

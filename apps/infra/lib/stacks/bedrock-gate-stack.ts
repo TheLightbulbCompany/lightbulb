@@ -217,7 +217,7 @@ export class BedrockGateStack extends cdk.Stack {
       // the fleet break-glass lever: set the value to the literal string
       // "direct" (SSM forbids empty strings) to route new provisions straight
       // to bedrock-runtime, bypassing the gate.
-      const gateUrlParamDescription = `bedrock-gate Function URL (${gateEnv}) — backend runtime discovery; "direct" = break-glass to bedrock-runtime`;
+      const gateUrlParamDescription = `bedrock-gate Function URL (${gateEnv}) - backend runtime discovery; "direct" = break-glass to bedrock-runtime`;
       new ssm.StringParameter(this, `GateUrlParamLightbulb${idSuffix}`, {
         parameterName: `/lightbulb/${gateEnv}/bedrock-gate-url`,
         stringValue: fnUrl.url,

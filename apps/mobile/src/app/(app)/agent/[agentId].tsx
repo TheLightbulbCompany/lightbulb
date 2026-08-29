@@ -4,7 +4,7 @@ import {
   accumulateStreamText,
   isRetryableRpcError,
   rpcRetryDelayMs,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
@@ -46,7 +46,7 @@ import {
 } from "../../../lib/attachments";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
-import { buildChatSessionKey } from "@isol8/shared";
+import { buildChatSessionKey } from "@lightbulb/shared";
 import { useGateway } from "../../../providers/gateway";
 
 /**

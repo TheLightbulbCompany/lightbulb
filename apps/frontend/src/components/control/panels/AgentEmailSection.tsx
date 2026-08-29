@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { Mail } from "lucide-react";
-import { ApiError } from "@isol8/shared";
+import { ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
@@ -17,7 +17,7 @@ interface AddressRow {
 }
 
 // The backend raises HTTPException(detail={"status": "bad_sender", "entry": …})
-// / {"status": reason} — a structured, non-string detail that @isol8/shared's
+// / {"status": reason} — a structured, non-string detail that @lightbulb/shared's
 // extractDetailMessage doesn't promote (it only lifts a string `detail` or a
 // `detail.message`), so ApiError.message falls back to the opaque "API 400".
 // Read the structured body ourselves rather than touching the shared client.

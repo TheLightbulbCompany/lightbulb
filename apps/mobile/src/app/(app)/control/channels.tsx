@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useGatewayRpc } from "@isol8/shared";
+import { useGatewayRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";

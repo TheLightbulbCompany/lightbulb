@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
-import { createApiClient, useChatGPTOAuth } from "@isol8/shared";
+import { createApiClient, useChatGPTOAuth } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";

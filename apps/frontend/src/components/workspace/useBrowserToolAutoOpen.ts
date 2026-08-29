@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ChatIncomingMessage } from "@isol8/shared";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import { useGateway } from "@/hooks/useGateway";
 import { normalizeToolName } from "@/lib/toolDisplay";
 import { getWorkspaceSnapshot, openPanel, type WorkspaceSnapshot } from "./workspaceController";

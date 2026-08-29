@@ -98,7 +98,7 @@ unchanged), Tauri `productName` Lightbulb, sidecar `isol8-browser-service`→
 `lightbulb-browser-service`, `Isol8.app`→`Lightbulb.app`, app-support dir follows
 bundle id, keychain service follows bundle id, `/tmp/isol8-desktop.log`.
 
-**Internal (P6, each cost-scoped):** `@isol8/*` packages, `isol8-desktop` crate,
+**Internal (P6, each cost-scoped):** `@lightbulb/*` packages, `isol8-desktop` crate,
 `ISOL8_*` env vars, `x-isol8-*` headers, `.isol8-guard`/`.isol8-protocol`,
 `isol8-facts.json`, `isol8-setup-seed.json`, `isol8-marketplace` plugin id,
 `isol8` skill dir + `isol8-mail.sh`, `isol8.notifications` fork plugin,
@@ -267,7 +267,7 @@ Unchanged from the earlier draft. Note the Apple Team ID (`WZX4U3C22Y`) is hardc
 ## Phase 6 — Internal identifiers (decide each; cost table in findings §5)
 
 24 cost-scoped families. Two corrections to the earlier table:
-- [ ] **`pnpm --filter` on a renamed scope EXITS 0** (verified in-repo). A `@isol8/*` rename without the same-PR CI edits gives fully green CI that ran NOTHING across 12 steps — including the infra synth and the entire mobile suite. Add a guard test.
+- [ ] **`pnpm --filter` on a renamed scope EXITS 0** (verified in-repo). A `@lightbulb/*` rename without the same-PR CI edits gives fully green CI that ran NOTHING across 12 steps — including the infra synth and the entire mobile suite. Add a guard test.
 - [ ] **The GitHub org rename is a two-key operation and one key has no code home** — the deploy role's OIDC trust is console-only (B12, C32).
 
 ## Rollback

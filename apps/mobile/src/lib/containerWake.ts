@@ -15,7 +15,7 @@
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef } from "react";
-import { createApiClient } from "@isol8/shared";
+import { createApiClient } from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
 import { isPresent } from "./presence";

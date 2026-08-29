@@ -1,5 +1,5 @@
 import { randomUUID } from "expo-crypto";
-import type { PlatformAdapter } from "@isol8/shared";
+import type { PlatformAdapter } from "@lightbulb/shared";
 
 import { API_URL } from "../config/env";
 

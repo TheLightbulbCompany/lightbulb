@@ -5,7 +5,7 @@
  * EXPO_PUBLIC_* (the Expo equivalent of NEXT_PUBLIC_*). Values are inlined at
  * bundle time by Metro, so a rebuild is required when they change.
  */
-import { deriveWebSocketUrl } from "@isol8/shared";
+import { deriveWebSocketUrl } from "@lightbulb/shared";
 
 import { ROOT_DOMAIN, WEB_ORIGIN } from "./domain";
 

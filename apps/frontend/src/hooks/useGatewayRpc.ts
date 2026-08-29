@@ -6,10 +6,10 @@ import {
   useGatewayRpc as useGatewayRpcShared,
   useGatewayRpcMutation as useGatewayRpcMutationShared,
   type RpcResult,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 import { useGateway } from "@/hooks/useGateway";
 
-// Implementation lives in @isol8/shared (Phase 1 extraction — see the
+// Implementation lives in @lightbulb/shared (Phase 1 extraction — see the
 // mobile-app plan); this wrapper binds the web gateway context so feature
 // code keeps its historical no-arg call signature.
 

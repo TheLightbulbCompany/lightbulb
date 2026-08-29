@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useGatewayConnection } from "@isol8/shared";
+import { useGatewayConnection } from "@lightbulb/shared";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];

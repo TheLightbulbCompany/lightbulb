@@ -7,7 +7,7 @@ import { AppState } from "react-native";
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
 }));
-jest.mock("@isol8/shared", () => {
+jest.mock("@lightbulb/shared", () => {
   const post = jest.fn(async () => ({}));
   return { createApiClient: () => ({ post }), __post: post };
 });
@@ -15,7 +15,7 @@ jest.mock("../adapter", () => ({ makeAdapter: () => ({}) }));
 
 import { useContainerWake } from "../containerWake";
 
-const { __post: mockPost } = jest.requireMock("@isol8/shared") as {
+const { __post: mockPost } = jest.requireMock("@lightbulb/shared") as {
   __post: jest.Mock;
 };
 

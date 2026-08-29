@@ -36,7 +36,7 @@ import type {
   ChatRenderItem,
   RenderGroup,
 } from "./internal/types";
-import { accumulateStreamText, GatewayRpcError } from "@isol8/shared";
+import { accumulateStreamText, GatewayRpcError } from "@lightbulb/shared";
 import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
 import { buildChatItems } from "./internal/buildChatItems";
 import { groupBySide } from "./internal/groupBySide";

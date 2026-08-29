@@ -8,7 +8,7 @@
  * where to read them. Caps come verbatim from the backend route
  * (routers/container_files.py): 10MB per file, 10 files per request.
  */
-import { createApiClient } from "@isol8/shared";
+import { createApiClient } from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
 

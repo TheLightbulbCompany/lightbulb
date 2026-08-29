@@ -16,7 +16,7 @@ import {
   useGatewayRpc,
   useGatewayRpcMutation,
   type Agent,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";

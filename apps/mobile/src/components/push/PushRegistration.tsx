@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { createApiClient } from "@isol8/shared";
+import { createApiClient } from "@lightbulb/shared";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
@@ -11,7 +11,7 @@ import { makeAdapter } from "../../lib/adapter";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
-import { sessionIdFromKey } from "@isol8/shared";
+import { sessionIdFromKey } from "@lightbulb/shared";
 
 /** Route a tapped notification (warm OR cold-start launch) to whatever it is
  * about: an agent chat, landing on the session the reply belongs to (sessionKey

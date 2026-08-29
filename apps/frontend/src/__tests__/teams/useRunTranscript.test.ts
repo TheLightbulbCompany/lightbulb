@@ -6,8 +6,8 @@ const read = vi.fn();
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read }) }));
 
 import { useRunTranscript, RUN_TRANSCRIPT_LIMIT_BYTES } from "@/components/teams/runs/useRunTranscript";
-import { resolveMessageBlocks } from "@isol8/shared";
-import type { HistoryMessage } from "@isol8/shared";
+import { resolveMessageBlocks } from "@lightbulb/shared";
+import type { HistoryMessage } from "@lightbulb/shared";
 
 beforeEach(() => read.mockReset());
 

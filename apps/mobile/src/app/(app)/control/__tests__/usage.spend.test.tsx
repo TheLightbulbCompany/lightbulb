@@ -17,8 +17,8 @@ jest.mock("@clerk/clerk-expo", () => ({
 
 const mockGet = jest.fn();
 
-jest.mock("@isol8/shared", () => ({
-  ...jest.requireActual("@isol8/shared"),
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ get: mockGet }),
 }));
 

@@ -58,7 +58,7 @@ dev-first one:
   `flickmeon.ai` touches no mail at all.
 
 **Internal identifiers**, renamed in their own PR — this file already uses the new
-names: `@isol8/*` → `@lightbulb/*`, `ISOL8_*` → `LIGHTBULB_*`, `x-isol8-*` →
+names: `@lightbulb/*` → `@lightbulb/*`, `ISOL8_*` → `LIGHTBULB_*`, `x-isol8-*` →
 `x-lightbulb-*`, the desktop deep-link scheme `isol8://` → `lightbulbai://`, the
 baked plugin `isol8-marketplace` → `lightbulb-marketplace`, and the bundled skill
 directory `skills/isol8/` → `skills/lightbulb/`.

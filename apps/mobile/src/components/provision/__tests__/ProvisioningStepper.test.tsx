@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { useEffect } from "react";
 import { AccessibilityInfo, Alert, Text } from "react-native";
-import { PROVISION_IDEAS, PROVISION_TIMEOUT_MS } from "@isol8/shared";
+import { PROVISION_IDEAS, PROVISION_TIMEOUT_MS } from "@lightbulb/shared";
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),

@@ -1,5 +1,5 @@
 {
-  "name": "@isol8/infra",
+  "name": "@lightbulb/infra",
   "version": "0.1.0",
   "bin": {
     "infra": "bin/infra.js"

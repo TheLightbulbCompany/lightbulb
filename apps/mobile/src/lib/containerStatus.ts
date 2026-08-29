@@ -5,7 +5,7 @@
  * body — `useOnboardingStatus`'s fetcher reads it via `fetchJsonWithStatus`
  * (200 vs 202) and catches `ApiError` for 402 (blocked gate) and 404
  * (needs-signup) internally. The status-code + payload-shape parse itself
- * lives in `@isol8/shared`'s `classifyContainerStatus`
+ * lives in `@lightbulb/shared`'s `classifyContainerStatus`
  * (mobile onboarding-parity Slice 1) — this file's job is ONLY turning a
  * `ClassifiedStatus` into this file's richer `ContainerStatus` (which
  * additionally distinguishes ready / starting / parked / error from the 200
@@ -78,7 +78,7 @@ import {
   type ContainerStatusBody,
   type StatusContract,
   type VisibilityAdapter,
-} from "@isol8/shared";
+} from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
 import { isPresent } from "./presence";

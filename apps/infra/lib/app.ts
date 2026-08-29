@@ -24,6 +24,25 @@ const vercelEnv = {
   VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
 };
 
+// The holding-company site (apps/company, thelightbulb.company) is a second
+// Vercel project: same token and org, its own project id. Like the frontend,
+// its Root Directory (apps/company) is a PROJECT SETTING on Vercel and the CLI
+// runs from the repo root — building inside apps/company instead makes the
+// output trace pnpm's store at a path relative to the app, and
+// `vercel deploy --prebuilt` then fails with "File does not exist:
+// node_modules/.pnpm/…" (reproduced 2026-08-29).
+const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID_COMPANY }}" };
+const COMPANY_DOMAIN = "thelightbulb.company";
+const companyVercelSteps = (prod: boolean) => [
+  // Vercel needs no git credentials; do not leave the token in the checkout.
+  { name: "Checkout", uses: "actions/checkout@v4", with: { "persist-credentials": false } },
+  { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+  { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+  { name: "Install Vercel CLI", run: "npm install -g vercel" },
+  { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
+  { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
+];
+
 // cdk-pipelines-github's `Runner` has a private constructor and its only
 // self-hosted factory force-prepends the `self-hosted` label, so there is no
 // supported way to express `runs-on: <expression>`. The pipeline reads only
@@ -173,6 +192,14 @@ pipeline.addStageWithGitHubOptions(devStage, {
         },
       ],
     }),
+    // The holding-company site. Preview only in dev: `dev.thelightbulb.company`
+    // is the dev agent-mail suffix (SES), so no dev alias is registered on it.
+    new GitHubActionStep("DeployCompanyDev", {
+      jobSteps: [
+        ...companyVercelSteps(false),
+        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --token=$VERCEL_TOKEN", env: companyVercelEnv },
+      ],
+    }),
   ],
 });
 
@@ -278,6 +305,39 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         },
       ],
     }),
+    // Gated by the same JsonPatch mechanism as DeployVercelProd (below).
+    new GitHubActionStep("DeployCompanyProd", {
+      jobSteps: [
+        ...companyVercelSteps(true),
+        {
+          name: "Deploy to Vercel (Production)",
+          id: "company-deploy-prod",
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          env: companyVercelEnv,
+        },
+        // Register before aliasing — the same SSO-wall trap as the product apex.
+        {
+          name: `Register ${COMPANY_DOMAIN} project domain`,
+          run: `vercel domains add ${COMPANY_DOMAIN} company --force --token="$VERCEL_TOKEN"`,
+          env: companyVercelEnv,
+        },
+        {
+          name: `Alias to ${COMPANY_DOMAIN}`,
+          run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} ${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
+          env: companyVercelEnv,
+        },
+        {
+          name: `Register www.${COMPANY_DOMAIN} project domain`,
+          run: `vercel domains add www.${COMPANY_DOMAIN} company --force --token="$VERCEL_TOKEN"`,
+          env: companyVercelEnv,
+        },
+        {
+          name: `Alias to www.${COMPANY_DOMAIN}`,
+          run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} www.${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
+          env: companyVercelEnv,
+        },
+      ],
+    }),
   ],
 });
 
@@ -327,6 +387,7 @@ pipeline.workflowFile.patch(
   // it cannot land on the wrong job: rename the step and RFC 6902 fails to
   // resolve the path and synth throws, rather than gating something else.
   JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
+  JsonPatch.add("/jobs/prod-DeployCompanyProd/if", PROD_PROMOTE_IF),
 );
 
 

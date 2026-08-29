@@ -28,6 +28,9 @@ name: mobile-ota
     branches: [main]
     paths:
       - 'apps/mobile/**'
+      # a change to the baked env (this file) must republish too — the
+      # 2026-08-28 Clerk-key fix would otherwise never have reached devices
+      - '.github/workflows/mobile-ota.yml'
       - 'packages/shared/**'
       # Native-affecting files: a change confined to these needs a build, not an
       # OTA, so don't waste a publish. (Fingerprint still guards the mixed case.)
@@ -61,7 +64,10 @@ jobs:
     # Clerk publishable key is base64 of the instance domain), so no secret.
     env:
       EXPO_PUBLIC_API_URL: https://api.flickmeon.ai/api/v1
-      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuaXNvbDguY28k
+      # prod Clerk instance on the product domain (clerk.flickmeon.ai) — the same key
+      # the prod web bundle carries. The old key named clerk.isol8.co, whose DNS is
+      # retired: an OTA built with it cannot load Clerk at all.
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA
       # Absent, APPLE_SUBSCRIPTION_SKU is "" and APPLE_IAP_AVAILABLE is false,
       # so the paywall renders no StoreKit purchase at all — the exact condition
       # App Review rejected 0.1.0 (17) for under guideline 3.1.1.
@@ -113,6 +119,9 @@ jobs:
           # flickmeon.ai. Keep both spellings until isol8.co is fully retired.
           grep -aqE 'api-dev\.(isol8\.co|flickmeon\.ai)' "$HBC" \
             && { echo '::error::DEV fallback URL present in OTA bundle (env not applied)'; FAIL=1; }
+          # The retired prod Clerk key (clerk.isol8.co, dead DNS) must never ship again.
+          grep -aq 'pk_live_Y2xlcmsuaXNvbDguY28k' "$HBC" \
+            && { echo '::error::retired clerk.isol8.co publishable key present in OTA bundle'; FAIL=1; }
           exit $FAIL
 
       # --skip-bundler publishes the exact dist we just verified.

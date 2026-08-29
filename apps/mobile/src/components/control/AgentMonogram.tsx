@@ -25,7 +25,7 @@ export function AgentMonogram({
         <Text
           style={[styles.monogramLetter, { fontSize: Math.round(size * 0.5) }]}
         >
-          {(name.trim()[0] ?? "8").toUpperCase()}
+          {(name.trim()[0] ?? "L").toUpperCase()}
         </Text>
       )}
     </View>

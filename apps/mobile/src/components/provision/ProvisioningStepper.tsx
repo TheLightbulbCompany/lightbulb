@@ -421,7 +421,7 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.timeoutButton, pressed && styles.pressed]}
-              onPress={() => void Linking.openURL("mailto:support@isol8.co")}
+              onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
               accessibilityRole="button"
               accessibilityLabel="Contact support"
             >
@@ -467,7 +467,7 @@ const styles = StyleSheet.create({
   },
   bannerText: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.bannerText,
@@ -512,7 +512,7 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
   },
   ideaEyebrow: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 11,
     lineHeight: 15,
     letterSpacing: 0.5,
@@ -521,8 +521,8 @@ const styles = StyleSheet.create({
   idea: {
     // The registered italic FACE, not `fonts.lora` + `fontStyle: "italic"`:
     // RN matches a PostScript family name exactly, so asking a
-    // regular-only family to slant is a no-op on iOS (same reason
-    // `interstitialGlyph` and the empty states use this token).
+    // regular-only family to slant is a no-op on iOS (same reason the
+    // marketplace listing's `vibe` tagline uses this token).
     fontFamily: fonts.loraItalic,
     fontSize: 15,
     lineHeight: 21,
@@ -568,7 +568,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.edge,
   },
   timeoutMsg: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 19,
     color: colors.inkSoft,
@@ -585,13 +585,13 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   timeoutButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.forest,
   },
   timeoutButtonMutedText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 18,
     color: colors.mute,
@@ -604,7 +604,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   signOutText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,

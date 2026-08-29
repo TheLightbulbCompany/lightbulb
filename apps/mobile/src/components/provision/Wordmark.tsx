@@ -3,11 +3,12 @@
  * onboarding-parity Slice 3). Mobile had no wordmark anywhere; web's
  * onboarding cards all lead with one (`<Logo size="lg" href={null}/>` at the
  * top of every ProvisioningStepper branch), which is what makes those screens
- * read as "Isol8 is setting things up" rather than an anonymous spinner.
+ * read as "Lightbulb is setting things up" rather than an anonymous spinner.
  *
- * Text + casing mirror web's `Logo.tsx` (`<span …>ISOL8</span>`) — uppercase,
- * serif, forest. The letter-spacing is what keeps the uppercase reading as a
- * wordmark instead of a shouty heading.
+ * Text, casing and tracking mirror web's `Logo.tsx` / `.brand-logo`
+ * (`<span …>LIGHTBULB</span>`) — uppercase Lora Medium in midnight, tracked
+ * +0.18em (3.96 at 22px). §03: weight below 400 is never used, and 700 is not
+ * the spec — 500 is.
  */
 import { StyleSheet, Text } from "react-native";
 
@@ -20,17 +21,17 @@ export function Wordmark() {
       accessibilityRole="header"
       accessibilityLabel="Lightbulb"
     >
-      ISOL8
+      LIGHTBULB
     </Text>
   );
 }
 
 const styles = StyleSheet.create({
   wordmark: {
-    fontFamily: fonts.lora,
+    fontFamily: fonts.loraMedium,
     fontSize: 22,
     lineHeight: 30,
-    letterSpacing: 1,
+    letterSpacing: 3.96,
     color: colors.forest,
     textAlign: "center",
   },

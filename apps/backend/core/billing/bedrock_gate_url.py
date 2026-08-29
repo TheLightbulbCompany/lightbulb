@@ -3,7 +3,7 @@
 The gateway is the STANDARD Bedrock path: every Bedrock provision points the
 container's ``amazon-bedrock`` provider (and the ACP harness) at the gate. The
 URL is minted at deploy time by the bedrock-gate CDK stack and published to SSM
-at ``/isol8/{env}/bedrock-gate-url`` — read here at provision time (cached), so
+at ``/lightbulb/{env}/bedrock-gate-url`` — read here at provision time (cached), so
 no deploy-ordering dance and no cross-stack env threading.
 
 Resolution order:
@@ -14,7 +14,7 @@ Returns ``""`` (route DIRECT to bedrock-runtime) when the parameter is missing
 (bootstrap: the gate stack hasn't deployed yet) or holds the literal value
 ``"direct"`` — the fleet BREAK-GLASS lever (SSM forbids empty strings):
 
-    aws ssm put-parameter --name /isol8/{env}/bedrock-gate-url \\
+    aws ssm put-parameter --name /lightbulb/{env}/bedrock-gate-url \\
         --value direct --overwrite
 
 NOTE: post gateway-cutover the per-owner roles carry NO ``bedrock:Invoke``, so
@@ -34,7 +34,7 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_PARAM_NAME_TMPL = "/isol8/{env}/bedrock-gate-url"
+_PARAM_NAME_TMPL = "/lightbulb/{env}/bedrock-gate-url"
 _CACHE_TTL_S = 60
 
 _cache: tuple[float, str] | None = None

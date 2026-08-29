@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  // Web chip: bg #e8e3d9 (chip token), rounded-lg, tiny type.
+  // Web chip: the one surface step (chip token), rounded-lg, tiny type.
   chip: {
     flexDirection: "row",
     alignItems: "center",
@@ -67,14 +67,14 @@ const styles = StyleSheet.create({
     maxWidth: "80%",
   },
   name: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.avatarText,
     flexShrink: 1,
   },
   size: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.placeholder,

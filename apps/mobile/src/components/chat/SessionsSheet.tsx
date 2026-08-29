@@ -258,7 +258,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   newActionText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -280,19 +280,19 @@ const styles = StyleSheet.create({
   },
   rowLabel: {
     flexShrink: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   rowTime: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 14,
     color: colors.mute,
   },
   rowPreview: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -316,14 +316,14 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.errorText,
     textAlign: "center",
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,

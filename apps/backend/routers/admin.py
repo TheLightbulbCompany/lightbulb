@@ -97,7 +97,7 @@ class QueueImageUpdateRequest(BaseModel):
     new_image: str = Field(
         ...,
         min_length=1,
-        description="ECR image URL to queue (e.g. 877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.5.12-570e197)",
+        description="ECR image URL to queue (e.g. 877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.5.12-570e197)",
     )
     description: str | None = Field(
         default=None,

@@ -320,13 +320,13 @@ const styles = StyleSheet.create({
   sectionLabel: { ...type.overline },
   sectionCount: { color: colors.sectionCount },
   description: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 21,
     color: colors.assistantInk,
   },
   selfContained: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
@@ -354,13 +354,13 @@ const styles = StyleSheet.create({
   },
   reqText: { flex: 1, gap: 2 },
   reqName: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   reqNote: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
@@ -369,7 +369,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono,
     fontSize: 10,
     lineHeight: 14,
-    color: colors.muteSoft,
+    color: colors.mute,
   },
   reqDisposition: {
     fontFamily: fonts.mono,
@@ -387,15 +387,15 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.forest,
   },
-  primaryButtonDisabled: { backgroundColor: colors.creamPressed },
+  primaryButtonDisabled: { opacity: 0.5 },
   primaryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.white,
   },
   webOnlyNote: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -433,7 +433,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -448,7 +448,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

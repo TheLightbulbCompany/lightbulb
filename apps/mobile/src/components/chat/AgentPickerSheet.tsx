@@ -45,7 +45,7 @@ export function AgentPickerSheet({ visible, onClose, agents, onPick }: Props) {
                   <Text style={styles.emoji}>{item.identity.emoji}</Text>
                 ) : (
                   <Text style={styles.letter}>
-                    {(agentDisplayName(item).trim()[0] ?? "8").toUpperCase()}
+                    {(agentDisplayName(item).trim()[0] ?? "L").toUpperCase()}
                   </Text>
                 )}
               </View>
@@ -106,7 +106,7 @@ const styles = StyleSheet.create({
   emoji: { fontSize: 14 },
   name: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.ink,

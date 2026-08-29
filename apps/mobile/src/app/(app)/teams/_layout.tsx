@@ -14,12 +14,12 @@ export default function TeamsLayout() {
         headerStyle: { backgroundColor: colors.cream },
         headerShadowVisible: false,
         headerTitleStyle: {
-          fontFamily: fonts.dmSansBold,
+          fontFamily: fonts.sansSemiBold,
           fontSize: 17,
           color: colors.ink,
         },
         headerTintColor: colors.forest,
-        headerBackTitleStyle: { fontFamily: fonts.dmSans },
+        headerBackTitleStyle: { fontFamily: fonts.sans },
         contentStyle: { backgroundColor: colors.cream },
       }}
     >

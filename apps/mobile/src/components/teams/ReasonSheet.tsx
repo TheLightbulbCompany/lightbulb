@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.creamDeepest,
   },
   title: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
@@ -140,12 +140,12 @@ const styles = StyleSheet.create({
   input: {
     minHeight: 72,
     maxHeight: 160,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
     padding: spacing.md,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.ink,
@@ -163,7 +163,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   cancelText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
@@ -175,9 +175,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.danger,
   },
   submitPrimary: { backgroundColor: colors.forest },
-  submitDisabled: { backgroundColor: colors.creamDeepest },
+  // Fades the whole button — label, icon and busy spinner together.
+  submitDisabled: { opacity: 0.5 },
   submitText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.white,

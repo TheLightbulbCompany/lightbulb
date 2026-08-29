@@ -864,6 +864,10 @@ export class ServiceStack extends cdk.Stack {
         sid: "BedrockGateUrlParamRead",
         actions: ["ssm:GetParameter"],
         resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/bedrock-gate-url`,
+          // TRANSITIONAL — the gate stack publishes both names for one cycle so
+          // the reader can move without a window where the parameter is absent.
+          // Drops with the legacy parameter in step 2.
           `arn:aws:ssm:${this.region}:${this.account}:parameter/isol8/${env}/bedrock-gate-url`,
         ],
       }),

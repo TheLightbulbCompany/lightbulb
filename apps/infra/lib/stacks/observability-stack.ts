@@ -197,7 +197,7 @@ export class ObservabilityStack extends cdk.Stack {
       // and bake the key into the committed template.
       const pagerDutyUrl = ssm.StringParameter.valueForStringParameter(
         this,
-        "/isol8/prod/pagerduty-page-url",
+        "/lightbulb/prod/pagerduty-page-url",
       );
 
       // sns.Subscription directly, NOT pageTopic.addSubscription(new

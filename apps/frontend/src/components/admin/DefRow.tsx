@@ -21,7 +21,7 @@ export function DefRow({ label, value, mono, href }: Props) {
   const title = typeof value === "string" ? value : undefined;
   return (
     <div className="flex items-baseline gap-3">
-      <dt className="w-32 shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
+      <dt className="w-32 shrink-0 text-xs uppercase tracking-caps text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 flex-1">

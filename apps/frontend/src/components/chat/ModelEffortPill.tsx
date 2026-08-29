@@ -121,12 +121,12 @@ export function ModelEffortPill({
         align="start"
         side="top"
         sideOffset={8}
-        className="!w-[300px] !p-0 rounded-xl border-[var(--edge)] bg-cream text-[var(--midnight)] shadow-[0_2px_8px_color-mix(in_srgb,var(--midnight)_4%,transparent),0_12px_32px_color-mix(in_srgb,var(--midnight)_10%,transparent)]"
+        className="!w-[300px] !p-0 rounded-xl border-[var(--edge)] bg-cream text-[var(--midnight)] shadow-md"
         style={{ maxHeight: 360 }}
       >
         {/* Model section */}
         <div className="p-2 border-b border-[var(--edge-soft)]">
-          <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[var(--midnight-label)]">Model</div>
+          <div className="px-2 py-1 label-caps">Model</div>
           <div className="max-h-48 overflow-y-auto">
             {models.map((m) => {
               const isSel = refOf(m) === selectedModelRef;
@@ -148,8 +148,8 @@ export function ModelEffortPill({
                 >
                   <span className="truncate text-left">{m.name ?? m.id}</span>
                   <span className="ml-2 flex shrink-0 items-center gap-1.5">
-                    {isSel && <Check className="h-3.5 w-3.5 text-[var(--midnight)]" />}
-                    <span className="text-[10px] text-[var(--midnight-muted)]">
+                    {isSel && <Check className="h-3 w-3 text-[var(--midnight)]" />}
+                    <span className="text-2xs text-[var(--midnight-muted)]">
                       {providerLabelFor(m)}
                     </span>
                   </span>
@@ -158,7 +158,7 @@ export function ModelEffortPill({
             })}
           </div>
           {isStreaming && (
-            <div className="px-2 pt-1 text-[10px] text-[var(--midnight-muted)]">
+            <div className="px-2 pt-1 text-2xs text-[var(--midnight-muted)]">
               Stop the run to switch model.
             </div>
           )}
@@ -167,7 +167,7 @@ export function ModelEffortPill({
         {/* Reasoning section — only for reasoning models */}
         {showEffort && (
           <div className="p-2 border-b border-[var(--edge-soft)]">
-            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[var(--midnight-label)]">
+            <div className="px-2 py-1 label-caps">
               Reasoning
             </div>
             <div className="mx-1 flex gap-0.5 rounded-lg bg-[var(--cream-deep)] p-0.5">
@@ -193,7 +193,7 @@ export function ModelEffortPill({
         {/* Speed (fast-mode) — only BYO-OpenAI */}
         {showSpeed && (
           <div className="p-2">
-            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-[var(--midnight-label)]">Speed</div>
+            <div className="px-2 py-1 label-caps">Speed</div>
             <button
               type="button"
               onClick={() => toggleFast(!fastMode)}
@@ -202,7 +202,7 @@ export function ModelEffortPill({
               <span>Fast mode</span>
               <span
                 className={cn(
-                  "text-[10px] px-1.5 py-0.5 rounded-full",
+                  "text-2xs px-1.5 py-0.5 rounded-full",
                   fastMode
                     ? "bg-[var(--midnight)]/10 text-[var(--midnight)]"
                     : "bg-[var(--cream-deep)] text-[var(--midnight-muted)]",
@@ -215,7 +215,7 @@ export function ModelEffortPill({
         )}
 
         {error && (
-          <div className="p-2 border-t border-[var(--edge-soft)] text-[11px] text-[var(--err)]">{error}</div>
+          <div className="p-2 border-t border-[var(--edge-soft)] text-caption text-[var(--err)]">{error}</div>
         )}
       </PopoverContent>
     </Popover>

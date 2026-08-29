@@ -34,7 +34,7 @@ export default async function DeploysPage() {
         ) : (
           <div className="space-y-2">
             {rows.map((r) => (
-              <div key={r.stack_name} className="rounded border border-border p-3">
+              <div key={r.stack_name} className="rounded-sm border border-border p-3">
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-sm text-foreground">{r.stack_name}</span>
                   <StatusChip status={deployTone(r.status)} label={r.status} />

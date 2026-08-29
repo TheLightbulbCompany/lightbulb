@@ -42,14 +42,14 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
 
   return (
     <article
-      className={`relative rounded-2xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
+      className={`relative rounded-xl border p-5 flex flex-col gap-3 min-h-[200px] transition ${
         phase === "started"
           ? "border-[var(--ok)]"
           : "border-[var(--edge)] bg-card hover:shadow-md hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
       }`}
     >
       {company.min_plan === "ultra_pro" && (
-        <span className="absolute top-3 right-3.5 text-[9.5px] tracking-widest text-[var(--midnight)] font-bold">
+        <span className="absolute top-3 right-3.5 text-2xs tracking-caps text-[var(--midnight)] font-bold">
           ULTRA PRO
         </span>
       )}
@@ -61,13 +61,13 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
       >
         {company.name}
       </Link>
-      <p className="text-[13px] text-muted-foreground leading-snug line-clamp-2">{company.description}</p>
+      <p className="text-ui text-muted-foreground leading-snug line-clamp-2">{company.description}</p>
       <div className="mt-auto flex items-center justify-between pt-2.5 border-t border-dashed border-[var(--edge)]">
-        <span className="text-[11.5px] italic text-muted-foreground">
+        <span className="text-caption italic text-muted-foreground">
           {company.agent_count} agents · {company.skill_count} skills
         </span>
         {phase === "started" ? (
-          <span className="text-[12px] font-semibold text-[var(--midnight)]" role="status">
+          <span className="text-xs font-semibold text-[var(--midnight)]" role="status">
             Deploying — check Teams
           </span>
         ) : (
@@ -75,14 +75,14 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
             type="button"
             onClick={deploy}
             disabled={phase === "deploying"}
-            className="text-[var(--cream)] bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold hover:opacity-90 transition disabled:opacity-60"
+            className="text-[var(--cream)] bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-ui font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {phase === "deploying" ? "Deploying…" : "Deploy company"}
           </button>
         )}
       </div>
       {error && (
-        <p className="text-[12px] text-[var(--err)]" role="alert">
+        <p className="text-xs text-[var(--err)]" role="alert">
           {error}{" "}
           {/Ultra Pro/i.test(error) && (
             <Link href="/settings" className="font-bold underline hover:opacity-80">

@@ -117,7 +117,7 @@ export function SessionList({
                           openEditor(s);
                         }}
                       >
-                        <Pencil size={11} />
+                        <Pencil size={12} />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>Rename session</TooltipContent>
@@ -135,7 +135,7 @@ export function SessionList({
                           onDelete(s);
                         }}
                       >
-                        <Trash2 size={11} />
+                        <Trash2 size={12} />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>Delete session</TooltipContent>
@@ -155,7 +155,7 @@ export function SessionList({
           onNew();
         }}
       >
-        <Plus size={13} />
+        <Plus size={12} />
         <span>New session</span>
       </button>
     </div>

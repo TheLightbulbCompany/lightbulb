@@ -89,7 +89,7 @@ export function BrowseView() {
                 setItems([]);
                 setLoading(true);
               }}
-              className={`px-3 py-1.5 rounded-full text-[12.5px] ${
+              className={`px-3 py-1.5 rounded-full text-ui ${
                 scope === s ? "bg-[var(--midnight)] text-[var(--cream)]" : "bg-transparent text-muted-foreground"
               }`}
             >
@@ -105,7 +105,7 @@ export function BrowseView() {
               key={c}
               type="button"
               onClick={() => setCategory(c)}
-              className={`px-3 py-1.5 rounded-full text-[12.5px] border ${
+              className={`px-3 py-1.5 rounded-full text-ui border ${
                 category === c
                   ? "bg-[var(--midnight)] text-[var(--cream)] border-[var(--midnight)]"
                   : "bg-transparent text-muted-foreground border-[var(--edge)]"

@@ -84,7 +84,7 @@ export function HealthIndicator({
           variant="ghost"
           size="sm"
           onClick={handleRecover}
-          className="h-5 px-2 text-[10px] font-medium hover:bg-[var(--cream-deep)]"
+          className="h-5 px-2 text-2xs font-medium hover:bg-[var(--cream-deep)]"
         >
           {actionLabel}
         </Button>

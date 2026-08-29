@@ -99,7 +99,7 @@ export default async function RecentTakedownsPage() {
                 </div>
               </dl>
               {td.basis_md && (
-                <p className="whitespace-pre-line rounded bg-background p-3 text-sm text-foreground">
+                <p className="whitespace-pre-line rounded-sm bg-background p-3 text-sm text-foreground">
                   {truncate(td.basis_md ?? "", BASIS_TRUNCATE)}
                 </p>
               )}

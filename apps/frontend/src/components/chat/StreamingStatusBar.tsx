@@ -38,7 +38,7 @@ export function StreamingStatusBar({ isStreaming, active }: StreamingStatusBarPr
     >
       <div className="flex items-center gap-2 text-xs text-[var(--midnight-muted)] bg-[var(--cream-deep)]/80 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-sm">
         <AgentGlyph state="thinking" size={16} />
-        <span className="font-medium tracking-tight">Working…</span>
+        <span className="font-medium">Working…</span>
       </div>
     </div>
   );

@@ -23,13 +23,13 @@ const PERSISTENT_FAILURE_THRESHOLD = 3;
 // Brand-primary recipe used across the app (see ProviderPicker / landing
 // .ld-btn): midnight fill, cream text, pill, hover eases opacity (no new colour).
 const CHOICE_BTN =
-  "w-full rounded-full bg-[var(--midnight)] hover:opacity-90 text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
+  "w-full rounded-full bg-[var(--midnight)] hover:opacity-90 text-[var(--cream)] py-4 text-sm font-semibold transition-colors";
 const INPUT =
-  "w-full rounded-xl border border-[var(--edge)] bg-cream-deep p-3 text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:outline-none focus:border-[var(--midnight)]";
+  "w-full rounded-xl border border-[var(--edge)] bg-cream-deep p-3 text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)]";
 // Outline, not filled: this is the escape hatch for the undecided, and it
 // should not compete with Continue for the user who already has an idea.
 const SECONDARY_BTN =
-  "w-full rounded-full border border-edge bg-transparent hover:bg-cream-deep text-[var(--midnight)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
+  "w-full rounded-full border border-edge bg-transparent hover:bg-cream-deep text-[var(--midnight)] py-3 text-sm font-medium transition-colors disabled:opacity-50";
 
 const QUIET_LINK =
   "text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors";
@@ -75,7 +75,7 @@ export function FirstRunSteps({
     return (
       <div className="space-y-8 text-center">
         <div className="space-y-2">
-          <h1 className="text-3xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
+          <h1 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
             Let&apos;s get started.
           </h1>
           <p className="text-sm text-[var(--midnight-muted)]">
@@ -107,7 +107,7 @@ export function FirstRunSteps({
           ← Back
         </button>
       )}
-      <h1 className="text-2xl font-semibold tracking-tight text-[var(--midnight)] font-lora">
+      <h1 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
         {activePath === "new" ? "What's your idea?" : "What's your company's website?"}
       </h1>
       {activePath === "new" ? (

@@ -259,12 +259,12 @@ function Header({
   return (
     <header className="mb-6 flex items-start justify-between gap-3 flex-wrap">
       <div>
-        <h2 className="font-editorial-serif text-3xl text-[var(--midnight)]">
+        <h2 className="font-editorial-serif text-2xl text-[var(--midnight)]">
           {live.name}
         </h2>
-        <p className="text-[12.5px] text-muted-foreground mt-1">{live.slug}</p>
+        <p className="text-ui text-muted-foreground mt-1">{live.slug}</p>
         <span
-          className={`inline-block mt-2 text-[10.5px] tracking-widest uppercase font-bold px-2.5 py-1 rounded-full ${
+          className={`inline-block mt-2 text-2xs tracking-caps uppercase font-bold px-2.5 py-1 rounded-full ${
             live.status === "published"
               ? "border border-[var(--ok)] text-[var(--ok)]"
               : live.status === "review"
@@ -292,7 +292,7 @@ function Header({
             type="button"
             onClick={handleContinueEdit}
             disabled={busy}
-            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-ui font-semibold disabled:opacity-50"
           >
             {continueEditLabel}
           </button>
@@ -302,7 +302,7 @@ function Header({
             onClick={handleRepublish}
             disabled={!canRepublish || busy}
             title={republishDisabledReason}
-            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold disabled:opacity-50"
+            className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-ui font-semibold disabled:opacity-50"
           >
             Republish with updates
           </button>
@@ -312,14 +312,14 @@ function Header({
             type="button"
             onClick={handleDiscard}
             disabled={busy}
-            className="text-[12.5px] font-semibold text-[var(--err)] hover:underline"
+            className="text-ui font-semibold text-[var(--err)] hover:underline"
           >
             Discard pending update
           </button>
         )}
         <a
           href={`/marketplace/listing/${live.listing_id}`}
-          className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline"
+          className="text-ui font-semibold text-[var(--midnight)] hover:underline"
         >
           View on marketplace →
         </a>
@@ -331,7 +331,7 @@ function Header({
 function Stats({ live }: { live: Listing }) {
   const installs = live.install_count ?? 0;
   return (
-    <div className="flex gap-6 mb-6 text-[13px] text-muted-foreground">
+    <div className="flex gap-6 mb-6 text-ui text-muted-foreground">
       <div>
         <strong className="block font-editorial-serif text-lg text-[var(--midnight)]">
           {installs.toLocaleString()}
@@ -404,7 +404,7 @@ function TabBtn({
       role="tab"
       aria-selected={active}
       onClick={() => setTab(name)}
-      className={`pb-2 text-[13px] font-semibold ${
+      className={`pb-2 text-ui font-semibold ${
         active
           ? "text-[var(--midnight)] border-b-2 border-[var(--midnight)]"
           : "text-muted-foreground"
@@ -419,7 +419,7 @@ function OverviewTab({ listing }: { listing: Listing }) {
   return (
     <div className="space-y-4">
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
+        <h3 className="text-xs tracking-caps uppercase font-bold text-[var(--midnight-label)] mb-2">
           Description
         </h3>
         <div className="prose prose-sm max-w-none">
@@ -427,21 +427,21 @@ function OverviewTab({ listing }: { listing: Listing }) {
         </div>
       </section>
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
+        <h3 className="text-xs tracking-caps uppercase font-bold text-[var(--midnight-label)] mb-2">
           Tags
         </h3>
         <div className="flex gap-2 flex-wrap">
           {(listing.tags ?? []).map((t) => (
             <span
               key={t}
-              className="text-[12px] px-2 py-1 rounded-full bg-cream-deep text-muted-foreground"
+              className="text-xs px-2 py-1 rounded-full bg-cream-deep text-muted-foreground"
             >
               {t}
             </span>
           ))}
         </div>
       </section>
-      <section className="grid grid-cols-2 gap-4 text-[13px]">
+      <section className="grid grid-cols-2 gap-4 text-ui">
         <Field label="Category" value={listing.category ?? "—"} />
         <Field label="Format" value={listing.format ?? "—"} />
       </section>
@@ -456,10 +456,10 @@ function BundleTab({ listing }: { listing: Listing }) {
     <div className="space-y-4">
       <Field label="Snapshotted from agent" value={listing.agent_id ?? "—"} />
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
+        <h3 className="text-xs tracking-caps uppercase font-bold text-[var(--midnight-label)] mb-2">
           MCPs bundled
         </h3>
-        <ul className="text-[13px] space-y-1">
+        <ul className="text-ui space-y-1">
           {mcps.length === 0 ? (
             <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
@@ -468,10 +468,10 @@ function BundleTab({ listing }: { listing: Listing }) {
         </ul>
       </section>
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
+        <h3 className="text-xs tracking-caps uppercase font-bold text-[var(--midnight-label)] mb-2">
           Skills bundled
         </h3>
-        <ul className="text-[13px] space-y-1">
+        <ul className="text-ui space-y-1">
           {skills.length === 0 ? (
             <li className="text-[var(--midnight-muted)] italic">None</li>
           ) : (
@@ -491,10 +491,10 @@ function PendingTab({ pending }: { pending: Listing }) {
   return (
     <div className="space-y-4">
       <section>
-        <h3 className="text-[12px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-2">
+        <h3 className="text-xs tracking-caps uppercase font-bold text-[var(--midnight-label)] mb-2">
           v{pending.version} {wasRejected ? "rejected" : pending.status}
         </h3>
-        <p className="text-[13px] text-muted-foreground">
+        <p className="text-ui text-muted-foreground">
           Created {new Date(pending.created_at).toLocaleDateString()}
         </p>
       </section>
@@ -503,7 +503,7 @@ function PendingTab({ pending }: { pending: Listing }) {
         <div
           role="status"
           data-testid="rejection-notes"
-          className="rounded-xl border border-[var(--err)] px-4 py-3 text-[13px] text-[var(--err)]"
+          className="rounded-xl border border-[var(--err)] px-4 py-3 text-ui text-[var(--err)]"
         >
           <strong className="font-semibold block mb-1">
             Rejection reason
@@ -515,7 +515,7 @@ function PendingTab({ pending }: { pending: Listing }) {
       <button
         type="button"
         onClick={() => startEditListing(pending)}
-        className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-[13px] font-semibold"
+        className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] px-4 py-2 rounded-full text-ui font-semibold"
       >
         {wasRejected ? "Revise & resubmit →" : "Continue editing →"}
       </button>
@@ -583,14 +583,14 @@ function VersionHistoryTab({
                 v{v.version}
               </span>
               <span
-                className={`text-[10px] tracking-widest uppercase font-bold px-2 py-0.5 rounded-full ${versionStatusCls(
+                className={`text-2xs tracking-caps uppercase font-bold px-2 py-0.5 rounded-full ${versionStatusCls(
                   v.status,
                 )}`}
               >
                 {versionStatusLabel(v)}
               </span>
             </div>
-            <div className="flex items-center gap-5 text-[12.5px] text-muted-foreground">
+            <div className="flex items-center gap-5 text-ui text-muted-foreground">
               <span>{installs.toLocaleString()} installs</span>
               <span>{stamp ? new Date(stamp).toLocaleDateString() : "—"}</span>
             </div>
@@ -610,10 +610,10 @@ function Field({
 }) {
   return (
     <div>
-      <span className="block text-[11.5px] tracking-widest uppercase font-bold text-[var(--midnight-label)] mb-1">
+      <span className="block label-caps mb-1">
         {label}
       </span>
-      <span className="text-[13px]">{value}</span>
+      <span className="text-ui">{value}</span>
     </div>
   );
 }

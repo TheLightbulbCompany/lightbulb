@@ -70,21 +70,21 @@ export function WebhooksPanel() {
                 type="button"
                 aria-label={revealed ? "Hide token" : "Reveal token"}
                 onClick={() => setRevealed((v) => !v)}
-                className="rounded p-1 hover:bg-accent"
+                className="rounded-sm p-1 hover:bg-accent"
               >
-                {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                {revealed ? <EyeOff size={12} /> : <Eye size={12} />}
               </button>
               <button
                 type="button"
                 aria-label="Copy token"
                 onClick={() => navigator.clipboard.writeText(credentials.token)}
-                className="rounded p-1 hover:bg-accent"
+                className="rounded-sm p-1 hover:bg-accent"
               >
-                <Copy size={14} />
+                <Copy size={12} />
               </button>
             </div>
           </div>
-          <div className="mt-1 rounded border border-border bg-muted px-3 py-2 font-mono text-sm">
+          <div className="mt-1 rounded-sm border border-border bg-muted px-3 py-2 font-mono text-sm">
             {tokenDisplay}
           </div>
           {credentials.rotated_at && (
@@ -115,12 +115,12 @@ function Field({
           type="button"
           aria-label={`Copy ${label}`}
           onClick={onCopy}
-          className="rounded p-1 hover:bg-accent"
+          className="rounded-sm p-1 hover:bg-accent"
         >
-          <Copy size={14} />
+          <Copy size={12} />
         </button>
       </div>
-      <div className="mt-1 break-all rounded border border-border bg-muted px-3 py-2 font-mono text-sm">
+      <div className="mt-1 break-all rounded-sm border border-border bg-muted px-3 py-2 font-mono text-sm">
         {value}
       </div>
     </div>

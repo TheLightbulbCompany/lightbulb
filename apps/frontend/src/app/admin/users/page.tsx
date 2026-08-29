@@ -87,7 +87,7 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
   return (
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full min-w-[720px] text-sm">
-        <thead className="bg-card text-left text-xs uppercase tracking-wide text-muted-foreground">
+        <thead className="bg-card text-left text-xs uppercase tracking-caps text-muted-foreground">
           <tr>
             <th className="px-3 py-2 font-medium">Email</th>
             <th className="px-3 py-2 font-medium">Clerk ID</th>
@@ -113,7 +113,7 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
                 </Link>
                 {u.org ? (
                   <span
-                    className="ml-2 font-mono text-[10px] text-muted-foreground"
+                    className="ml-2 font-mono text-2xs text-muted-foreground"
                     title={`Org: ${u.org.name} (${u.org.role})`}
                   >
                     [org:{u.org.slug}]

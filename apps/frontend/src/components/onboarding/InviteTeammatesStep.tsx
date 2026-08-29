@@ -124,7 +124,7 @@ export function InviteTeammatesStep({
         {error && (
           <div
             role="alert"
-            className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive"
+            className="rounded-lg border border-err bg-cream px-3 py-2 text-ui text-err"
           >
             {error}
           </div>

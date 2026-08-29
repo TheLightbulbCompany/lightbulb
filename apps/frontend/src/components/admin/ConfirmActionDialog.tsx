@@ -152,7 +152,7 @@ export function ConfirmActionDialog({
             aria-label={`Confirm ${actionLabel}`}
             className={cn(
               destructive &&
-                "bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20",
+                "bg-destructive text-destructive-foreground hover:bg-destructive/90",
             )}
           >
             {busy ? "Working\u2026" : actionLabel}

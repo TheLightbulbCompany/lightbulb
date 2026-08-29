@@ -44,9 +44,9 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       <div>
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded transition-colors"
+          className="w-full flex items-center gap-1.5 px-2 py-1 text-sm text-[var(--midnight)] hover:bg-[var(--cream-deep)] rounded-sm transition-colors"
         >
-          {expanded ? <ChevronDown className="h-3.5 w-3.5 text-[var(--midnight-muted)] flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-[var(--midnight-muted)] flex-shrink-0" />}
+          {expanded ? <ChevronDown className="h-3 w-3 text-[var(--midnight-muted)] flex-shrink-0" /> : <ChevronRight className="h-3 w-3 text-[var(--midnight-muted)] flex-shrink-0" />}
           {expanded ? <FolderOpen className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" /> : <FolderClosed className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" />}
           <span className="truncate">{entry.name}</span>
         </button>
@@ -73,7 +73,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
   return (
     <button
       onClick={() => onSelect(entry.path)}
-      className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm rounded transition-colors ${
+      className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm rounded-sm transition-colors ${
         isSelected
           ? "bg-cream-deeper text-[var(--midnight)] shadow-sm"
           : isMissing
@@ -82,7 +82,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       }`}
       title={isMissing ? "Click to create this file" : undefined}
     >
-      <span className="w-3.5 flex-shrink-0" />
+      <span className="w-3 flex-shrink-0" />
       {isMissing ? (
         <FileWarning className="h-4 w-4 text-[var(--midnight-muted)] flex-shrink-0" />
       ) : (
@@ -157,7 +157,7 @@ export function FileTree({
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--edge)]">
-        <span className="text-xs font-medium text-[var(--midnight-muted)] uppercase tracking-wide">Files</span>
+        <span className="text-xs font-medium text-[var(--midnight-muted)] uppercase tracking-caps">Files</span>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -165,7 +165,7 @@ export function FileTree({
               aria-label="Refresh file tree"
               className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
             </button>
           </TooltipTrigger>
           <TooltipContent>Refresh file tree</TooltipContent>

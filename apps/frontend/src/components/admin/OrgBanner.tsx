@@ -29,7 +29,7 @@ export function OrgBanner({ org, description = DEFAULT_DESCRIPTION }: Props) {
   const displayName = org.name || org.slug || org.id;
   return (
     <div className="rounded-md border-l-2 border-info bg-card px-4 py-3 text-sm">
-      <div className="text-xs uppercase tracking-wide text-info">
+      <div className="text-xs uppercase tracking-caps text-info">
         Org member
       </div>
       <div className="mt-1 text-foreground">

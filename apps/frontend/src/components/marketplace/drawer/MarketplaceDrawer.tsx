@@ -26,12 +26,12 @@ export function MarketplaceDrawer() {
       {/* Scrim */}
       <div
         onClick={close}
-        className="fixed inset-0 z-50 bg-[var(--midnight)]/45 transition-opacity duration-250"
+        className="fixed inset-0 z-(--z-overlay) bg-[var(--midnight)]/45 transition-opacity duration-(--dur-slow)"
         aria-hidden="true"
       />
       <aside
         data-mode={isPublish ? "publish" : undefined}
-        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-[-30px_0_80px_color-mix(in_srgb,var(--midnight)_16%,transparent)] flex flex-col transform translate-x-0 transition-transform duration-350"
+        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-xl flex flex-col transform translate-x-0 transition-transform duration-(--dur-slow)"
         aria-label="Marketplace drawer"
       >
         {/* HEADER */}
@@ -43,16 +43,16 @@ export function MarketplaceDrawer() {
                 <button
                   type="button"
                   onClick={() => open({ view: "publish" })}
-                  className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
+                  className="bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-[var(--cream)] rounded-full px-4 py-2 text-ui font-semibold inline-flex items-center gap-1.5"
                 >
-                  <Plus className="w-3.5 h-3.5" />
+                  <Plus className="w-3 h-3" />
                   Publish your agent
                 </button>
                 <Link
                   href="/marketplace"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[12.5px] text-muted-foreground hover:text-[var(--midnight)] inline-flex items-center gap-1"
+                  className="text-ui text-muted-foreground hover:text-[var(--midnight)] inline-flex items-center gap-1"
                 >
                   Open in full page <ExternalLink className="w-3 h-3" />
                 </Link>
@@ -85,12 +85,12 @@ function DefaultHeader() {
   const { state, setView } = useMarketplaceDrawer();
   return (
     <div className="flex items-center gap-4 min-w-0">
-      <span className="font-editorial-serif italic text-[13px] text-muted-foreground">Marketplace</span>
+      <span className="font-editorial-serif italic text-ui text-muted-foreground">Marketplace</span>
       <div className="bg-cream-deep rounded-full p-1 flex gap-1">
         <button
           type="button"
           onClick={() => setView("browse")}
-          className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
+          className={`px-4 py-1.5 rounded-full text-ui font-medium ${
             state.view === "browse"
               ? "bg-card text-[var(--midnight)] shadow-sm"
               : "text-muted-foreground"
@@ -101,7 +101,7 @@ function DefaultHeader() {
         <button
           type="button"
           onClick={() => setView("mine")}
-          className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
+          className={`px-4 py-1.5 rounded-full text-ui font-medium ${
             state.view === "mine"
               ? "bg-card text-[var(--midnight)] shadow-sm"
               : "text-muted-foreground"
@@ -123,12 +123,12 @@ function PublishHeader() {
       <button
         type="button"
         onClick={() => setView(previous)}
-        className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground hover:text-[var(--midnight)] hover:bg-cream-deep rounded-full px-2.5 py-1.5"
+        className="inline-flex items-center gap-1.5 text-ui text-muted-foreground hover:text-[var(--midnight)] hover:bg-cream-deep rounded-full px-2.5 py-1.5"
       >
-        <ChevronLeft className="w-3.5 h-3.5" />
+        <ChevronLeft className="w-3 h-3" />
         Marketplace
       </button>
-      <span className="font-editorial-serif italic text-[14px] text-muted-foreground">
+      <span className="font-editorial-serif italic text-sm text-muted-foreground">
         {isEditing ? `Edit "${state.editListing?.name}"` : "Publish an agent"}
       </span>
     </div>
@@ -138,8 +138,8 @@ function PublishHeader() {
 function DetailHeader() {
   return (
     <div className="flex items-center gap-3.5 min-w-0">
-      <span className="font-editorial-serif italic text-[13px] text-muted-foreground">Marketplace</span>
-      <span className="font-editorial-serif italic text-[14px] text-muted-foreground">Listing details</span>
+      <span className="font-editorial-serif italic text-ui text-muted-foreground">Marketplace</span>
+      <span className="font-editorial-serif italic text-sm text-muted-foreground">Listing details</span>
     </div>
   );
 }
@@ -154,7 +154,7 @@ function DetailBody() {
       <button
         type="button"
         onClick={() => setView("mine")}
-        className="text-[12.5px] font-semibold text-[var(--midnight)] hover:underline mb-3"
+        className="text-ui font-semibold text-[var(--midnight)] hover:underline mb-3"
       >
         ← Back to my listings
       </button>

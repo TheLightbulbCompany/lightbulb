@@ -163,7 +163,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
         // sr-only duplicate of the same text would just announce it twice.
         aria-label={stalled ? `${label} — outcome unknown` : label}
         className={cn(
-          "group flex w-full items-baseline gap-2.5 py-[3px] text-left text-[13px] leading-[1.5]",
+          "group flex w-full items-baseline gap-2.5 py-[3px] text-left text-ui leading-snug",
           hasDetails ? "cursor-pointer" : "cursor-default",
         )}
       >
@@ -196,7 +196,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
             <span
               className={cn(
                 display.kind === "command"
-                  ? "font-[family-name:var(--font-mono)] text-[12px]"
+                  ? "font-[family-name:var(--font-mono)] text-xs"
                   : undefined,
                 call.status === "error" ? "opacity-90" : "text-[var(--midnight-muted)]",
               )}
@@ -217,13 +217,13 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
         )}
         {/* Fixed slot so a row gaining a duration never shifts its neighbours.
             Hidden on mobile, where the width is worth more than the number. */}
-        <span className="hidden w-[38px] shrink-0 text-right text-[11px] tabular-nums text-[var(--midnight-muted)] sm:inline">
+        <span className="hidden w-[38px] shrink-0 text-right text-caption tabular-nums text-[var(--midnight-muted)] sm:inline">
           {showDuration ? formatDuration(durationMs!) : ""}
         </span>
       </button>
 
       {call.status === "error" && output && (
-        <div className="mb-1 mt-px max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--err)] bg-[color-mix(in_srgb,var(--err)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[11.5px] leading-[1.5] text-[var(--err)]">
+        <div className="mb-1 mt-px max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--err)] bg-[color-mix(in_srgb,var(--err)_6%,var(--cream))] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-caption leading-snug text-[var(--err)]">
           {output}
         </div>
       )}
@@ -233,7 +233,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
           {hasArgs && (
             <div>
               <div className="mb-0.5 font-medium text-[var(--midnight-soft)]">input</div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
                 {JSON.stringify(call.args, null, 2)}
               </pre>
             </div>
@@ -241,7 +241,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
           {output && call.status !== "error" && (
             <div>
               <div className="mb-0.5 font-medium text-[var(--midnight-soft)]">output</div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-[var(--cream-deep)] px-2 py-1 text-[var(--midnight-soft)]">
                 {output}
               </pre>
             </div>
@@ -290,12 +290,12 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
         type="button"
         onClick={() => setUserOpened(true)}
         aria-expanded={false}
-        className="mb-3.5 mt-0.5 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
+        className="mb-3.5 mt-0.5 flex items-center gap-1.5 text-left text-ui text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
       >
         <ChevronRight aria-hidden className="h-3 w-3 shrink-0 text-[var(--midnight-faint)]" />
         {summary}
         {totalMs !== undefined && totalMs >= DURATION_FLOOR_MS && (
-          <span className="text-[11.5px] tabular-nums text-[var(--midnight-muted)]">
+          <span className="text-caption tabular-nums text-[var(--midnight-muted)]">
             {formatDuration(totalMs)}
           </span>
         )}
@@ -316,7 +316,7 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
           type="button"
           onClick={() => setUserOpened(false)}
           aria-expanded={true}
-          className="mb-1 flex items-center gap-1.5 text-left text-[12.5px] text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
+          className="mb-1 flex items-center gap-1.5 text-left text-ui text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight-soft)]"
         >
           <ChevronRight aria-hidden className="h-3 w-3 shrink-0 rotate-90 text-[var(--midnight-faint)]" />
           Collapse

@@ -38,7 +38,7 @@ const CHART_4 = "var(--chart-4)";
 const CHART_5 = "var(--chart-5)";
 
 const GRID_STROKE = "var(--border)";
-const AXIS_TICK_PROPS = { tickLine: false as const, axisLine: false as const, className: "text-[10px]" };
+const AXIS_TICK_PROPS = { tickLine: false as const, axisLine: false as const, className: "text-2xs" };
 const NUMERIC_Y_PROPS = { ...AXIS_TICK_PROPS, width: 32, allowDecimals: false as const, domain: [0, "auto"] as [number, "auto"] };
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

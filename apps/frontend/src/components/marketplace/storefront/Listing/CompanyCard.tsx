@@ -23,17 +23,17 @@ export function CompanyCard({ listing }: { listing: Listing }) {
       <div className="flex items-start justify-between gap-2">
         <h3 className="font-editorial-serif text-xl text-[var(--midnight)]">{company.name}</h3>
         {locked ? (
-          <span className="rounded-full bg-[var(--cream-deep)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight)]">
+          <span className="rounded-full bg-[var(--cream-deep)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight)]">
             Requires Ultra Pro
           </span>
         ) : (
-          <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
+          <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
             One-click deploy
           </span>
         )}
       </div>
-      <p className="line-clamp-2 text-sm leading-6 text-[var(--midnight-soft)]">{company.description}</p>
-      <div className="mt-auto flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--midnight-muted)]">
+      <p className="line-clamp-2 text-sm leading-relaxed text-[var(--midnight-soft)]">{company.description}</p>
+      <div className="mt-auto flex flex-wrap gap-x-4 gap-y-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">
         <span>{company.agent_count} agents</span>
         <span>{company.team_count} {company.team_count === 1 ? "team" : "teams"}</span>
         <span>{company.skill_count} skills</span>

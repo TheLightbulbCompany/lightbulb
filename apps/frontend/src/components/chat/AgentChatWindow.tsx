@@ -423,17 +423,17 @@ export function AgentChatWindow({
         >
           <div className="w-full max-w-3xl mx-auto space-y-10 py-8">
             <div className="space-y-2.5">
-              <div className="h-3.5 w-11/12 rounded bg-cream-deep animate-pulse motion-reduce:animate-none" />
-              <div className="h-3.5 w-3/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
+              <div className="h-3.5 w-11/12 rounded-sm bg-cream-deep animate-pulse motion-reduce:animate-none" />
+              <div className="h-3.5 w-3/5 rounded-sm bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
             </div>
-            {/* Echoes the real user bubble: right-aligned, rounded-2xl/br-md. */}
+            {/* Echoes the real user bubble: right-aligned, rounded-lg/br-sm. */}
             <div className="flex justify-end">
-              <div className="h-9 w-2/5 rounded-2xl rounded-br-md bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
+              <div className="h-9 w-2/5 rounded-lg rounded-br-sm bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
             </div>
             <div className="space-y-2.5">
-              <div className="h-3.5 w-4/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:450ms]" />
-              <div className="h-3.5 w-full rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:600ms]" />
-              <div className="h-3.5 w-2/5 rounded bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:750ms]" />
+              <div className="h-3.5 w-4/5 rounded-sm bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:450ms]" />
+              <div className="h-3.5 w-full rounded-sm bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:600ms]" />
+              <div className="h-3.5 w-2/5 rounded-sm bg-cream-deep animate-pulse motion-reduce:animate-none [animation-delay:750ms]" />
             </div>
           </div>
         </div>
@@ -471,7 +471,7 @@ export function AgentChatWindow({
             <div className="mb-6 flex justify-center">
               <span style={{ fontFamily: "var(--font-serif), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--midnight)", lineHeight: 1 }}>8</span>
             </div>
-            <h1 className="text-3xl mb-3 text-[var(--midnight)] tracking-tight font-lora">
+            <h1 className="font-editorial-serif text-2xl mb-3 text-[var(--midnight)] tracking-display">
               {agentId
                 ? agentDisplayName(activeAgent ?? { id: agentId })
                 : "Select an agent"}
@@ -508,7 +508,7 @@ export function AgentChatWindow({
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
       {historyTruncated && (
-        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--midnight-muted)] bg-[var(--cream-deep)] border-b border-[var(--edge)]">
+        <div className="shrink-0 px-4 py-1.5 text-center text-caption text-[var(--midnight-muted)] bg-[var(--cream-deep)] border-b border-[var(--edge)]">
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}

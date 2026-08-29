@@ -26,8 +26,7 @@ export function AgentCreateChooser({
   };
 
   const cardClass =
-    "flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-colors " +
-    "focus:outline-none focus:ring-1 focus:ring-[var(--midnight)]";
+    "flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-colors";
 
   return (
     <div className="grid gap-2 sm:grid-cols-2" data-testid="agent-create-chooser">

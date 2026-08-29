@@ -149,7 +149,7 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
 
         {/* Issue credit */}
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Issue credit
           </h3>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-[160px_1fr_auto]">
@@ -188,7 +188,7 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
 
         {/* Mark invoice resolved */}
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Mark invoice resolved
           </h3>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">

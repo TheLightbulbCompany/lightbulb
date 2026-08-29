@@ -150,7 +150,7 @@ function InstructionsList({ items }: { items: React.ReactNode[] }) {
     <ol className="space-y-2 text-sm text-[var(--midnight-soft)]">
       {items.map((item, i) => (
         <li key={i} className="flex gap-2.5">
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--cream-deep)] text-[10px] font-semibold text-[var(--midnight-muted)]">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--cream-deep)] text-2xs font-semibold text-[var(--midnight-muted)]">
             {i + 1}
           </span>
           <span className="pt-0.5">{item}</span>
@@ -486,7 +486,7 @@ export function BotSetupWizard({
           <InlineLink href="https://t.me/BotFather">@BotFather</InlineLink>.
         </>,
         <>
-          Send <code className="px-1 py-0.5 rounded bg-[var(--cream-deep)] font-mono text-[11px]">/newbot</code>{" "}
+          Send <code className="px-1 py-0.5 rounded-sm bg-[var(--cream-deep)] font-mono text-caption">/newbot</code>{" "}
           and follow BotFather&apos;s prompts — pick a display name, then a username
           (must end in <span className="font-mono">bot</span>).
         </>,
@@ -635,7 +635,7 @@ export function BotSetupWizard({
           <button
             type="button"
             onClick={copyManifest}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-sm px-2 py-1 text-xs text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] transition-colors cursor-pointer"
             aria-label="Copy manifest"
           >
             {manifestCopied ? (
@@ -649,7 +649,7 @@ export function BotSetupWizard({
             )}
           </button>
         </div>
-        <pre className="whitespace-pre-wrap font-mono text-[10px] p-3 max-h-52 overflow-y-auto">
+        <pre className="whitespace-pre-wrap font-mono text-2xs p-3 max-h-52 overflow-y-auto">
           {SLACK_APP_MANIFEST}
         </pre>
       </div>
@@ -689,7 +689,7 @@ export function BotSetupWizard({
                 clearError();
               }}
               placeholder="xapp-1-A..."
-              className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
+              className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono"
               aria-label="App-Level Token"
               autoComplete="off"
               spellCheck={false}
@@ -706,7 +706,7 @@ export function BotSetupWizard({
               clearError();
             }}
             placeholder={placeholder}
-            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono focus:border-[var(--midnight)] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-sm font-mono"
             aria-label={labelText}
             autoComplete="off"
             spellCheck={false}
@@ -809,7 +809,7 @@ export function BotSetupWizard({
             }}
             placeholder="ABC12345"
             maxLength={8}
-            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-lg font-mono tracking-widest uppercase focus:border-[var(--midnight)] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 text-lg font-mono tracking-caps uppercase"
             aria-label="Pairing code"
             autoComplete="off"
             spellCheck={false}
@@ -878,7 +878,7 @@ export function BotSetupWizard({
         >
           {canGoBack ? (
             <>
-              <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+              <ArrowLeft className="h-3 w-3 mr-1" />
               Back
             </>
           ) : (

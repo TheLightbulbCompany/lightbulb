@@ -48,7 +48,7 @@
   background: var(--cream);
   color: var(--midnight);
   padding: 5px 10px;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 700;
   text-decoration: none;
   transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
@@ -69,7 +69,7 @@
   border-radius: 999px;
   background: var(--midnight);
   color: var(--cream);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   line-height: 1;
 }
 .sidebar-settings-link {
@@ -91,7 +91,7 @@
 .tab-btn {
   flex: 1;
   padding: 6px 0;
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 500;
   text-align: center;
   border-radius: 999px;
@@ -104,7 +104,7 @@
 .tab-btn.active {
   background: var(--cream);
   color: var(--midnight);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--midnight) 8%, transparent);
+  box-shadow: var(--shadow-hair);
 }
 .tab-btn:not(.active):hover {
   color: var(--midnight);
@@ -119,7 +119,7 @@
   align-items: stretch;
   margin: 4px 16px 8px;
   border: 1.5px solid var(--midnight);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--midnight);
   overflow: hidden;
 }
@@ -133,7 +133,7 @@
   background: transparent;
   border: none;
   color: var(--cream);
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -190,14 +190,18 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 4px 6px;
-  color: var(--midnight-muted);
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
+  color: var(--midnight-soft);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
+/* The count inherits the label's colour — it is the same voice, emphasised by
+   losing the caps tracking, not by a second tone. `font-weight` is restated
+   because <b>'s UA default is `bolder`, which resolves ABOVE the label's 600. */
 .agent-section-label b {
-  color: var(--midnight-label);
   font-weight: 600;
   letter-spacing: 0;
 }
@@ -220,7 +224,7 @@
      other children already fit on one line. */
   flex-wrap: wrap;
   padding: 8px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: background var(--dur-fast) ease;
   position: relative;
@@ -234,11 +238,11 @@
 }
 .agent-item:hover {
   background: var(--cream);
-  box-shadow: 0 1px 4px color-mix(in srgb, var(--midnight) 4%, transparent);
+  box-shadow: var(--shadow-hair);
 }
 .agent-item.active {
   background: var(--cream-deeper);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--midnight) 6%, transparent);
+  box-shadow: var(--shadow-hair);
 }
 
 /* ── The row's click target ───────────────────────────────────────────────
@@ -283,12 +287,12 @@
   content: "";
   position: absolute;
   /* Sits in the row's own 8px padding, a couple of px inside the hover card's
-     10px corner radius so it never collides with the rounded edge. */
+     8px corner radius so it never collides with the rounded edge. */
   left: -6px;
   top: 1px;
   bottom: 1px;
   width: 2px;
-  border-radius: 2px;
+  border-radius: 999px;
   background: transparent;
 }
 /* --ok, not --brass: this rail sits on the --cream-deep sidebar, where brass
@@ -343,12 +347,12 @@
    section header uses, so it reads as structure, not a badge. */
 .agent-rank {
   flex: none;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
   font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--midnight);
-  opacity: 0.75;
+  letter-spacing: var(--tracking-caps);
+  color: var(--midnight-label);
 }
 
 /* ── The state line ───────────────────────────────────────────────────────
@@ -359,7 +363,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -405,7 +409,7 @@
 .agent-avatar {
   width: 32px;
   height: 32px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--midnight);
   display: flex;
   align-items: center;
@@ -428,7 +432,7 @@
    `<div class="agent-name">` with bare text and no `__text` child, so making
    this a flex container globally would strip its truncation. */
 .agent-name {
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 500;
   color: var(--midnight);
   white-space: nowrap;
@@ -451,8 +455,8 @@
   text-overflow: ellipsis;
 }
 .agent-model {
-  font-size: 11px;
-  color: var(--midnight-muted);
+  font-size: var(--text-caption);
+  color: var(--midnight-soft);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -489,7 +493,7 @@
   border: 0;
   background: transparent;
   color: var(--midnight-muted);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
@@ -527,9 +531,9 @@
   padding: 5px 8px;
   border: 0;
   background: transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   color: var(--midnight-muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   text-align: left;
   cursor: pointer;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
@@ -566,7 +570,7 @@
   padding: 4px;
   border: 0;
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--midnight-muted);
   cursor: pointer;
 }
@@ -591,11 +595,10 @@
   min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--edge);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: var(--cream);
   color: var(--midnight);
-  font-size: 12px;
-  outline: none;
+  font-size: var(--text-xs);
 }
 .session-new {
   display: flex;
@@ -606,9 +609,9 @@
   margin-top: 1px;
   border: 0;
   background: transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   color: var(--midnight-muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   cursor: pointer;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
@@ -633,7 +636,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   color: var(--midnight-soft);
   flex-shrink: 0;
@@ -643,7 +646,7 @@
   min-width: 0;
 }
 .user-name {
-  font-size: 13px;
+  font-size: var(--text-ui);
   font-weight: 500;
   color: var(--midnight);
   white-space: nowrap;
@@ -651,21 +654,23 @@
   text-overflow: ellipsis;
 }
 .plan-badge {
-  font-size: 10px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: var(--tracking-caps);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--cream);
-  color: var(--midnight-muted);
+  color: var(--midnight-label);
 }
 .version-text {
   text-align: center;
-  font-size: 10px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
   color: var(--midnight-muted);
-  font-family: monospace;
-  letter-spacing: 0.05em;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   padding-top: 8px;
 }
@@ -689,7 +694,7 @@
   top: 0;
   left: 0;
   right: 0;
-  z-index: 20;
+  z-index: var(--z-chrome);
 }
 .main-content {
   flex: 1;
@@ -722,7 +727,7 @@
   padding: 12px;
   background: var(--cream);
   border: 1px solid var(--ok);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -732,7 +737,7 @@
   flex-shrink: 0;
 }
 .subscription-banner p {
-  font-size: 14px;
+  font-size: var(--text-sm);
   color: var(--ok);
   margin: 0;
 }
@@ -758,8 +763,10 @@
     left: 0;
     bottom: 0;
     width: min(280px, 85vw);
-    z-index: 50;
-    box-shadow: 4px 0 24px color-mix(in srgb, var(--midnight) 15%, transparent);
+    /* Same layer as its backdrop; the drawer wins on DOM order (ChatLayout
+       renders the backdrop first), so no second z-index step is needed. */
+    z-index: var(--z-overlay);
+    box-shadow: var(--shadow-lift);
   }
   .sidebar-backdrop {
     display: none;
@@ -769,7 +776,7 @@
     position: fixed;
     inset: 0;
     background: color-mix(in srgb, var(--midnight) 30%, transparent);
-    z-index: 49;
+    z-index: var(--z-overlay);
   }
   .mobile-hamburger {
     display: flex;

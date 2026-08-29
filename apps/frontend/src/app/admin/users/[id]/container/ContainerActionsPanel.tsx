@@ -266,7 +266,7 @@ export function ContainerActionsPanel({
 
         {/* Re-apply standard sizing (post-flat-fee: single per-user task profile) */}
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Re-apply standard sizing
           </h3>
           <p className="text-xs text-muted-foreground">
@@ -291,7 +291,7 @@ export function ContainerActionsPanel({
             the counterpart to "Apply now" below, which rolls the image but
             reuses the on-disk config verbatim. */}
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Regenerate config
           </h3>
           <p className="text-xs text-muted-foreground">
@@ -320,7 +320,7 @@ export function ContainerActionsPanel({
             alternative to Reprovision — container keeps running on the old image
             until the owner clicks "Update now" in their chat banner. */}
         <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Queue image update
           </h3>
           <p className="text-xs text-muted-foreground">
@@ -370,8 +370,8 @@ export function ContainerActionsPanel({
                             key={b.label}
                             className={
                               b.tone === "dev"
-                                ? "rounded border border-ok px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-ok"
-                                : "rounded border border-warn px-1.5 py-0 text-[10px] font-sans uppercase tracking-wide text-warn"
+                                ? "rounded-sm border border-ok px-1.5 py-0 text-2xs font-sans font-semibold uppercase tracking-caps text-ok"
+                                : "rounded-sm border border-warn px-1.5 py-0 text-2xs font-sans font-semibold uppercase tracking-caps text-warn"
                             }
                           >
                             {b.label}

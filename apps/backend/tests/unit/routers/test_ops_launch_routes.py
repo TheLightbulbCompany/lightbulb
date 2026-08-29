@@ -29,16 +29,24 @@ async def test_ops_launch_requires_admin(async_client):
     assert r.status_code in (401, 403)
 
 
-@patch("core.services.launch_revenue.delete_key", AsyncMock())
-@patch("core.repositories.launch_entries_repo.delete", AsyncMock())
-async def test_ops_launch_delete_entry_removes_row_and_key(admin_client):
-    from core.repositories import launch_entries_repo
-    from core.services import launch_revenue
+async def test_ops_launch_delete_entry_removes_row_and_key_in_order(admin_client):
+    # Key first: a dangling Secrets Manager entry with no owning row is worse
+    # than a row that still points at an already-revoked key.
+    calls: list[str] = []
 
-    r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
+    async def _delete_key(owner_id: str) -> None:
+        calls.append(f"key:{owner_id}")
+
+    async def _delete_row(owner_id: str) -> None:
+        calls.append(f"row:{owner_id}")
+
+    with (
+        patch("core.services.launch_revenue.delete_key", AsyncMock(side_effect=_delete_key)),
+        patch("core.repositories.launch_entries_repo.delete", AsyncMock(side_effect=_delete_row)),
+    ):
+        r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
     assert r.status_code == 200 and r.json() == {"deleted": "user_1"}
-    launch_entries_repo.delete.assert_awaited_once_with("user_1")
-    launch_revenue.delete_key.assert_awaited_once_with("user_1")
+    assert calls == ["key:user_1", "row:user_1"]
 
 
 async def test_ops_launch_delete_entry_requires_admin(async_client):

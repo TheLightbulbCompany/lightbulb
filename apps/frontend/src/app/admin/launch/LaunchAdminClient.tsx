@@ -11,8 +11,12 @@ import { refreshLaunch, removeLaunchEntry } from "../_actions/launch";
 import type { LaunchOpsData } from "../_lib/api";
 import { Table } from "../growth/sections";
 
-function csvEscape(v: unknown): string {
-  const s = v === null || v === undefined ? "" : String(v);
+// Values starting with =, +, -, or @ are formula triggers in Excel/Sheets when
+// the CSV is opened there — prefix with a leading `'` (a no-op text marker in
+// both apps) before deciding whether the value also needs quoting.
+export function csvEscape(v: unknown): string {
+  let s = v === null || v === undefined ? "" : String(v);
+  if (/^[=+\-@]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -50,13 +54,17 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
   };
 
   const e = data.economics;
+  const cb = data.competing_breakdown;
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricStat label="pot" value={formatMoney(data.pot_cents, "usd")} />
+        <MetricStat label="public pot" value={formatMoney(data.public_pot_cents, "usd")} hint={`${data.signups} signed up × $10 + $1,000`} />
+        <MetricStat label="funded pot" value={formatMoney(data.funded_pot_cents, "usd")} hint={`${data.pot_counted} first invoices landed`} />
+        <MetricStat label="signed up" value={data.signups} />
+        <MetricStat label="competing" value={data.competing} hint={`${cb.paid} paid · ${cb.comp_eligible} eligible · ${cb.public} public`} />
+        <MetricStat label="on the board" value={data.on_board} />
         <MetricStat label="waitlist" value={data.waitlist.total} hint={`${data.waitlist.top_slots_claimed} of top ${data.schedule.comp_slots} claimed`} />
         <MetricStat label="top slots activated" value={`${data.waitlist.top_slots_activated} / ${data.schedule.comp_slots}`} />
-        <MetricStat label="entrants" value={data.entrants.total} hint={`${data.entrants.paid} paid · ${data.entrants.comp_eligible} eligible · ${data.entrants.public} public`} />
         <MetricStat label="referrals signed up" value={data.referrals.signed_up} />
         <MetricStat label="referrals paid" value={data.referrals.paid} hint={`${data.referrals.months_banked} months banked`} />
         <MetricStat label="P&L before credits" value={formatMoney(e.pnl_cents, "usd")} tone={e.pnl_cents < 0 ? "error" : "default"} />
@@ -67,12 +75,12 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
         title="Actions"
         action={
           <div className="flex gap-2">
-            <button type="button" onClick={exportCsv} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">Export waitlist CSV</button>
-            <button type="button" onClick={refresh} disabled={busy} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">{busy ? "Refreshing…" : "Refresh all"}</button>
+            <button type="button" onClick={exportCsv} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent">Export waitlist CSV</button>
+            <button type="button" onClick={refresh} disabled={busy} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{busy ? "Refreshing…" : "Refresh all"}</button>
           </div>
         }
       >
-        <p className="text-xs text-zinc-500">{note ?? "Export the top rows for the launch email; refresh before judging."}</p>
+        <p className="text-xs text-muted-foreground">{note ?? "Export the top rows for the launch email; refresh before judging."}</p>
       </Card>
 
       <Card title="Economics (sheet lines)">
@@ -110,7 +118,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
               type="button"
               onClick={() => remove(r.owner_id)}
               disabled={busy}
-              className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+              className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
             >
               Remove
             </button>,

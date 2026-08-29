@@ -104,13 +104,13 @@ async def test_compute_counts_and_economics(deps):
     assert state == "ok" and errors == []
     assert data["waitlist"] == {"total": 3, "top_slots_activated": 1, "top_slots_claimed": 1}
     # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comp-eligible. u_c: position 3 ⇒ paid.
-    assert data["entrants"] == {"total": 2, "paid": 1, "comp_eligible": 1, "public": 1}
-    assert data["pot_cents"] == 100_000 + 2 * 1_000
+    assert data["competing_breakdown"] == {"paid": 1, "comp_eligible": 1, "public": 1}
     # signups (waitlist) vs competing (entries, joined) vs on_board (entries w/ has_key)
     assert data["signups"] == 3 and data["competing"] == 2 and data["on_board"] == 1
     # public pot tracks the uncapped waitlist; funded pot tracks first-invoice count
     assert data["public_pot_cents"] == 100_000 + 3 * 1_000
     assert data["funded_pot_cents"] == 100_000 + 2 * 1_000
+    assert data["pot_counted"] == 2
     assert data["referrals"] == {"signed_up": 1, "paid": 1, "months_banked": 1}
     econ = data["economics"]
     assert econ["paid_profit_cents"] == 1 * (5000 - 1800 - 1000)

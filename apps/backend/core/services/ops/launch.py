@@ -54,7 +54,11 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     top_claimed = [w for w in top if w.get("user_id")]
     top_activated = [w for w in top_claimed if w["user_id"] in activated]
 
-    billing_rows = await asyncio.gather(*[billing_repo.get_by_owner_id(e["owner_id"]) for e in entries])
+    async def _billing(owner_id: str) -> dict | None:
+        async with sem:
+            return await billing_repo.get_by_owner_id(owner_id)
+
+    billing_rows = await asyncio.gather(*[_billing(e["owner_id"]) for e in entries])
     entry_rows = []
     comp_eligible = 0
     for e, billing in zip(entries, billing_rows):
@@ -112,22 +116,24 @@ async def _compute(s: launch_phase.Schedule) -> dict:
             "top_slots_activated": len(top_activated),
             "top_slots_claimed": len(top_claimed),
         },
-        "entrants": {
-            "total": len(entries),
+        "signups": signups,
+        "competing": competing,
+        "on_board": on_board,
+        # The paid/comp_eligible/public split behind the "competing" count —
+        # kept (not dropped) for the entries-table hint, just renamed off the
+        # legacy "entrants" name now that "competing" is the count of record.
+        "competing_breakdown": {
             "paid": paid,
             "comp_eligible": comp_eligible,
             "public": sum(1 for e in entries if e.get("public", True)),
         },
-        "pot_cents": launch_phase.pot_cents(len(entries)),
-        "signups": signups,
-        "competing": competing,
-        "on_board": on_board,
         # Two pots (spec): the public number tracks the uncapped waitlist (what
         # every visitor sees before the drop); the funded number is only backed
         # by an actual Stripe invoice landing (see launch_referral.on_invoice_paid
         # -> launch_waitlist_repo.mark_pot_counted, first invoice of any amount).
         "public_pot_cents": launch_phase.pot_cents(signups),
         "funded_pot_cents": launch_phase.pot_cents(funded),
+        "pot_counted": funded,
         "referrals": {
             "signed_up": sum(int(w.get("referrals_signed_up", 0)) for w in waitlist),
             "paid": referrals_paid,
@@ -179,3 +185,7 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     if state == env.OK:
         _cache["launch"] = (time.monotonic(), result)
     return result
+
+
+def clear_cache() -> None:
+    _cache.clear()

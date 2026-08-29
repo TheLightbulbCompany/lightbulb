@@ -159,6 +159,30 @@ async def test_maybe_revalidate_noop_when_unconfigured_or_outside_window():
     assert rev._inflight is None
 
 
+async def test_maybe_revalidate_clears_the_leaderboard_response_cache_on_completion():
+    """A completed background sweep must invalidate routers.launch's own
+    response cache, or a reader can see stale numbers for up to
+    LEADERBOARD_TTL_S after the sweep already landed new ones."""
+    from routers import launch as launch_router
+
+    launch_router._RESP_CACHE.clear()
+    factory = AsyncMock(side_effect=[{"n": 1}, {"n": 2}])
+    try:
+        first = await launch_router._cached("leaderboard", launch_router.LEADERBOARD_TTL_S, factory)
+        assert first == {"n": 1}
+        with (
+            patch.object(rev.launch_phase, "schedule", return_value=S),
+            patch.object(rev, "refresh_all", AsyncMock(return_value=0)),
+        ):
+            assert rev.maybe_revalidate(now=NOW) is True
+            await rev._inflight
+        second = await launch_router._cached("leaderboard", launch_router.LEADERBOARD_TTL_S, factory)
+    finally:
+        launch_router._RESP_CACHE.clear()
+    assert second == {"n": 2}
+    assert factory.await_count == 2
+
+
 async def test_refresh_entry_finalises_a_baseline_computed_before_the_window_closed(repo):
     early = ENTRY("u1", 5_000, baseline_at=(S.competition_start_at - timedelta(hours=1)).isoformat())
     with (
@@ -197,6 +221,22 @@ async def test_refresh_entry_leaves_a_settled_baseline_alone(repo):
         await rev.refresh_entry(ENTRY("u1", 5_000), S, now=NOW)
     assert summer.await_count == 1
     repo.set_key_connected.assert_not_awaited()
+
+
+async def test_refresh_entry_errors_when_window_currency_differs_from_finalized_baseline(repo):
+    """sum_net_revenue's own MixedCurrency only catches a mismatch WITHIN one
+    page walk — a EUR baseline finalized on an earlier pass vs. a USD window
+    read this pass (e.g. the entrant's Stripe account default currency
+    changed) isn't caught there, so refresh_entry must check it itself."""
+    entry = ENTRY("u1", 5_000, currency="eur")
+    with (
+        patch.object(rev, "load_key", AsyncMock(return_value="rk")),
+        patch.object(rev, "sum_net_revenue", AsyncMock(return_value=(12_000, "usd"))) as summer,
+    ):
+        await rev.refresh_entry(entry, S, now=NOW)
+    assert summer.await_count == 1  # settled baseline: only the window is fetched
+    repo.set_refresh_error.assert_awaited_once_with("u1", "mixed_currency")
+    repo.set_revenue.assert_not_awaited()
 
 
 # --- Prorated baseline -------------------------------------------------------

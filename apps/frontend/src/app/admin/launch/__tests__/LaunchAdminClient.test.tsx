@@ -32,14 +32,19 @@ beforeEach(() => {
 });
 
 import type { LaunchOpsData } from "../../_lib/api";
-import { LaunchAdminClient } from "../LaunchAdminClient";
+import { csvEscape, LaunchAdminClient } from "../LaunchAdminClient";
 
 const data: LaunchOpsData = {
   generated_at: "t", phase: "live",
   schedule: { drop_at: "d", competition_start_at: "s", competition_end_at: "e", comp_slots: 220 },
   waitlist: { total: 300, top_slots_activated: 150, top_slots_claimed: 200 },
-  entrants: { total: 40, paid: 30, comp_eligible: 10, public: 35 },
-  pot_cents: 140000,
+  signups: 40,
+  competing: 40,
+  on_board: 25,
+  competing_breakdown: { paid: 30, comp_eligible: 10, public: 35 },
+  public_pot_cents: 140000,
+  funded_pot_cents: 125000,
+  pot_counted: 24,
   referrals: { signed_up: 50, paid: 12, months_banked: 3 },
   economics: { paid_profit_cents: 66000, comp_cost_cents: 28000, referral_cost_cents: 33600, pnl_cents: 4400, aws_credits_cents: 500000, net_cents: 504400 },
   entries: [{ owner_id: "u1", display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null, comp_eligible: true }],
@@ -49,13 +54,19 @@ const data: LaunchOpsData = {
 describe("LaunchAdminClient", () => {
   it("renders the sheet numbers and the entries table", () => {
     render(<LaunchAdminClient data={data} />);
+    // public pot ($1,400) and funded pot ($1,250) — the two tiles replacing the old single "pot".
     expect(screen.getByText("$1,400")).toBeInTheDocument();
+    expect(screen.getByText("$1,250")).toBeInTheDocument();
     expect(screen.getByText("150 / 220")).toBeInTheDocument();
     expect(screen.getByText("Ada")).toBeInTheDocument();
     expect(screen.getByText("+200%")).toBeInTheDocument();
     // "eligible", not "comped": redemption of the promo code is not observed.
     expect(screen.getByText("eligible")).toBeInTheDocument();
     expect(screen.getByText(/30 paid · 10 eligible · 35 public/)).toBeInTheDocument();
+    // signed up / competing / on the board counts
+    expect(screen.getByText("signed up")).toBeInTheDocument();
+    expect(screen.getByText("on the board")).toBeInTheDocument();
+    expect(screen.getByText("25")).toBeInTheDocument();
   });
 
   it("refresh calls the action", async () => {
@@ -79,5 +90,23 @@ describe("LaunchAdminClient", () => {
     fireEvent.click(screen.getByRole("button", { name: /export waitlist csv/i }));
     const blob = create.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("text/csv");
+  });
+});
+
+describe("csvEscape", () => {
+  // CodeRabbit: a bare =/+/-/@ leading char is a formula trigger when the CSV
+  // is opened in Excel/Sheets — prefix with a `'` before the quoting decision.
+  it.each(["=cmd", "+1", "-1", "@SUM(A1)"])("neutralizes a leading %s", (value) => {
+    expect(csvEscape(value)).toBe(`'${value}`);
+  });
+
+  it("still quotes commas/quotes/newlines, after neutralizing", () => {
+    expect(csvEscape("=a,b")).toBe(`"'=a,b"`);
+    expect(csvEscape('say "hi"')).toBe('"say ""hi"""');
+  });
+
+  it("leaves an ordinary value untouched", () => {
+    expect(csvEscape("Ada")).toBe("Ada");
+    expect(csvEscape(null)).toBe("");
   });
 });

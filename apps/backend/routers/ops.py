@@ -61,7 +61,7 @@ async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
     from core.services.ops import launch as launch_ops
 
     n = await launch_revenue.refresh_all(force=True)
-    launch_ops._cache.clear()
+    launch_ops.clear_cache()
     return {"refreshed": n}
 
 
@@ -75,7 +75,10 @@ async def delete_launch_entry(owner_id: str, _auth: AuthContext = Depends(requir
     from core.services import launch_revenue
     from core.services.ops import launch as launch_ops
 
-    await launch_entries_repo.delete(owner_id)
+    # Key first: if the row delete below fails partway, a dangling Secrets
+    # Manager entry with no owning row is worse than a row that still has
+    # has_key=true pointing at an already-revoked key.
     await launch_revenue.delete_key(owner_id)
-    launch_ops._cache.clear()
+    await launch_entries_repo.delete(owner_id)
+    launch_ops.clear_cache()
     return {"deleted": owner_id}

@@ -16,8 +16,8 @@ export default async function AdminLaunchPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-zinc-100">Launch competition</h1>
-        <p className="text-xs text-zinc-500">
+        <h1 className="text-xl font-semibold text-foreground">Launch competition</h1>
+        <p className="text-xs text-muted-foreground">
           The economics sheet with live inputs. {data ? `Generated ${data.generated_at}, phase ${data.phase}.` : ""}
         </p>
       </div>

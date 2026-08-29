@@ -178,6 +178,7 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
     now = now or datetime.now(timezone.utc)
     end = min(now, s.competition_end_at)
     baseline_cents = int(entry.get("baseline_cents", 0))
+    baseline_currency = entry.get("currency")
     try:
         key = await load_key(owner_id)
         if not key:
@@ -206,6 +207,13 @@ async def refresh_entry(entry: dict, s: Schedule, now: datetime | None = None) -
     except Exception:  # noqa: BLE001 — one bad entry must not stop the pass
         logger.warning("launch refresh: failed for %s", owner_id, exc_info=True)
         await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "refresh_failed"))
+        return
+    # sum_net_revenue only catches a mismatch WITHIN one call's own page walk;
+    # a finalized baseline in one currency vs. this pass's window in another
+    # (e.g. the entrant switched their Stripe account's default currency) isn't
+    # caught there — check it here, before the numbers get compared/stored.
+    if baseline_currency and baseline_currency != currency:
+        await _record(owner_id, launch_entries_repo.set_refresh_error(owner_id, "mixed_currency"))
         return
     prorated = prorated_baseline(baseline_cents, s, end)
     delta = window - prorated
@@ -273,6 +281,15 @@ def maybe_revalidate(now: datetime | None = None) -> bool:
             logger.info("launch refresh: %d entries", n)
         except Exception:  # noqa: BLE001
             logger.warning("launch refresh pass failed", exc_info=True)
+            return
+        try:
+            # Lazy import: routers.launch imports core.services.launch_revenue
+            # at module load, so a top-level import here would be circular.
+            from routers.launch import clear_response_cache
+
+            clear_response_cache()
+        except Exception:  # noqa: BLE001 — never let cache housekeeping break the sweep
+            logger.warning("launch refresh: failed to clear response cache", exc_info=True)
 
     _inflight = asyncio.create_task(_run())
     return True

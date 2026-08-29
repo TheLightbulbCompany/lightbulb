@@ -52,6 +52,13 @@ async def _cached(key: str, ttl_s: float, factory: Callable[[], Awaitable[dict]]
     return value
 
 
+def clear_response_cache() -> None:
+    """Invalidate the cached /launch and /launch/leaderboard responses. Called
+    by launch_revenue after a background refresh pass lands new numbers, so a
+    reader doesn't see a stale leaderboard for up to LEADERBOARD_TTL_S more."""
+    _RESP_CACHE.clear()
+
+
 def require_launch() -> Schedule:
     s = launch_phase.schedule()
     if s is None:

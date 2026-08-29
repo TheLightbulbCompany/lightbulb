@@ -709,8 +709,13 @@ export interface LaunchOpsData {
   phase: "waitlist" | "activation" | "live" | "ended";
   schedule: { drop_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
   waitlist: { total: number; top_slots_activated: number; top_slots_claimed: number };
-  entrants: { total: number; paid: number; comp_eligible: number; public: number };
-  pot_cents: number;
+  signups: number;
+  competing: number;
+  on_board: number;
+  competing_breakdown: { paid: number; comp_eligible: number; public: number };
+  public_pot_cents: number;
+  funded_pot_cents: number;
+  pot_counted: number;
   referrals: { signed_up: number; paid: number; months_banked: number };
   economics: {
     paid_profit_cents: number;

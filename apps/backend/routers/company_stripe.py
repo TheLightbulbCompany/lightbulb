@@ -11,7 +11,6 @@ import logging
 import secrets
 from typing import Annotated
 
-import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -22,8 +21,8 @@ from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
 from core.services import company_stripe, company_stripe_approval, provision_gate
 from core.services.owner_facts import write_owner_facts
-from core.services.paperclip_admin_client import PaperclipApiError
 from routers.agent_builder import _require_hook_token
+from routers.company_board import file_card
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -256,14 +255,6 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     return {"disconnected": True}
 
 
-def _board_unavailable(owner_id: str, e: Exception) -> HTTPException:
-    logger.warning("company_stripe: could not reach the board owner_id=%s: %s", owner_id, e)
-    return HTTPException(
-        status_code=503,
-        detail={"code": "paperclip_unavailable", "message": "Could not reach the company board; try again later"},
-    )
-
-
 class RequestStripeBody(BaseModel):
     issue_id: str | None = None
     reason: str = ""
@@ -276,23 +267,10 @@ async def request_from_container(owner_id: str, body: RequestStripeBody, request
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     if row.get("company_stripe_account_id"):
         return {"approval_id": None, "status": "connected"}
-    try:
-        approval_id = await company_stripe_approval.request_company_stripe(
-            owner_id=owner_id, issue_id=body.issue_id, reason=body.reason
-        )
-    except httpx.HTTPError as e:
-        raise _board_unavailable(owner_id, e) from e
-    except PaperclipApiError as e:
-        # `retryable` is 5xx/429 — genuinely "the board is down". A 4xx is the
-        # board REFUSING this request; reporting that as an outage tells the
-        # agent to retry forever on something that will never succeed.
-        if e.retryable:
-            raise _board_unavailable(owner_id, e) from e
-        logger.warning("company_stripe: board rejected the request owner_id=%s: %s", owner_id, e)
-        raise HTTPException(
-            status_code=502,
-            detail={"code": "paperclip_rejected", "message": e.message},
-        ) from e
+    approval_id = await file_card(
+        owner_id,
+        company_stripe_approval.request_company_stripe(owner_id=owner_id, issue_id=body.issue_id, reason=body.reason),
+    )
     # "no_company": the owner has no Paperclip company yet, so there is no
     # board to file against — not a duplicate, not a failure.
     return {"approval_id": approval_id, "status": "filed" if approval_id else "no_company"}

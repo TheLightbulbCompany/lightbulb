@@ -138,6 +138,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     commands: [
       "cd apps/infra",
       "npm ci",
+      // The synth runner is self-hosted with a persistent workspace, and CDK
+      // reuses a cached bundle whenever the cache key (source + docker command)
+      // is unchanged -- which replayed a broken authorizer bundle across two
+      // deploys after the local bundler was fixed. Start every synth clean.
+      "rm -rf cdk.out",
       "npx cdk synth",
     ],
     // Stripe flat-fee Price IDs are baked into the per-env ECS task env at

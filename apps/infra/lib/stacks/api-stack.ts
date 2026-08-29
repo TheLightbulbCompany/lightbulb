@@ -339,7 +339,11 @@ export class ApiStack extends cdk.Stack {
             command: [
               "bash",
               "-c",
-              "pip install -r requirements.txt -t /asset-output && cp -au . /asset-output",
+              // Same target pins as the local bundler below; the flags are
+              // redundant inside the 3.12 image but they are part of the
+              // bundling cache key, so changing them is what invalidates a
+              // stale cached bundle on a persistent runner.
+              "pip install -r requirements.txt -t /asset-output --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 && cp -au . /asset-output",
             ],
             local: {
               tryBundle(outputDir: string): boolean {

@@ -605,6 +605,15 @@ export class PaperclipStack extends cdk.Stack {
       maxCapacity: 4,
     });
     scaling.scaleOnCpuUtilization("PaperclipCpuScaling", {
+      // CDK derives the policy name from the construct path, which embeds the
+      // STACK's construct id. PolicyName is immutable, so the isol8 -> lightbulb
+      // rename would replace the policy -- and Application Auto Scaling allows
+      // only one target-tracking policy per metric, so the replacement fails
+      // before the old one is removed. Pinned to the deployed names.
+      policyName:
+        env === "prod"
+          ? "prodisol8prodpaperclipPaperclipServiceTaskCountTargetPaperclipCpuScaling1B986E45"
+          : "devisol8devpaperclipPaperclipServiceTaskCountTargetPaperclipCpuScalingD11C66AD",
       targetUtilizationPercent: 70,
       scaleInCooldown: cdk.Duration.minutes(5),
       scaleOutCooldown: cdk.Duration.minutes(2),

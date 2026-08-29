@@ -5,8 +5,11 @@ import * as cdk from "aws-cdk-lib";
 import { ShellStep } from "aws-cdk-lib/pipelines";
 import {
   AwsCredentials,
+  AwsCredentialsProvider,
   GitHubWorkflow,
   GitHubActionStep,
+  JobPermission,
+  JobStep,
   JsonPatch,
   Runner,
   StackCapabilities,
@@ -57,6 +60,45 @@ function expressionRunner(runsOn: string): Runner {
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
+const GITHUB_ACTIONS_ROLE_ARN = "arn:aws:iam::877352799272:role/isol8-dev-github-actions";
+
+// CDK bootstrap v32 rewrote the trust policy on all four `cdk-hnb659fds-*`
+// roles to add `"Condition": {"Null": {"sts:ExternalId": "true"}}` — assume is
+// permitted ONLY when no ExternalId is supplied. cdk-pipelines-github hardcodes
+// `roleExternalId: 'Pipeline'` on its "Assume CDK Deploy Role" step
+// (lib/aws-credentials.js, unchanged since the package's first release), so the
+// moment this account was re-bootstrapped every deploy AND asset job in BOTH
+// environments failed at that step with AccessDenied.
+//
+// `AwsCredentialsProvider` is the package's own public extension point: an
+// exported abstract class whose two methods are the only thing the pipeline
+// ever calls on the provider (pipeline.js:294,401,444,563 — no instanceof, no
+// property reads). So the external id is dropped by delegating to the stock
+// OIDC provider and stripping the one `with:` key it sets.
+//
+// Deliberately NOT a set of `JsonPatch.remove` operations: there is one such
+// step per deploy/asset job (49 on this commit) and the RFC 6902 paths would be
+// positional step indexes inside job names that churn whenever a stack or asset
+// is added — the same convergence and "job no longer exists" fragility the
+// cdk.out patches below have to work around.
+class NoExternalIdCredentials extends AwsCredentialsProvider {
+  private readonly inner = AwsCredentials.fromOpenIdConnect({
+    gitHubActionRoleArn: GITHUB_ACTIONS_ROLE_ARN,
+  });
+
+  public jobPermission(): JobPermission {
+    return this.inner.jobPermission();
+  }
+
+  public credentialSteps(region: string, assumeRoleArn?: string): JobStep[] {
+    return this.inner.credentialSteps(region, assumeRoleArn).map((step) => {
+      if (!step.with || !("role-external-id" in step.with)) return step;
+      const { "role-external-id": _dropped, ...rest } = step.with;
+      return { ...step, with: rest };
+    });
+  }
+}
+
 const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
 const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
 const CDKOUT_OIDC_STEP = {
@@ -66,7 +108,7 @@ const CDKOUT_OIDC_STEP = {
     "aws-region": "us-west-2",
     "role-duration-seconds": 1800,
     "role-skip-session-tagging": true,
-    "role-to-assume": "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
+    "role-to-assume": GITHUB_ACTIONS_ROLE_ARN,
   },
 };
 
@@ -117,9 +159,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),
-  awsCreds: AwsCredentials.fromOpenIdConnect({
-    gitHubActionRoleArn: "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
-  }),
+  awsCreds: new NoExternalIdCredentials(),
   workflowPath: "../../.github/workflows/deploy.yml",
   // Pipeline runner is driven by the `DEPLOY_RUNNER` repo Actions variable so
   // hosted <-> self-hosted flips from the GitHub UI (or

@@ -4,10 +4,10 @@ Unlike ``oauth_app_store`` (per-owner BYO/DCR clients), these are ISOL8-owned
 clients shared by every owner — e.g. the reviewed Meta app that Instagram
 connects run through. Stored at::
 
-    isol8/<env>/integrations/platform-oauth/<name>
+    lightbulb/<env>/integrations/platform-oauth/<name>
 
 deliberately under the ``integrations/`` prefix so the existing task-role grant
-(``isol8/<env>/integrations/*`` — see service-stack.ts) covers it with no IAM
+(``lightbulb/<env>/integrations/*`` — see service-stack.ts) covers it with no IAM
 change. No collision with per-owner secrets is possible: owner segments are
 Clerk ids (``user_…``/``org_…``), never the literal ``platform-oauth``.
 
@@ -34,7 +34,7 @@ _cache: dict[str, tuple[float, dict]] = {}
 
 def _secret_name(name: str) -> str:
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/integrations/platform-oauth/{name}"
+    return f"lightbulb/{env}/integrations/platform-oauth/{name}"
 
 
 def _client():

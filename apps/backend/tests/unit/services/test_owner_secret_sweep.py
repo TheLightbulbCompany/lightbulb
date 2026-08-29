@@ -25,16 +25,16 @@ def test_prefixes_cover_both_credential_roots():
         prefixes = owner_secret_sweep.owner_secret_prefixes("user_1")
     # BYOK LLM keys and integrations/OAuth apps live under different roots;
     # missing either leaves real credential material behind.
-    assert "isol8/dev/user-keys/user_1/" in prefixes
-    assert "isol8/dev/integrations/user_1/" in prefixes
+    assert "lightbulb/dev/user-keys/user_1/" in prefixes
+    assert "lightbulb/dev/integrations/user_1/" in prefixes
 
 
 @pytest.mark.asyncio
 async def test_deletes_every_owner_secret_forcefully():
     names = [
-        "isol8/dev/user-keys/user_1/anthropic",
-        "isol8/dev/integrations/user_1/slack",
-        "isol8/dev/integrations/user_1/oauth-app/github",
+        "lightbulb/dev/user-keys/user_1/anthropic",
+        "lightbulb/dev/integrations/user_1/slack",
+        "lightbulb/dev/integrations/user_1/oauth-app/github",
     ]
     sm = _sm_with(names)
     with (
@@ -62,8 +62,8 @@ async def test_a_longer_owner_id_is_never_swept_by_a_shorter_one():
     sm = MagicMock()
     sm.list_secrets.side_effect = lambda **kw: {
         "SecretList": [
-            {"Name": "isol8/dev/user-keys/u_1/anthropic"},
-            {"Name": "isol8/dev/user-keys/u_10/anthropic"},
+            {"Name": "lightbulb/dev/user-keys/u_1/anthropic"},
+            {"Name": "lightbulb/dev/user-keys/u_10/anthropic"},
         ]
     }
     with (
@@ -72,12 +72,12 @@ async def test_a_longer_owner_id_is_never_swept_by_a_shorter_one():
     ):
         deleted = await owner_secret_sweep.delete_owner_secrets("u_1")
 
-    assert deleted == ["isol8/dev/user-keys/u_1/anthropic"]
+    assert deleted == ["lightbulb/dev/user-keys/u_1/anthropic"]
 
 
 @pytest.mark.asyncio
 async def test_one_failing_secret_does_not_strand_the_rest():
-    names = ["isol8/dev/user-keys/user_1/a", "isol8/dev/user-keys/user_1/b"]
+    names = ["lightbulb/dev/user-keys/user_1/a", "lightbulb/dev/user-keys/user_1/b"]
     sm = _sm_with(names)
     sm.delete_secret.side_effect = [RuntimeError("boom"), None]
     with (
@@ -87,17 +87,17 @@ async def test_one_failing_secret_does_not_strand_the_rest():
         deleted = await owner_secret_sweep.delete_owner_secrets("user_1")
 
     # The second still went; the report undercounts rather than lying.
-    assert deleted == ["isol8/dev/user-keys/user_1/b"]
+    assert deleted == ["lightbulb/dev/user-keys/user_1/b"]
 
 
 @pytest.mark.asyncio
 async def test_listing_is_read_only():
-    sm = _sm_with(["isol8/dev/user-keys/user_1/anthropic"])
+    sm = _sm_with(["lightbulb/dev/user-keys/user_1/anthropic"])
     with (
         patch.object(owner_secret_sweep.settings, "ENVIRONMENT", "dev"),
         patch.object(owner_secret_sweep.boto3, "client", return_value=sm),
     ):
         names = await owner_secret_sweep.list_owner_secret_names("user_1")
 
-    assert names == ["isol8/dev/user-keys/user_1/anthropic"]
+    assert names == ["lightbulb/dev/user-keys/user_1/anthropic"]
     sm.delete_secret.assert_not_called()

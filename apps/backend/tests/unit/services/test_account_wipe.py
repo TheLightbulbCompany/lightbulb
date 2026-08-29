@@ -179,12 +179,12 @@ def wipe_mocks():
     stripe_delete = AsyncMock(return_value=True)
     usage_delete = AsyncMock(return_value=3)
     clerk_delete = AsyncMock(return_value=None)
-    agent_keys_list = AsyncMock(return_value=["isol8/dev/paperclip-agent-keys/user_abc123/agent-1"])
+    agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
     # Credential leftovers. These reach Secrets Manager, DDB and OpenAI for
     # real, so all must be stubbed or the suite makes live AWS calls.
-    owner_secrets_list = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
-    owner_secrets_delete = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
+    owner_secrets_list = AsyncMock(return_value=["lightbulb/dev/user-keys/user_abc123/anthropic"])
+    owner_secrets_delete = AsyncMock(return_value=["lightbulb/dev/user-keys/user_abc123/anthropic"])
     integrations_list = AsyncMock(return_value=[{"owner_id": "user_abc123", "provider": "slack"}])
     integrations_delete = AsyncMock(return_value=["slack"])
     oauth_revoke = AsyncMock(return_value=None)
@@ -338,8 +338,8 @@ async def test_sweeps_per_agent_paperclip_key_secrets_before_clerk(wipe_mocks):
 async def test_preview_lists_per_agent_paperclip_key_secrets(wipe_mocks):
     """preview_wipe surfaces the per-agent key secrets by name-prefix count."""
     wipe_mocks.agent_keys_list.return_value = [
-        "isol8/dev/paperclip-agent-keys/user_123/a1",
-        "isol8/dev/paperclip-agent-keys/user_123/a2",
+        "lightbulb/dev/paperclip-agent-keys/user_123/a1",
+        "lightbulb/dev/paperclip-agent-keys/user_123/a2",
     ]
     report = await preview_wipe(OWNER_ID)
 

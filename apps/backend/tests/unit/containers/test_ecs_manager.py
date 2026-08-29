@@ -3458,7 +3458,7 @@ class TestProvisionUserContainerProviderChoice:
         from Secrets Manager via the task IAM role grant — no plaintext on
         disk."""
         mock_ecs_client.describe_services.return_value = {"services": []}
-        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:lightbulb/dev/user-keys/user_test_123/openai-AbCdE"
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
@@ -3501,7 +3501,7 @@ class TestProvisionUserContainerProviderChoice:
         """byo_provider=anthropic pivots the secrets[] env var name to
         ANTHROPIC_API_KEY (the env var the OpenClaw anthropic provider reads)."""
         mock_ecs_client.describe_services.return_value = {"services": []}
-        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/anthropic-XyZqr"
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:lightbulb/dev/user-keys/user_test_123/anthropic-XyZqr"
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
@@ -3768,7 +3768,7 @@ class TestProvisionUserContainerProviderChoice:
         old_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:5"
         new_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:6"
         mock_ecs_client.register_task_definition.return_value = {"taskDefinition": {"taskDefinitionArn": new_arn}}
-        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:lightbulb/dev/user-keys/user_test_123/openai-AbCdE"
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
@@ -4975,7 +4975,9 @@ class TestProvisionFailureClassification:
         # token machinery); the per-owner role shell mint is stubbed autouse.
         monkeypatch.setattr(
             "core.services.key_service.get_secret_arn",
-            AsyncMock(return_value="arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_1/openai-A"),
+            AsyncMock(
+                return_value="arn:aws:secretsmanager:us-east-1:123:secret:lightbulb/dev/user-keys/user_1/openai-A"
+            ),
         )
 
         with pytest.raises(EcsManagerError, match="Failed to create ECS service"):

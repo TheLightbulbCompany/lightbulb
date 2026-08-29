@@ -157,7 +157,7 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
             // stringLikeRegexp anchors with ^…$, so wrap with .* to assert the
             // ARN merely CONTAINS the integrations secret prefix.
             Resource: Match.stringLikeRegexp(
-              ".*secret:isol8/dev/integrations/\\*",
+              ".*secret:lightbulb/dev/integrations/\\*",
             ),
           }),
         ]),
@@ -200,7 +200,7 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
             Sid: "IntegrationSecretsRW",
             Effect: "Allow",
             Resource: Match.stringLikeRegexp(
-              ".*secret:isol8/prod/integrations/\\*",
+              ".*secret:lightbulb/prod/integrations/\\*",
             ),
           }),
         ]),

@@ -4,7 +4,7 @@ Manager.
 Replaces the DynamoDB credential vault. A retained integration credential — a
 paste-key token, or any OAuth credential whose custodian is the backend rather
 than a self-refreshing container CLI — lives at
-``isol8/<env>/integrations/<owner>/<provider>`` as a JSON blob, encrypted at rest
+``lightbulb/<env>/integrations/<owner>/<provider>`` as a JSON blob, encrypted at rest
 with the AWS-managed Secrets Manager key (same convention as the ``user-keys``
 BYOK secrets — no explicit ``KmsKeyId``). No credential ciphertext is stored in
 DynamoDB.
@@ -27,10 +27,10 @@ from core.secrets_manager import create_or_update_secret
 
 def _secret_name(owner_id: str, provider: str) -> str:
     """Secrets Manager name. Must match the resource scope granted to the
-    backend task role in ``service-stack.ts`` (``isol8/<env>/integrations/*``),
+    backend task role in ``service-stack.ts`` (``lightbulb/<env>/integrations/*``),
     mirroring the ``user-keys/*`` BYOK convention."""
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/integrations/{owner_id}/{provider}"
+    return f"lightbulb/{env}/integrations/{owner_id}/{provider}"
 
 
 def _client():

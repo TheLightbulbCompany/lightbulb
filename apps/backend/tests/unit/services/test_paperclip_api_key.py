@@ -359,7 +359,7 @@ async def test_list_owner_agent_key_secrets_scopes_to_owner_prefix(fake_sm):
             f"{px}a1": "k1",
             f"{px}a2": "k2",
             f"{other}a1": "decoy-other-owner",
-            "isol8/dev/user-keys/user_x/openai": "decoy-other-namespace",
+            "lightbulb/dev/user-keys/user_x/openai": "decoy-other-namespace",
         }
     )
 

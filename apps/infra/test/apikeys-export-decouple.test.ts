@@ -140,7 +140,7 @@ describe.each(["dev", "prod"] as const)(
       });
       const json = JSON.stringify(service.toJSON());
       expect(json).toContain(
-        `secret:isol8/${environment}/paperclip-agent-keys/*`,
+        `secret:lightbulb/${environment}/paperclip-agent-keys/*`,
       );
     });
 

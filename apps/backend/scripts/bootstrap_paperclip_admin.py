@@ -114,7 +114,7 @@ logger = logging.getLogger(__name__)
 # was written when isol8.co WAS the live row -- the rule is not "never change
 # this", it is "change it only in lockstep with the live row and the guard".
 ADMIN_EMAIL = "admin+paperclip@thelightbulb.company"
-SECRET_NAME_TEMPLATE = "isol8/{env}/paperclip_admin_credentials"
+SECRET_NAME_TEMPLATE = "lightbulb/{env}/paperclip_admin_credentials"
 
 
 def _public_host(env: str) -> str:

@@ -1,6 +1,6 @@
 """Per-owner OAuth-app config (client_id/secret) in AWS Secrets Manager.
 
-Stored at ``isol8/<env>/integrations/<owner>/oauth-app/<provider>`` — under the
+Stored at ``lightbulb/<env>/integrations/<owner>/oauth-app/<provider>`` — under the
 ``integrations/`` prefix the backend task role has READ-WRITE on
 (``service-stack.ts:453-455``). NOT ``oauth-apps/*`` (that wildcard is read-only
 and a write would AccessDenied).
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def _secret_name(owner_id: str, provider: str) -> str:
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/integrations/{owner_id}/oauth-app/{provider}"
+    return f"lightbulb/{env}/integrations/{owner_id}/oauth-app/{provider}"
 
 
 def _client():

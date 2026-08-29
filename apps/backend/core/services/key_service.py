@@ -1,7 +1,7 @@
 """Service for managing user-provided LLM API keys (BYOK).
 
 Only LLM provider keys (OpenAI, Anthropic) live here, stored solely in AWS
-Secrets Manager (``isol8/<env>/user-keys/<user>/<provider>``). The per-user ECS
+Secrets Manager (``lightbulb/<env>/user-keys/<user>/<provider>``). The per-user ECS
 task definition references the secret by ARN via ``secrets:[{name, valueFrom}]``.
 No DynamoDB copy is kept — the secret name is deterministic from (user,
 provider), and existence/ARN are read back with ``describe_secret``. Saving a
@@ -37,10 +37,10 @@ def _secret_name(user_id: str, provider: str) -> str:
     """Per-user, per-provider Secrets Manager name.
 
     Must match the resource scope granted to the per-user ECS task role in
-    ``service-stack.ts`` (``isol8/{env}/user-keys/*``).
+    ``service-stack.ts`` (``lightbulb/{env}/user-keys/*``).
     """
     env = settings.ENVIRONMENT or "dev"
-    return f"isol8/{env}/user-keys/{user_id}/{provider}"
+    return f"lightbulb/{env}/user-keys/{user_id}/{provider}"
 
 
 async def _validate_llm_key(provider: str, api_key: str) -> None:

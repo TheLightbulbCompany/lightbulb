@@ -75,18 +75,18 @@ export function CompanyAccountsSection({ canManage }: { canManage: boolean }) {
         <p className="text-sm text-[var(--err)]">Couldn&apos;t load your accounts. Refresh to try again.</p>
       )}
 
-      {!error && isLoading && <p className="text-sm text-[var(--mute)]">Loading…</p>}
+      {!error && isLoading && <p className="text-sm text-[var(--midnight-muted)]">Loading…</p>}
 
       {!error && !isLoading && (
         <>
-          <p className="text-sm text-[var(--mute)] mb-3">
+          <p className="text-sm text-[var(--midnight-muted)] mb-3">
             {data?.stripe_cli === "paired" ? "Stripe CLI: connected" : "Stripe CLI: not connected"}
           </p>
 
-          {note && <p className="text-sm text-[var(--mute)] mb-3">{note}</p>}
+          {note && <p className="text-sm text-[var(--midnight-muted)] mb-3">{note}</p>}
 
           {(data?.resources.length ?? 0) === 0 ? (
-            <p className="text-sm text-[var(--mute)]">
+            <p className="text-sm text-[var(--midnight-muted)]">
               No provider accounts yet. Ask your agents for what the business needs — analytics,
               hosting, email — and they will ask you to approve each one here.
             </p>
@@ -95,11 +95,11 @@ export function CompanyAccountsSection({ canManage }: { canManage: boolean }) {
               {data?.resources.map((r) => (
                 <li key={`${r.provider}/${r.resource_id}`} className="flex flex-wrap items-center gap-3 text-sm">
                   <span className="font-medium text-[var(--midnight)]">{r.provider}</span>
-                  <span className="text-[var(--mute)]">{r.service}</span>
-                  {r.resource_name && <span className="text-[var(--mute)]">{r.resource_name}</span>}
-                  <span className="text-[var(--mute)]">{r.status}</span>
+                  <span className="text-[var(--midnight-muted)]">{r.service}</span>
+                  {r.resource_name && <span className="text-[var(--midnight-muted)]">{r.resource_name}</span>}
+                  <span className="text-[var(--midnight-muted)]">{r.status}</span>
                   {/* Spec §3.4: state the level per resource. */}
-                  <span className="text-[var(--mute)]">
+                  <span className="text-[var(--midnight-muted)]">
                     {r.level === "company" ? "Company-level" : "Agent-level"}
                   </span>
                   <a

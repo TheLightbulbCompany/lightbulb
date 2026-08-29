@@ -300,11 +300,14 @@ request again, and do not treat it as connected — say it is still being set
 up.
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"issue_id":"'"$PAPERCLIP_TASK_ID"'","reason":"<one sentence on why>"}' \
   "$ISOL8_API_URL/api/v1/company/stripe/u/$ISOL8_OWNER_ID/request"
 ```
+
+The last line is the HTTP status — 200 filed/connected/no_company, 503
+unreachable (retry next turn), 502 rejected (tell the owner).
 
 If the call returns 503, the board was unreachable — say so to the owner and
 try again on your next turn; never work around it. A 502 is different: the

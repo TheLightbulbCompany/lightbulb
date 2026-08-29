@@ -1381,7 +1381,7 @@ Because `company_stripe_approval` imports `resolve_company_name` from the router
 
 In `apps/infra/openclaw/skills/isol8/SKILL.md`, after the "Your email" section, add:
 
-```markdown
+````markdown
 ## Your company's Stripe account
 
 Money for the business (selling a product, taking payments, paying for a
@@ -1401,7 +1401,7 @@ never a gate: keep working on everything that does not need money, and say
 in your reply that you asked. The owner keeps the account and 100% of the
 revenue; Lightbulb AI takes no fee. Never create the Stripe account in the
 browser yourself.
-```
+````
 
 Add `company_stripe` to the facts written by `core/services/owner_facts.py`: the value is `"connected"` when the billing row has `company_stripe_account_id` and `company_stripe_charges_enabled` is true, `"pending"` when the id is set but charges are not enabled, else `"none"`. Find the dict the module writes (search `"plan":`) and add the key beside `provider_choice`.
 

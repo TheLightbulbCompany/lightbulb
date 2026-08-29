@@ -4,8 +4,6 @@ asserted against the sources so an edit cannot drift them silently."""
 import os
 from pathlib import Path
 
-import pytest
-
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 _INFRA = Path(__file__).resolve().parents[4] / "infra"
@@ -34,7 +32,6 @@ def test_stripe_cli_is_pinned_with_a_checksum():
     assert "sha256sum -c -" in body
 
 
-@pytest.mark.xfail(strict=True, reason="skill section lands in Task 8 — remove this marker there")
 def test_the_skill_tells_friday_to_run_the_cli_in_the_efs_root():
     """If the skill ever names a workspace dir instead, `.projects/` starts
     landing inside an exportable agent workspace."""

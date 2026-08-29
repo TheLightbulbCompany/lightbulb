@@ -324,6 +324,125 @@ everything that does not need money. The owner keeps the account and 100% of
 the revenue; Lightbulb AI takes no fee. Never create the Stripe account in
 the browser yourself.
 
+## Setting up accounts for the company (Stripe Projects)
+
+When work needs a real service — analytics, hosting, a database, email sending
+— you do not sign up in a browser, and you never create the account in
+Lightbulb's name. The owner gets it on **their own Stripe identity**, through
+Stripe Projects: you run the CLI, the platform puts the owner's two decisions
+in front of them, and stores what comes back.
+
+Read `~/.openclaw/isol8-facts.json` first — never ask twice:
+
+- `provisioned: ["posthog/project (Acme Analytics)", …]` — the owner already
+  has these. Use them; never provision one of them again.
+- `stripe_cli: "paired"` — the CLI is connected here; skip to step 2.
+- `stripe_cli: "unpaired"` — start at step 1. The fact is derived from what has
+  landed, so it flips on your first successful `landed`, not on the login.
+
+**Always work in `/home/node/.openclaw`.** That is the owner's durable storage
+and where the CLI's `.projects/` belongs. Never run these commands inside a
+`workspace-*/` directory — `.projects/` would ride into a published marketplace
+agent.
+
+```bash
+cd /home/node/.openclaw
+stripe --version                  # if this fails, stop — see below
+stripe plugin install projects    # idempotent
+```
+
+If `stripe --version` fails, this container's image does not carry the Stripe
+CLI yet: tell the owner the platform image has not been promoted, and stop.
+Never install a Stripe CLI yourself.
+
+**Step 1 — connect the CLI (once).**
+
+```bash
+stripe login --non-interactive    # prints browser_url, verification_code, next_step
+curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"browser_url":"<browser_url>","verification_code":"<verification_code>","issue_id":"'"$PAPERCLIP_TASK_ID"'"}' \
+  "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/pairing"
+```
+
+The response carries `approval_id`: a "Connect Stripe CLI" card is now in the
+owner's Inbox with that URL and code. Wait for them to approve it, then finish
+the login with the command `stripe login` printed as its `next_step`:
+
+```bash
+stripe login --complete '<the url from next_step>'
+```
+
+Read the outcome from Paperclip — `GET /api/approvals/<approval_id>`, or the
+approval wake — never by polling the backend; these routes file cards, they do
+not report on them. Say in your reply that you asked, and keep working on
+everything that does not need the account. This is never a gate.
+
+**Step 2 — get the owner's consent for the provider.** Once per
+provider+service, before you add anything. Read the provider's real terms and
+real price first: a card with a guessed price is worse than no card.
+
+```bash
+curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"posthog","service":"project","terms_url":"https://posthog.com/terms","pricing":"<what it costs, plainly>","issue_id":"'"$PAPERCLIP_TASK_ID"'"}' \
+  "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/consent"
+```
+
+`provider` and `service` are lowercase slugs, and must be the same pair you use
+in step 3. Wait for that card to be approved before step 3. `--accept-tos` is
+you saying the OWNER accepted — never pass it before their card is approved.
+
+**Step 3 — add the service, then report it.**
+
+```bash
+stripe projects add --help                        # read this first; flags move between CLI versions
+[ -d .projects ] || stripe projects init --yes    # once per company
+stripe projects add posthog/project --accept-tos
+stripe projects env                               # whatever prints the credentials — check --help
+```
+
+Then POST exactly the `NAME=value` pairs the CLI printed:
+
+```bash
+curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"posthog","service":"project","resource_id":"<id>","resource_name":"<name>",
+       "env":{"POSTHOG_API_KEY":"<value>"},"dashboard_url":"https://us.posthog.com/project/123"}' \
+  "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/landed"
+```
+
+The platform keeps the credential and injects it into your environment — after
+the next container restart if not immediately. From then on use
+`$POSTHOG_API_KEY`, never the value. Register a work product pointing at the new
+resource so the company has a receipt for what you created.
+
+The last line of each call is the HTTP status:
+
+- **200** — read `status` in the body: `filed` means the card is in the owner's
+  Inbox (say that you asked); `no_company` means the owner has no board yet, so
+  tell them plainly and try again on a later turn. `landed` returns the stored
+  pointer — names only, never values.
+- **401** — the hook token is wrong. Stop; do not retry.
+- **402** — the owner is not on a paid plan, and provisioning needs one. Tell
+  them, and do not retry.
+- **422** — your body is malformed. Fix the field it names; the same body will
+  fail again.
+- **503** — the board was unreachable. Say so and retry on your next turn.
+- **502** — the board REFUSED. Retrying changes nothing: tell the owner what it
+  said, verbatim, and move on.
+
+Never:
+
+- **Never** paste a credential value into chat, a Paperclip issue, a comment, a
+  work product, or a file. The only place a value ever goes is the `landed`
+  body.
+- **Never** run `stripe projects billing add` — the owner arranges their own
+  billing, on their own Stripe.
+- **Never** run `stripe projects remove` — it destroys something the owner
+  owns; ask them to do it in the provider's own dashboard.
+- **Never** provision a provider/service that is already in `provisioned`.
+
 ## Skills and self-improvement
 
 - The owner browses, enables, and installs skills in the **Skills** tab

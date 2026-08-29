@@ -19,15 +19,15 @@
 }
 .lc-stat {
   border: 1px solid var(--edge);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   padding: 18px 20px;
   background: var(--cream-deeper);
   text-align: left;
 }
 .lc-stat-value {
   font-family: var(--font-serif), Georgia, serif;
-  font-size: 30px;
-  line-height: 1.1;
+  font-size: var(--text-title);
+  line-height: 1.15;
   color: var(--midnight);
   font-variant-numeric: tabular-nums;
 }
@@ -35,36 +35,47 @@
 
 .lc-card {
   border: 1px solid var(--edge);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   padding: 22px 24px;
   background: var(--cream-deeper);
   color: var(--midnight);
 }
 .lc-card--lit { border-color: var(--brass); }
 
-.lc-table { width: 100%; border-collapse: collapse; font-size: 15px; color: var(--midnight); }
-.lc-table th { text-align: left; padding: 0 12px 10px 0; font-weight: 500; }
+.lc-table { width: 100%; border-collapse: collapse; font-size: var(--text-ui); color: var(--midnight); }
+/* The product's small-caps column head (the `label-caps` utility, written out:
+   this stylesheet is plain CSS and cannot @apply a Tailwind utility). */
+.lc-table th {
+  text-align: left;
+  padding: 0 12px 10px 0;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--midnight-label);
+}
 .lc-table td { padding: 10px 12px 10px 0; border-top: 1px solid var(--edge); font-variant-numeric: tabular-nums; }
 .lc-table .num { text-align: right; }
 
 .lc-field { display: block; margin-top: 16px; }
-.lc-field > span { display: block; font-size: 14px; font-weight: 600; color: var(--midnight); margin-bottom: 6px; }
+.lc-field > span { display: block; font-size: var(--text-ui); font-weight: 600; color: var(--midnight); margin-bottom: 6px; }
 .lc-field input {
   width: 100%;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--edge);
   background: var(--cream);
   color: var(--midnight);
-  font-size: 15px;
+  font-size: var(--text-ui);
 }
-.lc-field input:focus { outline: none; border-color: var(--brass); }
-.lc-field input[data-mono] { font-family: var(--font-mono), ui-monospace, monospace; font-size: 13px; }
+/* No `:focus` recipe here — the one focus ring is the global `:focus-visible`
+   rule in globals.css. Brass on cream is 2.76:1 and fails the 3:1 bar anyway. */
+.lc-field input[data-mono] { font-family: var(--font-mono), ui-monospace, monospace; font-size: var(--text-ui); }
 
-.lc-check { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; color: var(--midnight); }
-.lc-alert { margin-top: 12px; font-size: 14px; color: var(--err); }
-.lc-fine { font-size: 14px; color: var(--midnight-muted); }
-.lc-steps { margin: 8px 0 0 18px; font-size: 13px; color: var(--midnight-muted); }
+.lc-check { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: var(--text-ui); color: var(--midnight); }
+.lc-alert { margin-top: 12px; font-size: var(--text-ui); color: var(--err); }
+.lc-fine { font-size: var(--text-caption); color: var(--midnight-muted); }
+.lc-steps { margin: 8px 0 0 18px; font-size: var(--text-ui); color: var(--midnight-muted); }
 .lc-steps li + li { margin-top: 4px; }
 .lc-row { display: flex; gap: 8px; margin-top: 8px; }
 .lc-row input { flex: 1; min-width: 0; }

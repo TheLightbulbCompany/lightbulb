@@ -43,6 +43,7 @@ import type {
   RoutineVariable,
   RoutineVariableValue,
 } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // The /routines BFF is a pure passthrough of upstream Paperclip's
 // `RoutineListItem` (paperclip/packages/shared/src/types/routine.ts), so a
@@ -179,7 +180,7 @@ function RoutineToggle({
         className={cn(
           "relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border transition-colors",
           "disabled:cursor-not-allowed disabled:opacity-50",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)] focus-visible:ring-offset-1",
+          "",
         )}
         style={{
           backgroundColor: enabled ? "var(--midnight)" : "var(--cream-deep)",
@@ -710,11 +711,11 @@ function RunRoutineDialog({
       <div className="flex flex-col gap-3">
         {err && (
           <div
-            className="text-[var(--err)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
-              background: "color-mix(in srgb, var(--err) 6%, transparent)",
+                "1px solid var(--err)",
+              background: "var(--cream)",
             }}
           >
             {err}
@@ -768,7 +769,7 @@ function RunRoutineDialog({
                   value={values[v.name] ?? ""}
                   onChange={(e) => setVar(v.name, e.target.value)}
                   rows={3}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
                 />
               </label>
             );
@@ -781,7 +782,7 @@ function RunRoutineDialog({
                 type={v.type === "number" ? "number" : "text"}
                 value={values[v.name] ?? ""}
                 onChange={(e) => setVar(v.name, e.target.value)}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
               />
             </label>
           );
@@ -804,16 +805,20 @@ function SortMenu({
 }) {
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          title="Sort"
-          aria-label="Sort automations"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
-        >
-          <ArrowUpDown className="h-3.5 w-3.5" />
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label="Sort automations"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
+            >
+              <ArrowUpDown size={16} />
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Sort</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="w-44 p-1">
         {SORT_OPTIONS.map(([value, label]) => (
           <button
@@ -821,7 +826,7 @@ function SortMenu({
             type="button"
             onClick={() => onSelect(value)}
             className={cn(
-              "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
+              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-ui transition-colors",
               value === field
                 ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                 : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
@@ -833,7 +838,7 @@ function SortMenu({
                 {dir === "asc" ? "↑" : "↓"}
               </span>
             ) : (
-              <Check className="h-3.5 w-3.5 opacity-0" aria-hidden="true" />
+              <Check size={16} className="opacity-0" aria-hidden="true" />
             )}
           </button>
         ))}
@@ -1025,7 +1030,7 @@ function CreateRoutineDialog({
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
               />
             </label>
             {/* Agent picker replaces the old raw "Agent ID" text input — the
@@ -1040,7 +1045,7 @@ function CreateRoutineDialog({
                   selectedAgentId={agentId}
                   onChange={selectAssignee}
                   variant="inline"
-                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                  className="border border-[var(--edge)] rounded-sm px-3 py-2 bg-[var(--cream)]"
                 />
               </div>
             </div>
@@ -1053,7 +1058,7 @@ function CreateRoutineDialog({
                   onChange={setReviewerAgentId}
                   variant="inline"
                   noun="reviewer"
-                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                  className="border border-[var(--edge)] rounded-sm px-3 py-2 bg-[var(--cream)]"
                 />
               </div>
             </div>
@@ -1130,7 +1135,7 @@ function CreateRoutineDialog({
                   max={86400}
                   value={replayWindowSec}
                   onChange={(e) => setReplayWindowSec(e.target.value)}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
                 />
               </label>
             )}
@@ -1145,19 +1150,19 @@ function CreateRoutineDialog({
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
               rows={3}
             />
           </label>
         )}
         {shownErr && (
           <div
-            className="text-[var(--err)] text-sm rounded px-3 py-2"
+            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
             style={{
               border:
-                "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
+                "1px solid var(--err)",
               background:
-                "color-mix(in srgb, var(--err) 6%, transparent)",
+                "var(--cream)",
             }}
           >
             {shownErr}

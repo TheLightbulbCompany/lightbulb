@@ -10,7 +10,7 @@
 //   - MarkdownBody          -> MarkdownView (shared editorial renderer)
 //   - shadcn Button         -> EditorialButton (default/cta -> primary,
 //                              outline -> secondary, ghost -> ghost)
-//   - Tooltip on the header  dropped; created-by / date render bare
+//   - Tooltip on the header dropped; created-by / date render bare
 //   - `sky` selection accent recolored to --midnight / --cream-deep
 //   - emerald / rose / amber status hues kept (they read fine on cream)
 //   - semantic shadcn tokens (foreground/background/border/muted) mapped to
@@ -190,21 +190,21 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
     case "accepted":
     case "answered":
       return {
-        shell: "border-ok/70 bg-transparent",
+        shell: "border-ok bg-transparent",
         badge:
-          "border-ok/60 bg-ok/10 text-ok",
+          "border-ok bg-cream text-ok",
       };
     case "rejected":
     case "cancelled":
       return {
-        shell: "border-err/70 bg-transparent",
-        badge: "border-err/60 bg-err/10 text-err",
+        shell: "border-err bg-transparent",
+        badge: "border-err bg-cream text-err",
       };
     case "failed":
     case "expired":
       return {
-        shell: "border-warn/70 bg-transparent",
-        badge: "border-warn/60 bg-warn/10 text-warn",
+        shell: "border-warn bg-transparent",
+        badge: "border-warn bg-cream text-warn",
       };
     default:
       // Pending — recolored from upstream `sky` to the editorial forest accent.
@@ -228,7 +228,7 @@ function TaskField({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
+        "inline-flex items-center rounded-sm border px-2 py-0.5 label-caps",
         tone === "default"
           ? "border-[var(--edge)] bg-transparent text-[var(--midnight)]"
           : "border-[var(--edge)] bg-transparent text-[var(--midnight-muted)]",
@@ -328,7 +328,7 @@ function TaskTreeNode({
                   </div>
                 </div>
                 {depth > 0 ? (
-                  <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--midnight-muted)]">
+                  <div className="mt-0.5 label-caps text-[var(--midnight-muted)]">
                     Child task
                   </div>
                 ) : null}
@@ -346,13 +346,13 @@ function TaskTreeNode({
               href={createdTaskUrl}
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, createdTaskUrl)}
-              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-ok/50 bg-ok/10 px-2.5 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/15"
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-ok bg-cream px-2.5 py-1 text-caption font-medium text-ok transition-colors hover:bg-cream-deep"
             >
               {createdTask.identifier ?? createdTask.issueId.slice(0, 8)}
-              <ChevronRight className="h-3 w-3" />
+              <ChevronRight size={12} strokeWidth={1.75} />
             </Link>
           ) : isSkipped ? (
-            <span className="inline-flex shrink-0 items-center rounded-sm border border-warn/60 bg-warn/10 px-2.5 py-1 text-[11px] font-medium text-warn">
+            <span className="inline-flex shrink-0 items-center rounded-sm border border-warn bg-cream px-2.5 py-1 text-caption font-medium text-warn">
               Skipped
             </span>
           ) : null}
@@ -376,8 +376,8 @@ function TaskTreeNode({
         ) : null}
 
         {hiddenChildCount > 0 ? (
-          <div className="mt-2 flex items-center gap-2 rounded-sm border border-warn/60 bg-warn/10 px-3 py-2 text-xs text-warn">
-            <GitBranch className="h-3.5 w-3.5 shrink-0" />
+          <div className="mt-2 flex items-center gap-2 rounded-lg border border-warn bg-cream px-3 py-2 text-ui text-warn">
+            <GitBranch size={16} className="shrink-0" />
             <span>
               {hiddenChildCount === 1
                 ? "1 follow-on task hidden in preview"
@@ -549,8 +549,8 @@ function SuggestTasksCard({
       </div>
 
       {interaction.status === "accepted" ? (
-        <div className="rounded-sm border border-ok/60 bg-ok/10 px-4 py-3 text-sm text-ok">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ok">
+        <div className="rounded-lg border border-ok bg-cream px-3 py-2 text-ui text-ok">
+          <div className="label-caps text-ok">
             Resolution summary
           </div>
           <p className="mt-1 leading-6">
@@ -562,8 +562,8 @@ function SuggestTasksCard({
       ) : null}
 
       {interaction.status === "rejected" ? (
-        <div className="rounded-sm border border-err/60 bg-err/10 px-4 py-3 text-sm text-err">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-err">
+        <div className="rounded-lg border border-err bg-cream px-3 py-2 text-ui text-err">
+          <div className="label-caps text-err">
             Rejection reason
           </div>
           <p className={cn(
@@ -601,7 +601,7 @@ function SuggestTasksCard({
               >
                 {working === "accept" ? (
                   <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    <Loader2 size={16} className="mr-2 animate-spin" />
                     Accepting...
                   </>
                 ) : (
@@ -654,7 +654,7 @@ function SuggestTasksCard({
                 >
                   {working === "reject" ? (
                     <>
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      <Loader2 size={16} className="mr-2 animate-spin" />
                       Saving...
                     </>
                   ) : (
@@ -691,7 +691,7 @@ function QuestionOptionButton({
       role={selectionMode === "single" ? "radio" : "checkbox"}
       aria-checked={selected}
       className={cn(
-        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-[var(--midnight)] focus-visible:ring-2 focus-visible:ring-[var(--midnight)]",
+        "w-full rounded-sm border px-4 py-3 text-left transition-colors",
         selected
           ? "border-[var(--midnight)] bg-[var(--cream-deeper)] text-[var(--midnight)]"
           : "border-[var(--edge)] bg-transparent text-[var(--midnight)] hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)]",
@@ -853,8 +853,8 @@ function AskUserQuestionsCard({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
-        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-[var(--midnight-soft)]">
-          <MessageSquareQuote className="h-3 w-3" />
+        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] px-2.5 py-1 label-caps text-[var(--midnight-soft)]">
+          <MessageSquareQuote size={12} strokeWidth={1.75} />
           Ask user questions
         </span>
         <span>
@@ -869,11 +869,11 @@ function AskUserQuestionsCard({
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
+              className="rounded-xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--midnight-muted)]">
+                  <div className="label-caps text-[var(--midnight-muted)]">
                     Question {index + 1}
                   </div>
                   <div
@@ -919,7 +919,7 @@ function AskUserQuestionsCard({
                   id={`${interaction.id}-${question.id}-other`}
                   aria-expanded={otherActiveQuestions[question.id] === true}
                   className={cn(
-                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)]",
+                    "text-sm font-medium underline underline-offset-4 transition-colors",
                     otherActiveQuestions[question.id]
                       ? "text-[var(--midnight)] hover:text-[var(--midnight)]"
                       : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
@@ -951,7 +951,7 @@ function AskUserQuestionsCard({
             </div>
           ))}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
             <div className="text-sm text-[var(--midnight-muted)]">
               Submit once after you finish the full form.
             </div>
@@ -966,7 +966,7 @@ function AskUserQuestionsCard({
                 >
                   {cancelling ? (
                     <>
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      <Loader2 size={16} className="mr-2 animate-spin" />
                       Cancelling...
                     </>
                   ) : (
@@ -983,7 +983,7 @@ function AskUserQuestionsCard({
               >
                 {working ? (
                   <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    <Loader2 size={16} className="mr-2 animate-spin" />
                     Submitting...
                   </>
                 ) : (
@@ -994,7 +994,7 @@ function AskUserQuestionsCard({
           </div>
         </div>
       ) : interaction.status === "cancelled" ? (
-        <div className="rounded-2xl border border-err/60 bg-err/10 p-4 text-sm leading-6 text-err">
+        <div className="rounded-lg border border-err bg-cream px-3 py-2 text-ui leading-6 text-err">
           <div className="font-semibold">Question cancelled</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
@@ -1012,7 +1012,7 @@ function AskUserQuestionsCard({
             return (
               <div
                 key={question.id}
-                className="rounded-2xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
+                className="rounded-xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
               >
                 <div className="text-sm font-semibold text-[var(--midnight)]">
                   {question.prompt}
@@ -1031,8 +1031,8 @@ function AskUserQuestionsCard({
           })}
 
           {interaction.result?.summaryMarkdown ? (
-            <div className="rounded-2xl border border-ok/60 bg-ok/10 p-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ok">
+            <div className="rounded-lg border border-ok bg-cream px-3 py-2">
+              <div className="mb-2 label-caps text-ok">
                 Submitted summary
               </div>
               <MarkdownView>{interaction.result.summaryMarkdown}</MarkdownView>
@@ -1071,7 +1071,7 @@ function RequestConfirmationTargetChip({
   // renders `id="document-<key>"`. This is what fixes the previously dead chip.
   const isInPageAnchor = Boolean(href && href.startsWith("#"));
   const className = cn(
-    "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
+    "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 label-caps",
     tone === "default"
       ? "border-[var(--edge)] bg-transparent text-[var(--midnight)]"
       : "border-[var(--edge)] bg-transparent text-[var(--midnight-muted)]",
@@ -1080,7 +1080,7 @@ function RequestConfirmationTargetChip({
   );
   const content = (
     <>
-      <GitBranch className="h-3 w-3 shrink-0" />
+      <GitBranch size={12} strokeWidth={1.75} className="shrink-0" />
       <span className="min-w-0 truncate">{requestConfirmationTargetLabel(target)}</span>
     </>
   );
@@ -1121,7 +1121,7 @@ function ConfirmationDeclinedBlock({
         <RequestConfirmationTargetChip issueId={issueId} target={target} />
       </div>
       {result?.reason ? (
-        <blockquote className="rounded-sm border-l-2 border-err/70 bg-err/10 px-3 py-2 text-sm leading-6 text-err">
+        <blockquote className="rounded-lg border-l-2 border-err bg-cream px-3 py-2 text-ui leading-6 text-err">
           {result.reason}
         </blockquote>
       ) : null}
@@ -1143,8 +1143,8 @@ function ConfirmationExpiredBlock({
   const expiredByComment = outcome === "superseded_by_comment";
   const expiredByTargetChange = outcome === "stale_target";
   return (
-    <div className="space-y-3 rounded-sm border border-warn/60 bg-warn/10 px-4 py-3 text-sm text-warn">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-warn">
+    <div className="space-y-3 rounded-lg border border-warn bg-cream px-3 py-2 text-ui text-warn">
+      <div className="label-caps text-warn">
         {expiredByComment ? "Expired by comment" : "Expired by target change"}
       </div>
       <p className="leading-6">
@@ -1155,7 +1155,7 @@ function ConfirmationExpiredBlock({
       {expiredByComment && result?.commentId ? (
         <a
           href={`#comment-${result.commentId}`}
-          className="inline-flex h-7 items-center rounded-sm px-2 text-xs font-medium text-warn transition-colors hover:bg-warn/15"
+          className="border border-warn inline-flex h-7 items-center rounded-sm px-2 text-xs font-medium text-warn transition-colors hover:bg-cream-deep"
         >
           Jump to comment
         </a>
@@ -1168,7 +1168,7 @@ function ConfirmationExpiredBlock({
             tone="subtle"
           />
           {staleTarget && target ? (
-            <ChevronRight className="h-3.5 w-3.5 text-warn" />
+            <ChevronRight size={16} className="text-warn" />
           ) : null}
           <RequestConfirmationTargetChip issueId={issueId} target={target} />
         </div>
@@ -1327,7 +1327,7 @@ function RequestConfirmationCard({
             >
               {working === "accept" ? (
                 <>
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  <Loader2 size={16} className="mr-2 animate-spin" />
                   Confirming...
                 </>
               ) : (
@@ -1391,7 +1391,7 @@ function RequestConfirmationCard({
                 >
                   {working === "reject" ? (
                     <>
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      <Loader2 size={16} className="mr-2 animate-spin" />
                       Saving...
                     </>
                   ) : (
@@ -1438,7 +1438,7 @@ function RequestCheckboxConfirmationResolution({
     const hiddenCount = selectedLabels.length - CHECKBOX_SUMMARY_LABEL_LIMIT;
     const hasHiddenLabels = hiddenCount > 0;
     const chipClassName =
-      "inline-flex items-center rounded-sm border border-[var(--edge)] bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--midnight-muted)]";
+      "inline-flex items-center rounded-sm border border-[var(--edge)] bg-transparent px-2 py-0.5 label-caps text-[var(--midnight-muted)]";
 
     return (
       <div className="space-y-3">
@@ -1461,7 +1461,7 @@ function RequestCheckboxConfirmationResolution({
                 onClick={() => setExpanded((current) => !current)}
                 className={cn(
                   chipClassName,
-                  "cursor-pointer transition-colors hover:border-[var(--edge)] hover:text-[var(--midnight)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--midnight)] focus-visible:ring-offset-1",
+                  "cursor-pointer transition-colors hover:border-[var(--edge)] hover:text-[var(--midnight)]",
                 )}
                 aria-expanded={expanded}
               >
@@ -1765,7 +1765,7 @@ function RequestCheckboxConfirmationCard({
           >
             {working === "accept" ? (
               <>
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                <Loader2 size={16} className="mr-2 animate-spin" />
                 Confirming...
               </>
             ) : (
@@ -1829,7 +1829,7 @@ function RequestCheckboxConfirmationCard({
               >
                 {working === "reject" ? (
                   <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    <Loader2 size={16} className="mr-2 animate-spin" />
                     Saving...
                   </>
                 ) : (
@@ -1885,16 +1885,16 @@ export function IssueThreadInteractionCard({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
+            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 label-caps", styles.badge)}>
               <StatusGlyph status={interaction.status} className="h-3.5 w-3.5" />
               {interactionKindLabel(interaction.kind)}
-              <span className="text-current/60">/</span>
+              <span className="text-[var(--midnight-faint)]">/</span>
               {statusLabel(interaction.status)}
             </span>
             {interaction.continuationPolicy === "wake_assignee"
               || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
-              <span className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--midnight-soft)]">
-                <ListChecks className="h-3.5 w-3.5" />
+              <span className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-transparent px-2.5 py-1 label-caps text-[var(--midnight-soft)]">
+                <ListChecks size={16} />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
                   ? "Wakes on confirm"
                   : "Wakes assignee"}
@@ -1902,7 +1902,7 @@ export function IssueThreadInteractionCard({
             ) : null}
           </div>
 
-          <div className="mt-3 text-lg font-bold text-[var(--midnight)]">
+          <div className="mt-3 text-title tabular-nums text-[var(--midnight)]">
             {interaction.title
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"

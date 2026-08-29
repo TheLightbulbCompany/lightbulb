@@ -34,11 +34,11 @@ export function PageSkeleton({
       {/* Header bar: title placeholder + trailing action placeholder */}
       <div className="flex items-center justify-between">
         <div
-          className="h-6 w-40 rounded"
+          className="h-6 w-40 rounded-sm"
           style={{ backgroundColor: "var(--cream-deeper)" }}
         />
         <div
-          className="h-6 w-24 rounded"
+          className="h-6 w-24 rounded-sm"
           style={{ backgroundColor: "var(--cream-deep)" }}
         />
       </div>
@@ -59,17 +59,17 @@ export function PageSkeleton({
             />
             {/* identifier-pill placeholder */}
             <div
-              className="h-3 w-12 shrink-0 rounded"
+              className="h-3 w-12 shrink-0 rounded-sm"
               style={{ backgroundColor: "var(--cream-deep)" }}
             />
             {/* title bar — flex-grow */}
             <div
-              className="h-3 flex-1 rounded"
+              className="h-3 flex-1 rounded-sm"
               style={{ backgroundColor: "var(--cream-deeper)" }}
             />
             {/* trailing time placeholder */}
             <div
-              className="h-3 w-10 shrink-0 rounded"
+              className="h-3 w-10 shrink-0 rounded-sm"
               style={{ backgroundColor: "var(--cream-deep)" }}
             />
           </div>

@@ -80,6 +80,7 @@ import type {
   RoutineVariableType,
   RoutineVariableValue,
 } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // Retheme-mapped onto the editorial palette (mirrors GoalStatusIcon):
 //   active   -> --midnight  (running / live)
@@ -183,7 +184,7 @@ function triggerDetail(t: RoutineTriggerSummary): string | null {
 }
 
 const INPUT_CLASS =
-  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--midnight)]";
+  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]";
 
 // Inline error banner shared by the edit dialogs so a 402 gate / 5xx surfaces
 // ON the dialog the user is looking at, not just the main-column banner it
@@ -193,11 +194,11 @@ function DialogError({ message }: { message: string | null }) {
   return (
     <div
       role="alert"
-      className="text-sm rounded px-3 py-2"
+      className="text-sm rounded-sm px-3 py-2"
       style={{
         color: "var(--err)",
-        border: "1px solid color-mix(in srgb, var(--err) 20%, transparent)",
-        background: "color-mix(in srgb, var(--err) 6%, transparent)",
+        border: "1px solid var(--err)",
+        background: "var(--cream)",
       }}
     >
       {message}
@@ -486,7 +487,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           >
             Automations
           </Link>
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight size={12} strokeWidth={1.75} />
           <span className="truncate" style={{ color: "var(--midnight-soft)" }}>
             {routine.title}
           </span>
@@ -519,7 +520,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             }}
             aria-label="Edit automation"
           >
-            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+            <Pencil size={16} aria-hidden="true" />
             Edit
           </EditorialButton>
         </div>
@@ -532,8 +533,8 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             role="status"
             className="rounded-lg border px-4 py-3 text-sm flex items-center justify-between gap-3"
             style={{
-              borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
-              backgroundColor: "color-mix(in srgb, var(--warn) 12%, transparent)",
+              borderColor: "var(--warn)",
+              backgroundColor: "var(--cream)",
               color: "var(--warn)",
             }}
           >
@@ -580,7 +581,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               }}
               aria-label="Add trigger"
             >
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              <Plus size={16} aria-hidden="true" />
               Add
             </EditorialButton>
           </div>
@@ -594,7 +595,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                 <li key={t.id} className="flex flex-col gap-1.5 text-sm">
                   <div className="flex items-center gap-2">
                     <span
-                      className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+                      className="label-caps font-mono px-1.5 py-0.5 rounded-sm flex-shrink-0"
                       style={{ background: "var(--edge)", color: "var(--midnight)" }}
                     >
                       {t.kind}
@@ -622,57 +623,73 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     )}
                     <span className="flex-1" />
                     {t.kind === "schedule" && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          setActionError(null);
-                          setTriggerDialog({ mode: "edit", trigger: t });
-                        }}
-                        className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
-                        aria-label={`Edit ${triggerTitle(t)}`}
-                        title="Edit"
-                      >
-                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              setActionError(null);
+                              setTriggerDialog({ mode: "edit", trigger: t });
+                            }}
+                            className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
+                            aria-label={`Edit ${triggerTitle(t)}`}
+                          >
+                            <Pencil size={16} aria-hidden="true" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit</TooltipContent>
+                      </Tooltip>
                     )}
                     {triggerHasSecret(t) && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => rotateSecret(t.id)}
-                        className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
-                        aria-label={`Rotate to a new random secret for ${triggerTitle(t)}`}
-                        title="Rotate to a new random secret"
-                      >
-                        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => rotateSecret(t.id)}
+                            className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
+                            aria-label={`Rotate to a new random secret for ${triggerTitle(t)}`}
+                          >
+                            <KeyRound size={16} aria-hidden="true" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Rotate to a new random secret</TooltipContent>
+                      </Tooltip>
                     )}
                     {triggerHasSecret(t) && t.publicId && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          setActionError(null);
-                          setSecretDialogTrigger(t);
-                        }}
-                        className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
-                        aria-label={`Set signing secret for ${triggerTitle(t)}`}
-                        title="Set signing secret"
-                      >
-                        <KeySquare className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              setActionError(null);
+                              setSecretDialogTrigger(t);
+                            }}
+                            className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] disabled:opacity-50"
+                            aria-label={`Set signing secret for ${triggerTitle(t)}`}
+                          >
+                            <KeySquare size={16} aria-hidden="true" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Set signing secret</TooltipContent>
+                      </Tooltip>
                     )}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => deleteTrigger(t.id)}
-                      className="text-[var(--midnight-muted)] hover:text-[var(--err)] disabled:opacity-50"
-                      aria-label={`Delete ${triggerTitle(t)}`}
-                      title="Delete"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => deleteTrigger(t.id)}
+                          className="text-[var(--midnight-muted)] hover:text-[var(--err)] disabled:opacity-50"
+                          aria-label={`Delete ${triggerTitle(t)}`}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Delete</TooltipContent>
+                    </Tooltip>
                   </div>
                   {/* Arming a webhook trigger means pasting THIS url into the
                       provider's dashboard. The guided create-flow shows it once,
@@ -721,7 +738,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                   >
                     <div className="flex items-center gap-2">
                       <span
-                        className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded flex-shrink-0"
+                        className="label-caps px-1.5 py-0.5 rounded-sm flex-shrink-0"
                         style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
                       >
                         {r.source}
@@ -778,7 +795,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         {revisions.length > 0 && (
           <section className="flex flex-col gap-3">
             <h2 className="section-label inline-flex items-center gap-1.5">
-              <History className="h-3.5 w-3.5" aria-hidden="true" />
+              <History size={16} aria-hidden="true" />
               <b>Revisions</b>
             </h2>
             <ul className="flex flex-col">
@@ -809,7 +826,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     className="inline-flex items-center gap-1 text-xs text-[var(--midnight)] hover:underline disabled:opacity-50 flex-shrink-0"
                     aria-label={`Restore revision ${rev.revisionNumber ?? rev.id}`}
                   >
-                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />
                     Restore
                   </button>
                 </li>
@@ -1264,7 +1281,7 @@ function EditRoutineDialog({
               selectedAgentId={assigneeAgentId}
               onChange={selectAssignee}
               variant="inline"
-              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+              className="border border-[var(--edge)] rounded-sm px-3 py-2 bg-[var(--cream)]"
             />
           </div>
         </div>
@@ -1277,7 +1294,7 @@ function EditRoutineDialog({
               onChange={setReviewerAgentId}
               variant="inline"
               noun="reviewer"
-              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+              className="border border-[var(--edge)] rounded-sm px-3 py-2 bg-[var(--cream)]"
             />
           </div>
         </div>
@@ -1317,7 +1334,7 @@ function EditRoutineDialog({
           <div className="flex items-center justify-between">
             <span className="text-sm text-[var(--midnight-soft)]">Variables</span>
             <EditorialButton variant="ghost" size="sm" onClick={addVar}>
-              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              <Plus size={16} aria-hidden="true" />
               Add variable
             </EditorialButton>
           </div>
@@ -1339,14 +1356,14 @@ function EditRoutineDialog({
               {vars.map((v, i) => (
                 <li
                   key={i}
-                  className="flex flex-col gap-2 rounded border border-[var(--edge)] p-2"
+                  className="flex flex-col gap-2 rounded-sm border border-[var(--edge)] p-2"
                 >
                   <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
                     <input
                       value={v.name}
                       onChange={(e) => setVar(i, { name: e.target.value })}
                       placeholder="name"
-                      className="border border-[var(--edge)] bg-[var(--cream)] rounded px-2 py-1 text-sm text-[var(--midnight)]"
+                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
                     />
                     <div className="w-32">
                       <EditorialSelect
@@ -1360,28 +1377,32 @@ function EditRoutineDialog({
                         }
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => removeVar(i)}
-                      className="text-[var(--midnight-muted)] hover:text-[var(--err)]"
-                      aria-label={`Remove variable ${v.name || i + 1}`}
-                      title="Remove"
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => removeVar(i)}
+                          className="text-[var(--midnight-muted)] hover:text-[var(--err)]"
+                          aria-label={`Remove variable ${v.name || i + 1}`}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Remove</TooltipContent>
+                    </Tooltip>
                   </div>
                   <input
                     value={v.label}
                     onChange={(e) => setVar(i, { label: e.target.value })}
                     placeholder="label (optional)"
-                    className="border border-[var(--edge)] bg-[var(--cream)] rounded px-2 py-1 text-sm text-[var(--midnight)]"
+                    className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
                   />
                   {v.type === "select" && (
                     <input
                       value={v.options}
                       onChange={(e) => setVar(i, { options: e.target.value })}
                       placeholder="options, comma-separated"
-                      className="border border-[var(--edge)] bg-[var(--cream)] rounded px-2 py-1 text-sm text-[var(--midnight)]"
+                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
                     />
                   )}
                   <div className="flex items-center gap-2">
@@ -1439,7 +1460,7 @@ function VarDefaultInput({
       type={inputType}
       value={v.defaultValue}
       onChange={(e) => onChange(e.target.value)}
-      className="flex-1 border border-[var(--edge)] bg-[var(--cream)] rounded px-2 py-1 text-sm text-[var(--midnight)]"
+      className="flex-1 border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
     />
   );
 }

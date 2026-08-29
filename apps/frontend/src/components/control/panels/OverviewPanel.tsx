@@ -33,6 +33,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -198,7 +199,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+        <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
       </div>
     );
   }
@@ -208,7 +209,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">Failed to fetch status: {error.message}</p>
         <Button variant="outline" size="sm" onClick={handleRefresh}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+          <RefreshCw size={16} className="mr-1.5" /> Retry
         </Button>
       </div>
     );
@@ -241,24 +242,28 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Overview</h2>
+          <h2 className="font-editorial-serif text-title">Overview</h2>
           <p className="text-xs text-[var(--midnight-muted)]">
             Container status and gateway health snapshot.
           </p>
         </div>
         <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setConfigOpen(true)}
-            className="text-xs gap-1.5"
-            title="View raw openclaw.json"
-          >
-            <FileText className="h-3.5 w-3.5" />
-            Configuration
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfigOpen(true)}
+                className="text-xs gap-1.5"
+              >
+                <FileText size={16} />
+                Configuration
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>View raw openclaw.json</TooltipContent>
+          </Tooltip>
           <Button variant="ghost" size="sm" onClick={handleRefresh}>
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw size={16} />
           </Button>
         </div>
       </div>
@@ -267,12 +272,12 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Container Info */}
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--midnight-muted)]">
+          <h3 className="label-caps text-[var(--midnight-muted)]">
             Container Info
           </h3>
           <div className="space-y-2">
             <InfoRow
-              icon={<Activity className="h-3.5 w-3.5" />}
+              icon={<Activity size={16} />}
               label="Status"
               value={container?.container_status ?? "\u2014"}
               badge={
@@ -284,22 +289,22 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               }
             />
             <InfoRow
-              icon={<Server className="h-3.5 w-3.5" />}
+              icon={<Server size={16} />}
               label="Service"
               value={container?.service_name ?? "\u2014"}
             />
             <InfoRow
-              icon={<CreditCard className="h-3.5 w-3.5" />}
+              icon={<CreditCard size={16} />}
               label="Subscription"
               value={planLabel(subscriptionStatus, { expired: isTrialExpired }) ?? "—"}
             />
             <InfoRow
-              icon={<MapPin className="h-3.5 w-3.5" />}
+              icon={<MapPin size={16} />}
               label="Region"
               value={container?.region ?? "\u2014"}
             />
             <InfoRow
-              icon={<Clock className="h-3.5 w-3.5" />}
+              icon={<Clock size={16} />}
               label="Created"
               value={formatTimeAgo(container?.created_at)}
             />
@@ -308,23 +313,23 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
         {/* Snapshot */}
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--midnight-muted)]">
+          <h3 className="label-caps text-[var(--midnight-muted)]">
             Snapshot
           </h3>
           <div className="space-y-2">
             <InfoRow
-              icon={isOnline ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+              icon={isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}
               label="Status"
               value={isOnline ? "OK" : "Offline"}
               badge={isOnline ? "green" : "red"}
             />
             <InfoRow
-              icon={<Clock className="h-3.5 w-3.5" />}
+              icon={<Clock size={16} />}
               label="Uptime"
               value={formatUptime(health.ts)}
             />
             <InfoRow
-              icon={<Timer className="h-3.5 w-3.5" />}
+              icon={<Timer size={16} />}
               label="Tick Interval"
               value={
                 health.heartbeatSeconds
@@ -335,7 +340,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               }
             />
             <InfoRow
-              icon={<RefreshCw className="h-3.5 w-3.5" />}
+              icon={<RefreshCw size={16} />}
               label="Last Channels"
               value={formatTimeAgo(health.lastChannelsRefresh)}
             />
@@ -403,7 +408,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               className="text-xs"
             >
               {isRecovering ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                <Loader2 size={12} strokeWidth={1.75} className="animate-spin mr-1" />
               ) : null}
               {actionLabel}
             </Button>
@@ -426,7 +431,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
           <div className="max-h-[60vh] overflow-auto rounded-md border border-[var(--edge)] bg-cream-deep p-3">
             {configLoading ? (
               <div className="flex items-center gap-2 text-sm text-[var(--midnight-muted)]">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+                <Loader2 size={16} className="animate-spin" /> Loading…
               </div>
             ) : configForbidden ? (
               <p className="text-sm text-[var(--midnight-muted)]">
@@ -466,11 +471,11 @@ function InfoRow({
 }) {
   const badgeClass =
     badge === "green"
-      ? "text-ok bg-ok/10"
+      ? "border border-ok text-ok bg-cream"
       : badge === "yellow"
-        ? "text-warn bg-warn/10"
+        ? "border border-warn text-warn bg-cream"
         : badge === "red"
-          ? "text-err bg-err/10"
+          ? "border border-err text-err bg-cream"
           : "";
 
   return (
@@ -514,12 +519,12 @@ function SummaryCard({
       className={cn(
         "rounded-lg border border-[var(--edge)] bg-cream p-3 text-center w-full",
         interactive &&
-          "cursor-pointer hover:border-[var(--midnight-faint)] hover:bg-cream-deep transition focus:outline-none focus:ring-2 focus:ring-[var(--midnight)]/30",
+          "cursor-pointer hover:border-[var(--midnight-faint)] hover:bg-cream-deep transition-colors duration-(--dur-fast) ease-out",
       )}
     >
       <div className="flex items-center justify-center gap-1.5 mb-1">
-        <Icon className="h-3 w-3 text-midnight-label" />
-        <span className="text-[10px] uppercase tracking-wider text-midnight-label">
+        <Icon size={12} strokeWidth={1.75} className="text-midnight-label" />
+        <span className="label-caps">
           {label}
         </span>
       </div>
@@ -527,7 +532,7 @@ function SummaryCard({
       {subLabel ? (
         <div
           className={cn(
-            "text-[10px] font-medium mt-0.5",
+            "text-2xs font-medium mt-0.5",
             subLabelTone === "red"
               ? "text-err"
               : subLabelTone === "amber"

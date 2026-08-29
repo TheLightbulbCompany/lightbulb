@@ -190,7 +190,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
 
       {error && (
         <p className="text-xs text-err flex items-center gap-1">
-          <AlertCircle className="h-3 w-3" /> {error}
+          <AlertCircle size={12} strokeWidth={1.75} /> {error}
         </p>
       )}
       {restartNotice && (
@@ -206,7 +206,7 @@ export function AgentHeartbeatCard({ agentId }: { agentId: string }) {
         disabled={!dirty || saving || !configReady}
         className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-1.5 text-sm disabled:opacity-50 inline-flex items-center gap-2"
       >
-        {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        {saving && <Loader2 size={16} className="animate-spin" />}
         Save heartbeat settings
       </button>
     </div>

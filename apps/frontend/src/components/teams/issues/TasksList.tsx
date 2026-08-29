@@ -71,6 +71,7 @@ import type {
   IssueBlockerAttention,
   Issue,
 } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // Shared chip styling for label pills, lifted from IssueProperties' Labels
 // row so the trailing label chips read identically to the detail rail.
@@ -365,26 +366,34 @@ function ViewModeToggle({
     );
   return (
     <div className="flex items-center overflow-hidden rounded-md border border-[var(--edge)]">
-      <button
-        type="button"
-        className={buttonClass(viewMode === "list")}
-        onClick={() => onChange("list")}
-        aria-pressed={viewMode === "list"}
-        title="List view"
-        aria-label="List view"
-      >
-        <List className="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        className={buttonClass(viewMode === "board")}
-        onClick={() => onChange("board")}
-        aria-pressed={viewMode === "board"}
-        title="Board view"
-        aria-label="Board view"
-      >
-        <Columns3 className="h-3.5 w-3.5" />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(viewMode === "list")}
+            onClick={() => onChange("list")}
+            aria-pressed={viewMode === "list"}
+            aria-label="List view"
+          >
+            <List size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>List view</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(viewMode === "board")}
+            onClick={() => onChange("board")}
+            aria-pressed={viewMode === "board"}
+            aria-label="Board view"
+          >
+            <Columns3 size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Board view</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
@@ -401,20 +410,24 @@ function ToolbarIconButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className={cn(
-        "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
-        active
-          ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
-          : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
-      )}
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={title}
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
+            active
+              ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
+              : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
+          )}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -437,21 +450,25 @@ function MenuPopover<T extends string>({
 }) {
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          title={title}
-          aria-label={title}
-          className={cn(
-            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
-            active
-              ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
-              : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
-          )}
-        >
-          {icon}
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={title}
+              className={cn(
+                "inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] transition-colors",
+                active
+                  ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
+                  : "text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)]",
+              )}
+            >
+              {icon}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{title}</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="w-44 p-1">
         {options.map(([value, label]) => (
           <button
@@ -459,7 +476,7 @@ function MenuPopover<T extends string>({
             type="button"
             onClick={() => onSelect(value)}
             className={cn(
-              "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm transition-colors",
+              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-ui transition-colors",
               value === selected
                 ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                 : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
@@ -467,7 +484,7 @@ function MenuPopover<T extends string>({
           >
             <span>{label}</span>
             {value === selected
-              ? (trailing?.(value) ?? <Check className="h-3.5 w-3.5" />)
+              ? (trailing?.(value) ?? <Check size={16} />)
               : null}
           </button>
         ))}
@@ -481,10 +498,10 @@ function MenuPopover<T extends string>({
 function GroupHeader({ label, count }: { label: string; count: number }) {
   return (
     <div className="flex items-center gap-2 px-1 pb-1.5 pt-3">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--midnight-muted)]">
+      <span className="label-caps text-[var(--midnight-muted)]">
         {label}
       </span>
-      <span className="text-[11px] tabular-nums text-[var(--midnight-muted)]">
+      <span className="text-caption tabular-nums text-[var(--midnight-muted)]">
         {count}
       </span>
     </div>
@@ -588,11 +605,11 @@ function TaskRow({
           }}
           aria-label={expanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
           aria-expanded={expanded}
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
-          <ChevronRight
+          <ChevronRight size={16}
             className={cn(
-              "h-3.5 w-3.5 transition-transform",
+              "transition-transform",
               expanded && "rotate-90",
             )}
           />
@@ -637,14 +654,14 @@ function TaskRow({
           {labels.slice(0, 2).map((label) => (
             <span
               key={label.id}
-              className="max-w-[8rem] truncate rounded px-1.5 py-0.5 text-[11px]"
+              className="max-w-[8rem] truncate rounded-sm px-1.5 py-0.5 text-caption"
               style={LABEL_CHIP_STYLE}
             >
               {label.name}
             </span>
           ))}
           {labels.length > 2 ? (
-            <span className="text-[11px] text-[var(--midnight-muted)]">
+            <span className="text-caption text-[var(--midnight-muted)]">
               +{labels.length - 2}
             </span>
           ) : null}
@@ -680,7 +697,7 @@ function TaskRow({
           circle, every handler stops propagation so opening the menu or
           picking Hide never triggers the row's Link navigation. */}
       <span
-        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+        className="shrink-0 opacity-0 transition-opacity duration-(--dur-fast) ease-out group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
         onClick={stop}
       >
         <DropdownMenu>
@@ -689,9 +706,9 @@ function TaskRow({
               type="button"
               onClick={stop}
               aria-label="Task actions"
-              className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream)] hover:text-[var(--midnight)]"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[var(--midnight-muted)] transition-colors hover:bg-[var(--cream)] hover:text-[var(--midnight)]"
             >
-              <MoreHorizontal className="h-3.5 w-3.5" />
+              <MoreHorizontal size={16} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -701,7 +718,7 @@ function TaskRow({
                 void hideIssueWithUndo(issue.id, onUpdateIssue);
               }}
             >
-              <EyeOff className="h-4 w-4" />
+              <EyeOff size={16} />
               Hide
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -898,11 +915,11 @@ export function TasksList({
               }
               onClick={() => setNestingEnabled((v) => !v)}
             >
-              <ListTree className="h-3.5 w-3.5" />
+              <ListTree size={16} />
             </ToolbarIconButton>
 
             <MenuPopover<TasksSortField>
-              icon={<ArrowUpDown className="h-3.5 w-3.5" />}
+              icon={<ArrowUpDown size={16} />}
               title="Sort"
               options={SORT_OPTIONS}
               selected={sortField}
@@ -922,7 +939,7 @@ export function TasksList({
             />
 
             <MenuPopover<TasksGroupBy>
-              icon={<Layers className="h-3.5 w-3.5" />}
+              icon={<Layers size={16} />}
               title="Group"
               active={groupBy !== "none"}
               options={GROUP_OPTIONS}

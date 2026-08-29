@@ -24,7 +24,7 @@ function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: st
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-midnight-label">{label}</div>
+      <div className="label-caps">{label}</div>
       <div className="text-sm font-medium truncate text-[var(--midnight)]">{value}</div>
     </div>
   );
@@ -241,10 +241,10 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
               : "No models configured in gateway"}
           </p>
         )}
-        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--midnight-muted)]" />}
+        {updatingModel && <Loader2 size={16} className="animate-spin text-[var(--midnight-muted)]" />}
         {modelError && (
           <p className="text-xs text-err flex items-center gap-1">
-            <AlertCircle className="h-3 w-3" /> {modelError}
+            <AlertCircle size={12} strokeWidth={1.75} /> {modelError}
           </p>
         )}
       </div>
@@ -261,13 +261,13 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
 
         {metaError && (
           <p className="text-xs text-err flex items-center gap-1">
-            <AlertCircle className="h-3 w-3" /> {metaError}
+            <AlertCircle size={12} strokeWidth={1.75} /> {metaError}
           </p>
         )}
 
         <div className="flex justify-end">
           <Button size="sm" onClick={saveMeta} disabled={savingMeta}>
-            {savingMeta ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+            {savingMeta ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Save"}
           </Button>
         </div>
       </div>

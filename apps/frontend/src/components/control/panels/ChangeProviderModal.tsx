@@ -213,7 +213,7 @@ function ChangeProviderBody({
 
       {stage.kind === "submitting" && (
         <div className="flex items-center justify-center gap-3 py-12 text-sm text-[var(--midnight-muted)]">
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <Loader2 size={16} className="animate-spin" />
           Switching to {readableProvider(stage.choice, stage.byo)}…
         </div>
       )}
@@ -267,7 +267,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
             className={
               "rounded-xl border p-4 text-left transition-colors " +
               (current
-                ? "border-ok/60 bg-ok/10"
+                ? "border-ok bg-cream"
                 : "border-[var(--edge)] bg-cream hover:bg-[var(--cream-deep)]")
             }
           >
@@ -277,13 +277,13 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
                 <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full border border-ok px-2 py-0.5 text-[10px] font-medium text-ok">
+                <span className="rounded-full border border-ok px-2 py-0.5 text-2xs font-medium text-ok">
                   Current
                 </span>
               )}
             </div>
             {card.id === "byo_key" && current && currentByoProvider && (
-              <p className="mt-2 text-[11px] text-[var(--midnight-muted)]">
+              <p className="mt-2 text-caption text-[var(--midnight-muted)]">
                 Active sub-provider: {currentByoProvider === "openai" ? "OpenAI" : "Anthropic"}
               </p>
             )}
@@ -314,7 +314,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
     <div className="space-y-4 py-4">
       {state.status === "idle" && (
         <div className="flex flex-col items-center gap-3 py-6 text-sm text-[var(--midnight-muted)]">
-          <Loader2 className="h-5 w-5 animate-spin" />
+          <Loader2 size={20} className="animate-spin" />
           Starting ChatGPT sign-in…
         </div>
       )}
@@ -336,7 +336,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           <li>
             Enter this code:
             <div className="mt-2">
-              <code className="rounded bg-[var(--cream-deep)] px-3 py-2 font-mono text-lg tracking-widest text-[var(--midnight)]">
+              <code className="rounded-sm bg-[var(--cream-deep)] px-3 py-2 font-mono text-title tracking-caps text-[var(--midnight)]">
                 {state.userCode}
               </code>
             </div>
@@ -452,7 +452,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)] focus:border-[var(--bulb)] focus:outline-none"
+        className="w-full rounded-md border border-[var(--edge)] bg-cream-deep px-3 py-2 font-mono text-sm text-[var(--midnight)] placeholder:text-[var(--midnight-muted)]"
       />
 
       <p className="text-xs text-[var(--midnight-muted)]">

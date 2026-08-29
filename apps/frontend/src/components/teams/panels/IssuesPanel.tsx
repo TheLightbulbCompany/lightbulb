@@ -20,6 +20,7 @@ import type {
   IssueProject,
   IssueUpdateInput,
 } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export interface IssuesPanelProps {
   /** Agent-scope filter (from the roster's "See her work →"). null = no filter. */
@@ -179,24 +180,28 @@ export function IssuesPanel({
         searchPlaceholder="Search tasks..."
         searchAriaLabel="Search tasks"
         filters={
-          <button
-            type="button"
-            role="switch"
-            aria-checked={showRoutineTasks}
-            onClick={() => setShowRoutineTasks((v) => !v)}
-            title="Tasks filed automatically by a routine on each run"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
-            style={{
-              border: "1px solid var(--edge)",
-              background: showRoutineTasks
-                ? "var(--cream-deep)"
-                : "transparent",
-              color: showRoutineTasks ? "var(--midnight)" : "var(--midnight-muted)",
-            }}
-          >
-            <Repeat className="h-3 w-3" aria-hidden="true" />
-            Routine tasks
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showRoutineTasks}
+                onClick={() => setShowRoutineTasks((v) => !v)}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors"
+                style={{
+                  border: "1px solid var(--edge)",
+                  background: showRoutineTasks
+                    ? "var(--cream-deep)"
+                    : "transparent",
+                  color: showRoutineTasks ? "var(--midnight)" : "var(--midnight-muted)",
+                }}
+              >
+                <Repeat size={12} strokeWidth={1.75} aria-hidden="true" />
+                Routine tasks
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Tasks filed automatically by a routine on each run</TooltipContent>
+          </Tooltip>
         }
       />
       {agentFilter ? (
@@ -210,16 +215,20 @@ export function IssuesPanel({
             }}
           >
             Filtered to {agentFilterName}
-            <button
-              type="button"
-              onClick={clearAgentFilter}
-              aria-label="Clear agent filter"
-              title="Clear agent filter"
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
-              style={{ color: "var(--midnight-muted)" }}
-            >
-              <X className="h-3 w-3" />
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={clearAgentFilter}
+                  aria-label="Clear agent filter"
+                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--edge)]"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  <X size={12} strokeWidth={1.75} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Clear agent filter</TooltipContent>
+            </Tooltip>
           </span>
         </div>
       ) : null}

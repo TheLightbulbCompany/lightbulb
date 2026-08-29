@@ -43,7 +43,7 @@ const DAY_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
 const DEFAULT_SCHEDULE: Schedule = { freq: "daily", hour: 9, minute: 0, day: 1 };
 
 const INPUT_CLASS =
-  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]";
+  "w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 text-[var(--midnight)]";
 
 function toTimeValue(s: Schedule): string {
   return `${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}`;
@@ -129,7 +129,7 @@ export function ScheduleField({
             const [h, m] = e.target.value.split(":").map(Number);
             if (Number.isFinite(h) && Number.isFinite(m)) update({ hour: h, minute: m });
           }}
-          className="w-[120px] border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]"
+          className="w-[120px] border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 text-[var(--midnight)]"
         />
       </div>
       <div className="flex items-center justify-between gap-2">

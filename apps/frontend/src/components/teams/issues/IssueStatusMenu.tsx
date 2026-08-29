@@ -54,9 +54,9 @@ export function IssueStatusMenu({
             e.preventDefault();
             e.stopPropagation();
           }}
-          className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] disabled:opacity-40"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[var(--midnight-muted)] hover:bg-[var(--edge)] disabled:opacity-50"
         >
-          <MoreHorizontal className="h-4 w-4" />
+          <MoreHorizontal size={16} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">

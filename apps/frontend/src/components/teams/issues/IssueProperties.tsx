@@ -350,7 +350,7 @@ function MonitorRow({
           value={whenLocal}
           onChange={(e) => setWhenLocal(e.target.value)}
           aria-label="Re-check at"
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
@@ -363,7 +363,7 @@ function MonitorRow({
           placeholder="e.g. GitHub Actions"
           aria-label="External service"
           maxLength={120}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
@@ -376,7 +376,7 @@ function MonitorRow({
           placeholder="What to look for"
           aria-label="Monitor notes"
           maxLength={500}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
@@ -433,7 +433,7 @@ function MonitorRow({
                 type="button"
                 onClick={() => void checkNow()}
                 disabled={checkState === "checking"}
-                className="text-xs hover:underline disabled:opacity-60"
+                className="text-xs hover:underline disabled:opacity-50"
                 style={{ color: "var(--midnight)" }}
               >
                 {checkState === "checking"
@@ -571,7 +571,7 @@ function StageRow({
           {values.map((value) => (
             <span
               key={value}
-              className="rounded px-1.5 py-0.5 text-xs"
+              className="rounded-sm px-1.5 py-0.5 text-xs"
               style={CHIP_STYLE}
             >
               {valueLabel(value)}
@@ -656,7 +656,7 @@ export function IssueProperties({
             {labels.map((l) => (
               <span
                 key={l.id}
-                className="rounded px-1.5 py-0.5 text-xs"
+                className="rounded-sm px-1.5 py-0.5 text-xs"
                 style={CHIP_STYLE}
               >
                 {l.name}
@@ -708,7 +708,7 @@ export function IssueProperties({
             {relatedIdentifiers.map((identifier) => (
               <span
                 key={identifier}
-                className="rounded px-1.5 py-0.5 text-xs font-mono"
+                className="rounded-sm px-1.5 py-0.5 text-xs font-mono"
                 style={CHIP_STYLE}
               >
                 {identifier}

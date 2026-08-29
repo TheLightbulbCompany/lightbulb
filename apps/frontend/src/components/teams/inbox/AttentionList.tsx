@@ -62,7 +62,7 @@ function DecisionMeta({ item }: { item: AttentionItem }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span
-        className="rounded px-1.5 py-0.5 font-medium"
+        className="rounded-sm px-1.5 py-0.5 font-medium"
         style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
       >
         {sourceLabel(item)}
@@ -119,7 +119,7 @@ function UnhydratedRow({
           style={{ color: "var(--midnight)" }}
         >
           Open thread
-          <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          <ExternalLink size={12} strokeWidth={1.75} aria-hidden="true" />
         </button>
       )}
     </div>
@@ -216,8 +216,8 @@ export function AttentionList({
         role="alert"
         className="rounded-md border px-4 py-3 text-sm"
         style={{
-          borderColor: "color-mix(in srgb, var(--err) 25%, transparent)",
-          background: "color-mix(in srgb, var(--err) 6%, transparent)",
+          borderColor: "var(--err)",
+          background: "var(--cream)",
           color: "var(--err)",
         }}
       >
@@ -286,11 +286,11 @@ export function AttentionList({
             // so its behaviour stays in one place; the single-item <ul> is
             // what makes that valid markup, and carries the border that puts
             // an approval at the same depth as an interaction card.
-            <ul className="rounded-sm border py-1" style={surface}>
+            <ul className="rounded-lg border py-1" style={surface}>
               <ApprovalRow approval={item.approval} />
             </ul>
           ) : (
-            <div className="rounded-sm border p-3" style={surface}>
+            <div className="rounded-lg border p-3" style={surface}>
               <UnhydratedRow item={item} onOpenIssue={onOpenIssue} />
             </div>
           )}

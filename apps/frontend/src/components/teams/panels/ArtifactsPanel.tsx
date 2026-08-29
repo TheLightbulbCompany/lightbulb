@@ -76,7 +76,7 @@ function SortControl({
             type="button"
             aria-pressed={active}
             onClick={() => onChange(o.value)}
-            className="rounded px-2 py-1 transition-colors"
+            className="rounded-sm px-2 py-1 transition-colors"
             style={
               active
                 ? { background: "var(--midnight)", color: "var(--cream)" }
@@ -201,7 +201,7 @@ export function ArtifactsPanel() {
             className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-[var(--cream-deep)]"
             style={{ color: "var(--midnight-muted)" }}
           >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            <ArrowLeft size={16} aria-hidden="true" />
             All artifacts
           </button>
           {selectedGroup ? (
@@ -230,7 +230,7 @@ export function ArtifactsPanel() {
           </p>
         ) : !hasItems ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <Images size={28} style={{ color: "var(--midnight-muted)" }} />
+            <Images size={20} style={{ color: "var(--midnight-muted)" }} />
             <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               {isExpanded ? "No artifacts in this task." : "No artifacts yet."}
             </p>
@@ -292,7 +292,7 @@ export function ArtifactsPanel() {
                 setDeleteError(null);
               }}
               disabled={deleting}
-              className="rounded px-3 py-1.5 text-sm disabled:opacity-50"
+              className="rounded-md px-3 py-1.5 text-sm disabled:opacity-50"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               Cancel
@@ -301,7 +301,7 @@ export function ArtifactsPanel() {
               type="button"
               onClick={confirmDelete}
               disabled={deleting}
-              className="rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground disabled:opacity-50"
+              className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground disabled:opacity-50"
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>

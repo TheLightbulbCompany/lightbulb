@@ -230,7 +230,7 @@ export function AssigneePicker({
 
   const triggerClass =
     variant === "inline"
-      ? "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-[var(--cream-deep)]"
+      ? "inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-xs hover:bg-[var(--cream-deep)]"
       : "inline-flex items-center gap-2 text-sm hover:underline";
 
   return (
@@ -241,7 +241,7 @@ export function AssigneePicker({
           className={cn(triggerClass, className)}
           style={{ color: hasAssignee ? "var(--midnight)" : "var(--midnight-muted)" }}
         >
-          <User className="h-3.5 w-3.5" />
+          <User size={16} />
           <span>{triggerLabel}</span>
         </button>
       </PopoverTrigger>
@@ -276,7 +276,7 @@ export function AssigneePicker({
           aria-activedescendant={
             activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined
           }
-          className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--midnight)]"
+          className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul id={listboxId} className="max-h-56 overflow-y-auto" role="listbox">
@@ -294,7 +294,7 @@ export function AssigneePicker({
               onClick={() => handleOptionClick({ kind: "clear" })}
               onMouseEnter={() => setActiveIndex(0)}
               className={cn(
-                "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
+                "w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]",
                 activeIndex === 0 && "bg-[var(--cream-deeper)]",
               )}
               style={{ color: "var(--midnight-muted)" }}
@@ -304,7 +304,7 @@ export function AssigneePicker({
           </li>
           {peopleEnabled && (
             <li
-              className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide"
+              className="px-2 pt-2 pb-1 label-caps"
               style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             >
@@ -328,7 +328,7 @@ export function AssigneePicker({
                   onClick={() => handleOptionClick(option)}
                   onMouseEnter={() => setActiveIndex(optionIndex)}
                   className={cn(
-                    "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deep)]",
+                    "w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]",
                     activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                   )}
                 >
@@ -340,7 +340,7 @@ export function AssigneePicker({
           {peopleEnabled && (
             <>
               <li
-                className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide"
+                className="px-2 pt-2 pb-1 label-caps"
                 style={{ color: "var(--midnight-muted)" }}
                 aria-hidden="true"
               >
@@ -366,7 +366,7 @@ export function AssigneePicker({
                       onClick={() => handleOptionClick(option)}
                       onMouseEnter={() => setActiveIndex(optionIndex)}
                       className={cn(
-                        "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deep)]",
+                        "w-full text-left px-2 py-1.5 rounded-sm hover:bg-[var(--cream-deep)]",
                         activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                       )}
                     >

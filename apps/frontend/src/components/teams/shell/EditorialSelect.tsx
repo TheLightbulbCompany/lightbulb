@@ -36,7 +36,7 @@ export function EditorialSelect({
       <SelectTrigger
         className={cn(
           "border-[var(--edge)] bg-[var(--cream)] text-[var(--midnight)]",
-          "focus:ring-[var(--midnight)]/20 focus:border-[var(--midnight)]",
+          "",
           className,
         )}
       >
@@ -47,7 +47,7 @@ export function EditorialSelect({
           <SelectItem
             key={opt.value}
             value={opt.value}
-            className="text-[var(--midnight)] focus:bg-[var(--edge)] focus:text-[var(--midnight)]"
+            className="text-[var(--midnight)]"
           >
             {opt.label}
           </SelectItem>

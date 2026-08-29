@@ -76,7 +76,7 @@ export function ProjectDescription({
         disabled={saving}
         placeholder="Add a description…"
         aria-label="Project description"
-        className="w-full resize-y rounded px-3 py-2 text-sm outline-none"
+        className="w-full resize-y rounded-sm px-3 py-2 text-sm"
         style={{
           border: "1px solid var(--edge)",
           background: "var(--cream)",
@@ -90,7 +90,7 @@ export function ProjectDescription({
     <button
       type="button"
       onClick={() => setEditing(true)}
-      className="text-left text-sm whitespace-pre-wrap pl-3 rounded transition-colors"
+      className="text-left text-sm whitespace-pre-wrap pl-3 rounded-sm transition-colors"
       style={{
         borderLeft: "2px solid var(--edge)",
         color: description ? "var(--midnight-soft)" : "var(--midnight-muted)",

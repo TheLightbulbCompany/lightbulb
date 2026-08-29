@@ -40,7 +40,7 @@ export function ReportsToPicker({
       disabled={disabled}
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
-      className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--midnight)]"
+      className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 text-[var(--midnight)]"
     >
       <option value="">No manager (top level)</option>
       {candidates.map((a) => (

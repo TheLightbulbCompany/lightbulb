@@ -34,15 +34,15 @@ export function PanelSection({
           "border-b border-[var(--edge)]",
         )}
       >
-        <ChevronRight
+        <ChevronRight size={16}
           aria-hidden="true"
-          className="h-3.5 w-3.5 shrink-0 transition-transform [[data-state=open]>&]:rotate-90 text-[var(--midnight-muted)]"
+          className="shrink-0 transition-transform [[data-state=open]>&]:rotate-90 text-[var(--midnight-muted)]"
         />
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--midnight)]">
+        <span className="label-caps text-[var(--midnight)]">
           {label}
         </span>
         {typeof count === "number" && (
-          <span className="text-[11px] tabular-nums text-[var(--midnight-muted)]">{count}</span>
+          <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{count}</span>
         )}
       </CollapsibleTrigger>
       <CollapsibleContent>{children}</CollapsibleContent>

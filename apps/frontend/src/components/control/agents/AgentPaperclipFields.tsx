@@ -41,7 +41,7 @@ export function AgentPaperclipFields({
           onChange={(e) =>
             onChange({ ...value, role: e.target.value as PaperclipRole })
           }
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
         >
           {PAPERCLIP_AGENT_ROLES.map((r) => (
             <option key={r} value={r}>
@@ -53,7 +53,7 @@ export function AgentPaperclipFields({
 
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground" htmlFor="paperclip-title">
-          Title <span className="text-muted-foreground/60">(short)</span>
+          Title <span className="text-[var(--midnight-faint)]">(short)</span>
         </label>
         <input
           id="paperclip-title"
@@ -63,7 +63,7 @@ export function AgentPaperclipFields({
           maxLength={80}
           placeholder="e.g. Restaurant booking specialist"
           onChange={(e) => onChange({ ...value, title: e.target.value })}
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
         />
       </div>
 
@@ -73,7 +73,7 @@ export function AgentPaperclipFields({
           htmlFor="paperclip-capabilities"
         >
           Capabilities{" "}
-          <span className="text-muted-foreground/60">
+          <span className="text-[var(--midnight-faint)]">
             (what this agent does — Friday reads this)
           </span>
         </label>
@@ -85,7 +85,7 @@ export function AgentPaperclipFields({
           rows={3}
           placeholder="e.g. Books Resy reservations. Knows my preferences from USER.md."
           onChange={(e) => onChange({ ...value, capabilities: e.target.value })}
-          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
         />
       </div>
     </div>

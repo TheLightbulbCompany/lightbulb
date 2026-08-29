@@ -95,7 +95,7 @@ export function DocumentDiffModal({
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-err">Old</span>
+            <span className="label-caps text-err">Old</span>
             <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
               <SelectTrigger className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />
@@ -110,7 +110,7 @@ export function DocumentDiffModal({
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-ok">New</span>
+            <span className="label-caps text-ok">New</span>
             <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
               <SelectTrigger className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />

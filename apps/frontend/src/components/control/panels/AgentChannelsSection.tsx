@@ -83,7 +83,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
         return (
           <div key={provider} className="rounded-md border border-[var(--edge)] p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--midnight-muted)]">
+              <span className="label-caps text-[var(--midnight-muted)]">
                 {PROVIDER_LABELS[provider]}
               </span>
             </div>
@@ -97,9 +97,9 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
               bots.map((bot) => (
                 <div key={bot.agent_id} className="flex items-center gap-2 text-sm">
                   {bot.linked ? (
-                    <CheckCircle2 className="h-4 w-4 text-ok" />
+                    <CheckCircle2 size={16} className="text-ok" />
                   ) : (
-                    <AlertCircle className="h-4 w-4 text-warn" />
+                    <AlertCircle size={16} className="text-warn" />
                   )}
                   <span className="font-mono">{formatBotHandle(provider, bot.bot_username)}</span>
                   <div className="flex-1" />
@@ -120,7 +120,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                       onClick={() => setDeleteTarget(provider)}
                       aria-label={`Delete ${provider} bot`}
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 size={12} strokeWidth={1.75} />
                     </Button>
                   )}
                 </div>
@@ -133,7 +133,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 className="mt-2"
                 onClick={() => setWizardFor({ provider, mode: "create" })}
               >
-                <Plus className="h-3 w-3 mr-1" />
+                <Plus size={12} strokeWidth={1.75} className="mr-1" />
                 Add {PROVIDER_LABELS[provider]} bot
               </Button>
             )}
@@ -143,7 +143,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
 
       {wizardFor && (
         <div
-          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-50"
+          className="fixed inset-0 bg-[color-mix(in_srgb,var(--midnight)_30%,transparent)] flex items-center justify-center z-(--z-overlay)"
           role="dialog"
           aria-modal="true"
           onClick={() => setWizardFor(null)}

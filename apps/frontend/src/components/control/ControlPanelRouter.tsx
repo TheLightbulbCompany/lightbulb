@@ -11,7 +11,7 @@ import { Loader2 } from "lucide-react";
 function PanelSkeleton() {
   return (
     <div className="flex-1 flex items-center justify-center" aria-busy="true">
-      <Loader2 className="h-5 w-5 animate-spin text-[var(--midnight-muted)]" />
+      <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />
     </div>
   );
 }

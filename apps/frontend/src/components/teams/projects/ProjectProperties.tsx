@@ -169,7 +169,7 @@ function GoalsEditor({
       {linkedGoals.map((goal) => (
         <span
           key={goal.id}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
+          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs"
           style={{
             background: "var(--cream-deep)",
             border: "1px solid var(--edge)",
@@ -192,7 +192,7 @@ function GoalsEditor({
               className="shrink-0 hover:opacity-70"
               style={{ color: "var(--midnight-muted)" }}
             >
-              <X className="h-3 w-3" />
+              <X size={12} strokeWidth={1.75} />
             </button>
           )}
         </span>
@@ -204,11 +204,11 @@ function GoalsEditor({
               type="button"
               disabled={availableGoals.length === 0}
               className={cn(
-                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed",
+                "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed",
               )}
               style={{ color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
             >
-              <Target className="h-3 w-3" />
+              <Target size={12} strokeWidth={1.75} />
               Goal
             </button>
           </PopoverTrigger>
@@ -226,7 +226,7 @@ function GoalsEditor({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search goals..."
-              className="mb-1 w-full bg-transparent px-2 py-1.5 text-xs outline-none"
+              className="mb-1 w-full bg-transparent px-2 py-1.5 text-xs"
               style={{ borderBottom: "1px solid var(--edge)" }}
             />
             <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -235,7 +235,7 @@ function GoalsEditor({
                   <button
                     type="button"
                     onClick={() => addGoal(goal.id)}
-                    className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--cream-deep)]"
+                    className="w-full rounded-md px-2 py-1.5 text-left text-ui hover:bg-[var(--cream-deep)]"
                   >
                     {goal.title}
                   </button>

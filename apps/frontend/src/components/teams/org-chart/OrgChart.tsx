@@ -23,6 +23,7 @@ import {
   layoutTree,
   type OrgChartAgent,
 } from "./orgChartLayout";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export interface OrgChartProps {
   agents: OrgChartAgent[];
@@ -92,33 +93,45 @@ export function OrgChart({ agents, className }: OrgChartProps) {
       >
         {/* Zoom controls — editorial icon-button cluster, top-right. */}
         <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
-          <button
-            type="button"
-            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
-            onClick={zoomIn}
-            title="Zoom in"
-            aria-label="Zoom in"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
-            onClick={zoomOut}
-            title="Zoom out"
-            aria-label="Zoom out"
-          >
-            <Minus className="h-4 w-4" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="editorial-btn editorial-btn--secondary editorial-btn--icon"
-            onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
-          >
-            <Maximize2 className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+                onClick={zoomIn}
+                aria-label="Zoom in"
+              >
+                <Plus size={16} aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Zoom in</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+                onClick={zoomOut}
+                aria-label="Zoom out"
+              >
+                <Minus size={16} aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Zoom out</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="editorial-btn editorial-btn--secondary editorial-btn--icon"
+                onClick={fitToScreen}
+                aria-label="Fit chart to screen"
+              >
+                <Maximize2 size={16} aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Fit to screen</TooltipContent>
+          </Tooltip>
         </div>
 
         {/* SVG edge layer — shares the viewport transform via the inner <g>. */}

@@ -153,13 +153,13 @@ describe("InboxPage", () => {
 
   test("clicking the mine tab swaps the empty-state copy", () => {
     render(<InboxPage {...baseProps} />);
-    fireEvent.click(screen.getByRole("tab", { name: /mine/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /mine/i }));
     expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
   });
 
   test("clicking the unread tab swaps the empty-state copy", () => {
     render(<InboxPage {...baseProps} />);
-    fireEvent.click(screen.getByRole("tab", { name: /unread/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /unread/i }));
     expect(screen.getByText(/no new inbox items/i)).toBeInTheDocument();
   });
 
@@ -182,7 +182,7 @@ describe("InboxPage", () => {
 
   test("clicking the recent tab swaps the empty-state copy", () => {
     render(<InboxPage {...baseProps} />);
-    fireEvent.click(screen.getByRole("tab", { name: /recent/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /recent/i }));
     expect(screen.getByText(/no recent inbox items/i)).toBeInTheDocument();
   });
 

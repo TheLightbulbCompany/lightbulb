@@ -180,9 +180,9 @@ export function DocumentRow({
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <Chevron size={14} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
+          <Chevron size={16} className="flex-shrink-0" style={{ color: "var(--midnight-muted)" }} />
           <span
-            className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded flex-shrink-0"
+            className="label-caps font-mono px-1.5 py-0.5 rounded-sm flex-shrink-0"
             style={{ background: "var(--edge)", color: "var(--midnight)" }}
           >
             {doc.key}
@@ -214,14 +214,14 @@ export function DocumentRow({
                   ? `Comments on ${doc.key}`
                   : `${openCount} unresolved comments on ${doc.key}`
               }
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
+              className="flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs"
               style={{
                 border: "1px solid var(--edge)",
                 color: openCount > 0 ? "var(--midnight)" : "var(--midnight-muted)",
                 background: panelOpen ? "var(--edge)" : "transparent",
               }}
             >
-              <MessageSquare className="h-3 w-3" />
+              <MessageSquare size={12} strokeWidth={1.75} />
               <span className="tabular-nums">{openCount}</span>
             </button>
             {open ? (
@@ -235,7 +235,7 @@ export function DocumentRow({
               />
             ) : latestRevisionNumber > 0 ? (
               <span
-                className="rounded px-1.5 py-0.5 text-[10px] tabular-nums"
+                className="rounded-sm px-1.5 py-0.5 text-2xs tabular-nums"
                 style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
               >
                 rev {latestRevisionNumber}
@@ -252,7 +252,7 @@ export function DocumentRow({
         >
           {historicalPreview ? (
             <div
-              className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs"
+              className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-xs"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               <span>
@@ -262,10 +262,10 @@ export function DocumentRow({
                 type="button"
                 onClick={restoreRevision}
                 disabled={restoring}
-                className="flex items-center gap-1 rounded px-2 py-0.5 disabled:opacity-50"
+                className="flex items-center gap-1 rounded-sm px-2 py-0.5 disabled:opacity-50"
                 style={{ background: "var(--midnight)", color: "var(--cream)" }}
               >
-                <RotateCcw className="h-3 w-3" />
+                <RotateCcw size={12} strokeWidth={1.75} />
                 {restoring ? "Restoring…" : "Restore this revision"}
               </button>
             </div>

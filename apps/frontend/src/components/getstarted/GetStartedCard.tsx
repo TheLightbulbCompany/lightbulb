@@ -22,11 +22,11 @@ export function GetStartedCard({ gs, onAction }: {
   }, [close]);
   return (
     <section role="dialog" aria-label="Get started" aria-modal={false}
-      className="fixed right-5 bottom-[78px] z-50 w-[384px] max-h-[520px] flex flex-col bg-[var(--cream)] border border-[var(--edge)] rounded-2xl shadow-[0_18px_50px_-12px_color-mix(in_srgb,var(--midnight)_28%,transparent)] overflow-hidden">
+      className="fixed right-5 bottom-[78px] z-(--z-overlay) w-[384px] max-h-[520px] flex flex-col bg-[var(--cream)] border border-[var(--edge)] rounded-xl shadow-xl overflow-hidden">
       <div className="px-4 pt-3.5">
         <div className="flex items-center gap-2.5 mb-3">
           <span className="w-[30px] h-[30px] rounded-lg bg-[var(--midnight)] grid place-items-center"><Sparkles size={16} className="text-[var(--cream)]" /></span>
-          <div><div className="font-editorial-serif text-[16.5px] font-semibold leading-tight">Get started</div><div className="text-[11.5px] text-[var(--midnight-muted)]">You’re set up — first wins</div></div>
+          <div><div className="font-editorial-serif text-base font-semibold leading-tight">Get started</div><div className="text-caption text-[var(--midnight-muted)]">You’re set up — first wins</div></div>
           <div className="ml-auto flex gap-0.5">
             <button type="button" aria-label="Minimize" onClick={gs.minimize} className="w-7 h-7 rounded-md grid place-items-center text-[var(--midnight-muted)] hover:bg-[var(--cream-deeper)]"><Minus size={16} /></button>
             <button type="button" aria-label="Close" onClick={gs.close} className="w-7 h-7 rounded-md grid place-items-center text-[var(--midnight-muted)] hover:bg-[var(--cream-deeper)]"><X size={16} /></button>
@@ -35,7 +35,7 @@ export function GetStartedCard({ gs, onAction }: {
         <div className="flex gap-5 border-b border-[var(--edge)]">
           {(["do", "learn"] as const).map((t) => (
             <button key={t} type="button" onClick={() => { gs.backToLearn(); gs.setTab(t); }}
-              className={`relative py-2.5 text-[13px] font-semibold ${gs.tab === t ? "text-[var(--midnight)] after:absolute after:left-0 after:right-0 after:-bottom-px after:h-0.5 after:bg-[var(--midnight)]" : "text-[var(--midnight-muted)]"}`}>
+              className={`relative py-2.5 text-ui font-semibold ${gs.tab === t ? "text-[var(--midnight)] after:absolute after:left-0 after:right-0 after:-bottom-px after:h-0.5 after:bg-[var(--midnight)]" : "text-[var(--midnight-muted)]"}`}>
               {t === "do" ? "Checklist" : "Learn the basics"}
             </button>
           ))}
@@ -58,11 +58,11 @@ export function GetStartedCard({ gs, onAction }: {
         )}
         {gs.tab === "learn" && article && (
           <div>
-            <button type="button" onClick={gs.backToLearn} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--midnight)] mb-4"><ChevronLeft size={15} /> All concepts</button>
-            <div className="text-[11px] tracking-wider uppercase font-bold text-[var(--midnight-muted)] mb-1.5">{article.tag}</div>
+            <button type="button" onClick={gs.backToLearn} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--midnight)] mb-4"><ChevronLeft size={16} /> All concepts</button>
+            <div className="label-caps text-[var(--midnight-muted)] mb-1.5">{article.tag}</div>
             {/* h2, not h1: this is a floating dialog, not the page's top-level
                 heading — nests under the card's "Get started" header. */}
-            <h2 className="font-editorial-serif text-[22px] font-semibold leading-tight mb-3">{article.title}</h2>
+            <h2 className="font-editorial-serif text-title font-semibold leading-tight mb-3">{article.title}</h2>
             {article.body}
           </div>
         )}

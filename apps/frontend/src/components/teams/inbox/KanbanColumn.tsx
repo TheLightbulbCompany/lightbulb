@@ -45,7 +45,7 @@ export function KanbanColumn({
       <div className="mb-1 flex shrink-0 items-center gap-2 px-2 py-2">
         <StatusIcon status={status} />
         <span
-          className="text-xs font-semibold uppercase tracking-wide"
+          className="label-caps"
           style={{ color: "var(--midnight-muted)" }}
         >
           {statusLabel(status)}

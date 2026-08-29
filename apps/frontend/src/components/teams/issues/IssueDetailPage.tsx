@@ -291,15 +291,15 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             it the page renders as a normal task and silently stays invisible. */}
         {issue.hiddenAt && (
           <div
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded px-3 py-2 text-sm"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm px-3 py-2 text-sm"
             style={{
               border: "1px solid var(--edge)",
               background: "var(--cream-deep)",
               color: "var(--midnight-soft)",
             }}
           >
-            <EyeOff
-              className="h-4 w-4 shrink-0"
+            <EyeOff size={16}
+              className="shrink-0"
               style={{ color: "var(--midnight-muted)" }}
               aria-hidden="true"
             />
@@ -334,11 +334,11 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--cream-deep)]"
+                className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)]"
                 style={{ color: "var(--midnight-muted)" }}
                 aria-label="Issue actions"
               >
-                <MoreHorizontal className="h-4 w-4" />
+                <MoreHorizontal size={16} />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -348,7 +348,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                   copyAsMarkdown();
                 }}
               >
-                <Copy className="h-4 w-4" />
+                <Copy size={16} />
                 Copy as markdown
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -357,7 +357,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                   void handleHide();
                 }}
               >
-                <EyeOff className="h-4 w-4" />
+                <EyeOff size={16} />
                 Hide task
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -367,7 +367,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                   setDeleteOpen(true);
                 }}
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 size={16} />
                 Delete issue
               </DropdownMenuItem>
             </DropdownMenuContent>

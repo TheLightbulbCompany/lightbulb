@@ -45,6 +45,7 @@ import type {
   CompanyArtifact,
   CompanyArtifactGroup,
 } from "@/components/teams/shared/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // Fixed-height, rounded preview frame shared by every card variant. The fixed
 // aspect ratio is what keeps image / text / placeholder previews from shifting
@@ -259,7 +260,7 @@ export function ArtifactGalleryCard({
           onOpen(artifact);
         }
       }}
-      className="editorial-card editorial-card-hover group relative flex cursor-pointer flex-col overflow-hidden text-left focus:outline-none focus-visible:ring-2"
+      className="editorial-card editorial-card-hover group relative flex cursor-pointer flex-col overflow-hidden text-left"
       style={{ borderColor: "var(--edge)" }}
     >
       <ArtifactPreview artifact={artifact} />
@@ -267,26 +268,30 @@ export function ArtifactGalleryCard({
       {/* Hidden until hover/focus. pointer-events gated the same way so an
           invisible icon can't intercept a tap meant to open the viewer on
           touch (no hover) devices. */}
-      <div className="pointer-events-none absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+      <div className="pointer-events-none absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity duration-(--dur-fast) ease-out group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
         {issueId ? (
-          <Link
-            href={issueUrl}
-            onClick={openIssue}
-            aria-label="Open in issue"
-            title="Open in issue"
-            className="flex h-7 w-7 items-center justify-center rounded-md backdrop-blur transition-colors"
-            style={{ background: "var(--cream)", color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </Link>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link
+                href={issueUrl}
+                onClick={openIssue}
+                aria-label="Open in issue"
+                className="flex h-7 w-7 items-center justify-center rounded-md backdrop-blur transition-colors"
+                style={{ background: "var(--cream)", color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
+              >
+                <ExternalLink size={16} />
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent>Open in issue</TooltipContent>
+          </Tooltip>
         ) : null}
         {canDownload ? (
           <SecondaryButton onClick={() => onDownload(artifact)} label={`Download ${title}`}>
-            <Download className="h-3.5 w-3.5" />
+            <Download size={16} />
           </SecondaryButton>
         ) : null}
         <SecondaryButton onClick={() => onRequestDelete(artifact)} label={`Delete ${title}`}>
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 size={16} />
         </SecondaryButton>
       </div>
 
@@ -298,7 +303,7 @@ export function ArtifactGalleryCard({
         >
           {title}
         </h3>
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+        <div className="flex items-center gap-1.5 text-caption" style={{ color: "var(--midnight-muted)" }}>
           {artifact.issue?.identifier ? (
             <span className="font-mono">{artifact.issue.identifier}</span>
           ) : null}
@@ -306,7 +311,7 @@ export function ArtifactGalleryCard({
           <span>Updated {timeAgo(artifact.updatedAt)}</span>
         </div>
         {artifact.createdByAgent ? (
-          <span className="truncate text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+          <span className="truncate text-caption" style={{ color: "var(--midnight-muted)" }}>
             {artifact.createdByAgent.name}
           </span>
         ) : null}
@@ -340,29 +345,29 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
           onOpenStack(issueId);
         }
       }}
-      className="editorial-card editorial-card-hover group relative flex cursor-pointer flex-col overflow-hidden text-left focus:outline-none focus-visible:ring-2"
+      className="editorial-card editorial-card-hover group relative flex cursor-pointer flex-col overflow-hidden text-left"
       style={{ borderColor: "var(--edge)" }}
     >
       {preview ? (
         <ArtifactPreview artifact={preview} />
       ) : (
         <PreviewFrame>
-          <Layers className="h-8 w-8" style={{ color: "var(--midnight-muted)" }} aria-hidden="true" />
+          <Layers size={20} style={{ color: "var(--midnight-muted)" }} aria-hidden="true" />
         </PreviewFrame>
       )}
       <span
         data-testid="artifact-stack-count"
-        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium backdrop-blur"
+        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-caption font-medium backdrop-blur"
         style={{ background: "var(--cream)", color: "var(--midnight)", border: "1px solid var(--edge)" }}
       >
-        <Layers className="h-3 w-3" aria-hidden="true" />
+        <Layers size={12} strokeWidth={1.75} aria-hidden="true" />
         {group.count}
       </span>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="flex items-center gap-2">
           {group.issue?.identifier ? (
-            <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+            <span className="flex-shrink-0 font-mono text-caption" style={{ color: "var(--midnight-muted)" }}>
               {group.issue.identifier}
             </span>
           ) : null}
@@ -374,7 +379,7 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
             {group.title}
           </h3>
         </div>
-        <span className="text-[11px]" style={{ color: "var(--midnight-muted)" }}>
+        <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
           {group.count} {group.count === 1 ? "item" : "items"} · Updated {timeAgo(group.updatedAt)}
         </span>
       </div>

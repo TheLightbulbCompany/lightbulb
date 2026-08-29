@@ -370,8 +370,22 @@ def _env() -> str:
 
 
 def _aip_name(owner_id: str, tier: str) -> str:
-    """Env-prefixed AIP name so dev/prod never collide on a global name."""
-    return f"isol8-{_env()}-{owner_id}-{tier}"
+    """Env-prefixed AIP name so dev/prod never collide on a global name.
+
+    Changing this does NOT rename anything for an existing owner. Bedrock has no
+    update/rename operation for application inference profiles — only create,
+    delete, get, list — and ``ensure_owner_aips`` skips any tier already present
+    in the owner's stored ARN map (``if tier in arns: continue``). So an owner
+    who already holds a sonnet ARN keeps their old-named profile forever; only a
+    fresh owner, or one whose map has been cleared, mints under this name.
+
+    Migrating an existing owner therefore means: clear their stored map, let a
+    provision mint fresh profiles, and repoint every place the OLD ARN was
+    persisted — the containers row, the reverse table (whose PRIMARY KEY is the
+    arn), the gate-token row's aip_tiers, the task-def model env, and
+    openclaw.json on EFS. scripts/migrate_aip_names.py drives that.
+    """
+    return f"lightbulb-{_env()}-{owner_id}-{tier}"
 
 
 async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) -> dict[str, str]:

@@ -411,8 +411,15 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     assert "ECS API down" in (by_system["ecs_service"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "metronome", "stripe", "usage_counters"):
+    for system in ("efs_workspace_dir", "metronome", "usage_counters"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
+
+    # "stripe" covers two steps (Step 8 delete_stripe_customer, Step 8b
+    # deauthorize_company_account) -- disambiguate by action so both are
+    # independently checked instead of one silently shadowing the other.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "ok"
+    assert stripe_steps["deauthorize_company_account"].status == "ok"
 
     # Clerk — last step — must still have been called despite the earlier failure.
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
@@ -469,7 +476,11 @@ async def test_skips_metronome_when_no_metronome_customer_id(wipe_mocks):
     by_system = {s.system: s for s in report.steps}
     assert by_system["metronome"].status == "skipped"
     wipe_mocks.metronome_archive.assert_not_awaited()
-    assert by_system["stripe"].status == "ok"
+    # Disambiguate by action -- "stripe" covers Step 8 (delete_stripe_customer)
+    # and Step 8b (deauthorize_company_account); both are independent of
+    # metronome_customer_id, and are still on the row here (default fixture).
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -480,9 +491,12 @@ async def test_skips_billing_dependent_steps_when_no_billing_row(wipe_mocks):
 
     by_system = {s.system: s for s in report.steps}
     assert by_system["metronome"].status == "skipped"
-    assert by_system["stripe"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     wipe_mocks.billing_delete.assert_not_awaited()
+    # No billing row -> both "stripe"-system steps skip independently.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "skipped"
+    assert stripe_steps["deauthorize_company_account"].status == "skipped"
     # Non-billing steps still ran normally.
     assert by_system["clerk_user"].status == "ok"
 
@@ -689,7 +703,10 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     assert "bedrock_aips" not in by_system
     assert "bedrock_role" not in by_system
     assert by_system["metronome"].status == "skipped"
-    assert by_system["stripe"].status == "skipped"
+    # No billing row -> both "stripe"-system preview steps skip independently.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "skipped"
+    assert stripe_steps["deauthorize_company_account"].status == "skipped"
     assert by_system["paperclip_row"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     assert by_system["user_row"].status == "skipped"

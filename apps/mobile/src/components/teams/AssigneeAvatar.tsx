@@ -4,9 +4,10 @@ import { colors, fonts } from "../../config/theme";
 import type { AssigneeDisplay } from "../../lib/teamsData";
 
 // ---------------------------------------------------------------------------
-// Assignee avatar (Teams v3 T3a). Agents render a single-letter forest-tint
-// monogram (matching the pre-v3 board card); human members render up to two
-// initials in a neutral avatar, or their Clerk photo when one is present. The
+// Assignee avatar (Teams v3 T3a). Agents render a single-letter monogram on
+// the deeper surface step; human members render up to two initials on the
+// lighter step, or their Clerk photo when one is present. Two steps, because
+// one initial vs two is not a distinction for a single-word human name. The
 // photo is drawn OVER the initials with the built-in RN Image (no native/remote
 // image dep), so a failed/slow image load simply falls back to the initials
 // underneath — no error state needed.
@@ -71,10 +72,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     overflow: "hidden",
   },
-  agentCircle: { backgroundColor: colors.forestTint },
+  agentCircle: { backgroundColor: colors.creamDeepest },
   userCircle: { backgroundColor: colors.avatarBg },
   glyph: { textAlign: "center" },
-  agentGlyph: { fontFamily: fonts.dmSansBold, color: colors.forest },
-  userGlyph: { fontFamily: fonts.dmSansBold, color: colors.avatarText },
+  agentGlyph: { fontFamily: fonts.sansSemiBold, color: colors.forest },
+  userGlyph: { fontFamily: fonts.sansSemiBold, color: colors.avatarText },
   photo: { position: "absolute", top: 0, left: 0 },
 });

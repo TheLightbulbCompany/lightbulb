@@ -302,19 +302,19 @@ const styles = StyleSheet.create({
   rowIcon: { marginTop: 1 },
   rowText: { flex: 1, gap: 2 },
   rowTitle: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   rowMeta: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
   },
   linkAction: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.forest,
@@ -328,7 +328,7 @@ const styles = StyleSheet.create({
   },
   reviewLabel: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.warn,
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
   },
   approveText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.white,
@@ -358,7 +358,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
   },
   changesText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,

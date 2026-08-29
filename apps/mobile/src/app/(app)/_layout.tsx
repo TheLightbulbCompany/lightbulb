@@ -55,7 +55,7 @@ export default function AppLayout() {
               },
               headerShadowVisible: false,
               headerTitleStyle: {
-                fontFamily: fonts.dmSansBold,
+                fontFamily: fonts.sansSemiBold,
                 fontSize: 17,
                 color: colors.ink,
               },
@@ -67,7 +67,7 @@ export default function AppLayout() {
               },
               tabBarActiveTintColor: colors.forest,
               tabBarInactiveTintColor: colors.muted,
-              tabBarLabelStyle: { fontFamily: fonts.dmSansMedium, fontSize: 11 },
+              tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: 11 },
             }}
           >
             <Tabs.Screen

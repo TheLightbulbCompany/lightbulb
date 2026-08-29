@@ -382,13 +382,13 @@ const styles = StyleSheet.create({
   headIcon: { marginTop: 1 },
   headText: { flex: 1, gap: 2 },
   title: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,
   },
   meta: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -396,7 +396,7 @@ const styles = StyleSheet.create({
 
   resolvedRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   resolvedText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -406,13 +406,13 @@ const styles = StyleSheet.create({
   optionRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
   optionText: { flex: 1, gap: 2 },
   optionLabel: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   optionDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -431,7 +431,7 @@ const styles = StyleSheet.create({
 
   optionLocked: { opacity: 0.45 },
   selectionHint: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.warn,
@@ -439,7 +439,7 @@ const styles = StyleSheet.create({
 
   questionBlock: { gap: spacing.sm },
   questionPrompt: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -447,7 +447,7 @@ const styles = StyleSheet.create({
 
   actions: { flexDirection: "row", gap: spacing.sm },
   pressed: { opacity: 0.6 },
-  btnDisabled: { backgroundColor: colors.creamDeepest, borderColor: colors.creamDeepest },
+  btnDisabled: { opacity: 0.5 },
   acceptBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -460,7 +460,7 @@ const styles = StyleSheet.create({
     borderColor: colors.forest,
   },
   acceptText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.white,
@@ -474,7 +474,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
   },
   rejectText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,

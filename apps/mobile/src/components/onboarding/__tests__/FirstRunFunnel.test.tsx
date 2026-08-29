@@ -233,7 +233,7 @@ describe("FirstRunFunnel", () => {
     expect(mockPost).toHaveBeenCalledTimes(3);
 
     await u.press(screen.getByText("contact support"));
-    expect(openURL).toHaveBeenCalledWith("mailto:support@isol8.co");
+    expect(openURL).toHaveBeenCalledWith("mailto:support@thelightbulb.company");
 
     openURL.mockRestore();
   });

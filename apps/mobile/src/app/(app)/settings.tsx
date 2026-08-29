@@ -335,8 +335,8 @@ export default function Settings() {
                           detail === "email_mismatch"
                             ? "That email didn't match this account."
                             : detail === "deletion_incomplete"
-                              ? "Deletion didn't finish — try again in a moment, or contact support@isol8.co."
-                              : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
+                              ? "Deletion didn't finish — try again in a moment, or contact support@thelightbulb.company."
+                              : (detail ?? "Something went wrong — try again or contact support@thelightbulb.company."),
                         );
                       }
                     })(),
@@ -643,7 +643,7 @@ const styles = StyleSheet.create({
 
   overline: { ...type.overline },
   bodyText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -665,13 +665,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   avatarText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 12,
     color: colors.avatarText,
   },
   profileText: { flex: 1, gap: 2 },
   profileName: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -692,7 +692,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   planBadgeText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 0.4,
@@ -706,7 +706,7 @@ const styles = StyleSheet.create({
   },
   linkRowPressed: { opacity: 0.6 },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -714,7 +714,7 @@ const styles = StyleSheet.create({
 
   // Credits card
   balanceText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 20,
     lineHeight: 26,
     color: colors.ink,
@@ -737,7 +737,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -753,7 +753,7 @@ const styles = StyleSheet.create({
   },
   retryButtonPressed: { opacity: 0.6 },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,
@@ -770,13 +770,13 @@ const styles = StyleSheet.create({
   },
   signOutRowPressed: { backgroundColor: colors.creamPressed },
   signOutText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.danger,
   },
   deleteText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.danger,

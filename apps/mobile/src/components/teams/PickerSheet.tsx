@@ -148,13 +148,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   heading: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
   },
   subheading: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -180,12 +180,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
   },
-  rowActive: { backgroundColor: colors.white },
+  // The only white fill in the app with no border to hold it: on the cream
+  // sheet the active row has to be a surface STEP, one deeper than pressed.
+  rowActive: { backgroundColor: colors.creamDeepest },
   rowPressed: { backgroundColor: colors.creamDeeper },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,

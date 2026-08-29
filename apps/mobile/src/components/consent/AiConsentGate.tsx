@@ -170,7 +170,7 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
   content: { padding: spacing.xl, gap: spacing.lg },
-  title: { ...type.display, fontFamily: fonts.loraBold },
+  title: { ...type.display },
   lede: { ...type.body, color: colors.inkSoft },
   card: {
     backgroundColor: colors.white,
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   },
   overline: { ...type.overline },
   item: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.ink,
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
   caption: { ...type.caption, marginTop: spacing.xs },
   linkRow: { alignSelf: "flex-start", borderRadius: radii.xs },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -202,7 +202,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   primaryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 22,
     color: colors.white,
@@ -216,7 +216,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   secondaryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.inkSoft,

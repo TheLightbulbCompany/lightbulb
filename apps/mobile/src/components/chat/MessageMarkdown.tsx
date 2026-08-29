@@ -49,13 +49,13 @@ const rules: RenderRules = {
 // it internally, merging over its defaults (mergeStyle).
 const markdownStyles = {
   body: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 28,
     color: colors.assistantInk,
   },
   heading1: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 18,
     lineHeight: 24,
     color: colors.assistantInk,
@@ -63,7 +63,7 @@ const markdownStyles = {
     marginBottom: spacing.sm,
   },
   heading2: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 16,
     lineHeight: 22,
     color: colors.assistantInk,
@@ -71,7 +71,7 @@ const markdownStyles = {
     marginBottom: spacing.sm,
   },
   heading3: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 14,
     lineHeight: 20,
     color: colors.assistantInk,
@@ -79,7 +79,7 @@ const markdownStyles = {
     marginBottom: spacing.xs,
   },
   heading4: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 20,
     color: colors.assistantInk,
@@ -89,13 +89,13 @@ const markdownStyles = {
   paragraph: { marginTop: 0, marginBottom: spacing.md },
   // Static weight-specific font files: neutralize the default synthetic
   // bold so iOS doesn't look for a bold face inside the 700 family.
-  strong: { fontFamily: fonts.dmSansBold, fontWeight: "normal" as const },
+  strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
   link: { color: colors.forest, textDecorationLine: "underline" as const },
   bullet_list: { marginBottom: spacing.md },
   ordered_list: { marginBottom: spacing.md },
   list_item: { marginBottom: spacing.xs },
   bullet_list_icon: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 28,
     color: colors.assistantInk,
@@ -103,7 +103,7 @@ const markdownStyles = {
     marginRight: spacing.sm,
   },
   ordered_list_icon: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 28,
     color: colors.assistantInk,
@@ -183,7 +183,7 @@ const markdownStyles = {
   th: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
   },
   tr: { borderColor: colors.edge },
   td: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },

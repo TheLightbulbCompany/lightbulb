@@ -20,6 +20,7 @@ import { readFirstRun } from "../../lib/firstRun";
 import { useContainerStatusContext } from "../../lib/containerStatusContext";
 import { isContainerComingUp } from "../../lib/rosterPresentation";
 import { useGateway } from "../../providers/gateway";
+import { LogoMark } from "../../components/LogoMark";
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
 function HealthRow({
@@ -77,7 +78,7 @@ function Monogram({
         </Text>
       ) : (
         <Text style={big ? styles.monogramLetterBig : styles.monogramLetter}>
-          {(name.trim()[0] ?? "8").toUpperCase()}
+          {(name.trim()[0] ?? "L").toUpperCase()}
         </Text>
       )}
     </View>
@@ -240,7 +241,7 @@ export default function Chat() {
             <SkeletonGrid warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyGlyph}>8</Text>
+              <LogoMark size={48} />
               <Text style={styles.dim}>No agents yet.</Text>
             </View>
           )
@@ -370,7 +371,7 @@ const styles = StyleSheet.create({
   },
   healthDot: { width: 8, height: 8, borderRadius: 4 },
   healthLabel: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -392,7 +393,7 @@ const styles = StyleSheet.create({
   },
   newTaskPressed: { opacity: 0.85 },
   newTaskLabel: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.cream,
@@ -444,7 +445,7 @@ const styles = StyleSheet.create({
   monogramEmoji: { fontSize: 14 },
   monogramEmojiBig: { fontSize: 22 },
   tileName: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.ink,
@@ -452,12 +453,6 @@ const styles = StyleSheet.create({
   },
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // Loading skeletons — 2×2 tile grid (spec §7).
   warmingLabel: {
@@ -489,14 +484,14 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 20,
     color: colors.forest,
     marginTop: spacing.sm,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,

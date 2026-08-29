@@ -203,7 +203,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     padding: spacing.xl,
   },
-  // Lora, not type.title's DM Sans Bold — matches web's `.provision-title`
+  // Lora, not type.title's Source Sans 3 — matches web's `.provision-title`
   // (Lora 400) so the onboarding surfaces read the same on both clients.
   headline: {
     fontFamily: fonts.lora,
@@ -213,7 +213,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   body: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.mute,
@@ -233,7 +233,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
   expiry: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -251,26 +251,26 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
   },
   primaryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.white,
   },
   urlCaption: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
   },
   waiting: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
     textAlign: "center",
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -284,7 +284,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   signOutText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,

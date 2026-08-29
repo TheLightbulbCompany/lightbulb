@@ -115,7 +115,7 @@ export function PaywallScreen({
         // No token means nothing verifiable to send; treat as a failed purchase
         // rather than silently granting anything.
         if (!purchase.purchaseToken) {
-          setError("That purchase couldn't be confirmed. Contact support@isol8.co.");
+          setError("That purchase couldn't be confirmed. Contact support@thelightbulb.company.");
           setBusy(false);
           return;
         }
@@ -127,7 +127,7 @@ export function PaywallScreen({
           onPurchased();
         } catch {
           setError(
-            "Your purchase went through, but we couldn't activate it yet. Reopen the app, or contact support@isol8.co.",
+            "Your purchase went through, but we couldn't activate it yet. Reopen the app, or contact support@thelightbulb.company.",
           );
         } finally {
           setBusy(false);
@@ -300,7 +300,7 @@ export function PaywallScreen({
         // Purchases exist but none could be recorded — an honest failure beats
         // silence, since the customer is trying to recover something they paid
         // for and would otherwise assume it simply did not exist.
-        setError("We found a purchase but couldn't restore it. Contact support@isol8.co.");
+        setError("We found a purchase but couldn't restore it. Contact support@thelightbulb.company.");
       } else {
         setError("No previous purchase found on this Apple Account.");
       }
@@ -395,7 +395,7 @@ export function PaywallScreen({
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
   content: { padding: spacing.xl, gap: spacing.lg },
-  title: { ...type.display, fontFamily: fonts.loraBold, textAlign: "center" },
+  title: { ...type.display, textAlign: "center" },
   lede: { ...type.body, color: colors.inkSoft, textAlign: "center" },
   card: {
     backgroundColor: colors.white,
@@ -407,7 +407,7 @@ const styles = StyleSheet.create({
   },
   overline: { ...type.overline },
   price: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 24,
     lineHeight: 30,
     color: colors.ink,
@@ -421,20 +421,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   primaryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 22,
     color: colors.white,
   },
   linkRow: { alignSelf: "flex-start", borderRadius: radii.xs },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
   },
   error: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

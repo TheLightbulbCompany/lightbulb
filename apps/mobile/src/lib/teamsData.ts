@@ -1697,7 +1697,11 @@ export function approvalStatusMeta(status: ApprovalStatus): {
         tint: colors.statusTintTodo,
       };
     case "approved":
-      return { label: "Approved", color: colors.forest, tint: colors.forestTint };
+      return {
+        label: "Approved",
+        color: colors.runningGreen,
+        tint: colors.statusTintDone,
+      };
     case "rejected":
       return { label: "Rejected", color: colors.danger, tint: colors.statusTintBlocked };
     case "cancelled":

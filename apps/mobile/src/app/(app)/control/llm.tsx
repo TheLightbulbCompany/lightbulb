@@ -520,7 +520,7 @@ const styles = StyleSheet.create({
 
   overline: { ...type.overline },
   bodyText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -537,7 +537,7 @@ const styles = StyleSheet.create({
 
   // Credits.
   balanceText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 20,
     lineHeight: 26,
     color: colors.ink,
@@ -560,7 +560,7 @@ const styles = StyleSheet.create({
   },
   modelName: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -572,7 +572,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   defaultBadgeText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 9,
     lineHeight: 12,
     letterSpacing: 0.4,
@@ -587,7 +587,7 @@ const styles = StyleSheet.create({
   },
   linkRowPressed: { opacity: 0.6 },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -610,7 +610,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -626,7 +626,7 @@ const styles = StyleSheet.create({
   },
   retryButtonPressed: { opacity: 0.6 },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

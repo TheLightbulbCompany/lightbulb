@@ -22,6 +22,7 @@ import {
   useMarketplaceSearch,
   type Listing,
 } from "../../../lib/marketplace";
+import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
 // Skeleton (spec §7) — pulsing rows while the search is in flight.
@@ -66,7 +67,7 @@ function ListingRow({ item }: { item: Listing }) {
             {item.name}
           </Text>
           <View style={[styles.priceBadge, !free && styles.priceBadgePaid]}>
-            <Text style={[styles.priceText, !free && styles.priceTextPaid]}>
+            <Text style={styles.priceText}>
               {price}
             </Text>
           </View>
@@ -149,7 +150,7 @@ export default function MarketplacePanel() {
         }
         ListEmptyComponent={
           <View style={styles.emptyWrap}>
-            <Text style={styles.emptyGlyph}>8</Text>
+            <LogoMark size={48} />
             <Text style={styles.dim}>No listings</Text>
           </View>
         }
@@ -202,14 +203,14 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
   },
   searchInput: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
@@ -249,14 +250,14 @@ const styles = StyleSheet.create({
   rowText: { flex: 1, gap: 2 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   name: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
     flexShrink: 1,
   },
   summary: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
@@ -266,34 +267,31 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 0.4,
-    color: colors.muteSoft,
+    color: colors.mute,
   },
 
-  // Price badge — FREE (forest tint) vs paid ($ amount, gold).
+  // Price badge — one surface step for both; FREE takes the plain hairline,
+  // paid takes a brass rule. Brass is 2.94:1 on cream so it is the BORDER, not
+  // the type; the amount itself stays midnight.
   priceBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radii.xs,
-    backgroundColor: colors.forestTint,
+    backgroundColor: colors.creamDeeper,
+    borderWidth: 1,
+    borderColor: colors.edge,
   },
-  priceBadgePaid: { backgroundColor: colors.chip },
+  priceBadgePaid: { borderColor: colors.gold },
   priceText: {
     fontFamily: fonts.mono,
     fontSize: 9,
     lineHeight: 12,
     letterSpacing: 0.8,
-    color: colors.forest,
+    color: colors.ink,
   },
-  priceTextPaid: { color: colors.inkSoft },
 
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // Skeletons (spec §7).
   skeletonGroup: { padding: spacing.md, gap: spacing.sm },
@@ -314,7 +312,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -329,7 +327,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

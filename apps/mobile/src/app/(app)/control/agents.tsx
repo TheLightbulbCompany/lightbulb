@@ -30,6 +30,7 @@ import { deriveWorkspace, validateAgentName } from "../../../lib/agentCatalog";
 import { useGateway } from "../../../providers/gateway";
 import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 import { isContainerComingUp } from "../../../lib/rosterPresentation";
+import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
 // Skeleton (spec §7) — three pulsing rows while agents.list is in flight.
@@ -414,7 +415,7 @@ export default function AgentsPanel() {
             <SkeletonRows warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyGlyph}>8</Text>
+              <LogoMark size={48} />
               <Text style={styles.dim}>No agents yet.</Text>
             </View>
           )
@@ -508,13 +509,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   cardName: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,
   },
   cardModel: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
@@ -529,12 +530,6 @@ const styles = StyleSheet.create({
 
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // Loading skeletons (spec §7).
   warmingLabel: {
@@ -561,7 +556,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -576,7 +571,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,
@@ -609,19 +604,19 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   input: {
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
   },
   formError: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.danger,
@@ -640,7 +635,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   ghostButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.mute,
@@ -654,9 +649,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.forest,
   },
-  primaryButtonDisabled: { backgroundColor: colors.creamPressed },
+  primaryButtonDisabled: { opacity: 0.5 },
   primaryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.white,

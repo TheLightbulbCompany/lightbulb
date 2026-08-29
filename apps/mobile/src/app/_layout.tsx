@@ -1,15 +1,15 @@
 import { ClerkProvider } from "@clerk/clerk-expo";
 import {
-  DMSans_400Regular,
-  DMSans_500Medium,
-  DMSans_700Bold,
-} from "@expo-google-fonts/dm-sans";
-import {
   Lora_400Regular,
   Lora_400Regular_Italic,
-  Lora_700Bold,
+  Lora_500Medium,
   Lora_700Bold_Italic,
 } from "@expo-google-fonts/lora";
+import {
+  SourceSans3_400Regular,
+  SourceSans3_500Medium,
+  SourceSans3_600SemiBold,
+} from "@expo-google-fonts/source-sans-3";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -23,19 +23,19 @@ import { tokenCache } from "../lib/tokenCache";
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 // Hold the splash screen until fonts are ready so the first frame renders in
-// DM Sans / Lora rather than flashing system fonts.
+// Source Sans 3 / Lora rather than flashing system fonts.
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Reloads / fast refresh can reject this; the splash is already hidden.
 });
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    DMSans_400Regular,
-    DMSans_500Medium,
-    DMSans_700Bold,
+    SourceSans3_400Regular,
+    SourceSans3_500Medium,
+    SourceSans3_600SemiBold,
     Lora_400Regular,
     Lora_400Regular_Italic,
-    Lora_700Bold,
+    Lora_500Medium,
     Lora_700Bold_Italic,
   });
   // On font-load failure we still proceed — unknown fontFamily names fall

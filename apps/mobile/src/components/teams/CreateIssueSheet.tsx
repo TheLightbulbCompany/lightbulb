@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   heading: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 16,
     lineHeight: 21,
     color: colors.ink,
@@ -283,11 +283,11 @@ const styles = StyleSheet.create({
   },
 
   titleInput: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -295,11 +295,11 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   descInput: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.ink,
-    backgroundColor: colors.white,
+    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
     borderColor: colors.edge,
     borderRadius: radii.md,
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
   chipPressed: { opacity: 0.6 },
   chipDot: { width: 9, height: 9, borderRadius: 5 },
   chipText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
   },
   cancelPressed: { opacity: 0.6 },
   cancelText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.mute,
@@ -360,9 +360,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     backgroundColor: colors.forest,
   },
-  createDisabled: { backgroundColor: colors.creamPressed },
+  createDisabled: { opacity: 0.5 },
   createText: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 14,
     lineHeight: 18,
     color: colors.white,

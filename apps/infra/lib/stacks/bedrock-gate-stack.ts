@@ -430,7 +430,7 @@ export class BedrockGateStack extends cdk.Stack {
     this.gateFnDev = fns["dev"];
     this.gateFnProd = fns["prod"];
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", props.envName);
   }
 }

@@ -589,7 +589,7 @@ export class SesInboundStack extends cdk.Stack {
     // set before SES is permitted to write to the bucket / invoke the fn.
     activateRuleSet.node.addDependency(catchAllRule);
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", envName);
   }
 }

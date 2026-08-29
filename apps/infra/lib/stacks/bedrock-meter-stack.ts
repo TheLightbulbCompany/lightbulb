@@ -602,7 +602,7 @@ export class BedrockMeterStack extends cdk.Stack {
     this.meterFnDev = fns["dev"];
     this.meterFnProd = fns["prod"];
 
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", props.envName);
   }
 }

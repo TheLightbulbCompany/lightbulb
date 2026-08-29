@@ -92,8 +92,8 @@ describe("deploy.yml prod promotion gate", () => {
   it("keeps prod sequenced behind dev", () => {
     // The gate changes WHEN prod runs, never the DAG. Prod deploys still wait
     // on the dev stage inside the same run.
-    const auth = jobs.get("prod-isol8-prod-auth-Deploy")!;
-    expect(auth).toContain("- dev-isol8-dev-service-Deploy");
+    const auth = jobs.get("prod-lightbulb-prod-auth-Deploy")!;
+    expect(auth).toContain("- dev-lightbulb-dev-service-Deploy");
     expect(auth).toContain("- Build-Synth");
   });
 });

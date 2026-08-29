@@ -772,7 +772,7 @@ export class PaperclipStack extends cdk.Stack {
     });
 
     // Tags
-    cdk.Tags.of(this).add("Project", "isol8");
+    cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", env);
     cdk.Tags.of(this).add("Component", "paperclip");
   }

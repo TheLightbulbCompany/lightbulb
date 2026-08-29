@@ -2424,7 +2424,7 @@ export class ServiceStack extends cdk.Stack {
     // Tags
     // -------------------------------------------------------------------------
     cdk.Tags.of(this.service).add("Name", `isol8-${env}-backend`);
-    cdk.Tags.of(this.service).add("Project", "isol8");
+    cdk.Tags.of(this.service).add("Project", "lightbulb");
     cdk.Tags.of(this.service).add("Environment", env);
   }
 }

@@ -16,8 +16,13 @@ from fastapi import HTTPException
 from core.repositories import billing_repo
 from core.services import provision_gate, trial_cap
 
+DEFAULT_ALWAYS_ON_MESSAGE = (
+    "Scheduled routines are part of a paid plan — on the free plan your agents "
+    "only run while you're here. Upgrade to let them work on a schedule."
+)
 
-async def require_always_on_entitlement(owner_id: str) -> None:
+
+async def require_always_on_entitlement(owner_id: str, message: str | None = None) -> None:
     """403 unless the owner may create ALWAYS-ON automation.
 
     Autonomy is what the subscription buys — ``has_always_on_entitlement`` is
@@ -49,11 +54,11 @@ async def require_always_on_entitlement(owner_id: str) -> None:
             detail={
                 "blocked": True,
                 "code": "routines_require_subscription",
-                "message": (
-                    "Scheduled routines are part of a paid plan — on the free "
-                    "plan your agents only run while you're here. Upgrade to let "
-                    "them work on a schedule."
-                ),
+                # ``message`` is the only thing a caller may vary: the predicate
+                # and the code are the decision, the copy is what the surface
+                # reaching for autonomy should say. The provisioning rail passes
+                # its own; everything else gets the routines wording.
+                "message": message or DEFAULT_ALWAYS_ON_MESSAGE,
             },
         )
 

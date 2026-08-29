@@ -3,6 +3,7 @@ import { Construct } from "constructs";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
+import { RefactorPlaceholderStack } from "./stacks/refactor-placeholder-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
 import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
@@ -32,6 +33,22 @@ export interface Isol8StageProps extends cdk.StageProps {
    */
   platformMailDomain?: string;
 }
+
+const REFACTOR_TARGET_SUFFIXES = [
+  "auth",
+  "dns",
+  "ses-inbound",
+  "agent-mail-outbound",
+  "network",
+  "database",
+  "container",
+  "api",
+  "service",
+  "paperclip",
+  "observability",
+  "bedrock-meter",
+  "bedrock-gate",
+] as const;
 
 export class Isol8Stage extends cdk.Stage {
   constructor(scope: Construct, id: string, props: Isol8StageProps) {
@@ -323,8 +340,21 @@ export class Isol8Stage extends cdk.Stage {
       });
     }
 
+    // TRANSITIONAL — step 1 of 3 of the isol8-* -> lightbulb-* stack rename.
+    // Claims each destination stack NAME so a later `cdk refactor` has somewhere
+    // to move the real resources into: the CLI refuses to create the destination
+    // itself ("Creation of new stacks is not yet supported by the refactor
+    // command"). See refactor-placeholder-stack.ts for the full reasoning.
+    for (const suffix of REFACTOR_TARGET_SUFFIXES) {
+      new RefactorPlaceholderStack(this, `lightbulb-${env}-${suffix}`, {
+        stackName: `lightbulb-${env}-${suffix}`,
+      });
+    }
+
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "isol8");
     cdk.Tags.of(this).add("Environment", env);
   }
+
+
 }

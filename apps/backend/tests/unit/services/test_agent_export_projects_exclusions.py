@@ -36,13 +36,34 @@ def _members(blob: bytes) -> list[str]:
         return tf.getnames()
 
 
+def _extracted_text(blob: bytes) -> str:
+    """Decompress and concatenate every shipped file's actual bytes.
+
+    Checking a plaintext substring against ``blob`` directly is a dead
+    assertion: ``blob`` is gzip-compressed, and deflate output essentially
+    never contains the plaintext substring whether or not it was ever
+    tarred — so a leaked secret would pass silently. Extracting is the only
+    place a content check proves anything.
+    """
+    chunks: list[bytes] = []
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            extracted = tf.extractfile(member)
+            if extracted is not None:
+                chunks.append(extracted.read())
+    return b"\n".join(chunks).decode("latin-1")
+
+
 def test_tarball_omits_projects_stripe_and_credential_files(dirty_workspace):
     blob, contents, _pruned = _build_tarball(dirty_workspace)
     names = " ".join(_members(blob)) + " " + " ".join(contents)
     for leaked in (".projects", ".stripe", ".config", ".env", "posthog-credentials.json"):
         assert leaked not in names, f"{leaked} reached the artifact"
-    assert "phc_live_leak" not in blob.decode("latin-1")
-    assert "sk_live_leak" not in blob.decode("latin-1")
+    extracted = _extracted_text(blob)
+    assert "phc_live_leak" not in extracted
+    assert "sk_live_leak" not in extracted
     # The real workspace still ships.
     assert any(n.endswith("AGENTS.md") for n in _members(blob))
     assert any(n.endswith("skills/sell.md") for n in _members(blob))
@@ -70,4 +91,4 @@ def test_a_copied_non_dot_vault_is_still_caught(dirty_workspace):
     copied.mkdir()
     (copied / "credentials.json").write_text('{"token":"phc_live_leak"}\n')
     blob, _contents, _ = _build_tarball(dirty_workspace)
-    assert "phc_live_leak" not in blob.decode("latin-1")
+    assert "phc_live_leak" not in _extracted_text(blob)

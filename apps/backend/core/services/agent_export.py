@@ -130,15 +130,15 @@ def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
 # to a buyer.
 _SKIP_DIR_NAMES = frozenset(
     {
-        "__pycache__",
-        ".cache",
         ".DS_Store",
+        ".cache",
         ".git",
         ".projects",
         ".pytest_cache",
         ".ruff_cache",
         ".stripe",
         ".venv",
+        "__pycache__",
         "node_modules",
         "uploads",
     }

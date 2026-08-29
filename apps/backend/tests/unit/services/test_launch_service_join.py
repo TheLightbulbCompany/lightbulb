@@ -203,6 +203,36 @@ def test_rank_only_considers_entries_with_a_connected_key():
     assert rows[1]["pct"] == 0.5 and rows[2]["pct"] == -0.2
 
 
+def test_rank_excludes_private_entrants_even_with_a_connected_key():
+    """public=False means "don't show my name" — has_key alone must not
+    override that privacy choice; only has_key AND public rank."""
+    rows = launch_service.rank(
+        [
+            {
+                "owner_id": "a",
+                "display_name": "Private",
+                "has_key": True,
+                "public": False,
+                "delta_cents": 999,
+                "baseline_cents": 100,
+                "currency": "usd",
+                "entered_at": "1",
+            },
+            {
+                "owner_id": "b",
+                "display_name": "Public",
+                "has_key": True,
+                "public": True,
+                "delta_cents": 5,
+                "baseline_cents": 10,
+                "currency": "usd",
+                "entered_at": "2",
+            },
+        ]
+    )
+    assert [r["display_name"] for r in rows] == ["Public"]
+
+
 def test_rank_pct_uses_the_prorated_baseline_when_present():
     """delta_cents is measured against the prorated baseline; pct must match, or
     the board understates everyone's growth until the last day."""
@@ -238,6 +268,7 @@ async def test_leaderboard_returns_competing_and_on_board_counts():
             "owner_id": "a",
             "display_name": "A",
             "has_key": True,
+            "public": True,
             "delta_cents": 10,
             "baseline_cents": 0,
             "currency": "usd",
@@ -252,8 +283,20 @@ async def test_leaderboard_returns_competing_and_on_board_counts():
             "currency": "usd",
             "entered_at": "2",
         },
+        {
+            "owner_id": "c",
+            "display_name": "C",
+            "has_key": True,
+            "public": False,  # private but keyed — counts toward on_board, absent from rows
+            "delta_cents": 999,
+            "baseline_cents": 0,
+            "currency": "usd",
+            "entered_at": "3",
+        },
     ]
     with patch("core.services.launch_service.launch_entries_repo.list_all", AsyncMock(return_value=entries)):
         result = await launch_service.leaderboard()
-    assert result["competing"] == 2 and result["on_board"] == 1
+    # on_board counts every has_key entry, including private ones — it can be > len(rows).
+    assert result["competing"] == 3 and result["on_board"] == 2
     assert len(result["rows"]) == 1 and result["rows"][0]["display_name"] == "A"
+    assert "C" not in [r["display_name"] for r in result["rows"]]

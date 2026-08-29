@@ -122,15 +122,19 @@ async def test_connect_stripe_allowed_for_an_org_admin(configured, async_client_
     AsyncMock(
         return_value={
             "competing": 2,
-            "on_board": 1,
+            # 2 keyed entrants but only 1 public row — a private keyed entrant is
+            # counted here and absent from rows (launch_service.rank filters them).
+            "on_board": 2,
             "rows": [{"rank": 1, "display_name": "A", "delta_cents": 5, "pct": None, "currency": "usd"}],
         }
     ),
 )
 async def test_leaderboard_public_cached(configured, unauthenticated_async_client):
     r = await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
-    assert r.status_code == 200 and r.json()["rows"][0]["rank"] == 1
-    assert r.json()["competing"] == 2 and r.json()["on_board"] == 1
+    body = r.json()
+    assert r.status_code == 200 and body["rows"][0]["rank"] == 1
+    assert body["competing"] == 2 and body["on_board"] == 2
+    assert len(body["rows"]) == 1 and body["on_board"] > len(body["rows"])  # private entrant stays off the board
     assert r.headers["cache-control"] == "public, max-age=60"
 
 

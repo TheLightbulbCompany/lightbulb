@@ -161,7 +161,7 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
 
 
 def rank(entries: list[dict]) -> list[dict]:
-    visible = [e for e in entries if e.get("has_key")]
+    visible = [e for e in entries if e.get("has_key") and e.get("public", True)]
     visible.sort(key=lambda e: (-int(e.get("delta_cents", 0)), e.get("entered_at") or ""))
     rows = []
     for i, e in enumerate(visible, start=1):

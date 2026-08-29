@@ -743,7 +743,7 @@ export class PaperclipStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PaperclipMigrateTaskDefArn", {
       value: migrateTaskDef.taskDefinitionArn,
       description:
-        "One-shot migrate task — run via `aws ecs run-task`. See apps/infra/paperclip/RUNBOOK.md.",
+        "One-shot migrate task - run via `aws ecs run-task`. See apps/infra/paperclip/RUNBOOK.md.",
       exportName: `isol8-${env}-paperclip-migrate-taskdef`,
     });
 
@@ -767,7 +767,7 @@ export class PaperclipStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PaperclipTaskSecurityGroupId", {
       value: this.taskSecurityGroup.securityGroupId,
       description:
-        "Paperclip task SG — granted ingress by T6 (ALB) and FastAPI peer",
+        "Paperclip task SG - granted ingress by T6 (ALB) and FastAPI peer",
       exportName: `isol8-${env}-paperclip-task-sg`,
     });
 

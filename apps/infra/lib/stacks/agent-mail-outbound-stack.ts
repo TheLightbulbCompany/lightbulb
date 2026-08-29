@@ -59,7 +59,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
         "X-Isol8-SES-Secret",
         cdk.SecretValue.secretsManager(sesIngestSecretName),
       ),
-      description: `isol8 ${envName} agent-mail SES events → backend`,
+      description: `isol8 ${envName} agent-mail SES events -> backend`,
     });
     const destination = new events.ApiDestination(this, "BackendSesEvents", {
       connection,

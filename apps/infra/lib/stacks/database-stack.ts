@@ -484,7 +484,7 @@ export class DatabaseStack extends cdk.Stack {
       | undefined;
     if (!paperclipDbSecret) {
       throw new Error(
-        "PaperclipDb/Secret/Resource not found — the CDK internal path changed. " +
+        "PaperclipDb/Secret/Resource not found - the CDK internal path changed. " +
           "Without the Description override the generated secret references " +
           "AWS::StackName, which makes this stack ineligible for CloudFormation " +
           "stack refactoring.",

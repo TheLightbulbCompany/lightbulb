@@ -397,7 +397,7 @@ export class ObservabilityStack extends cdk.Stack {
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
-      description: "Path traversal attempt blocked — security event",
+      description: "Path traversal attempt blocked - security event",
     });
 
     // P11: marketplace-path-traversal
@@ -417,7 +417,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
       description:
-        "Marketplace agent export path traversal attempt blocked — security event",
+        "Marketplace agent export path traversal attempt blocked - security event",
     });
 
     // P4: update-fleet-patch-invoked
@@ -431,7 +431,7 @@ export class ObservabilityStack extends cdk.Stack {
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
-      description: "Fleet-wide config patch invoked — audit trail",
+      description: "Fleet-wide config patch invoked - audit trail",
     });
 
     // P5: debug-endpoint-prod-hit
@@ -446,7 +446,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
       description:
-        "Debug endpoint hit in production — should be 403d",
+        "Debug endpoint hit in production - should be 403d",
     });
 
     // P6: billing-pricing-missing-model
@@ -476,7 +476,7 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
       severity: "page",
       description:
-        "Update worker heartbeat absent for 5 min — loop may have died",
+        "Update worker heartbeat absent for 5 min - loop may have died",
     });
 
     // P8: dynamodb-throttle-sustained (AWS-native metric math)
@@ -648,7 +648,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
       description:
-        "An inline provision attempt hit its 1800s hard timeout — the owner " +
+        "An inline provision attempt hit its 1800s hard timeout - the owner " +
         "has been down for that whole window and recovery now rides the SFN " +
         "leg (or nothing, in the unwatched degrade).",
     });
@@ -794,7 +794,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
       description:
-        "Frontend connection prune storm — over 100 in 1 hour",
+        "Frontend connection prune storm - over 100 in 1 hour",
     });
 
     // W8: gateway-rpc-error-count
@@ -877,7 +877,7 @@ export class ObservabilityStack extends cdk.Stack {
     const litestreamPuts = new cloudwatch.Alarm(this, "W10B", {
       alarmName: `isol8-${this.envName}-W10B-litestream-put-requests`,
       alarmDescription:
-        "Litestream S3 PUT volume far above the active-fleet ceiling — idle-PUT pathology or a runaway checkpoint loop",
+        "Litestream S3 PUT volume far above the active-fleet ceiling - idle-PUT pathology or a runaway checkpoint loop",
       metric: new cloudwatch.Metric({
         namespace: "AWS/S3",
         metricName: "PutRequests",
@@ -994,7 +994,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
       description:
-        "JWT failures exceed 100 per hour — possible attack",
+        "JWT failures exceed 100 per hour - possible attack",
     });
 
     // W22: auth-jwks-refresh-fail
@@ -1079,7 +1079,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
       description:
-        "A per-user container is dropping Paperclip relay connections >10/15min — agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
+        "A per-user container is dropping Paperclip relay connections >10/15min - agent heartbeats can't stay connected; find the owner via the operator_proxy 'Operator upstream closed' logs",
     });
 
     // W54: gateway-reconnect-throttle-storm (next free id after W53).
@@ -1101,7 +1101,7 @@ export class ObservabilityStack extends cdk.Stack {
       dimensions: { event: "reconnect_throttled" },
       severity: "warn",
       description:
-        "Gateway reconnect throttles exceed 20 in 15 min — reconnect storm (misbehaving container burning the open-handshake budget)",
+        "Gateway reconnect throttles exceed 20 in 15 min - reconnect storm (misbehaving container burning the open-handshake budget)",
     });
 
     // W55: metronome-gate-refresh-error.
@@ -1122,7 +1122,7 @@ export class ObservabilityStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
       description:
-        "Metronome credit-gate balance refresh failing — gate serving stale cached balances; possible Metronome outage",
+        "Metronome credit-gate balance refresh failing - gate serving stale cached balances; possible Metronome outage",
     });
 
     // W56: metronome-webhook-bad-signature.
@@ -1143,7 +1143,7 @@ export class ObservabilityStack extends cdk.Stack {
       dimensions: { result: "bad_signature" },
       severity: "warn",
       description:
-        "Metronome webhook signature verification failing — secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
+        "Metronome webhook signature verification failing - secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
     });
 
     // W63: paperclip-down.
@@ -1176,7 +1176,7 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "warn",
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       description:
-        "Paperclip BFF is unreachable from the backend (httpx connect/transport errors) — Teams/agent flows are degraded. Replaces the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target group).",
+        "Paperclip BFF is unreachable from the backend (httpx connect/transport errors) - Teams/agent flows are degraded. Replaces the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target group).",
     });
 
     // W64: provision-gate-block-spike.
@@ -1198,7 +1198,7 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "warn",
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       description:
-        "Provision gate blocking >10 owners in 15 min — likely a provider outage (Stripe/Metronome/OAuth) silently gating users, not normal unsubscribed traffic. Provisional threshold; sums across all codes.",
+        "Provision gate blocking >10 owners in 15 min - likely a provider outage (Stripe/Metronome/OAuth) silently gating users, not normal unsubscribed traffic. Provisional threshold; sums across all codes.",
     });
   }
 
@@ -1562,7 +1562,7 @@ def handler(event, context):
     this.createAlarm({
       id: "W58",
       name: "per-user-crash-loop",
-      description: "≥3 unexpected container stops in 5 min — a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
+      description: ">=3 unexpected container stops in 5 min - a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
@@ -1651,7 +1651,7 @@ def handler(event, _ctx):
     this.createAlarm({
       id: "W59",
       name: "efs-multi-task-per-ap",
-      description: "A per-user service has >1 RUNNING task — two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
+      description: "A per-user service has >1 RUNNING task - two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
       metric: multiTaskMetric,
       threshold: 0,
       severity: "warn",
@@ -1894,7 +1894,7 @@ def handler(event, _ctx):
     this.createAlarm({
       id: "W61",
       name: "aurora-connections",
-      description: "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
+      description: "Paperclip Aurora DatabaseConnections >100 for 15 min - connection saturation. Provisional threshold.",
       metric: new cloudwatch.Metric({
         namespace: "AWS/RDS",
         metricName: "DatabaseConnections",
@@ -1915,7 +1915,7 @@ def handler(event, _ctx):
     // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
     const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
       ruleName: `isol8-${this.envName}-aurora-failover`,
-      description: "Paperclip Aurora failover/failure events → warn",
+      description: "Paperclip Aurora failover/failure events -> warn",
       eventPattern: {
         source: ["aws.rds"],
         detailType: ["RDS DB Cluster Event", "RDS DB Instance Event"],
@@ -1986,7 +1986,7 @@ def handler(event, _ctx):
       id: "W65",
       name: "paperclip-no-running-task",
       description:
-        "Paperclip Fargate service has no running task for 3 min — the BFF is gone or crash-looping. Native AWS/ECS availability signal, published regardless of traffic; complements W63, which only fires when a real backend call fails. Missing data = breaching: ECS stops publishing LiveTaskCount at zero tasks rather than reporting 0.",
+        "Paperclip Fargate service has no running task for 3 min - the BFF is gone or crash-looping. Native AWS/ECS availability signal, published regardless of traffic; complements W63, which only fires when a real backend call fails. Missing data = breaching: ECS stops publishing LiveTaskCount at zero tasks rather than reporting 0.",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ECS",
         metricName: "LiveTaskCount",
@@ -2079,7 +2079,7 @@ def handler(event, _ctx):
     const w50 = new cloudwatch.Alarm(this, "W50", {
       alarmName: `isol8-${this.envName}-W50-bedrock-spend-anomaly`,
       alarmDescription:
-        "Bedrock invocation count spike — potential cost anomaly",
+        "Bedrock invocation count spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Bedrock",
         metricName: "Invocations",
@@ -2099,7 +2099,7 @@ def handler(event, _ctx):
     const w51 = new cloudwatch.Alarm(this, "W51", {
       alarmName: `isol8-${this.envName}-W51-nat-gateway-data-transfer`,
       alarmDescription:
-        "NAT Gateway data transfer spike — potential cost anomaly",
+        "NAT Gateway data transfer spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
         namespace: "AWS/NATGateway",
         metricName: "BytesOutToDestination",
@@ -2124,7 +2124,7 @@ def handler(event, _ctx):
     const w52 = new cloudwatch.Alarm(this, "W52", {
       alarmName: `isol8-${this.envName}-W52-bedrock-cache-write-token-volume`,
       alarmDescription:
-        "Bedrock cache-write input tokens exceeded the daily ceiling — " +
+        "Bedrock cache-write input tokens exceeded the daily ceiling - " +
         "possible runaway inference loop driving cost",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Bedrock",

@@ -163,7 +163,7 @@ function ExecApprovalCard({ pending, onDecide }: ExecApprovalCardProps) {
   };
 
   return (
-    <div className="rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3 text-sm">
+    <div className="rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3 text-sm transition-[opacity,translate] duration-(--dur-base) ease-out starting:translate-y-1 starting:opacity-0 motion-reduce:transition-[opacity]">
       {pending.kind === "plugin" ? (
         <>
           <div className="flex items-start justify-between gap-2">

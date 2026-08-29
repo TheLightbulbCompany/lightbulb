@@ -6,6 +6,7 @@ import {
   FileJson, File, FileWarning, FolderOpen, FolderClosed, RefreshCw,
 } from "lucide-react";
 import type { FileEntry } from "@/hooks/useWorkspaceFiles";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   md: FileText, txt: FileText, log: FileText,
@@ -157,13 +158,18 @@ export function FileTree({
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--edge)]">
         <span className="text-xs font-medium text-[var(--midnight-muted)] uppercase tracking-wide">Files</span>
-        <button
-          onClick={onRefresh}
-          className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
-          title="Refresh file tree"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onRefresh}
+              aria-label="Refresh file tree"
+              className="text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Refresh file tree</TooltipContent>
+        </Tooltip>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
         {rootEntries.length === 0 && !isLoading ? (

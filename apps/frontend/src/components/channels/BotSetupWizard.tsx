@@ -99,12 +99,12 @@ function StepIndicator({ current, total }: { current: number; total: number }) {
         <span
           key={i}
           className={
-            "h-1.5 rounded-full transition-all " +
+            "h-1.5 w-6 origin-left rounded-full transition-[scale,background-color] duration-(--dur-base) ease-out " +
             (i < current
-              ? "w-4 bg-ok"
+              ? "scale-x-[0.667] bg-ok"
               : i === current
-                ? "w-6 bg-[var(--midnight)]"
-                : "w-4 bg-[var(--edge)]")
+                ? "scale-x-100 bg-[var(--midnight)]"
+                : "scale-x-[0.667] bg-[var(--edge)]")
           }
         />
       ))}

@@ -147,7 +147,7 @@ export function PickAgentStep({
                   ? "opacity-45 cursor-not-allowed bg-[var(--cream-deep)]"
                   : isSelected
                     ? "border-[var(--midnight)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--midnight)_8%,transparent)]"
-                    : "border-[var(--edge)] hover:border-[var(--midnight-faint)] hover:-translate-y-px"
+                    : "border-[var(--edge)] hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-px"
               }`}
               title={isMain ? "main agent can't be published" : undefined}
             >

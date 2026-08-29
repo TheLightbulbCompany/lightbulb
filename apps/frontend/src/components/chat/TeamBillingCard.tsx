@@ -136,7 +136,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onSubscribe)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep"
           >
             {busy ? "Starting checkout…" : "Subscribe your team"}
           </button>

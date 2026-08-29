@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import type { AgentSession } from "@/hooks/useAgentSessions";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface SessionListProps {
   sessions: AgentSession[];
@@ -105,32 +106,40 @@ export function SessionList({
                 {/* General (sessionId null) keeps its fixed identity — only
                     named sessions are renameable and deletable. */}
                 {onRename && s.sessionId !== null && (
-                  <button
-                    type="button"
-                    className="session-rename"
-                    aria-label={`Rename ${s.label}`}
-                    title="Rename session"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openEditor(s);
-                    }}
-                  >
-                    <Pencil size={11} />
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="session-rename"
+                        aria-label={`Rename ${s.label}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditor(s);
+                        }}
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Rename session</TooltipContent>
+                  </Tooltip>
                 )}
                 {onDelete && s.sessionId !== null && (
-                  <button
-                    type="button"
-                    className="session-rename session-delete"
-                    aria-label={`Delete ${s.label}`}
-                    title="Delete session"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(s);
-                    }}
-                  >
-                    <Trash2 size={11} />
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="session-rename session-delete"
+                        aria-label={`Delete ${s.label}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDelete(s);
+                        }}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete session</TooltipContent>
+                  </Tooltip>
                 )}
               </>
             )}

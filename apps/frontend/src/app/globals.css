@@ -319,13 +319,24 @@
 
 .editorial-card-hover,
 .agent-card {
-  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) ease,
+    border-color var(--dur-base) ease;
 }
 
 .editorial-card-hover:hover,
 .agent-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 16px 40px rgba(15, 26, 43, 0.08);
+  box-shadow: var(--shadow-lift);
+}
+
+/* The lift is gated: a tap on a touch device fires a sticky :hover, so an
+   ungated transform leaves the card floating after the finger is gone. */
+@media (hover: hover) and (pointer: fine) {
+  .editorial-card-hover:hover,
+  .agent-card:hover {
+    transform: translateY(-3px);
+  }
 }
 
 .editorial-btn {
@@ -336,8 +347,18 @@
   border-radius: 999px;
   border: 1px solid transparent;
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  font-weight: 700;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  /* 600, matching buttonVariants — the two dialects render as one control. */
+  font-weight: 600;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+
+/* Press feedback: the control has to look like it heard you. */
+.editorial-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .editorial-btn--sm  { padding: 4px 10px; font-size: 12px; line-height: 1.2; }
@@ -351,7 +372,7 @@
 }
 
 .editorial-btn--primary:hover {
-  background: #16223a;
+  background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
 }
 
 .editorial-btn--secondary {
@@ -628,14 +649,6 @@
 /* ═══════════════════════════════════════════════
    LANDING PAGE STYLES
    ═══════════════════════════════════════════════ */
-
-/* ── FOCUS RING (global) ── */
-:focus-visible {
-  outline: 2px solid var(--midnight);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-button:focus-visible { border-radius: 999px; }
 
 /* ── NAV ── */
 .landing-nav {
@@ -925,7 +938,7 @@ button:focus-visible { border-radius: 999px; }
   margin-left: 2px; vertical-align: text-bottom; animation: wf-cursor-blink .6s step-end infinite;
 }
 @keyframes chat-block-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-.chat-block-in { animation: chat-block-in 380ms cubic-bezier(.22,.61,.25,1) both; }
+.chat-block-in { animation: chat-block-in var(--dur-base) var(--ease-out) both; }
 .chat-tail > p:last-child { display: inline; }
 /* Turn-action buttons (Copy/Share, AgentHead) — 24px is under the 44px
    touch-target guidance; bump the hit area on coarse (touch) pointers.
@@ -1538,12 +1551,13 @@ button:focus-visible { border-radius: 999px; }
   .support-submit { width: 100%; text-align: center; }
 }
 
-/* Marketplace drawer: freshly-installed agent slide-in (Task 16) */
+/* Marketplace drawer: freshly-installed agent slide-in (Task 16).
+   Transform + opacity only — the keyframe used to animate `background` too,
+   which repaints the row on every frame for a flash nobody asked for. */
 @keyframes slideIn {
   from {
     opacity: 0;
     transform: translateY(-8px) scale(0.96);
-    background: #ecdcbb;
   }
   to {
     opacity: 1;
@@ -1551,7 +1565,11 @@ button:focus-visible { border-radius: 999px; }
   }
 }
 .agent-item.new-arrival {
-  animation: slideIn 0.5s ease both;
+  animation: slideIn var(--dur-slow) var(--ease-out) both;
+}
+/* Its own reduce rule: the arrival still needs to register, minus the move. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-item.new-arrival { animation-name: chat-block-fade; }
 }
 
 /* ── BRAND LOGO (canonical wordmark) ── */

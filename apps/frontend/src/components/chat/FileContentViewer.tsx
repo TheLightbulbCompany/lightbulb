@@ -122,7 +122,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
           <button
             onClick={handleSave}
             disabled={!dirty || saving || !onSave}
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[var(--midnight)] text-cream hover:bg-[var(--midnight-soft)] disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
             Save

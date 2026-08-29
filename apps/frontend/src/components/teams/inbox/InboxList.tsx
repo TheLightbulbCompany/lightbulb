@@ -61,7 +61,7 @@ function sectionHeaderLabel(
 }
 
 const ARCHIVING_CLASSNAME =
-  "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out";
+  "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-[translate,scale,opacity] duration-(--dur-base) ease-out";
 
 function isIssueWorkItem(
   item: InboxWorkItem,

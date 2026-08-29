@@ -518,7 +518,7 @@ export function AgentHead({
                 <AgentGlyph state={state} size={18} />
             </span>
             {settled && (
-                <div className="flex items-center gap-0.5 ml-1 chat-block-in">
+                <div className="flex items-center gap-0.5 ml-1">
                     <Button
                         variant="ghost"
                         size="icon"
@@ -1320,7 +1320,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
+                className="text-[11px] text-[var(--midnight-muted)] hover:text-[var(--midnight-soft)] disabled:opacity-50 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

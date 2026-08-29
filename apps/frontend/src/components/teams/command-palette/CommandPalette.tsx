@@ -37,16 +37,19 @@ export interface CommandPaletteProps {
 // here would render two backdrops on top of each other and the dark one
 // would cover the editorial midnight tint we want (matches the
 // NewIssueDialog backdrop).
+//
+// No open/close animation, deliberately: ⌘K is keyboard-initiated and fires
+// dozens of times a day, where motion only reads as lag (Raycast has none).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPortal>
         <DialogPrimitive.Overlay
-          className="fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+          className="fixed inset-0 z-50"
           style={{ background: "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
         />
         <DialogPrimitive.Content
-          className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg"
+          className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
@@ -119,7 +122,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--midnight-muted)] focus-visible:outline-none focus-visible:ring-0"
+          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--midnight-muted)]"
           style={{ color: "var(--midnight)" }}
         />
       </div>

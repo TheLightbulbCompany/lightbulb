@@ -202,7 +202,7 @@ export function ModelSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-2 h-9 px-3 bg-cream border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[var(--midnight-faint)] transition-all"
+          className="gap-2 h-9 px-3 bg-cream border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] hover:border-[var(--midnight-faint)]"
         >
           <span className="flex items-center gap-2">
             <ProviderIcon config={selectedProviderConfig || getProviderConfig("unknown")} size={16} />

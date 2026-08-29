@@ -4,6 +4,7 @@ import * as React from "react";
 import { ZoomIn, ZoomOut, RotateCcw, Copy, FileText, Loader2 } from "lucide-react";
 import { lobsterToMermaid } from "@/lib/lobster";
 import { LOBSTER_MERMAID_THEME } from "./lobsterMermaidBrand";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface LobsterGraphViewProps {
   content: string;
@@ -84,24 +85,39 @@ export function LobsterGraphView({ content, onViewCode }: LobsterGraphViewProps)
   }
 
   const iconBtn =
-    "p-1 rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors disabled:opacity-40";
+    "p-1 rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors disabled:opacity-50";
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1 px-3 py-1.5 bg-[var(--cream-deep)] border-b border-[var(--edge)] flex-shrink-0">
-        <button className={iconBtn} title="Zoom in" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(s + 0.2, 3))}>
-          <ZoomIn className="h-4 w-4" />
-        </button>
-        <button className={iconBtn} title="Zoom out" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))}>
-          <ZoomOut className="h-4 w-4" />
-        </button>
-        <button className={iconBtn} title="Reset zoom" aria-label="Reset zoom" onClick={() => setScale(1)}>
-          <RotateCcw className="h-4 w-4" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className={iconBtn} aria-label="Zoom in" onClick={() => setScale((s) => Math.min(s + 0.2, 3))}>
+              <ZoomIn className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Zoom in</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className={iconBtn} aria-label="Zoom out" onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))}>
+              <ZoomOut className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Zoom out</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className={iconBtn} aria-label="Reset zoom" onClick={() => setScale(1)}>
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Reset zoom</TooltipContent>
+        </Tooltip>
         <span className="text-[10px] text-[var(--midnight-muted)] ml-1">{Math.round(scale * 100)}%</span>
         <button
           className="ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded text-[var(--midnight-muted)] hover:bg-[var(--edge)] transition-colors"
-          title="Copy mermaid source"
+          aria-label="Copy mermaid source"
           onClick={() => navigator.clipboard?.writeText(result.mermaid)}
         >
           <Copy className="h-3 w-3" /> Copy source

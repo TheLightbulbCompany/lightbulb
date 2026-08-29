@@ -12,8 +12,9 @@ import secrets
 from typing import Annotated
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
@@ -23,6 +24,7 @@ from core.services import company_stripe
 from core.services.paperclip_admin_client import shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+from routers.agent_builder import _require_hook_token
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -179,3 +181,23 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
         raise _stripe_failure(e) from e
     await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
     return {"disconnected": True}
+
+
+class RequestStripeBody(BaseModel):
+    issue_id: str | None = None
+    reason: str = ""
+
+
+@router.post("/u/{owner_id}/request")
+async def request_from_container(owner_id: str, body: RequestStripeBody, request: Request):
+    """Container-authed (hook token): Friday asks the owner to set up Stripe."""
+    await _require_hook_token(owner_id, request)
+    row = await billing_repo.get_by_owner_id(owner_id) or {}
+    if row.get("company_stripe_account_id"):
+        return {"approval_id": None, "status": "connected"}
+    from core.services import company_stripe_approval
+
+    approval_id = await company_stripe_approval.request_company_stripe(
+        owner_id=owner_id, issue_id=body.issue_id, reason=body.reason
+    )
+    return {"approval_id": approval_id, "status": "filed" if approval_id else "exists"}

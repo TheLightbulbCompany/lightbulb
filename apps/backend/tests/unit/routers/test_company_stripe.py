@@ -208,3 +208,34 @@ def test_disconnect_deauthorizes_and_clears(client):
     assert resp.status_code == 200
     deauth.assert_awaited_once_with(account_id="acct_x")
     clear.assert_awaited_once_with("org_a", account_id="acct_x")
+
+
+def test_request_from_container_files_approval(client):
+    with (
+        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch(
+            "core.services.company_stripe_approval.request_company_stripe",
+            AsyncMock(return_value="apr_new"),
+        ),
+    ):
+        resp = client.post(
+            "/api/v1/company/stripe/u/org_a/request",
+            json={"issue_id": "iss_1", "reason": "x"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"approval_id": "apr_new", "status": "filed"}
+
+
+def test_request_from_container_already_connected(client):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x"}
+    with (
+        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+    ):
+        resp = client.post(
+            "/api/v1/company/stripe/u/org_a/request",
+            json={"issue_id": "iss_1", "reason": "x"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"approval_id": None, "status": "connected"}

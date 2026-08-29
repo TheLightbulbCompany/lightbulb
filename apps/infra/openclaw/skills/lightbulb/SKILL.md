@@ -289,6 +289,26 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.
 
+## Your company's Stripe account
+
+Money for the business (selling a product, taking payments, paying for a
+provider) needs the company's own Stripe account. Check `~/.openclaw/isol8-facts.json`
+for `company_stripe: "connected"`; if it is absent or `"none"`, do not
+improvise a Stripe signup — ask the owner through the platform:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"issue_id":"'"$PAPERCLIP_TASK_ID"'","reason":"<one sentence on why>"}' \
+  "$ISOL8_API_URL/api/v1/company/stripe/u/$ISOL8_OWNER_ID/request"
+```
+
+This files a "Set up <company> on Stripe" card in the owner's Inbox. It is
+never a gate: keep working on everything that does not need money, and say
+in your reply that you asked. The owner keeps the account and 100% of the
+revenue; Lightbulb AI takes no fee. Never create the Stripe account in the
+browser yourself.
+
 ## Skills and self-improvement
 
 - The owner browses, enables, and installs skills in the **Skills** tab

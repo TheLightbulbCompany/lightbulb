@@ -693,7 +693,7 @@ async def get_actions_audit(
 # ECR image listing (powers the admin queue-image-update dropdown)
 # ---------------------------------------------------------------------------
 
-_OPENCLAW_EXTENDED_REPO = "isol8/openclaw-extended"
+_OPENCLAW_EXTENDED_REPO = "lightbulb/openclaw-extended"
 _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
 
 # Current dev/prod extended-image tags, surfaced to the admin image-update

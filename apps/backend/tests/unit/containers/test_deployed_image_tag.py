@@ -50,7 +50,7 @@ async def test_returns_the_registered_image_tag(manager, ecs_client, monkeypatch
             "containerDefinitions": [
                 {
                     "name": "openclaw",
-                    "image": "1.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.7.2-isol8.8-8f700f0",
+                    "image": "1.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.7.2-isol8.8-8f700f0",
                 }
             ]
         }
@@ -80,7 +80,7 @@ async def test_base_image_tag_reads_the_family_the_replacement_is_cloned_from(ma
     ecs_client.describe_task_definition.return_value = {
         "taskDefinition": {
             "containerDefinitions": [
-                {"image": "1.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:2026.7.2-isol8.6-303527a"}
+                {"image": "1.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.7.2-isol8.6-303527a"}
             ]
         }
     }

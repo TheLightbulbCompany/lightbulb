@@ -362,6 +362,8 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
             snapshot=fresh,
             limit_editable=await limit_is_editable(account_id),
         )
+        if approval_id is None:
+            return await _no_board(row)
         return await repo.transition(
             workflow_id,
             from_state="awaiting_approval",

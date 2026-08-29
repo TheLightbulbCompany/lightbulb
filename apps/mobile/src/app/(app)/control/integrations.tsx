@@ -22,6 +22,7 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
+import { LogoMark } from "../../../components/LogoMark";
 
 // Adding / removing an MCP server is a HIGH-risk config mutation (arbitrary
 // command + env, gateway restart). v1 is read-only; management deep-links out
@@ -225,7 +226,7 @@ export default function IntegrationsPanel() {
   } else if (names.length === 0) {
     inner = (
       <View style={styles.emptyWrap}>
-        <Text style={styles.emptyGlyph}>8</Text>
+        <LogoMark size={64} />
         <Text style={styles.dim}>No MCP servers connected.</Text>
         <Text style={styles.dimSmall}>
           Add Model Context Protocol servers on flickmeon.ai.
@@ -275,7 +276,7 @@ const styles = StyleSheet.create({
 
   overline: { ...type.overline },
   bodyText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -303,7 +304,7 @@ const styles = StyleSheet.create({
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   cardTitle: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.ink,
@@ -322,7 +323,7 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
   },
   metaLine: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
@@ -344,7 +345,7 @@ const styles = StyleSheet.create({
   },
   linkRowPressed: { opacity: 0.6 },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -358,15 +359,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.xl,
   },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
   dim: { ...type.body, color: colors.mute, textAlign: "center" },
   dimSmall: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -391,7 +386,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -407,7 +402,7 @@ const styles = StyleSheet.create({
   },
   retryButtonPressed: { opacity: 0.6 },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

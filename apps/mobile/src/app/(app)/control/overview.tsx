@@ -426,14 +426,14 @@ const styles = StyleSheet.create({
   statusDot: { width: 10, height: 10, borderRadius: 5 },
   statusText: { flex: 1, gap: 2 },
   statusLabel: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
   },
   statusLabelDown: { color: colors.danger },
   statusDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -491,7 +491,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -507,7 +507,7 @@ const styles = StyleSheet.create({
   },
   retryButtonPressed: { opacity: 0.6 },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

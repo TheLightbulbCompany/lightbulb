@@ -23,7 +23,7 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
   },
   body: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,

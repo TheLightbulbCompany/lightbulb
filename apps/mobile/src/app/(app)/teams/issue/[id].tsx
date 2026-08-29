@@ -789,7 +789,7 @@ const styles = StyleSheet.create({
   },
   propValue: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -801,7 +801,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   editValueText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -819,10 +819,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  editGlyph: { color: colors.muteSoft, fontSize: 13 },
+  editGlyph: { color: colors.mute, fontSize: 13 },
 
   plainBody: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 22,
     color: colors.assistantInk,
@@ -853,7 +853,7 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   childTitle: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -865,7 +865,7 @@ const styles = StyleSheet.create({
     maxWidth: 96,
   },
   childStatusText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
   },
@@ -884,7 +884,7 @@ const styles = StyleSheet.create({
   },
   addChildPressed: { backgroundColor: colors.creamDeeper },
   addChildText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.forest,
@@ -905,14 +905,14 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   commentAuthor: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.inkSoft,
   },
-  commentDot: { fontFamily: fonts.dmSans, fontSize: 12, color: colors.mute },
+  commentDot: { fontFamily: fonts.sans, fontSize: 12, color: colors.mute },
   commentTime: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 16,
     color: colors.mute,
@@ -939,14 +939,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forestSoft,
   },
   stateTitle: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
     textAlign: "center",
   },
   stateDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 19,
     color: colors.mute,
@@ -963,7 +963,7 @@ const styles = StyleSheet.create({
   },
   buttonPressed: { opacity: 0.6 },
   buttonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -979,7 +979,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,

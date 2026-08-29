@@ -467,7 +467,7 @@ const styles = StyleSheet.create({
   },
   bannerText: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.bannerText,
@@ -512,7 +512,7 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
   },
   ideaEyebrow: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 11,
     lineHeight: 15,
     letterSpacing: 0.5,
@@ -568,7 +568,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.edge,
   },
   timeoutMsg: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 19,
     color: colors.inkSoft,
@@ -585,13 +585,13 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   timeoutButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.forest,
   },
   timeoutButtonMutedText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 18,
     color: colors.mute,
@@ -604,7 +604,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   signOutText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,

@@ -407,7 +407,7 @@ const styles = StyleSheet.create({
   },
   overline: { ...type.overline },
   price: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 24,
     lineHeight: 30,
     color: colors.ink,
@@ -421,20 +421,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   primaryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 22,
     color: colors.white,
   },
   linkRow: { alignSelf: "flex-start", borderRadius: radii.xs },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
   },
   error: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

@@ -40,6 +40,7 @@ import {
   type TeamsAgent,
 } from "../../../lib/teamsData";
 import { teamsPanelUrl } from "../../../lib/webLinks";
+import { LogoMark } from "../../../components/LogoMark";
 
 // Teams is a subscription-gated, web-managed surface: when the workspace needs
 // a subscription the mobile app deep-links out rather than running checkout.
@@ -861,7 +862,7 @@ function InboxView() {
         }
         ListEmptyComponent={
           <CenteredState
-            glyph={<Text style={styles.emptyGlyph}>8</Text>}
+            glyph={<LogoMark size={64} />}
             title={emptyCopy.title}
             detail={emptyCopy.detail}
           />
@@ -911,7 +912,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
   },
   segmentText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,
@@ -956,7 +957,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
   },
   tabChipText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -975,7 +976,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -1006,19 +1007,19 @@ const styles = StyleSheet.create({
   },
   failedRowText: { flex: 1, gap: 2 },
   failedRowTitle: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.ink,
   },
   failedRowAction: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.forest,
   },
   failedRowActionMuted: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -1037,7 +1038,7 @@ const styles = StyleSheet.create({
   },
   linkRowText: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,
@@ -1056,7 +1057,7 @@ const styles = StyleSheet.create({
   rowText: { flex: 1, gap: 3 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   title: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -1069,13 +1070,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
   },
   metaLine: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
   },
   previewLine: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -1095,24 +1096,18 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forestSoft,
   },
   stateTitle: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
     textAlign: "center",
   },
   stateDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 19,
     color: colors.mute,
     textAlign: "center",
-  },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
   },
 
   // Buttons.
@@ -1128,7 +1123,7 @@ const styles = StyleSheet.create({
   buttonDanger: { borderColor: colors.errorBorder },
   buttonPressed: { opacity: 0.6 },
   buttonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -1206,7 +1201,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   activityTotal: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,

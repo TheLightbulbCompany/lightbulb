@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
   },
   overline: { ...type.overline },
   bodyText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -402,7 +402,7 @@ const styles = StyleSheet.create({
 
   linkRow: { marginTop: spacing.xs, alignSelf: "flex-start", borderRadius: radii.xs },
   linkText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -423,7 +423,7 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   spendValue: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 26,
     lineHeight: 32,
     color: colors.ink,
@@ -456,7 +456,7 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   tileValue: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 18,
     lineHeight: 24,
     color: colors.ink,
@@ -476,7 +476,7 @@ const styles = StyleSheet.create({
   },
   memberName: {
     flex: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -486,7 +486,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono,
     fontSize: 10,
     lineHeight: 14,
-    color: colors.muteSoft,
+    color: colors.mute,
   },
   // Provider quota bar (oauth_quota mode).
   quotaBarTrack: {
@@ -519,7 +519,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -535,7 +535,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   statusChipText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 11,
     lineHeight: 14,
     flexShrink: 1,
@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   title: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,
@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.chip,
   },
   labelChipText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
   },
@@ -299,14 +299,14 @@ const styles = StyleSheet.create({
   },
   assignee: { flexDirection: "row", alignItems: "center", gap: spacing.xs, flexShrink: 1 },
   assigneeName: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
     flexShrink: 1,
   },
   subtasks: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,

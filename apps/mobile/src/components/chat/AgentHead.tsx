@@ -1,22 +1,20 @@
 import { Animated, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, spacing } from "../../config/theme";
+import { LogoMark } from "../LogoMark";
 import { usePulse } from "./usePulse";
 
 /**
- * The "8" brand mark that heads assistant messages (spec §1/§7). v1 is the
- * Lora-italic text glyph (JS-only — no react-native-svg): static ink when
+ * The bulb mark that heads assistant messages (spec §1/§7): static when
  * idle, a gentle 1.8s opacity pulse while the agent is thinking/streaming.
  * The pulse respects the system reduce-motion setting via usePulse.
  */
 export function AgentGlyph({ active }: { active: boolean }) {
   const pulse = usePulse(active, 0.3, 900);
   return (
-    <View style={styles.glyphBox}>
-      <Animated.Text style={[styles.glyph, { opacity: pulse }]}>
-        8
-      </Animated.Text>
-    </View>
+    <Animated.View style={[styles.glyphBox, { opacity: pulse }]}>
+      <LogoMark size={20} />
+    </Animated.View>
   );
 }
 
@@ -44,7 +42,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   name: {
-    fontFamily: fonts.dmSansBold,
+    fontFamily: fonts.sansSemiBold,
     fontSize: 12,
     lineHeight: 16,
     letterSpacing: -0.3,
@@ -56,11 +54,5 @@ const styles = StyleSheet.create({
     height: 20,
     alignItems: "center",
     justifyContent: "center",
-  },
-  glyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 17,
-    lineHeight: 20,
-    color: colors.ink,
   },
 });

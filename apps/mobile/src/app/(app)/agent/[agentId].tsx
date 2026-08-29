@@ -1149,7 +1149,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   userText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 28,
     color: colors.ink,
@@ -1167,7 +1167,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -1176,7 +1176,7 @@ const styles = StyleSheet.create({
   // and a bottom gap before the (empty) timeline.
   historyErrorCard: { marginBottom: spacing.lg, gap: spacing.sm },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -1188,13 +1188,13 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
 
-  // Composer (spec §4): floating white card on the cream page.
+  // Composer (spec §4): floating card on the cream page, held by its edge.
   composerOuter: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.lg,
     backgroundColor: colors.cream,
   },
-  // Web shadow `0 1px 2px rgba(26,26,26,.03), 0 4px 16px rgba(26,26,26,.05)`
+  // Web shadow `0 1px 2px rgba(15,26,43,.03), 0 4px 16px rgba(15,26,43,.05)`
   // — RN takes one shadow, so the softer/larger layer wins (+ elevation).
   card: {
     backgroundColor: colors.white,
@@ -1220,7 +1220,7 @@ const styles = StyleSheet.create({
   // track typing reliably on Fabric iOS), capped at 200. Zero the
   // platform-default vertical padding so the box hugs the text.
   input: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 24,
     maxHeight: 200,
@@ -1271,7 +1271,7 @@ const styles = StyleSheet.create({
   },
   sizeErrorText: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.errorText,
@@ -1297,7 +1297,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.connectingYellow,
   },
   bannerText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.bannerText,

@@ -169,13 +169,13 @@ const styles = StyleSheet.create({
   },
   rowText: { flex: 1, gap: 2 },
   rowLabel: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   rowDescription: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,

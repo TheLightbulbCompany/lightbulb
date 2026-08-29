@@ -22,6 +22,7 @@ import {
   useMarketplaceSearch,
   type Listing,
 } from "../../../lib/marketplace";
+import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
 // Skeleton (spec §7) — pulsing rows while the search is in flight.
@@ -149,7 +150,7 @@ export default function MarketplacePanel() {
         }
         ListEmptyComponent={
           <View style={styles.emptyWrap}>
-            <Text style={styles.emptyGlyph}>8</Text>
+            <LogoMark size={64} />
             <Text style={styles.dim}>No listings</Text>
           </View>
         }
@@ -209,7 +210,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
@@ -249,14 +250,14 @@ const styles = StyleSheet.create({
   rowText: { flex: 1, gap: 2 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   name: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
     flexShrink: 1,
   },
   summary: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.mute,
@@ -266,7 +267,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 0.4,
-    color: colors.muteSoft,
+    color: colors.mute,
   },
 
   // Price badge — FREE (forest tint) vs paid ($ amount, gold).
@@ -288,12 +289,6 @@ const styles = StyleSheet.create({
 
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // Skeletons (spec §7).
   skeletonGroup: { padding: spacing.md, gap: spacing.sm },
@@ -314,7 +309,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -329,7 +324,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

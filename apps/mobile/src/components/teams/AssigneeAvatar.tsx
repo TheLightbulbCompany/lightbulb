@@ -74,7 +74,7 @@ const styles = StyleSheet.create({
   agentCircle: { backgroundColor: colors.forestTint },
   userCircle: { backgroundColor: colors.avatarBg },
   glyph: { textAlign: "center" },
-  agentGlyph: { fontFamily: fonts.dmSansBold, color: colors.forest },
-  userGlyph: { fontFamily: fonts.dmSansBold, color: colors.avatarText },
+  agentGlyph: { fontFamily: fonts.sansSemiBold, color: colors.forest },
+  userGlyph: { fontFamily: fonts.sansSemiBold, color: colors.avatarText },
   photo: { position: "absolute", top: 0, left: 0 },
 });

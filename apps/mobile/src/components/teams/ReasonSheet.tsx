@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.creamDeepest,
   },
   title: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     borderRadius: radii.md,
     padding: spacing.md,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.ink,
@@ -163,7 +163,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   cancelText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
   submitPrimary: { backgroundColor: colors.forest },
   submitDisabled: { backgroundColor: colors.creamDeepest },
   submitText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.white,

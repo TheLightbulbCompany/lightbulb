@@ -1,15 +1,16 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, spacing } from "../../config/theme";
+import { LogoMark } from "../LogoMark";
 
 /**
- * Empty-chat hero (spec §7): centered "8" glyph, agent name in Lora, and a
+ * Empty-chat hero (spec §7): the centred bulb mark, agent name in Lora, and a
  * one-line prompt. Rendered while the transcript has no items.
  */
 export function EmptyState({ agentName }: { agentName: string }) {
   return (
     <View style={styles.wrap}>
-      <Text style={styles.glyph}>8</Text>
+      <LogoMark size={76} />
       <Text style={styles.name} numberOfLines={2}>
         {agentName}
       </Text>
@@ -26,12 +27,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.xl,
   },
-  glyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 56,
-    lineHeight: 66,
-    color: colors.ink,
-  },
   name: {
     fontFamily: fonts.lora,
     fontSize: 30,
@@ -41,7 +36,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   sub: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 24,
     color: colors.mute,

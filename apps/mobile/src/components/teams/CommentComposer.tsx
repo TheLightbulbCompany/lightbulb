@@ -116,7 +116,7 @@ const styles = StyleSheet.create({
   },
   inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
   input: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 24,
     color: colors.ink,
@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono,
     fontSize: 10,
     letterSpacing: 1.2,
-    color: colors.muteSoft,
+    color: colors.mute,
     textTransform: "uppercase",
   },
   sendButton: {

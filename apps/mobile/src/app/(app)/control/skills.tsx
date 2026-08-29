@@ -13,6 +13,7 @@ import { useGatewayRpc } from "@lightbulb/shared";
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { useGateway } from "../../../providers/gateway";
+import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §3 Skills)
@@ -297,7 +298,7 @@ export default function SkillsPanel() {
             </View>
           ) : (
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyGlyph}>8</Text>
+              <LogoMark size={64} />
               <Text style={styles.dim}>No skills found.</Text>
             </View>
           )
@@ -360,13 +361,13 @@ const styles = StyleSheet.create({
   },
   name: {
     flexShrink: 1,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
   },
   description: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -394,12 +395,6 @@ const styles = StyleSheet.create({
 
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // Skeletons (spec §7).
   skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
@@ -420,7 +415,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.errorText,
@@ -436,7 +431,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   retryText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,

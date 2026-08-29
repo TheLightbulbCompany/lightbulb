@@ -332,7 +332,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   subtitle: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.mute,
@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
   backLink: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -361,7 +361,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.lg,
   },
   choiceBtnText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.cream,
@@ -384,7 +384,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   secondaryBtnText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.ink,
@@ -396,7 +396,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     backgroundColor: colors.white,
     padding: spacing.md,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.ink,
@@ -407,7 +407,7 @@ const styles = StyleSheet.create({
   // three parts, not three separate affordances (web: space-y-1.5).
   escalatedBlock: { gap: spacing.xs, alignItems: "flex-start" },
   errorText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.danger,
@@ -415,7 +415,7 @@ const styles = StyleSheet.create({
   // The upstream detail is diagnostic, not the message — muted and smaller so
   // it reads as the cause rather than competing with the copy around it.
   errorDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -430,7 +430,7 @@ const styles = StyleSheet.create({
     marginLeft: -spacing.lg,
   },
   signOutText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,

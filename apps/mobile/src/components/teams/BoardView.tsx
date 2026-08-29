@@ -30,6 +30,7 @@ import { usePulse } from "../chat/usePulse";
 import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
 import { teamsPanelUrl } from "../../lib/webLinks";
+import { LogoMark } from "../LogoMark";
 
 // ---------------------------------------------------------------------------
 // Board mode — status-grouped vertical sections (recommended phone layout,
@@ -229,7 +230,7 @@ export function BoardView() {
         SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
         ListEmptyComponent={
           <CenteredState
-            glyph={<Text style={styles.emptyGlyph}>8</Text>}
+            glyph={<LogoMark size={64} />}
             title="No issues"
             detail="Issues on your board will show up here."
           />
@@ -284,12 +285,6 @@ const styles = StyleSheet.create({
     color: colors.sectionCount,
   },
 
-  emptyGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.ink,
-  },
 
   // States.
   centered: {
@@ -305,14 +300,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forestSoft,
   },
   stateTitle: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
     textAlign: "center",
   },
   stateDetail: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 19,
     color: colors.mute,
@@ -329,7 +324,7 @@ const styles = StyleSheet.create({
   },
   buttonPressed: { opacity: 0.6 },
   buttonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,

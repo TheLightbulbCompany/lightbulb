@@ -61,6 +61,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { LogoMark } from "../LogoMark";
 import { usePulse } from "../chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import {
@@ -90,16 +91,16 @@ function resolveManageUrl(href: string | null): string {
 // Blocking interstitial
 // ---------------------------------------------------------------------------
 
-/** The pulsing "8" glyph — animated for the team-pending "still working" cue. */
+/** The pulsing bulb mark — animated for the team-pending "still working" cue. */
 function InterstitialGlyph({ pulse }: { pulse: boolean }) {
   const opacity = usePulse(pulse, 0.35);
   if (!pulse) {
-    return <Text style={styles.interstitialGlyph}>8</Text>;
+    return <LogoMark size={64} />;
   }
   return (
-    <Animated.Text style={[styles.interstitialGlyph, { opacity }]}>
-      8
-    </Animated.Text>
+    <Animated.View style={{ opacity }}>
+      <LogoMark size={64} />
+    </Animated.View>
   );
 }
 
@@ -559,13 +560,7 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     padding: spacing.xl,
   },
-  interstitialGlyph: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 48,
-    lineHeight: 56,
-    color: colors.forest,
-  },
-  // Lora, not type.title's DM Sans Bold — matches web's `.provision-title`
+  // Lora, not type.title's Source Sans 3 — matches web's `.provision-title`
   // (Lora 400) so the onboarding surfaces read the same on both clients.
   interstitialHeadline: {
     fontFamily: fonts.lora,
@@ -575,7 +570,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   interstitialBody: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
     color: colors.mute,
@@ -588,7 +583,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   adminNoteText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.inkSoft,
@@ -603,7 +598,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.forest,
   },
   primaryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
     color: colors.white,
@@ -614,7 +609,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   retryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.forest,
@@ -625,7 +620,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   signOutText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 17,
     color: colors.mute,
@@ -651,13 +646,13 @@ const styles = StyleSheet.create({
   },
   teamsBannerText: {
     flex: 1,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.bannerText,
   },
   teamsBannerAction: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.forest,
@@ -671,20 +666,20 @@ const styles = StyleSheet.create({
   },
   firstRunBannerCopy: { flex: 1, gap: spacing.xs },
   firstRunBannerAction: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.errorText,
   },
   firstRunBannerText: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.errorText,
   },
   firstRunBannerDetail: {
     marginTop: spacing.xs,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
     color: colors.errorText,

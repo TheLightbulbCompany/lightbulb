@@ -614,7 +614,7 @@ const styles = StyleSheet.create({
   },
   rowPressed: { backgroundColor: colors.creamPressed },
   rowLabel: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
@@ -626,7 +626,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   rowValue: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
     color: colors.ink,
@@ -635,13 +635,13 @@ const styles = StyleSheet.create({
   },
   toolsBody: {},
   note: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.mute,
   },
   footnote: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -670,7 +670,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 20,
     color: colors.ink,
@@ -690,7 +690,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.errorBg,
   },
   deleteText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.danger,
@@ -729,7 +729,7 @@ const styles = StyleSheet.create({
   pickerRowPressed: { backgroundColor: colors.creamPressed },
   pickerRowText: { flex: 1, gap: 2 },
   pickerName: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.ink,
@@ -753,7 +753,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   ghostButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.mute,
@@ -769,7 +769,7 @@ const styles = StyleSheet.create({
   },
   primaryButtonDisabled: { backgroundColor: colors.creamPressed },
   primaryButtonText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
     color: colors.white,

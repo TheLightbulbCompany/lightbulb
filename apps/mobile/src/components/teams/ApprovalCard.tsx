@@ -156,13 +156,13 @@ const styles = StyleSheet.create({
   headIcon: { marginTop: 1 },
   headText: { flex: 1, gap: 2 },
   label: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
     color: colors.ink,
   },
   meta: {
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   statusText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 0.3,
@@ -199,14 +199,14 @@ const styles = StyleSheet.create({
   actionPressed: { opacity: 0.6 },
   approveBtn: { backgroundColor: colors.forest, borderColor: colors.forest },
   approveText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.white,
   },
   rejectBtn: { backgroundColor: colors.white, borderColor: colors.errorBorder },
   rejectText: {
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
     color: colors.errorText,

@@ -264,6 +264,8 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   // Busy stand-in shown while the native sheet is up — same box, Apple's black.
+  // The one colour literal outside theme.ts, deliberately: Sign in with Apple
+  // is a vendor mark Apple specifies in absolute terms, not a brand token.
   appleButtonBusy: {
     justifyContent: "center",
     alignItems: "center",
@@ -290,7 +292,7 @@ const styles = StyleSheet.create({
   },
   googleButtonText: {
     color: colors.ink,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 22,
   },
@@ -312,7 +314,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    fontFamily: fonts.dmSans,
+    fontFamily: fonts.sans,
     fontSize: 15,
     color: colors.ink,
   },
@@ -327,7 +329,7 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.5 },
   buttonText: {
     color: colors.white,
-    fontFamily: fonts.dmSansMedium,
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 22,
   },

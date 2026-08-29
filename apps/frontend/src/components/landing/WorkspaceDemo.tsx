@@ -281,10 +281,15 @@ export function WorkspaceDemo() {
         </span>
       </div>
       {selectedAgent.id === FRIDAY_ID ? (
-        <MessageList
-          renderGroups={DEMO_RENDER_GROUPS}
-          agentName={selectedAgent.name}
-        />
+        // `.ld-demo-enter`: MessageList is `ssr:false`, so it lands after
+        // hydration — this wrapper fades the whole transcript in as one unit
+        // rather than letting icons and fragments pop in out of order.
+        <div className="ld-demo-enter flex min-h-0 flex-1 flex-col">
+          <MessageList
+            renderGroups={DEMO_RENDER_GROUPS}
+            agentName={selectedAgent.name}
+          />
+        </div>
       ) : (
         <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-[var(--midnight-muted)]">
           {selectedAgent.name} is {selectedAgent.status ?? "idle"} — nothing in
@@ -843,7 +848,10 @@ export function WorkspaceDemo() {
                     data-testid="demo-left-panel"
                   >
                     <TabStrip label={leftTabLabel} />
-                    <div className="ld-panel-body">
+                    <div
+                      className="ld-panel-body"
+                      key={detailIssue ? `detail-${detailIssue.id}` : view}
+                    >
                       {detailIssue
                         ? detailPanel
                         : view === "tasks"

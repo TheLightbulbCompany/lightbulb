@@ -10,6 +10,11 @@ import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
 import { GLASS_CENTER_Y, LAMP_ANCHOR_Y, Lamp, easeStrike, type LampColors } from "./Lamp";
 
+// The strike's one clock. Same 700ms as `--dur-strike` in globals.css, which
+// every strike-driven CSS transition in landing.css reads — the wall tweening
+// here and the page repainting there must land on the same frame. A CSS custom
+// property is not cheap to read from the R3F loop, so this is the copy; move
+// them together.
 const STRIKE_MS = 700;
 const CAMERA_Z = 8;
 const CAMERA_FOV = 40;
@@ -371,6 +376,16 @@ function FirstFrames() {
   const invalidate = useThree((s) => s.invalidate);
   const setSize = useThree((s) => s.setSize);
   const gl = useThree((s) => s.gl);
+  // The host starts at opacity 0 (landing.css) because the first frame lands
+  // 50–1500ms after the headline and the hard cut read as a glitch. Marked
+  // from inside the first rendered frame, so the fade tracks the real paint
+  // rather than a guessed delay.
+  const drawn = React.useRef(false);
+  useFrame(() => {
+    if (drawn.current) return;
+    drawn.current = true;
+    gl.domElement.parentElement?.setAttribute("data-ready", "");
+  });
   React.useEffect(() => {
     const host = gl.domElement.parentElement;
     const fit = () => {

@@ -9,17 +9,17 @@ export function PricingThreeCard() {
   return (
     <section id="pricing" className="ld-pricing">
       <div className="ld-section">
-        <div className="ld-kicker" data-ld-reveal>
+        <div className="ld-kicker">
           pricing
         </div>
-        <h2 className="ld-h2" data-ld-reveal>
+        <h2 className="ld-h2">
           One price. <em>Three ways to power it.</em>
         </h2>
-        <p className="ld-lede" data-ld-reveal>
+        <p className="ld-lede">
           Everything it takes to run an autonomous business — your pod, your
           team, every channel. Choose how you want to pay for inference.
         </p>
-        <div className="ld-price-note" data-ld-reveal>
+        <div className="ld-price-note">
           <span className="ld-price-big">
             <sup>$</sup>50
           </span>
@@ -28,7 +28,7 @@ export function PricingThreeCard() {
           </span>
         </div>
 
-        <div className="ld-price-grid" data-ld-reveal-group>
+        <div className="ld-price-grid">
           {PROVIDER_CARDS.map((card) => (
             <div
               key={card.id}
@@ -71,7 +71,7 @@ export function PricingThreeCard() {
           ))}
         </div>
 
-        <div className="ld-teams-strip" data-ld-reveal>
+        <div className="ld-teams-strip">
           <div className="ld-teams-copy">
             <h3>Lightbulb for Teams</h3>
             <p>Shared agents, one workspace, per-seat pricing.</p>

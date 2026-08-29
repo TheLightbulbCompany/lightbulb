@@ -112,13 +112,17 @@
  * Brand Identity Manual v1.0 §06 — the only colours the product may use.
  * Every other colour in src/ is a bug; scripts/brand-tokens-scan.mjs finds them.
  *
- * MEASURED contrast, not estimated: getComputedStyle on real elements on a
- * live page (2026-08-28), colour-mix resolved by the browser. Text clears 4.5:1.
- *   on --cream #F5EFE2:
- *     --midnight       #0F1A2B  15.24:1   --midnight-soft   #3D4550  8.51:1
- *     --midnight-muted #62676D   5.00:1   --midnight-label  #696D72  4.55:1
- *     --ok 5.44:1   --warn 5.30:1   --err 6.33:1   --info 6.76:1
- *     --midnight-faint #82858A   3.37:1  disabled + non-text only (1.4.3 exempt)
+ * Contrast is checked on EVERY cream step a token can sit on, not only on
+ * --cream: the sidebar is --cream-deep, active rows and the inbox tab pill
+ * are --cream-deeper, table hover is --edge. Text clears 4.5:1 on all three
+ * steps; --faint clears the 3:1 non-text bar on all three.
+ *   text on --cream / --cream-deep / --cream-deeper:
+ *     --midnight       #0F1A2B  15.2 / 14.3 / 13.0
+ *     --midnight-soft  #3D4550   8.5 /  8.0 /  7.3
+ *     --midnight-muted #595E66   5.7 /  5.4 /  4.9   (was 64% = 4.98 / 4.68 / 4.27 ✗)
+ *     --midnight-label #5D6269   5.4 /  5.0 /  4.6   (was 61% = 4.55 / 4.27 / 3.90 ✗)
+ *     --ok 5.44   --warn 5.30   --err 6.33   --info 6.76  (on --cream, measured)
+ *     --midnight-faint #797C7F   3.7 /  3.4 /  3.1   disabled + non-text only (1.4.3 exempt)
  *     --brass           2.94:1  NEVER body copy on cream (§06 names this a fail)
  *     --bulb            1.45:1  never type, never a page fill
  *   reversed (.dark) on --midnight #0F1A2B, --card #212B3A:
@@ -164,12 +168,12 @@
   --edge-soft: #E8E0D0;             /* softer separation on cream */
 
   --midnight-soft: color-mix(in srgb, var(--midnight) 80%, var(--cream));   /* secondary text */
-  --midnight-muted: color-mix(in srgb, var(--midnight) 64%, var(--cream));  /* tertiary/metadata text */
-  /* §06 says 60% for small uppercase labels; on THIS cream 60% measures
-     4.42:1, under the AA floor for text — and a label is text. 61% is the
-     lowest step that clears it (4.55:1). */
-  --midnight-label: color-mix(in srgb, var(--midnight) 61%, var(--cream));
-  --midnight-faint: color-mix(in srgb, var(--midnight) 50%, var(--cream));  /* disabled text; also status dots, diagram strokes — 3.37:1, clears the 3:1 non-text bar (40% was 2.47) */
+  --midnight-muted: color-mix(in srgb, var(--midnight) 68%, var(--cream));  /* tertiary/metadata text — 68% is the lowest step that clears AA on --cream-deeper (4.9:1) */
+  /* §06 says 60% for small uppercase labels; a label is text and labels sit
+     on the --cream-deep sidebar, so the floor is AA on cream-deep: 66% is
+     the lowest step that clears it (5.0:1) and cream-deeper (4.6:1). */
+  --midnight-label: color-mix(in srgb, var(--midnight) 66%, var(--cream));
+  --midnight-faint: color-mix(in srgb, var(--midnight) 54%, var(--cream));  /* disabled text; also status dots, diagram strokes — 3.1:1 on cream-deeper, the 3:1 non-text bar on every step (50% was 2.8 there) */
 
   /* §06 state pairs — the second value is for the reversed ground. */
   --ok: #3A6B45;    --ok-reversed: #7FB58D;

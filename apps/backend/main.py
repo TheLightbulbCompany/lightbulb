@@ -952,6 +952,11 @@ from routers import marketplace_payouts  # noqa: E402
 
 app.include_router(marketplace_payouts.router)
 
+# Company Stripe account — status, create + hosted onboarding, connect existing, disconnect.
+from routers import company_stripe  # noqa: E402
+
+app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
+
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
 

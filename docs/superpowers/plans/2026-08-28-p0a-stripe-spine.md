@@ -1817,7 +1817,7 @@ git commit -m "feat(company-stripe): Settings → Connections section and connec
 
 - [ ] **Step 1: Owner actions before the dev run**
 
-Owner (not the agent): in the Stripe Dashboard for the **dev** platform account — (a) Connect settings → add the redirect URI `https://api-dev.flickmeon.ai/api/v1/company/stripe/connect/callback`; (b) brand the Connect Onboarding form (name/colour/icon — required by Connect Onboarding); (c) on the Connect-scoped webhook endpoint add `account.application.deauthorized`; (d) confirm the `ca_…` client id used in Task 1.
+Owner (not the agent): in the Stripe Dashboard for the **dev** platform account — (a) Connect settings → add the redirect URI `https://api-dev.flickmeon.ai/api/v1/company/stripe/connect/callback`; (b) brand the Connect Onboarding form (name/colour/icon — required by Connect Onboarding); (c) on the Connect-scoped webhook endpoint add `account.application.deauthorized`; (d) confirm the `ca_…` client id used in Task 1 — it is a prerequisite for connect-existing, disconnect AND wipe step 8b (all call `OAuth.deauthorize`).
 
 - [ ] **Step 2: Open the PR and watch CI**
 
@@ -1845,6 +1845,8 @@ gh pr checks --watch
 4. In the owner's container chat, ask Friday to "sell our first product" → she files the card → Inbox shows "Connect Stripe: Set up <company> on Stripe" (on a second dev owner with no account).
 5. Click "Disconnect" → row cleared; the Stripe test account still opens at dashboard.stripe.com (proof we never deleted it).
 6. Prove from the backend log group that `/webhooks/stripe-marketplace` received `account.updated` for the company account and did not run the seller flush.
+7. `OAuth.deauthorize` is accepted on a platform-CREATED v2 account (not just an OAuth-connected one) — disconnect on the account from step 2 and confirm Stripe does not error.
+8. `account.updated` from a v2 account arrives at the v1 Connect webhook endpoint (the same delivery step 6 looks for, but confirmed for the v2-created account specifically).
 
 - [ ] **Step 4: Report**
 

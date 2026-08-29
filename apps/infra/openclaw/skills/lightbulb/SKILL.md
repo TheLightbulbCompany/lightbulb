@@ -294,7 +294,10 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
 Money for the business (selling a product, taking payments, paying for a
 provider) needs the company's own Stripe account. Check `~/.openclaw/isol8-facts.json`
 for `company_stripe: "connected"`; if it is absent or `"none"`, do not
-improvise a Stripe signup — ask the owner through the platform:
+improvise a Stripe signup — ask the owner through the platform. `"pending"`
+means the account exists but onboarding is not finished: do not file the
+request again, and do not treat it as connected — say it is still being set
+up.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
@@ -304,7 +307,9 @@ curl -s -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
 ```
 
 If the call returns 503, the board was unreachable — say so to the owner and
-try again on your next turn; never work around it.
+try again on your next turn; never work around it. A 502 is different: the
+board REJECTED the request, so retrying changes nothing — tell the owner what
+it said, verbatim, and move on.
 
 This files a "Set up <company> on Stripe" card in the owner's Inbox. It is
 never a gate: keep working on everything that does not need money, and say

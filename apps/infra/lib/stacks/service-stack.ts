@@ -1662,14 +1662,14 @@ export class ServiceStack extends cdk.Stack {
         secretsmanager.Secret.fromSecretNameV2(
           this,
           "ImportStripeMarketplaceWebhookSecret",
-          `isol8/${env}/stripe_marketplace_webhook_secret`,
+          `lightbulb/${env}/stripe_marketplace_webhook_secret`,
         ),
       ),
       STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(
           this,
           "ImportStripeConnectWebhookSecret",
-          `isol8/${env}/stripe_connect_webhook_secret`,
+          `lightbulb/${env}/stripe_connect_webhook_secret`,
         ),
       ),
       ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(

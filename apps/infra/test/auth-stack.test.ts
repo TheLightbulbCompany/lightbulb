@@ -17,7 +17,7 @@ describe("AuthStack — gog file-keyring password secret", () => {
 
   test("creates the gog-keyring-password secret encrypted with the general CMK", () => {
     template.hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "isol8/dev/gog-keyring-password",
+      Name: "lightbulb/dev/gog-keyring-password",
       // CDK emits only GenerateSecretString on first create — the random value
       // is never regenerated on stack updates, keeping the keyring password
       // stable for the life of the stack.

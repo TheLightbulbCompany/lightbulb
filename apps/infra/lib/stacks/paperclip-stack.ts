@@ -250,7 +250,7 @@ export class PaperclipStack extends cdk.Stack {
         sid: "PaperclipExecutionSecretsRead",
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip_better_auth_secret-*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip_better_auth_secret-*`,
           // Aurora's master secret is named "isol8-${env}-paperclip-db-credentials"
           // (see database-stack.ts), generated under the AWS-managed prefix.
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,

@@ -25,7 +25,7 @@ function synthSesInboundStack(
   const stack = new SesInboundStack(app, "SesInboundTest", {
     env: { account: ACCOUNT, region: REGION },
     envName: "prod",
-    sesIngestSecretName: "isol8/prod/ses_ingest_secret",
+    sesIngestSecretName: "lightbulb/prod/ses_ingest_secret",
     mailDomain: PLATFORM_MAIL_DOMAIN,
     ...overrides,
   });

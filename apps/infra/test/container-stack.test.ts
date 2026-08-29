@@ -15,8 +15,8 @@ function buildStack(environment: "dev" | "prod"): Template {
     environment,
     vpc,
     kmsKeyArn: kmsKey.keyArn,
-    gogKeyringPasswordSecretName: `isol8/${environment}/gog-keyring-password`,
-    cloudflareWarpEnrollmentSecretName: `isol8/${environment}/cloudflare-warp-enrollment`,
+    gogKeyringPasswordSecretName: `lightbulb/${environment}/gog-keyring-password`,
+    cloudflareWarpEnrollmentSecretName: `lightbulb/${environment}/cloudflare-warp-enrollment`,
   });
   return Template.fromStack(containerStack);
 }
@@ -206,12 +206,12 @@ describe("ContainerStack — dev", () => {
               ) &&
               resources.some(
                 (res) =>
-                  typeof res === "string" && res.includes(":secret:isol8/dev/gog-keyring-password"),
+                  typeof res === "string" && res.includes(":secret:lightbulb/dev/gog-keyring-password"),
               ) &&
               resources.some(
                 (res) =>
                   typeof res === "string" &&
-                  res.includes(":secret:isol8/dev/cloudflare-warp-enrollment"),
+                  res.includes(":secret:lightbulb/dev/cloudflare-warp-enrollment"),
               )
             );
           },
@@ -506,7 +506,7 @@ describe("ContainerStack — dev", () => {
               ValueFrom: Match.objectLike({
                 "Fn::Join": Match.arrayWith([
                   Match.arrayWith([
-                    Match.stringLikeRegexp("isol8/dev/gog-keyring-password"),
+                    Match.stringLikeRegexp("lightbulb/dev/gog-keyring-password"),
                   ]),
                 ]),
               }),
@@ -529,7 +529,7 @@ describe("ContainerStack — dev", () => {
               ValueFrom: Match.objectLike({
                 "Fn::Join": Match.arrayWith([
                   Match.arrayWith([
-                    Match.stringLikeRegexp("isol8/dev/cloudflare-warp-enrollment"),
+                    Match.stringLikeRegexp("lightbulb/dev/cloudflare-warp-enrollment"),
                   ]),
                 ]),
               }),

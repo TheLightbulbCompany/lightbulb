@@ -12,6 +12,7 @@
 
 ## Global Constraints
 
+- **SUPERSEDED (2026-08-29)** by `docs/superpowers/plans/2026-08-29-launch-competition-addendum.md`: every `LAUNCH_*` setting (now `launch-schedule.json`), the `/waitlist` + `/enter` routes (now webhook join + `/join` + `/connect-stripe` + `PATCH /entry`), the hero `WaitlistForm`, the Clerk Restricted step, and the single pot (now public + funded). Leave the rest of this plan as history.
 - Backend: Python 3.12, ruff line-length 120, `asyncio_mode = "auto"` (pytest-asyncio); every DynamoDB call goes through `core.dynamodb.run_in_thread`; never log a Stripe key.
 - Every `/launch*` route returns **404** when `settings.LAUNCH_DROP_AT` is empty; `/ops/launch*` returns the `unavailable` envelope / `{"refreshed": 0}`. Prod is inert until an owner sets it.
 - The two new tables are read like every other core table — `core.dynamodb.get_table("launch-waitlist")` / `get_table("launch-entries")` under `DYNAMODB_TABLE_PREFIX`. (The `lightbulb-` prefix flip landed in #2102 before this branch was rebased; no full-name env vars.)

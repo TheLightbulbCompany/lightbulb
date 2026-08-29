@@ -14,16 +14,17 @@ paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.
 
 | Decision | Value |
 |---|---|
-| Waitlist | Uncapped. It is a marketing list + referral link, not a gate. |
-| Comp | Waitlist positions 1–220 get a free month (100% off, once). Delivered by **email + Stripe promotion code** created by the owner in the Stripe console: `max_redemptions=220`, `expires_at = drop + 72h`. Unredeemed = forfeited; never passed to #221. |
+| Waitlist | Uncapped. Sign-up IS the waitlist: a Clerk account created before the drop + the idea stashed as the pending brief (hero funnel) + a `launch-waitlist` row written by the Clerk `user.created` webhook (position = sign-up order, referral code). No email form. |
+| Comp | Waitlist positions 1–220 get a free month (100% off, once). Delivered by **email + Stripe promotion code** created by the owner in the Stripe console: `max_redemptions=220`, `expires_at = competition_start_at`. Unredeemed = forfeited; never passed to #221. |
 | Activation | Onboarding complete **and** Friday's first run complete. In this codebase that is one write (`bootstrap_state == "delivered"`). The gate is **soft**: the launch email says "finish onboarding first"; the code is redeemable at checkout regardless. |
-| Timeline | Wk 0 waitlist opens → wk 3 drop → drop+72h activation/redemption deadline → competition starts at drop+72h and runs 30 days. **Free month = competition month.** |
-| Pot | `$1,000` owner front + `$10 × entrants`. Grows visibly. |
+| Entry | Two explicit steps after activation (Friday's first run delivered) AND a live subscription (paid or the promo-code free month; `trial_local` cannot): **Join** (`POST /launch/join` → entry = competing) and optional **Connect Stripe** (`POST /launch/connect-stripe` → on the board). `public` is a privacy control, retractable via `PATCH /launch/entry`; private entrants count toward `on_board` but never appear in rows. |
+| Timeline | Drop Thursday midnight ET (Friday 00:00 America/New_York); competition starts Sunday midnight ET (Monday 00:00) and runs 30 days — the 3-day free trial covers activation. Both instants live in `launch-schedule.json` (per-env `dev`/`prod`, `null` = off). Free month = competition month. |
+| Pot | Two figures. Public pot = $1,000 + $10 × sign-ups (climbs at sign-up, never steps down). Funded pot (admin only) = $1,000 + $10 × people whose FIRST invoice landed, any amount (a free-month redemption counts). |
 | Metric | Hybrid. Public leaderboard on the entrant's own Stripe account revenue, ranked by **dollar delta vs the 30 days before competition start**, percent shown alongside (percent as the rank breaks on $0 baselines). Judges pick the winner. Never promise "highest revenue wins". |
 | Revenue read | Entrant pastes a Stripe **restricted API key** (`rk_live_…`, Balance: Read + Charges: Read). Connect OAuth `read_only` is Extension-only per Stripe docs and our Connect app is a Platform; `read_write` is too much trust; a Stripe App is a build + review. |
 | Referral | Referrer earns a free month **when the referred person's first paid invoice lands** (`invoice.paid`, `amount_paid > 0`). Not on activation — farmable. Applied via API as the same coupon; banked if it cannot be applied yet. |
 | Scope | Comp + referral rewards are **personal owners only**. Orgs may enter paid. |
-| Sign-ups during the waitlist | Clerk **Restricted** mode (dashboard toggle; existing users unaffected). Flip to Public at the drop. |
+| Sign-ups during the waitlist | OPEN throughout — no Clerk Restricted mode. Held accounts get no container and no trial clock until the drop (`launch_hold.pre_drop_gate`, code `launch_pending`, runs before `ensure_personal_trial_default` at every door). |
 | Waitlist vendor | Build in-house. Vendors ($15–49/mo) only cover the pre-drop list; referral state must live with us because the reward is a Stripe webhook on our side, and referrals keep flowing 5+ weeks post-drop. Clerk's own waitlist mode has no metadata/referral field. |
 
 ## What already exists (verified 2026-08-27)
@@ -44,20 +45,25 @@ paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.
 
 ## Config
 
-Backend `Settings` (`core/config.py`), injected per environment by CDK (`service-stack.ts`):
+`launch-schedule.json` at the repo root is the one place the dates and pot constants live —
+read at runtime by the backend (`core/services/launch_phase.py`) and at build time by the
+frontend (`apps/frontend/src/lib/launchSchedule.ts`), mirroring `openclaw-version.json`'s
+pattern. CDK reads the file at synth and ships its raw text as the `LAUNCH_SCHEDULE_JSON`
+container env var (transport only — the file itself is the source of truth):
 
-| Setting | Meaning |
+| Field | Meaning |
 |---|---|
-| `LAUNCH_DROP_AT` | ISO-8601 UTC. **Unset ⇒ every `/launch*` route 404s and the sweep does not run.** Prod is inert until an owner sets it. |
-| `LAUNCH_COMP_SLOTS` | 220. Display only ("you're in the first 220"); enforcement is the promo code's `max_redemptions`. |
-| `LAUNCH_ACTIVATION_WINDOW_HOURS` | 72. Competition start = drop + this. |
-| `LAUNCH_COMPETITION_DAYS` | 30. |
-| `LAUNCH_PRIZE_FRONT_CENTS` | 100000. |
-| `LAUNCH_POT_PER_ENTRANT_CENTS` | 1000. |
-| `STRIPE_FREE_MONTH_COUPON_ID` | The 100%-off-once coupon the owner creates in the Stripe console (dev + prod). Used only by the referral reward. Unset ⇒ rewards are banked, never applied. |
+| `competition_days` | 30. |
+| `comp_slots` | 220. Display only ("you're in the first 220"); enforcement is the promo code's `max_redemptions`. |
+| `pot_front_cents` | 100000. |
+| `pot_per_entrant_cents` | 1000. |
+| `dev.drop_at` / `dev.competition_start_at` | Per-env ISO-8601 instants with offset. **`null` ⇒ every `/launch*` route 404s, nothing is held, nothing refreshes.** |
+| `prod.drop_at` / `prod.competition_start_at` | Same, for prod. Prod is inert until an owner sets these. |
+| `STRIPE_FREE_MONTH_COUPON_ID` | Still a `Settings` env var (dev + prod) — the 100%-off-once coupon the owner creates in the Stripe console. Used only by the referral reward. Unset ⇒ rewards are banked, never applied. |
 
-Derived: `competition_start_at`, `competition_end_at`, `phase ∈ waitlist | activation | live | ended`.
-Changing a date is a CDK env change + deploy. No flag machinery.
+Derived: `competition_end_at = competition_start_at + competition_days`,
+`phase ∈ waitlist | activation | live | ended`. Changing a date is one commit to
+`launch-schedule.json`; merge deploys dev, the prod promotion carries it. No flag machinery.
 
 ## Data
 
@@ -74,7 +80,7 @@ dedicated `LAUNCH_WAITLIST_TABLE` / `LAUNCH_ENTRIES_TABLE` env var.
 | `position` | N. From the counter row (`email = "__counter__"`, `ADD position 1`). |
 | `referral_code` | S, 8 chars, unambiguous alphabet. GSI `referral-code-index`. |
 | `referred_by` | S, another row's `referral_code`. Set at join (`?ref=`) or by `POST /launch/referral`. Never self. |
-| `source` | `waitlist` (joined pre-drop via the form) or `signup` (row created lazily by `/launch/me`). |
+| `source` | Always `signup` now — written by the Clerk `user.created` webhook or lazily by `/launch/me`. (The `waitlist` value is a dead literal; nothing sets it since the waitlist form was removed.) |
 | `created_at` | ISO. |
 | `referrals_signed_up` | N counter, `ADD` on the referrer's row when a referred row is created/attributed. |
 | `referrals_paid` | N counter, `ADD` when a referred person's first payment rewards this row. |
@@ -102,18 +108,21 @@ The Stripe restricted key is stored on the BYO-key rail (`provider = "stripe-lau
 
 ## Endpoints — `routers/launch.py`, mounted at `/api/v1/launch`
 
-All 404 when `LAUNCH_DROP_AT` is unset.
+All 404 (`require_launch`) when `launch-schedule.json`'s `drop_at` is `null` for this env.
+There is no `POST /launch/waitlist` — the waitlist row is written by the Clerk `user.created`
+webhook (`routers/webhooks.py`), not a form submit.
 
 | Route | Auth | Behaviour |
 |---|---|---|
-| `GET /launch` | public, `Cache-Control: public, max-age=30` | `{phase, drop_at, competition_start_at, competition_end_at, pot_cents, entrants, waitlist_count, comp_slots}` |
-| `POST /launch/waitlist {email, ref?}` | public, `RateBucket` per client IP (10/min) | Validate email shape; idempotent per email; attribute `ref` via the GSI (ignore unknown/self); `ADD referrals_signed_up` on the referrer. Returns `{position, referral_code, in_comp_window}`. |
-| `GET /launch/me` | user | Resolve email from `users.email` (fallback: Clerk claims if present). Lazily create a `source=signup` row so every user has a referral link. Returns waitlist row (minus counters' internals), `activated` (`bootstrap_state == "delivered"`), `activated_at`, `entry`, `can_enter`, `reason`, referral stats, `free_months_banked`. |
+| `GET /launch` | public, `Cache-Control: public, max-age=30`, 20s server cache | `{phase, drop_at, competition_start_at, competition_end_at, signups, competing, on_board, pot_cents, comp_slots, pot_per_entrant_cents}` |
+| `GET /launch/me` | user | Resolves email, joins/claims the caller's waitlist row (lazy, so every user has a referral link even if they signed up before the webhook existed). Returns the waitlist row, `activated` (`bootstrap_state == "delivered"`), `activated_at`, `entry`, `joined`, `has_key`, `can_join`, `reason`, `idea` (first 140 chars of the pending hero-funnel brief). |
 | `POST /launch/referral {ref}` | user | Attribute a post-drop sign-up: only if `referred_by` unset, caller has no live subscription, `ref` resolves and is not the caller's own. Idempotent. |
-| `POST /launch/enter {display_name, stripe_key, public}` | user | Requires `phase ∈ {activation, live}`, `subscription_status ∈ {active, trialing}` (`trial_local` cannot enter), `bootstrap_state == "delivered"`, key matches `^rk_live_` (`^rk_(live\|test)_` when `ENVIRONMENT != "prod"`), and one `stripe.BalanceTransaction.list(limit=1, api_key=key)` succeeds. Stores key, computes baseline, upserts the row. Re-entering replaces key/name. 400 with a specific `reason` on every failure; the key is never echoed. |
-| `GET /launch/leaderboard` | public, `max-age=60` | Public entries ordered by `delta_cents` desc, top 50: `{rank, display_name, delta_cents, pct (null when baseline == 0), currency}` + `entrants`. |
-| `GET /ops/launch` | admin | Envelope: waitlist total, top-220 activated, entrants (`paid` / `comp_eligible` — position ≤ `comp_slots` AND activated by the deadline; a proxy, promo-code redemption is not observed, so the P&L treats every eligible entrant as comped), pot, referrals signed-up/paid, months granted/banked, projected P&L vs `LAUNCH_AWS_CREDITS_CENTS` (constant 500000 in `ops/launch.py`), full entries table. |
-| `POST /ops/launch/refresh` | admin | Force-refresh every entry now. |
+| `POST /launch/join {display_name, public}` | user, `RateBucket` per client IP (10/min) | Step 1. Requires `phase ∉ {waitlist, ended}`, `subscription_status ∈ {active, trialing}` (`trial_local` cannot join), `bootstrap_state == "delivered"`. Creates the entry row (idempotent — re-joining returns the existing row untouched). Never touches Stripe. 400 with a `reason` on refusal. |
+| `POST /launch/connect-stripe {stripe_key}` | user, `RateBucket` per client IP (10/min) | Step 2 (optional). Requires an existing entry. Validates the key (`^rk_live_`, or `^rk_(live\|test)_` when `ENVIRONMENT != "prod"`) with one `stripe.BalanceTransaction.list(limit=1, api_key=key)`, computes the `[start-30d, start)` baseline, stores the key on the BYO-key rail, flips the entry onto the board (`has_key=true`). Replaces any previously-connected key. The key is never echoed or logged. |
+| `PATCH /launch/entry {public}` | user, `RateBucket` per client IP (10/min) | Flip the board-visibility flag on an existing entry — retractable at any time, independent of join/connect-stripe. |
+| `GET /launch/leaderboard` | public, `max-age=60`, 30s server cache | `{competing, on_board, rows}` — `rows` = public entries with a connected key, ordered by `delta_cents` desc, top 50: `{rank, display_name, delta_cents, pct (null when baseline == 0), currency}`. |
+| `GET /ops/launch` | admin | Envelope: schedule, waitlist total/top-220-claimed/activated, `signups`, `competing`, `on_board`, `competing_breakdown` (`paid` / `comp_eligible` — position ≤ `comp_slots` AND activated by the deadline; a proxy, promo-code redemption is not observed, so the P&L treats every eligible entrant as comped — / `public`), `public_pot_cents` (by sign-ups), `funded_pot_cents` + `pot_counted` (by first-invoice count), referrals signed-up/paid/banked, projected P&L vs `AWS_CREDITS_CENTS` (constant 500000 in `core/services/ops/launch.py`), full entries table, `waitlist_rows`. |
+| `POST /ops/launch/refresh` | admin | Force-refresh every entry now (`refresh_all(force=True)`). |
 
 CSV is built client-side on `/admin/launch` from `waitlist_rows` in `GET /ops/launch`.
 
@@ -155,43 +164,52 @@ instance.
 
 ## Frontend
 
-The waitlist front door and the competition page are two different routes, split
-between the brand-owned root and a dedicated `/launch` page (owner decision
-2026-08-28 — the spec's original single `/launch`-hosts-everything design did
-not survive contact with the in-flight brand branch owning `app/page.tsx`):
+There is no `WaitlistForm` and no separate waitlist front door (owner decision
+2026-08-29, superseding the spec's original split) — sign-up itself is the
+waitlist, so the root landing page's hero stays the plain idea funnel
+(`HeroFunnel.tsx` → `GetStartedLauncher.tsx`) unchanged by the launch. Two
+in-app/in-product surfaces carry the launch instead:
 
-- **The root landing page** (`app/page.tsx`, brand-owned) hosts the waitlist via
-  a self-contained `<WaitlistForm />` (`components/launch/WaitlistForm.tsx`):
-  it takes no props, fetches its own `GET /launch` state, and renders nothing
-  unless the launch is configured and `phase === "waitlist"` — so it can sit
-  in the hero unchanged through the drop. The brand team's integration is one
-  import line: `import { WaitlistForm } from "@/components/launch/WaitlistForm"`.
-- **`app/launch/page.tsx`** is the competition page (`components/launch/LaunchPage.tsx`):
-  `ld-page` layout with the landing `Navbar`/`Footer`, a hero (pot + countdown +
-  phase copy via `LaunchHero`) that shows the waitlist form pre-drop and a
-  sign-up CTA during activation, a `Leaderboard` when `phase ∈ {live, ended}`,
-  and — signed in — a `MyLaunchCard` with the `EnterForm`. Reads `GET /launch`
-  on a 30s poll; signed-in users also read `GET /launch/me`.
+- **`LaunchHeldCard`** (`components/chat/LaunchHeldCard.tsx`) — rendered by
+  `ProvisioningStepper` when the provision gate returns
+  `blocked.code === "launch_pending"` (`core/services/launch_hold.py`). Reads
+  `GET /launch/me` (authed, via `useApi()`) and `GET /launch` (public fetch)
+  and renders `LaunchStatusLines` plus the gate's held-until-drop message.
+- **`app/launch/page.tsx`** (`components/launch/LaunchPage.tsx`) is the
+  competition page: `ld-page` layout with the landing `Navbar`/`Footer`, a
+  hero (pot + countdown + phase copy via `LaunchHero`), and states built
+  around `phase`:
+  - `waitlist` / `activation` — a "Sign up" CTA (`activation` also shows
+    "finish onboarding first, then redeem your code at checkout").
+  - `live` / `ended` — a `Leaderboard` section.
+  - Signed in, any phase — a `MyLaunchCard`, plus a static "How it works"
+    rules list.
+  - `MyLaunchCard` itself branches on `me`: `waitlist` phase → `LaunchStatusLines`;
+    not `activated` → "finish onboarding" copy; `activated` but not `joined` →
+    `JoinForm` when `can_join`, else the `reason`-keyed blocked copy; `joined`
+    → the public-board toggle (`PATCH /launch/entry`) plus `ConnectStripeForm`
+    when `!has_key` (or on `refresh_error`), else the live delta.
 - `?ref=` is captured by `useLaunchRef` into `localStorage`. When signed in and
   a stored ref exists → `POST /launch/referral` once, then clear. Referral
   links are rendered as `flickmeon.ai/?ref=CODE` (`ReferralLink.tsx`) — the
-  root domain, not `/launch`, since that's where the waitlist form lives.
-- `EnterForm`: display name, public toggle, restricted-key field with the
-  four-step instructions (*Dashboard → Developers → API keys → Create
-  restricted key → Balance: Read, Charges: Read*). Client-side prefix check
-  mirrors the server's.
+  root domain, since that's where sign-up (the waitlist) happens.
+- `JoinForm`: display name + public toggle → `POST /launch/join`.
+  `ConnectStripeForm`: restricted-key field with the four-step instructions
+  (*Dashboard → Developers → API keys → Create restricted key → Balance:
+  Read, Charges: Read*) → `POST /launch/connect-stripe`. Client-side prefix
+  check mirrors the server's.
 - Components are written on the landing page's `ld-*` classes and tokens, with
   launch-specific extras in `components/launch/launch.css`.
-- **`app/admin/launch/page.tsx`** + nav link: KPI tiles, sheet lines, a full
-  entries table, Refresh all, and client-side CSV export (`LaunchAdminClient.tsx`
-  builds the CSV from `GET /ops/launch`'s `waitlist_rows` — no server export
-  endpoint).
+- **`app/admin/launch/page.tsx`** + nav link: KPI tiles (both pots, `signups`/
+  `competing`/`on_board`), sheet lines, a full entries table, Refresh all, and
+  client-side CSV export (`LaunchAdminClient.tsx` builds the CSV from
+  `GET /ops/launch`'s `waitlist_rows` — no server export endpoint).
 
 ## Drop-day runbook
 
-1. **Wk 0** — merge; set `LAUNCH_DROP_AT` (+ the other `LAUNCH_*`) for dev; verify `dev.flickmeon.ai/launch` end to end with Claude-in-Chrome; promote; set prod values; Clerk prod → **Restricted**; hero CTA → `/launch`.
-2. **Drop** — Stripe live console: coupon 100% off / once → promotion code with `max_redemptions=220`, `expires_at=drop+72h`; set `STRIPE_FREE_MONTH_COUPON_ID` (dev+prod); `/admin/launch` → Export CSV → send the launch email from the marketing tool; Clerk → **Public**.
-3. **+72h** — nothing. The promo code expires itself; the competition starts on the clock.
+1. **Wk 0** — edit `launch-schedule.json`'s `dev` block (`drop_at` + `competition_start_at`), merge, verify `dev.flickmeon.ai` sign-up → held card → `/launch` with Claude-in-Chrome, then set `prod`, merge, promote via `workflow_dispatch`. No Clerk Restricted/Public step — sign-ups stay open throughout.
+2. **Drop** — Stripe live console: coupon 100% off / once → promotion code with `max_redemptions=220`, `expires_at=competition_start_at`; set `STRIPE_FREE_MONTH_COUPON_ID` (dev+prod); `/admin/launch` → Export CSV → send the launch email from the marketing tool.
+3. **Through competition start** — nothing. The promo code expires itself; the competition starts on the clock.
 4. **End** — `/admin/launch` → Refresh all; judges pick from the table; announce by email.
 
 ## Testing

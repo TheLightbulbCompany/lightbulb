@@ -61,16 +61,42 @@ export class AuthStack extends cdk.Stack {
       description?: string,
     ): secretsmanager.Secret => {
       const initialValue = secretVals[secretName];
-      return new secretsmanager.Secret(this, logicalId, {
-        secretName: `isol8/${env}/${secretName}`,
-        description: description ?? `Isol8 ${env} ${secretName}`,
-        encryptionKey: this.kmsKey,
-        ...(initialValue
-          ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
-          : generateConfig
-            ? { generateSecretString: generateConfig }
-            : {}),
-      });
+      const make = (id: string, prefix: string) =>
+        new secretsmanager.Secret(this, id, {
+          secretName: `${prefix}/${env}/${secretName}`,
+          description: description ?? `Lightbulb ${env} ${secretName}`,
+          encryptionKey: this.kmsKey,
+          ...(initialValue
+            ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
+            : generateConfig
+              ? { generateSecretString: generateConfig }
+              : {}),
+        });
+
+      // TRANSITIONAL — step 1 of 3 in the isol8/ -> lightbulb/ secret-prefix move.
+      //
+      // `secretName` is a CloudFormation REPLACEMENT property, so renaming these
+      // in place would have CFN mint a new secret with a GENERATED value and then
+      // delete the old one — over the live Fernet, Clerk and Stripe keys. And
+      // pre-copying the values to the new name doesn't rescue it either: CFN's
+      // create then fails with `already exists`. So the move is add-before-remove,
+      // the same shape used for the ManagedBy tag and the Cloud Map namespace:
+      //
+      //   1. THIS — mint the twin at the new name. Nothing consumes it yet, so the
+      //      generated placeholder value is harmless. `migrate_secret_prefix.py`
+      //      then copies each real value across (PutSecretValue; CFN neither knows
+      //      nor cares about the value it seeded).
+      //   2. Repoint every consumer to the new name. Consumers hold plain NAME
+      //      strings and import via `fromSecretNameV2`, never an ISecret, so there
+      //      is no cross-stack export to deadlock on — see isol8-stage.ts.
+      //   3. Delete the legacy construct and this branch.
+      //
+      // Steps 2 and 3 are separate deploys on purpose: deleting the old secret in
+      // the same deploy that repoints consumers leaves a window where a task
+      // restarting on the OLD task definition cannot read its secret (a secret
+      // scheduled for deletion fails GetSecretValue immediately).
+      make(`${logicalId}Lightbulb`, "lightbulb");
+      return make(logicalId, "isol8");
     };
 
     const encryptionKey = createSecret("EncryptionKey", "encryption_key");

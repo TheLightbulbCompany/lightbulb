@@ -259,3 +259,14 @@ async def test_the_lease_cannot_be_forged_through_patch_or_transition(workflows_
         await repo.transition(
             row["workflow_id"], from_state="ask", to_state="awaiting_approval", fields={"lease_until": "9999"}
         )
+
+
+@pytest.mark.asyncio
+async def test_list_open_follows_every_page(workflows_table, monkeypatch):
+    """A truncated Query would strand whatever fell off the first page — and
+    the sweep is the only thing that ever resumes those rows."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    monkeypatch.setattr(repo, "_PAGE_SIZE", 1)
+    expected = {(await _new())["workflow_id"] for _ in range(3)}
+    assert {r["workflow_id"] for r in await repo.list_open()} == expected

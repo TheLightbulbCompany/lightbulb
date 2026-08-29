@@ -9,15 +9,22 @@ Owner-blocked states (``awaiting_approval``, ``awaiting_user_action``,
 ``stale``) are DRIVEN, not abandoned: the guide says to keep polling the
 Account request and the Payment profile from the server, and a card approved on
 a phone must resume without waiting for a deploy. They just poll on the slow
-clock. Only ``TERMINAL_STATES`` stops the loop; how long an owner may take is
-the state machine's decision, not this module's.
+clock, and those ticks spend no step budget — how long an owner may take is the
+state machine's decision, not this module's. The loop stops on
+``TERMINAL_STATES``, on ``MAX_STEPS`` polling steps, or on ``MAX_WALL_S``.
 
 A rolling deploy runs two backend instances (``maxHealthyPercent: 200``), so
 every step is taken under a per-row LEASE (``repo.claim``): one driver per
-workflow, and the other instance skips the row rather than filing the same card
-or issuing the same Stripe read twice. The conditional ``transition`` is not
+workflow, and the other instance waits rather than filing the same card or
+issuing the same Stripe read twice. The conditional ``transition`` is not
 enough on its own — a step is a read plus a write, and both instances would
 still poll.
+
+The election lives in the LOOP, not in the sweep: the new instance is started
+and health-checked while the old one is still renewing, so a sweep that skipped
+held rows would skip everything and never run again. It kicks every open row;
+each task then waits its turn. Shutdown cancels the tasks so their leases are
+released rather than left to expire.
 
 This module never POSTs anything to Stripe. It calls ``advance``,
 ``on_approved``, ``on_rejected`` and one ``transition``; every decision about
@@ -30,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 import httpx
 
@@ -42,46 +50,38 @@ logger = logging.getLogger(__name__)
 
 # How long a workflow waiting on the owner sits before re-reading its approval.
 IDLE_RECONCILE_S = 60
-# Runaway guard: at POLL_MAX_S this is hours, well past the workflow's own
-# 15-minute deadline, so it only ever catches a logic loop.
+# Runaway guard on the FAST clock only: at POLL_MAX_S, 400 polling steps is
+# hours, well past the workflow's own 15-minute deadline, so it only ever
+# catches a logic loop. Slow-clock ticks are not steps — a workflow may wait on
+# its owner for a week without spending one.
 MAX_STEPS = 400
-# Twice the longest sleep the loop can take, so a live driver always renews
-# before its own lease lapses, and a dead one's row is claimable a minute later.
-LEASE_S = 2 * IDLE_RECONCILE_S
+# The bound that does cover waiting: just past the state machine's own 7-day
+# `stale` deadline, so a row nobody ever came back to is parked rather than
+# polled forever.
+MAX_WALL_S = 8 * 24 * 3600
+# Renewed at the top of every iteration, so this only has to outlast ONE
+# iteration: the 60s idle sleep plus a worst-case step of two chained Stripe
+# calls at the client's 45s timeout, doubled for headroom. Shorter would let a
+# live driver's lease lapse mid-step; longer would leave a crashed driver's row
+# stuck for no reason.
+LEASE_S = 300
 
 # Which instance holds a lease. The pid matters: a rolling deploy can put two
 # tasks on one host, and `HOSTNAME` is the Fargate task id in ECS.
 INSTANCE_ID = f"{os.getenv('HOSTNAME') or 'local'}:{os.getpid()}"
 
-# Waiting on a human, not on Stripe: the slow clock, not the poll backoff.
-_OWNER_BLOCKED = frozenset({"awaiting_approval", "awaiting_user_action", "stale"})
+# Nothing here is waiting on Stripe, so these tick on the slow clock and spend
+# no steps. `ask` is included because a row that never left it is not polling
+# anything either — `start` should have moved it, and the wall clock is what
+# eventually surfaces one that did not.
+_SLOW_STATES = frozenset({"ask", "awaiting_approval", "awaiting_user_action", "stale"})
 
-# Paperclip's approved/rejected spellings. Several are accepted because the
-# repo does not state them anywhere — see the VERIFY in the plan.
-_APPROVED = frozenset({"approved", "accepted"})
-# Rejection is a real outcome, not silence: without it a declined card polls
-# for seven days and then goes stale, and the owner is never told it stopped.
-_REJECTED = frozenset({"rejected", "declined", "denied"})
+# Paperclip's own two outcomes (fork `services/approvals.ts`). Rejection is a
+# real outcome, not silence: without it a declined card polls for seven days and
+# then goes stale, and the owner is never told it stopped.
+_OUTCOMES = ("approved", "rejected")
 
 _TASKS: dict[str, asyncio.Task] = {}
-# One log line per distinct wire spelling, so an unhandled one is visible in the
-# logs instead of quietly stalling a workflow.
-_SEEN_STATUSES: set[str] = set()
-
-
-def _approval_outcome(approval: dict | None) -> str | None:
-    raw = (approval or {}).get("status") or (approval or {}).get("state")
-    if not isinstance(raw, str):
-        return None
-    if raw not in _SEEN_STATUSES:
-        _SEEN_STATUSES.add(raw)
-        logger.info("provisioning: paperclip approval status=%r", raw)
-    lowered = raw.lower()
-    if lowered in _APPROVED:
-        return "approved"
-    if lowered in _REJECTED:
-        return "rejected"
-    return None
 
 
 async def _reconcile_approval(row: dict) -> dict | None:
@@ -101,35 +101,55 @@ async def _reconcile_approval(row: dict) -> dict | None:
     except (PaperclipApiError, httpx.HTTPError) as e:
         logger.warning("provisioning: approval read failed for %s: %s", row["workflow_id"], e)
         return None
-    outcome = _approval_outcome(approval)
-    if outcome is None:
+    status = (approval or {}).get("status")
+    if status not in _OUTCOMES:
         return None
-    if outcome == "rejected":
+    if status == "rejected":
         return await on_rejected(row["workflow_id"])
-    # What the owner actually approved: the card's amount if they edited it,
-    # otherwise the one it was filed with.
-    usage_limit = ((approval or {}).get("payload") or {}).get("usage_limit") or row.get("usage_limit")
-    return await on_approved(row["workflow_id"], usage_limit=usage_limit, approved_by="paperclip")
+    # An approver CANNOT edit a card's payload in Paperclip, so the only limit
+    # this path can honour is the one the card was filed with. An owner who
+    # changed the amount comes through the approve route, which passes theirs.
+    return await on_approved(row["workflow_id"], usage_limit=row.get("usage_limit"), approved_by="paperclip")
+
+
+async def _park(row: dict, code: str) -> None:
+    logger.warning("provisioning: workflow %s parked by the driver (%s)", row["workflow_id"], code)
+    await repo.transition(
+        row["workflow_id"], from_state=row["state"], to_state="requires_review", fields={"error_code": code}
+    )
 
 
 async def _drive(workflow_id: str) -> None:
-    """Step one workflow until it is terminal or out of steps."""
+    """Step one workflow until it is terminal, out of steps, or out of time."""
     row = await repo.get(workflow_id)
-    held = False
-    for _ in range(MAX_STEPS):
+    steps = 0
+    give_up_at = time.monotonic() + MAX_WALL_S
+    while True:
         if row is None or row.get("state") in repo.TERMINAL_STATES:
             return
-        if await repo.claim(workflow_id, owner=INSTANCE_ID, ttl_s=LEASE_S) is None:
+        claimed = await repo.claim(workflow_id, owner=INSTANCE_ID, ttl_s=LEASE_S)
+        if claimed is None:
             # Another instance is driving this row — a rolling deploy's
             # transient N=2. Not an error, and not a reason to give up either:
-            # wait out its lease so a driver that dies mid-deploy is taken over
-            # here rather than stalling until the next restart.
-            held = False
+            # wait out its lease so the row is taken over here the moment that
+            # instance stops renewing.
             await asyncio.sleep(IDLE_RECONCILE_S)
             row = await repo.get(workflow_id)
             continue
-        held = True
+        # The claim's own ALL_NEW projection, so a move the owner route made
+        # while we were sleeping is seen on this tick rather than overwritten —
+        # including one that finished the workflow.
+        if claimed.get("state") in repo.TERMINAL_STATES:
+            return
+        row = claimed
         before = row.get("state")
+        slow = before in _SLOW_STATES
+        if time.monotonic() >= give_up_at:
+            return await _park(row, "driver_wall_exceeded")
+        if not slow:
+            if steps >= MAX_STEPS:
+                return await _park(row, "driver_steps_exceeded")
+            steps += 1
         try:
             if before == "awaiting_approval":
                 # Poll Paperclip, not Stripe: nothing moves until the owner
@@ -140,26 +160,17 @@ async def _drive(workflow_id: str) -> None:
                 row = await advance(row)
         except Exception:
             logger.exception("provisioning: step failed for %s", workflow_id)
+            # Back off before retrying: a failing step that looped at full
+            # speed would burn the whole step budget in milliseconds and park a
+            # workflow whose only problem was a blip.
+            await asyncio.sleep(IDLE_RECONCILE_S if slow else poll_delay(int(row.get("attempts") or 0)))
             row = await repo.get(workflow_id)
             continue
         if row is None or row.get("state") != before:
             continue
-        # Nothing moved. Owner-blocked states wait on a human, so they get the
-        # slow clock; an in-flight Stripe operation gets the backoff.
-        delay = IDLE_RECONCILE_S if before in _OWNER_BLOCKED else poll_delay(int(row.get("attempts") or 0))
-        await asyncio.sleep(delay)
-    if held and row and row.get("state") not in repo.TERMINAL_STATES:
-        # Still moving after MAX_STEPS is a logic loop, not patience. Park it
-        # with its ids intact rather than polling Stripe forever. Only when we
-        # were the driver: a task that spent its steps waiting for someone
-        # else's lease has no business parking their row.
-        logger.warning("provisioning: workflow %s exceeded %d driver steps", workflow_id, MAX_STEPS)
-        await repo.transition(
-            workflow_id,
-            from_state=row["state"],
-            to_state="requires_review",
-            fields={"error_code": "driver_steps_exceeded"},
-        )
+        # Nothing moved. Waiting on a human gets the slow clock; an in-flight
+        # Stripe operation gets the backoff.
+        await asyncio.sleep(IDLE_RECONCILE_S if slow else poll_delay(int(row.get("attempts") or 0)))
 
 
 async def _run(workflow_id: str) -> None:
@@ -188,7 +199,13 @@ async def kick(workflow_id: str) -> None:
 
 
 async def resume_open_workflows() -> None:
-    """Startup sweep. Best-effort: never raises into the lifespan."""
+    """Startup sweep. Best-effort: never raises into the lifespan.
+
+    Kicks EVERY open row, including ones another instance still holds. It runs
+    once per process, while the outgoing instance is still alive and renewing,
+    so skipping held rows would skip all of them and nothing would ever look
+    again. The lease election is the loop's job, not the sweep's.
+    """
     try:
         rows = await repo.list_open()
     except Exception:
@@ -198,11 +215,22 @@ async def resume_open_workflows() -> None:
     for row in rows:
         workflow_id = row["workflow_id"]
         try:
-            if await repo.claim(workflow_id, owner=INSTANCE_ID, ttl_s=LEASE_S) is None:
-                continue  # the other instance still has it
             await kick(workflow_id)
             resumed += 1
         except Exception:
             logger.exception("provisioning: could not resume workflow %s", workflow_id)
     if resumed:
         logger.info("provisioning: resumed %d open workflow(s)", resumed)
+
+
+async def cancel_all() -> None:
+    """Shutdown: stop every driver task so each one's ``finally`` hands its
+    lease back. Otherwise the leases of the instance being replaced sit there
+    until they expire, and the new instance cannot touch those rows for as long
+    as LEASE_S."""
+    tasks = list(_TASKS.values())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _TASKS.clear()

@@ -488,6 +488,12 @@ async def lifespan(app: FastAPI):
             from core.services.provision_dispatch import handoff_inflight_provisions
 
             await handoff_inflight_provisions()
+            # Stop the provisioning drivers so each hands its row's lease back.
+            # Leaving them to expire would lock the incoming instance out of
+            # exactly the workflows it just swept in to take over.
+            from core.services.provisioning_driver import cancel_all
+
+            await cancel_all()
             system_health.BACKGROUND_TASKS.clear()
             # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
             request_worker_stop()

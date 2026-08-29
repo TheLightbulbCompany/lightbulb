@@ -18,6 +18,18 @@ Three writes, in this order and for these reasons:
    PROXY (``apps/infra/openclaw/plugins/aws-exec-profile``) instead — a named
    follow-up, deliberately NOT in P0b.
 
+The ``(owner, provider)`` Secrets Manager blob is SHARED with the OAuth
+integrations rail — ``_secret_name`` is the same name ``routers/connections.py``
+writes and ``credentials/mcp_server.py`` reads, and ``stripe``/``posthog`` are
+both registry providers (``credentials/providers.yaml``) AND providers this rail
+lands. So nothing here may assume the blob is its own: reads take only the names
+the row declares, and writes merge rather than replace.
+
+P0b ships no reconcile entry point for this rail (the integrations rail has
+``mcp_server.reconcile_integrations``); a config write missed because the
+container has no ``openclaw.json`` yet is repaired by the next provision, which
+calls ``build_provisioned_env``.
+
 Nothing here logs a credential value.
 """
 
@@ -27,6 +39,7 @@ import logging
 
 from core.repositories import integrations_repo
 from core.services import config_patcher
+from core.services.config_patcher import ConfigPatchError
 from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
@@ -39,15 +52,31 @@ async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]
     # for the same provider must not blank the first one's variables. A failing
     # read propagates deliberately: writing without knowing what is already
     # there would destroy credentials the provider only ever shows once.
+    #
+    # Merged VERBATIM, with no type filter: the same blob holds the OAuth rail's
+    # credential for this provider, whose fields are not all strings
+    # (``expires_in: int | None``). Dropping the non-strings would corrupt the
+    # round-trip the store documents.
     existing = await integration_secret_store.get(owner_id, provider) or {}
-    merged = {**{k: v for k, v in existing.items() if isinstance(v, str)}, **env}
+    merged = {**existing, **env}
     await integration_secret_store.put(owner_id, provider, merged)
     await integrations_repo.record_provider_resource(owner_id, provider, resource)
-    for name, value in sorted(env.items()):
-        # One locked RMW per var, not one write of the whole `env.vars` map:
-        # set_openclaw_config_path REPLACES the leaf, so setting the map would
-        # drop every var landed by another provider.
-        await config_patcher.set_openclaw_config_path(owner_id, ["env", "vars", name], value)
+    try:
+        for name, value in sorted(env.items()):
+            # One locked RMW per var, not one write of the whole `env.vars` map:
+            # set_openclaw_config_path REPLACES the leaf, so setting the map would
+            # drop every var landed by another provider.
+            await config_patcher.set_openclaw_config_path(owner_id, ["env", "vars", name], value)
+    except ConfigPatchError:
+        # No openclaw.json yet (container not provisioned). Not an error: the
+        # credential is already durable, and the provision that creates the config
+        # injects it via build_provisioned_env. Same call as
+        # mcp_server.reconcile_integrations makes.
+        logger.info(
+            "provisioning: no container config yet for owner=%s; %s vars land at provision",
+            owner_id,
+            provider,
+        )
     logger.info(
         "provisioning: landed %s/%s for owner=%s (%d vars)",
         provider,
@@ -62,8 +91,14 @@ async def build_provisioned_env(owner_id: str) -> dict[str, str]:
 
     A reprovision fully overwrites openclaw.json, so without re-injecting these
     the owner's provider tokens vanish on the next image roll — the identical
-    failure ``integration_mcp_servers`` exists to prevent
-    (core/containers/config.py:2386). Best-effort: never fail a provision.
+    failure the ``integration_mcp_servers`` merge in ``build_openclaw_config_dict``
+    exists to prevent. Best-effort: never fail a provision.
+
+    Only the names the row DECLARES (the union of its
+    ``provider_resources[].env_keys``) are read out of the blob, never the blob
+    itself: it is shared with the OAuth rail, so a provider connected on both
+    would otherwise leak ``access_token``/``refresh_token``/``client_secret``
+    into openclaw.json.
     """
     env: dict[str, str] = {}
     try:
@@ -72,8 +107,14 @@ async def build_provisioned_env(owner_id: str) -> dict[str, str]:
                 continue
             if row.get("status", "connected") != "connected":
                 continue
-            cred = await integration_secret_store.get(owner_id, row.get("provider") or "")
-            for name, value in (cred or {}).items():
+            names = {
+                name for resource in row.get("provider_resources") or [] for name in resource.get("env_keys") or []
+            }
+            if not names:
+                continue
+            cred = await integration_secret_store.get(owner_id, row.get("provider") or "") or {}
+            for name in names:
+                value = cred.get(name)
                 if isinstance(value, str):
                     env[name] = value
     except Exception:  # noqa: BLE001 — provisioning must not fail over this.

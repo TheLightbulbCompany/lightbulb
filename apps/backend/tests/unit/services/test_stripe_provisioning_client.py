@@ -118,8 +118,10 @@ async def test_logs_carry_no_secret_bearing_field(caplog):
     }
     with patch.object(mod, "_raw", MagicMock(return_value=revealed)), caplog.at_level("DEBUG"):
         await mod.environment_info("acct_1", project="proj_1", provider="prvdr_1", service="svc_1", reveal=True)
-    assert "sk_live_LEAK" not in caplog.text
-    assert "access_configuration" not in caplog.text
+    # A revealed credential is the most sensitive response this API returns, so
+    # the contract is stronger than "no secret in the text": a success logs
+    # nothing at all, which is the only version of this that cannot rot.
+    assert caplog.records == []
 
 
 @pytest.mark.asyncio
@@ -278,3 +280,109 @@ async def test_a_transport_timeout_is_transient_too():
         with pytest.raises(mod.TransientProvisioningError) as exc:
             await mod.create_deep_link("acct_1", provider="prvdr_1")
     assert exc.value.code == "transport_error"
+
+
+@pytest.mark.asyncio
+async def test_a_non_object_error_body_is_typed_and_logged_not_a_crash():
+    """An intermediary (WAF, proxy, load balancer) answers HTML, and the SDK
+    raises APIError with that raw body as `json_body`. Reaching into it as a
+    dict would raise AttributeError out of `request` BEFORE the log line — the
+    one failure mode that is neither typed nor recorded."""
+    err = mod.stripe.error.APIError("Invalid response object from API: '<html>502</html>'")
+    err.json_body = "<html>502 Bad Gateway</html>"
+    err.http_status = 502
+    logged = MagicMock()
+    with patch.object(mod, "_raw", MagicMock(side_effect=err)), patch.object(mod, "logger", logged):
+        with pytest.raises(mod.ProvisioningError) as exc:
+            await mod.get_resource("acct_1", "res_x")
+    assert exc.value.code == "provisioning_error"
+    assert logged.warning.call_count == 1
+    # Path and code only — never the body the SDK folded into its message.
+    assert "<html>" not in repr(logged.mock_calls)
+
+
+@pytest.mark.asyncio
+async def test_a_message_carrying_a_whole_response_body_is_bounded():
+    err = mod.stripe.error.APIError("Invalid response object from API: " + "x" * 5000)
+    err.json_body = ["not", "an", "object"]
+    with patch.object(mod, "_raw", MagicMock(side_effect=err)):
+        with pytest.raises(mod.ProvisioningError) as exc:
+            await mod.eligibility("acct_1")
+    assert len(exc.value.message) == mod._MAX_MESSAGE_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_429_is_transient_and_carries_retry_after():
+    err = mod.stripe.error.RateLimitError("slow down")
+    err.http_status = 429
+    err.headers = {"retry-after": "2.5"}
+    with patch.object(mod, "_raw", MagicMock(side_effect=err)):
+        with pytest.raises(mod.TransientProvisioningError) as exc:
+            await mod.eligibility("acct_1")
+    assert exc.value.http_status == 429
+    assert exc.value.retry_after == 2.5
+
+
+@pytest.mark.asyncio
+async def test_a_missing_or_dated_retry_after_is_none_not_a_crash():
+    err = mod.stripe.error.InvalidRequestError("nope", None, code="not_found")
+    err.http_status = 404
+    err.headers = {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}
+    with patch.object(mod, "_raw", MagicMock(side_effect=err)):
+        with pytest.raises(mod.ProvisioningError) as exc:
+            await mod.get_resource("acct_1", "res_x")
+    assert exc.value.retry_after is None
+    assert not isinstance(exc.value, mod.TransientProvisioningError)
+
+
+def test_the_stripe_client_is_built_with_a_network_timeout():
+    """`asyncio.wait_for` frees the caller but cannot kill the worker thread,
+    so the bound that actually cuts a hung read is the socket timeout. The
+    SDK's default is 80s."""
+    made = MagicMock()
+    with patch.object(mod, "StripeClient", made):
+        mod._client()
+    assert made.call_args.kwargs["http_client"]._timeout == mod.TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_a_get_refuses_a_body_instead_of_folding_it_into_the_query():
+    with patch.object(mod, "_raw", MagicMock()) as raw:
+        with pytest.raises(ValueError):
+            await mod.request("acct_1", "get", "/v2/provisioning/resources", body={"project": "proj_1"})
+    raw.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_paginated_failure_logs_the_bare_path_not_the_page_token():
+    """`paginate` hands `request` a url that already carries the opaque page
+    value; the log must not become a place page tokens accumulate."""
+    err = mod.stripe.error.InvalidRequestError("nope", None, code="not_found")
+    logged = MagicMock()
+    with patch.object(mod, "_raw", MagicMock(side_effect=err)), patch.object(mod, "logger", logged):
+        with pytest.raises(mod.ProvisioningError):
+            await mod.paginate("acct_1", "/v2/provisioning/resources", params={"limit": 100})
+    emitted = repr(logged.mock_calls)
+    assert "/v2/provisioning/resources" in emitted
+    assert "limit=100" not in emitted and "?" not in emitted
+
+
+@pytest.mark.asyncio
+async def test_charges_passes_limit_and_page_and_is_not_a_v2_list():
+    raw = MagicMock(
+        return_value={"usage": [], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=P"}
+    )
+    with patch.object(mod, "_raw", raw):
+        out = await mod.charges("acct_1", start_time="t0", end_time="t1", livemode=True, limit=50, page="P")
+    url = raw.call_args.args[1]
+    assert "limit=50" in url and "page=P" in url and "livemode=true" in url
+    # `usage`, not `data` — which is why paginate() is not used here.
+    assert "data" not in out
+
+
+@pytest.mark.asyncio
+async def test_deep_link_can_select_the_catalog_partition():
+    raw = MagicMock(return_value={"purpose": "dashboard", "url": "https://p", "expires_time": "t"})
+    with patch.object(mod, "_raw", raw):
+        await mod.create_deep_link("acct_1", provider="prvdr_1", catalog="testing")
+    assert raw.call_args.args[3]["catalog"] == "testing"

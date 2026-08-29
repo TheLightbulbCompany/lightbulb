@@ -42,8 +42,14 @@ logger = logging.getLogger(__name__)
 
 BASE = "/v2/provisioning"
 PROVISIONING_VERSION = "unsafe-development"
+# Stripe's message is surfaced to the caller but never logged; on the
+# non-object-response path it embeds the whole raw body, so it is capped.
+_MAX_MESSAGE_CHARS = 200
 # Guide, "Build a server-side API client": "Set a 45-second or shorter network
-# timeout that suits your platform."
+# timeout that suits your platform." It is the socket timeout on the HTTP
+# client, so a hung read is cut at the socket; `request`'s `asyncio.wait_for`
+# is only the outer backstop for a worker thread that never returns at all
+# (`wait_for` cannot kill the thread — it only frees the caller).
 TIMEOUT_S = 45
 
 # spec.txt §6: "Treat access_configuration, Project-variable value,
@@ -84,16 +90,19 @@ class ProvisioningError(RuntimeError):
         *,
         request_id: str | None = None,
         http_status: int | None = None,
+        retry_after: float | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.request_id = request_id
         self.http_status = http_status
+        # Seconds Stripe asked us to wait, when it said so (429 `retry-after`).
+        self.retry_after = retry_after
 
 
 class TransientProvisioningError(ProvisioningError):
-    """The call may not have been decided: a 5xx from the preview, or a
+    """The call may not have been decided: a 5xx from the preview, a 429, or a
     transport timeout with the request possibly in flight.
 
     A caller may re-READ (poll the resource / account request / payment
@@ -109,7 +118,10 @@ def redact(body: dict | None) -> dict:
 
 
 def _client() -> StripeClient:
-    return StripeClient(settings.STRIPE_SECRET_KEY)
+    """``StripeClient`` takes no ``timeout``; the socket timeout lives on the
+    HTTP client (``RequestsClient(timeout=…)``, default 80s), so it is set
+    here or a hung preview read blocks a worker thread for 80 seconds."""
+    return StripeClient(settings.STRIPE_SECRET_KEY, http_client=stripe.RequestsClient(timeout=TIMEOUT_S))
 
 
 def _raw(method: str, url: str, options: dict, body: dict | None):
@@ -127,31 +139,56 @@ def _url(path: str, params: dict | None) -> str:
 
 
 def _relative(next_page_url: str) -> str:
-    """Stripe returns an absolute next_page_url; raw_request takes a path.
-    Split rather than string-trim so a host change cannot silently break it."""
+    """Stripe returns an ABSOLUTE next_page_url, and it must not be handed to
+    `raw_request` as-is: `stripe._util.get_api_mode` classifies a url by
+    `startswith("/v2")`, so an absolute one would be sent as a V1 form-encoded
+    request. Split rather than string-trim, so a host change cannot break it."""
     parts = urlsplit(next_page_url)
     return parts.path + (f"?{parts.query}" if parts.query else "")
 
 
+def _retry_after(e: Exception) -> float | None:
+    """Seconds from the `retry-after` header, when it is a plain number.
+    An HTTP-date form yields None — the caller's backoff covers that."""
+    headers = getattr(e, "headers", None) or {}
+    try:
+        return float(headers.get("retry-after") or headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _error(e: Exception) -> ProvisioningError:
-    if isinstance(e, stripe.error.StripeError):
-        code = getattr(e, "code", None)
-        if not code:
-            code = ((getattr(e, "json_body", None) or {}).get("error") or {}).get("code")
-        status = getattr(e, "http_status", None)
-        cls = TransientProvisioningError if (status or 0) >= 500 else ProvisioningError
-        return cls(
-            code or "provisioning_error",
-            str(getattr(e, "user_message", None) or "Stripe refused the request"),
-            request_id=getattr(e, "request_id", None),
-            http_status=status,
-        )
-    return TransientProvisioningError("transport_error", "Could not reach Stripe; try again")
+    if not isinstance(e, stripe.error.StripeError):
+        return TransientProvisioningError("transport_error", "Could not reach Stripe; try again")
+    # `json_body` is whatever came back off the wire. An intermediary can answer
+    # a string or a list, and the SDK passes that straight through
+    # (`_api_requestor.handle_error_response` raises APIError with the raw body
+    # as `json_body`), so NOTHING here may assume a dict — an AttributeError
+    # here escapes `request` untyped and, worse, unlogged.
+    body = getattr(e, "json_body", None)
+    envelope = body.get("error") if isinstance(body, dict) else None
+    code = getattr(e, "code", None) or (envelope.get("code") if isinstance(envelope, dict) else None)
+    status = getattr(e, "http_status", None)
+    # Bounded: on that same non-object path the SDK's message interpolates the
+    # WHOLE raw response body. It is carried for the caller, never logged.
+    message = str(getattr(e, "user_message", None) or "Stripe refused the request")[:_MAX_MESSAGE_CHARS]
+    transient = (status or 0) >= 500 or status == 429 or isinstance(e, stripe.error.RateLimitError)
+    return (TransientProvisioningError if transient else ProvisioningError)(
+        code or "provisioning_error",
+        message,
+        request_id=getattr(e, "request_id", None),
+        http_status=status,
+        retry_after=_retry_after(e),
+    )
 
 
 async def request(
     account_id: str, method: str, path: str, *, params: dict | None = None, body: dict | None = None
 ) -> dict:
+    if method == "get" and body:
+        # The SDK would fold it into the query string instead of dropping it,
+        # which is how a body silently becomes a filter. Caller error, loudly.
+        raise ValueError("a GET carries its arguments in `params`, not `body`")
     url = _url(path, params)
     options = {
         "stripe_context": account_id,
@@ -159,11 +196,21 @@ async def request(
         "api_key": settings.STRIPE_SECRET_KEY,
     }
     try:
-        result = await asyncio.wait_for(asyncio.to_thread(_raw, method, url, options, body), timeout=TIMEOUT_S)
+        # TIMEOUT_S is the socket timeout; +5 leaves the HTTP client room to
+        # raise its own timeout, which arrives typed, before this fires.
+        result = await asyncio.wait_for(asyncio.to_thread(_raw, method, url, options, body), timeout=TIMEOUT_S + 5)
     except Exception as e:  # noqa: BLE001 — every failure becomes one typed error
         err = _error(e)
-        # Method, path, code, request id. Never a body and never a URL from one.
-        logger.warning("provisioning: %s %s failed code=%s request_id=%s", method, path, err.code, err.request_id)
+        # Method, path, code, request id. Never a body, never a message, and
+        # never a URL from one — the query is stripped because a caller (or
+        # `paginate`) can hand us a path that already carries filters.
+        logger.warning(
+            "provisioning: %s %s failed code=%s request_id=%s",
+            method,
+            path.split("?")[0],
+            err.code,
+            err.request_id,
+        )
         raise err from e
     return result if isinstance(result, dict) else dict(result)
 
@@ -395,7 +442,12 @@ async def update_payment_limit(
 
 
 async def create_deep_link(
-    account_id: str, *, provider: str, project: str | None = None, purpose: str = "dashboard"
+    account_id: str,
+    *,
+    provider: str,
+    project: str | None = None,
+    purpose: str = "dashboard",
+    catalog: str | None = None,
 ) -> dict:
     """Short-lived and pre-authenticated: "Present it immediately and do not
     persist, cache, or log it." Only call it for a purpose the Provider
@@ -403,17 +455,38 @@ async def create_deep_link(
     body: dict = {"purpose": purpose, "provider": provider}
     if project:
         body["project"] = project
+    if catalog:
+        body["catalog"] = catalog
     return await request(account_id, "post", f"{BASE}/deep_links", body=body)
 
 
 async def charges(
-    account_id: str, *, start_time: str, end_time: str, livemode: bool, project: str | None = None
+    account_id: str,
+    *,
+    start_time: str,
+    end_time: str,
+    livemode: bool,
+    project: str | None = None,
+    limit: int | None = None,
+    page: str | None = None,
 ) -> dict:
     """`start_time`, `end_time` and `livemode` are non-optional current proto
-    fields (spec.txt 4.7)."""
+    fields (spec.txt 4.7).
+
+    NOT walkable with `paginate`: this endpoint answers `usage[]`, not the
+    `v2.list` `data[]` every other list route returns, so `paginate` would
+    collect nothing. Pass `page` from the response's `next_page_url` — or add
+    a usage-shaped walker the day a fleet outgrows one page."""
     return await request(
         account_id,
         "get",
         f"{BASE}/charges",
-        params={"start_time": start_time, "end_time": end_time, "livemode": livemode, "project": project},
+        params={
+            "start_time": start_time,
+            "end_time": end_time,
+            "livemode": livemode,
+            "project": project,
+            "limit": limit,
+            "page": page,
+        },
     )

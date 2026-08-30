@@ -115,6 +115,7 @@ def test_pot_and_constants_read_the_row(configured):
         "competition_days": 30,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "referral_jump": 10,
     }
 
 

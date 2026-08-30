@@ -20,7 +20,7 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo, user_repo
-from core.services import launch_revenue, readiness_state
+from core.services import launch_phase, launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,23 @@ LIVE_FOR_ENTRY = frozenset({"active", "trialing"})
 
 def referral_link(code: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/?ref={code}"
+
+
+MAX_REFERRALS_COUNTED = 20  # ponytail: a flat cap; make it a setting if the owner ever wants to tune it
+
+
+def effective_position(row: dict, referral_jump: int) -> int:
+    """Queue-jump: each referral moves the referrer up ``referral_jump``
+    spots, floored at 1 (position never goes to zero or negative). This is
+    the ONE place that math happens — every surface that shows or gates on a
+    waitlist position (``me()``, ``join()``, the admin sheet's top-slot logic
+    and CSV) reads through this, not raw ``row["position"]``.
+
+    Only the first ``MAX_REFERRALS_COUNTED`` referrals count toward the jump:
+    sign-ups are cheap (a throwaway Clerk account each), so an uncapped jump
+    would let anyone buy their way into the comp-slot window for nothing."""
+    counted = min(int(row.get("referrals_signed_up", 0)), MAX_REFERRALS_COUNTED)
+    return max(1, int(row["position"]) - referral_jump * counted)
 
 
 async def resolve_email(auth: AuthContext) -> str | None:
@@ -113,10 +130,16 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     if email:
         row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
         await launch_waitlist_repo.claim_user(email, auth.user_id)
+        referral_jump = launch_phase.constants()["referral_jump"]
+        position = row["position"]
+        eff = effective_position(row, referral_jump)
         waitlist = {
-            "position": row["position"],
+            "position": position,
+            "effective_position": eff,
+            "moved_up": position - eff,
+            "referral_jump": referral_jump,
             "referral_code": row["referral_code"],
-            "in_comp_window": row["position"] <= s.comp_slots,
+            "in_comp_window": eff <= s.comp_slots,
             "referral_link": referral_link(row["referral_code"]),
             "referrals_signed_up": int(row.get("referrals_signed_up", 0)),
             "referrals_paid": int(row.get("referrals_paid", 0)),
@@ -160,7 +183,9 @@ async def join(auth: AuthContext, s: Schedule, *, display_name: str, public: boo
     email = await resolve_email(auth)
     if email:
         row = await launch_waitlist_repo.get(email)
-        position = int(row["position"]) if row else None
+        if row:
+            referral_jump = launch_phase.constants()["referral_jump"]
+            position = effective_position(row, referral_jump)
     entry = await launch_entries_repo.join(
         owner_id, display_name=display_name.strip(), public=public, waitlist_position=position
     )

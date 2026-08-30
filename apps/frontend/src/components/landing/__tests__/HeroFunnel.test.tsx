@@ -13,6 +13,8 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
+vi.mock("@/components/launch/LaunchHeroPill", () => ({ LaunchHeroPill: () => null }));
+
 function readStash(): { path: string; input: string; detail: string } | null {
   const raw = window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY);
   return raw ? JSON.parse(raw) : null;

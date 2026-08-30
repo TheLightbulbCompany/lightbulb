@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$")
 
 _POSITIVE_INT_FIELDS = ("comp_slots", "competition_days")
-_NONNEG_INT_FIELDS = ("pot_front_cents", "pot_per_entrant_cents")
+_NONNEG_INT_FIELDS = ("pot_front_cents", "pot_per_entrant_cents", "referral_jump")
 _STR_FIELDS = ("stripe_coupon_id", "stripe_promotion_code_id", "stripe_promotion_code")
 
 

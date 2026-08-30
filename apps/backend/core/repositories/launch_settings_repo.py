@@ -17,7 +17,14 @@ from core.config import settings
 from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
 
 _ID = "settings"
-_INT_FIELDS = ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents", "mint_nonce")
+_INT_FIELDS = (
+    "comp_slots",
+    "competition_days",
+    "pot_front_cents",
+    "pot_per_entrant_cents",
+    "referral_jump",
+    "mint_nonce",
+)
 
 DEFAULTS: dict = {
     "enabled": False,
@@ -27,6 +34,9 @@ DEFAULTS: dict = {
     "competition_days": 30,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
+    # Waitlist queue-jump: each referral moves the referrer up this many
+    # spots (see launch_service.effective_position). Admin-editable, ≥ 0.
+    "referral_jump": 10,
     "stripe_coupon_id": "",
     "stripe_promotion_code_id": "",
     "stripe_promotion_code": "",

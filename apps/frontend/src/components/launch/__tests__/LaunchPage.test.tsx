@@ -33,6 +33,14 @@ describe("LaunchPage phases", () => {
     render(<LaunchPage />);
     expect(await screen.findByText(/the first 220 on the waitlist/)).toBeInTheDocument();
     expect(screen.getByText(/Every entrant puts \$10 into the pot/)).toBeInTheDocument();
+    // GET /launch doesn't send referral_jump today — the generic fallback, never "first 220" as a promise.
+    expect(screen.getByText("Referrals move you up the list.")).toBeInTheDocument();
+  });
+  it("rules render the numeric referral_jump sentence once the backend sends it", async () => {
+    info.mockResolvedValue({ ...base, phase: "waitlist", referral_jump: 10 });
+    render(<LaunchPage />);
+    expect(await screen.findByText("Each referral moves you up 10 spots.")).toBeInTheDocument();
+    expect(screen.queryByText("Referrals move you up the list.")).not.toBeInTheDocument();
   });
   it("activation: sign-up CTA, no sign-in link, no form", async () => {
     info.mockResolvedValue({ ...base, phase: "activation" });

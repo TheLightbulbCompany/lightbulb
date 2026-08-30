@@ -694,6 +694,9 @@ export interface LaunchOpsEntry {
 export interface LaunchOpsWaitlistRow {
   email: string;
   position: number;
+  /** `position` after queue-jumps from referrals (see `LaunchSettings.referral_jump`
+   * / `core.services.launch_service.effective_position`) — the CSV/sheet sort key. */
+  effective_position: number;
   referral_link: string;
   created_at: string | null;
   user_id: string | null;
@@ -717,18 +720,28 @@ export interface LaunchSettings {
   competition_days: number;
   pot_front_cents: number;
   pot_per_entrant_cents: number;
+  /** Queue-jump: how many waitlist spots each referral moves the referrer up
+   * (`core.services.launch_service.effective_position`). */
+  referral_jump: number;
   stripe_coupon_id: string;
   stripe_promotion_code_id: string;
   stripe_promotion_code: string;
   updated_at?: string;
 }
 
-/** The seven admin-editable fields of `LaunchSettings` — the `PUT
+/** The eight admin-editable fields of `LaunchSettings` — the `PUT
  * /ops/launch/settings` body. The three `stripe_*` fields + `updated_at` are
  * server-managed (minted by the coupon endpoint / stamped on write). */
 export type LaunchSettingsInput = Pick<
   LaunchSettings,
-  "enabled" | "drop_at" | "competition_start_at" | "comp_slots" | "competition_days" | "pot_front_cents" | "pot_per_entrant_cents"
+  | "enabled"
+  | "drop_at"
+  | "competition_start_at"
+  | "comp_slots"
+  | "competition_days"
+  | "pot_front_cents"
+  | "pot_per_entrant_cents"
+  | "referral_jump"
 >;
 
 /** The full economics sheet — only present when the competition is enabled

@@ -19,7 +19,7 @@ import { MyLaunchCard } from "../MyLaunchCard";
 const info: LaunchInfo = { phase: "live", drop_at: "2026-09-18T16:00:00+00:00", competition_start_at: "", competition_end_at: "", pot_cents: 0, signups: 0, competing: 0, on_board: 0, comp_slots: 220, pot_per_entrant_cents: 1000 };
 const me = (over: Partial<LaunchMe>): LaunchMe => ({
   phase: "live",
-  waitlist: { position: 47, referral_code: "P9AB3CDE", in_comp_window: true, referral_link: "https://flickmeon.ai/?ref=P9AB3CDE", referrals_signed_up: 3, referrals_paid: 1, free_months_banked: 1 },
+  waitlist: { position: 47, effective_position: 17, moved_up: 30, referral_jump: 10, referral_code: "P9AB3CDE", in_comp_window: true, referral_link: "https://flickmeon.ai/?ref=P9AB3CDE", referrals_signed_up: 3, referrals_paid: 1, free_months_banked: 1 },
   activated: true, activated_at: "2026-09-19T00:00:00Z", entry: null, joined: false, has_key: false, can_join: true, reason: null, idea: null, ...over,
 });
 

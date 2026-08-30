@@ -25,6 +25,7 @@ def _payload(**over):
         "competition_days": 30,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "referral_jump": 10,
         "stripe_coupon_id": "coupon_1",
         "stripe_promotion_code_id": "promo_1",
         "stripe_promotion_code": "LIGHTBULB-ABCD",
@@ -42,6 +43,7 @@ def test_defaults_shape():
         "competition_days": 30,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "referral_jump": 10,
         "stripe_coupon_id": "",
         "stripe_promotion_code_id": "",
         "stripe_promotion_code": "",
@@ -55,6 +57,7 @@ def test_validate_accepts_a_full_valid_payload():
     assert row["drop_at"] == GOOD_DROP and row["competition_start_at"] == GOOD_START
     assert row["comp_slots"] == 220 and row["competition_days"] == 30
     assert row["pot_front_cents"] == 100_000 and row["pot_per_entrant_cents"] == 1_000
+    assert row["referral_jump"] == 10
     assert row["stripe_coupon_id"] == "coupon_1"
 
 
@@ -123,6 +126,7 @@ def test_validate_rejects_start_equal_to_drop():
         ("competition_days", 0),
         ("pot_front_cents", -1),
         ("pot_per_entrant_cents", -1),
+        ("referral_jump", -1),
     ],
 )
 def test_validate_rejects_out_of_range_ints(field, value):
@@ -140,6 +144,11 @@ def test_validate_rejects_a_non_numeric_int_field():
 def test_validate_allows_zero_pot_cents():
     row = ls.validate(_payload(pot_front_cents=0, pot_per_entrant_cents=0))
     assert row["pot_front_cents"] == 0 and row["pot_per_entrant_cents"] == 0
+
+
+def test_validate_allows_zero_referral_jump():
+    row = ls.validate(_payload(referral_jump=0))
+    assert row["referral_jump"] == 0
 
 
 def test_validate_rejects_enabled_without_either_date():

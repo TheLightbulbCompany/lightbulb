@@ -107,6 +107,7 @@ def constants() -> dict:
         "competition_days": row["competition_days"],
         "pot_front_cents": row["pot_front_cents"],
         "pot_per_entrant_cents": row["pot_per_entrant_cents"],
+        "referral_jump": row["referral_jump"],
     }
 
 

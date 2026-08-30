@@ -756,6 +756,33 @@
   color: color-mix(in srgb, var(--midnight) 66%, transparent);
 }
 
+/* Quiet mono chip pointing at the open launch competition, mounted by
+   LaunchHeroPill.tsx under the eyebrow. Renders nothing until its fetch
+   resolves, so there is no layout to reserve for it. Colours read the same
+   --midnight-muted/--midnight tokens `.ld-funnel-eyebrow` and `.ld-mono` use
+   — the dark-room swap ([data-lb-theme="dark"] .ld-page above) repoints them
+   automatically, so this needs no dark-mode override of its own. */
+.ld-launch-pill {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 22px;
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--midnight) 22%, transparent);
+  border-radius: 999px;
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--midnight-muted);
+  text-decoration: none;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.ld-launch-pill:hover {
+  border-color: color-mix(in srgb, var(--midnight) 45%, transparent);
+  color: var(--midnight);
+  text-decoration: underline;
+}
+
 .ld-funnel-mark {
   display: block;
   height: 84px;

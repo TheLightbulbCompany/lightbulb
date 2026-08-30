@@ -28,6 +28,9 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   phase: "waitlist",
   waitlist: {
     position: 47,
+    effective_position: 47,
+    moved_up: 0,
+    referral_jump: 10,
     referral_code: "P9AB3CDE",
     in_comp_window: true,
     referral_link: "https://flickmeon.ai/?ref=P9AB3CDE",

@@ -112,6 +112,7 @@ _FULL_PUT_BODY = {
     "competition_days": 30,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
+    "referral_jump": 10,
 }
 
 
@@ -168,7 +169,15 @@ async def test_ops_launch_settings_put_rejects_a_partial_body(admin_client, audi
     assert r.status_code == 422
 
 
-async def test_ops_launch_settings_put_audits_exactly_the_seven_editable_fields(admin_client, audited):
+async def test_ops_launch_settings_put_422_without_referral_jump(admin_client, audited):
+    r = await admin_client.put(
+        "/api/v1/ops/launch/settings",
+        json={k: v for k, v in _FULL_PUT_BODY.items() if k != "referral_jump"},
+    )
+    assert r.status_code == 422
+
+
+async def test_ops_launch_settings_put_audits_exactly_the_eight_editable_fields(admin_client, audited):
     """The audit body is the parsed model — the three server-managed stripe_*
     ids are not on it, so an admin save no longer logs empty coupon defaults
     that it never wrote."""

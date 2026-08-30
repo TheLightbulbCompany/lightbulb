@@ -13,6 +13,11 @@ export interface LaunchInfo {
   pot_cents: number;
   comp_slots: number;
   pot_per_entrant_cents: number;
+  /** Sent by `GET /launch`. Optional only for the merge→promote window
+   * (Vercel ships the frontend on merge; the backend is promoted on demand),
+   * during which an older backend omits it and the rules copy falls back to
+   * the generic sentence. */
+  referral_jump?: number;
 }
 
 export interface LeaderboardRow {
@@ -38,6 +43,13 @@ export interface LaunchEntry {
 
 export interface LaunchWaitlist {
   position: number;
+  /** `max(1, position - referral_jump * referrals_signed_up)` — the queue
+   * position after referral jumps; the number every UI surface shows. */
+  effective_position: number;
+  /** `position - effective_position` — how many spots referrals moved you up. */
+  moved_up: number;
+  /** Spots per referral, echoed for the "each referral moves you up N spots" copy. */
+  referral_jump: number;
   referral_code: string;
   in_comp_window: boolean;
   referral_link: string;

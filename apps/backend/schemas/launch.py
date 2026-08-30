@@ -16,6 +16,7 @@ class LaunchInfo(BaseModel):
     pot_cents: int
     comp_slots: int
     pot_per_entrant_cents: int
+    referral_jump: int
 
 
 class ReferralAttributeRequest(BaseModel):
@@ -58,12 +59,16 @@ class LeaderboardResponse(BaseModel):
 
 
 class LaunchSettingsUpdate(BaseModel):
-    """The seven admin-editable launch-settings fields, as PUT by the admin
+    """The eight admin-editable launch-settings fields, as PUT by the admin
     console. Every field is REQUIRED, with no default: the write is a full
     replace, so a partial body has to be a 422 rather than a silent reset of
     whatever it left out — a body with no dates would otherwise blank the
     launch schedule. (``drop_at``/``competition_start_at`` are nullable, but
     the client still has to say ``null``.)
+
+    ``referral_jump`` is the queue-jump setting: how many waitlist spots each
+    referral moves the referrer up (``core.services.launch_service.
+    effective_position``).
 
     The three ``stripe_*`` ids are deliberately NOT here: they are minted by
     the coupon endpoint and carried forward by
@@ -80,6 +85,7 @@ class LaunchSettingsUpdate(BaseModel):
     competition_days: int
     pot_front_cents: int
     pot_per_entrant_cents: int
+    referral_jump: int
 
 
 class StripeCouponCreateRequest(BaseModel):

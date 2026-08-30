@@ -89,6 +89,7 @@ async def launch_info(response: Response, s: Schedule = Depends(require_launch))
             "pot_cents": launch_phase.pot_cents(signups),
             "comp_slots": s.comp_slots,
             "pot_per_entrant_cents": launch_phase.constants()["pot_per_entrant_cents"],
+            "referral_jump": launch_phase.constants()["referral_jump"],
         }
 
     response.headers["Cache-Control"] = "public, max-age=30"

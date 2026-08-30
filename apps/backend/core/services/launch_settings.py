@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from datetime import datetime, timezone
 
 import stripe
 
@@ -180,12 +181,11 @@ async def update(auth: AuthContext, payload: dict) -> dict:
     ``create_stripe_coupon`` — this is the settings *form*, and the coupon is
     minted by its own button, never hand-edited. ``put`` is a full replace,
     so those four fields are explicitly carried over from the current stored
-    row here rather than trusted from ``payload``: the request body always
-    contains SOME value for them (the admin schema fills defaults for
-    anything the client omits), so "did the client omit it" can't be told
-    apart from "the client sent the empty default" — carrying them forward
-    unconditionally is the only way a settings save can never blank out (or
-    silently reset the idempotency nonce on) an already-minted coupon."""
+    row here rather than trusted from ``payload``: ``LaunchSettingsUpdate``
+    doesn't accept them at all, and ``validate`` fills the ``stripe_*`` ones
+    from ``DEFAULTS`` (empty strings), so carrying them forward is the only
+    way a settings save can never blank out (or silently reset the
+    idempotency nonce on) an already-minted coupon."""
     row = validate(payload)
     current = await effective()
     for field in _COUPON_MANAGED_FIELDS:
@@ -221,6 +221,14 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
     start_at = row["competition_start_at"]
     if not start_at:
         raise SettingsInvalid({"competition_start_at": "must be set before minting the coupon"})
+    if parse_iso(start_at) <= datetime.now(timezone.utc):
+        # The promo code expires AT competition start, so a start instant
+        # already behind us mints a code nobody can redeem — and Stripe
+        # rejects the past `expires_at` outright. A field error on the date
+        # says which knob to move; a bare 502 doesn't.
+        raise SettingsInvalid(
+            {"competition_start_at": "must be in the future — the promo code expires at competition start"}
+        )
 
     nonce = row["mint_nonce"] + 1 if force else max(row["mint_nonce"], 1)
     comp_slots = row["comp_slots"]
@@ -244,6 +252,10 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
             # change picked up between a failed attempt and its retry gets a
             # fresh promo-code creation instead of a Stripe 400 for reusing
             # an idempotency key with different `max_redemptions`.
+            # `code` above does NOT carry comp_slots, so that same retry asks
+            # for a new promo code under the code string the lost attempt may
+            # already have created — Stripe 400s on the duplicate. Re-mint
+            # with `force` (fresh nonce ⇒ fresh code) to get past it.
             idempotency_key=f"launch-promo:{env}:{start_at}:{comp_slots}:{nonce}",
         )
     except stripe.StripeError as e:

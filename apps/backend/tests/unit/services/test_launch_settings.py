@@ -277,6 +277,20 @@ async def test_create_stripe_coupon_requires_competition_start_at():
     assert "competition_start_at" in exc.value.errors
 
 
+async def test_create_stripe_coupon_refuses_a_start_date_already_passed():
+    """The promo code expires AT competition start, so a start in the past
+    mints a code nobody can redeem — and Stripe rejects the past expires_at
+    anyway. A field error names the knob; a bare 502 wouldn't."""
+    past = "2020-01-01T00:00:00-05:00"
+    with (
+        patch.object(ls, "effective", AsyncMock(return_value=_effective_row(competition_start_at=past))),
+        patch("stripe.Coupon.create", side_effect=AssertionError("must not reach Stripe")),
+    ):
+        with pytest.raises(ls.SettingsInvalid) as exc:
+            await ls.create_stripe_coupon(ADMIN)
+    assert "must be in the future" in exc.value.errors["competition_start_at"]
+
+
 def _expected_code(env: str, start_at: str, nonce: int) -> str:
     import hashlib
 

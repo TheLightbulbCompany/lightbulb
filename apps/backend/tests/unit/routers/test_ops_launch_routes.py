@@ -104,10 +104,21 @@ async def test_ops_launch_settings_get_requires_admin(async_client):
     assert r.status_code in (401, 403)
 
 
+_FULL_PUT_BODY = {
+    "enabled": True,
+    "drop_at": "2026-09-18T00:00:00-04:00",
+    "competition_start_at": "2026-09-21T00:00:00-04:00",
+    "comp_slots": 220,
+    "competition_days": 30,
+    "pot_front_cents": 100_000,
+    "pot_per_entrant_cents": 1_000,
+}
+
+
 async def test_ops_launch_settings_put_422_on_invalid_payload(admin_client, audited):
     r = await admin_client.put(
         "/api/v1/ops/launch/settings",
-        json={"enabled": True, "drop_at": None, "competition_start_at": None},
+        json={**_FULL_PUT_BODY, "drop_at": None, "competition_start_at": None},
     )
     assert r.status_code == 422
     # FastAPI's default HTTPException envelope — the codebase's one 422
@@ -137,14 +148,7 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
         patch("routers.launch.clear_response_cache") as clear_response_cache,
         patch("core.services.ops.launch.clear_cache") as clear_ops_cache,
     ):
-        r = await admin_client.put(
-            "/api/v1/ops/launch/settings",
-            json={
-                "enabled": True,
-                "drop_at": "2026-09-18T00:00:00-04:00",
-                "competition_start_at": "2026-09-21T00:00:00-04:00",
-            },
-        )
+        r = await admin_client.put("/api/v1/ops/launch/settings", json=_FULL_PUT_BODY)
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] is True and "updated_by" not in body
@@ -152,6 +156,31 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
     clear_response_cache.assert_called_once()
     clear_ops_cache.assert_called_once()
     audited.assert_awaited_once()  # the write left an audit trail
+
+
+async def test_ops_launch_settings_put_rejects_a_partial_body(admin_client, audited):
+    """The PUT is a full replace, so every field is required: a partial body
+    is a 422, never a silent reset of the dates it left out."""
+    r = await admin_client.put(
+        "/api/v1/ops/launch/settings",
+        json={k: v for k, v in _FULL_PUT_BODY.items() if k != "drop_at"},
+    )
+    assert r.status_code == 422
+
+
+async def test_ops_launch_settings_put_audits_exactly_the_seven_editable_fields(admin_client, audited):
+    """The audit body is the parsed model — the three server-managed stripe_*
+    ids are not on it, so an admin save no longer logs empty coupon defaults
+    that it never wrote."""
+    with (
+        patch("core.repositories.launch_settings_repo.get", AsyncMock(return_value=None)),
+        patch("core.repositories.launch_settings_repo.put", AsyncMock(side_effect=lambda item: item)),
+        patch("core.services.launch_settings._clear_caches"),
+    ):
+        r = await admin_client.put("/api/v1/ops/launch/settings", json=_FULL_PUT_BODY)
+    assert r.status_code == 200
+    body = audited.await_args.kwargs["payload"]["body"]
+    assert set(body) == set(_FULL_PUT_BODY)
 
 
 async def test_ops_launch_settings_put_requires_admin(async_client):

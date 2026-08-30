@@ -117,7 +117,7 @@ fi
 # imports it never had. Putting our state under macOS' standard
 # per-app Application Support dir gives full isolation; users keep
 # their CLI openclaw setup intact.
-export OPENCLAW_HOME="\${HOME}/Library/Application Support/co.isol8.desktop/openclaw"
+export OPENCLAW_HOME="\${HOME}/Library/Application Support/company.thelightbulb.desktop/openclaw"
 mkdir -p "\$OPENCLAW_HOME"
 exec "\$ASSETS/node-${TRIPLE}" \\
     "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\

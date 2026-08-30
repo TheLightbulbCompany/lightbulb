@@ -22,7 +22,7 @@ use crate::pair_client::DesktopPermissions;
 
 /// Keychain service name for the desktop process. Matches the bundle ID so
 /// macOS surfaces Keychain entries as belonging to this app.
-const KEYCHAIN_SERVICE: &str = "co.isol8.desktop";
+const KEYCHAIN_SERVICE: &str = "company.thelightbulb.desktop";
 
 /// HTTPS API base for the backend. Overridden at build time when a non-dev
 /// build is produced.
@@ -331,7 +331,7 @@ async fn run_bootstrap(
 
     // The Tauri path resolver lives behind `Manager::path()` in Tauri 2.
     // `app_data_dir` is the per-app data dir (macOS:
-    // ~/Library/Application Support/co.isol8.desktop); `resource_dir` is
+    // ~/Library/Application Support/company.thelightbulb.desktop); `resource_dir` is
     // the bundle's Resources/ directory in release builds.
     let app_data = app
         .path()

@@ -768,10 +768,9 @@ export class ApiStack extends cdk.Stack {
     if (props.certificate && props.hostedZone) {
       const browserViewDomain = isProd ? `bv.${rootDomain}` : `bv-${env}.${rootDomain}`;
 
-      // TRANSITIONAL (ALB rename step 1): the VPC origin for the named ALB,
-      // created now and referenced by the distribution in the next deploy
-      // (see the albV2 prop). Same port/protocol as the legacy origin below.
-      new cloudfront.VpcOrigin(this, "BrowserViewVpcOriginV2", {
+      // The VPC origin for the named ALB (created one deploy before the
+      // distribution referenced it — see the albV2 prop).
+      const browserViewVpcOriginV2 = new cloudfront.VpcOrigin(this, "BrowserViewVpcOriginV2", {
         endpoint: cloudfront.VpcOriginEndpoint.applicationLoadBalancer(props.albV2),
         vpcOriginName: `lightbulb-${env}-browser-view`,
         httpPort: 8081,
@@ -785,11 +784,10 @@ export class ApiStack extends cdk.Stack {
         // us-east-1 (CloudFront only accepts us-east-1 ACM certs).
         certificate: props.certificate,
         defaultBehavior: {
-          origin: origins.VpcOrigin.withApplicationLoadBalancer(props.alb, {
-            // The dedicated listener — NOT :80. Hitting :80 would bypass the
-            // path cap and hand CloudFront the whole FastAPI surface.
-            httpPort: 8081,
-            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          // The dedicated :8081 listener — NOT :80 — is fixed on the VpcOrigin
+          // above. Hitting :80 would bypass the path cap and hand CloudFront
+          // the whole FastAPI surface.
+          origin: origins.VpcOrigin.withVpcOrigin(browserViewVpcOriginV2, {
             // A WS connection is long-lived but CloudFront's origin read
             // timeout only bounds quiet gaps between reads; 60s of silence on
             // a VNC session means the viewer is idle — noVNC's client-side

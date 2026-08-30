@@ -436,13 +436,12 @@ The rail itself is **backend-owned** — the platform key never leaves the backe
 and no container ever holds it. `core/services/stripe_provisioning.py` is the
 only module that speaks `/v2/provisioning` (platform key + `Stripe-Context:
 acct_…` + `Stripe-Version: unsafe-development`, a preview contract that can
-change under us); `provisioning_workflow.py` is the state machine,
-`provisioning_driver.py` schedules it, and a `provisioning-workflows` row is the
-durable memory. Four invariants hold it up:
+change under us); `provisioning_workflow.py` is the state machine and a
+`provisioning-workflows` row is the durable memory. Four invariants hold it up:
 
-- **No webhooks.** Progress comes from polling — one driver task per open row
-  plus a startup sweep — so a row is never waiting on a callback that will not
-  arrive.
+- **No webhooks**, so workflows advance one step on every READ — Friday's
+  status route, the owner's page loads and clicks — under a short per-row
+  claim. There is no background driver and nothing sweeps the table.
 - **No idempotency contract.** A state-changing POST that times out or 5xx's is
   **never repeated**: the row goes `requires_review` with its ids kept. Only
   reads retry.

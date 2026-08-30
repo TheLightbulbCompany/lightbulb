@@ -8,7 +8,7 @@ import { MetricStat } from "@/components/admin/MetricStat";
 import { formatMoney, formatPct } from "@/lib/launch";
 
 import { refreshLaunch, removeLaunchEntry } from "../_actions/launch";
-import type { LaunchOpsData } from "../_lib/api";
+import type { LaunchOpsSheet } from "../_lib/api";
 import { Table } from "../growth/sections";
 
 // Values starting with =, +, -, or @ are formula triggers in Excel/Sheets when
@@ -22,7 +22,7 @@ export function csvEscape(v: unknown): string {
 
 // `activated` is null for rows the sheet never resolved onboarding for (see
 // core/services/ops/launch.py) — an em dash, never "null" or a fabricated no.
-export function waitlistCsv(rows: LaunchOpsData["waitlist_rows"]): string {
+export function waitlistCsv(rows: LaunchOpsSheet["waitlist_rows"]): string {
   const head = ["email", "position", "referral_link", "created_at", "activated"];
   return [
     head.join(","),
@@ -30,7 +30,7 @@ export function waitlistCsv(rows: LaunchOpsData["waitlist_rows"]): string {
   ].join("\n");
 }
 
-export function LaunchAdminClient({ data }: { data: LaunchOpsData }) {
+export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
   const router = useRouter();
   const [note, setNote] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);

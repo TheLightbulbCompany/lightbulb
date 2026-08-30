@@ -95,6 +95,11 @@ def deps():
             AsyncMock(side_effect=lambda o: {"stripe_subscription_id": f"sub_{o}"}),
         ),
         patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(
+            ops_launch.launch_settings,
+            "effective",
+            AsyncMock(return_value=dict(ops_launch.launch_settings.DEFAULTS, enabled=True)),
+        ),
     ):
         ops_launch._cache.clear()
         yield
@@ -103,6 +108,13 @@ def deps():
 async def test_compute_counts_and_economics(deps):
     data, state, errors = await ops_launch.compute()
     assert state == "ok" and errors == []
+    # The admin page branches on `data.enabled` uniformly whether or not the
+    # sheet itself is computable — see the disabled-branch equivalent in
+    # test_compute_unconfigured below.
+    assert data["enabled"] is True
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    expected_settings["enabled"] = True  # the `deps` fixture's mocked effective() row
+    assert data["settings"] == expected_settings
     assert data["waitlist"] == {"total": 3, "top_slots_activated": 1, "top_slots_claimed": 1}
     # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comp-eligible. u_c: position 3 ⇒ paid.
     assert data["competing_breakdown"] == {"paid": 1, "comp_eligible": 1, "public": 1}
@@ -168,6 +180,9 @@ async def test_onboarding_fanout_is_bounded_to_comped_slots_and_entrants():
         patch.object(ops_launch.readiness_state, "resolve_onboarding_state", AsyncMock(side_effect=_onb)),
         patch.object(ops_launch.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
         patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(
+            ops_launch.launch_settings, "effective", AsyncMock(return_value=dict(ops_launch.launch_settings.DEFAULTS))
+        ),
     ):
         ops_launch._cache.clear()
         data, state, _ = await ops_launch.compute()
@@ -194,7 +209,41 @@ async def test_compute_is_cached_for_60s(deps):
 
 
 async def test_compute_unconfigured():
-    with patch.object(ops_launch.launch_phase, "schedule", return_value=None):
+    # Feature off ⇒ no economics to compute, but the admin console still gets
+    # the settings row + enabled flag so it can render the settings card and
+    # let an admin turn the feature on, instead of the page going blank.
+    with (
+        patch.object(ops_launch.launch_phase, "schedule", return_value=None),
+        patch.object(ops_launch.launch_settings.launch_settings_repo, "get", AsyncMock(return_value=None)),
+    ):
         ops_launch._cache.clear()
         data, state, errors = await ops_launch.compute()
-    assert data is None and state == "unavailable" and errors[0]["domain"] == "launch"
+    assert state == "unavailable" and errors[0]["domain"] == "launch"
+    # to_public strips mint_nonce even here — it's never a client-visible field.
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    assert data == {"settings": expected_settings, "enabled": False}
+
+
+async def test_compute_keeps_the_settings_shell_when_the_sheet_read_fails(deps):
+    """A failed/timed-out sheet read still has to carry the settings row: the
+    admin page renders the settings card off `data`, so a bare None would take
+    away the only control that can turn the competition back off."""
+    with patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        ops_launch._cache.clear()
+        data, state, errors = await ops_launch.compute()
+    assert state == "unavailable" and errors[0]["domain"] == "launch"
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    expected_settings["enabled"] = True  # the `deps` fixture's mocked effective() row
+    assert data == {"settings": expected_settings, "enabled": True}
+    assert ops_launch._cache == {}  # a failed read is never cached
+
+
+async def test_compute_keeps_the_settings_shell_when_the_sheet_read_times_out(deps):
+    """Same for a timeout — every non-ok state keeps the shell, not just the
+    exception one."""
+    timed_out = (None, "unavailable", [{"domain": "launch", "reason": "timeout after 20.0s"}])
+    with patch.object(ops_launch.env, "read_source", AsyncMock(return_value=timed_out)):
+        ops_launch._cache.clear()
+        data, state, errors = await ops_launch.compute()
+    assert state == "unavailable" and "timeout" in errors[0]["reason"]
+    assert data["enabled"] is True and data["settings"]["comp_slots"] == 220

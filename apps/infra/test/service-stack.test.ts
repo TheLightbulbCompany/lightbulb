@@ -9,7 +9,7 @@ import {
 import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { ServiceStack, validateLaunchSchedule } from "../lib/stacks/service-stack";
+import { ServiceStack } from "../lib/stacks/service-stack";
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -164,37 +164,25 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task env carries the Stripe free-month coupon id and the launch schedule as LAUNCH_SCHEDULE_JSON — never the retired per-field LAUNCH_* names", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_FREE_MONTH_COUPON_ID", Value: "" }),
-          ]),
-        }),
-      ]),
-    });
-
-    // LAUNCH_SCHEDULE_JSON must be present and parse to an object with dev + prod keys.
-    const found = template.findResources("AWS::ECS::TaskDefinition");
-    const allContainers = Object.values(found).flatMap(
-      (td) =>
-        (td as { Properties: { ContainerDefinitions: Array<{ Environment?: Array<{ Name: string; Value: string }> }> } })
-          .Properties.ContainerDefinitions,
+  test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {
+    const backendTaskDefs = Object.values(
+      template.findResources("AWS::ECS::TaskDefinition", {
+        Properties: { Family: "lightbulb-dev-backend" },
+      }),
     );
-    const backendContainer = allContainers.find((c) =>
-      c.Environment?.some((e) => e.Name === "STRIPE_FREE_MONTH_COUPON_ID"),
-    );
+    expect(backendTaskDefs).toHaveLength(1);
+    const containerDefs = (backendTaskDefs[0] as any).Properties
+      ?.ContainerDefinitions as any[];
+    const backendContainer = containerDefs.find((c) => c.Name === "backend");
     expect(backendContainer).toBeDefined();
-    const scheduleEnv = backendContainer?.Environment?.find((e) => e.Name === "LAUNCH_SCHEDULE_JSON");
-    expect(scheduleEnv).toBeDefined();
-    const parsed = JSON.parse(scheduleEnv!.Value);
-    expect(parsed).toHaveProperty("dev");
-    expect(parsed).toHaveProperty("prod");
+    const backendEnvNames = (backendContainer?.Environment ?? []).map(
+      (e: any) => e.Name,
+    );
 
-    // The six retired per-field env names must be gone from THAT container —
-    // asserted on the located backend container, because a `Match.not` inside
-    // `arrayWith` is satisfied by any other container in the template.
+    // The six retired per-field env names, plus the two names this task
+    // retires (the schedule blob and the coupon id) — asserted on the
+    // located backend container, because a `Match.not` inside `arrayWith`
+    // is satisfied by any other container in the template.
     const retiredLaunchEnvNames = [
       "LAUNCH_DROP_AT",
       "LAUNCH_COMP_SLOTS",
@@ -202,91 +190,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       "LAUNCH_COMPETITION_DAYS",
       "LAUNCH_PRIZE_FRONT_CENTS",
       "LAUNCH_POT_PER_ENTRANT_CENTS",
+      "LAUNCH_SCHEDULE_JSON",
+      "STRIPE_FREE_MONTH_COUPON_ID",
     ];
-    const backendEnvNames = (backendContainer?.Environment ?? []).map((e) => e.Name);
     for (const retired of retiredLaunchEnvNames) {
       expect(backendEnvNames).not.toContain(retired);
     }
-  });
-
-  test("validateLaunchSchedule fails synth on a date the backend cannot use", () => {
-    const off = { dev: { drop_at: null, competition_start_at: null }, prod: { drop_at: null, competition_start_at: null } };
-    // Feature off in both envs is the shipped default — must stay valid.
-    expect(() => validateLaunchSchedule(off)).not.toThrow();
-    expect(() =>
-      validateLaunchSchedule({
-        ...off,
-        dev: { drop_at: "2026-09-18T00:00:00-04:00", competition_start_at: "2026-09-21T00:00:00-04:00" },
-      }),
-    ).not.toThrow();
-
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-32T00:00:00-04:00", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
-    expect(() =>
-      validateLaunchSchedule({ ...off, prod: { drop_at: null, competition_start_at: "not-a-date" } }),
-    ).toThrow(/prod\.competition_start_at is not a valid date/);
-    // A number passes `new Date(n)` (epoch millis) but breaks the backend's
-    // `parse_iso`, which calls `.replace()` on the value — a Python int has
-    // no such method.
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: 1758168000000, competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at must be a string, got number/);
-    // start <= drop is what launch_phase.schedule() itself raises on.
-    expect(() =>
-      validateLaunchSchedule({
-        ...off,
-        prod: { drop_at: "2026-09-21T00:00:00-04:00", competition_start_at: "2026-09-18T00:00:00-04:00" },
-      }),
-    ).toThrow(/prod\.competition_start_at must be after prod\.drop_at/);
-    expect(() => validateLaunchSchedule({ dev: { drop_at: null, competition_start_at: null } })).toThrow(
-      /missing "prod" block/,
-    );
-
-    // An env block must be a plain object — an array or a string silently
-    // reads every key as undefined (feature-off), which is not what a typo'd
-    // launch-schedule.json meant.
-    expect(() => validateLaunchSchedule({ ...off, dev: [] })).toThrow(/"dev" block must be an object, got array/);
-    expect(() => validateLaunchSchedule({ ...off, prod: "oops" })).toThrow(
-      /"prod" block must be an object, got string/,
-    );
-
-    // Timestamps are checked against the backend's ISO grammar, not just
-    // `new Date()` — `new Date()` happily parses formats `datetime.fromisoformat`
-    // (after the `Z`→`+00:00` swap) does not accept.
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "09/18/2026", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
-    expect(() =>
-      validateLaunchSchedule({
-        ...off,
-        prod: { drop_at: "2026-09-18 00:00 -04:00", competition_start_at: null },
-      }),
-    ).toThrow(/prod\.drop_at is not a valid date/);
-    expect(() =>
-      validateLaunchSchedule({
-        ...off,
-        dev: { drop_at: "2026-09-18T00:00:00-04:00", competition_start_at: null },
-      }),
-    ).not.toThrow();
-
-    // Grammar alone is not enough: `new Date()` NORMALIZES `24:00:00` (next
-    // day) and `2026-02-29` (March 1) where `fromisoformat` raises — both
-    // would synth clean and then 500 the fleet.
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T24:00:00Z", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-02-29T00:00:00Z", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T00:60:00Z", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
-    // Deliberately stricter than `parse_iso`: a naive timestamp (no offset)
-    // would be read as UTC by the backend — the "midnight ET" footgun.
-    expect(() =>
-      validateLaunchSchedule({ ...off, dev: { drop_at: "2026-09-18T00:00:00", competition_start_at: null } }),
-    ).toThrow(/dev\.drop_at is not a valid date/);
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {

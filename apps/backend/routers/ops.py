@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, require_platform_admin
+from core.services.admin_audit import audit_admin_action
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
+from schemas.launch import LaunchSettingsUpdate, StripeCouponCreateRequest
 
 router = APIRouter()
 
@@ -52,6 +54,58 @@ async def get_launch(_auth: AuthContext = Depends(require_platform_admin)):
 
     data, state, errors = await launch_ops.compute()
     return env.envelope(data, source_state=state, errors=errors)
+
+
+@router.get("/launch/settings")
+async def get_launch_settings(_auth: AuthContext = Depends(require_platform_admin)):
+    """The launch-settings row (DEFAULTS ⊕ stored), for the admin edit form.
+    Never audited — a read has nothing to log."""
+    from core.services import launch_settings
+
+    return launch_settings.to_public(await launch_settings.effective())
+
+
+@router.put("/launch/settings")
+@audit_admin_action("launch.settings.update", target_user_id_override="__launch__", capture_params=["body"])
+async def put_launch_settings(
+    body: LaunchSettingsUpdate,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """Validated full-replace of the settings row. A 422 on bad input is
+    FastAPI's default ``{"detail": {"errors": {field: msg}}}`` envelope — the
+    codebase's one 422 convention; a saved row invalidates every cache that
+    reads it."""
+    from core.services import launch_settings
+
+    try:
+        return await launch_settings.update(auth, body.model_dump())
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors})
+
+
+@router.post("/launch/settings/stripe-coupon")
+@audit_admin_action("launch.settings.stripe_coupon", target_user_id_override="__launch__", capture_params=["body"])
+async def post_launch_stripe_coupon(
+    body: StripeCouponCreateRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """One-click mint of the launch free-month coupon + promotion code.
+    409 if one is already configured (unless ``force``); 422 (FastAPI's
+    default ``{"detail": {"errors": ...}}`` envelope) if
+    ``competition_start_at`` isn't set yet; 502 on a Stripe-side failure —
+    the real Stripe error is logged server-side, never in the response."""
+    from core.services import launch_settings
+
+    try:
+        return await launch_settings.create_stripe_coupon(auth, force=body.force)
+    except launch_settings.CouponAlreadyConfigured:
+        raise HTTPException(status_code=409, detail="already_configured")
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors})
+    except launch_settings.StripeMintError:
+        raise HTTPException(status_code=502, detail="stripe_error")
 
 
 def _clear_public_launch_cache() -> None:

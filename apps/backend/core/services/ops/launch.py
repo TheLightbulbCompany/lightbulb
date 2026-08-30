@@ -8,7 +8,7 @@ import time
 
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
-from core.services import launch_phase, launch_service, readiness_state
+from core.services import launch_phase, launch_service, launch_settings, readiness_state
 from core.services.ops import envelope as env
 
 CONTAINER_COST_CENTS = 1800
@@ -33,13 +33,18 @@ def _row_activated(row: dict, resolvable: set[str], activated: set[str]) -> bool
 
 
 async def _compute(s: launch_phase.Schedule) -> dict:
-    waitlist, entries, funded, signups = await asyncio.gather(
+    waitlist, entries, funded, signups, settings_row = await asyncio.gather(
         launch_waitlist_repo.list_all(),
         launch_entries_repo.list_all(),
         launch_waitlist_repo.count_pot_counted(),
         # Same source as GET /launch's `signups` — the atomic position counter,
         # not len(list_all()), which drifts if a row is ever hard-deleted.
         launch_waitlist_repo.count(),
+        # Rides along so the admin page can branch on `data.enabled`
+        # uniformly whether or not the economics sheet itself is computable
+        # (see `compute()`'s disabled branch below, which carries the same
+        # two keys with no schedule to compute against).
+        launch_settings.effective(),
     )
     constants = launch_phase.constants()
     per_entrant = constants["pot_per_entrant_cents"]
@@ -116,6 +121,8 @@ async def _compute(s: launch_phase.Schedule) -> dict:
 
     return {
         "generated_at": utc_now_iso(),
+        "settings": launch_settings.to_public(settings_row),
+        "enabled": settings_row["enabled"],
         "phase": launch_phase.phase(s),
         "schedule": {
             "drop_at": s.drop_at.isoformat(),
@@ -188,21 +195,32 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     }
 
 
-async def compute() -> tuple[dict | None, str, list[dict]]:
+async def compute() -> tuple[dict, str, list[dict]]:
     s = launch_phase.schedule()
     if s is None:
+        # Feature off (or misconfigured for this env) — the economics sheet
+        # has nothing to compute, but the admin console still needs the
+        # settings row + enabled flag so it can render the settings card and
+        # let an admin turn the feature on, instead of the page going blank.
+        settings_row = launch_settings.to_public(await launch_settings.effective())
         return (
-            None,
+            {"settings": settings_row, "enabled": False},
             env.UNAVAILABLE,
-            [{"domain": "launch", "reason": "launch-schedule.json has no drop_at for this env"}],
+            [{"domain": "launch", "reason": "launch settings are disabled or missing a date for this env"}],
         )
     hit = _cache.get("launch")
     if hit and time.monotonic() - hit[0] < _CACHE_TTL_S:
         return hit[1]
     data, state, errors = await env.read_source("launch", lambda: _compute(s), timeout_s=20.0)
+    if state != env.OK:
+        # A failed or timed-out sheet read still owes the console the settings
+        # row: the admin page renders the settings card off `data`, so
+        # `read_source`'s `data=None` would take away the one control that can
+        # turn the competition back off. Same two keys as the disabled branch.
+        row = await launch_settings.effective()
+        return {"settings": launch_settings.to_public(row), "enabled": row["enabled"]}, state, errors
     result = (data, state, errors)
-    if state == env.OK:
-        _cache["launch"] = (time.monotonic(), result)
+    _cache["launch"] = (time.monotonic(), result)
     return result
 
 

@@ -31,10 +31,10 @@ beforeEach(() => {
   removeLaunchEntry.mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
 });
 
-import type { LaunchOpsData } from "../../_lib/api";
+import type { LaunchOpsSheet } from "../../_lib/api";
 import { csvEscape, LaunchAdminClient, waitlistCsv } from "../LaunchAdminClient";
 
-const data: LaunchOpsData = {
+const data: LaunchOpsSheet = {
   generated_at: "t", phase: "live",
   schedule: { drop_at: "d", competition_start_at: "s", competition_end_at: "e", comp_slots: 220 },
   waitlist: { total: 300, top_slots_activated: 150, top_slots_claimed: 200 },
@@ -51,6 +51,20 @@ const data: LaunchOpsData = {
   economics: { paid_profit_cents: 66000, comp_cost_cents: 28000, referral_cost_cents: 33600, pnl_cents: 4400, aws_credits_cents: 500000, net_cents: 504400 },
   entries: [{ owner_id: "u1", display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null, comp_eligible: true }],
   waitlist_rows: [{ email: "a@x.com", position: 1, referral_link: "https://flickmeon.ai/?ref=A", created_at: "t", user_id: "u1", activated: true, referred_by: null, referrals_signed_up: 0, referrals_paid: 0, free_months_banked: 0 }],
+  settings: {
+    enabled: true,
+    drop_at: "2026-09-18T00:00:00-04:00",
+    competition_start_at: "2026-09-25T00:00:00-04:00",
+    comp_slots: 220,
+    competition_days: 30,
+    pot_front_cents: 100000,
+    pot_per_entrant_cents: 1000,
+    stripe_coupon_id: "co_1",
+    stripe_promotion_code_id: "promo_1",
+    stripe_promotion_code: "LIGHTBULB-ABC123",
+    updated_at: "2026-08-01T00:00:00Z",
+  },
+  enabled: true,
 };
 
 describe("LaunchAdminClient", () => {

@@ -295,7 +295,7 @@ function buildUrl(path: string, query?: FetchOptions["query"]): string {
 }
 
 interface AdminHttpArgs {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   token: string;
   query?: FetchOptions["query"];
@@ -706,7 +706,34 @@ export interface LaunchOpsWaitlistRow {
   free_months_banked: number;
 }
 
-export interface LaunchOpsData {
+/** The launch-settings row's public projection (never `updated_by`/`mint_nonce` —
+ * see `core.services.launch_settings.to_public`). `updated_at` is absent until
+ * the row has been saved once (DEFAULTS carries no timestamp). */
+export interface LaunchSettings {
+  enabled: boolean;
+  drop_at: string | null;
+  competition_start_at: string | null;
+  comp_slots: number;
+  competition_days: number;
+  pot_front_cents: number;
+  pot_per_entrant_cents: number;
+  stripe_coupon_id: string;
+  stripe_promotion_code_id: string;
+  stripe_promotion_code: string;
+  updated_at?: string;
+}
+
+/** The seven admin-editable fields of `LaunchSettings` — the `PUT
+ * /ops/launch/settings` body. The three `stripe_*` fields + `updated_at` are
+ * server-managed (minted by the coupon endpoint / stamped on write). */
+export type LaunchSettingsInput = Pick<
+  LaunchSettings,
+  "enabled" | "drop_at" | "competition_start_at" | "comp_slots" | "competition_days" | "pot_front_cents" | "pot_per_entrant_cents"
+>;
+
+/** The full economics sheet — only present when the competition is enabled
+ * and the sheet computed cleanly (`enabled: true`, `source_state: "ok"`). */
+export interface LaunchOpsSheet {
   generated_at: string;
   phase: "waitlist" | "activation" | "live" | "ended";
   schedule: { drop_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
@@ -731,7 +758,19 @@ export interface LaunchOpsData {
   };
   entries: LaunchOpsEntry[];
   waitlist_rows: LaunchOpsWaitlistRow[];
+  settings: LaunchSettings;
+  enabled: true;
 }
+
+/** The disabled/unset shape (`core.services.ops.launch.compute`'s early-return
+ * branch) — the settings row is still readable so the admin console can turn
+ * the feature on, but there is nothing to compute a sheet from. */
+export interface LaunchOpsDisabled {
+  settings: LaunchSettings;
+  enabled: false;
+}
+
+export type LaunchOpsData = LaunchOpsSheet | LaunchOpsDisabled;
 
 export async function getLaunchOps(token: string): Promise<OpsEnvelope<LaunchOpsData> | null> {
   return adminFetch<OpsEnvelope<LaunchOpsData>>(token, "/ops/launch");

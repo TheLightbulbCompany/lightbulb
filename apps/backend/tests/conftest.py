@@ -56,6 +56,29 @@ def _reset_shutdown_flag():
     shutdown_aware.set_shutting_down(False)
 
 
+@pytest.fixture(autouse=True)
+def _launch_settings_read_defaults():
+    """Default every test to a launch-settings row that reads cleanly as
+    "nothing saved yet" (feature off).
+
+    Unit tests have no DynamoDB, so the real ``get_sync`` would attempt a
+    network read and fail — and a FAILED read is not the same as an empty
+    one: ``launch_phase.settings_unavailable()`` goes True and
+    ``launch_hold.pre_drop_gate`` then holds every container-less owner
+    (fail-closed by design). Patching the read to "no row" keeps the launch
+    feature off for tests that aren't about it. Tests that want a live
+    schedule use the ``launch_schedule`` fixture (it patches over this one);
+    the repo's own moto tests override this fixture to exercise the real
+    read. The cache is dropped either side so no row leaks across tests."""
+    from core.repositories import launch_settings_repo
+    from core.services import launch_phase
+
+    launch_phase.invalidate()
+    with patch.object(launch_settings_repo, "get_sync", return_value=None):
+        yield
+    launch_phase.invalidate()
+
+
 def parse_sse_events(response_text: str) -> list[dict]:
     """Parse SSE events from response text into list of event dicts."""
     lines = [line for line in response_text.split("\n") if line.startswith("data:")]
@@ -252,35 +275,39 @@ def mock_settings():
 
 @pytest.fixture
 def launch_schedule():
-    """Patch launch-schedule.json in memory. Call with (drop_at, start_at) datetimes or None to turn the feature off."""
-    import os
+    """Patch the launch-settings row in memory. Call with (drop_at, start_at)
+    datetimes, or no args to turn the feature off."""
     from contextlib import contextmanager
     from datetime import timedelta
     from unittest.mock import patch
 
+    from core.repositories import launch_settings_repo
     from core.services import launch_phase
 
     @contextmanager
-    def _set(drop_at=None, start_at=None, *, comp_slots=220, competition_days=30):
-        env = {
+    def _set(drop_at=None, start_at=None, *, comp_slots=220, competition_days=30, enabled=None):
+        start = start_at or (drop_at + timedelta(hours=72) if drop_at else None)
+        row = {
+            **launch_settings_repo.DEFAULTS,
+            "enabled": (drop_at is not None) if enabled is None else enabled,
             "drop_at": drop_at.isoformat() if drop_at else None,
-            "competition_start_at": (start_at or (drop_at + timedelta(hours=72) if drop_at else None)).isoformat()
-            if drop_at
-            else None,
-        }
-        f = {
-            "competition_days": competition_days,
+            "competition_start_at": start.isoformat() if start else None,
             "comp_slots": comp_slots,
-            "pot_front_cents": 100_000,
-            "pot_per_entrant_cents": 1_000,
-            "dev": env,
-            "prod": {"drop_at": None, "competition_start_at": None},
+            "competition_days": competition_days,
         }
+
+        async def _get():
+            return row
+
+        def _get_sync():
+            return row
+
+        launch_phase.invalidate()
         with (
-            patch.dict(os.environ, {"LAUNCH_SCHEDULE_JSON": ""}, clear=False),
-            patch.object(launch_phase, "_FILE", f),
-            patch.object(launch_phase.settings, "ENVIRONMENT", "dev"),
+            patch.object(launch_settings_repo, "get", _get),
+            patch.object(launch_settings_repo, "get_sync", _get_sync),
         ):
             yield
+        launch_phase.invalidate()
 
     return _set

@@ -45,7 +45,14 @@ import httpx
 from core.repositories import provisioning_workflow_repo as repo
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.provisioning_workflow import WorkflowRefused, advance, on_approved, on_rejected, poll_delay
+from core.services.provisioning_workflow import (
+    WorkflowRefused,
+    _write_facts,
+    advance,
+    on_approved,
+    on_rejected,
+    poll_delay,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +164,8 @@ async def _park(row: dict, code: str) -> None:
     await repo.transition(
         row["workflow_id"], from_state=row["state"], to_state="requires_review", fields={"error_code": code}
     )
+    # Friday's facts file must stop saying "in flight" the moment nothing drives it.
+    await _write_facts(row["owner_id"])
 
 
 async def _drive(workflow_id: str) -> None:

@@ -8,76 +8,72 @@ Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https:/
 
 Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
 
-The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/isol8ai/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
-- `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/isol8ai/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
+The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
+- `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
 
 Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). The `lightbulb` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update its SKILL.md (anchors listed in its maintenance header). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/isol8-facts.json`, written by `core/services/owner_facts.py`.
 
-This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `Isol8AI/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/isol8ai/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `Isol8AI/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
+This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
 Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
 
-## Rebrand in flight — Isol8 → Lightbulb
+## Rebrand — Isol8 → Lightbulb (SHIPPED; residue documented below)
 
-**Read this before trusting any hostname, brand string, or identifier below.** The
-`isol8` brand is being retired. The migration is live and only partly shipped, so
-this file describes a moving target; where a fact is environment-dependent it says
-which environment.
+The `isol8` brand is retired. As of 2026-08-30 the migration is COMPLETE except
+for the deliberate residue and pending items listed here. Current names:
 
-| | old | new |
-|---|---|---|
-| Product name | Isol8 | **Lightbulb** |
-| Product domain | `isol8.co` | **`flickmeon.ai`** — same prefixes (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, `company.`, and Clerk's `clerk.`/`accounts.`/`clkmail.`) |
-| Mail — humans, vendor logins, platform sender | `isol8.co` | **`thelightbulb.company`** (`hello@ support@ tickets@ admin@`) |
-| Agent mail | `{agent}@{slug}.isol8.co` | **`{agent}@{slug}.thelightbulb.company`** |
-| Legal entity | Isol8 Inc. | **"Isol8 Inc., doing business as Lightbulb AI"** — the entity rename is NOT yet effective. Do not write any other legal name. |
+| | value |
+|---|---|
+| Product name | **Lightbulb** |
+| Product domain | **`flickmeon.ai`**, BOTH environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, `company.`, and Clerk's `clerk.`/`accounts.`/`clkmail.`) |
+| Mail — humans, vendor logins, platform sender | **`thelightbulb.company`** (`hello@ support@ tickets@ admin@`) |
+| Agent mail | **`{agent}@{slug}.thelightbulb.company`** (dev: `…@{slug}.dev.thelightbulb.company`) |
+| GitHub | org **`TheLightbulbCompany`**, repo **`lightbulb`** (renamed 2026-08-30 from `Isol8AI/isol8`; forks `agent`, `paperclip`, `goosetown` moved with the org). GHCR is **`ghcr.io/thelightbulbcompany/*`** — package namespaces do NOT redirect. |
+| Expo | org **`thelightbulbcompany`**, project display "Lightbulb Mobile" — same projectId; the slug stays `isol8-mobile` (see residue) |
+| AWS account | name **"Lightbulb"**, alias **`thelightbulb`** (created 2026-08-30) |
+| Legal entity | **"Isol8 Inc., doing business as Lightbulb AI"** — the entity rename is NOT yet effective. Do not write any other legal name. |
 
 **`flickmeon.ai` is the product URL and carries NO mail** — no MX, no SES identity,
 no mail records of any kind. Mail lives on its own domain, which is why the root
 domain and the mail domain are two separate parameters
 (`apps/infra/lib/domains.ts`: `ROOT_DOMAIN`, `PLATFORM_MAIL_DOMAIN`) threaded
-through the stacks via `Isol8StageProps`.
+through the stacks via `Isol8StageProps`. `domains.ts` remains the per-environment
+truth — read it rather than trusting any doc when a hostname matters.
 
-**Which environment is actually on which domain is not decided by this file** — it
-is the per-environment value in `apps/infra/lib/domains.ts` plus the stage
-construction in `apps/infra/lib/app.ts`. Read them. The order is the repo's normal
-dev-first one:
+**⚠️ GitHub OIDC subs are id-qualified since the rename.** After the 2026-08-30
+org/repo rename, GitHub mints Actions OIDC tokens with subs shaped
+`repo:TheLightbulbCompany@253404738/lightbulb@1182791203:…` (immutable ids, so the
+form is rename-proof) — plain `repo:ORG/REPO:*` patterns no longer match. The
+deploy-role trust policies and `container-stack.ts`'s builder-role trust use the
+id-qualified form; keep it if you ever touch them.
 
-- **Dev flips first.** Dev hostnames in this file are written on `flickmeon.ai`. If
-  `domains.ts` still pins dev to `isol8.co` when you read this, the flip has not
-  landed yet — swap the domain, don't "fix" the doc.
-- **Prod stays on `isol8.co`** until the flag-day flip, which is a manual
-  `workflow_dispatch` run of `deploy.yml` like every other prod deploy (see "DEV
-  DEPLOYS ON MERGE; PROD IS PROMOTED ON DEMAND"). Merging the flip PR does not move
-  prod. Never tell an owner prod is on `flickmeon.ai` because you saw it on `main`
-  — check the running service.
-- **Dev agent mail is deliberately the last leg**: it stays on `dev.isol8.co` until
-  the prod flag day rather than moving with the dev product domain. Flipping dev to
-  `flickmeon.ai` touches no mail at all.
+**NOT renamed — deliberate residue; a naive `s/isol8/lightbulb/` sweep breaks
+every one of these:**
 
-**Internal identifiers**, renamed in their own PR — this file already uses the new
-names: `@lightbulb/*` → `@lightbulb/*`, `ISOL8_*` → `LIGHTBULB_*`, `x-isol8-*` →
-`x-lightbulb-*`, the desktop deep-link scheme `isol8://` → `lightbulbai://`, the
-baked plugin `isol8-marketplace` → `lightbulb-marketplace`, and the bundled skill
-directory `skills/isol8/` → `skills/lightbulb/`.
-
-**NOT renamed — a naive `s/isol8/lightbulb/` sweep breaks every one of these:**
-
-- **Every AWS resource name**: DynamoDB prefix `isol8-{env}-*`, Secrets Manager
-  `isol8/{env}/*`, SSM `/isol8/*`, ECR `isol8/*`, log groups, Cloud Map
-  `isol8-{env}.local`, IAM role names, CDK stack ids and the `isol8-deploy`
-  concurrency group, the SSO start URL and the `isol8-admin` CLI profile.
-  Renaming any of them REPLACES the resource and loses the data in it. They are
-  internal and invisible to customers. Leave them.
+- **Data-bearing AWS resource names**: DynamoDB prefix `isol8-{env}-*`, Secrets
+  Manager `isol8/{env}/*`, SSM `/isol8/*`, ECR `isol8/*`, Cloud Map
+  `isol8-{env}.local`, the `isol8-deploy` concurrency group. Renaming any of them
+  REPLACES the resource and loses the data in it. They are internal and invisible
+  to customers. Leave them. (The CDK stack names, ALBs, cluster, helper
+  Lambdas/roles/log-groups, S3 buckets and CFN exports WERE all renamed to
+  `lightbulb-*` — completed 2026-08-29/30.)
+- **The SSO access portal URL `isol8.awsapps.com`** — AWS allows exactly ONE
+  portal-URL customization per Identity Center instance, ever, and ours was spent
+  on `isol8`. Unchangeable without deleting Identity Center (which wipes all
+  users/groups/assignments). Accepted 2026-08-30. The `isol8-admin` CLI profile
+  name stays with it.
+- **The Expo project slug `isol8-mobile`** — Expo slugs cannot be renamed
+  (dashboard and eas-cli have no rename; only display name changes).
+  `apps/mobile/app.json` must keep `slug: "isol8-mobile"` to match the server.
 - **`isol8-connector`** — the IAM role *and* the CloudFormation stack name live in
   customers' own AWS accounts, and the name is baked immutably into published
   marketplace artifacts.
 - **`-isol8.N` image tags** and the `isol8/*` fork branches in
   `openclaw-version.json` / `paperclip-version.json` — they are rollback refs.
-- **GitHub org `Isol8AI`**, every `Isol8AI/isol8` path, and every issue/PR
-  reference (`#2053`, `isol8 #2016`) — quote those verbatim, always.
+- **Historical issue/PR references** (`Isol8AI/isol8#2053`, `isol8 #2016`) — quote
+  verbatim, always; GitHub web URLs redirect.
 - **`BOOTSTRAP_EMAILS`** — renaming it silently disarms the guard that stops an
   admin wipe from deleting the Paperclip bootstrap admin, which is a fleet-wide
   provisioning outage.
@@ -87,34 +83,27 @@ directory `skills/isol8/` → `skills/lightbulb/`.
   once-only migration across every EFS volume with a fatal failure mode and zero
   benefit (see "Config Patching Notes").
 
-**RENAMED, deliberately, against the rule above** (owner decision 2026-08-27): the
-CloudWatch metric namespaces `Isol8` / `Isol8/BedrockGate` / `Isol8/Billing` /
-`Isol8/ECS` are now `LightbulbAI*`, and the metric `service` dimension
-`isol8-backend` is now `lightbulb-backend`. The consequence was raised and
-accepted: CloudWatch cannot backfill, so ~15 months of history is orphaned (not
-deleted — just off every dashboard) and 72 alarms restart from zero datapoints.
-They do not error while empty, they go quiet, so treat a silent dashboard in the
-days after as expected rather than as a regression.
+**CloudWatch metric namespaces** were renamed (owner decision 2026-08-27):
+`Isol8*` → `LightbulbAI*`, and the metric `service` dimension `isol8-backend` →
+`lightbulb-backend`. CloudWatch cannot backfill, so ~15 months of history is
+orphaned (not deleted — just off every dashboard). Do NOT "fix" `LightbulbAI` in
+metric namespaces to match the GitHub org name — they are unrelated identifiers.
 
-**`ManagedBy` — MIGRATED, via add-before-remove.** The tag gates every mutate
-action on an owner's Bedrock application inference profile
-(`service-stack.ts` → `aws:ResourceTag/ManagedBy`), so flipping the writer and
-the IAM condition *together* would AccessDeny the backend from every EXISTING
-profile — inference dies fleet-wide, free tier included, while newly minted
-profiles keep working and mask it. That is why it moved in four separately
-reversible steps, not one: widen the condition to accept both values → re-tag
-the existing profiles → flip the writer → narrow back to the new value alone.
-Steps 1–3 are DONE (2026-08-28: all 37 owner profiles across both envs carry
-`lightbulb-backend`; the 2 untagged idempotency probes are expected). **Step 4
-is still pending** — `MANAGED_BY_ACCEPTED` in `service-stack.ts` still lists
-both values, and must not be collapsed until you have re-verified that no
+**`ManagedBy` — MIGRATED via add-before-remove; step 4 still pending.** The tag
+gates every mutate action on an owner's Bedrock application inference profile
+(`service-stack.ts` → `aws:ResourceTag/ManagedBy`). Steps 1–3 are DONE
+(2026-08-28: all 37 owner profiles across both envs carry `lightbulb-backend`).
+**Step 4 is still pending** — `MANAGED_BY_ACCEPTED` in `service-stack.ts` still
+lists both values, and must not be collapsed until you have re-verified that no
 resource still carries `isol8-backend`. Do not confuse this tag with the
 CloudWatch `service` dimension, the identical string in a different role.
 
-Working plan and the verified findings behind these decisions:
-`docs/superpowers/plans/2026-08-26-retire-isol8-rebrand.md` and
-`docs/superpowers/plans/2026-08-26-retire-isol8-findings.md`. Both are disposable —
-delete them when the retirement ships.
+**Still open (human-gated):** the `isol8.co` Google Workspace retirement + human
+mailbox move to `thelightbulb.company` (including the AWS root-account email,
+SNS/Budgets subscribers, and the three `google#…@isol8.co` integration rows);
+the mobile native identifiers (`co.isol8.mobile` bundle id + IAP product id — they
+change with the next App Store record); the legal-entity paperwork and the
+Termly/Meta follow-ups.
 
 ---
 
@@ -373,7 +362,7 @@ There is **no NLB and no VPC Link V1** — that architecture was replaced; see "
 
 ### Production Infrastructure
 
-Turborepo monorepo (`Isol8AI/isol8`): `apps/{frontend,backend,desktop,infra,mobile}`,
+Turborepo monorepo (`TheLightbulbCompany/lightbulb`): `apps/{frontend,backend,desktop,infra,mobile}`,
 `packages/shared` (see the Frontend section — it is load-bearing). The non-obvious
 entries at the root:
 
@@ -390,7 +379,8 @@ entries at the root:
 |---------|-------|
 | Account ID | `877352799272` |
 | Deploy Region | `us-east-1` |
-| SSO Start URL | `https://isol8.awsapps.com/start` |
+| SSO Start URL | `https://isol8.awsapps.com/start` (unchangeable residue — see the Rebrand section) |
+| Account alias | `thelightbulb` |
 | CLI Profile | `isol8-admin` |
 
 ---
@@ -740,7 +730,7 @@ Two constraints in that code worth not breaking:
 - **Nothing may select the line items by position** — Stripe does not guarantee order. The webhook picks the seat item by price id (`subscription_item_on_price`), and `create_team_seat_checkout` refuses to start if the base and seat price ids are equal.
 - **Seat quantity has a single writer**, `sync_team_seat_quantity`, driven off Clerk membership webhooks. Quantity is floored at 1 so a transient member-count read of 0 never creates a zero-quantity subscription. Pending invitations count as seats from the moment they're sent.
 
-**Apple IAP** is a code-complete second purchase rail (App Store guideline 3.1.3(b)): `routers/apple_iap.py` (link-purchase endpoints + `POST /webhooks/apple-iap` App Store Server Notifications, deduped on `notificationUUID`, StoreKit 2 JWS verified against pinned Apple root certs), `billing_repo.set_apple_subscription`, GSI `apple-original-transaction-index` on the billing table. The rail is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally (`service-stack.ts`), so the router does not 503. The mobile app drives it (`co.isol8.mobile.plan.monthly` via expo-iap → `/billing/apple/link`); those ids move to `ai.flickmeon.mobile*` with the new App Store record at the flag-day flip, not before.
+**Apple IAP** is a code-complete second purchase rail (App Store guideline 3.1.3(b)): `routers/apple_iap.py` (link-purchase endpoints + `POST /webhooks/apple-iap` App Store Server Notifications, deduped on `notificationUUID`, StoreKit 2 JWS verified against pinned Apple root certs), `billing_repo.set_apple_subscription`, GSI `apple-original-transaction-index` on the billing table. The rail is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally (`service-stack.ts`), so the router does not 503. The mobile app drives it (`co.isol8.mobile.plan.monthly` via expo-iap → `/billing/apple/link`); those ids change with the next App Store record (the app never shipped), not before.
 
 Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). The old *plan*-tier size ladder is gone, but size is not uniform: `_size_for_owner` returns `ULTRA_CPU`/`ULTRA_MEMORY_MIB` (2 vCPU / 8 GB) for **either** an `ultra_pro` plan **or** a live agent count over `COMPANY_STANDARD_PLAN_MAX_AGENTS` (10) — the latter is a RELIABILITY floor, not a billing signal, added after an 11-agent prod owner crash-looped on boot 2026-08-14 (24 SQLite DBs restoring concurrently starved the single vCPU; `database is locked` is what SQLite reports when a starved process exhausts its busy timeout). Sizing is derived at every provision/reprovision, so a hand-set size not backed by plan-or-agent-count is silently undone. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
@@ -896,7 +886,7 @@ Only the ones with a non-obvious constraint are worth writing down here:
 | `STRIPE_TEAM_BASE_PRICE_ID` | Org flat base, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). **Must differ from the seat price id** or checkout refuses to start. |
 | `STRIPE_TEAM_SEAT_PRICE_ID` | Org per-seat; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20). |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |
-| `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `isol8-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`, so they become `{agent}@{slug}.thelightbulb.company` once mail moves. `flickmeon.ai` carries no mail at all. |
+| `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `isol8-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
 | `CORS_ORIGINS` | Comma-separated. Note the API Gateway HTTP API handles CORS preflight at the gateway on the REST path — its allow/expose headers must match FastAPI's. |
 
 Everything ECS/EFS/WS/table-name-shaped is set by CDK — don't hand-set them.
@@ -908,13 +898,13 @@ Everything ECS/EFS/WS/table-name-shaped is set by CDK — don't hand-set them.
 | `NEXT_PUBLIC_API_URL` | Backend REST API URL **including `/api/v1`** (the chat WS URL is derived from it; `NEXT_PUBLIC_WS_URL` overrides) |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
 | `CLERK_SECRET_KEY` | Clerk secret key (server-side) |
-| `GITHUB_RELEASES_TOKEN` | Fine-grained PAT (contents: read on Isol8AI/isol8) for the desktop download + auto-updater routes — the repo is private |
+| `GITHUB_RELEASES_TOKEN` | Fine-grained PAT (contents: read on TheLightbulbCompany/lightbulb; fine-grained PATs pin repos by id, so it survived the rename) for the desktop download + auto-updater routes — the repo is private |
 
 **API URL by environment** (there is no staging environment — `app.ts` creates dev + prod only).
 The root domain is a per-environment parameter mid-rebrand; `apps/infra/lib/domains.ts` is the truth:
 - Local: `http://localhost:8000/api/v1`
-- Dev: `https://api-dev.flickmeon.ai/api/v1` (was `api-dev.isol8.co` — dev flips first)
-- Production: `https://api.isol8.co/api/v1` — moves to `api.flickmeon.ai` only on the flag-day `workflow_dispatch` promotion
+- Dev: `https://api-dev.flickmeon.ai/api/v1`
+- Production: `https://api.flickmeon.ai/api/v1`
 
 ---
 
@@ -934,22 +924,22 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
 | `ses-inbound-stack.ts` | Inbound agent email (SES → Lambda → backend). |
-| `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.isol8.co`; `*.flickmeon.ai` after the flip — it is a cross-stack CFN Export, so the new cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
+| `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
 `apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `isol8/openclaw-extended`. The tag we run is pinned in `openclaw-version.json`.
 
-**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `Isol8AI/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/isol8ai/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `isol8/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
+**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `isol8/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
 
 ---
 
 ## Desktop App
 
-Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop` — becomes `ai.flickmeon.desktop` at the flag-day flip (a fresh install; the device re-pairs). Product name: `Isol8` → `Lightbulb` with the brand swap.
+Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`.
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
-- Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://isol8.co/chat`** (and the updater endpoint) at build time in `desktop-build.yml` — that prod URL becomes `https://flickmeon.ai/chat` at the flag-day flip
-- Sidecar binaries (`isol8-browser-service` externalBin — renames to `lightbulb-browser-service` with the desktop flip — plus per-arch `node` and `openclaw-host`) are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
+- Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
+- Sidecar binaries (`lightbulb-browser-service` externalBin, plus per-arch `node` and `openclaw-host`) are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
@@ -959,9 +949,9 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop` — becomes `ai.fl
 
 ## Mobile App
 
-Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Bundle id `co.isol8.mobile`, scheme `isol8`, `applinks:isol8.co` — all three are native identifiers that move at the flag-day flip (`ai.flickmeon.mobile`, `lightbulbai`, `applinks:flickmeon.ai`); the app never shipped, so the App Store record is recreated rather than migrated.
+Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is still `co.isol8.mobile`** — it changes with the next App Store record (the app never shipped, so the record is recreated rather than migrated). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
-- **Reuses the web protocol via `@lightbulb/shared`** — the same `useGatewayConnection` WS machine and `createApiClient`, with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev, production → api.isol8.co until the flag-day flip).
+- **Reuses the web protocol via `@lightbulb/shared`** — the same `useGatewayConnection` WS machine and `createApiClient`, with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
 - Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.

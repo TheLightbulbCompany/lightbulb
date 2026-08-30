@@ -513,7 +513,11 @@ export class ContainerStack extends cdk.Stack {
         roleName: "lightbulb-openclaw-image-builder",
         assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
           StringLike: {
-            "token.actions.githubusercontent.com:sub": "repo:TheLightbulbCompany/lightbulb:*",
+            // After the 2026-08-30 org/repo rename GitHub mints id-qualified
+            // subs (owner@id/repo@id); the ids are immutable, so this form is
+            // rename-proof and the plain-name form never matches.
+            "token.actions.githubusercontent.com:sub":
+              "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:*",
           },
           StringEquals: {
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",

@@ -139,10 +139,16 @@ export class BedrockGateStack extends cdk.Stack {
       // The function name is stable and env-specific: it also becomes the
       // Lambda session-name segment of the gateway's assumed-role ARN in the
       // Bedrock invocation log, which the meter's env-split subscription filter
-      // keys off (`?"isol8-{env}-bedrock-gate"`). No CREATE-collision risk: this
-      // is a greenfield stack and the name never changes.
+      // keys off (`?"lightbulb-{env}-bedrock-gate"`).
       const fn = new lambda.Function(this, `GateFn${idSuffix}`, {
         functionName: `lightbulb-${gateEnv}-bedrock-gate`,
+        role: new iam.Role(this, `GateFnRole${idSuffix}`, {
+          roleName: `lightbulb-${gateEnv}-bedrock-gate`,
+          assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+          managedPolicies: [
+            iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+          ],
+        }),
         runtime: lambda.Runtime.NODEJS_20_X,
         architecture: lambda.Architecture.ARM_64,
         handler: "handler.handler",

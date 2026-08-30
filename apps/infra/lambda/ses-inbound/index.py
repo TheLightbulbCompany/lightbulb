@@ -25,7 +25,7 @@ For each record this Lambda:
     message, so the backend's wake gate must never parse one,
   - stores each attachment to S3 and mints a 1h presigned GET URL,
   - and POSTs a clean JSON payload to the backend's ``/webhooks/ses-inbound``
-    ingest endpoint, authenticated with a shared secret (``X-Isol8-SES-Secret``,
+    ingest endpoint, authenticated with a shared secret (``X-Lightbulb-SES-Secret``,
     fetched from Secrets Manager and cached across warm invocations).
 
 The backend, not this Lambda, makes every content decision (recipient
@@ -117,7 +117,7 @@ def _secretsmanager():
 
 
 def _get_secret(arn=None):
-    """Return the shared ``X-Isol8-SES-Secret`` value for ``arn``, fetched on
+    """Return the shared ``X-Lightbulb-SES-Secret`` value for ``arn``, fetched on
     first use and cached for the life of the container.
 
     Cached PER ARN: one Lambda serves both environments (see ``_route_for``),
@@ -391,7 +391,7 @@ def _post_to_backend(payload):
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "X-Isol8-SES-Secret": _get_secret(secret_arn),
+            "X-Lightbulb-SES-Secret": _get_secret(secret_arn),
         },
     )
     try:

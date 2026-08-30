@@ -26,8 +26,8 @@ included, same as the other marketplace scripts here).
 
 Usage:
     cd apps/backend
-    MARKETPLACE_LISTINGS_TABLE=isol8-prod-marketplace-listings \
-    MARKETPLACE_ARTIFACTS_BUCKET=isol8-prod-marketplace-artifacts \
+    MARKETPLACE_LISTINGS_TABLE=lightbulb-prod-marketplace-listings \
+    MARKETPLACE_ARTIFACTS_BUCKET=lightbulb-prod-marketplace-artifacts \
       uv run python -m scripts.scrub_manifest_snippets --env prod
     ... --apply
 

@@ -3,6 +3,7 @@ import { alertTopicArn } from "../table-names";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as events from "aws-cdk-lib/aws-events";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as ses from "aws-cdk-lib/aws-ses";
 import * as sns from "aws-cdk-lib/aws-sns";
@@ -56,7 +57,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
       // Same shared secret the SES-ingest Lambda presents — the backend's
       // ses-events handler verifies it with the same compare.
       authorization: events.Authorization.apiKey(
-        "X-Isol8-SES-Secret",
+        "X-Lightbulb-SES-Secret",
         cdk.SecretValue.secretsManager(sesIngestSecretName),
       ),
       description: `lightbulb ${envName} agent-mail SES events -> backend`,
@@ -74,7 +75,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     // REPLAY: `aws sqs receive-message --queue-url <this queue>`, then re-POST
     // the message body (the EventBridge event) to
     // https://{apiDomain}/api/v1/webhooks/ses-events with the
-    // X-Isol8-SES-Secret header. Replay is safe to repeat — the handler's
+    // X-Lightbulb-SES-Secret header. Replay is safe to repeat — the handler's
     // disable is an `update_settings` SET, not an increment.
     const dlq = new sqs.Queue(this, "ComplaintDlq", {
       queueName: `lightbulb-${envName}-agent-mail-complaint-dlq`,
@@ -83,6 +84,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     });
 
     new events.Rule(this, "SesComplaintRule", {
+      ruleName: `lightbulb-${envName}-agent-mail-ses-complaint`,
       description: `lightbulb ${envName}: SES complaints on ${this.configurationSetName}`,
       eventPattern: {
         source: ["aws.ses"],
@@ -93,6 +95,10 @@ export class AgentMailOutboundStack extends cdk.Stack {
       },
       targets: [
         new targets.ApiDestination(destination, {
+          eventRole: new iam.Role(this, "BackendSesEventsRole", {
+            roleName: `lightbulb-${envName}-agent-mail-ses-events`,
+            assumedBy: new iam.ServicePrincipal("events.amazonaws.com"),
+          }),
           deadLetterQueue: dlq,
           // Well short of EventBridge's 185/24h default: a complaint is only
           // actionable while it is fresh, and holding it in the DLQ where an

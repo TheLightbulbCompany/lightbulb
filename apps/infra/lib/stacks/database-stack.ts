@@ -529,7 +529,7 @@ export class DatabaseStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "PaperclipDbEndpoint", {
       value: this.paperclipDbCluster.clusterEndpoint.hostname,
-      exportName: `isol8-${env}-paperclip-db-endpoint`,
+      exportName: `lightbulb-${env}-paperclip-db-endpoint`,
     });
 
   }

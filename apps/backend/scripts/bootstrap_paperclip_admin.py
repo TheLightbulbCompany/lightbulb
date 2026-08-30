@@ -25,7 +25,7 @@ How to run
     aws ecs run-task \\
       --profile isol8-admin --region us-east-1 \\
       --cluster isol8-{env}-container-... \\
-      --task-definition isol8-{env}-paperclip-bootstrap-admin \\
+      --task-definition lightbulb-{env}-paperclip-bootstrap-admin \\
       --launch-type FARGATE \\
       --network-configuration 'awsvpcConfiguration={subnets=[<private-subnet>],securityGroups=[<paperclip-task-sg>],assignPublicIp=DISABLED}'
 

@@ -1,4 +1,4 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import {
@@ -85,10 +85,9 @@ describe("BedrockMeterStack", () => {
     }
   });
 
-  test("no fixed function names (a fixed name would CREATE-collide on replace)", () => {
-    for (const fn of meterFunctions()) {
-      expect(fn.Properties.FunctionName).toBeUndefined();
-    }
+  test("fixed, env-specific function names", () => {
+    const names = meterFunctions().map((fn) => fn.Properties.FunctionName).sort();
+    expect(names).toEqual(["lightbulb-dev-bedrock-meter", "lightbulb-prod-bedrock-meter"]);
   });
 
   test("creates one SQS DLQ per instance", () => {
@@ -125,12 +124,9 @@ describe("BedrockMeterStack", () => {
 
   test("each instance can GetItem its own env's aip-owners table only", () => {
     const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
-    // Both prefixes, both envs: the legacy entries are what keep the meter
-    // working against the tables it still reads until the reader flip.
     expect(policies).toContain("table/lightbulb-dev-bedrock-aip-owners");
     expect(policies).toContain("table/lightbulb-prod-bedrock-aip-owners");
-    expect(policies).toContain("table/isol8-dev-bedrock-aip-owners");
-    expect(policies).toContain("table/isol8-prod-bedrock-aip-owners");
+    expect(policies).not.toContain("table/isol8-");
   });
 
   test("kms grant covers BOTH Decrypt and GenerateDataKey, ViaService-confined", () => {
@@ -174,15 +170,9 @@ describe("BedrockMeterStack", () => {
             Match.objectLike({
               Action: "dynamodb:UpdateItem",
               Effect: "Allow",
-              // Spans BOTH prefixes during the table rename: these grants are
-              // literal ARNs, so unlike grantReadWriteData they do NOT follow a
-              // tableName change. Dropping the legacy half here would AccessDeny
-              // the meter against the tables it is still reading.
               Resource: [
                 `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-${meterEnv}-billing-accounts`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-billing-accounts`,
                 `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-${meterEnv}-containers`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-containers`,
               ],
             }),
           ]),
@@ -261,15 +251,9 @@ describe("BedrockMeterStack", () => {
             Match.objectLike({
               Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
               Effect: "Allow",
-              // Spans BOTH prefixes during the table rename: these grants are
-              // literal ARNs, so unlike grantReadWriteData they do NOT follow a
-              // tableName change. Dropping the legacy half here would AccessDeny
-              // the meter against the tables it is still reading.
               Resource: [
                 `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-${meterEnv}-containers`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-containers`,
                 `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-${meterEnv}-bedrock-gate-tokens`,
-                `arn:aws:dynamodb:us-east-1:877352799272:table/isol8-${meterEnv}-bedrock-gate-tokens`,
               ],
             }),
           ]),

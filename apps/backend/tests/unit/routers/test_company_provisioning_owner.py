@@ -85,16 +85,6 @@ def test_resources_returns_an_allowlisted_projection_never_the_stored_pointer(cl
     }
 
 
-def test_resources_surfaces_resource_status_when_the_pointer_has_one(client):
-    with patch.object(
-        mod.provisioning_landing,
-        "provisioning_summary",
-        AsyncMock(return_value=[{**RES, "resource_status": "removed"}]),
-    ):
-        resp = client.get("/api/v1/company/provisioning/resources")
-    assert resp.json()["resources"][0]["resource_status"] == "removed"
-
-
 def test_revoke_delegates_to_the_service_and_writes_facts(client, facts):
     """The router is a thin gate + delegate — the shared-blob-safe merge logic
     lives in provisioning_landing.revoke_credentials (see its own tests)."""

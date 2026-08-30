@@ -124,7 +124,8 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
       try {
         await api.post(`/company/provisioning/workflows/${workflowId}/cancel`, {});
       } catch (e) {
-        if ((e as { status?: number }).status !== 409) throw e;
+        const status = (e as { status?: number }).status;
+        if (status !== 409 && status !== 404) throw e;
         notifyError((e as Error).message);
       }
     }

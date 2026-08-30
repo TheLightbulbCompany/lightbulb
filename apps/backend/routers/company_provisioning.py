@@ -130,8 +130,6 @@ def _safe_resource(pointer: dict) -> dict:
         "level": pointer.get("level"),
         "workflow_id": pointer.get("workflow_id"),
     }
-    if pointer.get("resource_status"):
-        out["resource_status"] = pointer["resource_status"]
     return out
 
 

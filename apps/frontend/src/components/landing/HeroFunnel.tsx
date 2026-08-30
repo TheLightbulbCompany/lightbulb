@@ -71,9 +71,11 @@ export function HeroFunnel() {
       .get("/launch/me")
       .then((raw) => {
         const me = raw as LaunchMe;
-        // Held = pre-drop waitlist phase, not activated, not a competition
-        // entrant. Existing owners (activated) keep today's landing page.
-        if (alive && me.phase === "waitlist" && !me.activated && !me.joined) {
+        // `held` is computed server-side (pre-drop waitlist phase + no
+        // container row -- the same predicate as the launch_pending gate),
+        // so existing owners keep today's landing page regardless of their
+        // onboarding bookkeeping. Competition entrants are never swapped.
+        if (alive && me.held === true && me.phase === "waitlist" && !me.joined) {
           setHeldMe(me);
         }
       })

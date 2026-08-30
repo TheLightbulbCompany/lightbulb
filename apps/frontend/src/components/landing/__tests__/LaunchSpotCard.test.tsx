@@ -127,14 +127,43 @@ describe("LaunchSpotCard", () => {
     expect(await screen.findByText("A sharper idea")).toBeInTheDocument();
   });
 
-  it("a 422 shows the server's detail string inline and keeps the form", async () => {
+  it("a 422 shows the server's validation message inline and keeps the form", async () => {
+    // The real backend shape: the min-3-chars rule is a Pydantic
+    // model_validator, so FastAPI sends `detail` as a LIST of error items
+    // (and the shared client's message falls back to "API 422").
     apiPost.mockRejectedValue(
-      new FakeApiError(422, { detail: "input must be at least 3 characters" }, "input must be at least 3 characters"),
+      new FakeApiError(
+        422,
+        {
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body"],
+              msg: "Value error, input must be at least 3 characters",
+              input: { path: "new", input: "ab" },
+            },
+          ],
+        },
+        "API 422",
+      ),
     );
     render(<LaunchSpotCard me={me()} info={info} />);
     fireEvent.change(screen.getByLabelText("Your idea"), { target: { value: "abc" } });
     fireEvent.click(screen.getByRole("button", { name: "Save idea" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("input must be at least 3 characters");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("input must be at least 3 characters");
+    expect(alert).not.toHaveTextContent("Value error,");
     expect(screen.getByLabelText("Your idea")).toBeInTheDocument();
+  });
+
+  it("an already_submitted refusal is not rendered as saved", async () => {
+    apiPost.mockResolvedValue({ status: "already_submitted" });
+    render(<LaunchSpotCard me={me()} info={info} />);
+    fireEvent.change(screen.getByLabelText("Your idea"), { target: { value: "A ceramics studio" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save idea" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/earlier idea is still the one on file/);
+    // Still the form, not the saved view.
+    expect(screen.getByLabelText("Your idea")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
 });

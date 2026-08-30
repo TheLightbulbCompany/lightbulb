@@ -66,6 +66,10 @@ export interface LaunchMe {
   entry: LaunchEntry | null;
   joined: boolean;
   has_key: boolean;
+  /** Server-side pre-drop hold: waitlist phase + no container row (the same
+   * predicate the launch_pending gate uses). Optional for the merge->promote
+   * window, during which an older backend omits it. */
+  held?: boolean;
   can_join: boolean;
   reason: string | null;
   idea: string | null;

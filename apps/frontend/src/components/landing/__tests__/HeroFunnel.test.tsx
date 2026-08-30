@@ -136,6 +136,7 @@ describe("HeroFunnel during the launch waitlist phase", () => {
   };
   const heldMe = {
     phase: "waitlist",
+    held: true,
     waitlist: null,
     activated: false,
     activated_at: null,
@@ -173,12 +174,24 @@ describe("HeroFunnel during the launch waitlist phase", () => {
     expect(apiGet).toHaveBeenCalledWith("/launch/me");
   });
 
-  it("keeps the funnel for an activated (existing) owner — only the CTA reframes", async () => {
-    apiGet.mockResolvedValue({ ...heldMe, activated: true });
+  it("keeps the funnel for a legacy owner: held false, even with activated false", async () => {
+    // `held` is the server's container-row predicate — a container-owning
+    // owner whose onboarding bookkeeping never recorded delivery must NOT
+    // see the spot card.
+    apiGet.mockResolvedValue({ ...heldMe, held: false, activated: false });
     render(<HeroFunnel />);
     expect(await screen.findByRole("button", { name: "Join the launch" })).toBeInTheDocument();
     expect(screen.queryByTestId("launch-spot-card")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+  });
+
+  it("keeps the funnel when an older backend omits `held`", async () => {
+    const omitted: Record<string, unknown> = { ...heldMe };
+    delete omitted.held;
+    apiGet.mockResolvedValue(omitted);
+    render(<HeroFunnel />);
+    expect(await screen.findByRole("button", { name: "Join the launch" })).toBeInTheDocument();
+    expect(screen.queryByTestId("launch-spot-card")).not.toBeInTheDocument();
   });
 
   it("keeps the funnel for a competition entrant (joined)", async () => {

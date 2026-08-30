@@ -52,6 +52,23 @@ function peekStashedIdea(): string | null {
   }
 }
 
+/** The brief route's 422s come in two shapes: a plain-string detail (an
+ * HTTPException) and Pydantic's model_validator list
+ * (`detail: [{msg: "Value error, ..."}]`) — the min-3-chars rule is the
+ * latter, and the shared client's detail extraction leaves it as "API 422".
+ * Surface the first item's msg, minus Pydantic's boilerplate prefix. */
+function saveErrorCopy(err: unknown): string {
+  if (err instanceof ApiError && err.body && typeof err.body === "object") {
+    const detail = (err.body as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const msg = (detail[0] as { msg?: unknown } | undefined)?.msg;
+      if (typeof msg === "string") return msg.replace(/^Value error, /, "");
+    }
+  }
+  return "Couldn't save that — try again.";
+}
+
 export function LaunchSpotCard({ me, info }: { me: LaunchMe; info: LaunchInfo }) {
   const api = useApi();
   useReferralAttribution(api, me);
@@ -89,14 +106,19 @@ export function LaunchSpotCard({ me, info }: { me: LaunchMe; info: LaunchInfo })
     try {
       // Same body shape the stash replay sends: always path "new", empty
       // input absent rather than "".
-      await api.post("/onboarding/brief", { path: "new", input: trimmed || undefined });
+      const resp = await api.post("/onboarding/brief", { path: "new", input: trimmed || undefined });
+      // "staged" is the one success status. "already_submitted" is a refused
+      // overwrite (the backend couldn't confirm the held state) and must not
+      // render as saved.
+      if ((resp as { status?: string } | null)?.status !== "staged") {
+        setError("Couldn't save that — your earlier idea is still the one on file. Try again.");
+        return;
+      }
       setIdea(trimmed || null);
       setEditing(false);
       setDraft("");
     } catch (err) {
-      // ApiError.message is the backend's `detail` string (e.g. the 422
-      // validation copy); anything else gets a generic retry line.
-      setError(err instanceof ApiError && err.body ? err.message : "Couldn't save that — try again.");
+      setError(saveErrorCopy(err));
     } finally {
       setSaving(false);
     }

@@ -582,7 +582,11 @@ export class PaperclipStack extends cdk.Stack {
     this.service = new ecs.FargateService(this, "PaperclipService", {
       cluster: props.cluster,
       taskDefinition,
-      serviceName: `lightbulb-${env}-paperclip-server`,
+      // NOT renamed yet: the service name is a cross-stack export consumed by
+      // the observability alarms, and CloudFormation refuses to update an
+      // export in use (dev deploy 33282675160). It moves with the other named
+      // exports in the last tier of the rename, via the freeze-then-rename step.
+      serviceName: `isol8-${env}-paperclip-server`,
       desiredCount: 1,
       securityGroups: [this.taskSecurityGroup],
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },

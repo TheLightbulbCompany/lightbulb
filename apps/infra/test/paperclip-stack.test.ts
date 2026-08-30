@@ -230,7 +230,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("Fargate service runs in private subnets with no public IP", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
-      ServiceName: "lightbulb-dev-paperclip-server",
+      ServiceName: "isol8-dev-paperclip-server",
       LaunchType: "FARGATE",
       DesiredCount: 1,
       DeploymentConfiguration: Match.objectLike({

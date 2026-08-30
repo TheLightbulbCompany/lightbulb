@@ -105,6 +105,18 @@ export class NetworkStack extends cdk.Stack {
     this.albHttpListenerArnV2 = named.httpListenerArn;
     this.albHttpsListenerArnV2 = named.httpsListenerArn;
 
+    // ALB rename step 2: every consumer now imports the named set, so CDK would
+    // drop the legacy set's exports — but this stack deploys BEFORE api /
+    // service / observability update in the same run, and CloudFormation
+    // refuses to remove an export that is still in use. Keep them published
+    // for this deploy; step 3 deletes them with the legacy resources.
+    this.exportValue(legacy.alb.loadBalancerDnsName);
+    this.exportValue(legacy.alb.loadBalancerFullName);
+    this.exportValue(legacy.alb.loadBalancerArn);
+    this.exportValue(legacy.httpListenerArn);
+    this.exportValue(legacy.targetGroup.targetGroupArn);
+    this.exportValue(legacy.targetGroup.targetGroupFullName);
+
     this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
       ec2.Port.tcp(8081),

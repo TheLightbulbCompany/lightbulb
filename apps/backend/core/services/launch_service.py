@@ -34,13 +34,21 @@ def referral_link(code: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/?ref={code}"
 
 
+MAX_REFERRALS_COUNTED = 20  # ponytail: a flat cap; make it a setting if the owner ever wants to tune it
+
+
 def effective_position(row: dict, referral_jump: int) -> int:
     """Queue-jump: each referral moves the referrer up ``referral_jump``
     spots, floored at 1 (position never goes to zero or negative). This is
     the ONE place that math happens — every surface that shows or gates on a
     waitlist position (``me()``, ``join()``, the admin sheet's top-slot logic
-    and CSV) reads through this, not raw ``row["position"]``."""
-    return max(1, int(row["position"]) - referral_jump * int(row.get("referrals_signed_up", 0)))
+    and CSV) reads through this, not raw ``row["position"]``.
+
+    Only the first ``MAX_REFERRALS_COUNTED`` referrals count toward the jump:
+    sign-ups are cheap (a throwaway Clerk account each), so an uncapped jump
+    would let anyone buy their way into the comp-slot window for nothing."""
+    counted = min(int(row.get("referrals_signed_up", 0)), MAX_REFERRALS_COUNTED)
+    return max(1, int(row["position"]) - referral_jump * counted)
 
 
 async def resolve_email(auth: AuthContext) -> str | None:

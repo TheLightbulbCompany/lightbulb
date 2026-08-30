@@ -139,6 +139,15 @@ def test_effective_position_defaults_referrals_signed_up_to_zero():
     assert launch_service.effective_position({"position": 42}, 10) == 42
 
 
+def test_effective_position_counts_at_most_max_referrals():
+    # 500 throwaway sign-ups must not buy 5,000 spots: only the first
+    # MAX_REFERRALS_COUNTED referrals move the row.
+    cap = launch_service.MAX_REFERRALS_COUNTED
+    row = {"position": 10_000, "referrals_signed_up": 500}
+    assert launch_service.effective_position(row, 10) == 10_000 - 10 * cap
+    assert launch_service.effective_position({"position": 10_000, "referrals_signed_up": cap}, 10) == 10_000 - 10 * cap
+
+
 async def test_me_without_email_has_no_waitlist_block():
     auth = AuthContext(user_id="user_1")
     with (

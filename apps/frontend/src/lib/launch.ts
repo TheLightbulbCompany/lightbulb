@@ -13,10 +13,10 @@ export interface LaunchInfo {
   pot_cents: number;
   comp_slots: number;
   pot_per_entrant_cents: number;
-  /** Not sent by `GET /launch` today — the public info route predates the
-   * queue-jump setting. Optional so `LaunchPage`'s rules copy can render the
-   * numeric sentence once the backend adds it, and the generic fallback
-   * copy until then. */
+  /** Sent by `GET /launch`. Optional only for the merge→promote window
+   * (Vercel ships the frontend on merge; the backend is promoted on demand),
+   * during which an older backend omits it and the rules copy falls back to
+   * the generic sentence. */
   referral_jump?: number;
 }
 

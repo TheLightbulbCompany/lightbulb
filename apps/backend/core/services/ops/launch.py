@@ -92,6 +92,12 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         # entrant as comped — the pessimistic read.
         # Org entrants (owner_id "org_…") are never comped: comps are personal-only per the
         # spec, and `activated` is keyed by the individual user_id, so they land in `paid`.
+        # Eligibility is judged on the position FROZEN at join time (the
+        # effective position then), not the live one: the promo codes went out
+        # at the drop off the CSV, so referrals earned after joining cannot
+        # change who got a code. The pre-drop `top_slots_*` counts above use
+        # the live effective position on purpose — that is the list still being
+        # shaped.
         is_eligible = pos is not None and int(pos) <= s.comp_slots and e["owner_id"] in activated
         comp_eligible += int(is_eligible)
         baseline = int(e.get("baseline_cents", 0))

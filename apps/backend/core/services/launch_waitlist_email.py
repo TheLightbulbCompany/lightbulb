@@ -52,7 +52,7 @@ def _render_waitlist_html(
     </a>
   </p>
   <p style="color:#666;font-size:14px">
-    The first {comp_slots} on the list get their first month free.
+    The first {comp_slots} on the list get their first month free, while codes last.
   </p>
   <p style="color:#999;font-size:13px">— The Lightbulb team</p>
 </div>"""
@@ -78,7 +78,7 @@ Doors open {doors_open}.
 Each referral moves you up {referral_jump} spots. Share your link:
 {referral_link}
 
-The first {comp_slots} on the list get their first month free.
+The first {comp_slots} on the list get their first month free, while codes last.
 
 — The Lightbulb team"""
 

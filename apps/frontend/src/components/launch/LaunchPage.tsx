@@ -14,8 +14,8 @@ import "./launch.css";
 const rules = (info: LaunchInfo): string[] => [
   "Sign up and finish onboarding — Friday's first run has to complete.",
   `Every entrant puts ${formatMoney(info.pot_per_entrant_cents, "USD")} into the pot; the first ${info.comp_slots} on the waitlist get their month free.`,
-  // `GET /launch` doesn't carry `referral_jump` yet — render the concrete
-  // sentence once it does, the generic one until then.
+  // `GET /launch` carries `referral_jump`; the generic sentence covers the
+  // merge→promote window where an older backend still omits it.
   info.referral_jump !== undefined
     ? `Each referral moves you up ${info.referral_jump} spots.`
     : "Referrals move you up the list.",

@@ -1,0 +1,167 @@
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const get = vi.fn();
+const post = vi.fn();
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get, post }) }));
+
+// `@/lib/notify` imports ApiError from the mocked `@/lib/api`; stub it the
+// same way CompanyStripeSection.test.tsx does.
+const { notifyApiError, notifyError } = vi.hoisted(() => ({ notifyApiError: vi.fn(), notifyError: vi.fn() }));
+vi.mock("@/lib/notify", () => ({ notifyApiError, notifyError }));
+
+import {
+  ProvisionedResourcesFacet,
+  type ProvisionedResource,
+  type ProvisioningWorkflow,
+} from "@/components/settings/ProvisionedResources";
+
+const RESOURCE: ProvisionedResource = {
+  resource_id: "res_1",
+  provider: "posthog",
+  service: "analytics",
+  status: "active",
+  resource_name: "Northwind analytics",
+  env_keys: ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
+  level: "company",
+};
+
+// The two-phase tab: opened EMPTY and synchronously in the click handler, then
+// pointed at the URL the API mints (a `window.open` after an `await` is
+// blocked by Safari).
+function fakeTab() {
+  return { opener: undefined, location: { href: "" }, close: vi.fn() };
+}
+
+function renderFacet(
+  opts: {
+    canManage?: boolean;
+    resources?: ProvisionedResource[];
+    workflows?: ProvisioningWorkflow[];
+  } = {},
+) {
+  return render(
+    <ProvisionedResourcesFacet
+      provider="posthog"
+      resources={opts.resources ?? [RESOURCE]}
+      workflows={opts.workflows ?? []}
+      canManage={opts.canManage ?? true}
+      onChanged={vi.fn()}
+    />,
+  );
+}
+
+beforeEach(() => {
+  get.mockReset();
+  post.mockReset();
+  notifyApiError.mockReset();
+  notifyError.mockReset();
+});
+
+describe("ProvisionedResourcesFacet", () => {
+  it("names each resource and states its level", () => {
+    renderFacet();
+    expect(screen.getByText("Northwind analytics")).toBeInTheDocument();
+    expect(screen.getByText("analytics")).toBeInTheDocument();
+    expect(screen.getByText("Company-level")).toBeInTheDocument();
+  });
+
+  it("the dashboard link is minted on click, opened, and never rendered as an href", async () => {
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    post.mockResolvedValue({ url: "https://app.posthog.com/x", expires_time: "2026-08-29T12:00:00Z" });
+    renderFacet();
+
+    const button = screen.getByRole("button", { name: "Open dashboard" });
+    // Never an <a href>: the minted URL is bearer-like and must not be stored.
+    expect(button.tagName).toBe("BUTTON");
+    fireEvent.click(button);
+    // Synchronously, before the API promise settles.
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/resources/posthog/res_1/dashboard-link", {}),
+    );
+    await waitFor(() => expect(tab.location.href).toBe("https://app.posthog.com/x"));
+    expect(document.querySelector('a[href*="posthog.com/x"]')).toBeNull();
+  });
+
+  it("closes the pending tab when the mint fails", async () => {
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    post.mockRejectedValue(new Error("409"));
+    renderFacet();
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    await waitFor(() => expect(tab.close).toHaveBeenCalled());
+    expect(notifyApiError).toHaveBeenCalled();
+    expect(tab.location.href).toBe("");
+  });
+
+  it("revoke deletes our copy and says the owner keeps the account", async () => {
+    post.mockResolvedValue({ revoked: true });
+    renderFacet();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke our copy" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/resources/posthog/res_1/revoke", {}),
+    );
+    expect(await screen.findByText(/You keep the account/)).toBeInTheDocument();
+  });
+
+  it("remove asks for the resource name and only enables on an exact match", async () => {
+    renderFacet();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("button", { name: "Remove for good" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Type the name/), { target: { value: "wrong" } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Type the name/), { target: { value: "Northwind analytics" } });
+    expect(confirm).toBeEnabled();
+
+    post.mockResolvedValue({ removed: true });
+    fireEvent.click(confirm);
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/resources/posthog/res_1/remove", {
+        confirm: "Northwind analytics",
+      }),
+    );
+  });
+
+  it("the remove dialog states the billing and infrastructure effect", () => {
+    renderFacet();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByText(/deletes it at posthog/i)).toBeInTheDocument();
+    expect(screen.getByText(/stops any charges/i)).toBeInTheDocument();
+  });
+
+  it("offers neither revoke nor remove to a non-admin", () => {
+    renderFacet({ canManage: false });
+    expect(screen.queryByRole("button", { name: "Revoke our copy" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  it("chips a workflow the owner has not approved yet", () => {
+    renderFacet({
+      resources: [],
+      workflows: [
+        { workflow_id: "pwf_1", state: "awaiting_approval", provider: "posthog", service: "svc_analytics" },
+      ],
+    });
+    expect(screen.getByText(/Waiting for your approval/)).toBeInTheDocument();
+  });
+
+  it("requires_review tells the owner to contact us and offers no button", () => {
+    renderFacet({
+      resources: [],
+      workflows: [
+        { workflow_id: "pwf_1", state: "requires_review", provider: "posthog", service: "svc_analytics" },
+      ],
+    });
+    expect(screen.getByText(/needs a look from Lightbulb/)).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("renders nothing at all when the provider has neither resources nor open work", () => {
+    const { container } = renderFacet({ resources: [], workflows: [] });
+    expect(container).toBeEmptyDOMElement();
+  });
+});

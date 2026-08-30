@@ -18,7 +18,25 @@ vi.mock("next/link", () => ({
 // rows without re-hoisting.
 const h = vi.hoisted(() => ({
   connections: [] as Connection[],
+  resources: new Map<string, unknown[]>(),
+  workflows: new Map<string, unknown[]>(),
 }));
+
+// The Projects rail's facet does its own reads; the list only groups them.
+vi.mock("@/components/settings/ProvisionedResources", async () => {
+  const actual = await vi.importActual<typeof import("../ProvisionedResources")>(
+    "../ProvisionedResources",
+  );
+  return {
+    ...actual,
+    useProvisioningRail: () => ({
+      byProvider: h.resources,
+      workflowsByProvider: h.workflows,
+      providers: [...new Set([...h.resources.keys(), ...h.workflows.keys()])].sort(),
+      refresh: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("@/hooks/useConnections", () => ({
   useConnections: () => ({
@@ -32,10 +50,14 @@ vi.mock("@/hooks/useConnections", () => ({
   }),
 }));
 
+function resetRail() {
+  h.connections = [];
+  h.resources = new Map();
+  h.workflows = new Map();
+}
+
 describe("ConnectionsList — delivery receipts", () => {
-  beforeEach(() => {
-    h.connections = [];
-  });
+  beforeEach(resetRail);
 
   it("shows what a connected provider delivered", () => {
     h.connections = [
@@ -68,9 +90,7 @@ describe("ConnectionsList — delivery receipts", () => {
 });
 
 describe("ConnectionsList — inbound trigger capability", () => {
-  beforeEach(() => {
-    h.connections = [];
-  });
+  beforeEach(resetRail);
 
   it("shows a Can trigger line when the provider declares inbound events", () => {
     h.connections = [
@@ -123,9 +143,7 @@ describe("ConnectionsList — inbound trigger capability", () => {
 });
 
 describe("ConnectionsList — integration kind badges", () => {
-  beforeEach(() => {
-    h.connections = [];
-  });
+  beforeEach(resetRail);
 
   it("badges an MCP integration as MCP tools", () => {
     h.connections = [
@@ -171,5 +189,66 @@ describe("ConnectionsList — integration kind badges", () => {
     expect(screen.queryByText("MCP tools")).toBeNull();
     expect(screen.queryByText("CLI")).toBeNull();
     expect(screen.queryByText("Skill")).toBeNull();
+  });
+});
+
+// Two rails, one card (spec §3.2): the OAuth relationship and the resources the
+// Projects rail created on the owner's own provider identity.
+describe("ConnectionsList — the Projects resources facet", () => {
+  beforeEach(resetRail);
+
+  const RESOURCE = {
+    resource_id: "res_1",
+    provider: "posthog",
+    service: "analytics",
+    status: "active",
+    resource_name: "Northwind analytics",
+    env_keys: ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
+    level: "company",
+  };
+
+  it("hangs the resources off the provider's own card, beside the OAuth facet", () => {
+    h.connections = [
+      { provider: "posthog", display_name: "PostHog", acquisition: "direct_oauth", status: "connected" },
+    ];
+    h.resources = new Map([["posthog", [RESOURCE]]]);
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("PostHog")).toBeInTheDocument();
+    expect(screen.getByText("Northwind analytics")).toBeInTheDocument();
+    expect(screen.getByText("Company-level")).toBeInTheDocument();
+  });
+
+  it("offers the read side when the provider has resources but no OAuth connection", () => {
+    h.connections = [
+      { provider: "posthog", display_name: "PostHog", acquisition: "direct_oauth", status: "disconnected" },
+    ];
+    h.resources = new Map([["posthog", [RESOURCE]]]);
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/Also connect this account for reads/)).toBeInTheDocument();
+  });
+
+  it("says nothing about reads when the provider is already connected", () => {
+    h.connections = [
+      { provider: "posthog", display_name: "PostHog", acquisition: "direct_oauth", status: "connected" },
+    ];
+    h.resources = new Map([["posthog", [RESOURCE]]]);
+    render(<ConnectionsList canManage />);
+
+    expect(screen.queryByText(/Also connect this account for reads/)).toBeNull();
+  });
+
+  it("gives a card to a provider the OAuth registry has never heard of", () => {
+    h.resources = new Map([
+      ["neon", [{ ...RESOURCE, provider: "neon", resource_name: "Primary", service: "postgres" }]],
+    ]);
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("neon")).toBeInTheDocument();
+    expect(screen.getByText("Primary")).toBeInTheDocument();
+    // Nothing to connect: it is not in the OAuth registry.
+    expect(screen.queryByRole("button", { name: /connect/i })).toBeNull();
+    expect(screen.getByText(/Set up by your agents/)).toBeInTheDocument();
   });
 });

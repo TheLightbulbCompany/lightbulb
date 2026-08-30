@@ -236,7 +236,10 @@ def test_any_member_can_read_the_list_without_a_subscription(member_client, monk
     — the admin-and-paid fence is on the answers, not on looking."""
     entitlement = AsyncMock()
     monkeypatch.setattr(mod, "require_always_on_entitlement", entitlement)
-    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[WF])) as listed:
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[WF])) as listed,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
+    ):
         resp = member_client.get("/api/v1/company/provisioning/workflows")
     assert resp.status_code == 200 and resp.json()["workflows"][0]["workflow_id"] == "pwf_1"
     listed.assert_awaited_once_with("org_a")
@@ -246,7 +249,10 @@ def test_any_member_can_read_the_list_without_a_subscription(member_client, monk
 def test_workflows_list_is_owner_scoped_newest_first_and_safe(client):
     old = {**WF, "workflow_id": "pwf_0", "created_at": "2026-01-01", "project_id": "proj_1"}
     new = {**WF, "created_at": "2026-02-01", "project_id": "proj_1"}
-    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[old, new])) as listed:
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[old, new])) as listed,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
+    ):
         resp = client.get("/api/v1/company/provisioning/workflows")
     assert resp.status_code == 200
     listed.assert_awaited_once_with("org_a")
@@ -256,12 +262,14 @@ def test_workflows_list_is_owner_scoped_newest_first_and_safe(client):
     # `_safe_workflow` is an allowlist — the row's ids and the approval
     # snapshot never reach the browser.
     assert "project_id" not in rows[0] and "approval" not in rows[0]
+    # Both rows are open, so the page load moves both — newest first.
+    assert [c.args[0] for c in step.await_args_list] == ["pwf_1", "pwf_0"]
 
 
 # --- approve ---------------------------------------------------------------
 
 
-def test_approve_honours_an_edited_limit_records_the_signer_and_kicks(client):
+def test_approve_honours_an_edited_limit_records_the_signer_and_steps(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -271,7 +279,7 @@ def test_approve_honours_an_edited_limit_records_the_signer_and_kicks(client):
             "on_approved",
             AsyncMock(return_value={**WF, "state": "connecting_provider"}),
         ) as approved,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post(
             "/api/v1/company/provisioning/workflows/pwf_1/approve",
@@ -280,7 +288,7 @@ def test_approve_honours_an_edited_limit_records_the_signer_and_kicks(client):
     assert resp.status_code == 200 and resp.json()["state"] == "connecting_provider"
     assert approved.await_args.kwargs["usage_limit"]["max_amount"] == 2500
     assert approved.await_args.kwargs["approved_by"] == "user_admin"
-    kick.assert_awaited_once_with("pwf_1")
+    step.assert_awaited_once_with("pwf_1")
 
 
 def test_approve_ignores_an_edited_limit_once_a_payment_profile_exists(client):
@@ -292,7 +300,7 @@ def test_approve_ignores_an_edited_limit_once_a_payment_profile_exists(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(mod.provisioning_workflow, "limit_is_editable", AsyncMock(return_value=False)),
         patch.object(mod.provisioning_workflow, "on_approved", AsyncMock(return_value=row)) as approved,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         client.post(
             "/api/v1/company/provisioning/workflows/pwf_1/approve",
@@ -306,7 +314,7 @@ def test_approve_without_a_limit_never_probes_the_payment_profile(client):
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
         patch.object(mod.provisioning_workflow, "limit_is_editable", AsyncMock()) as editable,
         patch.object(mod.provisioning_workflow, "on_approved", AsyncMock(return_value=WF)) as approved,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
     assert resp.status_code == 200
@@ -372,12 +380,14 @@ def test_reject_is_terminal_and_refreshes_the_facts(client, facts):
         patch.object(
             mod.provisioning_workflow, "on_rejected", AsyncMock(return_value={**WF, "state": "rejected"})
         ) as rejected,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/reject")
     assert resp.status_code == 200 and resp.json()["state"] == "rejected"
     rejected.assert_awaited_once_with("pwf_1")
     facts.assert_awaited_once_with("org_a")
+    # `rejected` is terminal — there is nothing left to step.
+    step.assert_not_awaited()
 
 
 def test_reject_409s_on_a_card_that_is_not_open(client, facts):
@@ -397,12 +407,14 @@ def test_cancel_withdraws_the_ask(client, facts):
         patch.object(
             mod.provisioning_workflow, "cancel", AsyncMock(return_value={**WF, "state": "cancelled"})
         ) as cancelled,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/cancel")
     assert resp.status_code == 200 and resp.json()["state"] == "cancelled"
     cancelled.assert_awaited_once_with("pwf_1")
     facts.assert_awaited_once_with("org_a")
+    # `cancelled` is terminal — there is nothing left to step.
+    step.assert_not_awaited()
 
 
 def test_cancel_refuses_once_something_exists_on_the_owners_stripe_account(client, facts):
@@ -440,7 +452,7 @@ def test_information_submits_to_the_resource_endpoint_for_that_target(client):
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**RES_INFO, "state": "provisioning"})
         ) as move,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post(
             "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": "growth"}}
@@ -453,7 +465,7 @@ def test_information_submits_to_the_resource_endpoint_for_that_target(client):
     # The answered question's schema and the owner's clock go with it.
     assert move.await_args.kwargs["fields"]["information_schema"] is None
     assert move.await_args.kwargs["fields"]["user_action_since"] is None
-    kick.assert_awaited_once_with("pwf_1")
+    step.assert_awaited_once_with("pwf_1")
 
 
 def test_information_submits_to_the_account_request_endpoint_for_that_target(client):
@@ -467,7 +479,7 @@ def test_information_submits_to_the_account_request_endpoint_for_that_target(cli
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**AR_INFO, "state": "connecting_provider"})
         ) as move,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post(
             "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": "growth"}}
@@ -569,7 +581,7 @@ def test_payment_link_is_minted_on_click_and_never_stored(client):
         ) as minted,
         patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
     assert resp.json()["checkout_session_url"] == "https://checkout.stripe.com/x"
@@ -578,7 +590,7 @@ def test_payment_link_is_minted_on_click_and_never_stored(client):
     # Nothing bearer-like is written to the row.
     for call in [*patched.await_args_list, *move.await_args_list]:
         assert "checkout.stripe.com" not in str(call)
-    kick.assert_awaited_once_with("pwf_1")
+    step.assert_awaited_once_with("pwf_1")
 
 
 def test_payment_link_falls_back_to_the_default_limit(client):
@@ -586,7 +598,7 @@ def test_payment_link_falls_back_to_the_default_limit(client):
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**PAYING, "usage_limit": None})),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(mod.api, "create_payment_method_request", AsyncMock(return_value={"status": "complete"})) as m,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
     assert resp.json() == {"checkout_session_url": None, "status": "complete"}
@@ -624,7 +636,7 @@ def test_a_withdrawn_request_can_never_mint_a_link(client, path, code):
     read.assert_not_awaited()
 
 
-def test_payment_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
+def test_payment_link_un_stales_the_row_so_the_step_is_not_a_no_op(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**PAYING, "state": "stale"})),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -632,7 +644,7 @@ def test_payment_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
             mod.api, "create_payment_method_request", AsyncMock(return_value={"status": "checkout_initiated"})
         ),
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
     assert move.await_args.kwargs["from_state"] == "stale"
@@ -667,7 +679,7 @@ def test_connect_link_reuses_a_live_account_request(client):
         ),
         patch.object(mod.api, "create_account_request", AsyncMock()) as created,
         patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.json() == {"redirect_url": "https://provider.example/oauth?fresh"}
@@ -675,7 +687,7 @@ def test_connect_link_reuses_a_live_account_request(client):
     # Minted per click: the URL never reaches the row.
     for call in patched.await_args_list:
         assert "provider.example" not in str(call)
-    kick.assert_awaited_once_with("pwf_1")
+    step.assert_awaited_once_with("pwf_1")
 
 
 def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
@@ -696,7 +708,7 @@ def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(clien
         ) as created,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_project_id": "p_1"})),
         patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.json()["redirect_url"] == "https://provider.example/oauth?new"
@@ -719,16 +731,16 @@ def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
         ) as created,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
         patch.object(mod.workflow_repo, "patch", AsyncMock()),
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 200
     created.assert_awaited_once()
 
 
-def test_connect_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
+def test_connect_link_un_stales_the_row_so_the_step_is_not_a_no_op(client):
     """The driver stops on `stale` by design, so the click must move the row
-    back — and restart the seven days — before kicking, or nothing happens."""
+    back — and restart the seven days — before stepping, or nothing happens."""
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "state": "stale"})),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -738,7 +750,7 @@ def test_connect_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
             AsyncMock(return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
         ),
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 200
@@ -756,14 +768,14 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})),
         patch.object(mod.api, "create_account_request", AsyncMock()) as created,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_redirect_available"
-    # A `complete` request is not one to replace — and the kick is what moves
+    # A `complete` request is not one to replace — and the step is what moves
     # the row on from it.
     created.assert_not_awaited()
-    kick.assert_awaited_once_with("pwf_1")
+    step.assert_awaited_once_with("pwf_1")
 
 
 def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):

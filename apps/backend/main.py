@@ -436,14 +436,6 @@ async def lifespan(app: FastAPI):
     set_shutting_down(False)
     await startup_containers()
     await _resume_wake_resize_transitions()
-    # No Provisioning webhooks: an open workflow's poller dies with the
-    # process, so re-enter every non-terminal row (same shape as the line
-    # above). Best-effort by construction — the sweep swallows its own errors,
-    # and its per-row lease keeps a rolling deploy's two instances from both
-    # driving the same workflow.
-    from core.services.provisioning_driver import resume_open_workflows
-
-    await resume_open_workflows()
     await _reconcile_trial_idle_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
@@ -488,18 +480,6 @@ async def lifespan(app: FastAPI):
             from core.services.provision_dispatch import handoff_inflight_provisions
 
             await handoff_inflight_provisions()
-            # Stop the provisioning drivers so each hands its row's lease back.
-            # Leaving them to expire would lock the incoming instance out of
-            # exactly the workflows it just swept in to take over.
-            from core.services.provisioning_driver import cancel_all
-
-            # Bounded on its own: a driver task wedged in a Stripe read would
-            # otherwise eat the whole 20s drain budget and take the handoff
-            # steps below down with it. A lease left behind expires by itself.
-            try:
-                await asyncio.wait_for(cancel_all(), 5)
-            except asyncio.TimeoutError:
-                logger.warning("Provisioning drivers did not stop in 5s; their leases will expire on their own")
             system_health.BACKGROUND_TASKS.clear()
             # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
             request_worker_stop()

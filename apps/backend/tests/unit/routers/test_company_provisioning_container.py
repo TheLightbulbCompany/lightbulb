@@ -159,7 +159,7 @@ def test_catalog_without_a_company_stripe_account_is_an_actionable_409(client, m
 # --- requests --------------------------------------------------------------
 
 
-def test_request_starts_a_workflow_and_kicks_the_driver(client):
+def test_request_starts_a_workflow_and_takes_no_step(client):
     row = {
         "workflow_id": "pwf_1",
         "state": "awaiting_approval",
@@ -168,7 +168,7 @@ def test_request_starts_a_workflow_and_kicks_the_driver(client):
     }
     with (
         patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=row)) as start,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post(
             f"{BASE}/requests",
@@ -189,7 +189,9 @@ def test_request_starts_a_workflow_and_kicks_the_driver(client):
     assert start.await_args.kwargs["configuration"] == {"region": "us"}
     assert start.await_args.kwargs["reason"] == "The launch needs funnel numbers."
     assert resp.json()["reused"] is False
-    kick.assert_awaited_once_with("pwf_1")
+    # Nothing to step: the card was filed a millisecond ago, and Friday's next
+    # status read is what moves it.
+    step.assert_not_awaited()
 
 
 def test_asking_twice_reuses_the_open_workflow_instead_of_refusing(client):
@@ -204,7 +206,7 @@ def test_asking_twice_reuses_the_open_workflow_instead_of_refusing(client):
     }
     with (
         patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=open_row)),
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "posthog", "service": "svc_analytics"})
     assert resp.status_code == 200
@@ -312,13 +314,13 @@ def test_a_stripe_refusal_is_a_502_not_worth_retrying(client):
 def test_a_hostile_body_is_a_422_with_no_side_effect(client, body):
     with (
         patch.object(mod.provisioning_workflow, "start", AsyncMock()) as start,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()) as kick,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post(f"{BASE}/requests", headers=HDRS, json=body)
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "invalid_request"
     start.assert_not_awaited()
-    kick.assert_not_awaited()
+    step.assert_not_awaited()
 
 
 def test_a_scalar_configuration_is_accepted(client):
@@ -326,7 +328,7 @@ def test_a_scalar_configuration_is_accepted(client):
     config = {"region": "us", "seats": 3, "beta": True, "ratio": 0.5, "note": None}
     with (
         patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=row)) as start,
-        patch.object(mod.provisioning_driver, "kick", AsyncMock()),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
     ):
         resp = client.post(
             f"{BASE}/requests",
@@ -353,9 +355,14 @@ def test_request_status_is_owner_scoped_and_safe(client):
         "error_code": None,
         "approval": {"terms_url": "https://posthog.com/terms"},
     }
-    with patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=row)) as step,
+    ):
         resp = client.get(f"{BASE}/requests/pwf_1", headers=HDRS)
     body = resp.json()
+    # The read IS the clock — an open row is moved one step by looking at it.
+    step.assert_awaited_once_with("pwf_1")
     assert body["state"] == "provisioning"
     assert body["provider"] == "posthog"
     for leaked in (
@@ -461,10 +468,15 @@ def test_requests_list_is_owner_scoped_and_newest_first(client):
             "created_at": "2026-08-02T00:00:00Z",
         },
     ]
-    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=rows)) as listed:
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=rows)) as listed,
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
+    ):
         resp = client.get(f"{BASE}/requests", headers=HDRS)
     assert [r["workflow_id"] for r in resp.json()["requests"]] == ["pwf_2", "pwf_1"]
     listed.assert_awaited_once_with("org_a")
+    # Only the OPEN one is stepped; `pwf_1` is `active` and nothing reopens it.
+    step.assert_awaited_once_with("pwf_2")
 
 
 def test_status_exposes_the_provider_account_names_only(client):

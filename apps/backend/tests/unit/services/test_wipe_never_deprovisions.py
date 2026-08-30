@@ -43,7 +43,6 @@ _TEARDOWN_MODULES = (account_wipe, entitlement_teardown, owner_secret_sweep)
 _FORBIDDEN = (
     "stripe_provisioning",
     "provisioning_workflow",
-    "provisioning_driver",
     "provisioning_landing",
     "provisioning_approvals",
     "remove_resource",
@@ -170,9 +169,8 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     assert integrations_repo.projects_key("posthog") in details["integrations"]
     assert "1 owner secret(s)" in details["owner_secrets"]
 
-    # And our MEMORY of the ask goes: the open row is closed so neither the
-    # per-row driver nor the startup sweep ever touches Stripe for this owner
-    # again. A pure DDB write — `to_state="cancelled"`, no fields, no Stripe.
+    # And our MEMORY of the ask goes: the open row is closed, so no later read
+    # of it ever touches Stripe for this owner again. A pure DDB write — `to_state="cancelled"`, no fields, no Stripe.
     wipe_mocks.workflows_transition.assert_awaited_once_with("pwf_1", from_state="provisioning", to_state="cancelled")
     assert "cancelled 1 of 1" in details["provisioning"]
 
@@ -199,7 +197,7 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
 
 @pytest.mark.asyncio
 async def test_wipe_leaves_a_row_another_writer_already_closed(wipe_mocks):  # noqa: F811
-    """A terminal row is not re-closed, and a row the live driver moved out
+    """A terminal row is not re-closed, and a row a concurrent reader moved out
     from under us (``transition`` returns None) is not an error — the wipe
     reports what it actually closed and carries on."""
     wipe_mocks.workflows_list.return_value = [

@@ -76,11 +76,29 @@ def test_explicit_export_paths_cannot_smuggle_the_projects_dir(dirty_workspace):
     assert any(n.endswith("AGENTS.md") for n in _members(blob))
 
 
-def test_projects_and_stripe_are_named_backstops():
-    """The dotfile rule already covers these; the named entries are the
-    greppable intent, so a future relaxation of that rule still holds."""
+def test_projects_and_stripe_stay_named_backstops():
+    """Spec §3.6: "nothing on this rail writes to EFS any more, and
+    `.projects/` / `.stripe` stay in `_SKIP_DIR_NAMES` only as a named
+    backstop" — for workspaces dirtied by the retired CLI path before it was
+    removed, and for anything a seller copies in by hand."""
     assert ".projects" in _SKIP_DIR_NAMES
     assert ".stripe" in _SKIP_DIR_NAMES
+
+
+def test_the_provisioning_rail_writes_nothing_under_a_workspace():
+    """The structural proof, now that the rail is backend-owned: the only EFS
+    write on it is `openclaw.json`'s `env.vars`, through config_patcher. No
+    path under `workspace-{id}/` is ever constructed here, so there is nothing
+    for an export to exclude — the named entries above are the backstop, not
+    the fence."""
+    import inspect
+
+    from core.services import provisioning_landing
+
+    source = inspect.getsource(provisioning_landing)
+    assert "workspace-" not in source
+    assert "owner_efs_root" not in source
+    assert "set_openclaw_config_path" in source
 
 
 def test_a_copied_non_dot_vault_is_still_caught(dirty_workspace):

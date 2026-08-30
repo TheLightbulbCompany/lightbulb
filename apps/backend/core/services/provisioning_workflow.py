@@ -8,8 +8,10 @@ that produces it and every state move is conditional.
     ask -> awaiting_approval -> connecting_provider -> awaiting_user_action
         -> provisioning -> binding -> active | failed | requires_review
 
-``advance`` is one step. The driver (``provisioning_driver``) decides when to
-call it; the sweep re-enters it after a restart. Nothing here sleeps.
+``advance`` is one step and ``advance_on_read`` is what takes it: there is
+nothing in the background, so a workflow moves when somebody READS it —
+Friday's status route, the owner's page loads, the owner's clicks. Nothing here
+sleeps.
 
 One residual race is ACCEPTED: two truly simultaneous ``start`` calls can both
 read no open workflow and create two rows. The window is the round trip between
@@ -26,9 +28,10 @@ id, state, provider, service and error code.
 from __future__ import annotations
 
 import logging
-import random
+import os
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import jsonschema
 
 from core.config import settings
@@ -36,18 +39,33 @@ from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo
 from core.repositories import provisioning_workflow_repo as repo
 from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api
+from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
+from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.provisioning_landing import land_credentials
 from core.services.stripe_provisioning import ProvisioningError
 
 logger = logging.getLogger(__name__)
 
-POLL_BASE_S = 2.0
-POLL_MAX_S = 30.0
 DEADLINE_S = 900  # 15 minutes, then requires_review with the ids kept.
 # How long a workflow may sit waiting on the OWNER before the poller gives up
 # and marks it `stale`. Days, not minutes: the card is in their Inbox and they
 # are allowed to think about it over a weekend.
 USER_ACTION_DEADLINE_S = 7 * 24 * 3600
+
+# How long one reader may hold a row while it takes its step. Only has to
+# outlast a single ``advance`` — two chained Stripe calls at the client's 45s
+# timeout — so a reader that dies mid-step blocks the next one for a minute at
+# most. Renewed by nothing: a read takes ONE step and hands the row back.
+READ_LEASE_S = 60
+
+# Which process holds a claim. The pid matters: a rolling deploy can put two
+# workers on one host, and `HOSTNAME` is the Fargate task id in ECS.
+INSTANCE_ID = f"{os.getenv('HOSTNAME') or 'local'}:{os.getpid()}"
+
+# Paperclip's own two approval outcomes (fork `services/approvals.ts`).
+# Rejection is a real outcome, not silence: without it a declined card is read
+# forever and the owner is never told it stopped.
+_OUTCOMES = ("approved", "rejected")
 
 # spec.txt: the enum values "have no external_name annotation in the proto…
 # use the value returned by the endpoint and do not hard-code a lower-case wire
@@ -104,19 +122,6 @@ def is_transient(e: ProvisioningError) -> bool:
     ``http_status`` here would drift from it — the 429 was the one it missed.
     """
     return isinstance(e, api.TransientProvisioningError)
-
-
-def poll_delay(attempts: int) -> float:
-    """Bounded exponential backoff with jitter (guide: "Poll with bounded
-    exponential backoff and jitter").
-
-    Equal jitter, not full: half the window is the backoff itself, so a later
-    attempt always waits longer than an earlier one and a poller cannot spin at
-    the floor forever. The exponent is capped before the multiply — ``2 **
-    attempts`` on a long-lived row overflows the float otherwise.
-    """
-    ceiling = min(POLL_MAX_S, POLL_BASE_S * 2 ** min(attempts, 10))
-    return random.uniform(ceiling / 2, ceiling)
 
 
 def snapshot_of(service: dict, provider: dict, configuration: dict) -> dict:
@@ -604,7 +609,7 @@ async def _read_or_park(row: dict, awaitable) -> tuple:
     """Run one Stripe READ. Returns ``(result, None)`` or ``(None, refusal_row)``.
 
     A read is safe to repeat, so a transient failure only bumps the attempt and
-    lets the driver back off; an expired provider connection re-enters
+    leaves the next reader to try again; an expired provider connection re-enters
     ``connecting_provider``; anything else fails the workflow. Every read site
     goes through here so no branch can quietly forget one of the three.
     """
@@ -621,10 +626,10 @@ async def _read_or_park(row: dict, awaitable) -> tuple:
 async def _bump(row: dict, retry_after: float | None = None) -> dict:
     """One more poll attempt, same state.
 
-    ``retry_after`` is Stripe's own answer to "when": a 429 carries it, and the
-    driver's backoff has no way to know about it otherwise. Stamped on the row
-    as a floor the driver sleeps to; the driver caps it, so a silly header
-    cannot park a workflow.
+    ``retry_after`` is Stripe's own answer to "when": a 429 carries it, and a
+    read has no other way to know. Stamped on the row as a floor
+    ``advance_on_read`` will not step before — the read still answers, it just
+    does not spend a Stripe call it was asked to wait for.
     """
     fields: dict = {"attempts": int(row.get("attempts") or 0) + 1}
     if retry_after and retry_after > 0:
@@ -908,7 +913,7 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
 async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="binding")
     if moved is None:
-        # Someone else moved this row first (a sweep racing the live task, or a
+        # Someone else moved this row first (two concurrent readers, or a
         # second binder). It is not ours any more: reading credentials or
         # landing them again would be the duplicate the conditional exists to
         # stop. Report the row as it now stands.
@@ -1012,7 +1017,7 @@ async def _poll_awaited_leg(account_id: str, row: dict) -> dict:
         return refused if refused is not None else await _handle_account_request(account_id, row, ar)
 
     # A card with nothing to poll: the owner submits it through the owner
-    # route, which kicks the driver.
+    # route, which takes the step itself.
     return row
 
 
@@ -1033,12 +1038,60 @@ async def _stale_if_expired(row: dict) -> dict:
     return row
 
 
+async def _reconcile_approval(row: dict) -> dict:
+    """Read the consent card and resume the workflow if it has been answered.
+
+    The answer lives in Paperclip, not here: an owner who approves on their
+    phone never touches our routes. A Paperclip outage is transient by
+    construction — the row is left exactly as it was and the next read looks
+    again.
+    """
+    approval_id = row.get("approval_id")
+    if not approval_id:
+        return row
+    try:
+        admin = shared_admin_client()
+        cookie = await get_admin_session_cookie(admin._http)
+        approval = await admin.get_approval(session_cookie=cookie, approval_id=approval_id)
+    except (PaperclipApiError, httpx.HTTPError) as e:
+        logger.warning("provisioning: approval read failed for %s: %s", row["workflow_id"], e)
+        return row
+    status = (approval or {}).get("status")
+    if status not in _OUTCOMES:
+        return row
+    if status == "rejected":
+        return await on_rejected(row["workflow_id"]) or row
+    # An approver CANNOT edit a card's payload in Paperclip, so the only limit
+    # this path can honour is the one the card was filed with. An owner who
+    # changed the amount comes through the approve route, which passes theirs.
+    return await on_approved(row["workflow_id"], usage_limit=row.get("usage_limit"), approved_by="paperclip") or row
+
+
+def _too_soon(row: dict) -> bool:
+    """Stripe asked us to wait — a 429's ``Retry-After``, stamped by ``_bump``.
+
+    An unparseable value is no floor at all: a junk header must not be able to
+    park a workflow that nothing else will come back to.
+    """
+    when = row.get("next_poll_after")
+    if not when:
+        return False
+    try:
+        return datetime.fromisoformat(when) > datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
 async def advance(workflow: dict) -> dict:
     """One step. Terminal states and `ask` are no-ops; everything else moves or
     reports that it could not."""
     state = workflow.get("state")
-    if state in repo.TERMINAL_STATES or state in ("ask", "awaiting_approval"):
+    if state in repo.TERMINAL_STATES or state == "ask":
         return workflow
+    if state == "awaiting_approval":
+        # Nothing moves until the owner answers, and the answer is Paperclip's,
+        # not Stripe's.
+        return await _reconcile_approval(workflow)
     account_id = await account_id_for(workflow["owner_id"])
     if state in ("awaiting_user_action", "stale"):
         return await _poll_user_action(account_id, workflow)
@@ -1058,3 +1111,36 @@ async def advance(workflow: dict) -> dict:
         resource, refused = await _read_or_park(workflow, api.get_resource(account_id, workflow.get("resource_id")))
         return refused if refused is not None else await _bind(account_id, workflow, resource)
     return workflow
+
+
+async def advance_on_read(workflow_id: str) -> dict:
+    """Take ONE step, on somebody's read.
+
+    There are no Provisioning webhooks, so the readers are the clock: Friday's
+    status route, the owner's page loads, the owner's clicks. Each one moves a
+    row by one step under a short claim, so two concurrent readers (or a
+    rolling deploy's two instances) cannot file the same card or issue the same
+    Stripe write twice — the loser simply reports the row as it stands.
+
+    Never raises: a read must still answer when the step behind it could not.
+    """
+    claimed = await repo.claim(workflow_id, owner=INSTANCE_ID, ttl_s=READ_LEASE_S)
+    if claimed is None:
+        # Another reader holds it, or the row is gone. Its step is our step.
+        return await repo.get(workflow_id) or {}
+    if claimed.get("state") in repo.TERMINAL_STATES or _too_soon(claimed):
+        await repo.release(workflow_id, owner=INSTANCE_ID)
+        return claimed
+    try:
+        # ponytail: one Stripe call (<=45 s) may run inside a read; bound it, split it if reads get slow.
+        row = await advance(claimed)
+    except WorkflowRefused as e:
+        # A door the state machine will keep finding shut — the owner
+        # disconnected the company Stripe account, say. Park it for the human
+        # who has to fix it rather than re-reading it forever.
+        row = await _requires_review(claimed, e.code)
+    except Exception:
+        logger.exception("provisioning: read-step failed for %s", workflow_id)
+        row = claimed
+    await repo.release(workflow_id, owner=INSTANCE_ID)
+    return row

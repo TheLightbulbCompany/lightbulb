@@ -844,15 +844,6 @@ async def test_a_stripe_5xx_on_a_WRITE_is_an_uncertain_write():
     assert create.await_count == 1
 
 
-def test_poll_delay_backs_off_with_jitter_and_a_ceiling():
-    delays = [mod.poll_delay(n) for n in range(0, 12)]
-    assert all(d >= mod.POLL_BASE_S * 0.5 for d in delays)
-    assert all(d <= mod.POLL_MAX_S for d in delays)
-    assert delays[5] > delays[0]
-    # Jitter: two draws at the same attempt are not identical.
-    assert len({mod.poll_delay(6) for _ in range(20)}) > 1
-
-
 # --- the no-repeat rule -----------------------------------------------------
 
 
@@ -1568,3 +1559,216 @@ def test_an_empty_or_malformed_enum_is_not_renderable():
     assert mod._renderable({"properties": {"region": {"enum": ["us", "eu"]}}})
     assert not mod._renderable({"properties": {"region": {"enum": []}}})
     assert not mod._renderable({"properties": {"region": {"enum": "us"}}})
+
+
+# --- the read IS the clock --------------------------------------------------
+
+
+def _admin(approval):
+    from unittest.mock import MagicMock
+
+    admin = MagicMock()
+    admin._http = object()
+    admin.get_approval = AsyncMock(return_value=approval)
+    return admin
+
+
+@pytest.mark.asyncio
+async def test_advance_on_read_takes_one_step_and_hands_the_row_back():
+    row = _row(state="provisioning", resource_id="res_1")
+    moved = _row(state="binding", resource_id="res_1")
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=row)) as claim,
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod, "advance", AsyncMock(return_value=moved)) as step,
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == "binding"
+    # ONE step per read, and the claim is short: a read must not hold a row.
+    step.assert_awaited_once()
+    assert claim.await_args.kwargs == {"owner": mod.INSTANCE_ID, "ttl_s": mod.READ_LEASE_S}
+    release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_advance_on_read_leaves_a_row_another_reader_holds_alone():
+    """Two readers arriving together (or a rolling deploy's two instances) must
+    not both poll Stripe and file the same card. The loser just reports."""
+    held = _row(state="provisioning")
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=None)),
+        patch.object(mod.repo, "get", AsyncMock(return_value=held)),
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod, "advance", AsyncMock()) as step,
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == "provisioning"
+    step.assert_not_awaited()
+    # Not ours to hand back.
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", sorted({"active", "failed", "requires_review", "rejected", "cancelled"}))
+async def test_advance_on_read_releases_a_terminal_row_without_stepping_it(state):
+    done = _row(state=state)
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=done)),
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod, "advance", AsyncMock()) as step,
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == state
+    step.assert_not_awaited()
+    release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_advance_on_read_honours_a_retry_after_stripe_asked_for():
+    """A 429's floor. The read still answers — it just does not spend the call
+    Stripe told us to wait for."""
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+    row = _row(state="provisioning", next_poll_after=soon)
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=row)),
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod, "advance", AsyncMock()) as step,
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == "provisioning"
+    step.assert_not_awaited()
+    release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["2020-01-01T00:00:00+00:00", "not-a-date", None])
+async def test_a_past_or_junk_retry_after_is_no_floor_at_all(when):
+    """A silly header must not be able to park a workflow nothing else visits."""
+    row = _row(state="provisioning", next_poll_after=when)
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=row)),
+        patch.object(mod.repo, "release", AsyncMock()),
+        patch.object(mod, "advance", AsyncMock(return_value=_row(state="binding"))) as step,
+    ):
+        await mod.advance_on_read("pwf_1")
+    step.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_parks_the_row_on_the_read_that_found_it():
+    """A door the state machine will keep finding shut — the owner disconnected
+    the company Stripe account. Re-reading it forever is noise."""
+    row = _row(state="connecting_provider")
+    refusal = mod.WorkflowRefused("no_company_stripe_account", "Set up your company's Stripe account first")
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=row)),
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+        patch.object(mod, "advance", AsyncMock(side_effect=refusal)),
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "no_company_stripe_account"
+    # Friday's facts must stop saying "in flight" the moment it is parked.
+    mod.owner_facts.write_owner_facts.assert_awaited_once_with("org_a")
+    release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_blows_up_still_answers_the_read_and_frees_the_row():
+    row = _row(state="provisioning")
+    with (
+        patch.object(mod.repo, "claim", AsyncMock(return_value=row)),
+        patch.object(mod.repo, "release", AsyncMock()) as release,
+        patch.object(mod.repo, "transition", AsyncMock()) as move,
+        patch.object(mod, "advance", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        out = await mod.advance_on_read("pwf_1")
+    assert out["state"] == "provisioning"
+    # A blip is not a reason to park a workflow; only a refusal is.
+    move.assert_not_awaited()
+    release.assert_awaited_once_with("pwf_1", owner=mod.INSTANCE_ID)
+
+
+# --- the consent card is answered in Paperclip, so a read has to look --------
+
+
+@pytest.mark.asyncio
+async def test_a_read_resumes_a_card_the_owner_approved_on_their_phone():
+    row = _row(state="awaiting_approval", approval_id="apr_1", usage_limit={"max_amount": 2000})
+    with (
+        patch.object(mod, "shared_admin_client", return_value=_admin({"id": "apr_1", "status": "approved"})),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "on_approved", AsyncMock(return_value=_row(state="connecting_provider"))) as resumed,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    assert resumed.await_args.kwargs["approved_by"] == "paperclip"
+    # An approver cannot edit a card's payload in Paperclip, so this path can
+    # only honour the limit the card was filed with.
+    assert resumed.await_args.kwargs["usage_limit"] == {"max_amount": 2000}
+
+
+@pytest.mark.asyncio
+async def test_a_read_records_a_rejection_as_a_terminal_state():
+    """A declined card must stop the workflow, not be re-read for a week."""
+    row = _row(state="awaiting_approval", approval_id="apr_1")
+    with (
+        patch.object(mod, "shared_admin_client", return_value=_admin({"id": "apr_1", "status": "rejected"})),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "on_approved", AsyncMock()) as resumed,
+        patch.object(mod, "on_rejected", AsyncMock(return_value=_row(state="rejected"))) as declined,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "rejected"
+    declined.assert_awaited_once_with("pwf_1")
+    resumed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "revision_requested", None])
+async def test_a_read_leaves_an_undecided_card_alone(status):
+    row = _row(state="awaiting_approval", approval_id="apr_1")
+    with (
+        patch.object(mod, "shared_admin_client", return_value=_admin({"id": "apr_1", "status": status})),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod, "on_approved", AsyncMock()) as resumed,
+        patch.object(mod, "on_rejected", AsyncMock()) as declined,
+    ):
+        assert (await mod.advance(row))["state"] == "awaiting_approval"
+    resumed.assert_not_awaited()
+    declined.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_paperclip_outage_leaves_the_row_exactly_as_it_was():
+    """Transient by construction: the next read looks again."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    row = _row(state="awaiting_approval", approval_id="apr_1")
+    for error in (PaperclipApiError("GET /api/approvals/apr_1 -> 500", 500, "boom"), httpx.ConnectError("down")):
+        admin = _admin(None)
+        admin.get_approval = AsyncMock(side_effect=error)
+        with (
+            patch.object(mod, "shared_admin_client", return_value=admin),
+            patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+            patch.object(mod, "on_approved", AsyncMock()) as resumed,
+        ):
+            assert (await mod.advance(row))["state"] == "awaiting_approval"
+        resumed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_card_to_read_is_left_alone():
+    with patch.object(mod, "shared_admin_client") as client:
+        out = await mod.advance(_row(state="awaiting_approval"))
+    assert out["state"] == "awaiting_approval"
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ask_is_still_a_no_op():
+    """`start` is what moves an `ask` row; a read must never file its card."""
+    with patch.object(mod, "shared_admin_client") as client:
+        assert (await mod.advance(_row(state="ask")))["state"] == "ask"
+    client.assert_not_called()

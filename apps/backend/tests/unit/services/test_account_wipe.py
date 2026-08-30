@@ -65,8 +65,8 @@ EXPECTED_ORDER = [
     "user_row",
     "paperclip_agent_keys",
     # Spec §3.6: open provisioning workflows are CANCELLED, never
-    # deprovisioned — and before the credential deletes, so a live driver
-    # cannot re-land a secret the sweep already removed.
+    # deprovisioned — and before the credential deletes, so a reader mid-step
+    # cannot re-land a secret the wipe already removed.
     "provisioning",
     # Credential + identity leftovers: without these a "wiped" owner kept
     # their BYOK LLM keys, ChatGPT tokens and integration credentials in

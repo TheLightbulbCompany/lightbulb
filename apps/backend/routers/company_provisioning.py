@@ -27,7 +27,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, integrations_repo
 from core.repositories import provisioning_workflow_repo as workflow_repo
-from core.services import provisioning_approvals, provisioning_driver, provisioning_landing, provisioning_workflow
+from core.services import provisioning_approvals, provisioning_landing, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
 from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
@@ -272,6 +272,28 @@ def _safe_workflow(row: dict) -> dict:
     }
 
 
+# Stripe's Provisioning API has no webhooks, so a READ is what moves a
+# workflow. A list read steps the open rows it returns — bounded, because each
+# step can be a Stripe call and a page load must not turn into a dozen.
+#
+# ponytail: 5 rows per read; raise it (or step them concurrently) if owners
+# routinely have more open at once than one page load can carry.
+_MAX_STEPS_PER_READ = 5
+
+
+async def _stepped(rows: list[dict]) -> list[dict]:
+    """Move each non-terminal row one step, newest first, up to the cap. The
+    rest come back exactly as stored — the next read takes them."""
+    budget = _MAX_STEPS_PER_READ
+    out = []
+    for row in rows:
+        if budget and row.get("state") not in workflow_repo.TERMINAL_STATES:
+            budget -= 1
+            row = await provisioning_workflow.advance_on_read(row["workflow_id"]) or row
+        out.append(row)
+    return out
+
+
 async def _owned(owner_id: str, workflow_id: str) -> dict:
     """404 rather than 403 for another owner's id: a different status confirms
     the id exists."""
@@ -370,7 +392,7 @@ async def container_catalog(owner_id: str, request: Request, q: str = Query(defa
 @router.post("/u/{owner_id}/requests")
 async def container_request(owner_id: str, body: ProvisionRequestBody, request: Request):
     """Friday asks. The backend owns everything after this line — she cannot
-    approve her own request, and the driver, not this call, does the work."""
+    approve her own request, and the backend, not this call, does the work."""
     await _require_hook_token(owner_id, request)
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     _validate(body)
@@ -394,7 +416,6 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
         raise _refusal(e) from e
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
-    await provisioning_driver.kick(row["workflow_id"])
     reused = bool(row.get("reused"))
     return {
         **_safe_workflow(row),
@@ -411,14 +432,19 @@ async def container_requests(owner_id: str, request: Request):
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     rows = await workflow_repo.list_for_owner(owner_id)
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return {"requests": [_safe_workflow(r) for r in rows]}
+    return {"requests": [_safe_workflow(r) for r in await _stepped(rows)]}
 
 
 @router.get("/u/{owner_id}/requests/{workflow_id}")
 async def container_request_status(owner_id: str, workflow_id: str, request: Request):
+    """Friday checking back. The READ is what moves the workflow — see
+    ``_stepped``."""
     await _require_hook_token(owner_id, request)
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
-    return _safe_workflow(await _owned(owner_id, workflow_id))
+    row = await _owned(owner_id, workflow_id)
+    if row.get("state") in workflow_repo.TERMINAL_STATES:
+        return _safe_workflow(row)
+    return _safe_workflow(await provisioning_workflow.advance_on_read(workflow_id) or row)
 
 
 @router.delete("/u/{owner_id}/requests/{workflow_id}")
@@ -452,8 +478,8 @@ async def container_cancel_request(owner_id: str, workflow_id: str, request: Req
 #
 # Order on every route: the gate (`Owner`), then ownership, then state, then
 # the body, then the side effect. Each one that hands work back to the state
-# machine ends with `provisioning_driver.kick`, so the owner's click moves the
-# row now rather than on the driver's next slow tick.
+# machine ends with `advance_on_read`, because the click IS the clock — nothing
+# else will move the row until somebody reads it again.
 # ---------------------------------------------------------------------------
 
 # $1,000 per interval. Not Stripe's ceiling — ours, so a fat-fingered limit
@@ -526,9 +552,9 @@ async def _stamp_removed(workflow_id: str | None) -> None:
 async def _resumed(row: dict, awaiting: str) -> None:
     """The owner came back to a `stale` row.
 
-    Un-stale it BEFORE the kick or the kick is a no-op: the driver stops on
-    `stale` by design. `user_action_since` restarts with it — the seven days
-    measure how long they have been away, and they are demonstrably back.
+    Un-stale it BEFORE the step, or the step polls a `stale` row for another
+    seven days. `user_action_since` restarts with it — the days measure how
+    long they have been away, and they are demonstrably back.
     """
     if row.get("state") == "stale":
         await workflow_repo.transition(
@@ -550,7 +576,7 @@ async def list_workflows(auth: Annotated[AuthContext, Depends(get_current_user)]
     owner_id = resolve_owner_id(auth)
     rows = await workflow_repo.list_for_owner(owner_id)
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return {"workflows": [_safe_workflow(r) for r in rows]}
+    return {"workflows": [_safe_workflow(r) for r in await _stepped(rows)]}
 
 
 @router.post("/workflows/{workflow_id}/approve")
@@ -586,8 +612,8 @@ async def approve_workflow(
         raise _refusal(e) from e
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
-    await provisioning_driver.kick(workflow_id)
-    return _safe_workflow(moved or row)
+    stepped = await provisioning_workflow.advance_on_read(workflow_id)
+    return _safe_workflow(stepped or moved or row)
 
 
 @router.post("/workflows/{workflow_id}/reject")
@@ -599,7 +625,7 @@ async def reject_workflow(workflow_id: str, owner_id: Owner):
         raise _conflict("not_awaiting_approval", "This request is not waiting for your approval")
     moved = await provisioning_workflow.on_rejected(workflow_id)
     await write_owner_facts(owner_id)
-    await provisioning_driver.kick(workflow_id)
+    # No step: `rejected` is terminal, and nothing reads a terminal row again.
     return _safe_workflow(moved or {**row, "state": "rejected"})
 
 
@@ -614,7 +640,7 @@ async def cancel_workflow(workflow_id: str, owner_id: Owner):
     except WorkflowRefused as e:
         raise _refusal(e) from e
     await write_owner_facts(owner_id)
-    await provisioning_driver.kick(workflow_id)
+    # No step: `cancelled` is terminal.
     return _safe_workflow(moved or {**row, "state": "cancelled"})
 
 
@@ -686,8 +712,8 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
             "user_action_since": None,
         },
     )
-    await provisioning_driver.kick(workflow_id)
-    return _safe_workflow(moved or {**row, "state": to_state})
+    stepped = await provisioning_workflow.advance_on_read(workflow_id)
+    return _safe_workflow(stepped or moved or {**row, "state": to_state})
 
 
 @router.post("/workflows/{workflow_id}/payment-link")
@@ -715,9 +741,9 @@ async def payment_link(workflow_id: str, owner_id: Owner):
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await _resumed(row, "payment_setup")
-    await provisioning_driver.kick(workflow_id)
+    await provisioning_workflow.advance_on_read(workflow_id)
     # `complete` is the answer when a card is already on file — no URL, and the
-    # driver's payment-profile poll is what moves the row on from here.
+    # payment-profile poll on the next read is what moves the row on from here.
     return {"checkout_session_url": result.get("checkout_session_url"), "status": result.get("status")}
 
 
@@ -761,10 +787,10 @@ async def connect_link(workflow_id: str, owner_id: Owner):
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await _resumed(row, "provider_connect")
-    await provisioning_driver.kick(workflow_id)
+    await provisioning_workflow.advance_on_read(workflow_id)
     if request_.get("status") != "pending_auth" or not request_.get("redirect_url"):
         # `complete`, `requested` or `needs_information`: there is no browser
-        # step to take right now, and the kick above is what moves the row.
+        # step to take right now, and the step above is what moves the row.
         raise _conflict("no_redirect_available", "This provider connection does not need a browser step right now")
     return {"redirect_url": request_["redirect_url"]}
 

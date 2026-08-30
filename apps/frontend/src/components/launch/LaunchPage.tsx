@@ -14,6 +14,11 @@ import "./launch.css";
 const rules = (info: LaunchInfo): string[] => [
   "Sign up and finish onboarding — Friday's first run has to complete.",
   `Every entrant puts ${formatMoney(info.pot_per_entrant_cents, "USD")} into the pot; the first ${info.comp_slots} on the waitlist get their month free.`,
+  // `GET /launch` doesn't carry `referral_jump` yet — render the concrete
+  // sentence once it does, the generic one until then.
+  info.referral_jump !== undefined
+    ? `Each referral moves you up ${info.referral_jump} spots.`
+    : "Referrals move you up the list.",
   "Connect a read-only Stripe key. The board ranks the dollar lift over your prior 30 days.",
   "Judges pick the winner from the board. Self-dealing gets you removed.",
 ];

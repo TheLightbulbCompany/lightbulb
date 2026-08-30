@@ -23,10 +23,14 @@ export function csvEscape(v: unknown): string {
 // `activated` is null for rows the sheet never resolved onboarding for (see
 // core/services/ops/launch.py) — an em dash, never "null" or a fabricated no.
 export function waitlistCsv(rows: LaunchOpsSheet["waitlist_rows"]): string {
-  const head = ["email", "position", "referral_link", "created_at", "activated"];
+  const head = ["email", "position", "effective_position", "referral_link", "created_at", "activated"];
   return [
     head.join(","),
-    ...rows.map((r) => [r.email, r.position, r.referral_link, r.created_at, r.activated ?? "—"].map(csvEscape).join(",")),
+    ...rows.map((r) =>
+      [r.email, r.position, r.effective_position, r.referral_link, r.created_at, r.activated ?? "—"]
+        .map(csvEscape)
+        .join(","),
+    ),
   ].join("\n");
 }
 

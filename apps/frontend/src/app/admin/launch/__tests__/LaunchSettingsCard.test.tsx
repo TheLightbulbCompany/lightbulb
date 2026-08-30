@@ -28,6 +28,7 @@ const baseSettings: LaunchSettings = {
   competition_days: 30,
   pot_front_cents: 100000,
   pot_per_entrant_cents: 1000,
+  referral_jump: 10,
   stripe_coupon_id: "",
   stripe_promotion_code_id: "",
   stripe_promotion_code: "",
@@ -55,6 +56,7 @@ describe("LaunchSettingsCard", () => {
     expect(screen.getByLabelText(/competition days/i)).toHaveValue(30);
     expect(screen.getByLabelText(/pot front/i)).toHaveValue(1000);
     expect(screen.getByLabelText(/pot per entrant/i)).toHaveValue(10);
+    expect(screen.getByLabelText(/spots per referral/i)).toHaveValue(10);
     expect(screen.getByRole("checkbox", { name: /enabled/i })).not.toBeChecked();
   });
 
@@ -73,6 +75,7 @@ describe("LaunchSettingsCard", () => {
       competition_days: 30,
       pot_front_cents: 120000,
       pot_per_entrant_cents: 1000,
+      referral_jump: 10,
     });
     expect(mockRefresh).toHaveBeenCalled();
   });
@@ -111,11 +114,12 @@ describe("LaunchSettingsCard", () => {
     render(<LaunchSettingsCard settings={baseSettings} />);
     fireEvent.change(screen.getByLabelText(/comp slots/i), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText(/competition days/i), { target: { value: "30.4" } });
+    fireEvent.change(screen.getByLabelText(/spots per referral/i), { target: { value: "9.6" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(await screen.findByText(/^saved\.$/i)).toBeInTheDocument();
-    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ comp_slots: 2, competition_days: 30 }));
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ comp_slots: 2, competition_days: 30, referral_jump: 10 }));
   });
 
   it("reads the checkbox and the confirm gate off the saved row, not a derived flag", async () => {

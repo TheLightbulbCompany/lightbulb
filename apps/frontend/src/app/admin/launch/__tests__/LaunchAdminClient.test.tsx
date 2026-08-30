@@ -50,7 +50,7 @@ const data: LaunchOpsSheet = {
   referrals: { signed_up: 50, paid: 12, months_banked: 3 },
   economics: { paid_profit_cents: 66000, comp_cost_cents: 28000, referral_cost_cents: 33600, pnl_cents: 4400, aws_credits_cents: 500000, net_cents: 504400 },
   entries: [{ owner_id: "u1", display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null, comp_eligible: true }],
-  waitlist_rows: [{ email: "a@x.com", position: 1, referral_link: "https://flickmeon.ai/?ref=A", created_at: "t", user_id: "u1", activated: true, referred_by: null, referrals_signed_up: 0, referrals_paid: 0, free_months_banked: 0 }],
+  waitlist_rows: [{ email: "a@x.com", position: 1, effective_position: 1, referral_link: "https://flickmeon.ai/?ref=A", created_at: "t", user_id: "u1", activated: true, referred_by: null, referrals_signed_up: 0, referrals_paid: 0, free_months_banked: 0 }],
   settings: {
     enabled: true,
     drop_at: "2026-09-18T00:00:00-04:00",
@@ -59,6 +59,7 @@ const data: LaunchOpsSheet = {
     competition_days: 30,
     pot_front_cents: 100000,
     pot_per_entrant_cents: 1000,
+    referral_jump: 10,
     stripe_coupon_id: "co_1",
     stripe_promotion_code_id: "promo_1",
     stripe_promotion_code: "LIGHTBULB-ABC123",
@@ -113,6 +114,12 @@ describe("LaunchAdminClient", () => {
   it("exports an unresolved activation as an em dash, never null", () => {
     expect(waitlistCsv(data.waitlist_rows)).toContain(",true");
     expect(waitlistCsv([{ ...data.waitlist_rows[0], activated: null }])).toContain(",—");
+  });
+
+  it("puts effective_position right after position", () => {
+    const csv = waitlistCsv(data.waitlist_rows);
+    expect(csv.split("\n")[0]).toBe("email,position,effective_position,referral_link,created_at,activated");
+    expect(csv).toContain("a@x.com,1,1,https://flickmeon.ai/?ref=A,t,true");
   });
 });
 

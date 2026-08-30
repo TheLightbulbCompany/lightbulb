@@ -16,6 +16,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
+import { LaunchHeroPill } from "@/components/launch/LaunchHeroPill";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
@@ -76,6 +77,7 @@ export function HeroFunnel() {
         <p className="ld-mono ld-funnel-eyebrow">
           The Integrated Management Environment
         </p>
+        <LaunchHeroPill />
         <h1 className="ld-funnel-h1">
           Type an idea.{" "}
           <br />

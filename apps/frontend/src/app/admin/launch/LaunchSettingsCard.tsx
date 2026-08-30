@@ -60,6 +60,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   const [competitionDays, setCompetitionDays] = React.useState(String(settings.competition_days));
   const [potFrontDollars, setPotFrontDollars] = React.useState(String(settings.pot_front_cents / 100));
   const [potPerEntrantDollars, setPotPerEntrantDollars] = React.useState(String(settings.pot_per_entrant_cents / 100));
+  const [referralJump, setReferralJump] = React.useState(String(settings.referral_jump));
 
   const [saving, setSaving] = React.useState(false);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
@@ -83,6 +84,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
       competition_days: Math.round(Number(competitionDays)),
       pot_front_cents: Math.round(Number(potFrontDollars) * 100),
       pot_per_entrant_cents: Math.round(Number(potPerEntrantDollars) * 100),
+      referral_jump: Math.round(Number(referralJump)),
     };
     const result = await saveLaunchSettings(payload);
     setSaving(false);
@@ -252,6 +254,23 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
               onChange={(e) => setPotPerEntrantDollars(e.target.value)}
             />
             {errors.pot_per_entrant_cents ? <p className="text-2xs text-err">{errors.pot_per_entrant_cents}</p> : null}
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="launch-referral-jump"
+              className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
+            >
+              Spots per referral
+            </label>
+            <Input
+              id="launch-referral-jump"
+              type="number"
+              min={0}
+              step={1}
+              value={referralJump}
+              onChange={(e) => setReferralJump(e.target.value)}
+            />
+            {errors.referral_jump ? <p className="text-2xs text-err">{errors.referral_jump}</p> : null}
           </div>
         </div>
 

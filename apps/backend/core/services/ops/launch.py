@@ -33,13 +33,18 @@ def _row_activated(row: dict, resolvable: set[str], activated: set[str]) -> bool
 
 
 async def _compute(s: launch_phase.Schedule) -> dict:
-    waitlist, entries, funded, signups = await asyncio.gather(
+    waitlist, entries, funded, signups, settings_row = await asyncio.gather(
         launch_waitlist_repo.list_all(),
         launch_entries_repo.list_all(),
         launch_waitlist_repo.count_pot_counted(),
         # Same source as GET /launch's `signups` — the atomic position counter,
         # not len(list_all()), which drifts if a row is ever hard-deleted.
         launch_waitlist_repo.count(),
+        # Rides along so the admin page can branch on `data.enabled`
+        # uniformly whether or not the economics sheet itself is computable
+        # (see `compute()`'s disabled branch below, which carries the same
+        # two keys with no schedule to compute against).
+        launch_settings.effective(),
     )
     constants = launch_phase.constants()
     per_entrant = constants["pot_per_entrant_cents"]
@@ -116,6 +121,8 @@ async def _compute(s: launch_phase.Schedule) -> dict:
 
     return {
         "generated_at": utc_now_iso(),
+        "settings": launch_settings.to_public(settings_row),
+        "enabled": settings_row["enabled"],
         "phase": launch_phase.phase(s),
         "schedule": {
             "drop_at": s.drop_at.isoformat(),

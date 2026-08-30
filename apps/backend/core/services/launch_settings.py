@@ -3,22 +3,29 @@ of the launch-settings DynamoDB row, the admin write path, and the one-click
 Stripe free-month coupon + promotion-code mint.
 
 ``update`` and ``create_stripe_coupon`` are consumed by ``routers/ops.py``,
-which stays thin: ``SettingsInvalid`` propagates uncaught to main.py's
-``settings_invalid_handler`` (a bare 422 ``{"errors": ...}``, no
-``{"detail": ...}`` wrapper — the admin form walks it straight onto fields);
-the router itself only maps ``CouponAlreadyConfigured`` -> 409 and
-``StripeMintError`` -> 502. Every write here clears the three caches that
-read the settings row (``launch_phase``'s 30s poll-path cache, the public
-``/launch`` response cache, the admin ops sheet's 60s cache) — a saved row
-that doesn't take effect until an old cache expires is a launch-day footgun.
+which stays thin: it catches ``SettingsInvalid`` -> 422
+``{"detail": {"errors": ...}}`` (the codebase's one 422 convention —
+FastAPI's default ``HTTPException`` envelope), ``CouponAlreadyConfigured`` ->
+409, ``StripeMintError`` -> 502. Every write here clears the three caches
+that read the settings row (``launch_phase``'s 30s poll-path cache, the
+public ``/launch`` response cache, the admin ops sheet's 60s cache) — a
+saved row that doesn't take effect until an old cache expires is a
+launch-day footgun.
+
+``mint_nonce`` (server-only — never in ``to_public`` or the admin PUT
+schema) makes every Stripe call ``create_stripe_coupon`` makes a pure
+function of the row: the coupon/promo idempotency keys and the promotion
+code itself are derived from ``(env, competition_start_at, mint_nonce[,
+comp_slots])``, not a freshly-randomized value per call. Without this a
+retried mint (or a ``force`` re-mint) would send the same idempotency key
+with different params — Stripe 400s on that, not de-dupes it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-import secrets
-import string
 
 import stripe
 
@@ -42,13 +49,6 @@ _STR_FIELDS = ("stripe_coupon_id", "stripe_promotion_code_id", "stripe_promotion
 
 
 class SettingsInvalid(Exception):
-    # A plain attribute, not a raise-site HTTPException — main.py's
-    # ``settings_invalid_handler`` renders the errors dict as the BARE
-    # response body (no ``{"detail": ...}`` wrapper, unlike the two
-    # exceptions below); ``status_code`` here only makes
-    # ``@audit_admin_action``'s http_status column accurate.
-    status_code = 422
-
     def __init__(self, errors: dict[str, str]):
         self.errors = errors
         super().__init__(f"launch settings invalid: {errors}")
@@ -145,8 +145,9 @@ async def effective() -> dict:
 
 def to_public(row: dict) -> dict:
     """The row shape a non-admin surface (or the admin console form) may
-    see — never ``updated_by``."""
-    return {k: v for k, v in row.items() if k != "updated_by"}
+    see — never ``updated_by``, never ``mint_nonce`` (an internal Stripe
+    idempotency counter, not an editable or displayable setting)."""
+    return {k: v for k, v in row.items() if k not in ("updated_by", "mint_nonce")}
 
 
 def _clear_caches() -> None:
@@ -166,19 +167,32 @@ def _clear_caches() -> None:
     ops_launch.clear_cache()
 
 
+_COUPON_MANAGED_FIELDS = ("mint_nonce", "stripe_coupon_id", "stripe_promotion_code_id", "stripe_promotion_code")
+
+
 async def update(auth: AuthContext, payload: dict) -> dict:
     """Validate + persist an admin-submitted settings payload, stamping who
     wrote it, and drop every cache that reads the row. Raises
-    ``SettingsInvalid`` on bad input — main.py's exception handler turns that
-    into a 422 with the field errors."""
+    ``SettingsInvalid`` on bad input — ``routers/ops.py`` turns that into a
+    422 with the field errors.
+
+    ``mint_nonce`` and the three ``stripe_*`` ids are exclusively managed by
+    ``create_stripe_coupon`` — this is the settings *form*, and the coupon is
+    minted by its own button, never hand-edited. ``put`` is a full replace,
+    so those four fields are explicitly carried over from the current stored
+    row here rather than trusted from ``payload``: the request body always
+    contains SOME value for them (the admin schema fills defaults for
+    anything the client omits), so "did the client omit it" can't be told
+    apart from "the client sent the empty default" — carrying them forward
+    unconditionally is the only way a settings save can never blank out (or
+    silently reset the idempotency nonce on) an already-minted coupon."""
     row = validate(payload)
+    current = await effective()
+    for field in _COUPON_MANAGED_FIELDS:
+        row[field] = current[field]
     saved = await launch_settings_repo.put({**row, "updated_by": auth.user_id})
     _clear_caches()
     return to_public(saved)
-
-
-_PROMO_CODE_ALPHABET = string.ascii_uppercase + string.digits
-_PROMO_CODE_LEN = 6
 
 
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:
@@ -187,9 +201,20 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
     the competition starts, joining on the comped code is over). Refuses a
     second mint unless ``force`` — orphaning the first coupon in Stripe is an
     admin decision, never an accident. Raises ``CouponAlreadyConfigured``
-    (409, mapped by ``routers/ops.py``), ``SettingsInvalid`` (missing
-    ``competition_start_at``; 422, mapped by main.py's handler), or
-    ``StripeMintError`` (502, mapped by ``routers/ops.py``)."""
+    (409), ``SettingsInvalid`` (missing ``competition_start_at``; 422), or
+    ``StripeMintError`` (502) — all mapped by ``routers/ops.py``.
+
+    Every Stripe call is a pure function of ``(env, start_at, nonce[,
+    comp_slots])`` — see the module docstring. A non-``force`` mint always
+    computes ``nonce = max(stored_nonce, 1)``: it's only reachable with an
+    empty ``stripe_coupon_id`` (the conflict check above already refuses a
+    configured row), so this is either a genuine first mint (stored nonce 0
+    -> 1) or a RETRY of a mint that failed partway through Stripe before the
+    ids/nonce were ever persisted (stored nonce still whatever it was) —
+    either way, byte-identical params land on the same idempotency key and
+    Stripe hands back the cached object instead of erroring. ``force`` always
+    bumps the nonce, so a deliberate re-mint gets a fresh coupon + fresh
+    code rather than colliding with the one being replaced."""
     row = await effective()
     if row["stripe_coupon_id"] and not force:
         raise CouponAlreadyConfigured()
@@ -197,22 +222,29 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
     if not start_at:
         raise SettingsInvalid({"competition_start_at": "must be set before minting the coupon"})
 
-    code = "LIGHTBULB-" + "".join(secrets.choice(_PROMO_CODE_ALPHABET) for _ in range(_PROMO_CODE_LEN))
+    nonce = row["mint_nonce"] + 1 if force else max(row["mint_nonce"], 1)
+    comp_slots = row["comp_slots"]
+    env = settings.ENVIRONMENT
+    code = "LIGHTBULB-" + hashlib.sha256(f"{env}:{start_at}:{nonce}".encode()).hexdigest()[:6].upper()
     try:
         coupon = await run_in_thread(
             stripe.Coupon.create,
             percent_off=100,
             duration="once",
             name="Lightbulb launch free month",
-            idempotency_key=f"launch-coupon:{settings.ENVIRONMENT}:{start_at}",
+            idempotency_key=f"launch-coupon:{env}:{start_at}:{nonce}",
         )
         promo = await run_in_thread(
             stripe.PromotionCode.create,
             coupon=coupon.id,
             code=code,
-            max_redemptions=row["comp_slots"],
+            max_redemptions=comp_slots,
             expires_at=int(parse_iso(start_at).timestamp()),
-            idempotency_key=f"launch-promo:{settings.ENVIRONMENT}:{coupon.id}",
+            # comp_slots rides the key (not just the nonce) so a comp_slots
+            # change picked up between a failed attempt and its retry gets a
+            # fresh promo-code creation instead of a Stripe 400 for reusing
+            # an idempotency key with different `max_redemptions`.
+            idempotency_key=f"launch-promo:{env}:{start_at}:{comp_slots}:{nonce}",
         )
     except stripe.StripeError as e:
         # Logged here, once, with whatever Stripe said — never the API key
@@ -224,6 +256,7 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
     saved = await launch_settings_repo.put(
         {
             **row,
+            "mint_nonce": nonce,
             "stripe_coupon_id": coupon.id,
             "stripe_promotion_code_id": promo.id,
             "stripe_promotion_code": promo.code,

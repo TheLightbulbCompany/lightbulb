@@ -72,12 +72,16 @@ async def put_launch_settings(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    """Validated full-replace of the settings row. A ``SettingsInvalid``
-    (bad input) propagates to main.py's handler as a 422 with per-field
-    errors; a saved row invalidates every cache that reads it."""
+    """Validated full-replace of the settings row. A 422 on bad input is
+    FastAPI's default ``{"detail": {"errors": {field: msg}}}`` envelope — the
+    codebase's one 422 convention; a saved row invalidates every cache that
+    reads it."""
     from core.services import launch_settings
 
-    return await launch_settings.update(auth, body.model_dump())
+    try:
+        return await launch_settings.update(auth, body.model_dump())
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors})
 
 
 @router.post("/launch/settings/stripe-coupon")
@@ -88,16 +92,18 @@ async def post_launch_stripe_coupon(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     """One-click mint of the launch free-month coupon + promotion code.
-    409 if one is already configured (unless ``force``); a ``SettingsInvalid``
-    (``competition_start_at`` isn't set yet) propagates to main.py's handler
-    as a 422 with field errors; 502 on a Stripe-side failure — the real
-    Stripe error is logged server-side, never in the response."""
+    409 if one is already configured (unless ``force``); 422 (FastAPI's
+    default ``{"detail": {"errors": ...}}`` envelope) if
+    ``competition_start_at`` isn't set yet; 502 on a Stripe-side failure —
+    the real Stripe error is logged server-side, never in the response."""
     from core.services import launch_settings
 
     try:
         return await launch_settings.create_stripe_coupon(auth, force=body.force)
     except launch_settings.CouponAlreadyConfigured:
         raise HTTPException(status_code=409, detail="already_configured")
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors})
     except launch_settings.StripeMintError:
         raise HTTPException(status_code=502, detail="stripe_error")
 

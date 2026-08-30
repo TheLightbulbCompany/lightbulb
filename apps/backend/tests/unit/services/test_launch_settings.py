@@ -41,6 +41,7 @@ def test_defaults_shape():
         "stripe_coupon_id": "",
         "stripe_promotion_code_id": "",
         "stripe_promotion_code": "",
+        "mint_nonce": 0,
     }
 
 
@@ -54,7 +55,9 @@ def test_validate_accepts_a_full_valid_payload():
 
 
 def test_validate_fills_missing_fields_from_defaults():
-    assert ls.validate({}) == ls.DEFAULTS
+    # mint_nonce isn't a validate()-owned field — it's server-only, managed
+    # exclusively by create_stripe_coupon() (see update()'s docstring).
+    assert ls.validate({}) == {k: v for k, v in ls.DEFAULTS.items() if k != "mint_nonce"}
 
 
 @pytest.mark.parametrize(
@@ -177,10 +180,15 @@ async def test_effective_is_all_defaults_when_no_row_saved_yet():
 
 async def test_update_persists_the_validated_row_stamped_with_the_writer():
     put_mock = AsyncMock(side_effect=lambda item: {**item, "updated_at": "2026-08-29T00:00:00+00:00"})
-    with patch.object(ls.launch_settings_repo, "put", put_mock), patch.object(ls, "_clear_caches") as clear:
+    with (
+        patch.object(ls.launch_settings_repo, "get", AsyncMock(return_value=None)),
+        patch.object(ls.launch_settings_repo, "put", put_mock),
+        patch.object(ls, "_clear_caches") as clear,
+    ):
         public_row = await ls.update(ADMIN, _payload())
     assert public_row["enabled"] is True
     assert "updated_by" not in public_row  # to_public strips it from the response
+    assert "mint_nonce" not in public_row  # to_public strips it too — server-only
     assert public_row["updated_at"] == "2026-08-29T00:00:00+00:00"
     written = put_mock.call_args.args[0]
     assert written["updated_by"] == "user_admin"  # but the repo write DOES carry it
@@ -202,6 +210,7 @@ async def test_update_raises_settings_invalid_without_writing_or_clearing_caches
 
 async def test_update_clears_all_three_caches():
     with (
+        patch.object(ls.launch_settings_repo, "get", AsyncMock(return_value=None)),
         patch.object(ls.launch_settings_repo, "put", AsyncMock(side_effect=lambda item: item)),
         patch.object(ls.launch_phase, "invalidate") as invalidate,
         patch("routers.launch.clear_response_cache") as clear_response_cache,
@@ -211,6 +220,37 @@ async def test_update_clears_all_three_caches():
     invalidate.assert_called_once()
     clear_response_cache.assert_called_once()
     clear_ops_cache.assert_called_once()
+
+
+async def test_update_preserves_coupon_managed_fields_regardless_of_payload():
+    """A settings save can never blank out an already-minted coupon or reset
+    the idempotency nonce — those four fields are carried forward from the
+    STORED row, not trusted from the PUT body, no matter what the body
+    claims for them (see fix-round note in update()'s docstring)."""
+    stored = {
+        **ls.DEFAULTS,
+        "mint_nonce": 3,
+        "stripe_coupon_id": "coupon_real",
+        "stripe_promotion_code_id": "promo_real",
+        "stripe_promotion_code": "LIGHTBULB-REAL01",
+    }
+    put_mock = AsyncMock(side_effect=lambda item: item)
+    with (
+        patch.object(ls.launch_settings_repo, "get", AsyncMock(return_value=stored)),
+        patch.object(ls.launch_settings_repo, "put", put_mock),
+        patch.object(ls, "_clear_caches"),
+    ):
+        # The body claims different (garbage) values for all four managed
+        # fields — a hostile or buggy client, or just a stale form.
+        await ls.update(
+            ADMIN,
+            _payload(stripe_coupon_id="hijack", stripe_promotion_code_id="hijack", stripe_promotion_code="HIJACK"),
+        )
+    written = put_mock.call_args.args[0]
+    assert written["mint_nonce"] == 3
+    assert written["stripe_coupon_id"] == "coupon_real"
+    assert written["stripe_promotion_code_id"] == "promo_real"
+    assert written["stripe_promotion_code"] == "LIGHTBULB-REAL01"
 
 
 # ---------------------------------------------------------------------------
@@ -237,44 +277,102 @@ async def test_create_stripe_coupon_requires_competition_start_at():
     assert "competition_start_at" in exc.value.errors
 
 
-async def test_create_stripe_coupon_force_overrides_an_existing_coupon():
-    row = _effective_row(stripe_coupon_id="coupon_old", comp_slots=50)
-    coupon = SimpleNamespace(id="coupon_new")
-    promo = SimpleNamespace(id="promo_new", code="LIGHTBULB-ABC123")
+def _expected_code(env: str, start_at: str, nonce: int) -> str:
+    import hashlib
+
+    return "LIGHTBULB-" + hashlib.sha256(f"{env}:{start_at}:{nonce}".encode()).hexdigest()[:6].upper()
+
+
+async def _mint(row, *, force=False, coupon_id="coupon_new", promo_id="promo_new"):
+    """Drive create_stripe_coupon() against a fixed `row` (mocking `effective`
+    and `put`), returning the recorded Coupon.create / PromotionCode.create
+    kwargs plus what got written to the repo."""
+    promo_code_holder: dict = {}
+
+    def _make_promo(**kwargs):
+        promo_code_holder["code"] = kwargs["code"]
+        return SimpleNamespace(id=promo_id, code=kwargs["code"])
+
     put_mock = AsyncMock(side_effect=lambda item: item)
     with (
         patch.object(ls, "effective", AsyncMock(return_value=row)),
-        patch.object(ls, "_clear_caches") as clear,
-        patch("stripe.Coupon.create", return_value=coupon) as coupon_create,
-        patch("stripe.PromotionCode.create", return_value=promo) as promo_create,
+        patch.object(ls, "_clear_caches"),
+        patch("stripe.Coupon.create", return_value=SimpleNamespace(id=coupon_id)) as coupon_create,
+        patch("stripe.PromotionCode.create", side_effect=_make_promo) as promo_create,
         patch.object(ls.launch_settings_repo, "put", put_mock),
     ):
-        result = await ls.create_stripe_coupon(ADMIN, force=True)
+        result = await ls.create_stripe_coupon(ADMIN, force=force)
+    return result, coupon_create, promo_create, put_mock
+
+
+async def test_create_stripe_coupon_force_overrides_an_existing_coupon():
+    row = _effective_row(stripe_coupon_id="coupon_old", comp_slots=50, mint_nonce=1)
+    result, coupon_create, promo_create, put_mock = await _mint(row, force=True)
 
     assert result == {
         "stripe_coupon_id": "coupon_new",
         "stripe_promotion_code_id": "promo_new",
-        "stripe_promotion_code": "LIGHTBULB-ABC123",
+        "stripe_promotion_code": _expected_code(ls.settings.ENVIRONMENT, GOOD_START, 2),
     }
     coupon_kwargs = coupon_create.call_args.kwargs
     assert coupon_kwargs["percent_off"] == 100 and coupon_kwargs["duration"] == "once"
-    assert coupon_kwargs["idempotency_key"] == f"launch-coupon:{ls.settings.ENVIRONMENT}:{GOOD_START}"
+    assert coupon_kwargs["idempotency_key"] == f"launch-coupon:{ls.settings.ENVIRONMENT}:{GOOD_START}:2"
 
     promo_kwargs = promo_create.call_args.kwargs
     assert promo_kwargs["coupon"] == "coupon_new"
     assert promo_kwargs["max_redemptions"] == 50  # row["comp_slots"], not DEFAULTS'
     assert promo_kwargs["expires_at"] == int(ls.parse_iso(GOOD_START).timestamp())
-    assert promo_kwargs["idempotency_key"] == f"launch-promo:{ls.settings.ENVIRONMENT}:coupon_new"
+    assert promo_kwargs["idempotency_key"] == f"launch-promo:{ls.settings.ENVIRONMENT}:{GOOD_START}:50:2"
     code = promo_kwargs["code"]
     assert code.startswith("LIGHTBULB-") and len(code) == len("LIGHTBULB-") + 6
     assert code[len("LIGHTBULB-") :].isalnum() and code[len("LIGHTBULB-") :].isupper()
 
     written = put_mock.call_args.args[0]
+    assert written["mint_nonce"] == 2  # force bumps 1 -> 2, never re-derives 1
     assert written["stripe_coupon_id"] == "coupon_new"
     assert written["stripe_promotion_code_id"] == "promo_new"
-    assert written["stripe_promotion_code"] == "LIGHTBULB-ABC123"
+    assert written["stripe_promotion_code"] == code
     assert written["updated_by"] == "user_admin"
-    clear.assert_called_once()
+
+
+async def test_create_stripe_coupon_first_mint_uses_nonce_one():
+    row = _effective_row()  # mint_nonce defaults to 0 (never minted)
+    result, coupon_create, promo_create, put_mock = await _mint(row)
+    assert coupon_create.call_args.kwargs["idempotency_key"].endswith(":1")
+    assert promo_create.call_args.kwargs["idempotency_key"].endswith(":1")
+    assert put_mock.call_args.args[0]["mint_nonce"] == 1
+
+
+async def test_create_stripe_coupon_retry_after_a_partial_failure_is_byte_identical():
+    """A first attempt that crashed between Coupon.create and
+    PromotionCode.create never persisted ids/nonce, so `stripe_coupon_id` is
+    still empty — the retry must compute the SAME nonce (not a fresh one) so
+    both idempotency keys, and the deterministic code, match the first
+    attempt exactly and Stripe treats it as a replay, not a conflict."""
+    row = _effective_row(mint_nonce=0)  # nothing persisted yet — matches a crashed first attempt
+    _, first_coupon, first_promo, _ = await _mint(row)
+    _, retry_coupon, retry_promo, retry_put = await _mint(row)  # same starting row — the retry
+    assert first_coupon.call_args.kwargs["idempotency_key"] == retry_coupon.call_args.kwargs["idempotency_key"]
+    assert first_promo.call_args.kwargs["idempotency_key"] == retry_promo.call_args.kwargs["idempotency_key"]
+    assert first_promo.call_args.kwargs["code"] == retry_promo.call_args.kwargs["code"]
+    assert retry_put.call_args.args[0]["mint_nonce"] == 1
+
+
+async def test_create_stripe_coupon_comp_slots_change_only_moves_the_promo_key():
+    """comp_slots changed between the failed attempt and the retry (same
+    nonce, same start) — the coupon key/code must stay identical (no Stripe
+    400 for replaying it), but the promo key must differ so Stripe treats the
+    new max_redemptions as a fresh create instead of a conflicting replay."""
+    row = _effective_row(mint_nonce=0, comp_slots=220)
+    _, first_coupon, first_promo, _ = await _mint(row)
+    row2 = _effective_row(mint_nonce=0, comp_slots=300)
+    _, retry_coupon, retry_promo, _ = await _mint(row2)
+    assert first_coupon.call_args.kwargs["idempotency_key"] == retry_coupon.call_args.kwargs["idempotency_key"]
+    assert (
+        first_promo.call_args.kwargs["code"] == retry_promo.call_args.kwargs["code"]
+    )  # code doesn't depend on comp_slots
+    assert first_promo.call_args.kwargs["idempotency_key"] != retry_promo.call_args.kwargs["idempotency_key"]
+    assert retry_promo.call_args.kwargs["max_redemptions"] == 300
 
 
 async def test_create_stripe_coupon_stripe_error_raises_without_leaking_the_message():

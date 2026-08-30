@@ -13,7 +13,7 @@ from __future__ import annotations
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 _ID = "settings"
-_INT_FIELDS = ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents")
+_INT_FIELDS = ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents", "mint_nonce")
 
 DEFAULTS: dict = {
     "enabled": False,
@@ -26,6 +26,12 @@ DEFAULTS: dict = {
     "stripe_coupon_id": "",
     "stripe_promotion_code_id": "",
     "stripe_promotion_code": "",
+    # Server-only — never exposed via `launch_settings.to_public` or the
+    # admin PUT schema. Bumped by `create_stripe_coupon` on every successful
+    # mint so coupon/promo idempotency keys (and the promo code itself) are a
+    # pure function of the row instead of a fresh random value per call —
+    # see the fix-round note in `core/services/launch_settings.py`.
+    "mint_nonce": 0,
 }
 
 

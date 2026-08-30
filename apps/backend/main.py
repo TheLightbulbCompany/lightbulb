@@ -26,7 +26,6 @@ from core.containers import (
 )
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
-from core.services.launch_settings import SettingsInvalid
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
@@ -644,15 +643,6 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
         status_code=status,
         content={"detail": exc.message, "upstream_status": exc.status_code},
     )
-
-
-# The launch-settings admin form's error contract is a bare {field: message}
-# map — not FastAPI's default {"detail": ...} wrapper — so the admin console
-# can walk it straight onto form fields. Raised by
-# core.services.launch_settings.{validate,update,create_stripe_coupon}.
-@app.exception_handler(SettingsInvalid)
-async def launch_settings_invalid_handler(request, exc: SettingsInvalid):
-    return JSONResponse(status_code=422, content={"errors": exc.errors})
 
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.

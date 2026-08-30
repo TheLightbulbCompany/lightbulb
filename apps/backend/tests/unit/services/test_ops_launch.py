@@ -95,6 +95,11 @@ def deps():
             AsyncMock(side_effect=lambda o: {"stripe_subscription_id": f"sub_{o}"}),
         ),
         patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(
+            ops_launch.launch_settings,
+            "effective",
+            AsyncMock(return_value=dict(ops_launch.launch_settings.DEFAULTS, enabled=True)),
+        ),
     ):
         ops_launch._cache.clear()
         yield
@@ -103,6 +108,13 @@ def deps():
 async def test_compute_counts_and_economics(deps):
     data, state, errors = await ops_launch.compute()
     assert state == "ok" and errors == []
+    # The admin page branches on `data.enabled` uniformly whether or not the
+    # sheet itself is computable — see the disabled-branch equivalent in
+    # test_compute_unconfigured below.
+    assert data["enabled"] is True
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    expected_settings["enabled"] = True  # the `deps` fixture's mocked effective() row
+    assert data["settings"] == expected_settings
     assert data["waitlist"] == {"total": 3, "top_slots_activated": 1, "top_slots_claimed": 1}
     # u_a: position 1 ≤ 2 slots and activated inside 72h ⇒ comp-eligible. u_c: position 3 ⇒ paid.
     assert data["competing_breakdown"] == {"paid": 1, "comp_eligible": 1, "public": 1}
@@ -168,6 +180,9 @@ async def test_onboarding_fanout_is_bounded_to_comped_slots_and_entrants():
         patch.object(ops_launch.readiness_state, "resolve_onboarding_state", AsyncMock(side_effect=_onb)),
         patch.object(ops_launch.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
         patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(
+            ops_launch.launch_settings, "effective", AsyncMock(return_value=dict(ops_launch.launch_settings.DEFAULTS))
+        ),
     ):
         ops_launch._cache.clear()
         data, state, _ = await ops_launch.compute()
@@ -204,4 +219,6 @@ async def test_compute_unconfigured():
         ops_launch._cache.clear()
         data, state, errors = await ops_launch.compute()
     assert state == "unavailable" and errors[0]["domain"] == "launch"
-    assert data == {"settings": ops_launch.launch_settings.DEFAULTS, "enabled": False}
+    # to_public strips mint_nonce even here — it's never a client-visible field.
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    assert data == {"settings": expected_settings, "enabled": False}

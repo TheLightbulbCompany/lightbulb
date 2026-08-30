@@ -95,7 +95,8 @@ async def test_ops_launch_settings_get_returns_defaults_when_no_row(admin_client
     with patch("core.repositories.launch_settings_repo.get", AsyncMock(return_value=None)):
         r = await admin_client.get("/api/v1/ops/launch/settings")
     assert r.status_code == 200
-    assert r.json() == launch_settings.DEFAULTS
+    # mint_nonce is server-only — to_public strips it from every read, GET included.
+    assert r.json() == {k: v for k, v in launch_settings.DEFAULTS.items() if k != "mint_nonce"}
 
 
 async def test_ops_launch_settings_get_requires_admin(async_client):
@@ -109,7 +110,9 @@ async def test_ops_launch_settings_put_422_on_invalid_payload(admin_client, audi
         json={"enabled": True, "drop_at": None, "competition_start_at": None},
     )
     assert r.status_code == 422
-    assert "enabled" in r.json()["errors"]
+    # FastAPI's default HTTPException envelope — the codebase's one 422
+    # convention (Task 4 reads `body.detail.errors`, not `body.errors`).
+    assert "enabled" in r.json()["detail"]["errors"]
 
 
 async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_caches(admin_client, audited):
@@ -128,6 +131,7 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
         "updated_by": "user_admin",
     }
     with (
+        patch("core.repositories.launch_settings_repo.get", AsyncMock(return_value=None)),
         patch("core.repositories.launch_settings_repo.put", AsyncMock(return_value=saved_row)),
         patch("core.services.launch_phase.invalidate") as invalidate,
         patch("routers.launch.clear_response_cache") as clear_response_cache,
@@ -175,7 +179,8 @@ async def test_ops_launch_stripe_coupon_missing_start_date_422(admin_client, aud
         AsyncMock(side_effect=launch_settings.SettingsInvalid({"competition_start_at": "must be set"})),
     ):
         r = await admin_client.post("/api/v1/ops/launch/settings/stripe-coupon", json={})
-    assert r.status_code == 422 and "competition_start_at" in r.json()["errors"]
+    assert r.status_code == 422
+    assert "competition_start_at" in r.json()["detail"]["errors"]
 
 
 async def test_ops_launch_stripe_coupon_stripe_error_502_no_message_leak(admin_client, audited):

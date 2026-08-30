@@ -161,9 +161,15 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         # waitlist row for every signed-in caller.
         if held:
             row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
-            await launch_waitlist_repo.claim_user(email, auth.user_id)
         else:
             row = await launch_waitlist_repo.get(email)
+        if row is not None:
+            # Claim is not join: the user.created webhook writes email-only
+            # rows and this stamp is the ONLY writer of user_id (the admin
+            # sheet's activated/top-slot columns read it), so it runs on the
+            # read path too. claim_user's conditional write (row must exist,
+            # user_id must not) never creates rows.
+            await launch_waitlist_repo.claim_user(email, auth.user_id)
     if row is not None:
         referral_jump = launch_phase.constants()["referral_jump"]
         position = row["position"]

@@ -139,6 +139,7 @@ async def test_me_in_comp_window_is_computed_on_the_effective_position():
         patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         wl.get = AsyncMock(return_value=row)
+        wl.claim_user = AsyncMock()
         body = await launch_service.me(auth, _sched(-1))
     assert body["waitlist"]["effective_position"] == 210
     assert body["waitlist"]["moved_up"] == 20
@@ -278,7 +279,9 @@ async def test_me_with_a_container_is_not_held_and_reads_without_joining(contain
     assert body["held"] is False
     wl.get.assert_awaited_once_with("me@x.com")
     wl.join.assert_not_awaited()
-    wl.claim_user.assert_not_awaited()
+    # Claim still runs on the read path: the webhook writes email-only rows,
+    # and this stamp is the only writer of user_id (admin-sheet columns).
+    wl.claim_user.assert_awaited_once_with("me@x.com", "user_1")
     assert body["waitlist"]["position"] == 300
     # No waitlist row at all (never signed up pre-drop): the block is None.
     with (
@@ -295,9 +298,11 @@ async def test_me_with_a_container_is_not_held_and_reads_without_joining(contain
     ):
         wl.get = AsyncMock(return_value=None)
         wl.join = AsyncMock()
+        wl.claim_user = AsyncMock()
         body = await launch_service.me(auth, _sched(+5))
     assert body["held"] is False and body["waitlist"] is None
     wl.join.assert_not_awaited()
+    wl.claim_user.assert_not_awaited()
 
 
 async def test_me_container_read_failure_fails_toward_not_held(container_row):
@@ -319,9 +324,11 @@ async def test_me_container_read_failure_fails_toward_not_held(container_row):
     ):
         wl.get = AsyncMock(return_value=None)
         wl.join = AsyncMock()
+        wl.claim_user = AsyncMock()
         body = await launch_service.me(auth, _sched(+5))
     assert body["held"] is False
     wl.join.assert_not_awaited()
+    wl.claim_user.assert_not_awaited()
 
 
 async def test_me_is_never_held_after_the_drop(container_row):

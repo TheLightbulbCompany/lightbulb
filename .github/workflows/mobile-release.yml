@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${EXPO_ASC_API_KEY_BASE64:-}" ]; then
-            echo "::error::EXPO_ASC_API_KEY_BASE64 secret is not set — cannot submit to TestFlight. Add it with: base64 -i apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8 | gh secret set EXPO_ASC_API_KEY_BASE64 --repo Isol8AI/isol8"
+            echo "::error::EXPO_ASC_API_KEY_BASE64 secret is not set — cannot submit to TestFlight. Add it with: base64 -i apps/mobile/credentials/AuthKey_SZ68D5WBR2.p8 | gh secret set EXPO_ASC_API_KEY_BASE64 --repo TheLightbulbCompany/lightbulb"
             exit 1
           fi
           mkdir -p credentials

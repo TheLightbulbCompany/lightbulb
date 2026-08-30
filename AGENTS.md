@@ -148,8 +148,8 @@ real accounts -- don't use a production email.
 ### CI/CD Monitoring
 
 ```bash
-gh run watch <run-id> --repo Isol8AI/isol8 --exit-status
-gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
+gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status
+gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 
 **Deployment methods:**

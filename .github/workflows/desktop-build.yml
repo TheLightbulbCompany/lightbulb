@@ -1,7 +1,7 @@
 # Standalone desktop (Tauri DMG) build — dev + prod, signed & notarized.
 #
 # Runs on a SELF-HOSTED macOS runner (label `macos-desktop`) instead of
-# GitHub-hosted `macos-15`. The runner must be registered to the Isol8AI/isol8
+# GitHub-hosted `macos-15`. The runner must be registered to the TheLightbulbCompany/lightbulb
 # repo ONLY — never to public forks — since it executes the Apple signing cert
 # and secrets on a physical Mac. Fall back to GitHub-hosted by changing the two
 # `runs-on:` lines to `macos-15`.
@@ -208,7 +208,7 @@ jobs:
         xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
         xcrun stapler staple "$DMG"
         # Upload to the release tauri-action created (still a draft at this point).
-        gh release upload "$TAG" "$DMG" --repo Isol8AI/isol8 --clobber
+        gh release upload "$TAG" "$DMG" --repo TheLightbulbCompany/lightbulb --clobber
         echo "Published $DMG to $TAG"
       env:
         APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -216,7 +216,7 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Publish draft release
-      run: gh release edit "desktop-dev-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
+      run: gh release edit "desktop-dev-v0.4.${{ github.run_number }}" --repo TheLightbulbCompany/lightbulb --draft=false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # Persistent runner: never leave the Apple signing key on disk between runs.
@@ -402,7 +402,7 @@ jobs:
         xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
         xcrun stapler staple "$DMG"
         # Upload to the release tauri-action created (still a draft at this point).
-        gh release upload "$TAG" "$DMG" --repo Isol8AI/isol8 --clobber
+        gh release upload "$TAG" "$DMG" --repo TheLightbulbCompany/lightbulb --clobber
         echo "Published $DMG to $TAG"
       env:
         APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -410,7 +410,7 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Publish draft release
-      run: gh release edit "desktop-v0.4.${{ github.run_number }}" --repo Isol8AI/isol8 --draft=false
+      run: gh release edit "desktop-v0.4.${{ github.run_number }}" --repo TheLightbulbCompany/lightbulb --draft=false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # Persistent runner: never leave the Apple signing key on disk between runs.

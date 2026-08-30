@@ -276,10 +276,10 @@ pipeline.addStageWithGitHubOptions(devStage, {
 // Required reviewers and wait timers are public-repo-only on Free/Pro/Team;
 // this org is Team with a private repo, and the API says so:
 //
-//   PUT /repos/Isol8AI/isol8/environments/prod {"reviewers":[…]}
+//   PUT /repos/TheLightbulbCompany/lightbulb/environments/prod {"reviewers":[…]}
 //     422 Failed to create the environment protection rule. Please ensure the
 //         billing plan supports the required reviewers protection rule.
-//   PUT /repos/Isol8AI/isol8/environments/prod {"wait_timer":1}
+//   PUT /repos/TheLightbulbCompany/lightbulb/environments/prod {"wait_timer":1}
 //     422 … supports the wait timer protection rule.
 //
 // (The `dev` and `prod` environments do exist, with `protection_rules: []` —

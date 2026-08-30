@@ -96,7 +96,7 @@ jobs:
             --profile production \
             --local \
             --non-interactive \
-            --output "$RUNNER_TEMP/isol8.ipa"
+            --output "$RUNNER_TEMP/lightbulb.ipa"
 
       - name: Submit to TestFlight
         env:
@@ -106,10 +106,10 @@ jobs:
           npx -y eas-cli@latest submit \
             --platform ios \
             --profile production \
-            --path "$RUNNER_TEMP/isol8.ipa" \
+            --path "$RUNNER_TEMP/lightbulb.ipa" \
             --non-interactive
 
       # Persistent runner: never leave the ASC key or a signed .ipa on disk.
       - name: Clean up API key + artifact
         if: always()
-        run: rm -f credentials/AuthKey_SZ68D5WBR2.p8 "$RUNNER_TEMP/isol8.ipa" || true
+        run: rm -f credentials/AuthKey_SZ68D5WBR2.p8 "$RUNNER_TEMP/lightbulb.ipa" || true

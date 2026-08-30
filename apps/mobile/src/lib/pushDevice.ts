@@ -2,11 +2,11 @@ import { randomUUID } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
 /** Stable per-install device id (persisted in the keychain). */
-export const DEVICE_ID_KEY = "isol8.push.deviceId";
+export const DEVICE_ID_KEY = "lightbulb.push.deviceId";
 /** Last successful registration marker, `${userId}:${token}` — user-scoped so a
  * different account on the same device (the Expo token is per-install) still
  * re-registers instead of silently reusing the first user's registration. */
-export const LAST_REG_KEY = "isol8.push.lastReg";
+export const LAST_REG_KEY = "lightbulb.push.lastReg";
 
 export async function getDeviceId(): Promise<string> {
   const existing = await SecureStore.getItemAsync(DEVICE_ID_KEY).catch(() => null);

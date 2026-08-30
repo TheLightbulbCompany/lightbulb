@@ -28,7 +28,7 @@ import * as SecureStore from "expo-secure-store";
  * recipient, different data), which re-asks everyone. Renaming the key is the
  * whole mechanism — old entries are simply never read again.
  */
-const KEY_PREFIX = "isol8.aiConsent.v1.";
+const KEY_PREFIX = "lightbulb.aiConsent.v1.";
 
 /** SecureStore keys accept [A-Za-z0-9._-]; Clerk ids (`user_2ab…`) comply. */
 const keyFor = (userId: string) => `${KEY_PREFIX}${userId}`;

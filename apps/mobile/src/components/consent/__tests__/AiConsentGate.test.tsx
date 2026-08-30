@@ -73,7 +73,7 @@ describe("AiConsentGate", () => {
     await u.press(screen.getByRole("button", { name: "Agree and continue" }));
 
     expect(setItem).toHaveBeenCalledWith(
-      "isol8.aiConsent.v1.user_1",
+      "lightbulb.aiConsent.v1.user_1",
       "granted",
       expect.objectContaining({ keychainAccessible: "afterFirstUnlock" }),
     );
@@ -89,7 +89,7 @@ describe("AiConsentGate", () => {
     await renderGate();
     await screen.findByText("Before you start");
 
-    expect(getItem).toHaveBeenCalledWith("isol8.aiConsent.v1.user_2");
+    expect(getItem).toHaveBeenCalledWith("lightbulb.aiConsent.v1.user_2");
   });
 
   // Inverted from every other keychain reader here (tokenCache holds its last

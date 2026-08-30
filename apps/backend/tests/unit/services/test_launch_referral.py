@@ -23,7 +23,7 @@ def deps():
         patch.object(ref, "launch_waitlist_repo") as wl,
         patch.object(ref, "stripe") as stripe_mod,
         patch.object(ref, "capture_product_event") as capture,
-        patch.object(ref.settings, "STRIPE_FREE_MONTH_COUPON_ID", "coupon_free"),
+        patch.object(ref.launch_phase, "coupon_id", return_value="coupon_free"),
     ):
         billing.list_by_stripe_customer_id = AsyncMock(
             return_value=[{"owner_id": "user_payer", "stripe_subscription_id": "sub_payer"}]
@@ -70,7 +70,7 @@ async def test_zero_amount_invoice_still_marks_the_pot_but_grants_no_referral_re
 
 
 async def test_a_malformed_schedule_never_fails_the_billing_webhook(deps, caplog):
-    # launch_phase.schedule() raises on a bad launch-schedule.json. The
+    # launch_phase.schedule() raises on a malformed settings row. The
     # docstring's "a launch bug must never fail the billing webhook" only holds
     # if that call is inside the try.
     deps["schedule"].side_effect = ValueError("competition_start_at must be after drop_at")
@@ -114,7 +114,7 @@ async def test_banks_when_referrer_already_discounted(deps):
 
 
 async def test_banks_when_no_coupon_configured(deps):
-    with patch.object(ref.settings, "STRIPE_FREE_MONTH_COUPON_ID", ""):
+    with patch.object(ref.launch_phase, "coupon_id", return_value=""):
         await ref.on_invoice_paid(_invoice())
     deps["stripe"].Subscription.modify.assert_not_called()
     deps["wl"].add_counter.assert_any_await("ref@x.com", "free_months_banked", 1)

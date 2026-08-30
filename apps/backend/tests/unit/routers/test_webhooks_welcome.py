@@ -72,7 +72,7 @@ async def test_user_created_joins_launch_waitlist_when_open(async_client, monkey
 
 @pytest.mark.asyncio
 async def test_user_created_skips_launch_waitlist_join_when_feature_off(async_client, monkeypatch):
-    """No launch-schedule.json drop configured for this env -> no join attempt."""
+    """No launch settings drop configured for this env -> no join attempt."""
     monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
     headers = {**_HEADERS, "svix-id": "msg_launch_off"}
 

@@ -1,9 +1,12 @@
-"""Launch Competition schedule — pure functions over launch-schedule.json, no I/O after load.
+"""Launch Competition schedule — reads the launch-settings DynamoDB row
+through a 30-second in-process cache.
 
-launch-schedule.json at the repo root is THE source of the dates and pot
-constants for every surface (backend runtime here; frontend build time via
-apps/frontend/src/lib/launchSchedule.ts). Keyed per environment like
-openclaw-version.json. null dates = feature off.
+The row (``core.repositories.launch_settings_repo``, edited via
+``core.services.launch_settings`` from the admin console) is THE source of
+the dates and pot constants for every surface. This module sits on the
+container-status poll path (``core.services.launch_hold``), so it caches the
+row and never lets a DynamoDB hiccup fail that path — see ``_row()``.
+``enabled=False`` or either date missing = feature off.
 
 Phase ladder: waitlist (before the drop) → activation (drop .. competition
 start) → live → ended.
@@ -11,18 +14,20 @@ start) → live → ended.
 
 from __future__ import annotations
 
-import json
-import os
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Literal
 
-from core.config import settings
+from core.repositories import launch_settings_repo
+
+logger = logging.getLogger(__name__)
 
 Phase = Literal["waitlist", "activation", "live", "ended"]
-FILENAME = "launch-schedule.json"
-_FILE: dict | None = None
+
+_CACHE_TTL_S = 30
+_CACHE: dict = {"row": None, "fetched_at": 0.0}
 
 
 @dataclass(frozen=True)
@@ -42,59 +47,63 @@ def parse_iso(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def load_schedule_file() -> dict:
-    """Load the Launch Competition schedule. Prefers LAUNCH_SCHEDULE_JSON, the
-    raw file text injected as a container env var at CDK synth time (mirrors
-    OPENCLAW_UPSTREAM_VERSION — see the LAUNCH_SCHEDULE_JSON const in
-    service-stack.ts). Falls back to an ancestor-walk file read for local
-    dev / tests where the env var isn't set."""
-    global _FILE
-    if _FILE is not None:
-        return _FILE
-    raw_env = os.environ.get("LAUNCH_SCHEDULE_JSON")
-    if raw_env:
-        _FILE = json.loads(raw_env)
-        return _FILE
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        candidate = ancestor / FILENAME
-        if candidate.is_file():
-            _FILE = json.loads(candidate.read_text())
-            return _FILE
-    raise FileNotFoundError(FILENAME)
+def invalidate() -> None:
+    _CACHE["row"] = None
+    _CACHE["fetched_at"] = 0.0
 
 
-def env_key() -> str:
-    return "prod" if settings.ENVIRONMENT == "prod" else "dev"
+def _row() -> dict:
+    """The effective settings row (``DEFAULTS`` ⊕ the stored row), through
+    the 30s cache. A DynamoDB read failure logs a warning and falls back to
+    whatever is cached (or DEFAULTS on a cold cache) instead of raising —
+    this is on the container-status poll path, and a DynamoDB hiccup must
+    never 500 the fleet."""
+    now = time.monotonic()
+    if _CACHE["row"] is not None and now - _CACHE["fetched_at"] < _CACHE_TTL_S:
+        return _CACHE["row"]
+    try:
+        stored = launch_settings_repo.get_sync()
+        row = {**launch_settings_repo.DEFAULTS, **(stored or {})}
+    except Exception:  # noqa: BLE001 — the poll path must never fail because DynamoDB hiccuped
+        logger.warning("launch_phase: settings read failed; serving cached/default row", exc_info=True)
+        row = _CACHE["row"] if _CACHE["row"] is not None else dict(launch_settings_repo.DEFAULTS)
+    _CACHE["row"] = row
+    _CACHE["fetched_at"] = now
+    return row
 
 
 def constants() -> dict:
-    f = load_schedule_file()
+    row = _row()
     return {
-        "comp_slots": int(f["comp_slots"]),
-        "competition_days": int(f["competition_days"]),
-        "pot_front_cents": int(f["pot_front_cents"]),
-        "pot_per_entrant_cents": int(f["pot_per_entrant_cents"]),
+        "comp_slots": row["comp_slots"],
+        "competition_days": row["competition_days"],
+        "pot_front_cents": row["pot_front_cents"],
+        "pot_per_entrant_cents": row["pot_per_entrant_cents"],
     }
 
 
+def coupon_id() -> str:
+    return _row()["stripe_coupon_id"]
+
+
 def schedule() -> Schedule | None:
-    f = load_schedule_file()
-    env = f[env_key()]
-    if not env.get("drop_at") or not env.get("competition_start_at"):
+    row = _row()
+    if not row["enabled"] or not row["drop_at"] or not row["competition_start_at"]:
         return None
-    drop = parse_iso(env["drop_at"])
-    start = parse_iso(env["competition_start_at"])
+    drop = parse_iso(row["drop_at"])
+    start = parse_iso(row["competition_start_at"])
     if start <= drop:
-        raise ValueError("launch-schedule.json: competition_start_at must be after drop_at")
-    c = constants()
+        # Defense in depth — launch_settings.validate() already refuses this
+        # order at write time, so this only fires against a row that bypassed
+        # validation (a hand-edited DynamoDB item).
+        raise ValueError("launch settings: competition_start_at must be after drop_at")
     return Schedule(
         drop_at=drop,
         competition_start_at=start,
-        competition_end_at=start + timedelta(days=c["competition_days"]),
-        comp_slots=c["comp_slots"],
+        competition_end_at=start + timedelta(days=row["competition_days"]),
+        comp_slots=row["comp_slots"],
         activation_window_hours=int((start - drop).total_seconds() // 3600),
-        competition_days=c["competition_days"],
+        competition_days=row["competition_days"],
     )
 
 

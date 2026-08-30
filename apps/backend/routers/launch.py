@@ -1,9 +1,10 @@
 """Lightbulb Launch Competition — waitlist, join/connect, leaderboard.
 
-Every route 404s until launch-schedule.json's ``drop_at`` is set for this env
-(``require_launch``, backed by ``core.services.launch_phase.schedule()``), so
-a deploy with null dates is inert. Public routes are rate-limited per caller
-IP with the same in-process bucket the hook proxies use.
+Every route 404s until the launch-settings row is ``enabled`` with both dates
+set for this env (``require_launch``, backed by
+``core.services.launch_phase.schedule()``), so a deploy with the feature off
+is inert. Public routes are rate-limited per caller IP with the same
+in-process bucket the hook proxies use.
 """
 
 from __future__ import annotations

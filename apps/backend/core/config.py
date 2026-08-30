@@ -317,13 +317,6 @@ class Settings(BaseSettings):
     # the flat tier's agent budget). Empty default so the app boots without it;
     # CDK-wired in dev/prod. This is the billing source of truth for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""
-    # --- Lightbulb Launch Competition (docs/superpowers/specs/2026-08-28-launch-competition-design.md)
-    # Dates and pot constants live in launch-schedule.json at the repo root
-    # (core/services/launch_phase.py), not here — see that file's notes.
-    # 100%-off-once coupon created by the owner in the Stripe console. Only the
-    # referral reward uses it (the waitlist comp is a promotion code redeemed at
-    # checkout). Empty ⇒ rewards are banked on the row, never applied.
-    STRIPE_FREE_MONTH_COUPON_ID: str = ""
     # Display dollars for one seat, echoed to the frontend via /billing/account
     # so the paywall renders "N × $20" without hardcoding the number in the UI.
     # Kept in lockstep with STRIPE_TEAM_SEAT_PRICE_ID's unit amount in Stripe.

@@ -707,7 +707,7 @@ async def handle_clerk_webhook(request: Request):
                 logger.exception("user_repo.put failed for user.created %s", user_id)
 
             # Sign-up IS the waitlist now. Best-effort join, skipped when the
-            # feature is off (no launch-schedule.json drop configured for this
+            # feature is off (no launch settings drop configured for this
             # env) or Clerk sent no email — never fails the webhook.
             if email:
                 try:

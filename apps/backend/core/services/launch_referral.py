@@ -16,7 +16,6 @@ import logging
 
 import stripe
 
-from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, launch_waitlist_repo, user_repo
@@ -32,7 +31,7 @@ def subscription_has_discount(sub: dict) -> bool:
 async def grant_free_month(owner_id: str, *, idempotency_key: str) -> bool:
     """Apply the free-month coupon to the owner's live subscription.
     False ⇒ caller must bank it (no sub, already discounted, or no coupon)."""
-    coupon = settings.STRIPE_FREE_MONTH_COUPON_ID
+    coupon = launch_phase.coupon_id()
     if not coupon:
         return False
     billing = await billing_repo.get_by_owner_id(owner_id)
@@ -156,10 +155,11 @@ async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, inv
 
 async def on_invoice_paid(invoice: dict) -> None:
     try:
-        # Inside the try on purpose: schedule() raises on a malformed
-        # launch-schedule.json, and this handler's contract is that a launch
-        # bug never fails the billing webhook. Fail-loud lives at synth
-        # (service-stack.ts validateLaunchSchedule) and at the poll door
+        # Inside the try on purpose: schedule() raises on a malformed settings
+        # row (competition_start_at <= drop_at slipping past validate()), and
+        # this handler's contract is that a launch bug never fails the
+        # billing webhook. Fail-loud lives at the admin write
+        # (launch_settings.validate) and at the poll door
         # (launch_hold.pre_drop_gate), not here.
         if launch_phase.schedule() is None:
             return  # the competition is not configured — the webhook does no launch reads at all

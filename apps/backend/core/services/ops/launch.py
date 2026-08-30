@@ -194,7 +194,7 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
         return (
             None,
             env.UNAVAILABLE,
-            [{"domain": "launch", "reason": "launch-schedule.json has no drop_at for this env"}],
+            [{"domain": "launch", "reason": "launch settings are disabled or missing a date for this env"}],
         )
     hit = _cache.get("launch")
     if hit and time.monotonic() - hit[0] < _CACHE_TTL_S:

@@ -128,6 +128,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
       environment,
       vpc: network.vpc,
       alb: network.alb,
+      albV2: network.albV2,
       albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
       certificate: acm.Certificate.fromCertificateArn(

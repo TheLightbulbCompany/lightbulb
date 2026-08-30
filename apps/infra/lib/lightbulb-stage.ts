@@ -14,6 +14,7 @@ import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
+import { freezeCrossStackRefs } from "./freeze-cross-stack-refs";
 import { resourcePrefix, tableName } from "./table-names";
 
 export interface LightbulbStageProps extends cdk.StageProps {
@@ -327,6 +328,10 @@ export class LightbulbStage extends cdk.Stage {
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "lightbulb");
     cdk.Tags.of(this).add("Environment", env);
+
+    // TRANSITIONAL (deploy A of the resource rename): literalize every cross-stack
+    // import so the replacements in deploy B can change export values. Removed in B.
+    freezeCrossStackRefs(this, env);
   }
 
 

@@ -19,6 +19,7 @@ import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { LogoMark } from "@/components/Logo";
 import { useGateway } from "@/hooks/useGateway";
 
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
@@ -469,7 +470,7 @@ export function AgentChatWindow({
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <span style={{ fontFamily: "var(--font-serif), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--midnight)", lineHeight: 1 }}>8</span>
+              <LogoMark className="brand-mark--hero" />
             </div>
             <h1 className="font-editorial-serif text-2xl mb-3 text-[var(--midnight)] tracking-display">
               {agentId

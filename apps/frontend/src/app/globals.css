@@ -1279,6 +1279,8 @@
 .brand-logo .brand-mark {
   margin-right: 0.5em;
 }
+/* Standalone hero mark (chat empty state, provider picker). */
+.brand-mark--hero { height: 56px; }
 .brand-sunrise {
   display: block;
   width: 100%;

@@ -26,7 +26,7 @@ import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { LaunchHeldCard } from "@/components/chat/LaunchHeldCard";
-import { Logo } from "@/components/Logo";
+import { Logo, LogoMark } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 import {
   CREDIT_PRESETS_CENTS,
@@ -2234,10 +2234,7 @@ export function ProviderPicker({
       <div className={"w-full space-y-8 " + (embedded ? "" : "max-w-5xl text-center")}>
         <div className="space-y-3">
           {!embedded && (
-            <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
-              <rect width="100" height="100" rx="22" fill="var(--midnight)" />
-              <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-serif), serif" fontStyle="italic" fontSize="52" fill="var(--cream)">8</text>
-            </svg>
+            <LogoMark className="brand-mark--hero mb-4" />
           )}
           <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
             {heading ?? "One price. Three ways to power it."}

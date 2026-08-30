@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { EditorialButton } from "@/components/teams/shell";
 import { useApi } from "@/lib/api";
+import { notifyError } from "@/lib/notify";
 import { payloadString } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
 
@@ -15,6 +16,9 @@ import type { Approval } from "@/components/teams/shared/types";
  * ours fails the card stays pending, because a Paperclip approval the backend
  * never saw would strand the workflow in `awaiting_approval` forever.
  */
+
+const MISSING_WORKFLOW_MSG =
+  "This card has lost the request it belongs to — refresh your inbox and approve it again.";
 
 export type UsageLimit = { max_amount: number; currency: string; recurring_interval: string };
 
@@ -41,6 +45,17 @@ export function formatUsageLimit(limit: UsageLimit): string {
 function httpsUrl(payload: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = payloadString(payload, key);
   return value.startsWith("https://") ? value : null;
+}
+
+/** The configuration the agent asked for, which the owner is approving along
+ *  with the spend. Scalars only — the router already refuses anything else
+ *  (`_validate`), so a nested value here is not a field we filed. */
+function configurationLines(payload: Record<string, unknown> | null | undefined): string[] {
+  const raw = payload?.configuration;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.entries(raw as Record<string, unknown>)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    .map(([k, v]) => `${k}: ${String(v)}`);
 }
 
 function factLine(payload: Record<string, unknown> | null | undefined): string {
@@ -84,6 +99,7 @@ export function ProvisioningConsentActions({
     ? (payload!.constraints as unknown[]).filter((c) => typeof c === "string")
     : [];
   const facts = factLine(payload);
+  const configuration = configurationLines(payload);
   const terms = httpsUrl(payload, "terms_url");
   const privacy = httpsUrl(payload, "privacy_policy_url");
   const website = httpsUrl(payload, "website_url");
@@ -107,6 +123,11 @@ export function ProvisioningConsentActions({
       {description && <p className="text-[var(--midnight-muted)]">{description}</p>}
       {reason && <p className="text-[var(--midnight-muted)]">Friday asked because: {reason}</p>}
       {facts && <p className="text-xs text-[var(--midnight-muted)]">{facts}</p>}
+      {configuration.length > 0 && (
+        <p className="text-xs text-[var(--midnight-muted)]">
+          Configuration: {configuration.join(", ")}
+        </p>
+      )}
       {constraints.length > 0 && (
         <p className="text-xs text-[var(--midnight-muted)]">Constraints: {constraints.join(", ")}</p>
       )}
@@ -161,13 +182,17 @@ export function ProvisioningConsentActions({
             run(async () => {
               // Ours first: a Paperclip approval the backend never recorded
               // leaves the workflow waiting for an approval it already has.
-              if (workflowId) {
-                const signed = signedLimit();
-                await api.post(
-                  `/company/provisioning/workflows/${workflowId}/approve`,
-                  editable && signed ? { usage_limit: signed } : {},
-                );
+              // With no id there is no first write, and approving anyway would
+              // silently degrade a two-write decision to one.
+              if (!workflowId) {
+                notifyError(MISSING_WORKFLOW_MSG);
+                return;
               }
+              const signed = signedLimit();
+              await api.post(
+                `/company/provisioning/workflows/${workflowId}/approve`,
+                editable && signed ? { usage_limit: signed } : {},
+              );
               await approve(approval.id);
             })
           }

@@ -41,6 +41,7 @@ const CONSENT: Approval = card(
     environment: "Company — production",
     payment_owner: "your card, on your Stripe account",
     action: "creates new",
+    configuration: { region: "us-east-1", seats: 3, sso: true, nested: { no: 1 } },
     usage_limit: { max_amount: 5000, currency: "usd", recurring_interval: "month" },
     usage_limit_editable: true,
   },
@@ -64,6 +65,9 @@ describe("ApprovalRow provider_consent", () => {
     expect(screen.getByText(/posthog · analytics · Free up to 1M events\/mo/)).toBeInTheDocument();
     expect(screen.getByText(/The launch dashboard needs product analytics/)).toBeInTheDocument();
     expect(screen.getByText(/your card, on your Stripe account/)).toBeInTheDocument();
+    // Scalars only — a nested value is not a field the router would have filed.
+    expect(screen.getByText(/region: us-east-1, seats: 3, sso: true/)).toBeInTheDocument();
+    expect(screen.queryByText(/nested/)).toBeNull();
     expect(screen.getByText("Terms")).toHaveAttribute("href", "https://posthog.com/terms");
     expect(screen.getByText("Terms")).toHaveAttribute("rel", "noopener noreferrer");
 
@@ -109,6 +113,16 @@ describe("ApprovalRow provider_consent", () => {
     expect(approve).not.toHaveBeenCalled();
   });
 
+  it("refuses to approve a card that lost its workflow id", async () => {
+    const orphan = { ...CONSENT.payload };
+    delete (orphan as Record<string, unknown>).workflow_id;
+    render(<ApprovalRow approval={card(orphan, "a-consent")} />);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(post).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
   it("Reject tells the backend before Paperclip", async () => {
     render(<ApprovalRow approval={CONSENT} />);
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
@@ -118,6 +132,18 @@ describe("ApprovalRow provider_consent", () => {
       expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/reject", {}),
     );
     await waitFor(() => expect(reject).toHaveBeenCalledWith("a-consent", "too pricey"));
+  });
+});
+
+describe("ApprovalRow provider_consent — reject", () => {
+  it("does not reject in Paperclip when our reject route fails", async () => {
+    post.mockRejectedValue(new Error("409"));
+    render(<ApprovalRow approval={CONSENT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.change(screen.getByLabelText("Reason for rejection"), { target: { value: "no" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+    expect(reject).not.toHaveBeenCalled();
   });
 });
 
@@ -242,6 +268,34 @@ describe("ApprovalRow provider_information", () => {
       }),
     );
     await waitFor(() => expect(approve).toHaveBeenCalledWith("apr_1"));
+  });
+
+  it("will not send until every required field is answered", () => {
+    render(
+      <ApprovalRow
+        approval={card({
+          isol8_action: "provider_information",
+          workflow_id: "pwf_1",
+          provider: "posthog",
+          schema: { type: "object", properties: { seats: { type: "number" } }, required: ["seats"] },
+        })}
+      />,
+    );
+    // Empty required number: never coerced to 0, and never sendable.
+    expect(screen.getByRole("button", { name: "Send to posthog" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("seats"), { target: { value: "4" } });
+    expect(screen.getByRole("button", { name: "Send to posthog" })).toBeEnabled();
+  });
+
+  it("leaves untouched optional fields out of the answer", async () => {
+    render(<ApprovalRow approval={INFO} />);
+    fireEvent.change(screen.getByLabelText("team"), { target: { value: "Northwind" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send to posthog" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/information", {
+        information: { team: "Northwind" },
+      }),
+    );
   });
 
   it("shows the field the backend rejected, and does not approve", async () => {

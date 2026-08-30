@@ -72,20 +72,31 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
     );
   }
 
+  // The rail's own read can fail while the OAuth catalog loads fine. Both
+  // branches below show it, because an empty rail and a failed one look
+  // identical otherwise.
+  const railError = rail.error ? (
+    <p className="text-sm text-[var(--err)]">Couldn&apos;t load your resources. Refresh to try again.</p>
+  ) : null;
+
   if (isLoading) {
     return <div className="text-sm text-[var(--midnight-muted)]">Loading connections…</div>;
   }
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--midnight-muted)]">
-        No integrations are available yet.
+      <div className="space-y-2">
+        {railError}
+        <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--midnight-muted)]">
+          No integrations are available yet.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
+      {railError}
       {rows.map(({ connection, railOnly }) => {
         const connected = connection.status === "connected";
         // Gated off this owner. Distinct from "not connected": there is nothing
@@ -154,12 +165,14 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               {/* Spec §3.2: Projects hands over the provider's WRITE token, so a
                   provider can hold resources while its read-side OAuth is still
                   disconnected. Say so rather than leaving the dot muted. */}
-              {!railOnly && !connected && (rail.byProvider.get(connection.provider)?.length ?? 0) > 0 && (
-                <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
-                  Also connect this account for reads — your agents can create things here, but
-                  can&apos;t read your data back until you connect it.
-                </p>
-              )}
+              {!railOnly &&
+                connection.status === "disconnected" &&
+                (rail.byProvider.get(connection.provider)?.length ?? 0) > 0 && (
+                  <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
+                    Also connect this account for reads — your agents can create things here, but
+                    can&apos;t read your data back until you connect it.
+                  </p>
+                )}
               <ProvisionedResourcesFacet
                 provider={connection.provider}
                 resources={rail.byProvider.get(connection.provider) ?? []}

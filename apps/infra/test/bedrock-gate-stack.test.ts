@@ -46,13 +46,13 @@ describe("BedrockGateStack", () => {
     }
   });
 
-  test("each fn is named lightbulb-{env}-bedrock-gate with reserved concurrency 100", () => {
+  test("each fn is named isol8-{env}-bedrock-gate with reserved concurrency 100", () => {
     // The function name is stable + env-specific: it is the Lambda session-name
     // segment of the gateway's assumed-role ARN that the meter's env-split
     // subscription filter keys off. Reserved concurrency 100 bounds abuse.
     for (const gateEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::Lambda::Function", {
-        FunctionName: `lightbulb-${gateEnv}-bedrock-gate`,
+        FunctionName: `isol8-${gateEnv}-bedrock-gate`,
         ReservedConcurrentExecutions: 100,
       });
     }

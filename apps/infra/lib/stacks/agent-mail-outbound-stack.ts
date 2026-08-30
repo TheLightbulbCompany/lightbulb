@@ -34,7 +34,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     super(scope, id, props);
     const { envName, apiDomain, sesIngestSecretName } = props;
 
-    this.configurationSetName = `lightbulb-${envName}-agent-mail`;
+    this.configurationSetName = `isol8-${envName}-agent-mail`;
     const configSet = new ses.CfnConfigurationSet(this, "AgentMailConfigSet", {
       name: this.configurationSetName,
     });

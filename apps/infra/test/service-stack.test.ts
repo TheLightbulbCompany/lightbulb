@@ -319,7 +319,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
               }),
             }),
             Resource: Match.arrayWith([
-              "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-*",
+              "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-*",
             ]),
           }),
         ]),
@@ -328,12 +328,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   // The per-owner role-management + Bedrock-control-plane grants live in a
-  // dedicated ManagedPolicy (lightbulb-dev-backend-owner-bedrock-manage), NOT the
+  // dedicated ManagedPolicy (isol8-dev-backend-owner-bedrock-manage), NOT the
   // inline default policy, so the inline policy stays under CloudFormation's
   // 10 KB limit and does not spill other statements into an overflow policy.
   test("backend role can create boundary-bounded per-owner roles", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "lightbulb-dev-backend-owner-bedrock-manage",
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -355,7 +355,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     // pre-scoped at synth time). Without the condition this would be an
     // unconditioned Resource:"*" create grant — see I-1.
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "lightbulb-dev-backend-owner-bedrock-manage",
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -377,7 +377,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
 
   test("backend role can act on its own Bedrock profiles, scoped by the ManagedBy resource tag", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "lightbulb-dev-backend-owner-bedrock-manage",
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -406,13 +406,13 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     // synthesizes it as a bare Resource string (not a list) — unlike the
     // multi-resource IamPassRole statement asserted with arrayWith() above.
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "lightbulb-dev-backend-owner-bedrock-manage",
+      ManagedPolicyName: "isol8-dev-backend-owner-bedrock-manage",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
             Sid: "OwnerBedrockRoleManage",
             Action: Match.arrayWith(["iam:DeleteRole"]),
-            Resource: "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-*",
+            Resource: "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-*",
           }),
         ]),
       }),

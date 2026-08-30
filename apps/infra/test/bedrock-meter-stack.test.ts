@@ -50,7 +50,7 @@ describe("BedrockMeterStack", () => {
             BILLING_TABLE: `${tablePrefix(meterEnv)}billing-accounts`,
             CONTAINERS_TABLE: `${tablePrefix(meterEnv)}containers`,
             GATE_TOKENS_TABLE: `${tablePrefix(meterEnv)}bedrock-gate-tokens`,
-            ECS_CLUSTER_PREFIX: `lightbulb-${meterEnv}-container`,
+            ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
             INVOCATION_DEDUP_TABLE: Match.anyValue(),
             DLQ_URL: Match.anyValue(),
             METRONOME_API_KEY_SECRET_ARN: Match.anyValue(),
@@ -211,7 +211,7 @@ describe("BedrockMeterStack", () => {
             Match.objectLike({
               Action: "iam:DeleteRolePolicy",
               Effect: "Allow",
-              Resource: `arn:aws:iam::877352799272:role/lightbulb-${meterEnv}-owner-bedrock-*`,
+              Resource: `arn:aws:iam::877352799272:role/isol8-${meterEnv}-owner-bedrock-*`,
             }),
           ]),
         },
@@ -235,7 +235,7 @@ describe("BedrockMeterStack", () => {
             Match.objectLike({
               Action: "ecs:UpdateService",
               Effect: "Allow",
-              Resource: `arn:aws:ecs:us-east-1:877352799272:service/lightbulb-${meterEnv}-container/openclaw-*`,
+              Resource: `arn:aws:ecs:us-east-1:877352799272:service/isol8-${meterEnv}-container-*/openclaw-*`,
             }),
           ]),
         },
@@ -314,11 +314,11 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::Logs::SubscriptionFilter", 2);
     template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
       FilterPattern:
-        '?"lightbulb-dev-owner-bedrock" ?"lightbulb-dev-bedrock-gate"',
+        '?"isol8-dev-owner-bedrock" ?"isol8-dev-bedrock-gate"',
     });
     template.hasResourceProperties("AWS::Logs::SubscriptionFilter", {
       FilterPattern:
-        '?"lightbulb-prod-owner-bedrock" ?"lightbulb-prod-bedrock-gate"',
+        '?"isol8-prod-owner-bedrock" ?"isol8-prod-bedrock-gate"',
     });
   });
 

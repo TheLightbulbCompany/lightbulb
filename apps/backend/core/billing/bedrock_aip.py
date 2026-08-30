@@ -509,8 +509,8 @@ def _iam_client():
 
 def _owner_role_name(owner_id: str) -> str:
     """Per-owner role name. The CDK PassRole/CreateRole grants scope to the
-    'lightbulb-{env}-owner-bedrock-*' prefix, so this MUST start with it."""
-    return f"lightbulb-{_env()}-owner-bedrock-{owner_id}"
+    'isol8-{env}-owner-bedrock-*' prefix, so this MUST start with it."""
+    return f"isol8-{_env()}-owner-bedrock-{owner_id}"
 
 
 def _fan_out_regions() -> tuple[str, ...]:
@@ -904,7 +904,7 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
       prod, all at ``denied=False``).
     * **AIPs** — named only by ``bedrock_aip_arns``.
     * **the IAM role** — the one resource with a deterministic name
-      (``lightbulb-{env}-owner-bedrock-{owner_id}``), so it is reaped
+      (``isol8-{env}-owner-bedrock-{owner_id}``), so it is reaped
       UNCONDITIONALLY rather than gated on ``bedrock_role_arn`` being present
       on the row. Gating on that field is precisely what let legacy rows skip
       it silently.

@@ -254,7 +254,7 @@ export class BedrockMeterStack extends cdk.Stack {
           // from this prod-stage stack. The Lambda resolves it once per cold
           // start by listing clusters and matching this prefix — keeping the
           // "instances differ ONLY in env vars" rule intact.
-          ECS_CLUSTER_PREFIX: `lightbulb-${meterEnv}-container`,
+          ECS_CLUSTER_PREFIX: `isol8-${meterEnv}-container-`,
           // The env dimension on the Lambda's EMF metrics — both instances
           // share namespace Isol8 + service=isol8-bedrock-meter, so this is
           // what keeps dev noise out of the prod alarms. ALSO the env segment
@@ -376,7 +376,7 @@ export class BedrockMeterStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["iam:DeleteRolePolicy"],
           resources: [
-            `arn:aws:iam::${this.account}:role/lightbulb-${meterEnv}-owner-bedrock-*`,
+            `arn:aws:iam::${this.account}:role/isol8-${meterEnv}-owner-bedrock-*`,
           ],
         }),
       );
@@ -395,7 +395,7 @@ export class BedrockMeterStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["ecs:UpdateService"],
           resources: [
-            `arn:aws:ecs:${this.region}:${this.account}:service/lightbulb-${meterEnv}-container/openclaw-*`,
+            `arn:aws:ecs:${this.region}:${this.account}:service/isol8-${meterEnv}-container-*/openclaw-*`,
           ],
         }),
       );
@@ -453,7 +453,7 @@ export class BedrockMeterStack extends cdk.Stack {
           logGroup: this.invocationLogGroup,
           destination: new logsDestinations.LambdaDestination(fn),
           filterPattern: logs.FilterPattern.literal(
-            `?"lightbulb-${meterEnv}-owner-bedrock" ?"lightbulb-${meterEnv}-bedrock-gate"`,
+            `?"isol8-${meterEnv}-owner-bedrock" ?"isol8-${meterEnv}-bedrock-gate"`,
           ),
         }),
       );

@@ -465,7 +465,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           props.container.taskExecutionRole.roleArn,
           props.container.taskRole.roleArn,
-          `arn:aws:iam::${this.account}:role/lightbulb-${env}-owner-bedrock-*`,
+          `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
         ],
         conditions: {
           StringEquals: {
@@ -506,7 +506,7 @@ export class ServiceStack extends cdk.Stack {
     // backend that can CreateRole+PutRolePolicy cannot escalate beyond the
     // OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
     new iam.ManagedPolicy(this, "BackendOwnerBedrockManage", {
-      managedPolicyName: `lightbulb-${env}-backend-owner-bedrock-manage`,
+      managedPolicyName: `isol8-${env}-backend-owner-bedrock-manage`,
       roles: [this.taskRole],
       statements: [
         new iam.PolicyStatement({
@@ -535,14 +535,14 @@ export class ServiceStack extends cdk.Stack {
             "iam:DeleteRole",
           ],
           resources: [
-            `arn:aws:iam::${this.account}:role/lightbulb-${env}-owner-bedrock-*`,
+            `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
           ],
         }),
         new iam.PolicyStatement({
           sid: "OwnerBedrockRoleCreate",
           actions: ["iam:CreateRole"],
           resources: [
-            `arn:aws:iam::${this.account}:role/lightbulb-${env}-owner-bedrock-*`,
+            `arn:aws:iam::${this.account}:role/isol8-${env}-owner-bedrock-*`,
           ],
           conditions: {
             StringEquals: {
@@ -644,7 +644,7 @@ export class ServiceStack extends cdk.Stack {
           resources: [
             `arn:aws:ses:${this.region}:${this.account}:tenant/owner-*`,
             `arn:aws:ses:${this.region}:aws:reputation-policy/standard`,
-            `arn:aws:ses:${this.region}:${this.account}:configuration-set/lightbulb-${env}-agent-mail`,
+            `arn:aws:ses:${this.region}:${this.account}:configuration-set/isol8-${env}-agent-mail`,
             ...sendIdentityArns,
           ],
         }),

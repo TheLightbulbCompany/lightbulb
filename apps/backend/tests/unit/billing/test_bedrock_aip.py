@@ -636,41 +636,41 @@ class TestEnsureRole:
         fake = MagicMock()
         fake.get_role.side_effect = _no_such_entity()
         fake.create_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
+            "Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}
         }
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
             mod.settings,
             "BEDROCK_OWNER_BOUNDARY_ARN",
-            "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-boundary",
+            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-boundary",
             raising=False,
         )
         monkeypatch.setattr(
             mod.settings,
             "BEDROCK_OWNER_BASE_POLICY_ARN",
-            "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
+            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
             raising=False,
         )
         monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
 
         role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
 
-        assert role_arn == "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+        assert role_arn == "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
         # create_role carries the permissions boundary.
         ck = fake.create_role.call_args.kwargs
-        assert ck["RoleName"] == "lightbulb-dev-owner-bedrock-org_abc"
-        assert ck["PermissionsBoundary"] == "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-boundary"
+        assert ck["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
+        assert ck["PermissionsBoundary"] == "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-boundary"
         # base policy attached.
         fake.attach_role_policy.assert_called_once_with(
-            RoleName="lightbulb-dev-owner-bedrock-org_abc",
-            PolicyArn="arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
+            RoleName="isol8-dev-owner-bedrock-org_abc",
+            PolicyArn="arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
         )
         # scoped inline policy put with the FENCE shape: NO invoke Allow at all
         # (the bedrock-gate is the only inference path), only the
         # CreateInferenceProfile Deny.
         pk = fake.put_role_policy.call_args.kwargs
-        assert pk["RoleName"] == "lightbulb-dev-owner-bedrock-org_abc"
+        assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
         doc = json.loads(pk["PolicyDocument"])
         assert [st["Effect"] for st in doc["Statement"]] == ["Deny"]
         assert doc["Statement"][0]["Sid"] == "DenyTenantProfileEscalation"
@@ -690,7 +690,7 @@ class TestEnsureRole:
         fake = MagicMock()
         fake.get_role.side_effect = _no_such_entity()
         fake.create_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
+            "Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}
         }
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
@@ -715,9 +715,7 @@ class TestEnsureRole:
 
         arns = _aip_arns()
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
@@ -748,7 +746,7 @@ class TestEnsureRole:
         fake = MagicMock()
         fake.get_role.return_value = {
             "Role": {
-                "Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc",
+                "Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
                 "Tags": [{"Key": "trust_hardened", "Value": "1"}],
             }
         }
@@ -772,9 +770,7 @@ class TestEnsureRole:
 
         arns = _aip_arns()
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         fake.update_assume_role_policy.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "not propagated"}}, "UpdateAssumeRolePolicy"
         )
@@ -788,7 +784,7 @@ class TestEnsureRole:
 
         role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
 
-        assert role_arn.endswith("lightbulb-dev-owner-bedrock-org_abc")  # provisioning completed
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")  # provisioning completed
         fake.put_role_policy.assert_called_once()  # scoped policy still applied
         # not tagged, so the next provision retries the converge
         fake.tag_role.assert_not_called()
@@ -803,9 +799,7 @@ class TestEnsureRole:
             "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
         }
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -814,7 +808,7 @@ class TestEnsureRole:
         monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
 
         role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
-        assert role_arn.endswith("lightbulb-dev-owner-bedrock-org_abc")
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")
         fake.create_role.assert_not_called()
         fake.put_role_policy.assert_called_once()  # scope refreshed on existing role
 
@@ -831,9 +825,7 @@ class TestEnsureRole:
             "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
         }
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -841,7 +833,7 @@ class TestEnsureRole:
         )
 
         role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns, skip_bedrock_grant=True)
-        assert role_arn.endswith("lightbulb-dev-owner-bedrock-org_abc")
+        assert role_arn.endswith("isol8-dev-owner-bedrock-org_abc")
         # base policy still attached (role is bootable), but Bedrock NOT granted.
         fake.attach_role_policy.assert_called_once()
         fake.put_role_policy.assert_not_called()
@@ -858,7 +850,7 @@ class TestKillSwitch:
             "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
         }
         await mod.persist_owner_aips(
-            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
         )
         fake = MagicMock()
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
@@ -867,7 +859,7 @@ class TestKillSwitch:
         await mod.revoke_owner_bedrock("org_abc")
 
         fake.delete_role_policy.assert_called_once_with(
-            RoleName="lightbulb-dev-owner-bedrock-org_abc", PolicyName="owner-bedrock"
+            RoleName="isol8-dev-owner-bedrock-org_abc", PolicyName="owner-bedrock"
         )
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_revoked"]["BOOL"] is True
@@ -879,7 +871,7 @@ class TestKillSwitch:
         await mod.persist_owner_aips(
             "org_abc",
             {"opus": "a", "sonnet": "b", "haiku": "c"},
-            role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc",
+            role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
         )
         fake = MagicMock()
         fake.delete_role_policy.side_effect = ClientError(
@@ -902,15 +894,13 @@ class TestKillSwitch:
             "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/h",
         }
         await mod.persist_owner_aips(
-            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+            "org_abc", arns, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
         )
         fake = MagicMock()
         # restore -> ensure_owner_bedrock_role -> get_role must return a REAL
         # ARN string (a bare MagicMock would be written into DynamoDB and blow
         # up boto3's deepcopy of the put-item params).
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
@@ -918,7 +908,7 @@ class TestKillSwitch:
         await mod.restore_owner_bedrock("org_abc")
 
         pk = fake.put_role_policy.call_args.kwargs
-        assert pk["RoleName"] == "lightbulb-dev-owner-bedrock-org_abc"
+        assert pk["RoleName"] == "isol8-dev-owner-bedrock-org_abc"
         assert pk["PolicyName"] == "owner-bedrock"
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_revoked"]["BOOL"] is False
@@ -931,7 +921,7 @@ class TestKillSwitch:
         import core.billing.bedrock_aip as mod
 
         await mod.persist_owner_aips(
-            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
         )
         monkeypatch.setattr(mod, "_iam_client", lambda: MagicMock())
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
@@ -949,12 +939,10 @@ class TestKillSwitch:
         await mod.persist_owner_aips(
             "org_abc",
             {"opus": "o", "sonnet": "s", "haiku": "h"},
-            role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc",
+            role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc",
         )
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1,us-east-2,us-west-2", raising=False)
@@ -972,7 +960,7 @@ class TestKillSwitch:
         import core.billing.bedrock_aip as mod
 
         await mod.persist_owner_aips(
-            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+            "org_abc", {"sonnet": "s"}, role_arn="arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"
         )
         fake = MagicMock()
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
@@ -1012,9 +1000,7 @@ class TestLitestreamS3Policy:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -1034,9 +1020,7 @@ class TestLitestreamS3Policy:
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
-        fake.get_role.return_value = {
-            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
-        }
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(

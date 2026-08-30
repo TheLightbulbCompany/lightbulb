@@ -73,6 +73,10 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
    * OAuth page or a checkout is not consent, so Approve stays a second click.
    */
   function openMintedUrl(fetchUrl: () => Promise<string | null | undefined>, thenApprove: boolean) {
+    // `disabled={busy}` only takes effect on the next render, so two clicks in
+    // one frame both get through it. Each one mints a checkout session or an
+    // account request, so the guard is here too, on the value itself.
+    if (busy) return;
     const w = openPendingTab();
     if (!w) {
       notifyError(POPUP_BLOCKED_MSG);
@@ -96,13 +100,33 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     });
   }
 
-  /** Reject: the workflow hears first, so it stops instead of polling for a
-   *  week. Only the consent card — it is the one state our route accepts a
-   *  rejection in. */
+  /**
+   * Reject: the workflow hears first, so it stops instead of polling for a
+   * week.
+   *
+   * WHICH call depends on where the row is. `/reject` only accepts
+   * `awaiting_approval`, which is the consent card and nothing else — the
+   * connect, information and payment rows are past it and would 409. Those
+   * withdraw instead, and a withdrawal our side refuses (something has already
+   * been created on the owner's Stripe account) still clears the card: the
+   * owner asked to be rid of it, and the resource is theirs to remove.
+   */
   async function rejectWithReason() {
     const workflowId = payloadString(approval.payload, "workflow_id");
     if (workflowId && isProviderConsentApproval(approval)) {
       await api.post(`/company/provisioning/workflows/${workflowId}/reject`, {});
+    } else if (
+      workflowId &&
+      (isProviderConnectApproval(approval) ||
+        isProviderInformationApproval(approval) ||
+        isPaymentSetupApproval(approval))
+    ) {
+      try {
+        await api.post(`/company/provisioning/workflows/${workflowId}/cancel`, {});
+      } catch (e) {
+        if ((e as { status?: number }).status !== 409) throw e;
+        notifyError((e as Error).message);
+      }
     }
     await reject(approval.id, reason.trim());
   }

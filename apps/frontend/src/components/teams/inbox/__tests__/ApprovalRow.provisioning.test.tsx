@@ -184,6 +184,31 @@ describe("ApprovalRow provider_connect", () => {
     expect(post).not.toHaveBeenCalled();
     expect(approve).not.toHaveBeenCalled();
   });
+
+  it("Reject WITHDRAWS the workflow — /reject only accepts a consent card", async () => {
+    render(<ApprovalRow approval={CONNECT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.change(screen.getByLabelText("Reason for rejection"), { target: { value: "wrong service" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/cancel", {}),
+    );
+    expect(post).not.toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/reject", {});
+    await waitFor(() => expect(reject).toHaveBeenCalledWith("apr_1", "wrong service"));
+  });
+
+  it("still clears the card when the withdrawal is refused, and says why", async () => {
+    const refusal = Object.assign(new Error("This request has already started — review it instead"), {
+      status: 409,
+    });
+    post.mockRejectedValue(refusal);
+    render(<ApprovalRow approval={CONNECT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.change(screen.getByLabelText("Reason for rejection"), { target: { value: "no" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() => expect(reject).toHaveBeenCalledWith("apr_1", "no"));
+    expect(notifyError).toHaveBeenCalledWith("This request has already started — review it instead");
+  });
 });
 
 describe("ApprovalRow payment_setup", () => {
@@ -222,6 +247,17 @@ describe("ApprovalRow payment_setup", () => {
     await waitFor(() => expect(tab.close).toHaveBeenCalled());
     expect(notifyError).toHaveBeenCalled();
     expect(tab.location.href).toBe("");
+  });
+
+  it("Reject withdraws the payment row too", async () => {
+    render(<ApprovalRow approval={PAYMENT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.change(screen.getByLabelText("Reason for rejection"), { target: { value: "not now" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/cancel", {}),
+    );
+    await waitFor(() => expect(reject).toHaveBeenCalled());
   });
 });
 
@@ -285,6 +321,18 @@ describe("ApprovalRow provider_information", () => {
     expect(screen.getByRole("button", { name: "Send to posthog" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("seats"), { target: { value: "4" } });
     expect(screen.getByRole("button", { name: "Send to posthog" })).toBeEnabled();
+  });
+
+  it("refuses to submit a card that lost its workflow id", async () => {
+    // Same guard as the consent card: with no id there is nothing to submit to,
+    // and approving anyway would tell the owner the provider has their answers.
+    const orphan = card({ ...INFO.payload, workflow_id: "" }, "a-orphan-info");
+    render(<ApprovalRow approval={orphan} />);
+    fireEvent.change(screen.getByLabelText("team"), { target: { value: "Northwind" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send to posthog" }));
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(post).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
   });
 
   it("leaves untouched optional fields out of the answer", async () => {

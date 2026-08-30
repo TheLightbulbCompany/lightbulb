@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   connections: [] as Connection[],
   resources: new Map<string, unknown[]>(),
   workflows: new Map<string, unknown[]>(),
+  accounts: new Map<string, unknown>(),
 }));
 
 // The Projects rail's facet does its own reads; the list only groups them.
@@ -32,6 +33,7 @@ vi.mock("@/components/settings/ProvisionedResources", async () => {
     useProvisioningRail: () => ({
       byProvider: h.resources,
       workflowsByProvider: h.workflows,
+      accountByProvider: h.accounts,
       providers: [...new Set([...h.resources.keys(), ...h.workflows.keys()])].sort(),
       refresh: vi.fn(),
     }),
@@ -54,6 +56,7 @@ function resetRail() {
   h.connections = [];
   h.resources = new Map();
   h.workflows = new Map();
+  h.accounts = new Map();
 }
 
 describe("ConnectionsList — delivery receipts", () => {
@@ -227,6 +230,19 @@ describe("ConnectionsList — the Projects resources facet", () => {
     render(<ConnectionsList canManage />);
 
     expect(screen.getByText(/Also connect this account for reads/)).toBeInTheDocument();
+  });
+
+  it("names the account this rail set up, so the owner knows which login to use", () => {
+    h.connections = [
+      { provider: "posthog", display_name: "PostHog", acquisition: "direct_oauth", status: "disconnected" },
+    ];
+    h.resources = new Map([["posthog", [RESOURCE]]]);
+    h.accounts = new Map([["posthog", { display_name: "Northwind", primary_email: "ops@northwind.test" }]]);
+    render(<ConnectionsList canManage />);
+
+    expect(
+      screen.getByText(/The account we set up is Northwind · ops@northwind\.test\./),
+    ).toBeInTheDocument();
   });
 
   it("says nothing about reads when the provider is already connected", () => {

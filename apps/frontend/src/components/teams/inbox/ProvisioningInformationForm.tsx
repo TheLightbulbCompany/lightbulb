@@ -4,6 +4,8 @@ import { useState } from "react";
 
 import { EditorialButton } from "@/components/teams/shell";
 import { useApi } from "@/lib/api";
+import { notifyError } from "@/lib/notify";
+import { MISSING_WORKFLOW_MSG } from "@/components/teams/inbox/ProvisioningConsentActions";
 import { payloadString } from "@/components/teams/inbox/lib/approvalLabel";
 import type { Approval } from "@/components/teams/shared/types";
 
@@ -112,6 +114,13 @@ export function ProvisioningInformationForm({
 
   function submit(answering: Field[]) {
     setFieldError(null);
+    // Same guard as the consent card: with no id there is nothing to submit
+    // to, and approving anyway would tell the owner the provider has their
+    // answers when nothing was ever sent.
+    if (!workflowId) {
+      notifyError(MISSING_WORKFLOW_MSG);
+      return;
+    }
     run(async () => {
       const information: Record<string, string | number | boolean> = {};
       for (const field of answering) {

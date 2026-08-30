@@ -33,12 +33,25 @@ export type ProvisionedResource = {
   level: string;
 };
 
+/** Names and an e-mail — `provisioning_workflow.safe_account_details` allows
+ *  nothing else through, and certainly not a provider id or a token. */
+export type ProviderAccount = {
+  display_name?: string | null;
+  primary_email?: string | null;
+};
+
 export type ProvisioningWorkflow = {
   workflow_id: string;
   state: string;
   provider?: string | null;
   service?: string | null;
+  provider_account?: ProviderAccount | null;
 };
+
+/** The account line for a card: "Acme Ltd · ops@acme.com", or null. */
+export function accountLabel(account: ProviderAccount | null | undefined): string | null {
+  return [account?.display_name, account?.primary_email].filter(Boolean).join(" · ") || null;
+}
 
 const RESOURCES_PATH = "/company/provisioning/resources";
 const WORKFLOWS_PATH = "/company/provisioning/workflows";
@@ -66,6 +79,14 @@ const STATE_COPY: Record<string, string> = {
   failed: "Didn't work — your agents can ask again",
   requires_review: "This one needs a look from Lightbulb — email support and we'll take it from here",
 };
+
+/**
+ * Which open states an ask can still simply be WITHDRAWN from. Mirrors the
+ * backend's `CANCELLABLE_STATES`; the backend refuses again on the ids it can
+ * see and this cannot (an account request or a resource already exists), and
+ * that refusal is surfaced rather than swallowed.
+ */
+const WITHDRAWABLE = new Set(["ask", "awaiting_approval", "awaiting_user_action", "stale"]);
 
 export function isOpenWorkflow(w: ProvisioningWorkflow): boolean {
   return Object.hasOwn(STATE_COPY, w.state ?? "");
@@ -106,11 +127,21 @@ export function useProvisioningRail() {
     (workflows.data?.workflows ?? []).filter(isOpenWorkflow),
     (w) => w.provider ?? "",
   );
+  // WHICH provider account this rail ended up creating or linking. Read off the
+  // finished workflow, because that is the only place the owner is ever told —
+  // the resource pointer carries names of variables, not names of accounts.
+  const accountByProvider = new Map<string, ProviderAccount>();
+  for (const w of workflows.data?.workflows ?? []) {
+    const provider = w.provider ?? "";
+    if (!provider || w.state !== "active" || !w.provider_account) continue;
+    if (!accountByProvider.has(provider)) accountByProvider.set(provider, w.provider_account);
+  }
   const providers = [...new Set([...byProvider.keys(), ...workflowsByProvider.keys()])].sort();
 
   return {
     byProvider,
     workflowsByProvider,
+    accountByProvider,
     // A failed read leaves both maps empty, which is indistinguishable from
     // "this owner has provisioned nothing" — so the caller says which.
     error: resources.error ?? workflows.error ?? null,
@@ -144,10 +175,7 @@ export function ProvisionedResourcesFacet({
     <div className="mt-2 border-t border-[var(--edge)] pt-2">
       <p className="text-xs font-medium text-[var(--midnight)]">Resources</p>
       {workflows.map((w) => (
-        <p key={w.workflow_id} className="text-xs text-[var(--midnight-muted)] mt-0.5">
-          {w.service ? `${w.service} — ` : ""}
-          {STATE_COPY[w.state]}
-        </p>
+        <OpenWorkflowLine key={w.workflow_id} workflow={w} canManage={canManage} onChanged={onChanged} />
       ))}
       {resources.map((r) => (
         <ResourceLine
@@ -161,6 +189,53 @@ export function ProvisionedResourcesFacet({
       ))}
       {note && <p className="text-xs text-[var(--midnight-muted)] mt-1">{note}</p>}
     </div>
+  );
+}
+
+/**
+ * One unfinished request. The owner's only way to call an ask off from
+ * Settings — the Inbox card covers the ones with a card, and a row parked in
+ * `ask` or gone `stale` has none.
+ */
+function OpenWorkflowLine({
+  workflow,
+  canManage,
+  onChanged,
+}: {
+  workflow: ProvisioningWorkflow;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+
+  async function withdraw() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.post(`/company/provisioning/workflows/${workflow.workflow_id}/cancel`, {});
+      onChanged();
+    } catch (e) {
+      // 409 `cannot_cancel` is the honest answer, not a failure: something has
+      // already been created and only `remove` takes it back.
+      notifyApiError(e, "That request could not be withdrawn.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)] mt-0.5">
+      <span>
+        {workflow.service ? `${workflow.service} — ` : ""}
+        {STATE_COPY[workflow.state]}
+      </span>
+      {canManage && WITHDRAWABLE.has(workflow.state) && (
+        <button type="button" className="settings-btn-outline" disabled={busy} onClick={withdraw}>
+          Withdraw
+        </button>
+      )}
+    </p>
   );
 }
 

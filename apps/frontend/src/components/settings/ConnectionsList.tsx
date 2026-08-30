@@ -6,6 +6,7 @@ import { ConnectButton } from "@/components/settings/ConnectButton";
 import { INTEGRATION_RECEIPTS } from "@/components/settings/integration-receipts";
 import {
   ProvisionedResourcesFacet,
+  accountLabel,
   useProvisioningRail,
 } from "@/components/settings/ProvisionedResources";
 
@@ -171,6 +172,11 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                     Also connect this account for reads — your agents can create things here, but
                     can&apos;t read your data back until you connect it.
+                    {/* WHICH account to sign in as. Without it the owner is told
+                        to connect "posthog" and has to guess which of their
+                        logins this rail actually used. */}
+                    {accountLabel(rail.accountByProvider.get(connection.provider)) &&
+                      ` The account we set up is ${accountLabel(rail.accountByProvider.get(connection.provider))}.`}
                   </p>
                 )}
               <ProvisionedResourcesFacet

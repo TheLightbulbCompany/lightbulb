@@ -17,7 +17,7 @@ import type { Approval } from "@/components/teams/shared/types";
  * never saw would strand the workflow in `awaiting_approval` forever.
  */
 
-const MISSING_WORKFLOW_MSG =
+export const MISSING_WORKFLOW_MSG =
   "This card has lost the request it belongs to — refresh your inbox and approve it again.";
 
 export type UsageLimit = { max_amount: number; currency: string; recurring_interval: string };

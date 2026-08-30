@@ -48,7 +48,7 @@ export class DatabaseStack extends cdk.Stack {
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
   // pgvector extension is created by the drizzle migrations runner in
   // paperclip-stack.ts (Task 5), not here.
-  public readonly paperclipDbCluster: rds.DatabaseCluster;
+  public readonly paperclipDbCluster: rds.DatabaseClusterFromSnapshot;
   public readonly paperclipDbSecurityGroup: ec2.SecurityGroup;
 
   public readonly marketplaceListingsTable: dynamodb.Table;
@@ -458,7 +458,12 @@ export class DatabaseStack extends cdk.Stack {
       allowAllOutbound: false,
     });
 
-    this.paperclipDbCluster = new rds.DatabaseCluster(this, "PaperclipDb", {
+    // TRANSITIONAL — the legacy `isol8-{env}-paperclip-db` cluster stays until
+    // the follow-up deploy removes it. Its identifier is create-only, so the
+    // renamed cluster is a restore of its snapshot built ALONGSIDE it (below);
+    // Paperclip and the alarms repoint to the new cluster's exports in this
+    // deploy and the legacy exports go unimported.
+    const legacyPaperclipDb = new rds.DatabaseCluster(this, "PaperclipDb", {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
         version: rds.AuroraPostgresEngineVersion.VER_16_4,
       }),
@@ -504,7 +509,7 @@ export class DatabaseStack extends cdk.Stack {
     // `PaperclipDb/Secret/Resource`, so reach it by node lookup and assert it
     // was found: a silent miss here would quietly leave the stack ineligible.
     const paperclipDbSecretNode =
-      this.paperclipDbCluster.node.tryFindChild("Secret");
+      legacyPaperclipDb.node.tryFindChild("Secret");
     const paperclipDbSecret = paperclipDbSecretNode?.node.defaultChild as
       | secretsmanager.CfnSecret
       | undefined;
@@ -532,6 +537,61 @@ export class DatabaseStack extends cdk.Stack {
         ? "prodisol8proddatabasePaperclipDbSecret8743769B3fdaad7efa858a3daf9490cf0a702aeb"
         : "devisol8devdatabasePaperclipDbSecretA2A261833fdaad7efa858a3daf9490cf0a702aeb",
     );
+
+    // Renamed cluster, restored from the manual snapshot taken right before
+    // this deploy (Paperclip scaled to 0 so nothing was written after it):
+    //   aws rds create-db-cluster-snapshot --db-cluster-identifier isol8-{env}-paperclip-db \
+    //     --db-cluster-snapshot-identifier lightbulb-{env}-paperclip-db-rename
+    // The snapshot id is permanent in this template — a fresh stack restores
+    // it again, which is the intended disaster-recovery baseline. The master
+    // password is re-generated into the new secret (the username cannot change
+    // on a restore); the database name comes with the snapshot.
+    const paperclipDbV2SubnetGroup = new rds.SubnetGroup(this, "PaperclipDbSubnetsV2", {
+      subnetGroupName: `lightbulb-${env}-paperclip-db`,
+      vpc: props.vpc,
+      description: "Subnets for Paperclip Aurora cluster",
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+    this.paperclipDbCluster = new rds.DatabaseClusterFromSnapshot(this, "PaperclipDbV2", {
+      engine: rds.DatabaseClusterEngine.auroraPostgres({
+        // The live clusters auto-upgraded to 16.11; a restore cannot target an
+        // older minor than the snapshot's.
+        version: rds.AuroraPostgresEngineVersion.of("16.11", "16"),
+      }),
+      snapshotIdentifier: `lightbulb-${env}-paperclip-db-rename`,
+      // fromSecret (not fromGeneratedSecret): that variant cannot name the
+      // secret. CDK still sets the restored cluster's master password from it
+      // and attaches it, so `cluster.secret` works exactly as before.
+      snapshotCredentials: rds.SnapshotCredentials.fromSecret(
+        new rds.DatabaseSecret(this, "PaperclipDbV2Secret", {
+          username: "paperclip_admin",
+          secretName: `lightbulb-${env}-paperclip-db-credentials`,
+        }),
+      ),
+      serverlessV2MinCapacity: 0, // scale-to-zero
+      serverlessV2MaxCapacity: 4,
+      writer: rds.ClusterInstance.serverlessV2("writer", {
+        instanceIdentifier: `lightbulb-${env}-paperclip-db-writer`,
+      }),
+      vpc: props.vpc,
+      subnetGroup: paperclipDbV2SubnetGroup,
+      securityGroups: [paperclipDbSecurityGroup],
+      backup: { retention: cdk.Duration.days(7) },
+      storageEncrypted: true,
+      storageEncryptionKey: props.kmsKey,
+      removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
+      clusterIdentifier: `lightbulb-${env}-paperclip-db`,
+      enableDataApi: true,
+    });
+
+    // Keep the legacy cluster's cross-stack exports published for THIS deploy:
+    // the database stack deploys before paperclip/observability, which still
+    // import them until they update to the V2 exports in the same run, and
+    // CloudFormation refuses to drop an export that is in use. Remove these
+    // three lines together with `legacyPaperclipDb` in the follow-up deploy.
+    this.exportValue(legacyPaperclipDb.clusterEndpoint.hostname);
+    this.exportValue(legacyPaperclipDb.clusterIdentifier);
+    this.exportValue(legacyPaperclipDb.secret!.secretArn);
 
     this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
 

@@ -343,7 +343,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Sid: "AccountWipePaperclipAuroraExec",
             Action: "rds-data:ExecuteStatement",
             Resource:
-              "arn:aws:rds:us-east-1:877352799272:cluster:isol8-dev-paperclip-db",
+              "arn:aws:rds:us-east-1:877352799272:cluster:lightbulb-dev-paperclip-db",
           }),
         ]),
       }),
@@ -358,7 +358,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Sid: "AccountWipePaperclipDbSecretRead",
             Action: "secretsmanager:GetSecretValue",
             Resource:
-              "arn:aws:secretsmanager:us-east-1:877352799272:secret:isol8-dev-paperclip-db-credentials-*",
+              "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb-dev-paperclip-db-credentials-*",
           }),
         ]),
       }),

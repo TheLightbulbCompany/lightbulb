@@ -107,7 +107,7 @@ def _secret_arn(env: str) -> str:
     # secrets in the account, the target can be on a later page — a single
     # call would falsely report "not found" and block the recovery runbook.
     sm = boto3.client("secretsmanager", region_name=REGION)
-    needle = f"isol8-{env}-paperclip-db-credentials"
+    needle = f"lightbulb-{env}-paperclip-db-credentials"
     for page in sm.get_paginator("list_secrets").paginate():
         for s in page.get("SecretList", []):
             if needle in s["Name"]:
@@ -118,7 +118,7 @@ def _secret_arn(env: str) -> str:
 def _aurora(env: str):
     return (
         boto3.client("rds-data", region_name=REGION),
-        f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db",
+        f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:lightbulb-{env}-paperclip-db",
         _secret_arn(env),
     )
 

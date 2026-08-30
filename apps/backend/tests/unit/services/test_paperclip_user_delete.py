@@ -22,7 +22,7 @@ def _secretsmanager_stub(
     sm.get_paginator.return_value.paginate.return_value = [
         {
             "SecretList": [
-                {"Name": f"isol8-{env}-paperclip-db-credentials-XYZ", "ARN": secret_arn},
+                {"Name": f"lightbulb-{env}-paperclip-db-credentials-XYZ", "ARN": secret_arn},
             ]
         }
     ]
@@ -45,7 +45,7 @@ class TestDeletePaperclipUser:
         assert kwargs["sql"] == 'DELETE FROM "user" WHERE id = :id'
         assert kwargs["database"] == "paperclip"
         assert kwargs["parameters"] == [{"name": "id", "value": {"stringValue": "pc_user_123"}}]
-        assert kwargs["resourceArn"] == "arn:aws:rds:us-east-1:877352799272:cluster:isol8-dev-paperclip-db"
+        assert kwargs["resourceArn"] == "arn:aws:rds:us-east-1:877352799272:cluster:lightbulb-dev-paperclip-db"
         assert kwargs["secretArn"] == "arn:aws:secretsmanager:us-east-1:877352799272:secret:creds-abc"
 
     @pytest.mark.asyncio
@@ -59,7 +59,7 @@ class TestDeletePaperclipUser:
         await mod.delete_paperclip_user(paperclip_user_id="pc_user_456", email="member2@example.com", env="prod")
 
         kwargs = rds.execute_statement.call_args.kwargs
-        assert kwargs["resourceArn"] == "arn:aws:rds:us-east-1:877352799272:cluster:isol8-prod-paperclip-db"
+        assert kwargs["resourceArn"] == "arn:aws:rds:us-east-1:877352799272:cluster:lightbulb-prod-paperclip-db"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

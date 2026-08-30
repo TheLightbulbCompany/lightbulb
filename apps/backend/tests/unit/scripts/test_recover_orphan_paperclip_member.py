@@ -166,7 +166,7 @@ def test_secret_arn_paginates_secrets_manager():
     paginator = MagicMock()
     paginator.paginate.return_value = [
         {"SecretList": [{"Name": "other/secret", "ARN": "arn:other"}]},
-        {"SecretList": [{"Name": "isol8-prod-paperclip-db-credentials-AbCd", "ARN": "arn:target"}]},
+        {"SecretList": [{"Name": "lightbulb-prod-paperclip-db-credentials-AbCd", "ARN": "arn:target"}]},
     ]
     fake_sm = MagicMock()
     fake_sm.get_paginator.return_value = paginator

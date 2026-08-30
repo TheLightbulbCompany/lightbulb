@@ -2,7 +2,7 @@
 
 The backend task role already carries ``rds-data:ExecuteStatement`` on the
 cluster and ``secretsmanager:GetSecretValue`` on the DASH-named
-``isol8-{env}-paperclip-db-credentials`` secret (service-stack.ts
+``lightbulb-{env}-paperclip-db-credentials`` secret (service-stack.ts
 ``AccountWipePaperclipAurora*``), granted for the account-wipe user delete.
 This module is the shared wiring for that grant: ``paperclip_user_delete``
 imports the ARN/client helpers from here, and fleet aggregates
@@ -43,13 +43,13 @@ def secretsmanager_client():
 
 
 def cluster_arn(env: str) -> str:
-    return f"arn:aws:rds:{settings.AWS_REGION}:{_ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db"
+    return f"arn:aws:rds:{settings.AWS_REGION}:{_ACCOUNT_ID}:cluster:lightbulb-{env}-paperclip-db"
 
 
 def find_secret_arn(sm_client, env: str) -> str:
     """Paginated lookup: with enough secrets in the account the target can be
     on a later page, so a single unpaginated call falsely reports not-found."""
-    needle = f"isol8-{env}-paperclip-db-credentials"
+    needle = f"lightbulb-{env}-paperclip-db-credentials"
     for page in sm_client.get_paginator("list_secrets").paginate():
         for s in page.get("SecretList", []):
             if needle in s["Name"]:

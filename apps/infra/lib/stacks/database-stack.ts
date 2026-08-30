@@ -59,6 +59,7 @@ export class DatabaseStack extends cdk.Stack {
 
   public readonly launchWaitlistTable: dynamodb.Table;
   public readonly launchEntriesTable: dynamodb.Table;
+  public readonly launchSettingsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -418,6 +419,13 @@ export class DatabaseStack extends cdk.Stack {
     });
     this.launchEntriesTable = createTable("LaunchEntriesTable", "launch-entries", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+    // Launch admin settings — a small single-row-per-id config table replacing
+    // the retired schedule file + env vars; the backend reads it via
+    // get_table("launch-settings"). Covered by the existing backend wildcard
+    // table grant in service-stack.ts (table/*-{env}-*) — no IAM change needed.
+    this.launchSettingsTable = createTable("LaunchSettingsTable", "launch-settings", {
+      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

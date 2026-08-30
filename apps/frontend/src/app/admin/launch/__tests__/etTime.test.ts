@@ -54,4 +54,18 @@ describe("toEasternLocal", () => {
     // 2026-07-15T14:00:00Z is 10:00 EDT.
     expect(toEasternLocal("2026-07-15T14:00:00Z")).toBe("2026-07-15T10:00");
   });
+
+  it("renders ET midnight as 00:00, not 24:00", () => {
+    // 2026-07-04T00:00 ET is EDT (-04:00) -> 2026-07-04T04:00:00Z. `en-US`
+    // with `hour12: false` can resolve to the `h24` hour cycle, which prints
+    // midnight as "24:00" — an invalid `datetime-local` value. `hourCycle:
+    // "h23"` pins it to "00".
+    expect(toEasternLocal("2026-07-04T04:00:00Z")).toBe("2026-07-04T00:00");
+  });
+
+  it("renders ET midnight as 00:00 on the November DST-transition date", () => {
+    // 2026-11-01 falls back at 2:00 EDT -> 1:00 EST, so midnight itself is
+    // still EDT (-04:00): 2026-11-01T00:00 ET = 2026-11-01T04:00:00Z.
+    expect(toEasternLocal("2026-11-01T04:00:00Z")).toBe("2026-11-01T00:00");
+  });
 });

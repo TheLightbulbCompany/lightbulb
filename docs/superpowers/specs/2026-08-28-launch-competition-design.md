@@ -15,7 +15,7 @@ paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.
 | Decision | Value |
 |---|---|
 | Waitlist | Uncapped. Sign-up IS the waitlist: a Clerk account created before the drop + the idea stashed as the pending brief (hero funnel) + a `launch-waitlist` row written by the Clerk `user.created` webhook (position = sign-up order, referral code). No email form. |
-| Comp | Waitlist positions 1–220 get a free month (100% off, once). Delivered by **email + Stripe promotion code** created by the owner in the Stripe console: `max_redemptions=220`, `expires_at = competition_start_at`. Unredeemed = forfeited; never passed to #221. |
+| Comp | Waitlist positions 1–220 get a free month (100% off, once). Delivered by **email + Stripe promotion code**, created from the admin card's "Create Stripe coupon + promo code" button (which stores the ids on the settings row): `max_redemptions = comp_slots`, `expires_at = competition_start_at`. Unredeemed = forfeited; never passed to #221. |
 | Activation | Onboarding complete **and** Friday's first run complete. In this codebase that is one write (`bootstrap_state == "delivered"`). The gate is **soft**: the launch email says "finish onboarding first"; the code is redeemable at checkout regardless. |
 | Entry | Two explicit steps after activation (Friday's first run delivered) AND a live subscription (paid or the promo-code free month; `trial_local` cannot): **Join** (`POST /launch/join` → entry = competing) and optional **Connect Stripe** (`POST /launch/connect-stripe` → on the board). `public` is a privacy control, retractable via `PATCH /launch/entry`; private entrants count toward `on_board` but never appear in rows. |
 | Timeline | Drop Thursday midnight ET (Friday 00:00 America/New_York); competition starts Sunday midnight ET (Monday 00:00) and runs 30 days — the 3-day free trial covers activation. Both instants live in the per-environment launch settings row, edited on `/admin/launch` (Enabled off = feature off). Free month = competition month. |
@@ -64,8 +64,9 @@ the only place the dates, pot constants, comp slots and the Stripe coupon live. 
 The backend reads the row through a 30-second in-process cache (`core/services/launch_phase.py`
 — it sits on the container-status poll path), so a save takes effect within ~30 s fleet-wide
 with no deploy; writes also clear the public `/launch*` response cache and the admin sheet
-cache. Validation on save mirrors the backend parser: `24:00`, Feb 29 and naive timestamps are
-rejected, money is non-negative, `comp_slots ≥ 1`, `competition_days ≥ 1`. A DynamoDB read
+cache. Validation on save mirrors the backend parser: `24:00`, invalid calendar dates (e.g.
+`2026-02-29`) and naive timestamps are rejected, money is non-negative, `comp_slots ≥ 1`,
+`competition_days ≥ 1`. A DynamoDB read
 failure never raises on the poll path — the last cached row is served, else the defaults
 (feature off). Derived: `competition_end_at = competition_start_at + competition_days`,
 `phase ∈ waitlist | activation | live | ended`.

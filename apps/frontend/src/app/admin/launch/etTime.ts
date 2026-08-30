@@ -19,7 +19,10 @@ export function toEasternLocal(iso: string | null): string {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    // `hourCycle: "h23"`, not `hour12: false` — en-US with `hour12:false` can
+    // still resolve to `h24` (midnight rendered as "24:00"), which is not a
+    // valid `datetime-local` input value. h23 pins midnight to "00".
+    hourCycle: "h23",
   }).formatToParts(new Date(iso));
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;

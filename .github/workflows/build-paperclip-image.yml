@@ -77,7 +77,7 @@ jobs:
 
       # The base (paperclip-version.json#upstream) is now the Isol8 Paperclip
       # fork on GHCR — a private package this repo must be granted read access to
-      # (org Packages -> paperclip -> Manage Actions access -> add Isol8AI/isol8).
+      # (org Packages -> paperclip -> Manage Actions access -> add LightbulbAI/lightbulb).
       # The build below pulls it via FROM, so authenticate to GHCR first.
       - name: Login to GHCR
         uses: docker/login-action@v3

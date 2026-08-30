@@ -24,7 +24,7 @@
 #   scripts/switch-ci-runner.sh self-hosted deploy # only DEPLOY_RUNNER
 #   scripts/switch-ci-runner.sh status
 set -euo pipefail
-REPO="${ISOL8_REPO:-Isol8AI/isol8}"
+REPO="${ISOL8_REPO:-LightbulbAI/lightbulb}"
 
 label_for() {
   case "$1" in

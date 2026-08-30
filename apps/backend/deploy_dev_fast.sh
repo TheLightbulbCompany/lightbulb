@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO="Isol8AI/backend"
+REPO="LightbulbAI/backend"
 BRANCH="main"
 
 # Colors

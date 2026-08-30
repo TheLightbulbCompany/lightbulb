@@ -57,22 +57,22 @@ afterEach(() => {
 
 describe("GET /api/download/desktop", () => {
   const arm: GhAssetFixture = {
-    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/101",
+    url: "https://api.github.com/repos/LightbulbAI/lightbulb/releases/assets/101",
     name: "Isol8_0.2.6_aarch64.dmg",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_0.2.6_aarch64.dmg",
+      "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-v0.2.6/Isol8_0.2.6_aarch64.dmg",
   };
   const intel: GhAssetFixture = {
-    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/102",
+    url: "https://api.github.com/repos/LightbulbAI/lightbulb/releases/assets/102",
     name: "Isol8_0.2.6_x64.dmg",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_0.2.6_x64.dmg",
+      "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-v0.2.6/Isol8_0.2.6_x64.dmg",
   };
   const armBundle: GhAssetFixture = {
-    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/103",
+    url: "https://api.github.com/repos/LightbulbAI/lightbulb/releases/assets/103",
     name: "Isol8_aarch64.app.tar.gz",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.2.6/Isol8_aarch64.app.tar.gz",
+      "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-v0.2.6/Isol8_aarch64.app.tar.gz",
   };
   const prodRelease: GhReleaseFixture = {
     tag_name: "desktop-v0.2.6",
@@ -81,10 +81,10 @@ describe("GET /api/download/desktop", () => {
     assets: [arm, intel, armBundle],
   };
   const devAsset: GhAssetFixture = {
-    url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/201",
+    url: "https://api.github.com/repos/LightbulbAI/lightbulb/releases/assets/201",
     name: "Isol8_0.3.1_aarch64.dmg",
     browser_download_url:
-      "https://github.com/Isol8AI/isol8/releases/download/desktop-dev-v0.3.1/Isol8_0.3.1_aarch64.dmg",
+      "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-dev-v0.3.1/Isol8_0.3.1_aarch64.dmg",
   };
   const devRelease: GhReleaseFixture = {
     tag_name: "desktop-dev-v0.3.1",
@@ -185,10 +185,10 @@ describe("GET /api/download/desktop", () => {
       published_at: "2026-01-01T00:00:00Z",
     };
     const newerAsset: GhAssetFixture = {
-      url: "https://api.github.com/repos/Isol8AI/isol8/releases/assets/301",
+      url: "https://api.github.com/repos/LightbulbAI/lightbulb/releases/assets/301",
       name: "Isol8_0.3.0_aarch64.dmg",
       browser_download_url:
-        "https://github.com/Isol8AI/isol8/releases/download/desktop-v0.3.0/Isol8_0.3.0_aarch64.dmg",
+        "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-v0.3.0/Isol8_0.3.0_aarch64.dmg",
     };
     const newer: GhReleaseFixture = {
       ...prodRelease,

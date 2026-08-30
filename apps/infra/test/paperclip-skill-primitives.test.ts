@@ -139,7 +139,7 @@ describe("bundled Paperclip operating primitives", () => {
       "--status", "todo,blocked", "--updated-within", "30d", "--limit", "25", "--dry-run",
     ]);
     const extract = runHelper([
-      "extract", "company-1", "--contains", "github.com/Isol8AI/isol8/pull",
+      "extract", "company-1", "--contains", "github.com/LightbulbAI/lightbulb/pull",
       "--kind", "url", "--scope", "comments", "--matches-per-issue", "50", "--dry-run",
     ]);
     const stats = runHelper([
@@ -155,7 +155,7 @@ describe("bundled Paperclip operating primitives", () => {
     expect(extract.status, extract.stderr).toBe(0);
     expect(extract.stdout.trim()).toBe(
       "GET https://paperclip.test/api/companies/company-1/search/extract" +
-        "?contains=github.com%2FIsol8AI%2Fisol8%2Fpull&kind=url&scope=comments&matchesPerIssue=50",
+        "?contains=github.com%2FLightbulbAI%2Flightbulb%2Fpull&kind=url&scope=comments&matchesPerIssue=50",
     );
     expect(stats.status, stats.stderr).toBe(0);
     expect(stats.stdout.trim()).toBe(

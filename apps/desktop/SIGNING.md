@@ -7,8 +7,8 @@ service. This is a one-time setup — once the five secrets below are in
 GitHub, every future `desktop-dev-v*` or `desktop-v*` tag produces a clean
 signed + notarized DMG that opens without the "Isol8 is damaged" Gatekeeper
 warning. (That string is Tauri's `productName`, so it reads "Lightbulb is
-damaged" once the brand swap lands. `Isol8AI/isol8` and the `isol8-notarize`
-app-specific-password label are NOT renamed.)
+damaged" once the brand swap lands. The `isol8-notarize`
+app-specific-password label is NOT renamed.)
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
 
@@ -47,26 +47,26 @@ From the repo root:
 
 ```bash
 # 1. The base64-encoded .p12 from step 2 (still on clipboard).
-pbpaste | gh secret set APPLE_CERTIFICATE --repo Isol8AI/isol8
+pbpaste | gh secret set APPLE_CERTIFICATE --repo LightbulbAI/lightbulb
 
 # 2. The password you set when exporting the .p12 in step 1.
-gh secret set APPLE_CERTIFICATE_PASSWORD --repo Isol8AI/isol8 --body 'YOUR-P12-EXPORT-PASSWORD'
+gh secret set APPLE_CERTIFICATE_PASSWORD --repo LightbulbAI/lightbulb --body 'YOUR-P12-EXPORT-PASSWORD'
 
 # 3. Your Apple ID email.
-gh secret set APPLE_ID --repo Isol8AI/isol8 --body 'you@example.com'
+gh secret set APPLE_ID --repo LightbulbAI/lightbulb --body 'you@example.com'
 
 # 4. The app-specific password from step 3.
-gh secret set APPLE_PASSWORD --repo Isol8AI/isol8 --body 'xxxx-xxxx-xxxx-xxxx'
+gh secret set APPLE_PASSWORD --repo LightbulbAI/lightbulb --body 'xxxx-xxxx-xxxx-xxxx'
 
 # 5. The Apple Developer team ID (already known — embedded in
 #    tauri.conf.json's signingIdentity).
-gh secret set APPLE_TEAM_ID --repo Isol8AI/isol8 --body 'WZX4U3C22Y'
+gh secret set APPLE_TEAM_ID --repo LightbulbAI/lightbulb --body 'WZX4U3C22Y'
 ```
 
 Verify the secrets landed:
 
 ```bash
-gh secret list --repo Isol8AI/isol8 | grep -E "^APPLE_"
+gh secret list --repo LightbulbAI/lightbulb | grep -E "^APPLE_"
 # Expect: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID,
 # APPLE_PASSWORD, APPLE_TEAM_ID — five rows.
 ```

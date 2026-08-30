@@ -4,7 +4,7 @@
  *
  * Both `/api/download/desktop` and `/api/desktop/update/[target]/[current_version]`
  * resolve to the same pipeline:
- *   1. List Isol8AI/isol8 releases
+ *   1. List LightbulbAI/lightbulb releases
  *   2. Filter to the env-appropriate tag prefix (dev hosts → `desktop-dev-v*`,
  *      everything else → `desktop-v*`)
  *   3. Pick the HIGHEST-VERSION release, not the most-recently-published
@@ -13,14 +13,14 @@
  *
  * The repo is PRIVATE: listing releases and fetching assets both require
  * `GITHUB_RELEASES_TOKEN` (fine-grained PAT with contents: read on
- * Isol8AI/isol8). `browser_download_url` 404s without a logged-in browser
+ * LightbulbAI/lightbulb). `browser_download_url` 404s without a logged-in browser
  * session, so clients are never sent there — instead we resolve the
  * asset's API URL to the short-lived signed URL GitHub issues behind it
  * (`resolveAssetLocation`) and redirect at download time. Draft releases
  * are filtered explicitly since the token sees them.
  */
 
-export const ISOL8_REPO = "Isol8AI/isol8";
+export const LIGHTBULB_REPO = "LightbulbAI/lightbulb";
 
 const PROD_TAG_PREFIX = "desktop-v";
 const DEV_TAG_PREFIX = "desktop-dev-v";
@@ -108,7 +108,7 @@ export async function pickLatestRelease(
   prefix: string,
 ): Promise<{ release: GhRelease | null; githubStatus: number }> {
   const res = await fetch(
-    `https://api.github.com/repos/${ISOL8_REPO}/releases?per_page=30`,
+    `https://api.github.com/repos/${LIGHTBULB_REPO}/releases?per_page=30`,
     {
       headers: githubHeaders(),
       next: { revalidate: 300 },

@@ -46,7 +46,7 @@ pub struct DesktopNodeHostHandles {
 /// resolves `state_dir` and `binary` from `AppHandle` and then calls us.
 ///
 /// `keychain_service` is the macOS Keychain service name — production code
-/// passes `"co.isol8.desktop"`. Tests can pass a unique value to avoid
+/// passes `"company.thelightbulb.desktop"`. Tests can pass a unique value to avoid
 /// stomping on the real entries.
 pub async fn bootstrap_desktop_node_host(
     api_base: &str,

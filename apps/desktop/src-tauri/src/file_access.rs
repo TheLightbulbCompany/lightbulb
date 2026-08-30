@@ -2,7 +2,7 @@
 //! read/write through file.fetch / file.write / dir.list / dir.fetch.
 //!
 //! The allowlist lives on disk at
-//! `~/Library/Application Support/co.isol8.desktop/file_access.json`.
+//! `~/Library/Application Support/company.thelightbulb.desktop/file_access.json`.
 //! On first launch we create `~/Isol8/` and add it to the allowlist so
 //! agents have somewhere to read/write without the user thinking about
 //! it; the user can add or remove paths via the Settings page (which
@@ -68,16 +68,17 @@ impl From<serde_json::Error> for FileAccessError {
 }
 
 /// Returns the directory the store file lives in
-/// (`~/Library/Application Support/co.isol8.desktop/` on macOS). Created
-/// if it doesn't exist yet. Defers to `std::env::var("HOME")` rather
-/// than the dirs crate to keep dep surface tight.
+/// (`~/Library/Application Support/company.thelightbulb.desktop/` on macOS —
+/// the app's bundle identifier, matching where `app_data_dir()` puts
+/// `pair_state.json`). Created if it doesn't exist yet. Defers to `std::env::var("HOME")` rather than the dirs
+/// crate to keep dep surface tight.
 fn store_dir() -> Result<PathBuf, FileAccessError> {
     let home = std::env::var("HOME")
         .map_err(|_| FileAccessError::InvalidPath("HOME not set".into()))?;
     let p = PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("co.isol8.desktop");
+        .join("company.thelightbulb.desktop");
     std::fs::create_dir_all(&p)?;
     Ok(p)
 }

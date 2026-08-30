@@ -1,7 +1,7 @@
 //! Ed25519 keypair management with macOS Keychain persistence.
 //!
 //! Backend never sees the private key (security review HIGH finding D).
-//! Keys live in Keychain entries under co.isol8.desktop.device.{mac,cli}.
+//! Keys live in Keychain entries under company.thelightbulb.desktop.device.{mac,cli}.
 
 use base64::Engine;
 use ed25519_dalek::pkcs8::{

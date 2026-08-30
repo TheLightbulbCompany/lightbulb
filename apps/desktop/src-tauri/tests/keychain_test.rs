@@ -22,7 +22,7 @@ fn generate_keypair_produces_distinct_keys() {
 #[ignore = "requires interactive Keychain access; run locally with --include-ignored"]
 fn load_or_generate_persists_across_calls() {
     let slot = KeychainSlot::Mac;
-    let service = "co.isol8.desktop.test";
+    let service = "company.thelightbulb.desktop.test";
     let _ = delete(slot, service); // best-effort cleanup
     let first = load_or_generate(slot, service).unwrap();
     let second = load_or_generate(slot, service).unwrap();

@@ -87,15 +87,27 @@ export function ProvisioningInformationForm({
     );
   }
 
+  /** A checkbox always carries an answer; everything else needs typing. */
+  function answered(field: Field): boolean {
+    const value = values[field.name];
+    return field.kind === "boolean" ? true : typeof value === "string" && value !== "";
+  }
+
   function answer(field: Field): string | number | boolean | undefined {
     const value = values[field.name];
-    if (field.kind === "boolean") return value === true;
+    if (field.kind === "boolean") {
+      // An untouched optional checkbox is left OUT rather than sent as a
+      // `false` the owner never chose.
+      if (value === undefined && !field.required) return undefined;
+      return value === true;
+    }
     const text = typeof value === "string" ? value : "";
-    // An untouched optional field is left OUT rather than sent empty — the
-    // provider's schema decides what an absent answer means.
-    if (text === "" && !field.required) return undefined;
-    if (field.kind === "number") return Number(text);
-    return text;
+    // Never coerced: `Number("")` is 0, and 0 is an answer nobody gave. An
+    // empty required field cannot get here — Send stays disabled — and an
+    // empty optional one is left out, since the provider's schema decides
+    // what an absent answer means.
+    if (text === "") return undefined;
+    return field.kind === "number" ? Number(text) : text;
   }
 
   function submit(answering: Field[]) {
@@ -181,7 +193,11 @@ export function ProvisioningInformationForm({
       })}
       {fieldError && <p className="text-sm text-[var(--err)]">{fieldError}</p>}
       <span>
-        <EditorialButton size="sm" disabled={busy} onClick={() => submit(fields)}>
+        <EditorialButton
+          size="sm"
+          disabled={busy || fields.some((field) => field.required && !answered(field))}
+          onClick={() => submit(fields)}
+        >
           {`Send to ${provider}`}
         </EditorialButton>
       </span>

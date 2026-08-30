@@ -111,6 +111,9 @@ export function useProvisioningRail() {
   return {
     byProvider,
     workflowsByProvider,
+    // A failed read leaves both maps empty, which is indistinguishable from
+    // "this owner has provisioned nothing" — so the caller says which.
+    error: resources.error ?? workflows.error ?? null,
     /** Every provider this rail knows about — the superset the card list needs. */
     providers,
     refresh: () => {
@@ -229,11 +232,13 @@ function ResourceLine({
         <span className="text-[var(--midnight-muted)]">
           {resource.level === "company" ? "Company-level" : "Agent-level"}
         </span>
-        <button type="button" className="settings-btn-outline" disabled={busy} onClick={openDashboard}>
-          Open dashboard
-        </button>
+        {/* All three routes below are admin-and-paid (`Owner` in the
+            provisioning router), so a member sees the row without them. */}
         {canManage && (
           <>
+            <button type="button" className="settings-btn-outline" disabled={busy} onClick={openDashboard}>
+              Open dashboard
+            </button>
             <button
               type="button"
               className="settings-btn-outline"

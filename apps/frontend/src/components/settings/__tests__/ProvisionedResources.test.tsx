@@ -97,6 +97,14 @@ describe("ProvisionedResourcesFacet", () => {
     expect(tab.location.href).toBe("");
   });
 
+  it("does not call the API when the popup is blocked", async () => {
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    renderFacet();
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("revoke deletes our copy and says the owner keeps the account", async () => {
     post.mockResolvedValue({ revoked: true });
     renderFacet();
@@ -133,8 +141,12 @@ describe("ProvisionedResourcesFacet", () => {
     expect(screen.getByText(/stops any charges/i)).toBeInTheDocument();
   });
 
-  it("offers neither revoke nor remove to a non-admin", () => {
+  it("offers a non-admin none of the three admin-and-paid routes", () => {
     renderFacet({ canManage: false });
+    expect(screen.getByText("Northwind analytics")).toBeInTheDocument();
+    // `dashboard-link`, `revoke` and `remove` all sit behind the router's
+    // `Owner` gate (org admin + paid), so a member sees the row, not a 403.
+    expect(screen.queryByRole("button", { name: "Open dashboard" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Revoke our copy" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });

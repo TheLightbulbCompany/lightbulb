@@ -76,14 +76,17 @@ describe("LaunchHeldCard", () => {
     expect(screen.getByText(/Doors open Friday/)).toBeInTheDocument();
   });
 
-  it("shows the 'add your idea' fallback when there is no pending idea", async () => {
+  it("omits the idea line entirely when there is no pending idea", async () => {
     get.mockResolvedValue(me({ idea: null }));
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ drop_at: "2026-09-18T16:00:00+00:00" }) }),
     );
     render(<LaunchHeldCard blocked={blocked} />);
-    expect(await screen.findByText(/Add your idea on drop day/)).toBeInTheDocument();
+    expect(await screen.findByText(/#47/)).toBeInTheDocument();
+    // The landing spot card is where an idea gets added — no "drop day" nudge.
+    expect(screen.queryByText(/Your idea:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Add your idea/)).not.toBeInTheDocument();
   });
 
   it("attributes a stored referral without a trip to /launch, and clears it on a resolved response", async () => {

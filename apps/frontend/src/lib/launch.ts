@@ -69,6 +69,10 @@ export interface LaunchMe {
   can_join: boolean;
   reason: string | null;
   idea: string | null;
+  /** Untruncated pending-brief text (the `idea` teaser is capped at 140
+   * chars) — feeds the landing spot card's edit form. Optional for the
+   * merge→promote window, during which an older backend omits it. */
+  idea_full?: string | null;
 }
 
 export const LAUNCH_REF_KEY = "launch_ref";

@@ -41,6 +41,9 @@
   color: var(--midnight);
 }
 .lc-card--lit { border-color: var(--brass); }
+/* The landing hero's spot card: the hero section centers text and spans
+   820px; the card reads left and stays letter-width. */
+.lc-card--spot { text-align: left; max-width: 560px; margin-inline: auto; }
 
 .lc-table { width: 100%; border-collapse: collapse; font-size: var(--text-ui); color: var(--midnight); }
 /* The product's small-caps column head (the `label-caps` utility, written out:
@@ -59,7 +62,8 @@
 
 .lc-field { display: block; margin-top: 16px; }
 .lc-field > span { display: block; font-size: var(--text-ui); font-weight: 600; color: var(--midnight); margin-bottom: 6px; }
-.lc-field input {
+.lc-field input,
+.lc-field textarea {
   width: 100%;
   padding: 12px 14px;
   border-radius: var(--radius-md);
@@ -68,6 +72,8 @@
   color: var(--midnight);
   font-size: var(--text-ui);
 }
+.lc-field textarea { resize: vertical; font-family: inherit; }
+.lc-idea { font-size: var(--text-ui); color: var(--midnight); margin: 0 0 8px; overflow-wrap: anywhere; }
 /* No `:focus` recipe here — the one focus ring is the global `:focus-visible`
    rule in globals.css. Brass on cream is 2.76:1 and fails the 3:1 bar anyway. */
 .lc-field input[data-mono] { font-family: var(--font-mono), ui-monospace, monospace; font-size: var(--text-ui); }

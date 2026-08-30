@@ -73,6 +73,9 @@ def test_schedule_treats_start_before_drop_as_feature_off_not_a_raise(caplog):
         with caplog.at_level("WARNING", logger=launch_phase.logger.name):
             assert launch_phase.schedule() is None
     assert "failed to derive a schedule" in caplog.text
+    # A row that failed to derive a Schedule is a different failure mode than
+    # "off" — settings_unavailable() must reflect it (see launch_hold).
+    assert launch_phase.settings_unavailable() is True
 
 
 def test_schedule_never_raises_on_a_malformed_int_field(caplog):
@@ -85,6 +88,7 @@ def test_schedule_never_raises_on_a_malformed_int_field(caplog):
         with caplog.at_level("WARNING", logger=launch_phase.logger.name):
             assert launch_phase.schedule() is None
     assert "failed to derive a schedule" in caplog.text
+    assert launch_phase.settings_unavailable() is True
 
 
 @pytest.mark.parametrize(
@@ -236,4 +240,22 @@ def test_invalidate_clears_the_unavailable_flag():
         launch_phase.schedule()
     assert launch_phase.settings_unavailable() is True
     launch_phase.invalidate()
+    assert launch_phase.settings_unavailable() is False
+
+
+def test_a_subsequent_valid_row_clears_the_invalid_flag():
+    """The malformed-row flag describes the LAST read, not a sticky state —
+    once a valid row is derived, settings_unavailable() must go back to
+    False without needing an explicit invalidate() in between (the TTL
+    expiring is enough in production; here we invalidate to force a
+    refetch)."""
+    bad = _row(enabled=True, drop_at=CONFIGURED["drop_at"], competition_start_at=CONFIGURED["competition_start_at"])
+    bad["competition_days"] = "x"
+    with patch.object(launch_settings_repo, "get_sync", return_value=bad):
+        assert launch_phase.schedule() is None
+    assert launch_phase.settings_unavailable() is True
+
+    launch_phase.invalidate()
+    with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED):
+        assert launch_phase.schedule() is not None
     assert launch_phase.settings_unavailable() is False

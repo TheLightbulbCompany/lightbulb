@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 Phase = Literal["waitlist", "activation", "live", "ended"]
 
 _CACHE_TTL_S = 30
-_CACHE: dict = {"row": None, "fetched_at": 0.0, "unavailable": False}
+_CACHE: dict = {"row": None, "fetched_at": 0.0, "unavailable": False, "invalid": False}
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,7 @@ def invalidate() -> None:
     _CACHE["row"] = None
     _CACHE["fetched_at"] = 0.0
     _CACHE["unavailable"] = False
+    _CACHE["invalid"] = False
 
 
 def _row() -> dict:
@@ -84,15 +85,19 @@ def _row() -> dict:
 
 
 def settings_unavailable() -> bool:
-    """True iff the last read failed with nothing cached to fall back to —
-    the row every launch surface is reading right now is DEFAULTS-as-a-guess
-    (feature off), not the stored row.
+    """True iff the row currently backing every launch surface is not a
+    trustworthy read of the stored settings: either (a) the last read failed
+    with nothing cached to fall back to (DEFAULTS-as-a-guess), or (b) the
+    last read row failed to derive a ``Schedule`` (bad types, bad dates) —
+    ``schedule()`` treats that as feature-off too, but it is NOT the same as
+    an admin genuinely disabling the launch.
 
     Only ``launch_hold`` acts on this: un-holding an owner is irreversible
     (it stamps the 3-day trial clock), so a container-less owner is held
-    rather than released on a DynamoDB blip. Every other reader stays
-    fail-open — ``require_launch`` 404s, the webhook join is skipped."""
-    return bool(_CACHE["unavailable"])
+    rather than released on a DynamoDB blip or a malformed row. Every other
+    reader stays fail-open — ``require_launch`` 404s, the webhook join is
+    skipped."""
+    return bool(_CACHE["unavailable"] or _CACHE["invalid"])
 
 
 def constants() -> dict:
@@ -112,6 +117,9 @@ def coupon_id() -> str:
 def schedule() -> Schedule | None:
     row = _row()
     if not row["enabled"] or not row["drop_at"] or not row["competition_start_at"]:
+        # Genuinely off, not malformed — a prior malformed-row flag no
+        # longer describes the row we just read.
+        _CACHE["invalid"] = False
         return None
     try:
         drop = parse_iso(row["drop_at"])
@@ -122,6 +130,7 @@ def schedule() -> Schedule | None:
             # (a hand-edited DynamoDB item) — treated the same as any other
             # malformed row below: log and go feature-off, not a 500.
             raise ValueError("competition_start_at must be after drop_at")
+        _CACHE["invalid"] = False
         return Schedule(
             drop_at=drop,
             competition_start_at=start,
@@ -132,6 +141,11 @@ def schedule() -> Schedule | None:
         )
     except Exception:  # noqa: BLE001 — the poll path must never fail because a row is malformed
         logger.warning("launch_phase: settings row failed to derive a schedule; treating as feature off", exc_info=True)
+        # Unlike "disabled" or "no dates set", this row was READ successfully
+        # but is garbage — un-holding a container-less owner on it would be
+        # wrong the same way a DynamoDB read failure would be. See
+        # settings_unavailable()'s docstring.
+        _CACHE["invalid"] = True
         return None
 
 

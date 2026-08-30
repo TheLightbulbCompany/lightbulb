@@ -126,6 +126,60 @@ async def test_no_container_read_when_the_schedule_answers_on_its_own(launch_sch
     container_read.assert_not_awaited()
 
 
+def _malformed_row():
+    """A row that reads fine off DynamoDB but fails Schedule(...) construction
+    — the shape a hand-edited row has, distinct from an unreadable read."""
+    row = dict(launch_settings_repo.DEFAULTS, enabled=True, drop_at="2026-09-18T00:00:00-04:00")
+    row["competition_start_at"] = "2026-09-21T00:00:00-04:00"
+    row["competition_days"] = "x"  # not an int -> timedelta(days=...) raises inside schedule()
+    return row
+
+
+async def test_holds_a_container_less_owner_when_the_settings_row_is_malformed():
+    """A row that fails to derive a Schedule is a different failure mode than
+    an unreadable settings read, but it must fail closed the same way —
+    un-holding is irreversible (the next step stamps the 3-day trial
+    clock)."""
+    try:
+        launch_phase.invalidate()
+        with (
+            patch.object(launch_settings_repo, "get_sync", return_value=_malformed_row()),
+            patch.object(launch_hold.container_repo, "get_by_owner_id", AsyncMock(return_value=None)),
+        ):
+            assert launch_phase.schedule() is None
+            assert launch_phase.settings_unavailable() is True
+            g = await launch_hold.pre_drop_gate("user_1")
+    finally:
+        launch_phase.invalidate()
+    assert g is not None and g.code == "launch_pending"
+
+
+async def test_a_subsequent_valid_row_stops_holding_after_a_malformed_one():
+    try:
+        launch_phase.invalidate()
+        with patch.object(launch_settings_repo, "get_sync", return_value=_malformed_row()):
+            assert launch_phase.schedule() is None
+        assert launch_phase.settings_unavailable() is True
+
+        launch_phase.invalidate()
+        good = dict(
+            launch_settings_repo.DEFAULTS,
+            enabled=True,
+            drop_at="2020-01-01T00:00:00-05:00",
+            competition_start_at="2020-01-04T00:00:00-05:00",
+        )
+        with (
+            patch.object(launch_settings_repo, "get_sync", return_value=good),
+            patch.object(launch_hold.container_repo, "get_by_owner_id", AsyncMock(return_value=None)),
+        ):
+            assert launch_phase.settings_unavailable() is False
+            # The drop/start above are both well in the past, so the schedule
+            # alone answers "not held" without needing a container read.
+            assert await launch_hold.pre_drop_gate("user_1") is None
+    finally:
+        launch_phase.invalidate()
+
+
 async def test_reads_the_container_row_only_when_an_owner_could_be_held(launch_schedule):
     """The two cases that can hold — knowingly pre-drop, and an unreadable
     settings row — both have to check for an existing container first."""

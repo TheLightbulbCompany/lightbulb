@@ -7,8 +7,12 @@ import stripe
 from core.auth import AuthContext
 from core.services import launch_settings as ls
 
-GOOD_DROP = "2026-09-18T00:00:00-04:00"
-GOOD_START = "2026-09-21T00:00:00-04:00"
+# Far-future on purpose: create_stripe_coupon() 422s a competition_start_at
+# that has already passed, and these constants back both the validate()
+# grammar tests and the mint tests — a near-future date would eventually
+# trip that check as the calendar catches up to it.
+GOOD_DROP = "2099-09-18T00:00:00-04:00"
+GOOD_START = "2099-09-21T00:00:00-04:00"
 ADMIN = AuthContext(user_id="user_admin")
 
 
@@ -90,6 +94,13 @@ def test_validate_rejects_feb_29_on_a_non_leap_year():
     with pytest.raises(ls.SettingsInvalid) as exc:
         ls.validate(_payload(drop_at="2026-02-29T00:00:00-04:00"))
     assert "drop_at" in exc.value.errors
+
+
+def test_validate_accepts_feb_29_on_a_leap_year():
+    """Feb 29 is a real calendar date on a leap year — only invalid calendar
+    dates are rejected, not Feb 29 categorically."""
+    row = ls.validate(_payload(drop_at="2028-02-29T00:00:00-05:00", competition_start_at="2028-03-03T00:00:00-05:00"))
+    assert row["drop_at"] == "2028-02-29T00:00:00-05:00"
 
 
 def test_validate_rejects_start_before_drop():

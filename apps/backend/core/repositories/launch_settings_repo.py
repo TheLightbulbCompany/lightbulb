@@ -75,7 +75,9 @@ def _plain(item: dict | None) -> dict | None:
         if out.get(k) is not None:
             out[k] = int(out[k])
     if out.get("enabled") is not None:
-        out["enabled"] = bool(out["enabled"])
+        # Strict identity, not `bool(...)` — `bool("false")` is True in
+        # Python, so a hand-edited string value must not enable the launch.
+        out["enabled"] = out["enabled"] is True
     return out
 
 

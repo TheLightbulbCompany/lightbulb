@@ -135,6 +135,23 @@ async def test_schedule_reads_a_real_saved_row_with_int_typed_fields(repo):
         launch_phase.invalidate()
 
 
+async def test_enabled_string_false_reads_back_as_false(repo):
+    """A hand-edited row storing the string "false" must not enable the
+    launch — `bool("false")` is True in Python, so the coercion has to be a
+    strict `is True` check, not a truthy cast."""
+    saved = await repo.put(dict(repo.DEFAULTS, enabled="false"))
+    assert saved["enabled"] is False
+    fetched = await repo.get()
+    assert fetched["enabled"] is False
+
+
+async def test_enabled_int_one_reads_back_as_false(repo):
+    saved = await repo.put(dict(repo.DEFAULTS, enabled=1))
+    assert saved["enabled"] is False
+    fetched = await repo.get()
+    assert fetched["enabled"] is False
+
+
 def test_get_sync_reads_through_a_client_with_bounded_timeouts():
     """get_sync runs on the container-status poll path and blocks the caller
     while it waits — botocore's 60s defaults would park every poll behind a

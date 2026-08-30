@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
-import { useSearchParams, usePathname, useRouter } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -315,16 +315,17 @@ export function ProvisioningStepper({
   // landing root's spot card (LaunchSpotCard) is a complete, self-sufficient
   // experience for held owners (position, countdown, idea capture, referral
   // link all included), so bounce there instead of rendering an in-chat card.
-  // `pathname !== "/"` guards against a redirect loop if this ever renders
-  // while already on the landing root.
-  const pathname = usePathname();
+  // The redirect is unconditional: this component only ever mounts inside
+  // the /chat workspace shell, never on the landing root, so replace("/")
+  // cannot loop. (A usePathname guard here broke a dozen unrelated test
+  // mocks for a case that cannot occur.)
   const router = useRouter();
   const isHeld = gatePhase === "blocked" && blocked?.code === "launch_pending";
   useEffect(() => {
-    if (isHeld && pathname !== "/") {
+    if (isHeld) {
       router.replace("/");
     }
-  }, [isHeld, pathname, router]);
+  }, [isHeld, router]);
 
   // Instant-ready: the backend's connection pool pushes
   // status_change("HEALTHY") over the WebSocket at the exact moment the

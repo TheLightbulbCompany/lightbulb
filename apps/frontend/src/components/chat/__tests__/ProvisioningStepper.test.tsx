@@ -78,13 +78,15 @@ vi.mock("posthog-js/react", () => ({
 
 // Stable spy so the held-redirect test can assert against it — a fresh
 // vi.fn() per useRouter() call (the previous shape) can't be asserted on
-// across renders. mockPathname is likewise mutable so the same test can
-// exercise the loop-guard (pathname already "/") via rerender.
-const { routerReplace } = vi.hoisted(() => ({ routerReplace: vi.fn() }));
-let mockPathname = "/chat";
+// across renders.
+const { routerReplace, mockRouter } = vi.hoisted(() => {
+  const routerReplace = vi.fn();
+  // Stable identity, like the real next router — a fresh object per call
+  // would retrigger the redirect effect on every render.
+  return { routerReplace, mockRouter: { replace: routerReplace, push: vi.fn() } };
+});
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
-  usePathname: () => mockPathname,
+  useRouter: () => mockRouter,
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
@@ -193,7 +195,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
     routerReplace.mockClear();
-    mockPathname = "/chat";
     clerkMockUser = null;
     clerkMockIsLoaded = true;
   });
@@ -501,9 +502,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.queryByText("children")).not.toBeInTheDocument();
     expect(screen.queryByText(/Doors open Friday/)).not.toBeInTheDocument();
 
-    // Loop guard: once the navigation has landed on "/", a re-render must
-    // not fire router.replace again.
-    mockPathname = "/";
+    // Effect-dep stability: a re-render in the same held state must not
+    // fire router.replace again (the redirect is unconditional — the
+    // stepper only mounts inside /chat, never on the landing root).
     rerender(
       <ProvisioningStepper>
         <div>children</div>

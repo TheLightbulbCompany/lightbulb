@@ -24,12 +24,10 @@ def _doors_open_copy(drop_at: datetime) -> str:
 
 
 async def pre_drop_gate(owner_id: str, *, owner_role: str = "admin", now: datetime | None = None) -> Gate | None:
-    # Deliberate fail-loud: a malformed settings row (start <= drop, which
-    # launch_settings.validate() should already have refused at write time)
-    # raises here and 500s the poll rather than silently un-holding every
-    # signup. Only the DDB read below fails open — a launch-settings read
-    # failure itself is swallowed inside launch_phase's own cache. (The
-    # webhook path is the opposite — see launch_referral.on_invoice_paid.)
+    # launch_phase.schedule() never raises: a DynamoDB read failure or a
+    # malformed row both resolve to None (feature off), which un-holds this
+    # owner rather than 500ing the poll. The container-repo read below is the
+    # one thing here that fails open explicitly.
     s = launch_phase.schedule()
     if s is None:
         return None

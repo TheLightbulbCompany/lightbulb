@@ -4,8 +4,10 @@ through a 30-second in-process cache.
 The row (``core.repositories.launch_settings_repo``, edited via
 ``core.services.launch_settings`` from the admin console) is THE source of
 the dates and pot constants for every surface. This module sits on the
-container-status poll path (``core.services.launch_hold``), so it caches the
-row and never lets a DynamoDB hiccup fail that path — see ``_row()``.
+container-status poll path (``core.services.launch_hold``), so it never lets
+that path fail: a DynamoDB read failure falls back to the cached/default row
+(``_row()``), and a row that fails to derive a schedule (bad types, bad
+dates) is treated as feature-off rather than raised (``schedule()``).
 ``enabled=False`` or either date missing = feature off.
 
 Phase ladder: waitlist (before the drop) → activation (drop .. competition
@@ -90,21 +92,26 @@ def schedule() -> Schedule | None:
     row = _row()
     if not row["enabled"] or not row["drop_at"] or not row["competition_start_at"]:
         return None
-    drop = parse_iso(row["drop_at"])
-    start = parse_iso(row["competition_start_at"])
-    if start <= drop:
-        # Defense in depth — launch_settings.validate() already refuses this
-        # order at write time, so this only fires against a row that bypassed
-        # validation (a hand-edited DynamoDB item).
-        raise ValueError("launch settings: competition_start_at must be after drop_at")
-    return Schedule(
-        drop_at=drop,
-        competition_start_at=start,
-        competition_end_at=start + timedelta(days=row["competition_days"]),
-        comp_slots=row["comp_slots"],
-        activation_window_hours=int((start - drop).total_seconds() // 3600),
-        competition_days=row["competition_days"],
-    )
+    try:
+        drop = parse_iso(row["drop_at"])
+        start = parse_iso(row["competition_start_at"])
+        if start <= drop:
+            # launch_settings.validate() already refuses this order at write
+            # time, so this only fires against a row that bypassed validation
+            # (a hand-edited DynamoDB item) — treated the same as any other
+            # malformed row below: log and go feature-off, not a 500.
+            raise ValueError("competition_start_at must be after drop_at")
+        return Schedule(
+            drop_at=drop,
+            competition_start_at=start,
+            competition_end_at=start + timedelta(days=row["competition_days"]),
+            comp_slots=row["comp_slots"],
+            activation_window_hours=int((start - drop).total_seconds() // 3600),
+            competition_days=row["competition_days"],
+        )
+    except Exception:  # noqa: BLE001 — the poll path must never fail because a row is malformed
+        logger.warning("launch_phase: settings row failed to derive a schedule; treating as feature off", exc_info=True)
+        return None
 
 
 def phase(s: Schedule, now: datetime | None = None) -> Phase:

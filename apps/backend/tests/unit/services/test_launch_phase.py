@@ -64,11 +64,27 @@ def test_schedule_derives_end_and_window(configured):
     assert s.activation_window_hours == 72 and s.comp_slots == 220
 
 
-def test_schedule_rejects_start_before_drop():
+def test_schedule_treats_start_before_drop_as_feature_off_not_a_raise(caplog):
+    """launch_settings.validate() already refuses this order at write time —
+    this only exercises a hand-edited row. The poll path must never fail
+    because of it: log and go feature-off, not raise."""
     bad = _row(enabled=True, drop_at="2026-09-21T00:00:00-04:00", competition_start_at="2026-09-18T00:00:00-04:00")
     with patch.object(launch_settings_repo, "get_sync", return_value=bad):
-        with pytest.raises(ValueError):
-            launch_phase.schedule()
+        with caplog.at_level("WARNING", logger=launch_phase.logger.name):
+            assert launch_phase.schedule() is None
+    assert "failed to derive a schedule" in caplog.text
+
+
+def test_schedule_never_raises_on_a_malformed_int_field(caplog):
+    """Belt-and-braces on top of _plain()'s int coercion: even if a bad type
+    slips through (e.g. a hand-edited row), schedule()'s own arithmetic must
+    not raise on the poll path — it logs and goes feature-off."""
+    bad = _row(enabled=True, drop_at=CONFIGURED["drop_at"], competition_start_at=CONFIGURED["competition_start_at"])
+    bad["competition_days"] = "x"
+    with patch.object(launch_settings_repo, "get_sync", return_value=bad):
+        with caplog.at_level("WARNING", logger=launch_phase.logger.name):
+            assert launch_phase.schedule() is None
+    assert "failed to derive a schedule" in caplog.text
 
 
 @pytest.mark.parametrize(

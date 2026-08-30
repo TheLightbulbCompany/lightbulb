@@ -13,6 +13,7 @@ from __future__ import annotations
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 _ID = "settings"
+_INT_FIELDS = ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents")
 
 DEFAULTS: dict = {
     "enabled": False,
@@ -37,6 +38,11 @@ def _plain(item: dict | None) -> dict | None:
         return None
     out = dict(item)
     out.pop("id", None)
+    for k in _INT_FIELDS:
+        if out.get(k) is not None:
+            out[k] = int(out[k])
+    if out.get("enabled") is not None:
+        out["enabled"] = bool(out["enabled"])
     return out
 
 

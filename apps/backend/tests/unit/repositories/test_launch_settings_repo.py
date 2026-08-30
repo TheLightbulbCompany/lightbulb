@@ -81,3 +81,48 @@ async def test_put_always_writes_to_the_singleton_id(repo):
     # A caller-supplied id must not fork the row — put() always writes id="settings".
     resp = repo._table().scan()
     assert len(resp["Items"]) == 1 and resp["Items"][0]["id"] == "settings"
+
+
+async def test_get_returns_python_ints_not_dynamodb_decimals(repo):
+    """DynamoDB's low-level deserializer hands every numeric attribute back
+    as Decimal regardless of what type was put — regression coverage for the
+    launch_phase.schedule() TypeError this caused at timedelta(days=Decimal(...))."""
+    await repo.put(dict(repo.DEFAULTS, comp_slots=220, competition_days=30))
+    fetched = await repo.get()
+    for field in ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents"):
+        assert type(fetched[field]) is int, f"{field} came back as {type(fetched[field])}"
+    assert type(fetched["enabled"]) is bool
+
+
+def test_get_sync_returns_python_ints_not_dynamodb_decimals(repo):
+    import asyncio
+
+    asyncio.run(repo.put(dict(repo.DEFAULTS, comp_slots=220, competition_days=30)))
+    fetched = repo.get_sync()
+    for field in ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents"):
+        assert type(fetched[field]) is int, f"{field} came back as {type(fetched[field])}"
+
+
+async def test_schedule_reads_a_real_saved_row_with_int_typed_fields(repo):
+    """End-to-end: put a valid enabled row through moto, invalidate the
+    launch_phase cache, and confirm schedule() derives a real Schedule with
+    Python-int fields (not Decimals) and the right derived math."""
+    from datetime import timedelta
+
+    from core.services import launch_phase
+
+    row = dict(
+        repo.DEFAULTS,
+        enabled=True,
+        drop_at="2026-09-18T00:00:00-04:00",
+        competition_start_at="2026-09-21T00:00:00-04:00",
+    )
+    await repo.put(row)
+    launch_phase.invalidate()
+    try:
+        s = launch_phase.schedule()
+        assert s is not None
+        assert type(s.comp_slots) is int and type(s.competition_days) is int
+        assert s.competition_end_at == s.competition_start_at + timedelta(days=30)
+    finally:
+        launch_phase.invalidate()

@@ -358,7 +358,12 @@ def handler(event, context):
       }),
     });
 
-    const resource = new cdk.CustomResource(this, "FernetKeyBootstrap", {
+    // "V2" because renaming the provider changed this resource's ServiceToken,
+    // and CloudFormation refuses to modify a custom resource's service token
+    // in place ("Modifying service token is not allowed") — the resource must
+    // be REPLACED via a new logical id. Safe: the handler's Delete never
+    // touches the secret, and the new Create no-ops on a valid key.
+    const resource = new cdk.CustomResource(this, "FernetKeyBootstrapV2", {
       serviceToken: provider.serviceToken,
       resourceType: "Custom::FernetKey",
       properties: {

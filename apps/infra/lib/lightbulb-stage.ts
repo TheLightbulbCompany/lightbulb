@@ -145,6 +145,7 @@ export class LightbulbStage extends cdk.Stage {
       hostedZone: dns.hostedZone,
       alb: network.alb,
       albHttpListenerArn: network.albHttpListenerArn,
+      albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
       // for cross-stack secret refs to avoid KMS auto-grant cycles.

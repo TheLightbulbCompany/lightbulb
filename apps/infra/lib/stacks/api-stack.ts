@@ -39,6 +39,14 @@ export interface ApiStackProps extends cdk.StackProps {
   hostedZone?: route53.IHostedZone;
   alb: elbv2.IApplicationLoadBalancer;
   albHttpListenerArn: string;
+  /**
+   * TRANSITIONAL (ALB rename step 1): the named ALB. A CloudFront VPC origin
+   * for it is created here one deploy BEFORE the distribution references it,
+   * because a freshly created VpcOrigin can still be "Deploying" when a
+   * distribution update points at it (the race that broke the prod api
+   * stack's first create).
+   */
+  albV2: elbv2.IApplicationLoadBalancer;
   albSecurityGroup: ec2.ISecurityGroup;
   /**
    * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
@@ -759,6 +767,17 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
     if (props.certificate && props.hostedZone) {
       const browserViewDomain = isProd ? `bv.${rootDomain}` : `bv-${env}.${rootDomain}`;
+
+      // TRANSITIONAL (ALB rename step 1): the VPC origin for the named ALB,
+      // created now and referenced by the distribution in the next deploy
+      // (see the albV2 prop). Same port/protocol as the legacy origin below.
+      new cloudfront.VpcOrigin(this, "BrowserViewVpcOriginV2", {
+        endpoint: cloudfront.VpcOriginEndpoint.applicationLoadBalancer(props.albV2),
+        vpcOriginName: `lightbulb-${env}-browser-view`,
+        httpPort: 8081,
+        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+      });
+
       const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
         comment: `lightbulb ${env} container-browser live view relay`,
         domainNames: [browserViewDomain],

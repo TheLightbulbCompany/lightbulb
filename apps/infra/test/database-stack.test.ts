@@ -112,9 +112,9 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
 
   test("creates Aurora Serverless v2 Postgres cluster with scale-to-zero", () => {
     template.hasResourceProperties("AWS::RDS::DBCluster", {
-      DBClusterIdentifier: "isol8-dev-paperclip-db",
+      DBClusterIdentifier: "lightbulb-dev-paperclip-db",
       Engine: "aurora-postgresql",
-      DatabaseName: "paperclip",
+      SnapshotIdentifier: "lightbulb-dev-paperclip-db-rename",
       StorageEncrypted: true,
       ServerlessV2ScalingConfiguration: Match.objectLike({
         MinCapacity: 0,
@@ -125,7 +125,7 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
 
   test("Aurora cluster uses generated secret with deterministic name", () => {
     template.hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "isol8-dev-paperclip-db-credentials",
+      Name: "lightbulb-dev-paperclip-db-credentials",
     });
   });
 
@@ -157,14 +157,14 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
 
   test("Aurora cluster has 7-day backup retention", () => {
     template.hasResourceProperties("AWS::RDS::DBCluster", {
-      DBClusterIdentifier: "isol8-dev-paperclip-db",
+      DBClusterIdentifier: "lightbulb-dev-paperclip-db",
       BackupRetentionPeriod: 7,
     });
   });
 
   test("Aurora cluster uses SNAPSHOT removal policy regardless of env", () => {
     const clusters = template.findResources("AWS::RDS::DBCluster", {
-      Properties: { DBClusterIdentifier: "isol8-dev-paperclip-db" },
+      Properties: { DBClusterIdentifier: "lightbulb-dev-paperclip-db" },
     });
     const logicalId = Object.keys(clusters)[0];
     expect(clusters[logicalId].DeletionPolicy).toBe("Snapshot");

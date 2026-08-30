@@ -21,6 +21,11 @@ export class NetworkStack extends cdk.Stack {
   public readonly targetGroup: elbv2.ApplicationTargetGroup;
   public readonly albHttpListenerArn: string;
   public readonly albHttpsListenerArn?: string;
+  /** TRANSITIONAL (ALB rename step 1): the named set, unused until the consumers repoint. */
+  public readonly albV2: elbv2.ApplicationLoadBalancer;
+  public readonly targetGroupV2: elbv2.ApplicationTargetGroup;
+  public readonly albHttpListenerArnV2: string;
+  public readonly albHttpsListenerArnV2?: string;
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
     super(scope, id, props);
@@ -75,25 +80,65 @@ export class NetworkStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // ALB (internal)
+    // ALB (internal) + target group + listeners
+    //
+    // TRANSITIONAL — two sets during the isol8 -> lightbulb rename. ALB and
+    // target-group names are create-only, so the named set is built ALONGSIDE
+    // the legacy auto-named one: (1) this deploy adds it, unused; (2) the next
+    // repoints the API Gateway VPC link, the CloudFront VPC origin, the backend
+    // service and the alarms to it; (3) the one after deletes the legacy set.
+    // Deletion protection comes off the legacy ALB here (in-place) for step 3.
     // -------------------------------------------------------------------------
-    this.alb = new elbv2.ApplicationLoadBalancer(this, "Alb", {
+    const legacy = this.buildAlb("", props, { deletionProtection: false });
+    this.alb = legacy.alb;
+    this.targetGroup = legacy.targetGroup;
+    this.albHttpListenerArn = legacy.httpListenerArn;
+    this.albHttpsListenerArn = legacy.httpsListenerArn;
+
+    const named = this.buildAlb("V2", props, {
+      deletionProtection: env === "prod",
+      loadBalancerName: `lightbulb-${env}`,
+      targetGroupName: `lightbulb-${env}-backend`,
+    });
+    this.albV2 = named.alb;
+    this.targetGroupV2 = named.targetGroup;
+    this.albHttpListenerArnV2 = named.httpListenerArn;
+    this.albHttpsListenerArnV2 = named.httpsListenerArn;
+
+    this.albSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+      ec2.Port.tcp(8081),
+      "CloudFront VPC origin to browser-view relay (path-capped by listener rule)",
+    );
+  }
+
+  private buildAlb(
+    idSuffix: string,
+    props: NetworkStackProps,
+    names: { deletionProtection: boolean; loadBalancerName?: string; targetGroupName?: string },
+  ): {
+    alb: elbv2.ApplicationLoadBalancer;
+    targetGroup: elbv2.ApplicationTargetGroup;
+    httpListenerArn: string;
+    httpsListenerArn?: string;
+  } {
+    const alb = new elbv2.ApplicationLoadBalancer(this, `Alb${idSuffix}`, {
       vpc: this.vpc,
       internetFacing: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroup: this.albSecurityGroup,
       idleTimeout: cdk.Duration.seconds(300),
-      deletionProtection: env === "prod",
+      deletionProtection: names.deletionProtection,
+      loadBalancerName: names.loadBalancerName,
     });
 
-    // -------------------------------------------------------------------------
     // Target Group (IP target type for Fargate awsvpc networking)
-    // -------------------------------------------------------------------------
-    this.targetGroup = new elbv2.ApplicationTargetGroup(this, "TargetGroup", {
+    const targetGroup = new elbv2.ApplicationTargetGroup(this, `TargetGroup${idSuffix}`, {
       vpc: this.vpc,
       port: 8000,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
+      targetGroupName: names.targetGroupName,
       // Drain a deregistering task quickly so a rolling deploy / task stop
       // finishes in-flight work and then exits. Kept <= the ECS container
       // stopTimeout (30s) so the task is fully drained before SIGKILL.
@@ -109,48 +154,43 @@ export class NetworkStack extends cdk.Stack {
       stickinessCookieDuration: cdk.Duration.hours(1),
     });
 
-    // -------------------------------------------------------------------------
     // HTTPS Listener (only if certificate is provided)
-    // -------------------------------------------------------------------------
+    let httpsListenerArn: string | undefined;
     if (props.certificate) {
-      const httpsListener = this.alb.addListener("HttpsListener", {
+      const httpsListener = alb.addListener("HttpsListener", {
         port: 443,
         protocol: elbv2.ApplicationProtocol.HTTPS,
         certificates: [props.certificate],
         sslPolicy: elbv2.SslPolicy.TLS13_RES,
-        defaultTargetGroups: [this.targetGroup],
+        defaultTargetGroups: [targetGroup],
       });
-      this.albHttpsListenerArn = httpsListener.listenerArn;
+      httpsListenerArn = httpsListener.listenerArn;
     }
 
-    // -------------------------------------------------------------------------
     // HTTP Listener — forwards to target group (NOT redirect)
     // API Gateway VPC Link sends plain HTTP internally (API GW handles public TLS)
-    // -------------------------------------------------------------------------
-    const httpListener = this.alb.addListener("HttpListener", {
+    const httpListener = alb.addListener("HttpListener", {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
-      defaultTargetGroups: [this.targetGroup],
+      defaultTargetGroups: [targetGroup],
     });
-    this.albHttpListenerArn = httpListener.listenerArn;
 
-    // -------------------------------------------------------------------------
     // Browser-view listener (:8081) — the ONLY WebSocket-capable door to the
-    // backend. api[-env].isol8.co is an API Gateway HTTP API, and HTTP APIs do
-    // not pass WebSocket upgrades (verified live: the upgrade dies with an ALB
-    // 400 and never reaches uvicorn), so the container-browser live view
+    // backend. api[-env] is an API Gateway HTTP API, and HTTP APIs do not pass
+    // WebSocket upgrades (verified live: the upgrade dies with an ALB 400 and
+    // never reaches uvicorn), so the container-browser live view
     // (routers/browser_view.py) rides CloudFront → VPC origin → this listener
     // instead (api-stack.ts, BrowserViewDistribution).
     //
     // A dedicated port because path scoping must live HERE: CloudFront VPC
     // origins put their ENIs behind an AWS-managed security group that only
-    // exists after the first deploy, so the ALB ingress rule below has to
-    // admit the VPC CIDR — meaning anything in-VPC (per-user containers
-    // included) can reach this port. The fixed-404 default + single path rule
-    // cap that at exactly the one Clerk-authenticated relay route, which is
-    // the same exposure the public CloudFront door grants anyway. Widening
-    // this listener's routing widens what a hostile container can reach.
-    const browserViewListener = this.alb.addListener("BrowserViewListener", {
+    // exists after the first deploy, so the ALB ingress rule admits the VPC
+    // CIDR — meaning anything in-VPC (per-user containers included) can reach
+    // this port. The fixed-404 default + single path rule cap that at exactly
+    // the one Clerk-authenticated relay route, which is the same exposure the
+    // public CloudFront door grants anyway. Widening this listener's routing
+    // widens what a hostile container can reach.
+    const browserViewListener = alb.addListener("BrowserViewListener", {
       port: 8081,
       protocol: elbv2.ApplicationProtocol.HTTP,
       defaultAction: elbv2.ListenerAction.fixedResponse(404, {
@@ -161,12 +201,9 @@ export class NetworkStack extends cdk.Stack {
     browserViewListener.addAction("BrowserViewRelay", {
       priority: 10,
       conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/browser-view/*"])],
-      action: elbv2.ListenerAction.forward([this.targetGroup]),
+      action: elbv2.ListenerAction.forward([targetGroup]),
     });
-    this.albSecurityGroup.addIngressRule(
-      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-      ec2.Port.tcp(8081),
-      "CloudFront VPC origin to browser-view relay (path-capped by listener rule)",
-    );
+
+    return { alb, targetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };
   }
 }

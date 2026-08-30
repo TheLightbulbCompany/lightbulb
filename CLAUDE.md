@@ -179,7 +179,6 @@ turbo run lint                        # All linting
 
 Backend: `cd apps/backend && uv run pytest tests/ -v`
 Frontend unit: `cd apps/frontend && pnpm test`
-Frontend E2E: `cd apps/frontend && pnpm run test:e2e`
 
 ### Container Re-provisioning (Dev)
 
@@ -213,10 +212,8 @@ subscription, Clerk org, and marketplace rows — moved to the
 
 ### Manual dev testing accounts
 
-The E2E journey test no longer uses a fixed account — it mints a random
-`isol8-e2e-<rand>@mailsac.com` per run and deletes it in `cleanupUser`
-(`apps/frontend/tests/e2e/fixtures/user.ts`), so there is no reserved address
-to avoid clobbering.
+The Playwright journey test was removed 2026-08-30 — E2E is Claude-in-Chrome
+against dev now, not a scripted suite, so there is no reserved test account.
 
 For manual dev testing, create your own Clerk account (or use an existing
 personal email) at https://dev.flickmeon.ai/sign-up. The dev Clerk instance is
@@ -324,7 +321,7 @@ skip.)
 - **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
-- **E2E journey test:** GitHub Actions (`e2e-dev.yml`) runs the Playwright journey test against dev **on-demand only** (not on every deploy); keep regularly-needed coverage hermetic/per-PR
+- **E2E:** no scripted suite — Claude-in-Chrome drives dev directly (the Playwright journey test was removed 2026-08-30)
 
 ---
 

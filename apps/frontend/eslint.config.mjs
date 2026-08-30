@@ -13,9 +13,6 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Playwright generated files
-    "playwright-report/**",
-    "test-results/**",
   ]),
   // CEO A2: prevent the public client bundle from importing admin code.
   // The middleware host gate (CEO A1) keeps unauth'd users out at the edge;

@@ -171,8 +171,8 @@ def _create_tables(resource):
             {"AttributeName": "provider", "AttributeType": "S"},
         ],
     )
-    # provisioning-workflows: PK workflow_id, GSIs owner-state-index +
-    # open-sweep-index (mirror database-stack.ts exactly).
+    # provisioning-workflows: PK workflow_id, GSI owner-state-index (mirror
+    # database-stack.ts exactly).
     _make(
         f"{_PREFIX}provisioning-workflows",
         [{"AttributeName": "workflow_id", "KeyType": "HASH"}],
@@ -180,8 +180,6 @@ def _create_tables(resource):
             {"AttributeName": "workflow_id", "AttributeType": "S"},
             {"AttributeName": "owner_id", "AttributeType": "S"},
             {"AttributeName": "state", "AttributeType": "S"},
-            {"AttributeName": "sweep_key", "AttributeType": "S"},
-            {"AttributeName": "updated_at", "AttributeType": "S"},
         ],
         gsis=[
             {
@@ -189,14 +187,6 @@ def _create_tables(resource):
                 "KeySchema": [
                     {"AttributeName": "owner_id", "KeyType": "HASH"},
                     {"AttributeName": "state", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-            {
-                "IndexName": "open-sweep-index",
-                "KeySchema": [
-                    {"AttributeName": "sweep_key", "KeyType": "HASH"},
-                    {"AttributeName": "updated_at", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },

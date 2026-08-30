@@ -321,17 +321,6 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    // SPARSE, on purpose: `sweep_key` is written as "open" while a workflow is
-    // non-terminal and REMOVEd when it reaches a terminal state, so the
-    // startup sweep is one small Query rather than a table Scan, and a
-    // finished workflow costs the index nothing.
-    this.provisioningWorkflowsTable.addGlobalSecondaryIndex({
-      indexName: "open-sweep-index",
-      partitionKey: { name: "sweep_key", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "updated_at", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
     // Paperclip companies — maps Isol8 user_id → their Paperclip company
     // record + encrypted credentials. GSI by-status-purge-at lets the
     // cleanup cron find disabled rows past their grace window. Per the

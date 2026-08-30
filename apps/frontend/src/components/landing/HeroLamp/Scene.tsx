@@ -384,7 +384,9 @@ function FirstFrames() {
   useFrame(() => {
     if (drawn.current) return;
     drawn.current = true;
-    gl.domElement.parentElement?.setAttribute("data-ready", "");
+    // Not parentElement: R3F wraps the canvas in its own inner div, and the
+    // CSS fade lives on the .ld-hero-canvas host above it.
+    gl.domElement.closest(".ld-hero-canvas")?.setAttribute("data-ready", "");
   });
   React.useEffect(() => {
     const host = gl.domElement.parentElement;

@@ -123,11 +123,12 @@ def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
 # drags along stale snapshots of files that live canonically elsewhere.
 #
 # ``.projects`` / ``.stripe`` are the Stripe Projects vault and CLI session
-# (spec §3.6). They are ALREADY excluded twice — Friday runs the CLI in the EFS
-# root, a sibling of every workspace-{id}/, and the dotfile rule below drops
-# them at any depth. Naming them here is the greppable intent so a future
-# relaxation of that rule cannot quietly ship an owner's provider credentials
-# to a buyer.
+# (spec §3.6). The rail that would write them is BACKEND-owned and puts nothing
+# on EFS but `env.vars` in openclaw.json, so these only ever appear as leftovers
+# from the retired CLI path or a hand copy — in the EFS root, a sibling of every
+# workspace-{id}/, and the dotfile rule below drops them at any depth anyway.
+# Naming them here is the greppable intent, so a future relaxation of that rule
+# cannot quietly ship an owner's provider credentials to a buyer.
 _SKIP_DIR_NAMES = frozenset(
     {
         ".DS_Store",

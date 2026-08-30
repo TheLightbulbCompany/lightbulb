@@ -232,13 +232,14 @@ class TestDeleteOwnerBedrockRole:
             "owner-litestream-s3",
         ]
         assert all(
-            c.kwargs["RoleName"] == "isol8-dev-owner-bedrock-org_abc" for c in fake.delete_role_policy.call_args_list
+            c.kwargs["RoleName"] == "lightbulb-dev-owner-bedrock-org_abc"
+            for c in fake.delete_role_policy.call_args_list
         )
         fake.detach_role_policy.assert_called_once_with(
-            RoleName="isol8-dev-owner-bedrock-org_abc",
+            RoleName="lightbulb-dev-owner-bedrock-org_abc",
             PolicyArn="arn:aws:iam::877352799272:policy/base",
         )
-        fake.delete_role.assert_called_once_with(RoleName="isol8-dev-owner-bedrock-org_abc")
+        fake.delete_role.assert_called_once_with(RoleName="lightbulb-dev-owner-bedrock-org_abc")
 
     @pytest.mark.asyncio
     async def test_never_deletes_the_base_managed_policy_itself(self, aip_tables, monkeypatch):
@@ -303,7 +304,7 @@ class TestDeleteOwnerBedrockRole:
 ROW = {
     "owner_id": "org_abc",
     "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
-    "bedrock_role_arn": "arn:aws:iam::1:role/isol8-dev-owner-bedrock-org_abc",
+    "bedrock_role_arn": "arn:aws:iam::1:role/lightbulb-dev-owner-bedrock-org_abc",
     "bedrock_gate_token_hash": "hash_current",
     "bedrock_gate_superseded_hashes": ["hash_old"],
 }
@@ -453,7 +454,7 @@ class TestDetachByEnumeration:
     async def test_detaches_a_policy_the_current_setting_does_not_name(self, aip_tables, monkeypatch):
         import core.billing.bedrock_aip as mod
 
-        stale = "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base"
+        stale = "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base"
         fake = MagicMock()
         fake.list_attached_role_policies.return_value = {"AttachedPolicies": [{"PolicyArn": stale}]}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
@@ -477,7 +478,7 @@ class TestDetachByEnumeration:
         import core.billing.bedrock_aip as mod
 
         arns = [
-            "arn:aws:iam::877352799272:policy/isol8-dev-owner-bedrock-base",
+            "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
             "arn:aws:iam::877352799272:policy/lightbulb-dev-owner-bedrock-base",
         ]
         fake = MagicMock()

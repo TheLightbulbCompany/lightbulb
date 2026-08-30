@@ -8,7 +8,7 @@ import time
 
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
-from core.services import launch_phase, launch_service, readiness_state
+from core.services import launch_phase, launch_service, launch_settings, readiness_state
 from core.services.ops import envelope as env
 
 CONTAINER_COST_CENTS = 1800
@@ -188,11 +188,16 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     }
 
 
-async def compute() -> tuple[dict | None, str, list[dict]]:
+async def compute() -> tuple[dict, str, list[dict]]:
     s = launch_phase.schedule()
     if s is None:
+        # Feature off (or misconfigured for this env) — the economics sheet
+        # has nothing to compute, but the admin console still needs the
+        # settings row + enabled flag so it can render the settings card and
+        # let an admin turn the feature on, instead of the page going blank.
+        settings_row = launch_settings.to_public(await launch_settings.effective())
         return (
-            None,
+            {"settings": settings_row, "enabled": False},
             env.UNAVAILABLE,
             [{"domain": "launch", "reason": "launch settings are disabled or missing a date for this env"}],
         )

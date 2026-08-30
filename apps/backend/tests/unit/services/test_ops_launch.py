@@ -194,7 +194,14 @@ async def test_compute_is_cached_for_60s(deps):
 
 
 async def test_compute_unconfigured():
-    with patch.object(ops_launch.launch_phase, "schedule", return_value=None):
+    # Feature off ⇒ no economics to compute, but the admin console still gets
+    # the settings row + enabled flag so it can render the settings card and
+    # let an admin turn the feature on, instead of the page going blank.
+    with (
+        patch.object(ops_launch.launch_phase, "schedule", return_value=None),
+        patch.object(ops_launch.launch_settings.launch_settings_repo, "get", AsyncMock(return_value=None)),
+    ):
         ops_launch._cache.clear()
         data, state, errors = await ops_launch.compute()
-    assert data is None and state == "unavailable" and errors[0]["domain"] == "launch"
+    assert state == "unavailable" and errors[0]["domain"] == "launch"
+    assert data == {"settings": ops_launch.launch_settings.DEFAULTS, "enabled": False}

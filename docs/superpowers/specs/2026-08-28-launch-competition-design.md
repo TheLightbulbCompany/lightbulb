@@ -45,25 +45,34 @@ paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.
 
 ## Config
 
-`launch-schedule.json` at the repo root is the one place the dates and pot constants live —
-read at runtime by the backend (`core/services/launch_phase.py`) and at build time by the
-frontend (`apps/frontend/src/lib/launchSchedule.ts`), mirroring `openclaw-version.json`'s
-pattern. CDK reads the file at synth and ships its raw text as the `LAUNCH_SCHEDULE_JSON`
-container env var (transport only — the file itself is the source of truth):
+One DynamoDB row per environment — `lightbulb-{env}-launch-settings`, item `id="settings"` — is
+the only place the dates, pot constants, comp slots and the Stripe coupon live. Edited on
+`/admin/launch` (the **Launch settings** card; platform admins only; every write is an audit row
+`launch.settings.update` / `launch.settings.stripe_coupon`). There is no schedule file and no
+`LAUNCH_*` / coupon env var any more.
 
 | Field | Meaning |
 |---|---|
+| `enabled` | Off ⇒ every `/launch*` route 404s, the webhook join returns first thing, the pre-drop hold never fires. Both environments ship disabled. Requires both dates to turn on. |
+| `drop_at` / `competition_start_at` | ISO-8601 instants **with offset** (the card shows and edits them in Eastern time). `competition_start_at > drop_at`. |
+| `comp_slots` | 220. Display + the promo code's `max_redemptions`. |
 | `competition_days` | 30. |
-| `comp_slots` | 220. Display only ("you're in the first 220"); enforcement is the promo code's `max_redemptions`. |
-| `pot_front_cents` | 100000. |
-| `pot_per_entrant_cents` | 1000. |
-| `dev.drop_at` / `dev.competition_start_at` | Per-env ISO-8601 instants with offset. **`null` ⇒ every `/launch*` route 404s, nothing is held, nothing refreshes.** |
-| `prod.drop_at` / `prod.competition_start_at` | Same, for prod. Prod is inert until an owner sets these. |
-| `STRIPE_FREE_MONTH_COUPON_ID` | Still a `Settings` env var (dev + prod) — the 100%-off-once coupon the owner creates in the Stripe console. Used only by the referral reward. Unset ⇒ rewards are banked, never applied. |
+| `pot_front_cents` / `pot_per_entrant_cents` | $1,000 / $10 — the public pot is `front + per_entrant × sign-ups`. |
+| `stripe_coupon_id`, `stripe_promotion_code_id`, `stripe_promotion_code` | Written by **Create Stripe coupon + promo code** on the card: `Coupon(percent_off=100, duration=once)` + `PromotionCode(max_redemptions=comp_slots, expires_at=competition_start_at)`. The code is what goes in the launch email. `stripe_coupon_id` unset ⇒ referral rewards are banked, never applied. |
+| server-side only | `mint_nonce` (idempotency: a retry re-sends byte-identical params; "force" mints a fresh pair), `updated_at`, `updated_by`. |
 
-Derived: `competition_end_at = competition_start_at + competition_days`,
-`phase ∈ waitlist | activation | live | ended`. Changing a date is one commit to
-`launch-schedule.json`; merge deploys dev, the prod promotion carries it. No flag machinery.
+The backend reads the row through a 30-second in-process cache (`core/services/launch_phase.py`
+— it sits on the container-status poll path), so a save takes effect within ~30 s fleet-wide
+with no deploy; writes also clear the public `/launch*` response cache and the admin sheet
+cache. Validation on save mirrors the backend parser: `24:00`, Feb 29 and naive timestamps are
+rejected, money is non-negative, `comp_slots ≥ 1`, `competition_days ≥ 1`. A DynamoDB read
+failure never raises on the poll path — the last cached row is served, else the defaults
+(feature off). Derived: `competition_end_at = competition_start_at + competition_days`,
+`phase ∈ waitlist | activation | live | ended`.
+
+Admin routes (`routers/ops.py`, mounted at `/api/v1/ops`): `GET /launch/settings`,
+`PUT /launch/settings` (422 → `{"detail": {"errors": {field: msg}}}`),
+`POST /launch/settings/stripe-coupon {force}` (409 `already_configured`, 502 `stripe_error`).
 
 ## Data
 
@@ -108,7 +117,7 @@ The Stripe restricted key is stored on the BYO-key rail (`provider = "stripe-lau
 
 ## Endpoints — `routers/launch.py`, mounted at `/api/v1/launch`
 
-All 404 (`require_launch`) when `launch-schedule.json`'s `drop_at` is `null` for this env.
+All 404 (`require_launch`) while the settings row is disabled or missing a date for this env.
 There is no `POST /launch/waitlist` — the waitlist row is written by the Clerk `user.created`
 webhook (`routers/webhooks.py`), not a form submit.
 
@@ -132,7 +141,7 @@ On `invoice.paid` with `amount_paid > 0`:
 
 1. Resolve owner from `customer` via the `stripe-customer-index` GSI. Org owner ⇒ return (personal only).
 2. Referral payoff: owner → `users.email` → waitlist row. If `referred_by` set and `referral_rewarded_at` unset → conditional update stamping `referral_rewarded_at` (the CAS). On success: resolve referrer via the GSI, `ADD referrals_paid 1`, then **grant**:
-   - referrer has `stripe_subscription_id` and the subscription carries no discount and `STRIPE_FREE_MONTH_COUPON_ID` is set → `stripe.Subscription.modify(sub_id, discounts=[{"coupon": id}], idempotency_key=f"referral_reward:{referrer_subscription_id}:{invoice_id}")`.
+   - referrer has `stripe_subscription_id` and the subscription carries no discount and the settings row's `stripe_coupon_id` is set → `stripe.Subscription.modify(sub_id, discounts=[{"coupon": id}], idempotency_key=f"referral_reward:{referrer_subscription_id}:{invoice_id}")`.
    - otherwise → `ADD free_months_banked 1` on the referrer's row.
 3. Drain for the payer: if the payer's own row has `free_months_banked > 0` and their subscription carries no discount → conditional decrement + apply the coupon (idempotency key `banked_month:{payer_subscription_id}:{invoice_id}`). A refused decrement stops the drain — there is no month to spend, so nothing is put back.
 
@@ -210,8 +219,8 @@ in-app/in-product surfaces carry the launch instead:
 
 ## Drop-day runbook
 
-1. **Wk 0** — edit `launch-schedule.json`'s `dev` block (`drop_at` + `competition_start_at`), merge, verify `dev.flickmeon.ai` sign-up → held card → `/launch` with Claude-in-Chrome, then set `prod`, merge, promote via `workflow_dispatch`. No Clerk Restricted/Public step — sign-ups stay open throughout.
-2. **Drop** — Stripe live console: coupon 100% off / once → promotion code with `max_redemptions=220`, `expires_at=competition_start_at`. Then set `STRIPE_FREE_MONTH_COUPON_ID` — **this is a CODE change**, not a console toggle: it is a literal in `apps/infra/lib/stacks/service-stack.ts`'s backend container env (`""` today), so it lands as a PR that dev-deploys on merge and reaches prod only via a `workflow_dispatch` promotion. Budget the deploy. Until it is set, `launch_referral` **banks** every earned free month (`free_months_banked`) and `_drain_banked` can never spend one — the rewards accrue and drain retroactively on the next paid invoice after the id ships. Finally: `/admin/launch` → Export CSV → send the launch email from the marketing tool.
+1. **Wk 0** — open `admin.dev.flickmeon.ai/admin/launch`: set Drop + Competition start (Eastern), Save, tick Enabled. Verify on `dev.flickmeon.ai` with Claude-in-Chrome: sign-up → held card → move Drop into the past → container + Friday's first run → Join → Connect. Then the same on `admin.flickmeon.ai/admin/launch` for prod. No PR, no deploy, no Clerk Restricted/Public step — sign-ups stay open throughout.
+2. **Drop** — on the card, **Create Stripe coupon + promo code** (prod = live mode; it mints the 100%-off-once coupon and a promotion code with `max_redemptions = comp_slots`, `expires_at = competition_start_at`); copy the code into the launch email; `/admin/launch` → Export CSV → send from the marketing tool. Until a coupon exists, `launch_referral` **banks** every earned free month (`free_months_banked`) and `_drain_banked` spends them retroactively on the next paid invoice once it does.
 3. **Through competition start** — nothing. The promo code expires itself; the competition starts on the clock.
 4. **End** — `/admin/launch` → Refresh all; judges pick from the table; announce by email.
 

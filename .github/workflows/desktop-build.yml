@@ -86,7 +86,7 @@ jobs:
     - name: Set up signing keychain
       run: |-
         set -euo pipefail
-        KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+        KEYCHAIN_PATH="$RUNNER_TEMP/lightbulb-build.keychain-db"
         KEYCHAIN_PASSWORD="$(uuidgen)"
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
@@ -171,12 +171,12 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        ISOL8_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://dev.flickmeon.ai/auth/desktop-callback
         # Compile-time targets for the native node-host + pairing client.
         # These default to dev in lib.rs, but set them explicitly so the
         # dev/prod split is visible here and can't silently regress.
-        ISOL8_API_BASE: https://api-dev.flickmeon.ai
-        ISOL8_WS_URL: wss://ws-dev.flickmeon.ai
+        LIGHTBULB_API_BASE: https://api-dev.flickmeon.ai
+        LIGHTBULB_WS_URL: wss://ws-dev.flickmeon.ai
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
@@ -192,8 +192,8 @@ jobs:
         # sidesteps that TCC wall. ditto (not makehybrid) is required because a
         # shell-script binary's code signature lives in extended attributes, which
         # makehybrid drops -> notarization rejects the DMG as "not signed".
-        RW="$RUNNER_TEMP/isol8_rw.dmg"
-        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        RW="$RUNNER_TEMP/lightbulb_rw.dmg"
+        MNT="$RUNNER_TEMP/lightbulb_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
         hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb" "$RW"
@@ -222,7 +222,7 @@ jobs:
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()
-      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true
+      run: security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true
   build-desktop-prod:
     name: BuildDesktopProd
     runs-on:
@@ -279,7 +279,7 @@ jobs:
     - name: Set up signing keychain
       run: |-
         set -euo pipefail
-        KEYCHAIN_PATH="$RUNNER_TEMP/isol8-build.keychain-db"
+        KEYCHAIN_PATH="$RUNNER_TEMP/lightbulb-build.keychain-db"
         KEYCHAIN_PASSWORD="$(uuidgen)"
         CERT_PATH="$RUNNER_TEMP/cert.p12"
 
@@ -364,13 +364,13 @@ jobs:
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        ISOL8_CALLBACK_URL: https://flickmeon.ai/auth/desktop-callback
+        LIGHTBULB_CALLBACK_URL: https://flickmeon.ai/auth/desktop-callback
         # Point the native node-host + pairing client at PROD. Without these
         # the compile-time defaults in lib.rs fall back to dev, so the prod
         # app's "computer access" half pairs against dev while the chat UI +
         # Friday run on prod — they never connect.
-        ISOL8_API_BASE: https://api.flickmeon.ai
-        ISOL8_WS_URL: wss://ws.flickmeon.ai
+        LIGHTBULB_API_BASE: https://api.flickmeon.ai
+        LIGHTBULB_WS_URL: wss://ws.flickmeon.ai
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail
@@ -386,8 +386,8 @@ jobs:
         # sidesteps that TCC wall. ditto (not makehybrid) is required because a
         # shell-script binary's code signature lives in extended attributes, which
         # makehybrid drops -> notarization rejects the DMG as "not signed".
-        RW="$RUNNER_TEMP/isol8_rw.dmg"
-        MNT="$RUNNER_TEMP/isol8_dmgmnt"
+        RW="$RUNNER_TEMP/lightbulb_rw.dmg"
+        MNT="$RUNNER_TEMP/lightbulb_dmgmnt"
         rm -f "$RW" "$DMG"; rm -rf "$MNT"; mkdir -p "$MNT"
         SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 200 ))
         hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Lightbulb" "$RW"
@@ -416,4 +416,4 @@ jobs:
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()
-      run: security delete-keychain "$RUNNER_TEMP/isol8-build.keychain-db" || true
+      run: security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true

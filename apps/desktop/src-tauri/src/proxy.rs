@@ -174,7 +174,7 @@ async fn handle_connection(
     // emit only scheme+host+path plus the redacted token/clientId we
     // append. If the backend ever returns a pre-signed gateway_url (or
     // any URL with credential-bearing query params), naive token-only
-    // redaction would leak those verbatim. /tmp/isol8-desktop.log is
+    // redaction would leak those verbatim. /tmp/lightbulb-desktop.log is
     // world-readable, so we only emit the parts WE control here.
     let upstream_base = upstream_url.split('?').next().unwrap_or(&upstream_url);
     log(&format!(

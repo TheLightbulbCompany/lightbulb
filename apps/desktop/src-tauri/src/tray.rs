@@ -15,7 +15,7 @@ pub fn update_tray_status(app: &AppHandle, label: &str) {
 }
 
 fn build_tray_menu(app: &AppHandle, status_label: &str) -> tauri::Result<()> {
-    let title = MenuItemBuilder::with_id("title", "Isol8 Desktop")
+    let title = MenuItemBuilder::with_id("title", "Lightbulb Desktop")
         .enabled(false)
         .build(app)?;
     let status = MenuItemBuilder::with_id("status", status_label)
@@ -36,7 +36,7 @@ fn build_tray_menu(app: &AppHandle, status_label: &str) -> tauri::Result<()> {
         tray.set_menu(Some(menu))?;
     } else {
         TrayIconBuilder::with_id("main")
-            .tooltip("Isol8")
+            .tooltip("Lightbulb")
             .menu(&menu)
             .on_menu_event(|app, event| {
                 if event.id().as_ref() == "quit" {

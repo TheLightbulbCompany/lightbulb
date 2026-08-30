@@ -5,8 +5,8 @@
 //! us assert on the identity-file side effects and the non-blocking spawn
 //! behavior without needing a real openclaw install on the test machine.
 
-use isol8_desktop::keychain::generate_keypair;
-use isol8_desktop::subprocess::spawn;
+use lightbulb_desktop::keychain::generate_keypair;
+use lightbulb_desktop::subprocess::spawn;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
@@ -88,7 +88,7 @@ async fn spawn_returns_quickly_does_not_block() {
 #[tokio::test]
 async fn spawn_forwards_subprocess_stderr_to_log() {
     // Smoke test for the stdio-piping plumbing. We can't easily intercept
-    // /tmp/isol8-desktop.log from the test harness, so this just verifies
+    // /tmp/lightbulb-desktop.log from the test harness, so this just verifies
     // that spawning a process that produces stderr + exits doesn't crash
     // the parent (e.g. by panicking on a closed pipe in the forwarding
     // tasks). /bin/sh with no args reads stdin then exits — close enough

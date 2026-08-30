@@ -1525,6 +1525,44 @@ async def test_pending_brief_is_put_if_absent(repo):
     assert item["submitted_by"] == "m1"
 
 
+async def test_pending_brief_overwrite_true_bypasses_the_still_pending_guard(repo):
+    """overwrite=True backs the launch-waitlist "edit your idea while held"
+    flow -- it must replace a STILL-PENDING item, not just a failed one,
+    which the ordinary put-if-absent guard never allows."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="first idea", detail=None, brief_text="build first", submitted_by="user_abc"
+    )
+    item = await repo.get_pending_brief("user_abc")
+    assert item["brief_state"] == "pending"  # still pending -- what the ordinary guard checks
+
+    # The ordinary put-if-absent guard still refuses it...
+    assert not await repo.put_pending_brief(
+        "user_abc",
+        path="new",
+        user_input="second idea",
+        detail=None,
+        brief_text="build second",
+        submitted_by="user_abc",
+    )
+    assert (await repo.get_pending_brief("user_abc"))["input"] == "first idea"  # unchanged
+
+    # ...but overwrite=True replaces it against the real table.
+    assert await repo.put_pending_brief(
+        "user_abc",
+        path="new",
+        user_input="edited idea",
+        detail=None,
+        brief_text="build edited idea",
+        submitted_by="user_abc",
+        overwrite=True,
+    )
+    item = await repo.get_pending_brief("user_abc")
+    assert item["input"] == "edited idea"
+    assert item["brief_text"] == "build edited idea"
+    assert item["brief_state"] == "pending"
+    assert item["attempts"] == 0
+
+
 async def test_pending_brief_is_invisible_to_the_org_gsi(repo):
     """The sentinel item deliberately carries no org_id, so it can never be
     mistaken for a company row by find_owner_row / get_org_company_id."""

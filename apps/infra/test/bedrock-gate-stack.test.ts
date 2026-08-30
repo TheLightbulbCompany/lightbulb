@@ -308,7 +308,7 @@ describe("BedrockGateStack", () => {
     for (const gateEnv of ["dev", "prod"]) {
       const errorsAlarm = alarms.find(
         (a: any) =>
-          a.Properties.AlarmName === `isol8-${gateEnv}-bedrock-gate-fn-errors`,
+          a.Properties.AlarmName === `lightbulb-${gateEnv}-bedrock-gate-fn-errors`,
       );
       expect(errorsAlarm).toBeDefined();
       expect(errorsAlarm.Properties.MetricName).toBe("Errors");
@@ -322,7 +322,7 @@ describe("BedrockGateStack", () => {
       const throttlesAlarm = alarms.find(
         (a: any) =>
           a.Properties.AlarmName ===
-          `isol8-${gateEnv}-bedrock-gate-fn-throttles`,
+          `lightbulb-${gateEnv}-bedrock-gate-fn-throttles`,
       );
       expect(throttlesAlarm).toBeDefined();
       expect(throttlesAlarm.Properties.MetricName).toBe("Throttles");
@@ -336,7 +336,7 @@ describe("BedrockGateStack", () => {
     for (const gateEnv of ["dev", "prod"]) {
       for (const metricName of ["gate.error", "gate.hold_release_failed"]) {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-          AlarmName: `isol8-${gateEnv}-${metricName.replace(/\./g, "-")}`,
+          AlarmName: `lightbulb-${gateEnv}-${metricName.replace(/\./g, "-")}`,
           MetricName: metricName,
           Namespace: "LightbulbAI/BedrockGate",
           Dimensions: Match.arrayWith([
@@ -355,7 +355,7 @@ describe("BedrockGateStack", () => {
     for (const alarm of alarms) {
       const name: string = alarm.Properties.AlarmName;
       if (/-gate-error$|-gate-hold_release_failed$/.test(name)) {
-        const gateEnv = name.startsWith("isol8-dev-") ? "dev" : "prod";
+        const gateEnv = name.startsWith("lightbulb-dev-") ? "dev" : "prod";
         expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain(
           `lightbulb-${gateEnv}-alerts-page`,
         );

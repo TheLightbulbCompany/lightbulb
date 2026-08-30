@@ -312,8 +312,8 @@ describe("ObservabilityStack", () => {
     // absent data means the check is gone — indistinguishable from an
     // outage, and must never be read as healthy.
     for (const alarmName of [
-      "isol8-dev-P13-app-unreachable",
-      "isol8-dev-P14-api-unreachable",
+      "lightbulb-dev-P13-app-unreachable",
+      "lightbulb-dev-P14-api-unreachable",
     ]) {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: alarmName,
@@ -325,7 +325,7 @@ describe("ObservabilityStack", () => {
 
   test("page-tier alarm P1 exists with correct name", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "isol8-dev-P1-container-error-state",
+      AlarmName: "lightbulb-dev-P1-container-error-state",
     });
   });
 
@@ -335,7 +335,7 @@ describe("ObservabilityStack", () => {
   // name, so the alarm cannot silently drift off the emitter's stream.
   test("P15 pages on the inline-provision-timeout stream", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "isol8-dev-P15-provision-inline-timeout",
+      AlarmName: "lightbulb-dev-P15-provision-inline-timeout",
       Namespace: "LightbulbAI",
       MetricName: "container.provision",
       Threshold: 0,
@@ -348,7 +348,7 @@ describe("ObservabilityStack", () => {
 
   test("dashboard has correct name", () => {
     template.hasResourceProperties("AWS::CloudWatch::Dashboard", {
-      DashboardName: "isol8-dev-orr",
+      DashboardName: "lightbulb-dev-orr",
     });
   });
 
@@ -358,8 +358,8 @@ describe("ObservabilityStack", () => {
     // (TreatMissingData=breaching) sits in ALARM forever. Guard both alarms so
     // the TargetGroup dimension cannot be dropped again.
     for (const alarmName of [
-      "isol8-dev-W48-alb-healthy-hosts-drop",
-      "isol8-dev-W28-alb-unhealthy-hosts",
+      "lightbulb-dev-W48-alb-healthy-hosts-drop",
+      "lightbulb-dev-W28-alb-unhealthy-hosts",
     ]) {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: alarmName,
@@ -384,7 +384,7 @@ describe("ObservabilityStack", () => {
   //     alarm scoped to the cluster alone would read the whole per-user fleet.
   test("W65 alarms on the Paperclip service's native ECS task count", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "isol8-dev-W65-paperclip-no-running-task",
+      AlarmName: "lightbulb-dev-W65-paperclip-no-running-task",
       Namespace: "AWS/ECS",
       MetricName: "LiveTaskCount",
       Statistic: "Minimum",
@@ -539,8 +539,8 @@ describe("ObservabilityStack — prod-only paths", () => {
 
   test("prod uptime alarms page rather than warn", () => {
     for (const name of [
-      "isol8-prod-P13-app-unreachable",
-      "isol8-prod-P14-api-unreachable",
+      "lightbulb-prod-P13-app-unreachable",
+      "lightbulb-prod-P14-api-unreachable",
     ]) {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: name,

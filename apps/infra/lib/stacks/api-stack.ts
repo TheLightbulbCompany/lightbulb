@@ -122,7 +122,7 @@ export class ApiStack extends cdk.Stack {
 
     // --- HTTP API ---
     const httpApi = new apigatewayv2.CfnApi(this, "HttpApi", {
-      name: `isol8-${env}-api`,
+      name: `lightbulb-${env}-api`,
       protocolType: "HTTP",
       // AWS API Gateway HTTP API handles CORS preflight AT THE GATEWAY LAYER —
       // the backend never sees OPTIONS requests for declared CORS headers.
@@ -154,7 +154,7 @@ export class ApiStack extends cdk.Stack {
 
     // --- VPC Link v2 (for HTTP API → ALB) ---
     const vpcLinkV2 = new apigatewayv2.CfnVpcLink(this, "HttpVpcLink", {
-      name: `isol8-${env}-vpc-link`,
+      name: `lightbulb-${env}-vpc-link`,
       securityGroupIds: [props.albSecurityGroup.securityGroupId],
       subnetIds: props.vpc.selectSubnets({
         subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -201,7 +201,7 @@ export class ApiStack extends cdk.Stack {
 
     // --- HTTP API Log Group ---
     const httpApiLogGroup = new logs.LogGroup(this, "HttpApiLogs", {
-      logGroupName: `/aws/api-gateway/isol8-${env}-http`,
+      logGroupName: `/aws/api-gateway/lightbulb-${env}-http`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -559,7 +559,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     const wsApi = new WebSocketApi(this, "WebSocketApi", {
-      apiName: `isol8-${env}-websocket`,
+      apiName: `lightbulb-${env}-websocket`,
       routeSelectionExpression: "$request.body.action",
       connectRouteOptions: {
         integration: new WebSocketLambdaIntegration("ConnectIntegration", connectFn),
@@ -575,7 +575,7 @@ export class ApiStack extends cdk.Stack {
 
     // --- WebSocket API Log Group ---
     const wsApiLogGroup = new logs.LogGroup(this, "WsApiLogs", {
-      logGroupName: `/aws/api-gateway/isol8-${env}-websocket`,
+      logGroupName: `/aws/api-gateway/lightbulb-${env}-websocket`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -760,7 +760,7 @@ export class ApiStack extends cdk.Stack {
     if (props.certificate && props.hostedZone) {
       const browserViewDomain = isProd ? `bv.${rootDomain}` : `bv-${env}.${rootDomain}`;
       const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
-        comment: `isol8 ${env} container-browser live view relay`,
+        comment: `lightbulb ${env} container-browser live view relay`,
         domainNames: [browserViewDomain],
         // The wildcard *.isol8.co cert works here because the deploy region IS
         // us-east-1 (CloudFront only accepts us-east-1 ACM certs).

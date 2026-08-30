@@ -313,7 +313,7 @@ class EcsManager:
     # `<base>-user`. Splitting the families means `describe_task_definition`
     # on the base family always returns the latest CDK base — no need for
     # SSM-pinned ARNs.
-    _BASE_TASK_DEF_FAMILY = "isol8-{env}-openclaw"
+    _BASE_TASK_DEF_FAMILY = "lightbulb-{env}-openclaw"
     _PER_USER_FAMILY_SUFFIX = "-user"
 
     def __init__(self):
@@ -377,7 +377,7 @@ class EcsManager:
                     },
                 },
                 Tags=[
-                    {"Key": "Name", "Value": f"isol8-{user_id}"},
+                    {"Key": "Name", "Value": f"lightbulb-{user_id}"},
                     {"Key": "owner_id", "Value": user_id},
                     {"Key": "owner_type", "Value": owner_type},
                     {"Key": "ManagedBy", "Value": "lightbulb-backend"},
@@ -593,7 +593,7 @@ class EcsManager:
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
-        Reads the latest revision from the base family (e.g. ``isol8-dev-openclaw``)
+        Reads the latest revision from the base family (e.g. ``lightbulb-dev-openclaw``)
         live on every call — that family contains ONLY CDK-managed base
         revisions because per-user clones register into ``<base>-user`` (see
         the family below). This means the running backend always picks up

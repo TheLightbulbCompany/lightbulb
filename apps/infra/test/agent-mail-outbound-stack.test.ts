@@ -87,7 +87,7 @@ describe("AgentMailOutboundStack", () => {
     // the owner's outbound stays ENABLED after a spam complaint.
     template.resourceCountIs("AWS::SQS::Queue", 1);
     template.hasResourceProperties("AWS::SQS::Queue", {
-      QueueName: "isol8-dev-agent-mail-complaint-dlq",
+      QueueName: "lightbulb-dev-agent-mail-complaint-dlq",
     });
     template.hasResourceProperties("AWS::Events::Rule", {
       Targets: Match.arrayWith([
@@ -104,7 +104,7 @@ describe("AgentMailOutboundStack", () => {
 
   test("alarms on the complaint DLQ being non-empty", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "isol8-dev-agent-mail-complaint-dlq",
+      AlarmName: "lightbulb-dev-agent-mail-complaint-dlq",
       MetricName: "ApproximateNumberOfMessagesVisible",
       ComparisonOperator: "GreaterThanThreshold",
       Threshold: 0,

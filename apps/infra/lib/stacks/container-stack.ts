@@ -558,7 +558,7 @@ export class ContainerStack extends cdk.Stack {
     const PER_USER_TASK_RESOURCES = { cpu: 1024, memoryMiB: 4096 } as const;
 
     this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
-      family: `isol8-${env}-openclaw`,
+      family: `lightbulb-${env}-openclaw`,
       cpu: PER_USER_TASK_RESOURCES.cpu,
       memoryLimitMiB: PER_USER_TASK_RESOURCES.memoryMiB,
       taskRole: this.taskRole,

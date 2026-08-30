@@ -362,7 +362,7 @@ export class BedrockGateStack extends cdk.Stack {
       // corruption, but chat breaks. The Errors metric is the only signal for a
       // whole-invocation failure (cold-start import, timeout, uncaught throw).
       const errorsAlarm = new cloudwatch.Alarm(this, `GateFnErrorsAlarm${idSuffix}`, {
-        alarmName: `isol8-${gateEnv}-bedrock-gate-fn-errors`,
+        alarmName: `lightbulb-${gateEnv}-bedrock-gate-fn-errors`,
         alarmDescription:
           "Bedrock gate Lambda invocation errored - cut-over owners are seeing Bedrock 5xx (cold-start import error, timeout, or uncaught throw). Chat breaks for gated owners; investigate or break-glass to direct-invoke.",
         metric: fn.metricErrors({
@@ -379,7 +379,7 @@ export class BedrockGateStack extends cdk.Stack {
       // Reserved concurrency (100) is a hard ceiling; sustained throttles mean
       // legitimate traffic is being turned away as Bedrock 429.
       const throttlesAlarm = new cloudwatch.Alarm(this, `GateFnThrottlesAlarm${idSuffix}`, {
-        alarmName: `isol8-${gateEnv}-bedrock-gate-fn-throttles`,
+        alarmName: `lightbulb-${gateEnv}-bedrock-gate-fn-throttles`,
         alarmDescription:
           "Bedrock gate Lambda is throttling - reserved concurrency (100) is exhausted and legitimate inference is being turned away. Investigate a runaway or raise the reservation.",
         metric: fn.metricThrottles({
@@ -406,7 +406,7 @@ export class BedrockGateStack extends cdk.Stack {
       ];
       for (const [metricName, alarmId] of pagingMetrics) {
         const alarm = new cloudwatch.Alarm(this, `${alarmId}${idSuffix}`, {
-          alarmName: `isol8-${gateEnv}-${metricName.replace(/\./g, "-")}`,
+          alarmName: `lightbulb-${gateEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock gate (${gateEnv}) emitted ${metricName} - the synchronous debit/hold accounting invariant broke. Investigate immediately (money/correctness).`,
           metric: new cloudwatch.Metric({
             namespace: "LightbulbAI/BedrockGate",

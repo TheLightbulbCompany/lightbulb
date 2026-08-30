@@ -6,7 +6,7 @@ import {
   PLATFORM_MAIL_DOMAIN,
   ROOT_DOMAIN,
 } from "../lib/domains";
-import { Isol8Stage } from "../lib/isol8-stage";
+import { LightbulbStage } from "../lib/lightbulb-stage";
 import { HOSTED_ZONE_CONTEXT } from "./helpers";
 import { SesInboundStack, SesInboundStackProps } from "../lib/stacks/ses-inbound-stack";
 
@@ -330,10 +330,10 @@ describe("SesInboundStack", () => {
   });
 });
 
-describe("SesInboundStack gating (Isol8Stage)", () => {
+describe("SesInboundStack gating (LightbulbStage)", () => {
   function stageStacks(environment: "dev" | "prod"): Stack[] {
     const app = new App({ context: HOSTED_ZONE_CONTEXT });
-    const stage = new Isol8Stage(app, environment, {
+    const stage = new LightbulbStage(app, environment, {
       environment,
       env: { account: ACCOUNT, region: REGION },
     });

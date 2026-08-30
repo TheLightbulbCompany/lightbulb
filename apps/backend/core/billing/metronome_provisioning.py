@@ -276,7 +276,7 @@ async def _ensure_low_balance_alerts(owner_id: str, customer_id: str, client: Me
         try:
             await client.create_alert(
                 customer_id=customer_id,
-                name=f"isol8-low-balance-{owner_id}-{suffix}",
+                name=f"lightbulb-low-balance-{owner_id}-{suffix}",
                 alert_type=_LOW_BALANCE_ALERT_TYPE,
                 threshold_cents=threshold_cents,
                 # Required for commit-balance alert types (sandbox-verified:

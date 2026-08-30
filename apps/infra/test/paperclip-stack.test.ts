@@ -124,7 +124,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // sneaking back in AND keeps the default bootstrap path pinned (no floating
     // :latest).
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-paperclip-server",
+      Family: "lightbulb-dev-paperclip-server",
       Cpu: "512",
       Memory: "1024",
       ContainerDefinitions: Match.arrayWith([
@@ -155,7 +155,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // express "all of these are present in any order" — it requires
     // monotonic ordering — so we extract once and use plain expect().
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
-      Properties: { Family: "isol8-dev-paperclip-server" },
+      Properties: { Family: "lightbulb-dev-paperclip-server" },
     });
     expect(Object.keys(tasks)).toHaveLength(1);
     const td = Object.values(tasks)[0] as { Properties: any };
@@ -198,7 +198,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // permitted`). We run as user 1000 (the same UID the image chowns
     // /paperclip + /app to) to keep the privilege drop without gosu.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-paperclip-server",
+      Family: "lightbulb-dev-paperclip-server",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           EntryPoint: ["/bin/sh", "-c"],
@@ -230,7 +230,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("Fargate service runs in private subnets with no public IP", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
-      ServiceName: "isol8-dev-paperclip-server",
+      ServiceName: "lightbulb-dev-paperclip-server",
       LaunchType: "FARGATE",
       DesiredCount: 1,
       DeploymentConfiguration: Match.objectLike({
@@ -308,7 +308,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     });
   });
 
-  test("log group lives at /isol8/{env}/paperclip with 14d retention", () => {
+  test("log group lives at /lightbulb/{env}/paperclip with 14d retention", () => {
     template.hasResourceProperties("AWS::Logs::LogGroup", {
       LogGroupName: "/lightbulb/dev/paperclip",
       RetentionInDays: 14,
@@ -343,7 +343,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(cmd[0]).toMatch(/encodeURIComponent\(process\.env\.PGPASSWORD\)/);
   });
 
-  test("migrate task def has its own log group at /isol8/{env}/paperclip-migrate", () => {
+  test("migrate task def has its own log group at /lightbulb/{env}/paperclip-migrate", () => {
     template.hasResourceProperties("AWS::Logs::LogGroup", {
       LogGroupName: "/lightbulb/dev/paperclip-migrate",
       RetentionInDays: 14,
@@ -396,7 +396,7 @@ describe("PaperclipStack — prod public URL", () => {
 
   test("prod container env sets PAPERCLIP_PUBLIC_URL to the https auth origin (no env suffix)", () => {
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
-      Properties: { Family: "isol8-prod-paperclip-server" },
+      Properties: { Family: "lightbulb-prod-paperclip-server" },
     });
     expect(Object.keys(tasks)).toHaveLength(1);
     const td = Object.values(tasks)[0] as { Properties: any };
@@ -419,7 +419,7 @@ describe("PaperclipStack — prod public URL", () => {
     // in paperclip-stack.ts around the PAPERCLIP_AUTH_DISABLE_SIGN_UP
     // line.
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
-      Properties: { Family: "isol8-prod-paperclip-server" },
+      Properties: { Family: "lightbulb-prod-paperclip-server" },
     });
     const td = Object.values(tasks)[0] as { Properties: any };
     const envArr = td.Properties.ContainerDefinitions[0].Environment as Array<{
@@ -434,7 +434,7 @@ describe("PaperclipStack — prod public URL", () => {
     // Dev-first rollout: this flips to "1" in a follow-up PR, after dev has
     // run a full provision and a marketplace hire under the fence.
     const tasks = template.findResources("AWS::ECS::TaskDefinition", {
-      Properties: { Family: "isol8-prod-paperclip-server" },
+      Properties: { Family: "lightbulb-prod-paperclip-server" },
     });
     const td = Object.values(tasks)[0] as { Properties: any };
     const envArr = td.Properties.ContainerDefinitions[0].Environment as Array<{

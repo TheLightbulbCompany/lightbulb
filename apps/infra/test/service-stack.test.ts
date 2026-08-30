@@ -13,7 +13,7 @@ import { ServiceStack, validateLaunchSchedule } from "../lib/stacks/service-stac
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
- * Container). Mirrors the wiring in isol8-stage.ts (and marketplace-resources.test.ts)
+ * Container). Mirrors the wiring in lightbulb-stage.ts (and marketplace-resources.test.ts)
  * so the synthesized template matches what gets deployed.
  */
 function buildServiceStack(environment: "dev" | "prod"): Template {
@@ -530,7 +530,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
   test("provision state machine and provisioner task-def exist", () => {
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-provisioner",
+      Family: "lightbulb-dev-provisioner",
     });
   });
 
@@ -540,7 +540,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     // reopen the inline/SFN split.
     const backendTaskDefs = Object.values(
       template.findResources("AWS::ECS::TaskDefinition", {
-        Properties: { Family: "isol8-dev-backend" },
+        Properties: { Family: "lightbulb-dev-backend" },
       }),
     );
     expect(backendTaskDefs).toHaveLength(1);
@@ -971,7 +971,7 @@ describe("ServiceStack — agent-mail outbound wiring", () => {
     // Per-owner SES tenants are created lazily by the backend at first send
     // (core/services/agent_mail_tenant.py) — this is the IAM side of that.
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "isol8-dev-backend-ses-send",
+      ManagedPolicyName: "lightbulb-dev-backend-ses-send",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -993,7 +993,7 @@ describe("ServiceStack — agent-mail outbound wiring", () => {
     // naming convention.
     const policies = template.findResources("AWS::IAM::ManagedPolicy");
     const sesSend = Object.values(policies).find(
-      (p: any) => p.Properties?.ManagedPolicyName === "isol8-dev-backend-ses-send",
+      (p: any) => p.Properties?.ManagedPolicyName === "lightbulb-dev-backend-ses-send",
     ) as any;
     expect(sesSend).toBeDefined();
     const statement = sesSend.Properties.PolicyDocument.Statement.find(

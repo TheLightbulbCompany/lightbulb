@@ -3,7 +3,7 @@
 //!
 //! The allowlist lives on disk at
 //! `~/Library/Application Support/company.thelightbulb.desktop/file_access.json`.
-//! On first launch we create `~/Isol8/` and add it to the allowlist so
+//! On first launch we create `~/Lightbulb/` and add it to the allowlist so
 //! agents have somewhere to read/write without the user thinking about
 //! it; the user can add or remove paths via the Settings page (which
 //! talks to this module through Tauri commands in `lib.rs`).
@@ -89,11 +89,11 @@ fn store_file() -> Result<PathBuf, FileAccessError> {
 
 /// Default seed path. We mkdir it on first init so agents can immediately
 /// drop files there; the user discovers it via the Settings page label
-/// ("Default folder: ~/Isol8/").
+/// ("Default folder: ~/Lightbulb/").
 pub fn default_seed_path() -> Result<PathBuf, FileAccessError> {
     let home = std::env::var("HOME")
         .map_err(|_| FileAccessError::InvalidPath("HOME not set".into()))?;
-    Ok(PathBuf::from(home).join("Isol8"))
+    Ok(PathBuf::from(home).join("Lightbulb"))
 }
 
 /// Resolve `~/foo` and relative paths to canonical absolute form. We
@@ -125,7 +125,7 @@ pub fn canonicalize(input: &str) -> Result<PathBuf, FileAccessError> {
 /// Returns true if `target` (which MUST already be canonical) sits
 /// inside `prefix` (also canonical) or is exactly equal to it.
 /// Component-by-component comparison so that `/Users/me/Iso` is NOT
-/// treated as inside `/Users/me/Isol8`.
+/// treated as inside `/Users/me/Lightbulb`.
 pub fn is_inside(target: &Path, prefix: &Path) -> bool {
     let mut t = target.components();
     for pc in prefix.components() {
@@ -140,7 +140,7 @@ pub fn is_inside(target: &Path, prefix: &Path) -> bool {
 static STORE: OnceLock<Mutex<FileAccessStore>> = OnceLock::new();
 
 /// Initializes the in-memory store from disk, creating the default
-/// `~/Isol8/` seed entry on first run. Safe to call multiple times —
+/// `~/Lightbulb/` seed entry on first run. Safe to call multiple times —
 /// only the first call does I/O.
 pub fn init() -> Result<(), FileAccessError> {
     STORE.get_or_init(|| {
@@ -272,13 +272,13 @@ mod tests {
 
     #[test]
     fn is_inside_basics() {
-        let root = PathBuf::from("/Users/me/Isol8");
-        assert!(is_inside(&PathBuf::from("/Users/me/Isol8"), &root));
-        assert!(is_inside(&PathBuf::from("/Users/me/Isol8/a"), &root));
-        assert!(is_inside(&PathBuf::from("/Users/me/Isol8/a/b"), &root));
+        let root = PathBuf::from("/Users/me/Lightbulb");
+        assert!(is_inside(&PathBuf::from("/Users/me/Lightbulb"), &root));
+        assert!(is_inside(&PathBuf::from("/Users/me/Lightbulb/a"), &root));
+        assert!(is_inside(&PathBuf::from("/Users/me/Lightbulb/a/b"), &root));
         // Sibling prefix doesn't match (the killer test — component-wise).
         assert!(!is_inside(&PathBuf::from("/Users/me/Iso"), &root));
-        assert!(!is_inside(&PathBuf::from("/Users/me/Isol82"), &root));
+        assert!(!is_inside(&PathBuf::from("/Users/me/Lightbulb2"), &root));
         // Completely outside.
         assert!(!is_inside(&PathBuf::from("/etc/passwd"), &root));
         // Empty target.

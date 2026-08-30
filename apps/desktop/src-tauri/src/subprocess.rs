@@ -122,7 +122,7 @@ pub async fn spawn(
         .spawn()
         .map_err(|e| format!("spawn subprocess: {e}"))?;
 
-    // Forward child stdio line-by-line to /tmp/isol8-desktop.log so
+    // Forward child stdio line-by-line to /tmp/lightbulb-desktop.log so
     // openclaw's `node host gateway connect failed: ...` panic/error
     // traces are visible. Without this, child stderr disappears into
     // the void (Tauri GUI apps have no terminal attached on macOS).

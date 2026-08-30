@@ -82,7 +82,7 @@ pub async fn handle_invoke(
             error: Some(InvokeError {
                 code: "NOT_IMPLEMENTED".into(),
                 message: format!(
-                    "{} is not yet supported on the Isol8 desktop node. See docs for node capabilities.",
+                    "{} is not yet supported on the Lightbulb desktop node. See docs for node capabilities.",
                     cmd,
                 ),
             }),
@@ -295,7 +295,7 @@ async fn handle_device_info(
         },
         "kernel": kernel,
         "desktop": {
-            "app": "Isol8 Desktop",
+            "app": "Lightbulb Desktop",
             "version": env!("CARGO_PKG_VERSION"),
         },
     });

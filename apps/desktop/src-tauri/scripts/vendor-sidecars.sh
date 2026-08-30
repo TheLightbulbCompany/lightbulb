@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vendor sidecars for the Isol8 desktop browser node.
+# Vendor sidecars for the Lightbulb desktop browser node.
 # Produces: src-tauri/bin/ containing
 #   - node-<triple>                               (per-arch Mach-O binary)
 #   - openclaw-host-<triple>/                     (per-arch npm install)

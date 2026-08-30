@@ -92,6 +92,6 @@ pub async fn handle_screen_snapshot(params: &Value) -> Value {
 fn tempfile_path(ext: &str) -> Option<PathBuf> {
     let mut p = std::env::temp_dir();
     let unique = uuid::Uuid::new_v4().to_string();
-    p.push(format!("isol8-snap-{}.{}", unique, ext));
+    p.push(format!("lightbulb-snap-{}.{}", unique, ext));
     Some(p)
 }

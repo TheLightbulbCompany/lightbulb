@@ -26,7 +26,7 @@ const KEYCHAIN_SERVICE: &str = "company.thelightbulb.desktop";
 
 /// HTTPS API base for the backend. Overridden at build time when a non-dev
 /// build is produced.
-const ISOL8_API_BASE: &str = match option_env!("ISOL8_API_BASE") {
+const LIGHTBULB_API_BASE: &str = match option_env!("LIGHTBULB_API_BASE") {
     Some(v) => v,
     None => "https://api-dev.flickmeon.ai",
 };
@@ -79,7 +79,7 @@ pub struct NodeState {
 /// File-based logger for macOS GUI apps (stdout not visible).
 pub fn log(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/isol8-desktop.log") {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/lightbulb-desktop.log") {
         let _ = writeln!(f, "{}", msg);
     }
     println!("{}", msg);
@@ -202,7 +202,7 @@ fn send_auth_token(
         *current = token.clone();
     }
 
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
     // is `wss://host?token=…` (no slash), the resulting request line is
@@ -343,11 +343,11 @@ async fn run_bootstrap(
 
     log(&format!(
         "[bootstrap] api_base={} state_dir={:?} binary={:?}",
-        ISOL8_API_BASE, state_dir, binary
+        LIGHTBULB_API_BASE, state_dir, binary
     ));
 
     let handles: DesktopNodeHostHandles = bootstrap_desktop_node_host(
-        ISOL8_API_BASE,
+        LIGHTBULB_API_BASE,
         &jwt_snapshot,
         KEYCHAIN_SERVICE,
         "node-host".to_string(),
@@ -531,7 +531,7 @@ async fn start_from_persisted_state(
     // on this path ever depends on a webview JWT. Publishing also flips
     // send_auth_token into its rotate-only branch, so a later webview JWT
     // just refreshes the URL cell instead of re-bootstrapping.
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
+    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://ws-dev.flickmeon.ai");
     let shared_url = Arc::new(RwLock::new(format!(
         "{}/?clientId=openclaw-macos",
         ws_url
@@ -966,9 +966,9 @@ async fn serve_manifest_once(body: String) -> Result<String, String> {
 /// Previously this URL embedded a Vercel protection-bypass query param so the
 /// callback loaded on preview-protected dev.isol8.co. That secret shipped in
 /// the binary (and git history) and has been rotated out. If dev.isol8.co
-/// preview-protection is re-enabled, pass `ISOL8_CALLBACK_URL` at build time
+/// preview-protection is re-enabled, pass `LIGHTBULB_CALLBACK_URL` at build time
 /// with the appropriate bypass param instead of hard-coding the secret.
-const DESKTOP_CALLBACK_URL: &str = match option_env!("ISOL8_CALLBACK_URL") {
+const DESKTOP_CALLBACK_URL: &str = match option_env!("LIGHTBULB_CALLBACK_URL") {
     Some(url) => url,
     None => "https://dev.flickmeon.ai/auth/desktop-callback",
 };
@@ -1003,7 +1003,7 @@ fn is_oauth_url(url: &Url) -> bool {
 /// so the frontend's useDesktopAuth hook can complete the sign-in.
 /// Produce a log-safe representation of a URL by dropping the query
 /// string and fragment. Applied everywhere we log URLs because
-/// /tmp/isol8-desktop.log is world-readable — Clerk sign-in tickets,
+/// /tmp/lightbulb-desktop.log is world-readable — Clerk sign-in tickets,
 /// OAuth `code`/`state`, and similar short-lived credentials must not
 /// land there.
 fn redact_url(url_str: &str) -> String {
@@ -1170,9 +1170,9 @@ end tell"#,
             claude_export::export_claude_context,
         ])
         .setup(|app| {
-            log("[setup] Isol8 desktop app starting");
+            log("[setup] Lightbulb desktop app starting");
 
-            // Seed the file-access allowlist (creates ~/Isol8/ and adds
+            // Seed the file-access allowlist (creates ~/Lightbulb/ and adds
             // it on first launch). Non-fatal on failure — file ops will
             // just be denied with a clear error until the user fixes it
             // via the Settings UI.

@@ -21,7 +21,17 @@ export const metadata: Metadata = {
     siteName: "The Lightbulb Company",
     type: "website",
   },
-  icons: { icon: "/favicon.svg" },
+  // Adaptive favicon pack — see docs/brand/favicons.md. The SVG carries both
+  // colourways and switches on prefers-color-scheme; the PNGs are the fallback.
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon-32.png", sizes: "32x32" },
+      { url: "/favicon-16.png", sizes: "16x16" },
+      { url: "/icon-512.png", sizes: "512x512" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

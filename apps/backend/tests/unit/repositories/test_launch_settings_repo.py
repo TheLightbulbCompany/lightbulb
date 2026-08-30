@@ -10,6 +10,13 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 TABLE = "test-launch-settings"
 
 
+@pytest.fixture(autouse=True)
+def _launch_settings_read_defaults():
+    """Override the global autouse default in tests/conftest.py — this module
+    is the one that exercises the REAL read, against moto."""
+    yield
+
+
 @pytest.fixture
 def repo():
     with mock_aws():
@@ -126,3 +133,21 @@ async def test_schedule_reads_a_real_saved_row_with_int_typed_fields(repo):
         assert s.competition_end_at == s.competition_start_at + timedelta(days=30)
     finally:
         launch_phase.invalidate()
+
+
+def test_get_sync_reads_through_a_client_with_bounded_timeouts():
+    """get_sync runs on the container-status poll path and blocks the caller
+    while it waits — botocore's 60s defaults would park every poll behind a
+    single unreachable table."""
+    from unittest.mock import MagicMock
+
+    from core.repositories import launch_settings_repo as r
+
+    resource = MagicMock()
+    resource.Table.return_value.get_item.return_value = {}
+    with patch.object(r, "_sync_resource", None), patch.object(r, "boto3") as boto3_mod:
+        boto3_mod.resource.return_value = resource
+        assert r.get_sync() is None
+        cfg = boto3_mod.resource.call_args.kwargs["config"]
+    assert cfg.connect_timeout == 2 and cfg.read_timeout == 2
+    assert cfg.retries["max_attempts"] == 2

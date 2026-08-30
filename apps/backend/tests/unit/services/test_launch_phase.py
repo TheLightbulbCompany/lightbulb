@@ -200,3 +200,40 @@ def test_ddb_read_failure_after_ttl_serves_the_last_known_row(caplog):
                 s = launch_phase.schedule()
     assert s is not None and s.comp_slots == 220
     assert "settings read failed" in caplog.text
+
+
+def test_cold_cache_read_failure_is_not_cached_and_reports_unavailable():
+    """A failed read with nothing cached must not become a 30s "feature off"
+    answer: the DEFAULTS served are flagged as a guess (settings_unavailable),
+    nothing is cached, and the very next call retries — and picks up the row
+    the moment DynamoDB comes back."""
+    with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
+        assert launch_phase.schedule() is None
+        assert launch_phase.settings_unavailable() is True
+        assert launch_phase._CACHE["row"] is None  # nothing cached -> the next call retries
+
+    with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED) as ok:
+        s = launch_phase.schedule()
+    assert s is not None and ok.call_count == 1
+    assert launch_phase.settings_unavailable() is False
+
+
+def test_read_failure_with_a_warm_cache_is_not_unavailable():
+    """A cached row is a real answer, stale or not — only a cold-cache failure
+    is 'unavailable'."""
+    t = {"now": time.monotonic()}
+    with patch("core.services.launch_phase.time.monotonic", side_effect=lambda: t["now"]):
+        with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED):
+            assert launch_phase.schedule() is not None
+        t["now"] += _CACHE_TTL_S_PLUS
+        with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
+            assert launch_phase.schedule() is not None
+    assert launch_phase.settings_unavailable() is False
+
+
+def test_invalidate_clears_the_unavailable_flag():
+    with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
+        launch_phase.schedule()
+    assert launch_phase.settings_unavailable() is True
+    launch_phase.invalidate()
+    assert launch_phase.settings_unavailable() is False

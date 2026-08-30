@@ -10,7 +10,11 @@ off — see ``launch_phase.schedule()``'s None contract).
 
 from __future__ import annotations
 
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+import boto3
+from botocore.config import Config
+
+from core.config import settings
+from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
 
 _ID = "settings"
 _INT_FIELDS = ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents", "mint_nonce")
@@ -39,6 +43,29 @@ def _table():
     return get_table("launch-settings")
 
 
+# `get_sync` runs on the container-status poll path (`launch_phase._row`),
+# where an unreachable DynamoDB has to fail FAST — botocore's defaults would
+# park the request for 60s a try. Same table name, region and endpoint as
+# `get_table("launch-settings")` resolves (`core.dynamodb`); only the timeouts
+# differ, which is why this is a module-local resource rather than the shared
+# one.
+_SYNC_CONFIG = Config(connect_timeout=2, read_timeout=2, retries={"max_attempts": 2})
+_sync_resource = None
+
+
+def _sync_table():
+    global _sync_resource
+    if _sync_resource is None:
+        endpoint = getattr(settings, "DYNAMODB_ENDPOINT_URL", None)
+        _sync_resource = boto3.resource(
+            "dynamodb",
+            region_name=getattr(settings, "AWS_REGION", "us-east-1"),
+            config=_SYNC_CONFIG,
+            **({"endpoint_url": endpoint} if endpoint else {}),
+        )
+    return _sync_resource.Table(table_name("launch-settings"))
+
+
 def _plain(item: dict | None) -> dict | None:
     if not item:
         return None
@@ -61,8 +88,9 @@ def get_sync() -> dict | None:
     """Sync twin of ``get`` for ``launch_phase.schedule()``, which stays sync
     because the container-status poll path calls it synchronously.
     ``run_in_thread`` is for async callers only — it has no meaning called
-    from a function that isn't itself a coroutine."""
-    resp = _table().get_item(Key={"id": _ID})
+    from a function that isn't itself a coroutine. Reads through the bounded
+    client above, because this one blocks the event loop while it waits."""
+    resp = _sync_table().get_item(Key={"id": _ID})
     return _plain(resp.get("Item"))
 
 

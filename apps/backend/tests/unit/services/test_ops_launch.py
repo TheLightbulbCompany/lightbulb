@@ -222,3 +222,28 @@ async def test_compute_unconfigured():
     # to_public strips mint_nonce even here — it's never a client-visible field.
     expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
     assert data == {"settings": expected_settings, "enabled": False}
+
+
+async def test_compute_keeps_the_settings_shell_when_the_sheet_read_fails(deps):
+    """A failed/timed-out sheet read still has to carry the settings row: the
+    admin page renders the settings card off `data`, so a bare None would take
+    away the only control that can turn the competition back off."""
+    with patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        ops_launch._cache.clear()
+        data, state, errors = await ops_launch.compute()
+    assert state == "unavailable" and errors[0]["domain"] == "launch"
+    expected_settings = {k: v for k, v in ops_launch.launch_settings.DEFAULTS.items() if k != "mint_nonce"}
+    expected_settings["enabled"] = True  # the `deps` fixture's mocked effective() row
+    assert data == {"settings": expected_settings, "enabled": True}
+    assert ops_launch._cache == {}  # a failed read is never cached
+
+
+async def test_compute_keeps_the_settings_shell_when_the_sheet_read_times_out(deps):
+    """Same for a timeout — every non-ok state keeps the shell, not just the
+    exception one."""
+    timed_out = (None, "unavailable", [{"domain": "launch", "reason": "timeout after 20.0s"}])
+    with patch.object(ops_launch.env, "read_source", AsyncMock(return_value=timed_out)):
+        ops_launch._cache.clear()
+        data, state, errors = await ops_launch.compute()
+    assert state == "unavailable" and "timeout" in errors[0]["reason"]
+    assert data["enabled"] is True and data["settings"]["comp_slots"] == 220

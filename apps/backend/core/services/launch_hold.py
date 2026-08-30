@@ -23,29 +23,45 @@ def _doors_open_copy(drop_at: datetime) -> str:
     return f"Doors open {local.strftime('%A, %B %-d')} at {local.strftime('%-I:%M %p')} ET. Sign back in then and Friday runs your idea."
 
 
+# The settings row is unreadable, so we cannot name the drop instant — the
+# hold still says the true thing, just without the date.
+_DOORS_OPEN_SOON_COPY = "Doors open soon. Sign back in in a minute and Friday runs your idea."
+
+
+def _gate(message: str, owner_role: str) -> Gate:
+    return Gate(
+        code=CODE,
+        title="You're on the list",
+        message=message,
+        action_label="See your spot",
+        action_href="/launch",
+        action_admin_only=False,
+        owner_role=owner_role,
+    )
+
+
 async def pre_drop_gate(owner_id: str, *, owner_role: str = "admin", now: datetime | None = None) -> Gate | None:
-    # launch_phase.schedule() never raises: a DynamoDB read failure or a
-    # malformed row both resolve to None (feature off), which un-holds this
-    # owner rather than 500ing the poll. The container-repo read below is the
-    # one thing here that fails open explicitly.
-    s = launch_phase.schedule()
-    if s is None:
-        return None
-    now = now or datetime.now(timezone.utc)
-    if now >= s.drop_at:
-        return None
+    # The container read comes FIRST, so an owner who already has one is never
+    # held — not by the schedule, and not by a settings read that failed. It is
+    # the one read here that fails open explicitly.
     try:
         if await container_repo.get_by_owner_id(owner_id) is not None:
             return None
     except Exception:  # noqa: BLE001 — a read failure must not block provisioning
         logger.warning("launch_hold: container read failed for %s; not holding", owner_id, exc_info=True)
         return None
-    return Gate(
-        code=CODE,
-        title="You're on the list",
-        message=_doors_open_copy(s.drop_at),
-        action_label="See your spot",
-        action_href="/launch",
-        action_admin_only=False,
-        owner_role=owner_role,
-    )
+
+    # launch_phase.schedule() never raises: a DynamoDB read failure and a
+    # malformed row both resolve to None (feature off). For a container-less
+    # owner those two are not the same answer — "feature off" un-holds, and
+    # un-holding is irreversible (the next step stamps the 3-day trial clock),
+    # so an UNREADABLE settings row holds instead. The next poll retries.
+    s = launch_phase.schedule()
+    if launch_phase.settings_unavailable():
+        return _gate(_DOORS_OPEN_SOON_COPY, owner_role)
+    if s is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if now >= s.drop_at:
+        return None
+    return _gate(_doors_open_copy(s.drop_at), owner_role)

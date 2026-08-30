@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 Phase = Literal["waitlist", "activation", "live", "ended"]
 
 _CACHE_TTL_S = 30
-_CACHE: dict = {"row": None, "fetched_at": 0.0}
+_CACHE: dict = {"row": None, "fetched_at": 0.0, "unavailable": False}
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,7 @@ def parse_iso(value: str) -> datetime:
 def invalidate() -> None:
     _CACHE["row"] = None
     _CACHE["fetched_at"] = 0.0
+    _CACHE["unavailable"] = False
 
 
 def _row() -> dict:
@@ -59,7 +60,11 @@ def _row() -> dict:
     the 30s cache. A DynamoDB read failure logs a warning and falls back to
     whatever is cached (or DEFAULTS on a cold cache) instead of raising —
     this is on the container-status poll path, and a DynamoDB hiccup must
-    never 500 the fleet."""
+    never 500 the fleet.
+
+    A cold-cache failure is deliberately NOT cached: the next call retries
+    (rather than serving a guess for 30 seconds), and ``settings_unavailable``
+    reports that the DEFAULTS just served are a guess rather than the row."""
     now = time.monotonic()
     if _CACHE["row"] is not None and now - _CACHE["fetched_at"] < _CACHE_TTL_S:
         return _CACHE["row"]
@@ -68,10 +73,26 @@ def _row() -> dict:
         row = {**launch_settings_repo.DEFAULTS, **(stored or {})}
     except Exception:  # noqa: BLE001 — the poll path must never fail because DynamoDB hiccuped
         logger.warning("launch_phase: settings read failed; serving cached/default row", exc_info=True)
-        row = _CACHE["row"] if _CACHE["row"] is not None else dict(launch_settings_repo.DEFAULTS)
+        if _CACHE["row"] is None:
+            _CACHE["unavailable"] = True
+            return dict(launch_settings_repo.DEFAULTS)
+        row = _CACHE["row"]
+    _CACHE["unavailable"] = False
     _CACHE["row"] = row
     _CACHE["fetched_at"] = now
     return row
+
+
+def settings_unavailable() -> bool:
+    """True iff the last read failed with nothing cached to fall back to —
+    the row every launch surface is reading right now is DEFAULTS-as-a-guess
+    (feature off), not the stored row.
+
+    Only ``launch_hold`` acts on this: un-holding an owner is irreversible
+    (it stamps the 3-day trial clock), so a container-less owner is held
+    rather than released on a DynamoDB blip. Every other reader stays
+    fail-open — ``require_launch`` 404s, the webhook join is skipped."""
+    return bool(_CACHE["unavailable"])
 
 
 def constants() -> dict:

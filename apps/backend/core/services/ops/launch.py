@@ -212,9 +212,15 @@ async def compute() -> tuple[dict, str, list[dict]]:
     if hit and time.monotonic() - hit[0] < _CACHE_TTL_S:
         return hit[1]
     data, state, errors = await env.read_source("launch", lambda: _compute(s), timeout_s=20.0)
+    if state != env.OK:
+        # A failed or timed-out sheet read still owes the console the settings
+        # row: the admin page renders the settings card off `data`, so
+        # `read_source`'s `data=None` would take away the one control that can
+        # turn the competition back off. Same two keys as the disabled branch.
+        row = await launch_settings.effective()
+        return {"settings": launch_settings.to_public(row), "enabled": row["enabled"]}, state, errors
     result = (data, state, errors)
-    if state == env.OK:
-        _cache["launch"] = (time.monotonic(), result)
+    _cache["launch"] = (time.monotonic(), result)
     return result
 
 

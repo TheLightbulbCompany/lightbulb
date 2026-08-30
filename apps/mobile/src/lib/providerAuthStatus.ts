@@ -1,5 +1,5 @@
 /**
- * Pure mapping between Isol8's billing-side `provider_choice` and the
+ * Pure mapping between Lightbulb's billing-side `provider_choice` and the
  * container's live `models.authStatus` snapshot. Ported VERBATIM (behavior-
  * for-behavior) from the web frontend
  * (`components/control/panels/llm-auth-status.ts`) so the mobile Model &
@@ -40,7 +40,7 @@ function normalizeId(id: string): string {
   return id.trim().toLowerCase();
 }
 
-// Candidate container provider ids for a given Isol8 provider choice. Match is
+// Candidate container provider ids for a given Lightbulb provider choice. Match is
 // exact-or-prefix on the normalized id because the container may report a more
 // specific variant (e.g. openai-codex, openai-responses) than our coarse
 // choice. ChatGPT OAuth is the openai-codex provider upstream.

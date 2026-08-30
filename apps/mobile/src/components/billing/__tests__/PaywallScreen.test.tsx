@@ -59,7 +59,7 @@ function makeApi(flatPriceUsd: number | null = 50) {
 
 jest.mock("../../../lib/appleIap", () => ({
   APPLE_IAP_AVAILABLE: true,
-  APPLE_SUBSCRIPTION_SKU: "co.isol8.mobile.plan.monthly",
+  APPLE_SUBSCRIPTION_SKU: "company.thelightbulb.mobile.plan.monthly",
   ownerAccountToken: jest.fn(async (id: string) => `token-for-${id}`),
   linkApplePurchase: jest.fn(async () => undefined),
   createWebCheckout: jest.fn(async () => "https://checkout.stripe.com/c/pay/cs_test_123"),
@@ -85,7 +85,7 @@ describe("PaywallScreen", () => {
     mockWebCheckout.mockReset().mockResolvedValue("https://checkout.stripe.com/c/pay/cs_test_123");
     mockFinishTransaction.mockReset().mockResolvedValue(undefined);
     mockSubscriptions = [
-      { id: "co.isol8.mobile.plan.monthly", displayPrice: "$64.99" },
+      { id: "company.thelightbulb.mobile.plan.monthly", displayPrice: "$64.99" },
     ];
   });
 
@@ -160,7 +160,7 @@ describe("PaywallScreen", () => {
 
     expect(mockRequestPurchase).toHaveBeenCalledWith({
       type: "subs",
-      request: { apple: { sku: "co.isol8.mobile.plan.monthly", appAccountToken: undefined } },
+      request: { apple: { sku: "company.thelightbulb.mobile.plan.monthly", appAccountToken: undefined } },
     });
   });
 
@@ -182,7 +182,7 @@ describe("PaywallScreen", () => {
         type: "subs",
         request: {
           apple: {
-            sku: "co.isol8.mobile.plan.monthly",
+            sku: "company.thelightbulb.mobile.plan.monthly",
             appAccountToken: "token-for-user_abc",
           },
         },
@@ -302,7 +302,7 @@ describe("PaywallScreen", () => {
 describe("restore purchases", () => {
   it("submits each restored token through verify-then-finish", async () => {
     mockRestoredPurchases = [
-      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
+      { id: "company.thelightbulb.mobile.plan.monthly", purchaseToken: "restored-jws" },
     ];
     const onPurchased = jest.fn();
     const u = userEvent.setup();
@@ -344,7 +344,7 @@ describe("restore purchases", () => {
 
   it("reports a restore that could not be recorded, since the customer already paid", async () => {
     mockRestoredPurchases = [
-      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
+      { id: "company.thelightbulb.mobile.plan.monthly", purchaseToken: "restored-jws" },
     ];
     mockLink.mockRejectedValueOnce(new Error("server down"));
     const onPurchased = jest.fn();
@@ -366,7 +366,7 @@ describe("restore purchases", () => {
 describe("restore reads the transactions it just fetched", () => {
   it("uses the value getAvailablePurchases resolves to, not hook state", async () => {
     mockRestoredPurchases = [
-      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "fresh-jws" },
+      { id: "company.thelightbulb.mobile.plan.monthly", purchaseToken: "fresh-jws" },
     ];
     const onPurchased = jest.fn();
     const u = userEvent.setup();

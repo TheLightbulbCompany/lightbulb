@@ -21,7 +21,7 @@ jest.mock("../../../lib/appleIap", () => ({
   get APPLE_IAP_AVAILABLE() {
     return mockIapAvailable;
   },
-  APPLE_SUBSCRIPTION_SKU: "co.isol8.mobile.plan.monthly",
+  APPLE_SUBSCRIPTION_SKU: "company.thelightbulb.mobile.plan.monthly",
   linkApplePurchase: jest.fn(),
   createWebCheckout: jest.fn(),
 }));

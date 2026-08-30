@@ -59,7 +59,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
         "X-Isol8-SES-Secret",
         cdk.SecretValue.secretsManager(sesIngestSecretName),
       ),
-      description: `isol8 ${envName} agent-mail SES events -> backend`,
+      description: `lightbulb ${envName} agent-mail SES events -> backend`,
     });
     const destination = new events.ApiDestination(this, "BackendSesEvents", {
       connection,
@@ -77,13 +77,13 @@ export class AgentMailOutboundStack extends cdk.Stack {
     // X-Isol8-SES-Secret header. Replay is safe to repeat — the handler's
     // disable is an `update_settings` SET, not an increment.
     const dlq = new sqs.Queue(this, "ComplaintDlq", {
-      queueName: `isol8-${envName}-agent-mail-complaint-dlq`,
+      queueName: `lightbulb-${envName}-agent-mail-complaint-dlq`,
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
 
     new events.Rule(this, "SesComplaintRule", {
-      description: `isol8 ${envName}: SES complaints on ${this.configurationSetName}`,
+      description: `lightbulb ${envName}: SES complaints on ${this.configurationSetName}`,
       eventPattern: {
         source: ["aws.ses"],
         detailType: ["Email Complaint Received"],
@@ -107,7 +107,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     // ObservabilityStack creates it per env with this fixed name, and a real
     // prop would add a cross-stack dependency for one alarm action.
     const alarm = new cloudwatch.Alarm(this, "ComplaintDlqNotEmptyAlarm", {
-      alarmName: `isol8-${envName}-agent-mail-complaint-dlq`,
+      alarmName: `lightbulb-${envName}-agent-mail-complaint-dlq`,
       alarmDescription:
         "SES complaint events failed delivery to the backend ses-events webhook and are held for replay. Until they are replayed the affected owners' agent outbound is still ENABLED after a spam complaint. See the replay note in agent-mail-outbound-stack.ts.",
       metric: dlq.metricApproximateNumberOfMessagesVisible({

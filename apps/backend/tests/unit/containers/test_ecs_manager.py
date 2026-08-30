@@ -161,7 +161,7 @@ def mock_ecs_client():
     client.delete_service.return_value = {}
     client.describe_task_definition.return_value = {
         "taskDefinition": {
-            "family": "isol8-dev-openclaw",
+            "family": "lightbulb-dev-openclaw",
             "taskRoleArn": "arn:aws:iam::123456789:role/task-role",
             "executionRoleArn": "arn:aws:iam::123456789:role/exec-role",
             "networkMode": "awsvpc",
@@ -186,7 +186,9 @@ def mock_ecs_client():
         }
     }
     client.register_task_definition.return_value = {
-        "taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw:42"}
+        "taskDefinition": {
+            "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/lightbulb-dev-openclaw:42"
+        }
     }
     client.describe_services.return_value = {
         "services": [
@@ -417,14 +419,14 @@ class TestRegisterTaskDefinition:
         mock_ecs_client.describe_task_definition.assert_called_once_with(
             taskDefinition=manager._base_task_def_family,
         )
-        assert manager._base_task_def_family == "isol8-dev-openclaw"
+        assert manager._base_task_def_family == "lightbulb-dev-openclaw"
 
         # Verify register was called with overridden access point AND in the
         # per-user family (not the base family) so future describes of the
         # base family don't pick up this revision.
         mock_ecs_client.register_task_definition.assert_called_once()
         call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-        assert call_kwargs["family"] == "isol8-dev-openclaw-user"
+        assert call_kwargs["family"] == "lightbulb-dev-openclaw-user"
         volumes = call_kwargs["volumes"]
         assert len(volumes) == 1
         efs_config = volumes[0]["efsVolumeConfiguration"]
@@ -449,7 +451,7 @@ class TestRegisterTaskDefinition:
         """
         mock_ecs_client.describe_task_definition.return_value = {
             "taskDefinition": {
-                "family": "isol8-dev-openclaw",
+                "family": "lightbulb-dev-openclaw",
                 "taskRoleArn": "arn:aws:iam::123456789:role/task-role",
                 "executionRoleArn": "arn:aws:iam::123456789:role/exec-role",
                 "networkMode": "awsvpc",
@@ -2500,7 +2502,7 @@ class TestResizeUserContainer:
         # that mirrors the base, not the user's drifted prior state.
         mock_ecs_client.describe_task_definition.return_value = {
             "taskDefinition": {
-                "family": "isol8-dev-openclaw",
+                "family": "lightbulb-dev-openclaw",
                 "taskRoleArn": "",
                 "executionRoleArn": "",
                 "networkMode": "awsvpc",
@@ -2582,7 +2584,7 @@ class TestResizeUserContainer:
         the drift fence of test_resize_reads_env_from_base_not_current holds.
         """
         base_def = {
-            "family": "isol8-dev-openclaw",
+            "family": "lightbulb-dev-openclaw",
             "taskRoleArn": "arn:aws:iam::123:role/shared-base",
             "executionRoleArn": "",
             "networkMode": "awsvpc",
@@ -2616,10 +2618,10 @@ class TestResizeUserContainer:
             "cpu": "256",
             "memory": "512",
         }
-        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/lightbulb-dev-openclaw-user:7"
         prior_def = {
             **base_def,
-            "family": "isol8-dev-openclaw-user",
+            "family": "lightbulb-dev-openclaw-user",
             "taskRoleArn": "arn:aws:iam::123:role/prior-owner",
             "containerDefinitions": [
                 {
@@ -2704,7 +2706,7 @@ class TestResizeUserContainer:
 
     @pytest.mark.asyncio
     async def test_resize_row_task_role_wins_over_prior_revision(self, manager, mock_ecs_client):
-        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/lightbulb-dev-openclaw-user:7"
         row_role = "arn:aws:iam::123:role/row-owner"
         prior_role = "arn:aws:iam::123:role/prior-owner"
         base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
@@ -2729,7 +2731,7 @@ class TestResizeUserContainer:
 
     @pytest.mark.asyncio
     async def test_resize_keeps_base_task_role_when_row_and_prior_have_none(self, manager, mock_ecs_client):
-        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/lightbulb-dev-openclaw-user:7"
         base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
         base_role = base["taskRoleArn"]
         prior = dict(base)
@@ -5094,7 +5096,7 @@ class TestStaleLogConfigRefresh:
     def _current(self, group):
         return {
             "taskDefinition": {
-                "family": "isol8-dev-openclaw-user",
+                "family": "lightbulb-dev-openclaw-user",
                 "taskRoleArn": "arn:aws:iam::123456789:role/owner",
                 "executionRoleArn": "arn:aws:iam::123456789:role/exec",
                 "networkMode": "awsvpc",
@@ -5117,7 +5119,7 @@ class TestStaleLogConfigRefresh:
             self._base("/lightbulb/dev/openclaw"),
             self._current("/lightbulb/dev/openclaw"),
         ]
-        assert manager._refresh_stale_log_config("arn:td/isol8-dev-openclaw-user:207") is None
+        assert manager._refresh_stale_log_config("arn:td/lightbulb-dev-openclaw-user:207") is None
         mock_ecs_client.register_task_definition.assert_not_called()
 
     def test_re_registers_onto_the_base_group_when_stale(self, manager, mock_ecs_client):
@@ -5126,11 +5128,11 @@ class TestStaleLogConfigRefresh:
             self._current("/isol8/dev/openclaw"),
         ]
         mock_ecs_client.register_task_definition.return_value = {
-            "taskDefinition": {"taskDefinitionArn": "arn:td/isol8-dev-openclaw-user:208"}
+            "taskDefinition": {"taskDefinitionArn": "arn:td/lightbulb-dev-openclaw-user:208"}
         }
-        out = manager._refresh_stale_log_config("arn:td/isol8-dev-openclaw-user:207")
+        out = manager._refresh_stale_log_config("arn:td/lightbulb-dev-openclaw-user:207")
 
-        assert out == "arn:td/isol8-dev-openclaw-user:208"
+        assert out == "arn:td/lightbulb-dev-openclaw-user:208"
         kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
         cd = kwargs["containerDefinitions"][0]
         assert cd["logConfiguration"]["options"]["awslogs-group"] == "/lightbulb/dev/openclaw"

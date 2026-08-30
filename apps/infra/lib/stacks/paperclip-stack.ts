@@ -324,7 +324,7 @@ export class PaperclipStack extends cdk.Stack {
     // Task definition: 0.5 vCPU / 1 GB Fargate, upstream image
     // ─────────────────────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, "PaperclipTaskDef", {
-      family: `isol8-${env}-paperclip-server`,
+      family: `lightbulb-${env}-paperclip-server`,
       cpu: 512,
       memoryLimitMiB: 1024,
       executionRole,
@@ -582,7 +582,7 @@ export class PaperclipStack extends cdk.Stack {
     this.service = new ecs.FargateService(this, "PaperclipService", {
       cluster: props.cluster,
       taskDefinition,
-      serviceName: `isol8-${env}-paperclip-server`,
+      serviceName: `lightbulb-${env}-paperclip-server`,
       desiredCount: 1,
       securityGroups: [this.taskSecurityGroup],
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },

@@ -80,7 +80,7 @@ export class BedrockMeterStack extends cdk.Stack {
     // nothing ever re-reads this group after delivery. Retention is purely a
     // debugging window; keep the credential-bearing history short.
     this.invocationLogGroup = new logs.LogGroup(this, "InvocationLogGroup", {
-      logGroupName: "/isol8/bedrock-invocation",
+      logGroupName: "/lightbulb/bedrock-invocation",
       retention: logs.RetentionDays.THREE_DAYS,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -184,7 +184,7 @@ export class BedrockMeterStack extends cdk.Stack {
       // async DLQ to catch the rare platform-level async failure path, but the
       // synchronous per-record sends are the load-bearing durability mechanism.
       const dlq = new sqs.Queue(this, `MeterDlq${idSuffix}`, {
-        queueName: `isol8-${meterEnv}-bedrock-meter-dlq`,
+        queueName: `lightbulb-${meterEnv}-bedrock-meter-dlq`,
         retentionPeriod: cdk.Duration.days(14),
       });
 
@@ -497,7 +497,7 @@ export class BedrockMeterStack extends cdk.Stack {
       ]);
 
       const dlqAlarm = new cloudwatch.Alarm(this, `MeterDlqNotEmptyAlarm${idSuffix}`, {
-        alarmName: `isol8-${meterEnv}-bedrock-meter-dlq-not-empty`,
+        alarmName: `lightbulb-${meterEnv}-bedrock-meter-dlq-not-empty`,
         alarmDescription:
           "Bedrock meter DLQ has messages - a record failed Metronome ingest, was unattributed, or was unparseable and is held for redrive. Investigate before billing reconciles.",
         metric: dlq.metricApproximateNumberOfMessagesVisible({
@@ -518,7 +518,7 @@ export class BedrockMeterStack extends cdk.Stack {
       // few times and then drops it silently. The function's own Errors
       // metric is the only signal for that failure class.
       const errorsAlarm = new cloudwatch.Alarm(this, `MeterFnErrorsAlarm${idSuffix}`, {
-        alarmName: `isol8-${meterEnv}-bedrock-meter-fn-errors`,
+        alarmName: `lightbulb-${meterEnv}-bedrock-meter-fn-errors`,
         alarmDescription:
           "Bedrock meter Lambda invocation errored - a WHOLE batch failed (cold-start import error, timeout, or transport-retry exhaustion) and never reached the per-record DLQ. CloudWatch Logs retries then drops the batch, so investigate before records age out.",
         metric: fn.metricErrors({
@@ -565,13 +565,13 @@ export class BedrockMeterStack extends cdk.Stack {
       ];
       for (const [metricName, alarmId] of skipMetrics) {
         const alarm = new cloudwatch.Alarm(this, `${alarmId}${idSuffix}`, {
-          alarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
+          alarmName: `lightbulb-${meterEnv}-${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock meter (${meterEnv}) emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
           metric: new cloudwatch.Metric({
             namespace: "LightbulbAI",
             metricName,
             dimensionsMap: {
-              service: "isol8-bedrock-meter",
+              service: "lightbulb-bedrock-meter",
               env: meterEnv,
             },
             period: cdk.Duration.minutes(15),

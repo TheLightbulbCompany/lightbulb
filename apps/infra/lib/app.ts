@@ -15,7 +15,7 @@ import {
   StackCapabilities,
 } from "cdk-pipelines-github";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
-import { Isol8Stage } from "./isol8-stage";
+import { LightbulbStage } from "./lightbulb-stage";
 
 const app = new cdk.App();
 const awsEnv = { account: "877352799272", region: "us-east-1" };
@@ -205,7 +205,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
 // ---------------------------------------------------------------------------
 // Dev stage — auto-deploy infra + frontend on merge to main
 // ---------------------------------------------------------------------------
-const devStage = new Isol8Stage(app, "dev", {
+const devStage = new LightbulbStage(app, "dev", {
   env: awsEnv,
   environment: "dev",
   rootDomain: DEV_ROOT_DOMAIN,
@@ -293,7 +293,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
 // and dev still deploys on every merge.
 const PROD_PROMOTE_IF = "github.event_name == 'workflow_dispatch'";
 
-const prodStage = new Isol8Stage(app, "prod", {
+const prodStage = new LightbulbStage(app, "prod", {
   env: awsEnv,
   environment: "prod",
   rootDomain: ROOT_DOMAIN,

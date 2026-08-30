@@ -66,7 +66,7 @@ export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
 
 /**
  * Builds a real ApiStack wired to a real upstream NetworkStack. Mirrors the
- * wiring in isol8-stage.ts so the synthesized template matches what gets
+ * wiring in lightbulb-stage.ts so the synthesized template matches what gets
  * deployed. Used by api-stack.test.ts (and any future ApiStack assertion
  * tests) so the ws-connections table + its GSIs are exercised as-deployed.
  */
@@ -96,7 +96,7 @@ export function synthApiStack(
     albHttpListenerArn: network.albHttpListenerArn,
     albSecurityGroup: network.albSecurityGroup,
     // Pass secret name + KMS key ARN as plain strings — same cross-stack
-    // pattern as isol8-stage.ts (avoids KMS auto-grant cycles).
+    // pattern as lightbulb-stage.ts (avoids KMS auto-grant cycles).
     paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
     paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
     wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,

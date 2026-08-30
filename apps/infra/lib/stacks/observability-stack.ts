@@ -292,7 +292,7 @@ export class ObservabilityStack extends cdk.Stack {
       });
 
     const alarm = new cloudwatch.Alarm(this, def.id, {
-      alarmName: `isol8-${this.envName}-${def.id}-${def.name}`,
+      alarmName: `lightbulb-${this.envName}-${def.id}-${def.name}`,
       alarmDescription: def.description,
       metric,
       threshold: def.threshold,
@@ -543,7 +543,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const p9 = new cloudwatch.Alarm(this, "P9", {
-      alarmName: `isol8-${this.envName}-P9-alb-5xx-rate`,
+      alarmName: `lightbulb-${this.envName}-P9-alb-5xx-rate`,
       alarmDescription: "ALB 5xx error rate exceeds 5%",
       metric: albErrorRate,
       threshold: 5,
@@ -575,7 +575,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const p10 = new cloudwatch.Alarm(this, "P10", {
-      alarmName: `isol8-${this.envName}-P10-apigw-ws-5xx-rate`,
+      alarmName: `lightbulb-${this.envName}-P10-apigw-ws-5xx-rate`,
       alarmDescription: "API Gateway WebSocket 5xx error rate exceeds 5%",
       metric: apiGwErrorRate,
       threshold: 5,
@@ -606,7 +606,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const heartbeatAlarm = new cloudwatch.Alarm(this, "ReaperHeartbeatAlarm", {
-      alarmName: `isol8-${this.envName}-P12-backend-liveness`,
+      alarmName: `lightbulb-${this.envName}-P12-backend-liveness`,
       alarmDescription:
         "PAGE: backend metrics loop has emitted no heartbeat in 10 minutes. " +
         "The backend emits gateway.running.count every ~60s regardless of " +
@@ -857,7 +857,7 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(5),
     });
     const w10 = new cloudwatch.Alarm(this, "W10", {
-      alarmName: `isol8-${this.envName}-W10-chat-error-rate`,
+      alarmName: `lightbulb-${this.envName}-W10-chat-error-rate`,
       alarmDescription: "Chat error rate exceeds 1%",
       metric: chatErrorRate,
       threshold: 1,
@@ -875,7 +875,7 @@ export class ObservabilityStack extends cdk.Stack {
     // never normal. Bucket name is the literal deterministic one (no
     // cross-stack ref — same anti-KMS-cycle posture as the rest of the repo).
     const litestreamPuts = new cloudwatch.Alarm(this, "W10B", {
-      alarmName: `isol8-${this.envName}-W10B-litestream-put-requests`,
+      alarmName: `lightbulb-${this.envName}-W10B-litestream-put-requests`,
       alarmDescription:
         "Litestream S3 PUT volume far above the active-fleet ceiling - idle-PUT pathology or a runaway checkpoint loop",
       metric: new cloudwatch.Metric({
@@ -1442,7 +1442,7 @@ export class ObservabilityStack extends cdk.Stack {
     // The Lambda below only emits the alarm metric for genuinely-unexpected
     // stops, so normal per-user teardown + deploys no longer fire W39.
     const taskStoppedRule = new events.Rule(this, "TaskStoppedRule", {
-      ruleName: `isol8-${this.envName}-ecs-task-stopped`,
+      ruleName: `lightbulb-${this.envName}-ecs-task-stopped`,
       description: "Captures ECS task stopped events for alarming",
       eventPattern: {
         source: ["aws.ecs"],
@@ -1577,7 +1577,7 @@ def handler(event, context):
     // Lambda checks running-task count on each RUNNING transition. Reuses the
     // free-Lambda pattern; events are low-volume.
     const multiTaskRule = new events.Rule(this, "TaskRunningRule", {
-      ruleName: `isol8-${this.envName}-ecs-task-running`,
+      ruleName: `lightbulb-${this.envName}-ecs-task-running`,
       description:
         "Captures ECS task RUNNING transitions for >1-task-per-service detection",
       eventPattern: {
@@ -1677,7 +1677,7 @@ def handler(event, _ctx):
         this,
         `W40-${shortName}`,
         {
-          alarmName: `isol8-${this.envName}-W40-ddb-read-${shortName}`,
+          alarmName: `lightbulb-${this.envName}-W40-ddb-read-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} read capacity anomaly`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1705,7 +1705,7 @@ def handler(event, _ctx):
         this,
         `W41-${shortName}`,
         {
-          alarmName: `isol8-${this.envName}-W41-ddb-write-${shortName}`,
+          alarmName: `lightbulb-${this.envName}-W41-ddb-write-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} write capacity anomaly`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1732,7 +1732,7 @@ def handler(event, _ctx):
         this,
         `W42-${shortName}`,
         {
-          alarmName: `isol8-${this.envName}-W42-ddb-errors-${shortName}`,
+          alarmName: `lightbulb-${this.envName}-W42-ddb-errors-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} system errors > 0`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1775,7 +1775,7 @@ def handler(event, _ctx):
 
     // W44: EFS BurstCreditBalance low
     const w44 = new cloudwatch.Alarm(this, "W44", {
-      alarmName: `isol8-${this.envName}-W44-efs-burst-credits`,
+      alarmName: `lightbulb-${this.envName}-W44-efs-burst-credits`,
       alarmDescription: "EFS burst credit balance is low",
       metric: new cloudwatch.Metric({
         namespace: "AWS/EFS",
@@ -1914,7 +1914,7 @@ def handler(event, _ctx):
     // the 3C Aurora-failover scenario has a recovery signal. (Event categories:
     // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
     const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
-      ruleName: `isol8-${this.envName}-aurora-failover`,
+      ruleName: `lightbulb-${this.envName}-aurora-failover`,
       description: "Paperclip Aurora failover/failure events -> warn",
       eventPattern: {
         source: ["aws.rds"],
@@ -2077,7 +2077,7 @@ def handler(event, _ctx):
     // W50: Bedrock spend anomaly
     // Use CloudWatch alarm on AWS/Bedrock InvocationCount as a proxy for cost
     const w50 = new cloudwatch.Alarm(this, "W50", {
-      alarmName: `isol8-${this.envName}-W50-bedrock-spend-anomaly`,
+      alarmName: `lightbulb-${this.envName}-W50-bedrock-spend-anomaly`,
       alarmDescription:
         "Bedrock invocation count spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
@@ -2097,7 +2097,7 @@ def handler(event, _ctx):
 
     // W51: NAT Gateway data transfer anomaly
     const w51 = new cloudwatch.Alarm(this, "W51", {
-      alarmName: `isol8-${this.envName}-W51-nat-gateway-data-transfer`,
+      alarmName: `lightbulb-${this.envName}-W51-nat-gateway-data-transfer`,
       alarmDescription:
         "NAT Gateway data transfer spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
@@ -2122,7 +2122,7 @@ def handler(event, _ctx):
     // weeks). Pages so it can't go unnoticed again. Threshold lives in
     // BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD — tune as the fleet grows.
     const w52 = new cloudwatch.Alarm(this, "W52", {
-      alarmName: `isol8-${this.envName}-W52-bedrock-cache-write-token-volume`,
+      alarmName: `lightbulb-${this.envName}-W52-bedrock-cache-write-token-volume`,
       alarmDescription:
         "Bedrock cache-write input tokens exceeded the daily ceiling - " +
         "possible runaway inference loop driving cost",
@@ -2180,7 +2180,7 @@ def handler(event, _ctx):
   private createUptimeChecks(): void {
     const isProd = this.envName === "prod";
 
-    // Mirrors api-stack (`api.{root}` / `api-{env}.{root}`) and isol8-stage
+    // Mirrors api-stack (`api.{root}` / `api-{env}.{root}`) and lightbulb-stage
     // (`{root}` / `dev.{root}`).
     const root = this.rootDomain;
     const appHost = isProd ? root : `${this.envName}.${root}`;
@@ -2225,7 +2225,7 @@ def handler(event, _ctx):
           measureLatency: false,
         },
         healthCheckTags: [
-          { key: "Name", value: `isol8-${this.envName}-${target.name}` },
+          { key: "Name", value: `lightbulb-${this.envName}-${target.name}` },
         ],
       });
 
@@ -2240,7 +2240,7 @@ def handler(event, _ctx):
       });
 
       const alarm = new cloudwatch.Alarm(this, target.id, {
-        alarmName: `isol8-${this.envName}-${target.id}-${target.name}`,
+        alarmName: `lightbulb-${this.envName}-${target.id}-${target.name}`,
         alarmDescription: target.description,
         metric,
         threshold: 1,
@@ -2275,7 +2275,7 @@ def handler(event, _ctx):
     const albFullName = props.alb.loadBalancerFullName;
 
     const dashboard = new cloudwatch.Dashboard(this, "OrrDashboard", {
-      dashboardName: `isol8-${this.envName}-orr`,
+      dashboardName: `lightbulb-${this.envName}-orr`,
     });
 
     // ----- Row 1: SLOs (2 widgets) -----
@@ -2817,7 +2817,7 @@ def handler(event, _ctx):
 
     // GuardDuty findings → warn SNS via EventBridge
     const guardDutyRule = new events.Rule(this, "GuardDutyFindings", {
-      ruleName: `isol8-${this.envName}-guardduty-findings`,
+      ruleName: `lightbulb-${this.envName}-guardduty-findings`,
       description: "Route GuardDuty findings to warn SNS topic",
       eventPattern: {
         source: ["aws.guardduty"],
@@ -2831,7 +2831,7 @@ def handler(event, _ctx):
       this,
       "AccessAnalyzerFindings",
       {
-        ruleName: `isol8-${this.envName}-access-analyzer-findings`,
+        ruleName: `lightbulb-${this.envName}-access-analyzer-findings`,
         description:
           "Route IAM Access Analyzer findings to warn SNS topic",
         eventPattern: {

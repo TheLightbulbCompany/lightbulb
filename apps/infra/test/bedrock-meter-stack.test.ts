@@ -94,10 +94,10 @@ describe("BedrockMeterStack", () => {
   test("creates one SQS DLQ per instance", () => {
     template.resourceCountIs("AWS::SQS::Queue", 2);
     template.hasResourceProperties("AWS::SQS::Queue", {
-      QueueName: "isol8-dev-bedrock-meter-dlq",
+      QueueName: "lightbulb-dev-bedrock-meter-dlq",
     });
     template.hasResourceProperties("AWS::SQS::Queue", {
-      QueueName: "isol8-prod-bedrock-meter-dlq",
+      QueueName: "lightbulb-prod-bedrock-meter-dlq",
     });
   });
 
@@ -298,7 +298,7 @@ describe("BedrockMeterStack", () => {
     // with AlreadyExists (this bricked two prod deploys).
     template.hasResource("AWS::Logs::LogGroup", {
       Properties: Match.objectLike({
-        LogGroupName: "/isol8/bedrock-invocation",
+        LogGroupName: "/lightbulb/bedrock-invocation",
       }),
       DeletionPolicy: "Delete",
       UpdateReplacePolicy: "Delete",
@@ -402,7 +402,7 @@ describe("BedrockMeterStack", () => {
     // copy, so retention is purely a debugging window. Keep it days, not
     // months.
     template.hasResourceProperties("AWS::Logs::LogGroup", {
-      LogGroupName: "/isol8/bedrock-invocation",
+      LogGroupName: "/lightbulb/bedrock-invocation",
       RetentionInDays: 3,
     });
   });
@@ -432,19 +432,19 @@ describe("BedrockMeterStack", () => {
         "meter.malformed_record",
       ]) {
         template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-          AlarmName: `isol8-${meterEnv}-${metricName.replace(/\./g, "-")}`,
+          AlarmName: `lightbulb-${meterEnv}-${metricName.replace(/\./g, "-")}`,
           MetricName: metricName,
           Namespace: "LightbulbAI",
           Dimensions: Match.arrayWith([
             Match.objectLike({ Name: "env", Value: meterEnv }),
-            Match.objectLike({ Name: "service", Value: "isol8-bedrock-meter" }),
+            Match.objectLike({ Name: "service", Value: "lightbulb-bedrock-meter" }),
           ]),
           ComparisonOperator: "GreaterThanThreshold",
           Threshold: 0,
         });
       }
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        AlarmName: `isol8-${meterEnv}-bedrock-meter-dlq-not-empty`,
+        AlarmName: `lightbulb-${meterEnv}-bedrock-meter-dlq-not-empty`,
         MetricName: "ApproximateNumberOfMessagesVisible",
         Namespace: "AWS/SQS",
       });
@@ -466,7 +466,7 @@ describe("BedrockMeterStack", () => {
       const errorsAlarm = alarms.find(
         (a: any) =>
           a.Properties.AlarmName ===
-          `isol8-${meterEnv}-bedrock-meter-fn-errors`,
+          `lightbulb-${meterEnv}-bedrock-meter-fn-errors`,
       );
       expect(errorsAlarm).toBeDefined();
       expect(errorsAlarm.Properties.MetricName).toBe("Errors");
@@ -526,7 +526,7 @@ describe("BedrockMeterStack", () => {
     for (const alarm of alarms) {
       expect(alarm.Properties.AlarmActions?.length).toBeGreaterThan(0);
       const name: string = alarm.Properties.AlarmName;
-      const expectedEnv = name.startsWith("isol8-dev-") ? "dev" : "prod";
+      const expectedEnv = name.startsWith("lightbulb-dev-") ? "dev" : "prod";
       const pages = PAGING.some((m) => name.endsWith(m));
       const tier = pages ? "page" : "warn";
       if (pages) paged++;

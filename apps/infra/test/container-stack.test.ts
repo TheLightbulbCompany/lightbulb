@@ -28,7 +28,7 @@ function openclawStartupCommand(template: Template, env: "dev" | "prod"): string
       ContainerDefinitions?: Array<{ Name?: string; Command?: string[] }>;
     };
   }>;
-  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `lightbulb-${env}-openclaw`);
   const container = taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw");
   expect(container?.Command?.slice(0, 2)).toEqual(["sh", "-c"]);
   return container?.Command?.[2] ?? "";
@@ -47,7 +47,7 @@ function openclawContainerEnv(
       }>;
     };
   }>;
-  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `lightbulb-${env}-openclaw`);
   return taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw")?.Environment ?? [];
 }
 
@@ -63,7 +63,7 @@ function openclawContainerEnv(
 // litestream-supervised child), not in this command.
 function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
   template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-    Family: `isol8-${env}-openclaw`,
+    Family: `lightbulb-${env}-openclaw`,
     ContainerDefinitions: Match.arrayWith([
       Match.objectLike({
         Name: "openclaw",
@@ -146,7 +146,7 @@ function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void 
     BucketName: `isol8-${env}-openclaw-replicas`,
   });
   template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-    Family: `isol8-${env}-openclaw`,
+    Family: `lightbulb-${env}-openclaw`,
     ContainerDefinitions: Match.arrayWith([
       Match.objectLike({
         Name: "openclaw",
@@ -269,7 +269,7 @@ describe("ContainerStack — dev", () => {
 
   test("openclaw container has a /healthz healthcheck on port 18789", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -293,7 +293,7 @@ describe("ContainerStack — dev", () => {
 
   test("openclaw container enables Fargate init process for zombie reaping", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -379,7 +379,7 @@ describe("ContainerStack — dev", () => {
     // or the OAuth tokens land on the ephemeral overlay fs and are wiped on
     // every task restart.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -410,7 +410,7 @@ describe("ContainerStack — dev", () => {
     // spread across filesystems hits a cross-device rename) so its whole
     // cache goes to /tmp.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -440,7 +440,7 @@ describe("ContainerStack — dev", () => {
     // an absent /home/node/.xurl and every X call silently runs unauthenticated
     // — the connection shows "connected" while nothing works.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -460,7 +460,7 @@ describe("ContainerStack — dev", () => {
     // overrun the health-check start period. The migration must `mv` it aside
     // (an O(1) same-filesystem rename), exactly like the chromium/npm guards.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -479,7 +479,7 @@ describe("ContainerStack — dev", () => {
     // migration for a recursive delete and silently re-introduce the
     // boot-path NFS unlink storm.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -493,7 +493,7 @@ describe("ContainerStack — dev", () => {
 
   test("openclaw container injects GOG_KEYRING_PASSWORD from the shared secret", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -519,7 +519,7 @@ describe("ContainerStack — dev", () => {
 
   test("openclaw container injects CLOUDFLARE_WARP_ENROLLMENT from the shared secret", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",
@@ -634,7 +634,7 @@ describe("ContainerStack — dev", () => {
     // future refactors of the command can't accidentally re-introduce
     // the markdown-converter install.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",

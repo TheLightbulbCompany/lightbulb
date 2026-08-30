@@ -249,7 +249,7 @@ export interface ServiceStackProps extends cdk.StackProps {
   wsStage: string;
   /**
    * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
-   * prod-only SesInboundStack — see isol8-stage.ts). Empty/undefined in every
+   * prod-only SesInboundStack — see lightbulb-stage.ts). Empty/undefined in every
    * other env; the backend's AGENT_EMAIL_DOMAIN guards treat that as "agent
    * email off", keeping dev/local/CI inert.
    */
@@ -257,7 +257,7 @@ export interface ServiceStackProps extends cdk.StackProps {
   /**
    * SES configuration set every agent-mail send is stamped with; empty ⇒
    * unstamped. Sourced from the AgentMailOutboundStack instantiated in
-   * lockstep with agentEmailDomain (see isol8-stage.ts) — undefined in any
+   * lockstep with agentEmailDomain (see lightbulb-stage.ts) — undefined in any
    * env/deploy where that stack isn't instantiated.
    */
   agentMailConfigurationSet?: string;
@@ -611,7 +611,7 @@ export class ServiceStack extends cdk.Stack {
     // prod-stage SesInboundStack is deployed (prod-only), and sends are
     // separately gated by AGENT_EMAIL_DOMAIN being set (core/services/ses_email.py).
     new iam.ManagedPolicy(this, "BackendSesSend", {
-      managedPolicyName: `isol8-${env}-backend-ses-send`,
+      managedPolicyName: `lightbulb-${env}-backend-ses-send`,
       roles: [this.taskRole],
       statements: [
         new iam.PolicyStatement({
@@ -1000,7 +1000,7 @@ export class ServiceStack extends cdk.Stack {
     // (apps/backend/core/services/cloudwatch_logs.py). Scoped to the
     // backend's own log group ARN; never "*" — least privilege.
     //
-    // Log group name matches service-stack.ts + isol8-stage.ts —
+    // Log group name matches service-stack.ts + lightbulb-stage.ts —
     // `/ecs/lightbulb-${env}` (no /aws prefix, no
     // -backend suffix). The cloudwatch_logs service must use this same
     // name when constructing FilterLogEvents calls.
@@ -1682,7 +1682,7 @@ export class ServiceStack extends cdk.Stack {
       // dev/local/CI stay inert.
       AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
       // Agent-email inbound attachments bucket, from the prod-stage
-      // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
+      // SesInboundStack when it exists (prod-only — see lightbulb-stage.ts).
       // SES configuration set stamped on every agent-mail send
       // (core/services/ses_email.py), from the AgentMailOutboundStack
       // instantiated in lockstep with AGENT_EMAIL_DOMAIN above. Empty string
@@ -1841,7 +1841,7 @@ export class ServiceStack extends cdk.Stack {
     // (ContainerFromServiceIngress above) is keyed to it.
     // ---------------------------------------------------------------------
     const provisionerTaskDef = new ecs.FargateTaskDefinition(this, "ProvisionerTaskDef", {
-      family: `isol8-${env}-provisioner`,
+      family: `lightbulb-${env}-provisioner`,
       cpu: 1024,
       memoryLimitMiB: 2048,
       taskRole: this.taskRole,
@@ -2291,7 +2291,7 @@ export class ServiceStack extends cdk.Stack {
     );
 
     const provisionFailed = new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
-      alarmName: `isol8-${env}-provision-executions-failed`,
+      alarmName: `lightbulb-${env}-provision-executions-failed`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution FAILED. New signups are " +
         "not getting containers.",
@@ -2303,7 +2303,7 @@ export class ServiceStack extends cdk.Stack {
     provisionFailed.addAlarmAction(pageAction);
 
     const provisionTimedOut = new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
-      alarmName: `isol8-${env}-provision-executions-timedout`,
+      alarmName: `lightbulb-${env}-provision-executions-timedout`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution TIMED OUT. New signups " +
         "are not getting containers.",
@@ -2324,7 +2324,7 @@ export class ServiceStack extends cdk.Stack {
     // inline-timeout page covers the in-flight 1800s mark). Normal executions
     // close in 3-10 min; 20 min is comfortably above that.
     const provisionSlow = new cloudwatch.Alarm(this, "ProvisionExecutionSlowAlarm", {
-      alarmName: `isol8-${env}-provision-executions-slow`,
+      alarmName: `lightbulb-${env}-provision-executions-slow`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution took over 20 minutes " +
         "to close. An owner sat without a container for that whole time, " +
@@ -2340,7 +2340,7 @@ export class ServiceStack extends cdk.Stack {
     provisionSlow.addAlarmAction(pageAction);
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      family: `isol8-${env}-backend`,
+      family: `lightbulb-${env}-backend`,
       cpu: env === "prod" ? 2048 : 1024,
       memoryLimitMiB: env === "prod" ? 4096 : 2048,
       taskRole: this.taskRole,
@@ -2423,7 +2423,7 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Tags
     // -------------------------------------------------------------------------
-    cdk.Tags.of(this.service).add("Name", `isol8-${env}-backend`);
+    cdk.Tags.of(this.service).add("Name", `lightbulb-${env}-backend`);
     cdk.Tags.of(this.service).add("Project", "lightbulb");
     cdk.Tags.of(this.service).add("Environment", env);
   }

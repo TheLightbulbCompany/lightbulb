@@ -123,6 +123,22 @@ async def _pending_idea(owner_id: str) -> str | None:
     return text[:140] if text else None
 
 
+async def _pending_idea_full(owner_id: str) -> str | None:
+    """Untruncated pending-brief text, or None -- same degrade-to-None
+    posture as ``_pending_idea``, and a separate read of the same tiny row
+    rather than sharing one: ``/launch/me`` is on-demand, not the 3s
+    container-status poll, so the extra GetItem isn't worth coupling the two
+    fields together for. This is what lets the landing card's held-owner
+    "edit your idea" view prefill the full text, not just the 140-char
+    teaser."""
+    try:
+        item = await _paperclip_repo().get_pending_brief(owner_id)
+    except Exception:  # noqa: BLE001 — a degraded read must not break /launch/me
+        logger.info("launch_service: pending-brief read failed for owner %s", owner_id, exc_info=True)
+        return None
+    return (item or {}).get("input") or None
+
+
 async def me(auth: AuthContext, s: Schedule) -> dict:
     owner_id = resolve_owner_id(auth)
     email = await resolve_email(auth)
@@ -160,6 +176,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "can_join": ok,
         "reason": reason,
         "idea": await _pending_idea(owner_id),
+        "idea_full": await _pending_idea_full(owner_id),
     }
 
 

@@ -73,6 +73,7 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         wl.join = AsyncMock(return_value=row)
         wl.claim_user = AsyncMock()
@@ -121,6 +122,7 @@ async def test_me_in_comp_window_is_computed_on_the_effective_position():
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         wl.join = AsyncMock(return_value=row)
         wl.claim_user = AsyncMock()
@@ -159,6 +161,7 @@ async def test_me_without_email_has_no_waitlist_block():
             AsyncMock(return_value=NOT_ACTIVATED),
         ),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(auth, _sched(-1))
     assert body["waitlist"] is None and body["can_join"] is False and body["reason"] == "no_subscription"
@@ -178,6 +181,7 @@ async def test_me_reports_joined_has_key_from_the_entry_row():
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ACTIVATED)
         ),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(auth, _sched(-1))
     assert body["joined"] is True and body["has_key"] is True
@@ -201,6 +205,9 @@ async def test_me_idea_is_the_pending_briefs_input_truncated_to_140_chars():
         )
         body = await launch_service.me(auth, _sched(-1))
     assert body["idea"] == long_input[:140] and len(body["idea"]) == 140
+    # idea_full is the SAME row, untruncated -- the landing card's held-owner
+    # edit view needs the whole stashed idea, not the 140-char teaser.
+    assert body["idea_full"] == long_input
 
 
 async def test_me_idea_is_none_when_no_pending_brief_or_on_a_read_failure():
@@ -218,7 +225,9 @@ async def test_me_idea_is_none_when_no_pending_brief_or_on_a_read_failure():
         MockRepo.return_value.get_pending_brief = AsyncMock(return_value=None)
         body = await launch_service.me(auth, _sched(-1))
         assert body["idea"] is None
+        assert body["idea_full"] is None
 
         MockRepo.return_value.get_pending_brief = AsyncMock(side_effect=RuntimeError("boom"))
         body = await launch_service.me(auth, _sched(-1))
         assert body["idea"] is None
+        assert body["idea_full"] is None

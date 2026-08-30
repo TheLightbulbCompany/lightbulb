@@ -21,7 +21,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly targetGroup: elbv2.ApplicationTargetGroup;
   public readonly albHttpListenerArn: string;
   public readonly albHttpsListenerArn?: string;
-  /** TRANSITIONAL (ALB rename step 1): the named set, unused until the consumers repoint. */
+  /** Same objects as `alb`/`targetGroup`; kept so the stage wiring reads either name. */
   public readonly albV2: elbv2.ApplicationLoadBalancer;
   public readonly targetGroupV2: elbv2.ApplicationTargetGroup;
   public readonly albHttpListenerArnV2: string;
@@ -80,26 +80,19 @@ export class NetworkStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // ALB (internal) + target group + listeners
-    //
-    // TRANSITIONAL — two sets during the isol8 -> lightbulb rename. ALB and
-    // target-group names are create-only, so the named set is built ALONGSIDE
-    // the legacy auto-named one: (1) this deploy adds it, unused; (2) the next
-    // repoints the API Gateway VPC link, the CloudFront VPC origin, the backend
-    // service and the alarms to it; (3) the one after deletes the legacy set.
-    // Deletion protection comes off the legacy ALB here (in-place) for step 3.
+    // ALB (internal) + target group + listeners. The legacy auto-named set was
+    // deleted in the last step of the isol8 -> lightbulb rename; the `V2`
+    // construct ids are the deployed logical ids and stay.
     // -------------------------------------------------------------------------
-    const legacy = this.buildAlb("", props, { deletionProtection: false });
-    this.alb = legacy.alb;
-    this.targetGroup = legacy.targetGroup;
-    this.albHttpListenerArn = legacy.httpListenerArn;
-    this.albHttpsListenerArn = legacy.httpsListenerArn;
-
     const named = this.buildAlb("V2", props, {
       deletionProtection: env === "prod",
       loadBalancerName: `lightbulb-${env}`,
       targetGroupName: `lightbulb-${env}-backend`,
     });
+    this.alb = named.alb;
+    this.targetGroup = named.targetGroup;
+    this.albHttpListenerArn = named.httpListenerArn;
+    this.albHttpsListenerArn = named.httpsListenerArn;
     this.albV2 = named.alb;
     this.targetGroupV2 = named.targetGroup;
     this.albHttpListenerArnV2 = named.httpListenerArn;

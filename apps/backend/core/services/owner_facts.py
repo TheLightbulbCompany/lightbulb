@@ -47,7 +47,13 @@ def format_provider_label(provider_choice: str | None, byo_provider: str | None)
     return f"unknown ({provider_choice})"
 
 
-def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_address: str | None = None) -> dict:
+def build_owner_facts(
+    owner_id: str,
+    billing_account: dict | None,
+    *,
+    email_address: str | None = None,
+    provisioning: list[dict] | None = None,
+) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
 
@@ -110,6 +116,10 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         #   email_enabled=True,  address="..."   -> that is the address
         "email_enabled": bool((settings.AGENT_EMAIL_DOMAIN or "").strip()),
         "email_address": email_address,
+        # Every provisioning workflow the owner has, newest per provider/service
+        # (spec §3.2). Friday reads this so she never re-asks for something
+        # already open, already running, or already refused.
+        "provisioning": list(provisioning or []),
         "generated_at": utc_now_iso(),
     }
 
@@ -136,6 +146,63 @@ async def _lookup_email_address(owner_id: str) -> str | None:
     return active[0].get("address")
 
 
+async def _lookup_provisioning(owner_id: str) -> list[dict]:
+    """The newest workflow per (provider, service), reduced to what an agent
+    may see.
+
+    ONE owner-partitioned Query, on the WORKFLOW table rather than the
+    ``integrations`` pointer: the file's job is "don't ask twice", so it has to
+    show the asks the pointer never learns about — awaiting approval, and
+    ``rejected``/``cancelled``. ``resource_name`` and ``env_keys`` are stamped
+    on the row when it binds, so this can never disagree with the pointer.
+
+    NAMES only — never a credential value. Never raises: the facts write must
+    not depend on it.
+    """
+    try:
+        from core.repositories.provisioning_workflow_repo import list_for_owner
+
+        rows = await list_for_owner(owner_id)
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: provisioning lookup failed for %s: %s", owner_id, e)
+        return []
+    newest: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        provider = row.get("provider_name") or ""
+        service = row.get("service_ref") or ""
+        if not provider or not service:
+            continue
+        key = (provider, service)
+        prior = newest.get(key)
+        if prior is None or (row.get("created_at") or "") > (prior.get("created_at") or ""):
+            newest[key] = row
+    out = []
+    for pair in sorted(newest):
+        row = newest[pair]
+        entry = {
+            "workflow_id": row.get("workflow_id"),
+            "provider": pair[0],
+            "service": pair[1],
+            "state": row.get("state"),
+        }
+        # `removed` once the owner deprovisioned it. The row stays `active` —
+        # the request WAS fulfilled — so without this the file would keep
+        # advertising variables that no longer exist and Friday would go on
+        # reaching for them.
+        resource_status = row.get("resource_status")
+        if resource_status:
+            entry["resource_status"] = resource_status
+        if resource_status != "removed":
+            # Present once bound: the NAMES of the variables that now exist.
+            # Never a value — the container reads those from its own environment.
+            if row.get("resource_name"):
+                entry["resource_name"] = row["resource_name"]
+            if row.get("env_keys"):
+                entry["env_keys"] = list(row["env_keys"])
+        out.append(entry)
+    return out
+
+
 async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = None) -> None:
     """Render + write the facts file. Best-effort: never raises.
 
@@ -151,7 +218,12 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if account_overrides:
             account = {**account, **account_overrides}
-        facts = build_owner_facts(owner_id, account, email_address=await _lookup_email_address(owner_id))
+        facts = build_owner_facts(
+            owner_id,
+            account,
+            email_address=await _lookup_email_address(owner_id),
+            provisioning=await _lookup_provisioning(owner_id),
+        )
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

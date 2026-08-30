@@ -182,6 +182,31 @@ export interface ServiceStackProps extends cdk.StackProps {
    * defaults to "" so an unconfigured env just can't start that flow yet.
    */
   stripeConnectClientId?: string;
+  /**
+   * Provider catalog partition for the Stripe Projects provisioning rail:
+   * `prod | dev | testing`. Dev reads/writes Stripe's `testing` partition,
+   * prod the real one. NOT a payment-mode switch — Stripe's own caveat:
+   * "Selecting a DEV or TESTING catalog doesn't mean 'no real charges.'"
+   * Defaults to `prod`, the safe value for an env that forgot to set it:
+   * reading one partition while writing another provisions into a catalog
+   * the owner never saw.
+   */
+  stripeProjectsCatalog?: string;
+  /**
+   * Stripe's recommended Provisioning onboarding path: request the Accounts v2
+   * `developer` configuration with the `projects` capability on the company
+   * account. DEFAULT FALSE — `configuration.developer` is an "Unknown field"
+   * for our platform today (probed 2026-08-29); sending it breaks every
+   * company-account create. Flip once Stripe enables the field.
+   */
+  stripeProjectsDeveloperConfig?: boolean;
+  /**
+   * The Accounts v2 API version pinned on the company account/account-link
+   * calls (`Stripe-Version` header). Empty ⇒ the SDK's own default, i.e.
+   * today's behaviour. Set once Stripe names the version during preview
+   * onboarding for stripeProjectsDeveloperConfig.
+   */
+  stripeAccountsV2Version?: string;
 }
 
 /**
@@ -1597,6 +1622,18 @@ export class ServiceStack extends cdk.Stack {
           ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
           : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
       STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
+      // Provider catalog partition. dev reads/writes Stripe's `testing`
+      // partition, prod the real one. NOT a payment-mode switch — Stripe's own
+      // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
+      // charges.'"
+      STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
+      // Stripe's recommended `developer` configuration + `projects`
+      // capability on the company account. Default-off flag — see the
+      // stripeProjectsDeveloperConfig prop doc for why.
+      STRIPE_PROJECTS_DEVELOPER_CONFIG: String(props.stripeProjectsDeveloperConfig ?? false),
+      // Accounts v2 API version pin for the company account/account-link
+      // calls. Empty ⇒ the SDK's own default.
+      STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

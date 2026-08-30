@@ -48,11 +48,17 @@ marketplace payouts; Connect webhook secret + `account.updated` handler in
 `routers/marketplace_purchases.py`). Two doors, one code path:
 
 - **Create**: **Accounts v2** — `POST /v2/core/accounts` with the `merchant`
-  configuration (`card_payments` requested), `dashboard: full`, and
+  configuration (`card_payments` requested) **and, once Stripe enables it for
+  our platform, the `developer` configuration requesting the `projects`
+  capability** — Stripe's recommended Projects onboarding path (owner
+  decision 2026-08-29: follow the recommended path; the code ships behind
+  `STRIPE_PROJECTS_DEVELOPER_CONFIG`, default off, flipped when the field
+  exists for us), `dashboard: full`, and
   `defaults.responsibilities = {fees_collector: stripe, losses_collector:
   stripe}`; prefilled from the company name and the owner's Clerk email;
   hosted onboarding via v2 account links (`use_case.type =
-  account_onboarding`, `configurations: [merchant]`; single-use, ~10-minute
+  account_onboarding`, `configurations: [merchant]` plus `developer` under
+  the same flag; single-use, ~10-minute
   TTL, minted on click, never stored or emailed). Decided 2026-08-28: v2 is GA
   for all Stripe users (dahlia, 2026-04-22), our dev platform already serves
   `/v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient.v2.core`.
@@ -76,9 +82,17 @@ Stripe account.
 
 The spine is three things at once: the owner's payments ledger; the identity
 Stripe Projects hangs providers off (`Stripe-Context: acct_…`); the billing
-profile with per-provider spend limits. Projects requires **verified email,
-date of birth and phone** on the account — onboarding must collect more than
-`contact_email`.
+profile with per-provider spend limits. Whether an account can provision is
+`GET /v2/provisioning/eligibility` — `is_eligible` plus `requirements` such as
+`representative.name`, `representative.dob`, `tos.stripe` — resolved through
+the merchant hosted onboarding (or `POST /v2/provisioning/kyc`);
+`contact_email` alone never satisfies it, and a return to our `return_url`
+proves nothing. **Verified 2026-08-29 in live mode:** an existing Express
+account of ours with no special configuration already answers `is_eligible:
+true, requirements: []`, so provisioning is not blocked while the `developer`
+configuration is still unavailable to us (`configuration.developer` is an
+unknown field for our platform under every API version — a cohort
+enablement Stripe has to switch on, plus the Accounts API version to pin).
 
 **When it appears: a Friday-raised approval card, never a gate before chat.**
 Friday raises it the first time a task needs money or infrastructure (or in
@@ -97,29 +111,140 @@ First run stays "type an idea, watch it become a company" — never a setup
 checklist. Trial owners see the same sentence framed as what upgrading
 unlocks (the paywall inversion in the growth doc).
 
-### 3.2 Provisioning door (Stripe Projects)
+### 3.2 Provisioning door (Stripe Provisioning API — Projects for Platforms)
 
-Behind an interface with two implementations:
+Access granted 2026-08-28 (allowlisted private preview; every call carries
+`Stripe-Version: unsafe-development`; "the contract can change"). Every field
+below is taken from Stripe's two preview documents (spec rev `f918b509`,
+integration guide) — re-verify on the shared Slack channel before deploying a
+field change, and tolerate unknown response properties.
 
-1. **Projects for Platforms API** (private preview; request access at
-   projectsforplatforms@stripe.com — owner action, send in P0). Backend calls
-   with `Stripe-Context: <acct>`: catalog → account request (`complete` |
-   `needs_information` → approval card) → provision → poll → reveal credentials
-   → store → inject. Provider accounts are created on the owner's identity;
-   deep links open the provider's own dashboard.
-2. **Fallback until access**: Stripe CLI in the container, paired once by the
-   owner via `stripe login --non-interactive` (prints `browser_url` +
-   `verification_code`; owner confirms in any surface; Friday runs
-   `next_step`). Session refreshes itself; `stripe projects add …` with
-   `--accept-tos` after the owner's one-time consent; vault at
-   `.projects/vault` on the owner's EFS.
+**Backend-owned, Friday-asked, owner-approved (decided 2026-08-30).** The API
+has two authentication modes: *direct* (the account's own key — what the public
+Projects CLI uses) and *platform* (our platform key + `Stripe-Context: acct_…`).
+The platform key acts on every connected account by changing one header, so it
+never leaves the backend; Stripe's guide places the whole operational loop in
+"trusted server-side code" and says never from generated application code or a
+model prompt. (A Project *ephemeral key* exists, but the guide reserves it for
+"a trusted server-side process" — a container credential is a question for
+Stripe, not a plan.) So the backend runs the loop, and:
 
-Verified 2026-08-28: catalog answers with our dev platform key; `posthog/
-analytics` is free tier, config `region` + `organization_name`; providers
-include Cloudflare, Vercel, Supabase, Neon, Clerk, PostHog, Twilio, Resend,
-AgentMail, Squarespace/Spaceship/WordPress.com (domains), Sentry, E2B. PostHog
-hands over only the public write token (`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN`)
-— reads need the PostHog OAuth token (§4.2).
+- **Friday reaches it through the container door the marketplace and §3.1
+  already use** — hook-token routes under
+  `/api/v1/company/provisioning/u/{owner_id}/…` (`catalog`, `requests`,
+  `requests/{id}`), plus `isol8-facts.json`. She never sees a credential value,
+  a checkout URL, a redirect URL, or a deep link. The skill carries the *when*
+  (a task needs infrastructure or a paid service; cards are never a gate;
+  `requires_review` means tell the owner); the *how* is code.
+- **The owner reaches it through Settings → Connections and Inbox cards**, the
+  same cards/rows as the Stripe card, opened with the two-phase popup.
+- **The CLI-in-container path is retired** (no Stripe CLI in the image, no
+  pairing card, nothing on EFS). Accounts we cannot configure for Projects
+  (connect-existing Standard accounts, pending Stripe's answer) simply do not
+  provision — the card says so.
+
+**Mapping onto Stripe's objects.** Tenant = the company = §3.1's connected
+account (`billing.company_stripe_account_id`). Project = **one per company**
+(`"<Company name>"`, `catalog: prod`); per-app preview/production Projects are
+a later feature. Stripe's "Approval" = our consent card's payload plus a
+snapshot on the workflow row. Stripe's "Provisioning workflow" = a
+`provisioning-workflows` DynamoDB row. "Secret binding" = the existing
+`integrations` row `projects/{provider}` + Secrets Manager blob + `env.vars`
+(§3.5). Payment profile + usage limits = the owner's, on their account.
+
+**The loop** (workflow states are ours; Stripe's are in code font):
+
+1. **Ask.** Friday `POST …/requests {provider, service, configuration?,
+   issue_id, reason}` (or the owner, from Connections, later). Backend:
+   `GET /eligibility` — `is_eligible=false` → `failed` with a safe message;
+   `requirements` non-empty → a **Finish Stripe setup** card (hosted
+   onboarding link, §3.1). *P0b ships no card here: P0a's card short-circuits
+   once an account exists, so the refusal (409 `requirements_pending`, with the
+   list) names the Settings → Connections path instead.* Re-read the account catalog
+   (`catalog/services?provider_name=`), reject unavailable services, validate
+   `configuration` against `configuration_schema`, snapshot provider, service
+   (`service_id` → `service_ref`), configuration, `pricing.paid_pricing`,
+   terms, the proposed usage limit → row `awaiting_approval` → **consent card**
+   (§3.1's card shape; `payload.isol8_action = provider_consent`, now carrying
+   the snapshot and a limit the owner can edit).
+2. **Approve.** On approval the backend re-reads the catalog; if price, terms,
+   configuration or availability changed, a fresh card. Paid service with no
+   payment profile → **payment card**: `POST /payment_method_requests` with
+   only `usage_limits` (the owner's own card, collected on Stripe's hosted
+   page — the `checkout_session_url` is opened from the card and never stored),
+   then poll `GET /payment_profile`. **Verified 2026-08-29:** this works under
+   `Stripe-Context` (`checkout_initiated` + a `checkout.stripe.com` URL);
+   `usage_limits.max_amount` is sent as a string. The platform-owned-source
+   variant (`payment_method_owner=platform`, our Customer/PaymentMethod,
+   pass-through billing) is the documented alternative we do not build.
+3. **Connect the provider** (`connecting_provider`). `GET
+   /provider_connections`; none `active` → `POST /account_requests {provider,
+   project_id}`. `pending_auth` → **Connect <Provider>** card whose button
+   opens `redirect_url` (`awaiting_user_action`; Stripe owns the OAuth
+   callback; we poll the account request). `needs_information` → the card
+   renders `needs_information_schema` with a constrained renderer (string,
+   number, boolean, enum; anything else → `requires_review`) and submits via
+   `submit_information`. `complete` → show `provider_account_details`
+   (display name, e-mail, `link_action`) so the owner knows which provider
+   account now exists.
+4. **Provision** (`provisioning`). `POST /resources {service_ref, provider,
+   project, name, configuration}` (project-scoped) — persist the returned id
+   before anything else. Poll with bounded exponential backoff and jitter to
+   a deadline (then `requires_review`, ids kept); `needs_information` → card;
+   `errored` → `failed` with `error_message` only if safe. Plan/deployable
+   dependencies: create the plan, wait `complete`, re-read, re-approve if
+   changed, then the deployable.
+5. **Bind** (`binding`). `GET /environment_info?reveal=true&scope=SERVICE&
+   project&provider&service`, select the entry whose `resource_id` matches the
+   row, `land_credentials` (Secrets Manager `projects/{provider}`, pointer
+   with `env_keys`, per-key `env.vars`) → `active` → `write_owner_facts`.
+   Friday's next turn sees the variable *names*.
+6. **After.** Rotation: `POST /resources/{id}/rotate_credentials` → `complete`
+   → re-bind; `pending` → `requires_review` (no retrieval flow in preview).
+   Remove/unlink: **owner-only, explicit, separate confirmation stating the
+   billing and infrastructure effect** — the only path that ever reaches a
+   provider. Spend: `GET /charges` (per provider, `start_time/end_time/
+   livemode` required) → Money → Spend. Dashboards: `POST /deep_links
+   {purpose: dashboard, provider, project}` on click, never stored.
+
+**Non-negotiables from the preview contract.** No webhooks → a backend task
+per workflow polls, and a startup sweep resumes every non-terminal row (same
+pattern as `_resume_wake_resize_transitions`). **No idempotency contract → a
+state-changing POST that times out is never repeated**; the row goes
+`requires_review`, known ids are retrieved, an admin line shows it. Provider
+HTTP errors are translated — branch on Provisioning codes
+(`payment_method_required`, `provider_reauth_required` → new account request,
+`invalid_resource_configuration` → re-render schema,
+`resource_count_constraint_exceeded`, `provider_failure`, `not_found`).
+`llm_context`, terms text and schemas are untrusted data. Secrets, checkout
+URLs, redirect URLs and deep links never reach a browser payload we did not
+mint for that click, a log, analytics, or a prompt. 45-second client timeout;
+follow `next_page_url`, never construct pages.
+
+**Two rails, one Connections page.** The OAuth integrations rail (existing:
+`integrations` row `<provider>`, MCP servers, tokens for agents to *act
+through* an account) and this rail (`projects/<provider>`: a resource
+*created* on the owner's identity, a resource-scoped credential as env) are
+different relationships and both stay. Stripe's `account_requests` is Stripe's
+own connection for provisioning — it gives us no token to call the provider,
+so it never replaces our OAuth rail. Rendering: one card per provider with two
+facets, "Account connected" and "Resources" (level per §3.4), and after a
+resource completes, an offer to OAuth-connect *that* provider account (the
+`provider_account_details` e-mail) so reads work (§4.2 — PostHog is the case:
+Projects gives the site's write token, HogQL reads still need OAuth).
+
+Verified 2026-08-28/29: `posthog/analytics` is free tier (config `region` +
+`organization_name`); providers include Cloudflare, Vercel, Supabase, Neon,
+Clerk, PostHog, Twilio, Resend, AgentMail, Squarespace/Spaceship/
+WordPress.com (domains), Sentry, E2B; our **prod platform is enrolled**
+(live `eligibility`, `catalog`, `provider_connections` answer under
+`Stripe-Context`). The API **refuses legacy test mode**
+(`v2_api_not_supported_in_testmode`) — dev verification needs a Stripe
+**Sandbox** key; whether a sandbox inherits the platform's enrollment is
+checked first. Live `features` and `identity` returned 500 during the probe:
+the workflow never depends on them, and a Stripe 5xx is transient — reads
+retry, state-changing POSTs never do. Paid *test* provisioning is cohort-gated
+— free resources only until Stripe confirms.
 
 ### 3.3 Rails Projects does not reach
 
@@ -161,13 +286,23 @@ Three patterns exist in production; pick per credential class:
   sees the key): use for the connected-account Stripe key and anything with
   money authority.
 - **Per-run injection** (`paperclip-exec-creds`): use for short-lived tokens.
-- **Static env** (Projects `.env`, MCP OAuth store): acceptable for provider
-  write tokens (PostHog project token, Vercel deploy token) scoped to the
-  owner's own resources.
+- **Static env** (Provisioning `environment_info` landed as OpenClaw
+  `env.vars`, MCP OAuth store): acceptable for provider write tokens (PostHog
+  project token, Vercel deploy token) scoped to the owner's own resources.
+  `build_provisioned_env` re-asserts them at every provision from Secrets
+  Manager, injecting only the names each pointer's `env_keys` declares.
+
+The provisioning rail also keeps a durable **workflow record**
+(`provisioning-workflows`: owner, action, state, Stripe ids — account request,
+resource, project — the approval snapshot, safe error code, timestamps). A
+browser session, provider redirect, backend restart or deploy must never lose
+an account-request id, a resource id, or an uncertain write.
 
 Backend copies of provider credentials live in Secrets Manager at
-`isol8/{env}/integrations/{owner}/{provider}` (existing store,
-`credentials/integration_secret_store.py`), never DynamoDB.
+`lightbulb/{env}/integrations/{owner}/projects/{provider}` (existing store,
+`credentials/integration_secret_store.py`; the `projects/` segment keeps this
+rail off the OAuth rail's key — a bare key made the provider look
+OAuth-connected and injected a live MCP server), never DynamoDB.
 
 ### 3.6 Gates, org semantics, exit, limits
 
@@ -181,11 +316,13 @@ Backend copies of provider credentials live in Secrets Manager at
   a real name before the Stripe card.
 - **Exit / wipe.** `account_wipe`, `entitlement_teardown`,
   `owner_secret_sweep` revoke the Connect link and delete *our* credential
-  copies. They **never** call Projects `remove` or touch owner-owned provider
-  resources.
-- **Marketplace export** (`agent_export.py`) must exclude `.projects/`,
-  Stripe CLI config and provider credentials before Projects ships. A hired
-  agent arrives with no accounts; its "accounts to connect" to-do reuses the
+  copies. They **never** call Provisioning `remove`/`unlink` or touch
+  owner-owned provider resources; `remove` exists only behind the owner's own
+  explicit, separately confirmed click.
+- **Marketplace export** (`agent_export.py`) must exclude provider
+  credentials; nothing on this rail writes to EFS any more, and `.projects/` /
+  `.stripe` stay in `_SKIP_DIR_NAMES` only as a named backstop. A hired agent
+  arrives with no accounts; its "accounts to connect" to-do reuses the
   paused-trigger to-do Automations already produces.
 - **Countries.** Connect Standard and Projects paid tier have country lists
   (US in both). Outside them: connect-existing + read-through only.
@@ -339,10 +476,12 @@ async back-office jobs, one real record per card — on our cream/green brand.
 
 ## 6. Phases
 
-- **P0 Foundations** — Stripe card + Connect create/connect; Connect webhook
-  coverage; retained PostHog token; rollup + scheduled writer; credential
-  proxy for the Stripe key; paid gate; wipe/export rules; work-product
-  register-on-create; Lightbulb MCP; preview request. Screens: Accounts,
+- **P0 Foundations** — Stripe card + Connect create/connect (P0a, shipped
+  as PR #2157); the Provisioning API workflow — eligibility, consent, payment,
+  connect, provision, bind — with its cards and the two-facet Connections page
+  (P0b); Connect webhook coverage; retained PostHog token; rollup + scheduled
+  writer; credential proxy for the Stripe key; paid gate; wipe/export rules;
+  work-product register-on-create; Lightbulb MCP. Screens: Connections,
   Inbox reshaped.
 - **P1 Money + Home** — Payments, Products, Customers, Spend, Home.
 - **P2 Knowledge + Support** — Brain UI; Support widget + hosted page +
@@ -354,12 +493,17 @@ async back-office jobs, one real record per card — on our cream/green brand.
 - **P5 Long tail** — SEO & AEO, A/B Testing, Compliance, Contracts.
 - **Cross-cutting** — IA migration + panel registry, mobile parity.
 
-Each phase ships only on rails that exist by then. Vendor waits: Projects
-preview (P0 fallback = CLI), Meta App Review (Ads).
+Each phase ships only on rails that exist by then. Vendor waits: Stripe's answers
+to §8 6–8 (P0b ships free resources on created accounts meanwhile), Meta App
+Review (Ads).
 
 ## 7. Owner actions (outside the repo)
 
-Send the Projects-for-Platforms preview request · open a bundle.social Business
+Create a Stripe **Sandbox** for dev (Dashboard → Sandboxes; then dev's
+Stripe secrets, prices, webhooks and Connect settings move to it) · accept
+Stripe's shared Slack channel and ask §8 6 (developer configuration
+enablement) and §8 8 ·
+open a bundle.social Business
 account (confirm whether X needs our own app keys) · doola partner
 conversation (organizer semantics, compliance API, iFrame tier) · PostHog
 partner registration if the Provisioning API is used for owners without
@@ -375,6 +519,17 @@ Projects · decide Route 53 vs Projects registrars (P4).
    via Metronome.
 4. Per-agent phone numbers vs one per company.
 5. User/Aden asks: not yet checked against this design — collect and diff.
+6. Stripe (ask): enable the `developer` configuration / `projects`
+   capability for our platform, name the Accounts API version to pin, and
+   confirm `merchant` + `developer` coexist on one `dashboard: full`
+   account. Not blocking — eligibility already passes without it (§3.1).
+   Connect-existing Standard accounts: eligibility is per account; check
+   `GET /eligibility` at request time.
+7. ~~Hosted collection under `Stripe-Context`~~ — resolved 2026-08-29: works
+   (§3.2 step 2).
+8. Stripe: which operations does a Project ephemeral key authenticate; is the
+   paid *test* cohort enabled for our platform; does a Sandbox inherit the
+   platform's preview enrollment? (Ask only if the sandbox probe fails.)
 
 ## 9. Non-goals
 

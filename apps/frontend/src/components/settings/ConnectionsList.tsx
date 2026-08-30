@@ -1,9 +1,14 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { useConnections } from "@/hooks/useConnections";
+import { useConnections, type Connection } from "@/hooks/useConnections";
 import { ConnectButton } from "@/components/settings/ConnectButton";
 import { INTEGRATION_RECEIPTS } from "@/components/settings/integration-receipts";
+import {
+  ProvisionedResourcesFacet,
+  accountLabel,
+  useProvisioningRail,
+} from "@/components/settings/ProvisionedResources";
 
 interface ConnectionsListProps {
   /** Org admins may connect/disconnect; non-admins see disabled actions. */
@@ -37,6 +42,25 @@ const KIND_LABELS: Record<string, string> = {
 export function ConnectionsList({ canManage }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
+  // The second facet. Its providers are NOT the OAuth registry's: this rail
+  // provisions neon/supabase/resend, which have no Connections row at all, so
+  // they get a card of their own rather than disappearing.
+  const rail = useProvisioningRail();
+  const railOnlyProviders = rail.providers.filter(
+    (p) => !connections.some((c) => c.provider === p),
+  );
+  const rows: { connection: Connection; railOnly: boolean }[] = [
+    ...connections.map((connection) => ({ connection, railOnly: false })),
+    ...railOnlyProviders.map((provider) => ({
+      connection: {
+        provider,
+        display_name: provider,
+        acquisition: "paste_token",
+        status: "disconnected",
+      } as Connection,
+      railOnly: true,
+    })),
+  ];
 
   if (error) {
     return (
@@ -49,21 +73,32 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
     );
   }
 
+  // The rail's own read can fail while the OAuth catalog loads fine. Both
+  // branches below show it, because an empty rail and a failed one look
+  // identical otherwise.
+  const railError = rail.error ? (
+    <p className="text-sm text-[var(--err)]">Couldn&apos;t load your resources. Refresh to try again.</p>
+  ) : null;
+
   if (isLoading) {
     return <div className="text-sm text-[var(--midnight-muted)]">Loading connections…</div>;
   }
 
-  if (connections.length === 0) {
+  if (rows.length === 0) {
     return (
-      <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--midnight-muted)]">
-        No integrations are available yet.
+      <div className="space-y-2">
+        {railError}
+        <div className="rounded-md border border-[var(--edge)] p-4 text-sm text-[var(--midnight-muted)]">
+          No integrations are available yet.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      {connections.map((connection) => {
+      {railError}
+      {rows.map(({ connection, railOnly }) => {
         const connected = connection.status === "connected";
         // Gated off this owner. Distinct from "not connected": there is nothing
         // they can click to change it, so the row must not read as one step away
@@ -91,12 +126,18 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                 )}
               </div>
               <p className="text-xs text-[var(--midnight-muted)]">
-                {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
-                {connection.acquisition === "direct_oauth"
-                  ? " · OAuth"
-                  : connection.acquisition === "aws_sts"
-                    ? " · AWS role"
-                    : " · API key"}
+                {railOnly ? (
+                  "Set up by your agents on your own provider account"
+                ) : (
+                  <>
+                    {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
+                    {connection.acquisition === "direct_oauth"
+                      ? " · OAuth"
+                      : connection.acquisition === "aws_sts"
+                        ? " · AWS role"
+                        : " · API key"}
+                  </>
+                )}
               </p>
               {receipt && (
                 <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
@@ -122,15 +163,40 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   agent&apos;s tool list.
                 </p>
               )}
+              {/* Spec §3.2: Projects hands over the provider's WRITE token, so a
+                  provider can hold resources while its read-side OAuth is still
+                  disconnected. Say so rather than leaving the dot muted. */}
+              {!railOnly &&
+                connection.status === "disconnected" &&
+                (rail.byProvider.get(connection.provider)?.length ?? 0) > 0 && (
+                  <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
+                    Also connect this account for reads — your agents can create things here, but
+                    can&apos;t read your data back until you connect it.
+                    {/* WHICH account to sign in as. Without it the owner is told
+                        to connect "posthog" and has to guess which of their
+                        logins this rail actually used. */}
+                    {accountLabel(rail.accountByProvider.get(connection.provider)) &&
+                      ` The account we set up is ${accountLabel(rail.accountByProvider.get(connection.provider))}.`}
+                  </p>
+                )}
+              <ProvisionedResourcesFacet
+                provider={connection.provider}
+                resources={rail.byProvider.get(connection.provider) ?? []}
+                workflows={rail.workflowsByProvider.get(connection.provider) ?? []}
+                canManage={canManage}
+                onChanged={rail.refresh}
+              />
             </div>
-            <ConnectButton
-              connection={connection}
-              canManage={canManage}
-              connectPaste={connectPaste}
-              startOAuth={startOAuth}
-              disconnect={disconnect}
-              refreshConnections={mutate}
-            />
+            {!railOnly && (
+              <ConnectButton
+                connection={connection}
+                canManage={canManage}
+                connectPaste={connectPaste}
+                startOAuth={startOAuth}
+                disconnect={disconnect}
+                refreshConnections={mutate}
+              />
+            )}
           </div>
         );
       })}

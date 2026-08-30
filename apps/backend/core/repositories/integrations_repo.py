@@ -148,6 +148,93 @@ async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list
     )
 
 
+# ---------------------------------------------------------------------------
+# Provider resources provisioned through Stripe Projects.
+#
+# POINTERS ONLY (spec §2, §4.3): resource id, name, service, status, env var
+# NAMES, dashboard URL. Never a value — credentials live in Secrets Manager
+# (integration_secret_store), never in DynamoDB (spec §3.5).
+#
+# NAMESPACED under `projects/{provider}`: the bare sort key belongs to the
+# OAuth integrations rail, and several providers (stripe, posthog, sentry,
+# cloudflare) exist on BOTH. Sharing the key would make every OAuth reader
+# (routers/connections.py, credentials/mcp_server.py, catalog_service.py)
+# treat a provisioned provider as OAuth-connected, 409 the OAuth start, and —
+# worst — let an OAuth Disconnect force-delete this rail's credentials.
+# `integration_secret_store` is namespaced with the SAME key for the same
+# reason: one blob per rail, never a shared one.
+#
+# UpdateExpression rather than put_status's put_item: put_status full-replaces
+# the item, so routing these through it would drop identity /
+# google_watch_channels / meta_webhook_bindings. Same reasoning as
+# set_google_watch_channels above.
+# ---------------------------------------------------------------------------
+
+PROJECTS_ACTOR = "projects"
+PROJECTS_KEY_PREFIX = "projects/"
+
+
+def projects_key(provider: str) -> str:
+    """The Stripe Projects rail's storage key for ``provider``.
+
+    The ONE place the namespace is spelled. Used for both the ``integrations``
+    sort key (here) and the Secrets Manager provider segment
+    (``provisioning_landing``) — a `/` is legal in a Secrets Manager name and
+    already used by ``oauth_app_store``'s ``oauth-app/{provider}``.
+    """
+    return f"{PROJECTS_KEY_PREFIX}{provider}"
+
+
+async def list_provider_resources(owner_id: str, provider: str) -> list[dict]:
+    row = await get(owner_id, projects_key(provider))
+    return list((row or {}).get("provider_resources") or [])
+
+
+async def _write_provider_resources(owner_id: str, provider: str, resources: list[dict]) -> list[dict]:
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": projects_key(provider)},
+        UpdateExpression=(
+            "SET provider_resources = :r, actor = :a, #st = :s, updated_at = :now, "
+            "connected_at = if_not_exists(connected_at, :now)"
+        ),
+        # `status` is a DynamoDB reserved word.
+        ExpressionAttributeNames={"#st": "status"},
+        ExpressionAttributeValues={":r": resources, ":a": PROJECTS_ACTOR, ":s": "connected", ":now": now},
+    )
+    return resources
+
+
+async def record_provider_resource(owner_id: str, provider: str, resource: dict) -> list[dict]:
+    """Upsert one provisioned resource pointer. Idempotent per ``resource_id``.
+
+    Read-modify-write of a per-(owner, provider) list. The only writer is
+    ``provisioning_workflow._bind``, and each workflow binds under its own
+    driver lease, so a lost update needs two DIFFERENT workflows for the same
+    provider to bind in the same instant. Accepted: the losing pointer is a
+    credential still present in Secrets Manager and in the container's env, and
+    the workflow row keeps its own ``resource_name``/``env_keys`` copy.
+    """
+    resource_id = resource.get("resource_id")
+    if not resource_id:
+        raise ValueError("resource must carry a resource_id")
+    existing = await list_provider_resources(owner_id, provider)
+    merged = [r for r in existing if r.get("resource_id") != resource_id] + [resource]
+    merged.sort(key=lambda r: r.get("resource_id") or "")
+    return await _write_provider_resources(owner_id, provider, merged)
+
+
+async def remove_provider_resource(owner_id: str, provider: str, resource_id: str) -> list[dict]:
+    """Drop OUR pointer to a resource. Does NOT touch the provider — the owner
+    owns that resource and keeps it (spec §3.6)."""
+    existing = await list_provider_resources(owner_id, provider)
+    kept = [r for r in existing if r.get("resource_id") != resource_id]
+    if len(kept) == len(existing):
+        return existing
+    return await _write_provider_resources(owner_id, provider, kept)
+
+
 async def scan_all() -> list[dict]:
     """Every row in the table, paginated.
 

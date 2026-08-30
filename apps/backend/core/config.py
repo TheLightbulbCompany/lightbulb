@@ -406,6 +406,33 @@ class Settings(BaseSettings):
     # Connect platform client id (ca_…). Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
 
+    # Stripe's recommended Provisioning onboarding path: request the Accounts v2
+    # `developer` configuration with the `projects` capability on the company
+    # account (guide, "Create the connected account").
+    #
+    # DEFAULT FALSE, deliberately. Probed 2026-08-29: `configuration.developer`
+    # is an "Unknown field" for our platform under 2026-02-25.clover,
+    # 2026-08-26.dahlia AND unsafe-development, in both test and live mode, so
+    # sending it today breaks every company-account create. It is also not
+    # load-bearing — eligibility already returns is_eligible on an account
+    # without it. Flip to True once Stripe enables the field for our platform
+    # and names the Accounts API version to pin below.
+    STRIPE_PROJECTS_DEVELOPER_CONFIG: bool = False
+    # The Accounts v2 API version for the account/account-link calls. The guide
+    # pins them with `Stripe-Version: {{ACCOUNTS_V2_VERSION}}` and says to
+    # confirm it during preview onboarding. Empty ⇒ the SDK's own default,
+    # which is exactly today's behaviour.
+    STRIPE_ACCOUNTS_V2_VERSION: str = ""
+
+    # Which Provider catalog partition this environment reads and writes:
+    # "prod" | "dev" | "testing" (spec.txt 4.2 / 4.4). Configuration, never a
+    # literal — dev runs "testing", prod runs "prod", and reading one partition
+    # while writing another provisions into a catalog the owner never saw.
+    #
+    # NOTE, verbatim from the guide: "Selecting a DEV or TESTING catalog
+    # doesn't mean 'no real charges.'"
+    STRIPE_PROJECTS_CATALOG: str = "prod"
+
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
     # a platform-scoped one for checkout/refund events (they originate on the

@@ -4050,6 +4050,13 @@ class EcsManager:
         # the connected integration servers.
         integration_mcp_servers = await _provision_mcp_servers(owner_id, integration_mcp_servers)
 
+        # Same staleness class as the MCP servers above: rebuild the owner's
+        # provisioned provider env from Secrets Manager so this full overwrite
+        # does not drop it.
+        from core.services.provisioning_landing import build_provisioned_env
+
+        provisioned_env = await build_provisioned_env(owner_id)
+
         # Carry the user's configured channel bot accounts across this full
         # overwrite. A reprovision rewrites openclaw.json wholesale, so without
         # this every Telegram/Slack/Discord bot token + pairing is dropped.
@@ -4078,6 +4085,7 @@ class EcsManager:
             hook_token=hook_token,
             owner_type=owner_type,
             integration_mcp_servers=integration_mcp_servers,
+            provisioned_env=provisioned_env,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
             deployed_tag=deployed_tag,

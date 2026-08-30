@@ -399,6 +399,26 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("XDG_CONFIG_HOME and the EFS mount stay together (gog's keyring)", () => {
+    // gog reads its config from XDG_CONFIG_HOME and stores the file keyring
+    // under XDG_DATA_HOME; container-stack.ts's own comment says BOTH must be
+    // on EFS or a task replacement loses the owner's Google OAuth tokens.
+    // Nothing else pins that, so this assertion stays even though the Stripe
+    // CLI it was originally written for is gone.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Environment: Match.arrayWith([{ Name: "XDG_CONFIG_HOME", Value: "/home/node/.openclaw/.config" }]),
+          MountPoints: Match.arrayWith([
+            Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("openclaw keeps the npm download cache on EFS but redirects the npx + uv extract storms to local /tmp", () => {
     // MCP servers spawn as npx/uvx children that inherit only HOME (not the
     // container env), so caches are relocated by symlinking the default

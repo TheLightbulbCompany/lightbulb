@@ -361,3 +361,20 @@ describe("DatabaseStack — billing-accounts table", () => {
     });
   });
 });
+
+describe("DatabaseStack — provisioning-workflows table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  // No open-row index: workflows advance on read, so nothing ever sweeps the
+  // table for open rows.
+  test("provisioning-workflows table with the owner index and no sweep index", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike({
+      TableName: Match.stringLikeRegexp("provisioning-workflows$"),
+      KeySchema: [{ AttributeName: "workflow_id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: [Match.objectLike({ IndexName: "owner-state-index" })],
+    }));
+  });
+});

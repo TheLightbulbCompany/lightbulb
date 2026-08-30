@@ -171,6 +171,27 @@ def _create_tables(resource):
             {"AttributeName": "provider", "AttributeType": "S"},
         ],
     )
+    # provisioning-workflows: PK workflow_id, GSI owner-state-index (mirror
+    # database-stack.ts exactly).
+    _make(
+        f"{_PREFIX}provisioning-workflows",
+        [{"AttributeName": "workflow_id", "KeyType": "HASH"}],
+        [
+            {"AttributeName": "workflow_id", "AttributeType": "S"},
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "state", "AttributeType": "S"},
+        ],
+        gsis=[
+            {
+                "IndexName": "owner-state-index",
+                "KeySchema": [
+                    {"AttributeName": "owner_id", "KeyType": "HASH"},
+                    {"AttributeName": "state", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+    )
 
     for name in waiters:
         resource.meta.client.get_waiter("table_exists").wait(TableName=name)

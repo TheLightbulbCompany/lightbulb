@@ -1354,6 +1354,7 @@ def build_openclaw_config_dict(
     hook_token: str | None = None,
     owner_type: str = "personal",
     integration_mcp_servers: dict | None = None,
+    provisioned_env: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool = False,
@@ -2387,6 +2388,13 @@ def build_openclaw_config_dict(
         servers = config.setdefault("mcp", {}).setdefault("servers", {})
         servers.update(integration_mcp_servers)
 
+    # Merge env vars from resources provisioned on the owner's own identity
+    # (Stripe Projects). Same reason as the mcp.servers merge above: a
+    # reprovision fully overwrites openclaw.json, so without this every
+    # provider token the owner provisioned disappears on the next image roll.
+    if provisioned_env:
+        config.setdefault("env", {}).setdefault("vars", {}).update(provisioned_env)
+
     # Pin the bundled MCP runtime to "shared" scope: one connected runtime per
     # (workspace, server-config), reused across every session instead of spawned
     # per session — so a new session (a new Paperclip issue, a chat after the
@@ -2478,6 +2486,7 @@ async def write_openclaw_config(
     hook_token: str | None = None,
     owner_type: str = "personal",
     integration_mcp_servers: dict | None = None,
+    provisioned_env: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
     acp_enabled: bool = True,
@@ -2530,6 +2539,7 @@ async def write_openclaw_config(
         hook_token=hook_token,
         owner_type=owner_type,
         integration_mcp_servers=integration_mcp_servers,
+        provisioned_env=provisioned_env,
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,
         acp_enabled=acp_enabled,

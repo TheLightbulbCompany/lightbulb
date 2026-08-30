@@ -2731,3 +2731,48 @@ class TestAwsCredentialsEndpoint:
             assert mock_store.get.await_count <= conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE
         finally:
             conn_mod._aws_cli_rate_buckets.clear()
+
+
+class TestProjectsRailNamespaceIsInvisibleHere:
+    """Regression: the Stripe Projects provisioning rail keys its
+    ``integrations`` rows ``projects/{provider}``, NOT the bare provider this
+    rail owns. ``posthog`` sits on both rails, so a shared key made the OAuth
+    readers treat a provisioned provider as OAuth-connected — which 409'd the
+    OAuth start and let Disconnect force-delete the Projects credentials."""
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_a_projects_row_does_not_read_as_connected(self, mock_repo, async_client):
+        mock_repo.list_for_owner = AsyncMock(
+            return_value=[
+                {
+                    "provider": "projects/posthog",
+                    "status": "connected",
+                    "actor": "projects",
+                    "provider_resources": [{"resource_id": "res_1", "env_keys": ["POSTHOG_API_KEY"]}],
+                }
+            ]
+        )
+
+        response = await async_client.get("/api/v1/connections")
+        assert response.status_code == 200
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["posthog"]["status"] == "disconnected"
+        # And the namespaced key is not itself surfaced as a provider.
+        assert "projects/posthog" not in by_key
+
+    @pytest.mark.asyncio
+    async def test_a_projects_row_publishes_no_mcp_server(self, monkeypatch):
+        """``posthog`` rides ``mcp_remote``, which emits a server block from the
+        registry + a connected status ALONE (no secret read) — so a bare-keyed
+        Projects row would have injected a live MCP server the owner never
+        connected."""
+        from core.services.credentials import mcp_server
+
+        monkeypatch.setattr(
+            mcp_server.integrations_repo,
+            "list_for_owner",
+            AsyncMock(return_value=[{"provider": "projects/posthog", "status": "connected", "actor": "projects"}]),
+        )
+        monkeypatch.setattr(mcp_server.integration_secret_store, "get", AsyncMock(return_value={"token": "leaked"}))
+        assert await mcp_server.build_connected_integration_servers("org_a") == {}

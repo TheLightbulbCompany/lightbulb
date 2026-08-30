@@ -87,6 +87,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
     agentMailConfigurationSet: "isol8-test-agent-mail",
+    stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
 
   return Template.fromStack(service);
@@ -162,6 +163,46 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         }),
       ]),
     });
+  });
+
+  test("dev reads the testing catalog partition, prod reads prod", () => {
+    // The provisioning rail reads the catalog AND writes resources into it, so
+    // a dev backend pointed at the prod partition would create real provider
+    // resources. Prod is the default when nothing threads the prop.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "testing" }),
+          ]),
+        }),
+      ]),
+    }));
+    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "prod" }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+
+  test("Stripe developer configuration defaults off, and the Accounts v2 version pin defaults empty, when no prop threads a value", () => {
+    // configuration.developer is an Unknown field for our platform today
+    // (probed 2026-08-29) — sending it would break every company-account
+    // create, so a stack that forgets to set the prop must stay off.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_DEVELOPER_CONFIG", Value: "false" }),
+            Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" }),
+          ]),
+        }),
+      ]),
+    }));
   });
 
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {

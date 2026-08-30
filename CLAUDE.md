@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
 
@@ -424,6 +424,39 @@ Mostly one repo per DynamoDB table (`marketplace_repo.py` fronts five
 marketplace tables); items are plain dicts. Table names follow
 `isol8-{env}-{suffix}` (see `database-stack.ts`).
 
+The **Stripe Projects provisioning rail** keeps its `integrations` rows and its
+Secrets Manager blobs under **`projects/{provider}`** (`integrations_repo.projects_key`)
+— never the bare provider, which the OAuth rail owns and four providers share
+(stripe/posthog/sentry/cloudflare). A bare-key write makes the provider look
+OAuth-connected to every reader and lets an OAuth Disconnect force-delete the
+Projects credentials. Readers inject only the names `provider_resources[].env_keys`
+declares.
+
+The rail itself is **backend-owned** — the platform key never leaves the backend
+and no container ever holds it. `core/services/stripe_provisioning.py` is the
+only module that speaks `/v2/provisioning` (platform key + `Stripe-Context:
+acct_…` + `Stripe-Version: unsafe-development`, a preview contract that can
+change under us); `provisioning_workflow.py` is the state machine and a
+`provisioning-workflows` row is the durable memory. Four invariants hold it up:
+
+- **No webhooks**, so workflows advance one step on every READ — Friday's
+  status route, the owner's page loads and clicks — under a short per-row
+  claim. There is no background driver and nothing sweeps the table.
+- **No idempotency contract.** A state-changing POST that times out or 5xx's is
+  **never repeated**: the row goes `requires_review` with its ids kept. Only
+  reads retry.
+- **The catalog partition is configuration**, `STRIPE_PROJECTS_CATALOG` —
+  `testing` in dev, `prod` in prod. It is a catalog selector, **not** a safety
+  net: a DEV/TESTING catalog can still create real infrastructure and real
+  charges.
+- **The API refuses legacy test mode** (`v2_api_not_supported_in_testmode`), so
+  dev verification needs a Stripe **Sandbox** key, not the legacy test key.
+
+Friday only ever sees `/api/v1/company/provisioning/u/{owner}/…`; `remove` — the
+one call that deprovisions — is reachable from the owner's typed-confirmation
+route and nowhere else, and teardown never reaches it (spec §3.6, proved by
+`tests/unit/services/test_wipe_never_deprovisions.py`).
+
 ### Container Orchestration (`core/containers/`)
 
 | File | Purpose |
@@ -763,6 +796,10 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 - Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
   with NFS).
 - `chown` to UID 1000 after write (OpenClaw runs as node)
+- `env.vars` is re-asserted at every provision from Secrets Manager by
+  `provisioning_landing.build_provisioned_env` — same class as the
+  `integration_mcp_servers` merge. A reprovision overwrites openclaw.json
+  wholesale, so anything not re-injected there is simply dropped.
 
 ---
 
@@ -799,6 +836,8 @@ POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → 
                 └─ openclaw-slice.json (slice to be deep-merged into buyer's openclaw.json)
 POST /listings/{id}/submit                              (draft → review)
 ```
+
+`.projects/` and `.stripe` are named in `_SKIP_DIR_NAMES` as a **backstop for workspaces dirtied by the retired Stripe-CLI path**. The Stripe Projects rail is backend-owned and writes nothing to EFS except `env.vars` in `openclaw.json`, so there is nothing on it for an export to leak — the exclusion is structural, and the named entries only cover leftovers and hand-copied debris.
 
 **Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
 

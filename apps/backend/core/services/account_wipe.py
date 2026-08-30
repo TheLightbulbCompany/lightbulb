@@ -35,6 +35,7 @@ for them (see the inline notes at those call sites):
   spec #1  -> "paperclip_company"     (PaperclipAdminClient.delete_company)
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
+  (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
   spec #3  -> "ecs_service"           (ecs_manager.delete_user_service)
   spec #4  -> "efs_workspace_dir"     (Workspace.delete_user_dir)
   spec #5  -> folded into "ecs_service" (see note below)
@@ -98,6 +99,7 @@ from core.repositories import (
     company_slug_repo,
     container_repo,
     integrations_repo,
+    provisioning_workflow_repo,
     usage_repo,
     user_repo,
 )
@@ -562,6 +564,20 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     # Credential + identity leftovers. A preview that omits these tells an
     # admin the credentials survive — the impression this report exists to
     # correct. All read-only.
+    open_workflows = [
+        r
+        for r in await provisioning_workflow_repo.list_for_owner(owner_id)
+        if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES
+    ]
+    _preview_step(
+        steps,
+        system="provisioning",
+        action="cancel_open_workflows",
+        exists=bool(open_workflows),
+        detail_if_exists=f"{len(open_workflows)} open provisioning workflow(s) would be cancelled (never deprovisioned)",
+        detail_if_absent="no open provisioning workflows",
+    )
+
     secret_names = await list_owner_secret_names(owner_id)
     _preview_step(
         steps,
@@ -914,6 +930,28 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # "wipe", and their agent email addresses kept routing inbound SES mail
     # at an owner that no longer existed. Unconditional and idempotent —
     # each no-ops on an empty set.
+
+    # Any provisioning workflow still in flight is CANCELLED — never
+    # deprovisioned (spec §3.6). The row is OUR durable memory of an ask, and
+    # closing it makes it terminal, so no later read of it touches Stripe for
+    # this owner again. The provider resources themselves are the owner's and
+    # are left standing; this is a pure DDB write and reaches no provider. It
+    # runs BEFORE the credential deletes below so a reader mid-step cannot land
+    # a fresh secret after those have already run.
+    async def _s9e2() -> str:
+        rows = await provisioning_workflow_repo.list_for_owner(owner_id)
+        open_rows = [r for r in rows if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES]
+        cancelled = 0
+        for row in open_rows:
+            # None means someone else moved it first (a reader mid-step) —
+            # it is closed or moving either way, so it is not an error here.
+            if await provisioning_workflow_repo.transition(
+                row["workflow_id"], from_state=row["state"], to_state="cancelled"
+            ):
+                cancelled += 1
+        return f"cancelled {cancelled} of {len(open_rows)} open provisioning workflow(s)"
+
+    await _step(steps, system="provisioning", action="cancel_open_workflows", fn=_s9e2)
 
     async def _s9f() -> str:
         names = await delete_owner_secrets(owner_id)

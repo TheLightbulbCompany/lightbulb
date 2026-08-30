@@ -19,7 +19,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { legacyTablePrefix, resourcePrefix, tablePrefix } from "../table-names";
+import { legacyTablePrefix, logGroupPath, resourcePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
 
@@ -409,7 +409,11 @@ export class ApiStack extends cdk.Stack {
         // same shape as the Secrets Manager call the authorizer already makes).
         CONTAINERS_TABLE: props.containersTableName,
       },
-      logRetention: logs.RetentionDays.ONE_MONTH,
+      logGroup: new logs.LogGroup(this, "WsAuthorizerLogs", {
+        logGroupName: logGroupPath(env, "ws-authorizer"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
     });
 
     // Read-only access to the containers row for device-token pubkey lookup.
@@ -492,13 +496,22 @@ export class ApiStack extends cdk.Stack {
         ALB_DNS_NAME: props.alb.loadBalancerDnsName,
         CONNECTIONS_TABLE: connectionsTable.tableName,
       },
-      logRetention: logs.RetentionDays.ONE_MONTH,
     };
+
+    // Explicit lightbulb-named log groups (replaces the per-stack LogRetention
+    // singleton Lambda the old logRetention prop shipped).
+    const wsLogGroup = (id: string, name: string) =>
+      new logs.LogGroup(this, id, {
+        logGroupName: logGroupPath(env, name),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
 
     // --- ws-connect Lambda ---
     const connectFn = new lambda.Function(this, "WsConnectFn", {
       ...lambdaDefaults,
       functionName: `${resourcePrefix(env)}ws-connect`,
+      logGroup: wsLogGroup("WsConnectFnLogs", "ws-connect"),
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-connect"),
@@ -510,6 +523,7 @@ export class ApiStack extends cdk.Stack {
     const disconnectFn = new lambda.Function(this, "WsDisconnectFn", {
       ...lambdaDefaults,
       functionName: `${resourcePrefix(env)}ws-disconnect`,
+      logGroup: wsLogGroup("WsDisconnectFnLogs", "ws-disconnect"),
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-disconnect"),
@@ -521,6 +535,7 @@ export class ApiStack extends cdk.Stack {
     const messageFn = new lambda.Function(this, "WsMessageFn", {
       ...lambdaDefaults,
       functionName: `${resourcePrefix(env)}ws-message`,
+      logGroup: wsLogGroup("WsMessageFnLogs", "ws-message"),
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-message"),

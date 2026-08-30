@@ -6,6 +6,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
+import { logGroupPath } from "../table-names";
 
 export interface AuthSecrets {
   clerkIssuer: secretsmanager.ISecret;
@@ -272,15 +273,27 @@ export class AuthStack extends cdk.Stack {
     // 44-char URL-safe base64). Bootstrap a real Fernet key on first deploy
     // via a Lambda-backed Custom Resource. Idempotent: if the current value
     // already decodes to 32 bytes via urlsafe_b64decode, the Lambda no-ops.
-    this.bootstrapFernetKey(encryptionKey);
+    this.bootstrapFernetKey(encryptionKey, env);
   }
 
-  private bootstrapFernetKey(secret: secretsmanager.Secret): void {
+  private bootstrapFernetKey(secret: secretsmanager.Secret, env: string): void {
     const handler = new lambda.Function(this, "FernetKeyBootstrapFn", {
+      functionName: `lightbulb-${env}-fernet-key-bootstrap`,
+      role: new iam.Role(this, "FernetKeyBootstrapFnRole", {
+        roleName: `lightbulb-${env}-fernet-key-bootstrap`,
+        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+        ],
+      }),
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.seconds(30),
-      logRetention: logs.RetentionDays.ONE_MONTH,
+      logGroup: new logs.LogGroup(this, "FernetKeyBootstrapFnLogs", {
+        logGroupName: logGroupPath(env, "fernet-key-bootstrap"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
       code: lambda.Code.fromInline(`
 import base64
 import secrets as py_secrets
@@ -330,6 +343,19 @@ def handler(event, context):
 
     const provider = new cr.Provider(this, "FernetKeyBootstrapProvider", {
       onEventHandler: handler,
+      providerFunctionName: `lightbulb-${env}-fernet-key-bootstrap-provider`,
+      role: new iam.Role(this, "FernetKeyBootstrapProviderRole", {
+        roleName: `lightbulb-${env}-fernet-key-bootstrap-provider`,
+        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+        ],
+      }),
+      logGroup: new logs.LogGroup(this, "FernetKeyBootstrapProviderLogs", {
+        logGroupName: logGroupPath(env, "fernet-key-bootstrap-provider"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
     });
 
     const resource = new cdk.CustomResource(this, "FernetKeyBootstrap", {

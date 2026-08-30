@@ -14,7 +14,7 @@ paid, $5,000 of AWS credits absorbing the comps, a $6,000 pot.
 
 | Decision | Value |
 |---|---|
-| Waitlist | Uncapped. Sign-up IS the waitlist: a Clerk account created before the drop + the idea stashed as the pending brief (hero funnel) + a `launch-waitlist` row written by the Clerk `user.created` webhook (position = sign-up order, referral code). No email form. |
+| Waitlist | Uncapped. Sign-up IS the waitlist: a Clerk account created before the drop + the idea stashed as the pending brief (hero funnel) + a `launch-waitlist` row written by the Clerk `user.created` webhook (position = sign-up order, referral code). No email form. Conventional waitlist UX (owner, 2026-08-30): the landing hero shows a pill while the list is open (`Launch competition · $pot · N on the list → see your spot`), sign-up gets an immediate "You're #N" (the held card + a confirmation email that replaces the welcome email while the list is open), and every referral moves the referrer up `referral_jump` spots (default 10) — the **effective position** = `max(1, position − referral_jump × referrals_signed_up)` is what every surface shows and what the top-N comp slots use; the raw sign-up order is kept as `position`. |
 | Comp | Waitlist positions 1–220 get a free month (100% off, once). Delivered by **email + Stripe promotion code**, created from the admin card's "Create Stripe coupon + promo code" button (which stores the ids on the settings row): `max_redemptions = comp_slots`, `expires_at = competition_start_at`. Unredeemed = forfeited; never passed to #221. |
 | Activation | Onboarding complete **and** Friday's first run complete. In this codebase that is one write (`bootstrap_state == "delivered"`). The gate is **soft**: the launch email says "finish onboarding first"; the code is redeemable at checkout regardless. |
 | Entry | Two explicit steps after activation (Friday's first run delivered) AND a live subscription (paid or the promo-code free month; `trial_local` cannot): **Join** (`POST /launch/join` → entry = competing) and optional **Connect Stripe** (`POST /launch/connect-stripe` → on the board). `public` is a privacy control, retractable via `PATCH /launch/entry`; private entrants count toward `on_board` but never appear in rows. |
@@ -57,6 +57,7 @@ the only place the dates, pot constants, comp slots and the Stripe coupon live. 
 | `drop_at` / `competition_start_at` | ISO-8601 instants **with offset** (the card shows and edits them in Eastern time). `competition_start_at > drop_at`. |
 | `comp_slots` | 220. Display + the promo code's `max_redemptions`. |
 | `competition_days` | 30. |
+| `referral_jump` | 10. Spots a referrer moves up per referred sign-up (queue-jumping). `0` disables the jump. |
 | `pot_front_cents` / `pot_per_entrant_cents` | $1,000 / $10 — the public pot is `front + per_entrant × sign-ups`. |
 | `stripe_coupon_id`, `stripe_promotion_code_id`, `stripe_promotion_code` | Written by **Create Stripe coupon + promo code** on the card: `Coupon(percent_off=100, duration=once)` + `PromotionCode(max_redemptions=comp_slots, expires_at=competition_start_at)`. The code is what goes in the launch email. `stripe_coupon_id` unset ⇒ referral rewards are banked, never applied. |
 | server-side only | `mint_nonce` (idempotency: a retry re-sends byte-identical params; "force" mints a fresh pair), `updated_at`, `updated_by`. |
@@ -174,6 +175,9 @@ instance.
 
 ## Frontend
 
+- **`LaunchHeroPill`** (`components/launch/LaunchHeroPill.tsx`) — mounted under the landing hero's eyebrow; reads the public `GET /launch` and renders nothing unless the competition is enabled; copy by phase (waitlist: pot + N on the list → see your spot; activation: doors are open → join; live: N competing → the board).
+- **Queue-jump copy** (`LaunchStatusLines`): `You're #<effective_position> on the list.` · `Up M spots from R referrals.` (when moved) · `Each referral moves you up J spots.` The admin CSV carries `effective_position` beside `position`.
+
 There is no `WaitlistForm` and no separate waitlist front door (owner decision
 2026-08-29, superseding the spec's original split) — sign-up itself is the
 waitlist, so the root landing page's hero stays the plain idea funnel
@@ -220,7 +224,7 @@ in-app/in-product surfaces carry the launch instead:
 
 ## Drop-day runbook
 
-1. **Wk 0** — open `admin.dev.flickmeon.ai/admin/launch`: set Drop + Competition start (Eastern), Save, tick Enabled. Verify on `dev.flickmeon.ai` with Claude-in-Chrome: sign-up → held card → move Drop into the past → container + Friday's first run → Join → Connect. Then the same on `admin.flickmeon.ai/admin/launch` for prod. No PR, no deploy, no Clerk Restricted/Public step — sign-ups stay open throughout.
+1. **Wk 0** — open `admin.dev.flickmeon.ai/admin/launch`: set Drop + Competition start (Eastern), Save, tick Enabled. Verify on `dev.flickmeon.ai` with Claude-in-Chrome: sign-up → held card → move Drop into the past → container + Friday's first run → Join → Connect. Then the same on `admin.flickmeon.ai/admin/launch` for prod. No PR, no deploy, no Clerk Restricted/Public step — sign-ups stay open throughout. While enabled in the waitlist phase the landing hero shows the pill and every new sign-up receives the "You're #N" email instead of the welcome email.
 2. **Drop** — on the card, **Create Stripe coupon + promo code** (prod = live mode; it mints the 100%-off-once coupon and a promotion code with `max_redemptions = comp_slots`, `expires_at = competition_start_at`); copy the code into the launch email; `/admin/launch` → Export CSV → send from the marketing tool. Until a coupon exists, `launch_referral` **banks** every earned free month (`free_months_banked`) and `_drain_banked` spends them retroactively on the next paid invoice once it does.
 3. **Through competition start** — nothing. The promo code expires itself; the competition starts on the clock.
 4. **End** — `/admin/launch` → Refresh all; judges pick from the table; announce by email.

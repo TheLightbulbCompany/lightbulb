@@ -184,9 +184,9 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 describe("ServiceStack — marketplace S3 bucket", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
-  test("creates isol8-dev-marketplace-artifacts bucket with versioning + S3-managed encryption + block-all-public", () => {
+  test("creates lightbulb-dev-marketplace-artifacts bucket with versioning + S3-managed encryption + block-all-public", () => {
     template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "isol8-dev-marketplace-artifacts",
+      BucketName: "lightbulb-dev-marketplace-artifacts",
       VersioningConfiguration: { Status: "Enabled" },
       BucketEncryption: {
         ServerSideEncryptionConfiguration: [
@@ -206,7 +206,7 @@ describe("ServiceStack — marketplace S3 bucket", () => {
     for (const env of ["dev", "prod"] as const) {
       const t = buildServiceStack(env);
       t.hasResourceProperties("AWS::S3::Bucket", {
-        BucketName: `isol8-${env}-marketplace-artifacts`,
+        BucketName: `lightbulb-${env}-marketplace-artifacts`,
         CorsConfiguration: {
           CorsRules: Match.arrayWith([
             Match.objectLike({

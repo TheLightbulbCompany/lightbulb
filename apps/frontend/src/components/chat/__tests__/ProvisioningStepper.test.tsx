@@ -76,8 +76,15 @@ vi.mock("posthog-js/react", () => ({
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+// Stable spy so the held-redirect test can assert against it — a fresh
+// vi.fn() per useRouter() call (the previous shape) can't be asserted on
+// across renders. mockPathname is likewise mutable so the same test can
+// exercise the loop-guard (pathname already "/") via rerender.
+const { routerReplace } = vi.hoisted(() => ({ routerReplace: vi.fn() }));
+let mockPathname = "/chat";
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
+  usePathname: () => mockPathname,
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
@@ -172,16 +179,6 @@ window.matchMedia =
       dispatchEvent: vi.fn(),
     }) as unknown as MediaQueryList);
 
-// LaunchHeldCard fetches /launch/me and /launch itself (see its own test
-// file); stubbed here so this suite only asserts the connection — that
-// ProvisioningStepper routes blocked.code === "launch_pending" to it and
-// passes the blocked payload through.
-vi.mock("@/components/chat/LaunchHeldCard", () => ({
-  LaunchHeldCard: ({ blocked }: { blocked: { title: string } }) => (
-    <div data-testid="launch-held-card">{blocked.title}</div>
-  ),
-}));
-
 const useProvMock = useProvisioningState as ReturnType<typeof vi.fn>;
 
 describe("ProvisioningStepper blocked-state rendering", () => {
@@ -195,6 +192,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
+    routerReplace.mockClear();
+    mockPathname = "/chat";
     clerkMockUser = null;
     clerkMockIsLoaded = true;
   });
@@ -469,7 +468,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
   });
 
-  it("renders LaunchHeldCard (not the generic blocked card) for launch_pending", () => {
+  it("redirects to / for launch_pending instead of rendering the /chat shell", () => {
     useProvMock.mockReturnValue({
       phase: "blocked",
       container: null,
@@ -489,17 +488,28 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       refresh: vi.fn(),
     });
 
-    render(
+    const { rerender } = render(
       <ProvisioningStepper>
         <div>children</div>
       </ProvisioningStepper>,
     );
 
-    // The held-status card, not the generic gate copy.
-    expect(screen.getByTestId("launch-held-card")).toHaveTextContent("You're on the list");
+    expect(routerReplace).toHaveBeenCalledWith("/");
+    expect(routerReplace).toHaveBeenCalledTimes(1);
+    // The neutral loader, not the shell content or a held-status card.
+    expect(screen.getByText(/Getting your workspace ready/)).toBeInTheDocument();
+    expect(screen.queryByText("children")).not.toBeInTheDocument();
     expect(screen.queryByText(/Doors open Friday/)).not.toBeInTheDocument();
-    // The gate's own action, rendered as a link.
-    expect(screen.getByRole("link", { name: /see your spot/i })).toHaveAttribute("href", "/launch");
+
+    // Loop guard: once the navigation has landed on "/", a re-render must
+    // not fire router.replace again.
+    mockPathname = "/";
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    expect(routerReplace).toHaveBeenCalledTimes(1);
   });
 
   it.each([["trial_daily_cap"], ["trial_expired"]])(

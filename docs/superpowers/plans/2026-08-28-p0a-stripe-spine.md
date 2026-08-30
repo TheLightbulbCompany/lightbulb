@@ -1,5 +1,7 @@
 # P0a — Stripe Spine Implementation Plan
 
+> Executed on `feat/company-stripe-spine`; delete on merge.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give every paid company one Standard-style Stripe account connected to the Connect platform we already run — created by us or connected by the owner — raised by Friday as an approval card, tracked on the billing row, kept current by Connect webhooks, and shown on Settings → Connections.

@@ -1,5 +1,7 @@
 # P0b — The Provisioning Door Implementation Plan (Provisioning API)
 
+> Executed on `feat/provisioning-door`; delete on merge.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Provision provider resources (PostHog, Vercel, Neon, Resend, …) **on the owner's own Stripe identity** through Stripe's Provisioning API — the whole loop run by the backend with the platform key + `Stripe-Context`, Friday asking through the container door, the owner approving cards, credentials landing in the rail this branch already built.

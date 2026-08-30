@@ -2,9 +2,14 @@
 
 A provisioning workflow (`lightbulb-{env}-provisioning-workflows`) in
 `requires_review` is a row **a human has to decide about**. Nothing retries it:
-the driver stops, the owner's Connections card says "this one needs a look from
-Lightbulb", and Friday is told to stop asking (`GET …/requests/{id}` returns the
-state and the door refuses a re-ask with 409 `needs_review_first`).
+`requires_review` is terminal, so a read steps right over it, the owner's
+Connections card says "this one needs a look from Lightbulb", and Friday is told
+to stop asking (`GET …/requests/{id}` returns the state and the door refuses a
+re-ask with 409 `needs_review_first`).
+
+Nothing runs in the background on this rail at all — a workflow advances one
+step each time somebody READS it (Friday's status route, the owner's page loads
+and clicks), so a parked row is simply re-read on the owner's next page load.
 
 The reason it is not automatic: Stripe's Provisioning API has **no caller
 idempotency contract**, so a state-changing POST whose answer we never saw may
@@ -26,7 +31,6 @@ Repeating it is how an owner ends up paying for two.
 | `poll_deadline_exceeded` | the resource stayed `pending` past the 15-minute deadline | the resource exists |
 | `ambiguous_provider_connection` | more than one `active` connection for the provider; the write API cannot pick | no |
 | `no_company` | a later-leg card could not be filed — the owner has no Paperclip board | ids may exist |
-| `driver_steps_exceeded` / `driver_wall_exceeded` | the driver gave up: a logic loop, or a row older than 8 days | depends on the state it stopped in |
 | a `WorkflowRefused` code (`no_company_stripe_account`, `not_eligible`, `requirements_pending`, `service_unavailable`, …) | the state machine hit a door that will stay shut — usually the company's Stripe account was disconnected | ids may exist |
 
 ## Step 1 — read the row
@@ -77,7 +81,7 @@ Two outcomes, and the read above is what tells you which.
 aws dynamodb update-item --profile isol8-admin \
   --table-name lightbulb-prod-provisioning-workflows \
   --key '{"workflow_id":{"S":"pwf_…"}}' \
-  --update-expression 'SET #s = :s, updated_at = :t REMOVE sweep_key, lease_owner, lease_until' \
+  --update-expression 'SET #s = :s, updated_at = :t REMOVE lease_owner, lease_until' \
   --condition-expression '#s = :from' \
   --expression-attribute-names '{"#s":"state"}' \
   --expression-attribute-values '{":s":{"S":"cancelled"},":from":{"S":"requires_review"},":t":{"S":"2026-08-30T00:00:00+00:00"}}'
@@ -87,21 +91,22 @@ aws dynamodb update-item --profile isol8-admin \
 state the skill tells Friday she may ask again from.
 
 **The resource DOES exist** → hand it back to the loop by writing the id and
-re-opening the row. `sweep_key` must go back on or nothing will ever drive it:
+moving the row out of `requires_review`. A non-terminal state is all it takes:
 
 ```bash
 aws dynamodb update-item --profile isol8-admin \
   --table-name lightbulb-prod-provisioning-workflows \
   --key '{"workflow_id":{"S":"pwf_…"}}' \
-  --update-expression 'SET #s = :s, resource_id = :r, sweep_key = :open, updated_at = :t' \
+  --update-expression 'SET #s = :s, resource_id = :r, updated_at = :t' \
   --condition-expression '#s = :from' \
   --expression-attribute-names '{"#s":"state"}' \
-  --expression-attribute-values '{":s":{"S":"provisioning"},":r":{"S":"res_…"},":open":{"S":"open"},":from":{"S":"requires_review"},":t":{"S":"2026-08-30T00:00:00+00:00"}}'
+  --expression-attribute-values '{":s":{"S":"provisioning"},":r":{"S":"res_…"},":from":{"S":"requires_review"},":t":{"S":"2026-08-30T00:00:00+00:00"}}'
 ```
 
-The next backend restart's sweep picks it up (`resume_open_workflows`); it polls
-the resource, binds the credentials and goes `active`. To avoid waiting for a
-deploy, roll the backend service **through the admin UI**.
+The next READ of the row picks it up — the owner opening Settings → Connections,
+or Friday checking her request. It polls the resource, binds the credentials and
+goes `active` over the following reads. No deploy and no restart is involved;
+if nobody is looking, nothing moves, so tell the owner to open the page.
 
 An `account_request_id` that turned out to exist goes back the same way, with
 `account_request_id` set and the state `connecting_provider`.

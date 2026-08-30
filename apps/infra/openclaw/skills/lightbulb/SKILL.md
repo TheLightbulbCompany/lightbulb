@@ -406,7 +406,8 @@ same ask is already open and nothing new was filed. It puts an approval card in
 the owner's Inbox. **The card is never a gate:** keep working on everything that
 does not need the account, and say in your reply that you asked.
 
-**Step 3 — check back on a later turn.**
+**Step 3 — check back on a later turn.** Every status read moves your request
+one step, so check back next turn — that read is what advances it.
 
 ```bash
 curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \

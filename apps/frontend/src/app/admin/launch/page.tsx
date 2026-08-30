@@ -19,7 +19,8 @@ export default async function AdminLaunchPage() {
       <div>
         <h1 className="text-xl font-semibold text-foreground">Launch competition</h1>
         <p className="text-xs text-muted-foreground">
-          The economics sheet with live inputs. {data?.enabled ? `Generated ${data.generated_at}, phase ${data.phase}.` : ""}
+          The economics sheet with live inputs.{" "}
+          {env?.source_state === "ok" && data?.enabled ? `Generated ${data.generated_at}, phase ${data.phase}.` : ""}
         </p>
       </div>
       {/* `key` remounts the card on a saved row, so its form state (seeded

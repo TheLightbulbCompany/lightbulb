@@ -12,21 +12,27 @@ import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApproval
 import {
   approvalLabel,
   isCompanyStripeApproval,
+  isPaymentSetupApproval,
+  isProviderConnectApproval,
   isProviderConsentApproval,
+  isProviderInformationApproval,
+  payloadString,
 } from "@/components/teams/inbox/lib/approvalLabel";
+import {
+  ProvisioningConsentActions,
+  formatUsageLimit,
+  usageLimitOf,
+} from "@/components/teams/inbox/ProvisioningConsentActions";
+import { ProvisioningInformationForm } from "@/components/teams/inbox/ProvisioningInformationForm";
 import type { Approval } from "@/components/teams/shared/types";
 
 const POPUP_BLOCKED_MSG =
-  "Your browser blocked the Stripe window — allow popups for this site and try again.";
+  "Your browser blocked the new tab — allow popups for this site and try again.";
+const NO_URL_MSG =
+  "There is nothing to open for this step right now — approve the card and it will carry on.";
 
-// The consent card's payload is agent-authored, so its Terms link is
-// untrusted: it only ever renders when it's an https:// URL. Anything else
-// renders as inert text.
-
-function payloadString(payload: Record<string, unknown> | null | undefined, key: string): string {
-  const value = payload?.[key];
-  return typeof value === "string" ? value : "";
-}
+// Every payload on this rail is agent-authored, so a link off one is
+// untrusted: it only ever renders when it's an https:// URL.
 
 export function ApprovalRow({ approval }: { approval: Approval }) {
   const { approve, reject } = useApprovalMutations();
@@ -57,31 +63,59 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
   }
 
   /**
-   * Open the tab SYNCHRONOUSLY (the click is the only moment the browser
-   * lets us), point it at the minted URL, and only then approve the card —
-   * a `window.open` after the `await` is blocked by Safari, and approving a
+   * Open the tab SYNCHRONOUSLY (the click is the only moment the browser lets
+   * us), point it at the URL minted for THIS click, and — only where the
+   * hand-off IS the decision (P0a's Stripe card) — approve after. A
+   * `window.open` after the `await` is blocked by Safari, and approving a
    * hand-off the owner never saw is the failure that matters here.
+   *
+   * On the provisioning rail `thenApprove` is false: opening a provider's
+   * OAuth page or a checkout is not consent, so Approve stays a second click.
    */
-  function openThenApprove(fetchUrl: () => Promise<string>) {
+  function openMintedUrl(fetchUrl: () => Promise<string | null | undefined>, thenApprove: boolean) {
     const w = openPendingTab();
     if (!w) {
       notifyError(POPUP_BLOCKED_MSG);
       return;
     }
     void run(async () => {
-      let url: string;
+      let url: string | null | undefined;
       try {
         url = await fetchUrl();
       } catch (e) {
         closePendingTab(w);
         throw e;
       }
+      if (!url) {
+        closePendingTab(w);
+        notifyError(NO_URL_MSG);
+        return;
+      }
       navigatePendingTab(w, url);
-      await approve(approval.id);
+      if (thenApprove) await approve(approval.id);
     });
   }
 
-  const termsUrl = payloadString(approval.payload, "terms_url");
+  /** Reject: the workflow hears first, so it stops instead of polling for a
+   *  week. Only the consent card — it is the one state our route accepts a
+   *  rejection in. */
+  async function rejectWithReason() {
+    const workflowId = payloadString(approval.payload, "workflow_id");
+    if (workflowId && isProviderConsentApproval(approval)) {
+      await api.post(`/company/provisioning/workflows/${workflowId}/reject`, {});
+    }
+    await reject(approval.id, reason.trim());
+  }
+
+  const workflowId = payloadString(approval.payload, "workflow_id");
+  const paymentLimit = usageLimitOf(approval.payload);
+  // WHICH provider account is about to be authorised — names and an e-mail
+  // only (`provisioning_workflow.safe_account_details`), and only on a
+  // re-connect, where the owner has more than one candidate in mind.
+  const connectAccount = (approval.payload?.provider_account ?? null) as {
+    display_name?: string | null;
+    primary_email?: string | null;
+  } | null;
 
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
@@ -99,10 +133,11 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   size="sm"
                   disabled={busy}
                   onClick={() =>
-                    openThenApprove(
+                    openMintedUrl(
                       async () =>
                         ((await api.post("/company/stripe/create", {})) as { onboarding_url: string })
                           .onboarding_url,
+                      true,
                     )
                   }
                 >
@@ -112,30 +147,76 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                   size="sm"
                   disabled={busy}
                   onClick={() =>
-                    openThenApprove(
+                    openMintedUrl(
                       async () =>
                         ((await api.get("/company/stripe/connect/start")) as { authorize_url: string })
                           .authorize_url,
+                      true,
                     )
                   }
                 >
                   Connect existing
                 </EditorialButton>
               </>
-            ) : isProviderConsentApproval(approval) ? (
+            ) : isProviderConsentApproval(approval) || isProviderInformationApproval(approval) ? (
+              // Their own action button lives with the form below — a limit or
+              // a set of answers has to travel with the click.
+              null
+            ) : isProviderConnectApproval(approval) ? (
               <>
-                <span className="text-sm text-[var(--midnight)]">
-                  {payloadString(approval.payload, "provider")} ·{" "}
-                  {payloadString(approval.payload, "service")}
-                  {payloadString(approval.payload, "pricing")
-                    ? ` · ${payloadString(approval.payload, "pricing")}`
-                    : ""}
-                </span>
-                {termsUrl.startsWith("https://") && (
-                  <a className="text-sm underline" href={termsUrl} target="_blank" rel="noopener noreferrer">
-                    Terms
-                  </a>
+                {connectAccount && (
+                  <span className="text-sm text-[var(--midnight-muted)]">
+                    {[connectAccount.display_name, connectAccount.primary_email]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
                 )}
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    openMintedUrl(
+                      async () =>
+                        (
+                          (await api.post(
+                            `/company/provisioning/workflows/${workflowId}/connect-link`,
+                            {},
+                          )) as { redirect_url?: string | null }
+                        ).redirect_url,
+                      false,
+                    )
+                  }
+                >
+                  {`Connect ${payloadString(approval.payload, "provider")}`}
+                </EditorialButton>
+                <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
+                  Approve
+                </EditorialButton>
+              </>
+            ) : isPaymentSetupApproval(approval) ? (
+              <>
+                <span className="text-sm text-[var(--midnight-muted)]">
+                  {payloadString(approval.payload, "price_display")}
+                  {paymentLimit ? ` · Limit ${formatUsageLimit(paymentLimit)}` : ""}
+                </span>
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    openMintedUrl(
+                      async () =>
+                        (
+                          (await api.post(
+                            `/company/provisioning/workflows/${workflowId}/payment-link`,
+                            {},
+                          )) as { checkout_session_url?: string | null }
+                        ).checkout_session_url,
+                      false,
+                    )
+                  }
+                >
+                  Add a card
+                </EditorialButton>
                 <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
                   Approve
                 </EditorialButton>
@@ -154,6 +235,12 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           <span className="shrink-0 whitespace-nowrap text-caption capitalize text-[var(--midnight-muted)]">{approval.status}</span>
         )}
       </div>
+      {isActionable && !rejecting && isProviderConsentApproval(approval) && (
+        <ProvisioningConsentActions approval={approval} busy={busy} run={run} approve={approve} />
+      )}
+      {isActionable && !rejecting && isProviderInformationApproval(approval) && (
+        <ProvisioningInformationForm approval={approval} busy={busy} run={run} approve={approve} />
+      )}
       {isActionable && rejecting && (
         <div className="flex items-center gap-2">
           <input
@@ -169,7 +256,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
                 setReason("");
               } else if (e.key === "Enter" && reason.trim() !== "") {
                 e.preventDefault();
-                void run(async () => { await reject(approval.id, reason.trim()); });
+                void run(rejectWithReason);
               }
             }}
             disabled={busy}
@@ -184,7 +271,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
             size="sm"
             disabled={busy || reason.trim() === ""}
             aria-label="Confirm reject"
-            onClick={() => run(async () => { await reject(approval.id, reason.trim()); })}
+            onClick={() => run(rejectWithReason)}
           >
             Confirm reject
           </EditorialButton>

@@ -140,7 +140,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // schema runner picks up code changes Drizzle expects. Same registry
     // pin applies — bare names break here too.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-paperclip-migrate",
+      Family: "lightbulb-dev-paperclip-migrate",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Image: expectedPaperclipImage("dev"),
@@ -230,7 +230,7 @@ describe("PaperclipStack — Fargate service shape", () => {
 
   test("Fargate service runs in private subnets with no public IP", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
-      ServiceName: "isol8-dev-paperclip-server",
+      ServiceName: "lightbulb-dev-paperclip-server",
       LaunchType: "FARGATE",
       DesiredCount: 1,
       DeploymentConfiguration: Match.objectLike({
@@ -304,7 +304,7 @@ describe("PaperclipStack — Fargate service shape", () => {
   test("exposes internal URL output for FastAPI proxy router (T14)", () => {
     template.hasOutput("PaperclipInternalUrl", {
       Value: "http://paperclip.lightbulb-dev.local:3100",
-      Export: { Name: "isol8-dev-paperclip-internal-url" },
+      Export: { Name: "lightbulb-dev-paperclip-internal-url" },
     });
   });
 
@@ -316,7 +316,7 @@ describe("PaperclipStack — Fargate service shape", () => {
   });
 
   test("migrate one-shot task def is 256/512 with the migrate command", () => {
-    // A SECOND task definition (family `isol8-dev-paperclip-migrate`)
+    // A SECOND task definition (family `lightbulb-dev-paperclip-migrate`)
     // exists alongside the main service one. It runs CREATE EXTENSION
     // for pgvector, then `pnpm --filter @paperclipai/db migrate`.
     //
@@ -325,7 +325,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // (Fargate `NoNewPrivs=1` blocks setuid). It runs as root because
     // apt-get-install postgresql-client requires it.
     const migrateDefs = template.findResources("AWS::ECS::TaskDefinition", {
-      Properties: { Family: "isol8-dev-paperclip-migrate" },
+      Properties: { Family: "lightbulb-dev-paperclip-migrate" },
     });
     expect(Object.keys(migrateDefs)).toHaveLength(1);
     const td = Object.values(migrateDefs)[0] as { Properties: any };

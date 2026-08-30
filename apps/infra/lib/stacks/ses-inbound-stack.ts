@@ -366,8 +366,8 @@ export class SesInboundStack extends cdk.Stack {
 
     // Deterministic literal names (not read off the live construct — see
     // note below) so cross-stage consumers never receive a CDK Token.
-    const rawBucketName = `isol8-${envName}-agent-mail-raw`;
-    const attachmentsBucketName = `isol8-${envName}-agent-mail-attachments`;
+    const rawBucketName = `lightbulb-${envName}-agent-mail-raw`;
+    const attachmentsBucketName = `lightbulb-${envName}-agent-mail-attachments`;
 
     // -------------------------------------------------------------------------
     // Raw-mail S3 bucket — the SES receipt rule's S3 action lands the full

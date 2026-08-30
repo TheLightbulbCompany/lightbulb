@@ -257,14 +257,14 @@ describe("SesInboundStack", () => {
   test("creates the raw-mail and attachments S3 buckets, both private", () => {
     template.resourceCountIs("AWS::S3::Bucket", 2);
     template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "isol8-prod-agent-mail-raw",
+      BucketName: "lightbulb-prod-agent-mail-raw",
       PublicAccessBlockConfiguration: Match.objectLike({
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
       }),
     });
     template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "isol8-prod-agent-mail-attachments",
+      BucketName: "lightbulb-prod-agent-mail-attachments",
       PublicAccessBlockConfiguration: Match.objectLike({
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
@@ -274,13 +274,13 @@ describe("SesInboundStack", () => {
 
   test("raw bucket expires objects after 7 days, attachments after 30", () => {
     template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "isol8-prod-agent-mail-raw",
+      BucketName: "lightbulb-prod-agent-mail-raw",
       LifecycleConfiguration: {
         Rules: Match.arrayWith([Match.objectLike({ ExpirationInDays: 7 })]),
       },
     });
     template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "isol8-prod-agent-mail-attachments",
+      BucketName: "lightbulb-prod-agent-mail-attachments",
       LifecycleConfiguration: {
         Rules: Match.arrayWith([Match.objectLike({ ExpirationInDays: 30 })]),
       },

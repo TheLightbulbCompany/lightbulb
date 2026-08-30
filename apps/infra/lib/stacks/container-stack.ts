@@ -110,7 +110,7 @@ export class ContainerStack extends cdk.Stack {
         ? OPENCLAW_VERSION[props.environment]
         : undefined;
     const envTag = envCfg?.tag ?? "bootstrap";
-    const litestreamBucketName = `isol8-${props.environment}-openclaw-replicas`;
+    const litestreamBucketName = `lightbulb-${props.environment}-openclaw-replicas`;
 
     // Import KMS key by ARN to avoid cross-stack dependency cycle
     const kmsKey = kms.Key.fromKeyArn(this, "ImportedKmsKey", props.kmsKeyArn);
@@ -212,8 +212,9 @@ export class ContainerStack extends cdk.Stack {
 
     // ECS task execution role (used by ECS agent)
     this.taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
+      roleName: `lightbulb-${props.environment}-openclaw-task-execution`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${props.environment} ECS task execution role`,
+      description: `Lightbulb ${props.environment} ECS task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -254,8 +255,9 @@ export class ContainerStack extends cdk.Stack {
 
     // ECS task role (used by the container itself)
     this.taskRole = new iam.Role(this, "TaskRole", {
+      roleName: `lightbulb-${props.environment}-openclaw-task`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${props.environment} ECS task role`,
+      description: `Lightbulb ${props.environment} ECS task role`,
     });
 
     // EFS client access — required for IAM-authenticated EFS mounts
@@ -1178,6 +1180,7 @@ export class ContainerStack extends cdk.Stack {
     );
 
     new events.Rule(this, "EcsTaskStateChangeRule", {
+      ruleName: `lightbulb-${props.environment}-ecs-task-state-change`,
       description:
         `Persist ECS Task State Change events for ${this.cluster.clusterName} to a CloudWatch log group, so we can reconstruct task stop reasons after the 1h ECS retention window expires.`,
       eventPattern: {

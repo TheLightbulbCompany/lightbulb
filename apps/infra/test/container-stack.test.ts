@@ -143,7 +143,7 @@ function expectDisplayGate(
 
 function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
   template.hasResourceProperties("AWS::S3::Bucket", {
-    BucketName: `isol8-${env}-openclaw-replicas`,
+    BucketName: `lightbulb-${env}-openclaw-replicas`,
   });
   template.hasResourceProperties("AWS::ECS::TaskDefinition", {
     Family: `lightbulb-${env}-openclaw`,
@@ -151,7 +151,7 @@ function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void 
       Match.objectLike({
         Name: "openclaw",
         Environment: Match.arrayWith([
-          { Name: "LITESTREAM_S3_BUCKET", Value: `isol8-${env}-openclaw-replicas` },
+          { Name: "LITESTREAM_S3_BUCKET", Value: `lightbulb-${env}-openclaw-replicas` },
         ]),
         MountPoints: [
           Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
@@ -776,7 +776,7 @@ describe("ContainerStack — prod", () => {
 
   test("replica bucket is RETAINed in prod (never auto-deleted)", () => {
     template.hasResource("AWS::S3::Bucket", {
-      Properties: Match.objectLike({ BucketName: "isol8-prod-openclaw-replicas" }),
+      Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
     });

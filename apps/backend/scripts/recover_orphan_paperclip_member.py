@@ -135,7 +135,7 @@ def _aurora_users(client, db_arn, secret_arn) -> list[dict]:
 
 def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:
     ddb = boto3.client("dynamodb", region_name=REGION)
-    table = f"isol8-{env}-paperclip-companies"
+    table = f"lightbulb-{env}-paperclip-companies"
     out = []
     # Paginate: scan returns one page + a LastEvaluatedKey. The disambiguation
     # guard in plan_recovery depends on seeing EVERY failed row, so a partial

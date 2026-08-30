@@ -882,7 +882,7 @@ export class ObservabilityStack extends cdk.Stack {
         namespace: "AWS/S3",
         metricName: "PutRequests",
         dimensionsMap: {
-          BucketName: `isol8-${this.envName}-openclaw-replicas`,
+          BucketName: `lightbulb-${this.envName}-openclaw-replicas`,
           FilterId: "EntireBucket",
         },
         statistic: "Sum",

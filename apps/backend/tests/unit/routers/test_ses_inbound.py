@@ -109,7 +109,7 @@ def _body(**overrides):
 def _post(client, body, secret=SECRET):
     headers = {}
     if secret is not None:
-        headers["X-Isol8-SES-Secret"] = secret
+        headers["X-Lightbulb-SES-Secret"] = secret
     return client.post("/api/v1/webhooks/ses-inbound", json=body, headers=headers)
 
 
@@ -808,7 +808,7 @@ def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
     monkeypatch.setattr(ses_inbound, "update_settings", upd)
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
     assert r.status_code == 200 and r.json()["status"] == "disabled" and r.json()["addresses"] == 2
     assert r.json()["notified"] is True
     assert {c.args[0] for c in upd.call_args_list} == {"friday@acme-robotics.isol8.co", "atlas@acme-robotics.isol8.co"}
@@ -822,7 +822,9 @@ def test_ses_events_complaint_disables_owner_outbound(client, monkeypatch):
 def test_ses_events_ignores_non_complaint(client, monkeypatch):
     _enable(monkeypatch)
     r = client.post(
-        "/api/v1/webhooks/ses-events", json=_complaint(event_type="Delivery"), headers={"X-Isol8-SES-Secret": SECRET}
+        "/api/v1/webhooks/ses-events",
+        json=_complaint(event_type="Delivery"),
+        headers={"X-Lightbulb-SES-Secret": SECRET},
     )
     assert r.json()["status"] == "ignored"
 
@@ -831,13 +833,17 @@ def test_ses_events_garbage_source_is_ignored_not_a_500(client, monkeypatch):
     """`normalize` would raise on a non-string source. An unhandled 500 makes
     EventBridge retry a permanently invalid event until it expires."""
     _enable(monkeypatch)
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(source=123), headers={"X-Isol8-SES-Secret": SECRET})
+    r = client.post(
+        "/api/v1/webhooks/ses-events", json=_complaint(source=123), headers={"X-Lightbulb-SES-Secret": SECRET}
+    )
     assert r.status_code == 200 and r.json()["status"] == "ignored"
 
 
 def test_ses_events_empty_source_is_terminal_200(client, monkeypatch):
     _enable(monkeypatch)
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(source=""), headers={"X-Isol8-SES-Secret": SECRET})
+    r = client.post(
+        "/api/v1/webhooks/ses-events", json=_complaint(source=""), headers={"X-Lightbulb-SES-Secret": SECRET}
+    )
     assert r.status_code == 200 and r.json()["status"] == "unknown_source"
 
 
@@ -845,7 +851,7 @@ def test_ses_events_bad_secret_401(client, monkeypatch):
     _enable(monkeypatch)
     assert (
         client.post(
-            "/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": "nope"}
+            "/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": "nope"}
         ).status_code
         == 401
     )
@@ -859,7 +865,7 @@ def test_ses_events_non_dict_json_body_400(client, monkeypatch):
     r = client.post(
         "/api/v1/webhooks/ses-events",
         content=b"[1,2,3]",
-        headers={"Content-Type": "application/json", "X-Isol8-SES-Secret": SECRET},
+        headers={"Content-Type": "application/json", "X-Lightbulb-SES-Secret": SECRET},
     )
     assert r.status_code == 400 and r.json()["status"] == "bad_json"
 
@@ -880,7 +886,7 @@ def test_ses_events_partial_disable_failure_still_disables_and_notifies(client, 
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
 
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
 
     assert r.status_code == 200
     assert r.json()["status"] == "disabled" and r.json()["addresses"] == 1
@@ -903,7 +909,7 @@ def test_ses_events_all_disable_failures_returns_503_no_notify(client, monkeypat
     notify = AsyncMock(return_value="sent")
     monkeypatch.setattr(ses_inbound, "send_to_owner", notify)
 
-    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    r = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
 
     assert r.status_code == 503 and r.json()["status"] == "error"
     notify.assert_not_awaited()
@@ -924,8 +930,8 @@ def test_ses_events_notice_is_once_per_owner_per_day(client, monkeypatch):
     # First event claims the day, second one loses it.
     monkeypatch.setattr(ses_inbound, "try_claim_daily_system_notice", AsyncMock(side_effect=[True, False]))
 
-    first = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
-    second = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Isol8-SES-Secret": SECRET})
+    first = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
+    second = client.post("/api/v1/webhooks/ses-events", json=_complaint(), headers={"X-Lightbulb-SES-Secret": SECRET})
 
     notify.assert_awaited_once()
     assert first.json()["notified"] is True

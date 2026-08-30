@@ -711,31 +711,31 @@ export class ApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "HttpApiUrlOutput", {
       value: this.httpApiUrl,
       description: "HTTP API Gateway URL",
-      exportName: `isol8-${env}-http-api-url`,
+      exportName: `lightbulb-${env}-http-api-url`,
     });
 
     new cdk.CfnOutput(this, "WebSocketUrlOutput", {
       value: this.webSocketUrl,
       description: "WebSocket API Gateway URL",
-      exportName: `isol8-${env}-websocket-url`,
+      exportName: `lightbulb-${env}-websocket-url`,
     });
 
     new cdk.CfnOutput(this, "ManagementApiUrlOutput", {
       value: this.managementApiUrl,
       description: "WebSocket Management API URL (for pushing messages)",
-      exportName: `isol8-${env}-management-api-url`,
+      exportName: `lightbulb-${env}-management-api-url`,
     });
 
     new cdk.CfnOutput(this, "ConnectionsTableOutput", {
       value: connectionsTable.tableName,
       description: "DynamoDB connections table name",
-      exportName: `isol8-${env}-connections-table`,
+      exportName: `lightbulb-${env}-connections-table`,
     });
 
     new cdk.CfnOutput(this, "WsApiIdOutput", {
       value: this.wsApiId,
       description: "WebSocket API ID (for IAM ManageConnections ARN)",
-      exportName: `isol8-${env}-ws-api-id`,
+      exportName: `lightbulb-${env}-ws-api-id`,
     });
 
     // =========================================================================
@@ -795,7 +795,7 @@ export class ApiStack extends cdk.Stack {
       new cdk.CfnOutput(this, "BrowserViewUrlOutput", {
         value: `wss://${browserViewDomain}/api/v1/browser-view/ws`,
         description: "Container-browser live view relay endpoint",
-        exportName: `isol8-${env}-browser-view-url`,
+        exportName: `lightbulb-${env}-browser-view-url`,
       });
     }
   }

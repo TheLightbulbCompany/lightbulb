@@ -197,7 +197,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // racing on the same stack produce "UPDATE_IN_PROGRESS ... can not be
   // updated" failures).
   concurrency: {
-    group: "isol8-deploy",
+    group: "lightbulb-deploy",
     cancelInProgress: false,
   },
 });

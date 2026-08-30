@@ -44,14 +44,14 @@ can't grow once the fence is live.
 and rejecting an approval stops it minting an agent. It does NOT stop a run that is
 already executing a dangerous adapter on the host. So the REQUIRED final step after
 a non-clean ``--apply`` is to force a new deployment of the Paperclip ECS service
-``isol8-{env}-paperclip-server`` — that kills every in-flight adapter process /
+``lightbulb-{env}-paperclip-server`` — that kills every in-flight adapter process /
 socket. CAPTURE the running task ARNs first, force the deploy, then VERIFY the new
 rollout actually completed: ``wait services-stable`` alone is NOT sufficient (it
 also succeeds after a circuit-breaker ROLLBACK that leaves the old compromised task
 alive). Substitute the shared cluster ARN (see apps/infra/paperclip/RUNBOOK.md):
 
     set -euo pipefail   # a failed capture below must ABORT, not silently proceed
-    CL=<cluster-arn>; SVC=isol8-{env}-paperclip-server; P="--profile isol8-admin --region us-east-1"
+    CL=<cluster-arn>; SVC=lightbulb-{env}-paperclip-server; P="--profile isol8-admin --region us-east-1"
     OLD=$(aws ecs list-tasks --cluster $CL --service-name $SVC --desired-status RUNNING $P \
         --query 'taskArns' --output text)
     test -n "$OLD"   # abort if list-tasks failed or returned nothing to verify against

@@ -233,8 +233,9 @@ export class PaperclipStack extends cdk.Stack {
     // IAM: task execution role (ECR pull + CloudWatch + secrets fetch)
     // ─────────────────────────────────────────────────────────────────
     const executionRole = new iam.Role(this, "PaperclipTaskExecutionRole", {
+      roleName: `lightbulb-${env}-paperclip-task-execution`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip Fargate task execution role`,
+      description: `Lightbulb ${env} Paperclip Fargate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -288,8 +289,9 @@ export class PaperclipStack extends cdk.Stack {
     // APIs in normal operation, so this stays minimal — log writes only)
     // ─────────────────────────────────────────────────────────────────
     const taskRole = new iam.Role(this, "PaperclipTaskRole", {
+      roleName: `lightbulb-${env}-paperclip-task`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip Fargate task role`,
+      description: `Lightbulb ${env} Paperclip Fargate task role`,
     });
     taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -311,7 +313,7 @@ export class PaperclipStack extends cdk.Stack {
     // (Put/Get/Head/Delete), which grantReadWrite covers.
     // ─────────────────────────────────────────────────────────────────
     const attachmentsBucket = new s3.Bucket(this, "PaperclipAttachmentsBucket", {
-      bucketName: `isol8-${env}-paperclip-attachments`,
+      bucketName: `lightbulb-${env}-paperclip-attachments`,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy:
@@ -582,11 +584,7 @@ export class PaperclipStack extends cdk.Stack {
     this.service = new ecs.FargateService(this, "PaperclipService", {
       cluster: props.cluster,
       taskDefinition,
-      // NOT renamed yet: the service name is a cross-stack export consumed by
-      // the observability alarms, and CloudFormation refuses to update an
-      // export in use (dev deploy 33282675160). It moves with the other named
-      // exports in the last tier of the rename, via the freeze-then-rename step.
-      serviceName: `isol8-${env}-paperclip-server`,
+      serviceName: `lightbulb-${env}-paperclip-server`,
       desiredCount: 1,
       securityGroups: [this.taskSecurityGroup],
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
@@ -609,15 +607,9 @@ export class PaperclipStack extends cdk.Stack {
       maxCapacity: 4,
     });
     scaling.scaleOnCpuUtilization("PaperclipCpuScaling", {
-      // CDK derives the policy name from the construct path, which embeds the
-      // STACK's construct id. PolicyName is immutable, so the isol8 -> lightbulb
-      // rename would replace the policy -- and Application Auto Scaling allows
-      // only one target-tracking policy per metric, so the replacement fails
-      // before the old one is removed. Pinned to the deployed names.
-      policyName:
-        env === "prod"
-          ? "prodisol8prodpaperclipPaperclipServiceTaskCountTargetPaperclipCpuScaling1B986E45"
-          : "devisol8devpaperclipPaperclipServiceTaskCountTargetPaperclipCpuScalingD11C66AD",
+      // Explicit: CDK would otherwise derive the name from the construct path,
+      // which embeds the stack's construct id.
+      policyName: `lightbulb-${env}-paperclip-cpu`,
       targetUtilizationPercent: 70,
       scaleInCooldown: cdk.Duration.minutes(5),
       scaleOutCooldown: cdk.Duration.minutes(2),
@@ -647,8 +639,9 @@ export class PaperclipStack extends cdk.Stack {
     // rule (CfnSecurityGroupIngress added above for the main service).
     // ─────────────────────────────────────────────────────────────────
     const migrateExecutionRole = new iam.Role(this, "PaperclipMigrateExecutionRole", {
+      roleName: `lightbulb-${env}-paperclip-migrate-execution`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Paperclip migrate task execution role`,
+      description: `Lightbulb ${env} Paperclip migrate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -696,10 +689,14 @@ export class PaperclipStack extends cdk.Stack {
       this,
       "PaperclipMigrateTaskDef",
       {
-        family: `isol8-${env}-paperclip-migrate`,
+        family: `lightbulb-${env}-paperclip-migrate`,
         cpu: 256,
         memoryLimitMiB: 512,
         executionRole: migrateExecutionRole,
+        taskRole: new iam.Role(this, "PaperclipMigrateTaskRole", {
+          roleName: `lightbulb-${env}-paperclip-migrate-task`,
+          assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+        }),
       },
     );
 
@@ -757,7 +754,7 @@ export class PaperclipStack extends cdk.Stack {
       value: migrateTaskDef.taskDefinitionArn,
       description:
         "One-shot migrate task - run via `aws ecs run-task`. See apps/infra/paperclip/RUNBOOK.md.",
-      exportName: `isol8-${env}-paperclip-migrate-taskdef`,
+      exportName: `lightbulb-${env}-paperclip-migrate-taskdef`,
     });
 
     // ─────────────────────────────────────────────────────────────────
@@ -774,14 +771,14 @@ export class PaperclipStack extends cdk.Stack {
       value: this.internalUrl,
       description:
         "Internal URL FastAPI uses to reach Paperclip via Cloud Map",
-      exportName: `isol8-${env}-paperclip-internal-url`,
+      exportName: `lightbulb-${env}-paperclip-internal-url`,
     });
 
     new cdk.CfnOutput(this, "PaperclipTaskSecurityGroupId", {
       value: this.taskSecurityGroup.securityGroupId,
       description:
         "Paperclip task SG - granted ingress by T6 (ALB) and FastAPI peer",
-      exportName: `isol8-${env}-paperclip-task-sg`,
+      exportName: `lightbulb-${env}-paperclip-task-sg`,
     });
 
     // Tags

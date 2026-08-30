@@ -361,8 +361,9 @@ export class ServiceStack extends cdk.Stack {
     // IAM Task Role
     // -------------------------------------------------------------------------
     this.taskRole = new iam.Role(this, "TaskRole", {
+      roleName: `lightbulb-${env}-backend-task`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Fargate task role`,
+      description: `Lightbulb ${env} Fargate task role`,
     });
 
     // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
@@ -390,14 +391,14 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
         actions: ["s3:ListBucket"],
-        resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas`],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas`],
       }),
     );
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaDelete",
         actions: ["s3:DeleteObject"],
-        resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*`],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*`],
       }),
     );
     // The one read path: the OAuth seed harvest litestream-restores the
@@ -415,7 +416,7 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "LitestreamReplicaAuthDbRead",
         actions: ["s3:GetObject"],
-        resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
       }),
     );
 
@@ -1114,6 +1115,7 @@ export class ServiceStack extends cdk.Stack {
     // inline statement tips CDK into an overflow ManagedPolicy that
     // relocates unrelated statements (the packing the stack tests pin).
     new iam.ManagedPolicy(this, "TaskRoleSts", {
+      managedPolicyName: `lightbulb-${env}-backend-sts`,
       statements: [
         new iam.PolicyStatement({
           sid: "StsAccess",
@@ -1182,8 +1184,8 @@ export class ServiceStack extends cdk.Stack {
           "s3:ListBucket",
         ],
         resources: [
-          `arn:aws:s3:::isol8-${env}-openclaw-configs`,
-          `arn:aws:s3:::isol8-${env}-openclaw-configs/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-configs`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-configs/*`,
         ],
       }),
     );
@@ -1230,7 +1232,7 @@ export class ServiceStack extends cdk.Stack {
     // access; bytes are served via signed URLs from the marketplace API.
     // -------------------------------------------------------------------------
     const marketplaceArtifactsBucket = new s3.Bucket(this, "MarketplaceArtifactsBucket", {
-      bucketName: `isol8-${env}-marketplace-artifacts`,
+      bucketName: `lightbulb-${env}-marketplace-artifacts`,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -1342,8 +1344,9 @@ export class ServiceStack extends cdk.Stack {
     // Task Execution Role
     // -------------------------------------------------------------------------
     const taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
+      roleName: `lightbulb-${env}-backend-task-execution`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Isol8 ${env} Fargate task execution role`,
+      description: `Lightbulb ${env} Fargate task execution role`,
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           "service-role/AmazonECSTaskExecutionRolePolicy",
@@ -1407,7 +1410,7 @@ export class ServiceStack extends cdk.Stack {
       // that touches the local-sqlite layout (sentinel writes, replica
       // lifecycle deletes) keys off this being set. Name-based (never a
       // bucket ref) per the KMS-cycle posture.
-      LITESTREAM_BUCKET: `isol8-${env}-openclaw-replicas`,
+      LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
@@ -1819,7 +1822,7 @@ export class ServiceStack extends cdk.Stack {
           props.secretNames.wsInternalSecret,
         ),
       ),
-      // Shared secret the SES-ingest Lambda attaches as X-Isol8-SES-Secret.
+      // Shared secret the SES-ingest Lambda attaches as X-Lightbulb-SES-Secret.
       // The backend compares it in constant time (routers/ses_inbound.py)
       // only when AGENT_EMAIL_DOMAIN is also set. KMS decrypt covered by
       // the wildcard SecretsAccess + KmsDecryptForSecrets below (same CMK
@@ -2233,6 +2236,10 @@ export class ServiceStack extends cdk.Stack {
 
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `${resourcePrefix(env)}provision`,
+      role: new iam.Role(this, "ProvisionStateMachineRole", {
+        roleName: `${resourcePrefix(env)}provision-state-machine`,
+        assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
+      }),
       definitionBody: sfn.DefinitionBody.fromChainable(initWatch),
       // 40 watch ticks (~40 min) + up to 3 x 30-min ECS attempts + retry
       // waits ~= 132 min. The old 2h ceiling would time the execution out
@@ -2400,6 +2407,7 @@ export class ServiceStack extends cdk.Stack {
     // Fargate Service
     // -------------------------------------------------------------------------
     this.service = new ecs.FargateService(this, "Service", {
+      serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,
       taskDefinition: taskDef,
       desiredCount: 1,

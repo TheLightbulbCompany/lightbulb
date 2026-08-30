@@ -55,7 +55,7 @@ describe("AgentMailOutboundStack", () => {
       AuthorizationType: "API_KEY",
       AuthParameters: Match.objectLike({
         ApiKeyAuthParameters: Match.objectLike({
-          ApiKeyName: "X-Isol8-SES-Secret",
+          ApiKeyName: "X-Lightbulb-SES-Secret",
         }),
       }),
     });

@@ -23,7 +23,7 @@ decision).
 | `RAW_MAIL_PREFIX` | Key prefix under which the raw MIME lives (default `""`); the object key is `{RAW_MAIL_PREFIX}{messageId}`. |
 | `ATTACHMENTS_BUCKET` | S3 bucket attachments are stored to, at `inbound/{messageId}/{filename}`. |
 | `BACKEND_INGEST_URL` | Full URL of the backend's SES ingest endpoint (e.g. `https://api.isol8.co/api/v1/webhooks/ses-inbound`). |
-| `SES_INBOUND_SECRET_ARN` | Secrets Manager ARN of the shared secret sent as `X-Isol8-SES-Secret`; fetched once and cached across warm invocations. |
+| `SES_INBOUND_SECRET_ARN` | Secrets Manager ARN of the shared secret sent as `X-Lightbulb-SES-Secret`; fetched once and cached across warm invocations. |
 
 ## Testing
 

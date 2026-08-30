@@ -88,6 +88,7 @@ export class BedrockMeterStack extends cdk.Stack {
     // Bedrock's delivery role — assumed by the bedrock.amazonaws.com service
     // to write to the CloudWatch log group.
     const deliveryRole = new iam.Role(this, "BedrockLoggingRole", {
+      roleName: "lightbulb-bedrock-invocation-logging",
       assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
     });
     this.invocationLogGroup.grantWrite(deliveryRole);
@@ -219,11 +220,18 @@ export class BedrockMeterStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
 
-      // No explicit functionName: a fixed name would CREATE-before-DELETE
-      // collide with the pre-rework function on the replacement update. CFN
-      // names the functions; nothing references them by name (alarms and the
-      // subscription filters use object refs).
+      // Fixed name: a future change that replaces the function (runtime,
+      // handler rename) must go through a rename-and-back, since CFN creates
+      // the replacement before deleting the old one.
       const fn = new lambda.Function(this, `MeterFn${idSuffix}`, {
+        functionName: `lightbulb-${meterEnv}-bedrock-meter`,
+        role: new iam.Role(this, `MeterFnRole${idSuffix}`, {
+          roleName: `lightbulb-${meterEnv}-bedrock-meter`,
+          assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+          managedPolicies: [
+            iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+          ],
+        }),
         runtime: lambda.Runtime.PYTHON_3_12,
         handler: "index.handler",
         code: meterCode,
@@ -330,7 +338,6 @@ export class BedrockMeterStack extends cdk.Stack {
           actions: ["dynamodb:GetItem"],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}bedrock-aip-owners`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}bedrock-aip-owners`,
           ],
         }),
       );
@@ -359,9 +366,7 @@ export class BedrockMeterStack extends cdk.Stack {
           actions: ["dynamodb:UpdateItem"],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}billing-accounts`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}billing-accounts`,
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}containers`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}containers`,
           ],
         }),
       );
@@ -422,9 +427,7 @@ export class BedrockMeterStack extends cdk.Stack {
           actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}containers`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}containers`,
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${tablePrefix(meterEnv)}bedrock-gate-tokens`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${legacyTablePrefix(meterEnv)}bedrock-gate-tokens`,
           ],
         }),
       );

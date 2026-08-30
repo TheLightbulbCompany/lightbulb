@@ -106,3 +106,43 @@ async def test_a_recovered_settings_read_stops_holding():
             assert await launch_hold.pre_drop_gate("user_1") is None
     finally:
         launch_phase.invalidate()
+
+
+async def test_no_container_read_when_the_schedule_answers_on_its_own(launch_schedule):
+    """The gate runs on every container-status poll. A settings row we
+    actually read answers "nobody is held" by itself — before the drop is set
+    and after it has passed — so it must not spend a DynamoDB read to say so."""
+    container_read = AsyncMock(return_value=None)
+    with (
+        launch_schedule(None),  # feature known off
+        patch.object(launch_hold.container_repo, "get_by_owner_id", container_read),
+    ):
+        assert await launch_hold.pre_drop_gate("user_1") is None
+    with (
+        launch_schedule(NOW - timedelta(seconds=1)),  # known past the drop
+        patch.object(launch_hold.container_repo, "get_by_owner_id", container_read),
+    ):
+        assert await launch_hold.pre_drop_gate("user_1") is None
+    container_read.assert_not_awaited()
+
+
+async def test_reads_the_container_row_only_when_an_owner_could_be_held(launch_schedule):
+    """The two cases that can hold — knowingly pre-drop, and an unreadable
+    settings row — both have to check for an existing container first."""
+    container_read = AsyncMock(return_value=None)
+    with (
+        launch_schedule(NOW + timedelta(days=10)),  # known pre-drop
+        patch.object(launch_hold.container_repo, "get_by_owner_id", container_read),
+    ):
+        assert await launch_hold.pre_drop_gate("user_1") is not None
+    assert container_read.await_count == 1
+
+    try:
+        with (
+            _settings_read_down(),
+            patch.object(launch_hold.container_repo, "get_by_owner_id", container_read),
+        ):
+            assert await launch_hold.pre_drop_gate("user_1") is not None
+    finally:
+        launch_phase.invalidate()
+    assert container_read.await_count == 2

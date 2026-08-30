@@ -386,6 +386,7 @@ def test_the_safe_shape_is_the_only_shape(client):
         "message",
         "provider_account",
         "resource_name",
+        "resource_status",
         "env_keys",
         "created_at",
         "updated_at",

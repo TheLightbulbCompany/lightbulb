@@ -322,6 +322,11 @@ async def test_start_validates_configuration_against_the_service_schema():
                 issue_id=None,
             )
     assert exc.value.code == "invalid_configuration"
+    # Never the submitted VALUE: this refusal is relayed into Friday's
+    # transcript, and a provider field can be a credential.
+    assert "mars" not in exc.value.message
+    # Still says which field, or she retries blind.
+    assert "organization_name" in exc.value.message
 
 
 @pytest.mark.asyncio
@@ -455,6 +460,25 @@ async def test_cancel_refuses_once_anything_exists_on_the_owners_stripe_account(
         out = await mod.cancel("pwf_1")
     assert out["state"] == "cancelled"
     assert move.await_args.kwargs["to_state"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_clears_the_pending_question_with_the_state():
+    """A cancelled row that still says `awaiting: payment_setup` is one every
+    owner route keyed on `awaiting` still treats as live — a withdrawn ask
+    could mint a hosted checkout."""
+    row = _row(state="awaiting_user_action", awaiting="payment_setup", user_action_since="2026-08-01T00:00:00Z")
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="cancelled"))) as move,
+    ):
+        await mod.cancel("pwf_1")
+    assert move.await_args.kwargs["fields"] == {
+        "awaiting": None,
+        "information_target": None,
+        "information_schema": None,
+        "user_action_since": None,
+    }
 
 
 # --- connecting_provider ----------------------------------------------------

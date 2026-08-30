@@ -162,7 +162,9 @@ RESOURCE_ROUTES = [
     ("POST", "/resources/posthog/res_1/dashboard-link", None),
     ("POST", "/resources/posthog/res_1/remove", {"confirm": "x"}),
 ]
-ALL_ROUTES = [("GET", "/workflows", None), *WORKFLOW_ROUTES, *RESOURCE_ROUTES]
+# The GET is deliberately absent: it is a READ any org member may make, gated
+# like `GET /resources`. Only the ANSWERS are admin-and-paid.
+ALL_ROUTES = [*WORKFLOW_ROUTES, *RESOURCE_ROUTES]
 
 
 def _call(client, method, path, body):
@@ -210,6 +212,18 @@ def test_resource_routes_reject_a_hostile_provider_segment(client, method, path,
         resp = _call(client, method, path.replace("posthog", "PostHog!"), body)
     assert resp.status_code == 422
     listed.assert_not_awaited()
+
+
+def test_any_member_can_read_the_list_without_a_subscription(member_client, monkeypatch):
+    """Seeing what your company was asked for is a read, like `GET /resources`
+    — the admin-and-paid fence is on the answers, not on looking."""
+    entitlement = AsyncMock()
+    monkeypatch.setattr(mod, "require_always_on_entitlement", entitlement)
+    with patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[WF])) as listed:
+        resp = member_client.get("/api/v1/company/provisioning/workflows")
+    assert resp.status_code == 200 and resp.json()["workflows"][0]["workflow_id"] == "pwf_1"
+    listed.assert_awaited_once_with("org_a")
+    entitlement.assert_not_awaited()
 
 
 def test_workflows_list_is_owner_scoped_newest_first_and_safe(client):
@@ -457,6 +471,26 @@ def test_information_is_validated_against_the_stored_schema(client):
             "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {"team": 7}}
         )
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "invalid_information"
+    # The path, never the submitted value — a provider's form can ask for a
+    # credential.
+    assert "7" not in resp.json()["detail"]["message"]
+    assert "team" in resp.json()["detail"]["message"]
+    submit.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "information",
+    [{"team": {"nested": "object"}}, {"team": ["a", "list"]}, {"team": "x" * 9000}, {"team": "two\nlines"}],
+)
+def test_information_bounds_its_values_like_a_configuration(client, information):
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as submit,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": information}
+        )
+    assert resp.status_code == 422
     submit.assert_not_awaited()
 
 
@@ -534,6 +568,27 @@ def test_payment_link_409s_when_the_row_is_not_waiting_on_a_card(client):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/payment-link")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_payment_pending"
     minted.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [("payment-link", "no_payment_pending"), ("connect-link", "no_connect_pending")],
+)
+def test_a_withdrawn_request_can_never_mint_a_link(client, path, code):
+    """`cancel` clears `awaiting`, but a row cancelled before that shipped —
+    or by any other terminal move — must not mint one either."""
+    row = {**PAYING, "state": "cancelled", "awaiting": "payment_setup"}
+    if path == "connect-link":
+        row = {**row, "awaiting": "provider_connect", "account_request_id": "ar_1"}
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.api, "create_payment_method_request", AsyncMock()) as paid,
+        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+    ):
+        resp = client.post(f"/api/v1/company/provisioning/workflows/pwf_1/{path}")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == code
+    paid.assert_not_awaited()
+    read.assert_not_awaited()
 
 
 def test_payment_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
@@ -658,6 +713,8 @@ def test_connect_link_un_stales_the_row_so_the_kick_is_not_a_no_op(client):
     assert move.await_args.kwargs["to_state"] == "awaiting_user_action"
     assert move.await_args.kwargs["fields"]["awaiting"] == "provider_connect"
     assert move.await_args.kwargs["fields"]["user_action_since"]
+    # Un-staling writes state, never the minted URL.
+    assert "p.example" not in str(move.await_args_list)
 
 
 def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
@@ -779,6 +836,61 @@ def test_remove_deprovisions_at_the_provider_then_drops_our_copy(client, facts):
     removed.assert_awaited_once_with("acct_1", "res_1")
     revoked.assert_awaited_once_with(owner_id="org_a", provider="posthog", resource_id="res_1")
     facts.assert_awaited_once_with("org_a")
+
+
+def test_remove_stamps_the_workflow_so_the_history_stops_saying_active(client):
+    with (
+        patch.object(
+            mod.integrations_repo,
+            "list_provider_resources",
+            AsyncMock(return_value=[{**POINTER, "workflow_id": "pwf_1"}]),
+        ),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "remove_resource", AsyncMock()),
+        patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=True)),
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": "analytics-abc123"}
+        )
+    assert resp.status_code == 200
+    assert patched.await_args.args[1]["resource_status"] == "removed"
+    assert patched.await_args.args[1]["removed_at"]
+
+
+def test_a_purged_workflow_row_cannot_fail_a_completed_removal(client):
+    """The resource is already gone at the provider and our copy with it. A
+    stamp that cannot land must not hand the owner a 500 to retry."""
+    with (
+        patch.object(
+            mod.integrations_repo,
+            "list_provider_resources",
+            AsyncMock(return_value=[{**POINTER, "workflow_id": "pwf_gone"}]),
+        ),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "remove_resource", AsyncMock()),
+        patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=True)),
+        patch.object(mod.workflow_repo, "patch", AsyncMock(side_effect=RuntimeError("ConditionalCheckFailed"))),
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": "analytics-abc123"}
+        )
+    assert resp.status_code == 200 and resp.json()["removed"] is True
+
+
+def test_remove_of_a_pointer_with_no_workflow_never_patches(client):
+    with (
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
+        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
+        patch.object(mod.api, "remove_resource", AsyncMock()),
+        patch.object(mod.provisioning_landing, "revoke_credentials", AsyncMock(return_value=True)),
+        patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/resources/posthog/res_1/remove", json={"confirm": "analytics-abc123"}
+        )
+    assert resp.status_code == 200
+    patched.assert_not_awaited()
 
 
 def test_remove_keeps_our_copy_when_the_provider_refuses(client, facts):

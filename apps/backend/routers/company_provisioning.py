@@ -238,6 +238,10 @@ def _safe_workflow(row: dict) -> dict:
         # stored shape cannot escape here by default.
         "provider_account": provisioning_workflow.safe_account_details(row.get("provider_account")),
         "resource_name": row.get("resource_name"),
+        # `removed` once the owner deprovisioned it: the row stays `active`
+        # (the request WAS fulfilled), so without this the history says the
+        # credential is still live.
+        "resource_status": row.get("resource_status"),
         # NAMES only. The values live in Secrets Manager and are injected into
         # the container's env — they are never served over an HTTP door.
         "env_keys": [str(k)[:128] for k in (row.get("env_keys") or [])[:50]],
@@ -477,6 +481,19 @@ async def _company_project_id(owner_id: str) -> str | None:
     return (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_project_id")
 
 
+async def _stamp_removed(workflow_id: str | None) -> None:
+    """Mark the workflow whose resource just went away. BEST-EFFORT by
+    construction: the provider resource is already gone and our copy with it,
+    so a purged or missing row must never turn a completed removal into a 500
+    the owner would retry."""
+    if not workflow_id:
+        return
+    try:
+        await workflow_repo.patch(workflow_id, {"resource_status": "removed", "removed_at": utc_now_iso()})
+    except Exception as e:  # noqa: BLE001 — the removal already happened
+        logger.warning("company_provisioning: could not stamp workflow %s as removed: %s", workflow_id, e)
+
+
 async def _resumed(row: dict, awaiting: str) -> None:
     """The owner came back to a `stale` row.
 
@@ -494,9 +511,14 @@ async def _resumed(row: dict, awaiting: str) -> None:
 
 
 @router.get("/workflows")
-async def list_workflows(owner_id: Owner):
+async def list_workflows(auth: Annotated[AuthContext, Depends(get_current_user)]):
     """What the owner has been asked for, newest first — the Settings list and
-    the source of every card's live state."""
+    the source of every card's live state.
+
+    A READ, gated like `GET /resources`: any member of the org may see what
+    their company was asked for. Only the answers below are admin-and-paid.
+    """
+    owner_id = resolve_owner_id(auth)
     rows = await workflow_repo.list_for_owner(owner_id)
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return {"workflows": [_safe_workflow(r) for r in rows]}
@@ -584,10 +606,27 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
         raise _conflict("no_information_pending", "This request is not waiting for information")
     if len(body.information) > _MAX_CONFIG_KEYS:
         raise _invalid(f"information may hold at most {_MAX_CONFIG_KEYS} fields")
+    # Same bounds a `configuration` gets: the provider renders these, and only
+    # a renderable schema (`_renderable`) ever reaches an owner, so a nested
+    # value is not an answer to any form we filed.
+    for key, value in body.information.items():
+        if isinstance(value, str):
+            if len(value) > _MAX_CONFIG_VALUE or _UNSAFE_RE.search(value):
+                raise _invalid(f"the value for {key!r} is too long or has control characters")
+        elif value is not None and not isinstance(value, (bool, int, float)):
+            raise _invalid(f"the value for {key!r} must be a single value, not a list or an object")
     try:
         jsonschema.validate(body.information, row.get("information_schema") or {})
     except jsonschema.ValidationError as e:
-        raise HTTPException(status_code=422, detail={"code": "invalid_information", "message": e.message}) from e
+        # `schema_reason`, never `e.message` — that quotes the offending value
+        # back, and a provider's form can ask for a credential.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_information",
+                "message": f"{provisioning_workflow.schema_reason(e)} for this form",
+            },
+        ) from e
     try:
         account_id = await provisioning_workflow.account_id_for(owner_id)
         if target == "account_request":
@@ -626,7 +665,7 @@ async def payment_link(workflow_id: str, owner_id: Owner):
     behind an old one would be long expired.
     """
     row = await _owned(owner_id, workflow_id)
-    if row.get("awaiting") != "payment_setup":
+    if row.get("state") in workflow_repo.TERMINAL_STATES or row.get("awaiting") != "payment_setup":
         raise _conflict("no_payment_pending", "This request is not waiting for a payment method")
     # The limit the owner already approved. Merged over the default so a row
     # written before the limit existed still names all three fields.
@@ -659,7 +698,7 @@ async def connect_link(workflow_id: str, owner_id: Owner):
     user to reconnect").
     """
     row = await _owned(owner_id, workflow_id)
-    if row.get("awaiting") != "provider_connect":
+    if row.get("state") in workflow_repo.TERMINAL_STATES or row.get("awaiting") != "provider_connect":
         raise _conflict("no_connect_pending", "This request is not waiting for a provider connection")
     try:
         account_id = await provisioning_workflow.account_id_for(owner_id)
@@ -736,6 +775,10 @@ async def remove_provider_resource(provider: str, resource_id: str, body: Remove
     entitlement teardown and revoke never do. The owner types the resource's
     own name back, which is the "separate confirmation" the guide requires
     alongside stating the billing and infrastructure effect.
+
+    Partial failure has a cleanup door: if the deprovision lands but dropping
+    our copy does not, the resource is gone at the provider and our pointer
+    survives — `POST /resources/{provider}/{id}/revoke` removes exactly that.
     """
     pointer = await _owned_resource(owner_id, provider, resource_id)
     expected = str(pointer.get("resource_name") or resource_id)
@@ -750,5 +793,6 @@ async def remove_provider_resource(provider: str, resource_id: str, body: Remove
     # Our copy goes only after the provider accepted the deprovision, so a
     # failure never leaves a live resource we can no longer name.
     await provisioning_landing.revoke_credentials(owner_id=owner_id, provider=provider, resource_id=resource_id)
+    await _stamp_removed(pointer.get("workflow_id"))
     await write_owner_facts(owner_id)
     return {"removed": True, "message": REMOVED_MESSAGE.format(name=expected, provider=provider)}

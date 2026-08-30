@@ -76,7 +76,7 @@ function expressionRunner(runsOn: string): Runner {
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
-const GITHUB_ACTIONS_ROLE_ARN = "arn:aws:iam::877352799272:role/isol8-dev-github-actions";
+const GITHUB_ACTIONS_ROLE_ARN = "arn:aws:iam::877352799272:role/lightbulb-github-actions";
 
 // CDK bootstrap v32 rewrote the trust policy on all four `cdk-hnb659fds-*`
 // roles to add `"Condition": {"Null": {"sts:ExternalId": "true"}}` — assume is

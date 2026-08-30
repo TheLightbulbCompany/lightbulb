@@ -134,7 +134,7 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-openclaw-image-builder
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2

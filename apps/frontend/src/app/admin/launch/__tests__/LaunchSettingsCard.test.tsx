@@ -48,7 +48,7 @@ beforeEach(() => {
 
 describe("LaunchSettingsCard", () => {
   it("renders the settings row converted into ET wall time / dollars", () => {
-    render(<LaunchSettingsCard settings={baseSettings} enabled={baseSettings.enabled} />);
+    render(<LaunchSettingsCard settings={baseSettings} />);
     expect(screen.getByLabelText("Drop (ET)")).toHaveValue("2026-07-15T10:00");
     expect(screen.getByLabelText("Competition start (ET)")).toHaveValue("2026-07-20T10:00");
     expect(screen.getByLabelText(/comp slots/i)).toHaveValue(220);
@@ -59,7 +59,7 @@ describe("LaunchSettingsCard", () => {
   });
 
   it("saves with dates converted back to ISO and dollars converted to cents, with no confirm gate when enabled/phase don't change", async () => {
-    render(<LaunchSettingsCard settings={baseSettings} enabled={baseSettings.enabled} />);
+    render(<LaunchSettingsCard settings={baseSettings} />);
     fireEvent.change(screen.getByLabelText(/pot front/i), { target: { value: "1200" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
@@ -83,7 +83,7 @@ describe("LaunchSettingsCard", () => {
       status: 422,
       data: { detail: { errors: { comp_slots: "must be at least 1" } } },
     });
-    render(<LaunchSettingsCard settings={baseSettings} enabled={baseSettings.enabled} />);
+    render(<LaunchSettingsCard settings={baseSettings} />);
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(await screen.findByText("must be at least 1")).toBeInTheDocument();
     expect(mockRefresh).not.toHaveBeenCalled();
@@ -91,7 +91,7 @@ describe("LaunchSettingsCard", () => {
 
   it("gates a save that flips `enabled` behind the typed-launch confirm dialog", async () => {
     const user = userEvent.setup();
-    render(<LaunchSettingsCard settings={baseSettings} enabled={baseSettings.enabled} />);
+    render(<LaunchSettingsCard settings={baseSettings} />);
 
     await user.click(screen.getByRole("checkbox", { name: /enabled/i }));
     await user.click(screen.getByRole("button", { name: /^save$/i }));
@@ -107,11 +107,33 @@ describe("LaunchSettingsCard", () => {
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
   });
 
+  it("rounds the integer fields so a typed decimal never reaches the server", async () => {
+    render(<LaunchSettingsCard settings={baseSettings} />);
+    fireEvent.change(screen.getByLabelText(/comp slots/i), { target: { value: "1.5" } });
+    fireEvent.change(screen.getByLabelText(/competition days/i), { target: { value: "30.4" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(await screen.findByText(/^saved\.$/i)).toBeInTheDocument();
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ comp_slots: 2, competition_days: 30 }));
+  });
+
+  it("reads the checkbox and the confirm gate off the saved row, not a derived flag", async () => {
+    // An enabled row whose sheet failed to compute still renders enabled —
+    // and saving it unchanged is not a "changes what every user sees" moment.
+    const user = userEvent.setup();
+    render(<LaunchSettingsCard settings={{ ...baseSettings, enabled: true }} />);
+    expect(screen.getByRole("checkbox", { name: /enabled/i })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+  });
+
   it("disables the coupon button until both dates are set", () => {
     render(
       <LaunchSettingsCard
         settings={{ ...baseSettings, drop_at: null, competition_start_at: null }}
-        enabled={false}
       />,
     );
     expect(screen.getByRole("button", { name: /create stripe coupon/i })).toBeDisabled();
@@ -119,7 +141,7 @@ describe("LaunchSettingsCard", () => {
 
   it("mints the coupon directly (no confirm) when none exists yet", async () => {
     const user = userEvent.setup();
-    render(<LaunchSettingsCard settings={baseSettings} enabled={baseSettings.enabled} />);
+    render(<LaunchSettingsCard settings={baseSettings} />);
     await user.click(screen.getByRole("button", { name: /create stripe coupon/i }));
     expect(mockMintCoupon).toHaveBeenCalledWith(false);
     expect(await screen.findByText(/coupon \+ promo code created/i)).toBeInTheDocument();
@@ -130,7 +152,6 @@ describe("LaunchSettingsCard", () => {
     render(
       <LaunchSettingsCard
         settings={{ ...baseSettings, stripe_coupon_id: "co_existing" }}
-        enabled={baseSettings.enabled}
       />,
     );
     await user.click(screen.getByRole("button", { name: /create stripe coupon/i }));

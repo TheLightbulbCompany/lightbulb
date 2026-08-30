@@ -22,7 +22,9 @@ export default async function AdminLaunchPage() {
           The economics sheet with live inputs. {data?.enabled ? `Generated ${data.generated_at}, phase ${data.phase}.` : ""}
         </p>
       </div>
-      {data ? <LaunchSettingsCard settings={data.settings} enabled={data.enabled} /> : null}
+      {/* `key` remounts the card on a saved row, so its form state (seeded
+          once from props) picks the new values up after router.refresh(). */}
+      {data ? <LaunchSettingsCard key={data.settings.updated_at ?? "new"} settings={data.settings} /> : null}
       {!env ? (
         <ErrorBanner error="Launch read failed — nothing below is trustworthy." />
       ) : data && !data.enabled ? (

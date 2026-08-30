@@ -22,35 +22,50 @@ export function toEasternLocal(iso: string | null): string {
     hour12: false,
   }).formatToParts(new Date(iso));
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
-  // Some ICU builds render midnight as "24" under hour12:false — normalize.
-  const hour = get("hour") === "24" ? "00" : get("hour");
-  return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get("minute")}`;
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
+/** ET offset in effect at a given instant, as `"-04:00"` / `"-05:00"`. */
+function etOffsetAt(instant: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_ZONE,
+    timeZoneName: "longOffset",
+  }).formatToParts(instant);
+  const gmtOffset = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT-05:00";
+  return gmtOffset.replace("GMT", "") || "+00:00";
+}
+
+/** `"-04:00"` -> its signed millisecond value. */
+function offsetMs(offset: string): number {
+  const m = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
+  if (!m) return 0;
+  return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) * 60_000;
 }
 
 /** "YYYY-MM-DDTHH:mm" ET wall time -> ISO string with the correct ET offset
  * for that wall time (`-04:00` EDT / `-05:00` EST).
  *
- * DST resolution: the wall time is first treated as if it were a UTC
- * instant, and the ET formatter is asked what offset America/New_York uses
- * AT THAT (UTC) INSTANT. Because ET is 4-5 hours behind UTC, that instant
- * falls on the same calendar date, so it reads the correct season almost
- * always — the only place it can disagree with "the offset ET actually used
- * at that wall clock" is the ~1-5 hour window around a DST transition itself,
- * which is exactly the ambiguous/nonexistent wall time this function has no
- * single correct answer for anyway. For the spring-forward gap (e.g.
- * 2026-03-08T02:30, which never occurs on a real ET clock) this resolves to
- * the PRE-transition offset (EST, -05:00) rather than throwing — a documented
- * choice, not a crash. */
+ * DST resolution takes two passes, because reading the offset once is wrong
+ * for the 4-5 hours after a transition: the wall time treated as a UTC
+ * instant lands BEFORE the transition (ET is 4-5 hours behind UTC), so a
+ * single read reports the old season. So: read the offset at the naive
+ * instant, subtract it to get the UTC instant that offset implies, and read
+ * the offset there — `2026-11-01T03:00` resolves to EST, `2027-03-14T05:00`
+ * to EDT.
+ *
+ * The second read is then verified by converting back: a spring-forward gap
+ * wall time (e.g. 2026-03-08T02:30, which never occurs on a real ET clock)
+ * doesn't render back as itself, and keeps the pre-transition offset (EST) —
+ * a documented choice, not a crash. An ambiguous fall-back wall time (e.g.
+ * 2026-11-01T01:30, which occurs twice) resolves to the FIRST occurrence,
+ * EDT. */
 export function fromEasternLocal(local: string): string {
   const [datePart, timePart] = local.split("T");
   const [year, month, day] = datePart.split("-").map(Number);
   const [hour, minute] = timePart.split(":").map(Number);
-  const naiveInstant = new Date(Date.UTC(year, month - 1, day, hour, minute));
-  const offsetParts = new Intl.DateTimeFormat("en-US", {
-    timeZone: ET_ZONE,
-    timeZoneName: "longOffset",
-  }).formatToParts(naiveInstant);
-  const gmtOffset = offsetParts.find((p) => p.type === "timeZoneName")?.value ?? "GMT-05:00";
-  const offset = gmtOffset.replace("GMT", "") || "+00:00";
-  return `${local}:00${offset}`;
+  const naive = Date.UTC(year, month - 1, day, hour, minute);
+  const first = etOffsetAt(new Date(naive));
+  const second = etOffsetAt(new Date(naive - offsetMs(first)));
+  const roundTrips = toEasternLocal(new Date(naive - offsetMs(second)).toISOString()) === local;
+  return `${local}:00${roundTrips ? second : first}`;
 }

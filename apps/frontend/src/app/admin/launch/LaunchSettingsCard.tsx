@@ -38,7 +38,6 @@ function describeError(result: SaveResult): string {
 
 export interface LaunchSettingsCardProps {
   settings: LaunchSettings;
-  enabled: boolean;
 }
 
 /**
@@ -48,10 +47,13 @@ export interface LaunchSettingsCardProps {
  * admin has to be able to turn the feature ON from here); the rest of the
  * economics sheet only shows up once the row is enabled and computes clean.
  */
-export function LaunchSettingsCard({ settings, enabled: enabledProp }: LaunchSettingsCardProps) {
+export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   const router = useRouter();
 
-  const [enabled, setEnabled] = React.useState(enabledProp);
+  // The saved row itself, never the sheet's derived `enabled` — those differ
+  // whenever the row is on but the sheet failed to compute, and the checkbox
+  // has to show what is stored.
+  const [enabled, setEnabled] = React.useState(settings.enabled);
   const [dropAtLocal, setDropAtLocal] = React.useState(() => toEasternLocal(settings.drop_at));
   const [startAtLocal, setStartAtLocal] = React.useState(() => toEasternLocal(settings.competition_start_at));
   const [compSlots, setCompSlots] = React.useState(String(settings.comp_slots));
@@ -75,8 +77,10 @@ export function LaunchSettingsCard({ settings, enabled: enabledProp }: LaunchSet
       enabled,
       drop_at: dropAtLocal ? fromEasternLocal(dropAtLocal) : null,
       competition_start_at: startAtLocal ? fromEasternLocal(startAtLocal) : null,
-      comp_slots: Number(compSlots),
-      competition_days: Number(competitionDays),
+      // Every one of the four is a whole number server-side — round here so a
+      // typed "1.5" is a 2, not a 422 (the pot fields already did).
+      comp_slots: Math.round(Number(compSlots)),
+      competition_days: Math.round(Number(competitionDays)),
       pot_front_cents: Math.round(Number(potFrontDollars) * 100),
       pot_per_entrant_cents: Math.round(Number(potPerEntrantDollars) * 100),
     };
@@ -100,7 +104,7 @@ export function LaunchSettingsCard({ settings, enabled: enabledProp }: LaunchSet
   const newDropIso = dropAtLocal ? fromEasternLocal(dropAtLocal) : null;
   const newDropMs = newDropIso ? Date.parse(newDropIso) : null;
   const dropCrossesNow = oldDropMs !== null && newDropMs !== null && oldDropMs > now !== newDropMs > now;
-  const needsConfirm = enabled !== enabledProp || dropCrossesNow;
+  const needsConfirm = enabled !== settings.enabled || dropCrossesNow;
 
   async function doMintCoupon(force: boolean) {
     setCouponBusy(true);

@@ -506,7 +506,7 @@ export class ContainerStack extends cdk.Stack {
         oidcProviderArn,
       );
       const builderRole = new iam.Role(this, "OpenclawImageBuilderRole", {
-        roleName: "isol8-openclaw-image-builder",
+        roleName: "lightbulb-openclaw-image-builder",
         assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
           StringLike: {
             "token.actions.githubusercontent.com:sub": "repo:Isol8AI/isol8:*",

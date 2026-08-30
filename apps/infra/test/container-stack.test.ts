@@ -233,7 +233,7 @@ describe("ContainerStack — dev", () => {
 
   test("creates the openclaw-image-builder OIDC role for CI image pushes", () => {
     template.hasResourceProperties("AWS::IAM::Role", {
-      RoleName: "isol8-openclaw-image-builder",
+      RoleName: "lightbulb-openclaw-image-builder",
       AssumeRolePolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -783,13 +783,13 @@ describe("ContainerStack — prod", () => {
   });
 
   test("does NOT create the image-builder role (single account-wide role)", () => {
-    // No role with name isol8-openclaw-image-builder — verify by checking
+    // No role with name lightbulb-openclaw-image-builder — verify by checking
     // no IAM::Role with that exact RoleName exists.
     const roles = template.findResources("AWS::IAM::Role");
     const builderRoles = Object.values(roles).filter(
       (r: unknown) =>
         (r as { Properties?: { RoleName?: string } }).Properties?.RoleName ===
-        "isol8-openclaw-image-builder",
+        "lightbulb-openclaw-image-builder",
     );
     expect(builderRoles).toHaveLength(0);
   });

@@ -48,6 +48,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     )
     constants = launch_phase.constants()
     per_entrant = constants["pot_per_entrant_cents"]
+    referral_jump = constants["referral_jump"]
     competing = len(entries)
     on_board = sum(1 for e in entries if e.get("has_key"))
 
@@ -55,7 +56,13 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     # comped top slots and everyone who actually entered. An uncapped waitlist
     # otherwise means one onboarding resolve per signup on every cache miss —
     # thousands of reads for a sheet that shows two numbers off them.
-    resolvable = {w["user_id"] for w in waitlist if w.get("user_id") and int(w["position"]) <= s.comp_slots}
+    # EFFECTIVE position, not raw — a referral can pull a row into the comped
+    # window from well outside its raw position (launch_service.effective_position).
+    resolvable = {
+        w["user_id"]
+        for w in waitlist
+        if w.get("user_id") and launch_service.effective_position(w, referral_jump) <= s.comp_slots
+    }
     resolvable |= {e["owner_id"] for e in entries}
     sem = asyncio.Semaphore(8)
 
@@ -67,7 +74,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
     onboarding = dict(zip(ordered, await asyncio.gather(*[_onb(uid) for uid in ordered])))
     activated = {uid for uid, o in onboarding.items() if _activated_by_deadline(o, s)}
 
-    top = [w for w in waitlist if int(w["position"]) <= s.comp_slots]
+    top = [w for w in waitlist if launch_service.effective_position(w, referral_jump) <= s.comp_slots]
     top_claimed = [w for w in top if w.get("user_id")]
     top_activated = [w for w in top_claimed if w["user_id"] in activated]
 
@@ -176,6 +183,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
                 {
                     "email": w["email"],
                     "position": int(w["position"]),
+                    "effective_position": launch_service.effective_position(w, referral_jump),
                     "referral_link": launch_service.referral_link(w["referral_code"]),
                     "created_at": w.get("created_at"),
                     "user_id": w.get("user_id"),
@@ -190,7 +198,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
                 }
                 for w in waitlist
             ],
-            key=lambda r: r["position"],
+            key=lambda r: r["effective_position"],
         ),
     }
 

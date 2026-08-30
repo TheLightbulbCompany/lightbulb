@@ -138,6 +138,8 @@ async def test_compute_counts_and_economics(deps):
     assert data["entries"][1]["refresh_error"] == "stripe_auth"
     row = next(r for r in data["waitlist_rows"] if r["email"] == "a@x.com")
     assert row["referral_link"] == "https://dev.flickmeon.ai/?ref=AAAA2345" and row["activated"] is True
+    # Row a: position 1, referrals_signed_up 1, default referral_jump 10 -> floored at 1.
+    assert row["effective_position"] == 1
     # An unclaimed row is definitively not activated — never an unknown.
     assert next(r for r in data["waitlist_rows"] if r["email"] == "b@x.com")["activated"] is False
     # The pot formula's own inputs ride along so the console renders the sum.
@@ -195,6 +197,70 @@ async def test_onboarding_fanout_is_bounded_to_comped_slots_and_entrants():
     assert next(r for r in data["waitlist_rows"] if r["position"] == 1)["activated"] is False
     assert next(r for r in data["waitlist_rows"] if r["position"] == 300)["activated"] is None
     assert next(r for r in data["waitlist_rows"] if r["position"] == 400)["activated"] is False
+
+
+async def test_top_slot_logic_uses_effective_position_not_raw():
+    """A row's raw waitlist position can sit well outside comp_slots while
+    its referrals pull the EFFECTIVE position inside the window -- the top
+    slot / claimed / activated counts, and waitlist_rows' own sort order,
+    must all follow the effective position, not the raw one."""
+    slots = 5
+    sched = launch_phase.Schedule(DROP, DROP + timedelta(hours=72), DROP + timedelta(hours=72, days=30), slots, 72, 30)
+    waitlist = [
+        {
+            "email": "far@x.com",
+            "position": 50,
+            "referral_code": "FAR00001",
+            "user_id": "u_far",
+            "created_at": "t",
+            "referrals_signed_up": 5,  # 50 - 10*5 = 0 -> floored to 1, inside the 5 comp slots
+            "referrals_paid": 0,
+            "free_months_banked": 0,
+        },
+        {
+            "email": "close@x.com",
+            "position": 4,
+            "referral_code": "CLOSE001",
+            "user_id": "u_close",
+            "created_at": "t",
+            "referrals_signed_up": 0,  # stays at 4 -- inside the window either way
+            "referrals_paid": 0,
+            "free_months_banked": 0,
+        },
+    ]
+    onboarding = {
+        "u_far": {"bootstrap_state": "delivered", "bootstrap_delivered_at": (DROP + timedelta(hours=1)).isoformat()},
+        "u_close": {"bootstrap_state": "not_started", "bootstrap_delivered_at": None},
+    }
+    with (
+        patch.object(ops_launch.launch_phase, "schedule", return_value=sched),
+        patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(return_value=waitlist)),
+        patch.object(ops_launch.launch_waitlist_repo, "count_pot_counted", AsyncMock(return_value=0)),
+        patch.object(ops_launch.launch_waitlist_repo, "count", AsyncMock(return_value=2)),
+        patch.object(ops_launch.launch_entries_repo, "list_all", AsyncMock(return_value=[])),
+        patch.object(
+            ops_launch.readiness_state,
+            "resolve_onboarding_state",
+            AsyncMock(side_effect=lambda o: onboarding.get(o, {"bootstrap_state": "not_started"})),
+        ),
+        patch.object(ops_launch.launch_service.settings, "FRONTEND_URL", "https://dev.flickmeon.ai"),
+        patch.object(
+            ops_launch.launch_settings, "effective", AsyncMock(return_value=dict(ops_launch.launch_settings.DEFAULTS))
+        ),
+    ):
+        ops_launch._cache.clear()
+        data, state, _ = await ops_launch.compute()
+    assert state == "ok"
+    # far's raw position (50) is well outside 5 comp slots, but 5 referrals x
+    # the default jump (10) puts its EFFECTIVE position at 1 -- inside the
+    # window, claimed, and (unlike close) activated within the deadline.
+    assert data["waitlist"]["top_slots_claimed"] == 2
+    assert data["waitlist"]["top_slots_activated"] == 1
+    row = next(r for r in data["waitlist_rows"] if r["email"] == "far@x.com")
+    assert row["effective_position"] == 1 and row["position"] == 50
+    # Sorted by effective position: far (1) comes before close (4), even
+    # though close's raw position (4) is lower than far's (50).
+    assert [r["email"] for r in data["waitlist_rows"]] == ["far@x.com", "close@x.com"]
 
 
 async def test_compute_is_cached_for_60s(deps):

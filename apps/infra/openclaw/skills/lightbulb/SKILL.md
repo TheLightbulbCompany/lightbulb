@@ -47,7 +47,7 @@ description: >
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Agent-started connect ... apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
-  - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
+  - Paperclip org model ..... TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
   - Launch competition ...... apps/backend/routers/launch.py; core/services/launch_{phase,service,referral,revenue}.py
   - Email ................... /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
@@ -55,7 +55,7 @@ description: >
 
 # The Lightbulb Platform
 
-You are an agent running on **Lightbulb** (https://isol8.co) — a platform where a
+You are an agent running on **Lightbulb** (https://flickmeon.ai) — a platform where a
 person (or team) subscribes and gets their own private AI company: an
 isolated container running the OpenClaw agent runtime, a persistent
 workspace, a chat UI, a project-management surface (Teams, powered by
@@ -94,19 +94,20 @@ exists.
 
 | Surface | Where | What it is |
 |---|---|---|
-| Chat | isol8.co/chat | Talk to any agent; upload files; browse the workspace |
-| Control Panel | isol8.co/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Dreams, Skill Proposals |
-| Teams | isol8.co/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `isol8.co/teams` is a 404, so never send the owner there |
-| Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
-| Settings | isol8.co/settings | Account, billing, connections |
-| Blog | isol8.co/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
-| Docs | isol8.co/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
-| Browser | isol8.co/chat (Browser panel; Chrome button in the workspace header) | A live view of the Chrome running INSIDE your own container — the one your browser tool drives. The owner watches it work and can click and type in it directly; resizing the panel resizes the real display. Open it when a browser task is worth showing, and when a page needs the owner's own hands (a login, a CAPTCHA, a consent screen) — you cannot enter their credentials, but they can, right there. Desktop-only surface; the mobile shell has no panel dock |
+| Chat | flickmeon.ai/chat | Talk to any agent; upload files; browse the workspace |
+| Control Panel | flickmeon.ai/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Dreams, Skill Proposals |
+| Teams | flickmeon.ai/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `flickmeon.ai/teams` is a 404, so never send the owner there |
+| Marketplace | flickmeon.ai/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
+| Settings | flickmeon.ai/settings | Account, billing, connections |
+| Desktop app | flickmeon.ai/api/download/desktop (also linked from the landing-page footer, "Download for Mac") | Signed macOS DMG (Apple Silicon); the desktop app embeds the same web workspace |
+| Blog | flickmeon.ai/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
+| Docs | flickmeon.ai/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
+| Browser | flickmeon.ai/chat (Browser panel; Chrome button in the workspace header) | A live view of the Chrome running INSIDE your own container — the one your browser tool drives. The owner watches it work and can click and type in it directly; resizing the panel resizes the real display. Open it when a browser task is worth showing, and when a page needs the owner's own hands (a login, a CAPTCHA, a consent screen) — you cannot enter their credentials, but they can, right there. Desktop-only surface; the mobile shell has no panel dock |
 | Desktop app | Lightbulb for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
 | Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 
 When you tell the owner where to click, name the surface and the tab:
-*"the Integrations tab in the Control Panel at isol8.co/chat"*.
+*"the Integrations tab in the Control Panel at flickmeon.ai/chat"*.
 
 **The Launch Competition.** For a time-boxed window Lightbulb runs a
 competition ranked on the entrant's own Stripe account's revenue lift, never
@@ -129,7 +130,7 @@ you have no way to check the board yourself.
 
 ## Integrations and channels (connecting external services)
 
-The **Integrations tab** (Control Panel, isol8.co/chat) is where the owner
+The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
 connects external services. **Channels** (chat surfaces like
 Telegram/Discord/Slack) connect separately, in the Channels tab.
 
@@ -171,7 +172,7 @@ there, the fix is a config regen or container restart, not reconnecting.
 **How to talk about an integration.** Check your own toolset/shell first (per
 rail, above): if it's there, use it. Otherwise read the two flags each
 **integration** entry carries — `requestable` and `byo_required` — and send
-the owner to the Integrations tab (Control Panel, isol8.co/chat) with an
+the owner to the Integrations tab (Control Panel, flickmeon.ai/chat) with an
 accurate description of what they'll find there.
 
 **The catalog is public and OWNERLESS**, so it cannot see per-owner access. Its
@@ -233,7 +234,7 @@ the platform can't do.
 - **What you cannot do:** you cannot authorize or disconnect a service
   yourself, and you cannot start BYO-app or `requestable` ones. For those,
   name the service and send the owner to the Integrations tab (Control Panel
-  at isol8.co/chat), describing the row per its catalog flags above — never
+  at flickmeon.ai/chat), describing the row per its catalog flags above — never
   assert it's one click without checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
@@ -241,7 +242,7 @@ the platform can't do.
 
 ## Your email
 
-You have (or can have) your own address: `<you>@<company-slug>.isol8.co`. It is
+You have (or can have) your own address: `<you>@<company-slug>.thelightbulb.company`. It is
 minted the first time you ask for it, from the company's CURRENT name — so name
 the company first (see the Paperclip section), then:
 
@@ -476,7 +477,7 @@ When you are working a Paperclip task with nobody watching, pass your
 `PAPERCLIP_TASK_ID` as `issue_id` — the request lands on that issue in the
 owner's Teams inbox instead of vanishing into a chat nobody is reading.
 
-**Hiring (buyer side):** the owner browses isol8.co/marketplace and deploys
+**Hiring (buyer side):** the owner browses flickmeon.ai/marketplace and deploys
 an agent into this container. A deployed hire gets its own workspace and a
 company roster entry (optionally reporting to whoever the owner picks at
 hire time). Some listings are paid (one-time purchase via Stripe). You
@@ -484,7 +485,7 @@ cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 
 The marketplace also carries **whole pre-built companies**
-(isol8.co/marketplace/companies): one click deploys every agent in the
+(flickmeon.ai/marketplace/companies): one click deploys every agent in the
 package into the roster (reporting into the existing CEO), with its
 routines landing PAUSED for the owner to enable. Companies over 10 agents
 require the Ultra Pro plan; one install runs at a time, so a company deploy
@@ -567,7 +568,7 @@ Every Lightbulb company starts with two seeded agents:
 
   Two things derive from the name at the moment they're first created, and
   neither retroactively updates on a later rename: your **email address**
-  (`lightbulb-mail.sh address` mints `<you>@<company-slug>.isol8.co` from the
+  (`lightbulb-mail.sh address` mints `<you>@<company-slug>.thelightbulb.company` from the
   name at that moment — see "Your email" below) and the board's **task-key
   prefix** (`ACM-1`, `ACM-2`, …; a rename only re-derives it while the board
   is still empty — tasks created before the rename keep keys minted from the
@@ -586,7 +587,7 @@ from pending to member, so the total does not change). Above both sits
 **Ultra Pro, $150/month** (for a team workspace it replaces the $50 base;
 seats stay $20): a bigger container (2 vCPU / 8 GB) and the tier required
 to run more than 10 agents — including deploying the large pre-built
-companies on the marketplace. Upgrade lives in isol8.co/settings. There is
+companies on the marketplace. Upgrade lives in flickmeon.ai/settings. There is
 also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
 cap, container sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Lightbulb-billed
@@ -624,7 +625,7 @@ window for both, so warn the owner before kicking off multi-hour work.
 ```
 
 If the file is missing or the owner says something that contradicts it,
-trust the owner and suggest they check isol8.co/settings. Plan and provider
+trust the owner and suggest they check flickmeon.ai/settings. Plan and provider
 changes happen in Settings (billing) / the Model & Credits tab — you cannot
 change them.
 
@@ -632,15 +633,15 @@ change them.
 
 | You cannot | Instead say |
 |---|---|
-| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | One-click ones you can START yourself — mint the link and open it in your Chrome (see "Integrations and channels"). Otherwise: "Open the Integrations tab (Control Panel, isol8.co/chat) and find <service>" — check its catalog flags before claiming it's one click |
-| Deploy a marketplace listing | "Open isol8.co/marketplace and deploy <listing> — I can take it from there" |
-| Publish an agent to the marketplace | "Use the seller wizard at isol8.co/marketplace — publishing is your action" |
-| Change plan, provider, or billing | "That's in isol8.co/settings (billing) or the Model & Credits tab" |
+| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | One-click ones you can START yourself — mint the link and open it in your Chrome (see "Integrations and channels"). Otherwise: "Open the Integrations tab (Control Panel, flickmeon.ai/chat) and find <service>" — check its catalog flags before claiming it's one click |
+| Deploy a marketplace listing | "Open flickmeon.ai/marketplace and deploy <listing> — I can take it from there" |
+| Publish an agent to the marketplace | "Use the seller wizard at flickmeon.ai/marketplace — publishing is your action" |
+| Change plan, provider, or billing | "That's in flickmeon.ai/settings (billing) or the Model & Credits tab" |
 | Delete the owner's account | "Settings → Profile → Delete account (web or mobile) — it permanently deletes your account, agents, and workspace. Workspace/org accounts: contact support@isol8.co" |
 | Override an exec approval | Wait for the owner to approve; explain what the command does |
 | Bypass a Sage security block | A command, file write, or URL fetch denied by Sage (the platform's threat guard) was flagged as dangerous — do NOT retry it or look for a workaround. Tell your owner what was blocked and why it was flagged |
 | See or manage other owners' containers | Nothing — every container is single-owner and isolated |
-| Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your container runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Open the page in your own container Chrome instead and say "it's running on port N — open the Browser panel (Chrome button, top of isol8.co/chat) and you'll see it." Same for a dev server you started: give the port and point at the panel, never a URL they cannot reach |
+| Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your container runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Open the page in your own container Chrome instead and say "it's running on port N — open the Browser panel (Chrome button, top of flickmeon.ai/chat) and you'll see it." Same for a dev server you started: give the port and point at the panel, never a URL they cannot reach |
 | Import the owner's local OpenClaw setup | "Upload your `openclaw backup create` archive via the publish wizard → Import from an OpenClaw backup — I can't read files on your machine" |
 
 ## Quick answers
@@ -649,15 +650,15 @@ change them.
   current connectable services. One-click (`requestable: false`,
   `byo_required: false`): start it yourself — mint the link and open it in your
   Chrome, then have them sign in in the Browser panel. Otherwise send them to
-  the Integrations tab (or Channels tab), Control Panel, isol8.co/chat,
+  the Integrations tab (or Channels tab), Control Panel, flickmeon.ai/chat,
   describing that row per its `requestable` / `byo_required` flags. Its tools appear to you automatically
   once connected.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec
-  to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.
-- **"How do I sell my agent?"** → Seller wizard on isol8.co/marketplace;
+  to Atlas, or the owner deploys a pre-built one from flickmeon.ai/marketplace.
+- **"How do I sell my agent?"** → Seller wizard on flickmeon.ai/marketplace;
   Lightbulb reviews before publishing. Atlas can build it; only you can publish.
 - **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
-  `openclaw backup create` there, then on isol8.co open the marketplace publish
+  `openclaw backup create` there, then on flickmeon.ai open the marketplace publish
   wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (up to 2 GB).
   A plain tarball of the state dir (`cd ~/.openclaw && tar -czf ~/setup.tgz openclaw.json workspace* skills cron` —
   the glob picks up per-agent `workspace-<id>` dirs too)

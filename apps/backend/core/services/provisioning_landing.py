@@ -1,8 +1,6 @@
-"""Where a provisioned credential goes after Friday hands it back.
-
-Friday runs the Stripe CLI in her own container and POSTs the result to
-``/company/provisioning/u/{owner}/landed``. This module is the platform's half.
-Three writes, in this order and for these reasons:
+"""Where a provisioned credential goes once ``provisioning_workflow._bind`` has
+read it out of ``environment_info``. Three writes, in this order and for these
+reasons:
 
 1. **Secrets Manager** — ``lightbulb/{env}/integrations/{owner}/projects/{provider}``,
    the EXISTING integration store, under this rail's OWN namespace. Spec §3.5:
@@ -175,7 +173,7 @@ async def build_provisioned_env(owner_id: str) -> dict[str, str]:
 
     Only the names the row DECLARES (the union of its
     ``provider_resources[].env_keys``) are read out of the blob, never the blob
-    itself — openclaw.json gets exactly the variables the CLI landed.
+    itself — openclaw.json gets exactly the variables this rail landed.
     """
     env: dict[str, str] = {}
     try:
@@ -201,21 +199,16 @@ async def build_provisioned_env(owner_id: str) -> dict[str, str]:
     return env
 
 
-async def provisioning_summary(owner_id: str) -> tuple[str, list[dict]]:
-    """``("paired"|"unpaired", resource pointers)`` from ONE integrations query.
-
-    The state is DERIVED, not probed: a successful `landed` post proves the
-    owner completed pairing, and probing the container costs a websocket round
-    trip on a path that runs on every billing mutation. Never raises — both
-    callers (the Accounts route and the facts file) must survive a DDB hiccup.
-    """
+async def provisioning_summary(owner_id: str) -> list[dict]:
+    """Every provisioned-resource pointer this owner has, from ONE integrations
+    query. Never raises — the one caller (``GET /resources``) must survive a DDB
+    hiccup, and an empty list is the honest answer either way."""
     try:
         rows = await integrations_repo.list_for_owner(owner_id)
     except Exception as e:  # noqa: BLE001
         logger.warning("provisioning_summary: integrations read failed for %s: %s", owner_id, e)
-        return "unpaired", []
+        return []
     resources: list[dict] = []
-    paired = False
     for row in rows:
         # Same two-part selection as build_provisioned_env. The pointers inside
         # carry the BARE provider (`posthog`), never the namespaced key — that
@@ -224,7 +217,6 @@ async def provisioning_summary(owner_id: str) -> tuple[str, list[dict]]:
             continue
         if row.get("actor") != integrations_repo.PROJECTS_ACTOR:
             continue
-        paired = True
         resources.extend(row.get("provider_resources") or [])
     resources.sort(key=lambda r: (r.get("provider") or "", r.get("service") or ""))
-    return ("paired" if paired else "unpaired"), resources
+    return resources

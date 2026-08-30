@@ -328,19 +328,18 @@ async def test_build_provisioned_env_never_fails_the_caller():
 
 
 @pytest.mark.asyncio
-async def test_summary_pairs_state_with_pointers():
+async def test_summary_returns_only_this_rails_pointers():
     rows = [
         {"provider": "projects/posthog", "actor": "projects", "provider_resources": [RES]},
         {"provider": "linear"},
     ]
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)):
-        state, resources = await mod.provisioning_summary("org_a")
-    assert state == "paired"
+        resources = await mod.provisioning_summary("org_a")
     assert [r["resource_id"] for r in resources] == ["res_1"]
     # The POINTER carries the bare provider — that is what /resources renders
     # and what the revoke route takes back.
     assert [r["provider"] for r in resources] == ["posthog"]
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "linear"}])):
-        assert await mod.provisioning_summary("org_a") == ("unpaired", [])
+        assert await mod.provisioning_summary("org_a") == []
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(side_effect=RuntimeError("ddb down"))):
-        assert await mod.provisioning_summary("org_a") == ("unpaired", [])
+        assert await mod.provisioning_summary("org_a") == []

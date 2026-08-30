@@ -389,3 +389,43 @@ async def test_reconcile_does_nothing_without_a_card_to_read():
     with patch.object(mod, "shared_admin_client") as client:
         assert await mod._reconcile_approval(_row("awaiting_approval")) is None
     client.assert_not_called()
+
+
+# --- a refusal is not something to retry for eight days ---------------------
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_refusal_parks_the_row_on_the_first_tick():
+    """The owner disconnected the company's Stripe account, so every step from
+    here raises the same refusal. Retrying it to the 8-day wall clock is noise;
+    park it for the human who has to reconnect it."""
+    refusal = mod.WorkflowRefused("no_company_stripe_account", "Set up your company's Stripe account first")
+    advance = AsyncMock(side_effect=refusal)
+    with patch.object(mod, "advance", advance):
+        await mod._run("pwf_1")
+    assert advance.await_count == 1
+    mod.repo.transition.assert_awaited_once()
+    kwargs = mod.repo.transition.await_args.kwargs
+    assert kwargs["to_state"] == "requires_review"
+    assert kwargs["fields"]["error_code"] == "no_company_stripe_account"
+
+
+# --- Retry-After ------------------------------------------------------------
+
+
+def test_sleep_for_honours_a_retry_after_floor_and_caps_it():
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+    far = (datetime.now(timezone.utc) + timedelta(seconds=9999)).isoformat()
+    with patch.object(mod, "poll_delay", lambda attempts: 2.0):
+        # No floor: the row's own backoff decides.
+        assert mod.sleep_for(_row(), slow=False) == 2.0
+        # Stripe asked for longer than the backoff, so we wait as asked…
+        assert 80 < mod.sleep_for(_row(next_poll_after=soon), slow=False) <= 90
+        # …but never past the ceiling, so a bad header cannot strand a workflow.
+        assert mod.sleep_for(_row(next_poll_after=far), slow=False) == mod.MAX_POLL_SLEEP_S
+        # A past instant, or junk, is no floor at all.
+        past = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        assert mod.sleep_for(_row(next_poll_after=past), slow=False) == 2.0
+        assert mod.sleep_for(_row(next_poll_after="not-a-date"), slow=False) == 2.0
+    # Waiting on a HUMAN ignores it — the slow clock is not Stripe's business.
+    assert mod.sleep_for(_row(next_poll_after=far), slow=True) == float(mod.IDLE_RECONCILE_S)

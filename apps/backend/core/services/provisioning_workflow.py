@@ -35,8 +35,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo
 from core.repositories import provisioning_workflow_repo as repo
-from core.services import provisioning_approvals, stripe_provisioning as api
-from core.services.owner_facts import write_owner_facts
+from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api
 from core.services.provisioning_landing import land_credentials
 from core.services.stripe_provisioning import ProvisioningError
 
@@ -69,7 +68,8 @@ _THIN_ROW_ALLOWLIST = frozenset({"posthog", "vercel", "neon", "supabase", "resen
 class WorkflowRefused(RuntimeError):
     """A refusal the caller renders: ``not_eligible``, ``requirements_pending``,
     ``service_unavailable``, ``invalid_configuration``,
-    ``no_company_stripe_account``, ``no_company``, ``cannot_cancel``."""
+    ``no_company_stripe_account``, ``no_company``, ``cannot_cancel``,
+    ``needs_review_first``."""
 
     def __init__(self, code: str, message: str, *, requirements: list[str] | None = None):
         super().__init__(message)
@@ -234,7 +234,12 @@ def _renderable(schema: dict) -> bool:
     for field in props.values():
         if not isinstance(field, dict):
             return False
-        if field.get("enum") is not None:
+        enum = field.get("enum")
+        if enum is not None:
+            # A `select` with nothing in it is a field the owner cannot answer,
+            # and an `enum` that is not a list is not a form we can draw at all.
+            if not isinstance(enum, list) or not enum:
+                return False
             continue
         if field.get("type") not in _RENDERABLE_TYPES:
             return False
@@ -255,15 +260,29 @@ async def limit_is_editable(account_id: str) -> bool:
     return False
 
 
-async def _open_workflow_for(owner_id: str, provider_id: str, service_id: str) -> dict | None:
-    """An existing non-terminal workflow for the same pair, or None."""
-    for row in await repo.list_for_owner(owner_id):
-        if (
-            row.get("provider_id") == provider_id
-            and row.get("service_id") == service_id
-            and row.get("state") not in repo.TERMINAL_STATES
-        ):
-            return row
+def _for_pair(rows: list[dict], provider_id: str, service_id: str) -> list[dict]:
+    """This owner's workflows for one (provider, service), NEWEST FIRST."""
+    mine = [r for r in rows if r.get("provider_id") == provider_id and r.get("service_id") == service_id]
+    mine.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return mine
+
+
+def _parked_for_review(for_pair: list[dict]) -> dict | None:
+    """The newest row for the pair, when re-asking would risk a SECOND billable
+    resource.
+
+    ``uncertain_write`` means a state-changing POST was issued and its answer
+    never arrived — the Stripe object may exist. A fresh workflow gets a fresh
+    ``resource_name_for``, so the reconcile-by-name read that guards every
+    create would find nothing and create a second one. Same for any parked row
+    that already carries an id. A row parked for a reason with no write behind
+    it (``unrenderable_schema``, say) blocks nothing.
+    """
+    newest = for_pair[0] if for_pair else None
+    if not newest or newest.get("state") != "requires_review":
+        return None
+    if newest.get("error_code") == "uncertain_write" or newest.get("resource_id") or newest.get("account_request_id"):
+        return newest
     return None
 
 
@@ -329,11 +348,19 @@ async def start(
     # One open workflow per (provider, service). Two asks in the same turn —
     # or Friday retrying after a timeout — must not open a second card or, once
     # approved, provision the resource twice.
-    existing = await _open_workflow_for(owner_id, provider["id"], service["service_id"])
+    for_pair = _for_pair(await repo.list_for_owner(owner_id), provider["id"], service["service_id"])
+    existing = next((r for r in for_pair if r.get("state") not in repo.TERMINAL_STATES), None)
     if existing is not None:
         # In-memory marker, never written to the row: the caller must not tell
         # the owner a second card was filed when it reused the first.
         return {**existing, "reused": True}
+    parked = _parked_for_review(for_pair)
+    if parked is not None:
+        raise WorkflowRefused(
+            "needs_review_first",
+            f"An earlier request for this ({parked['workflow_id']}) is parked for review at Lightbulb — "
+            "it may already have created the resource. Tell the owner and do not ask again.",
+        )
 
     row = await repo.create(
         owner_id=owner_id,
@@ -347,14 +374,23 @@ async def start(
         reason=reason,
     )
     snapshot = snapshot_of(service, provider, configuration or {})
-    approval_id = await provisioning_approvals.request_provider_consent(
-        owner_id=owner_id,
-        issue_id=issue_id,
-        workflow_id=row["workflow_id"],
-        snapshot=snapshot,
-        limit_editable=await limit_is_editable(account_id),
-        reason=reason,
-    )
+    try:
+        approval_id = await provisioning_approvals.request_provider_consent(
+            owner_id=owner_id,
+            issue_id=issue_id,
+            workflow_id=row["workflow_id"],
+            snapshot=snapshot,
+            limit_editable=await limit_is_editable(account_id),
+            reason=reason,
+        )
+    except Exception:
+        # The row is already `ask`, and the dedupe above treats an `ask` row as
+        # open — so leaving it would make Friday's retry a no-op reuse of a
+        # workflow nothing is driving. Close it; the retry opens a fresh one.
+        await repo.transition(
+            row["workflow_id"], from_state="ask", to_state="failed", fields={"error_code": "board_unavailable"}
+        )
+        raise
     if approval_id is None:
         # No Paperclip company ⇒ no Inbox ⇒ nobody can ever approve this. Fail
         # the row rather than leaving an un-approvable workflow open forever.
@@ -441,7 +477,10 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
 async def on_rejected(workflow_id: str) -> dict | None:
     """The owner declined the consent card. Terminal, and a clean stop: nothing
     exists on their Stripe account yet, so there is nothing to unwind."""
-    return await repo.transition(workflow_id, from_state="awaiting_approval", to_state="rejected")
+    moved = await repo.transition(workflow_id, from_state="awaiting_approval", to_state="rejected")
+    if moved:
+        await _write_facts(moved["owner_id"])
+    return moved
 
 
 async def cancel(workflow_id: str) -> dict | None:
@@ -511,10 +550,25 @@ def _already_waiting(row: dict, awaiting: str, target: str | None = None) -> boo
     )
 
 
+async def _write_facts(owner_id: str) -> None:
+    """Every TERMINAL move re-renders the owner's facts file, so Friday's next
+    turn sees a stopped workflow instead of re-reading an in-flight one and
+    waiting for something nothing is driving.
+
+    Best-effort, and through the module attribute: the facts file is a nicety
+    and must never turn a state move into a failure.
+    """
+    try:
+        await owner_facts.write_owner_facts(owner_id)
+    except Exception:  # noqa: BLE001 — facts must never block a transition
+        logger.warning("provisioning: facts write failed for %s", owner_id, exc_info=True)
+
+
 async def _requires_review(row: dict, code: str) -> dict:
     moved = await repo.transition(
         row["workflow_id"], from_state=row["state"], to_state="requires_review", fields={"error_code": code}
     )
+    await _write_facts(row["owner_id"])
     logger.warning(
         "provisioning: workflow %s requires review (%s) provider=%s service=%s",
         row["workflow_id"],
@@ -542,6 +596,7 @@ async def _fail(row: dict, code: str, message: str = "") -> dict:
         to_state="failed",
         fields={"error_code": code, "error_message": message[:400]},
     )
+    await _write_facts(row["owner_id"])
     return moved or {**row, "state": "failed"}
 
 
@@ -559,13 +614,22 @@ async def _read_or_park(row: dict, awaitable) -> tuple:
         if e.code == "provider_reauth_required":
             return None, await _reauth(row)
         if is_transient(e):
-            return None, await _bump(row)
+            return None, await _bump(row, e.retry_after)
         return None, await _fail(row, e.code, e.message)
 
 
-async def _bump(row: dict) -> dict:
-    """One more poll attempt, same state."""
-    return await repo.patch(row["workflow_id"], {"attempts": int(row.get("attempts") or 0) + 1}) or row
+async def _bump(row: dict, retry_after: float | None = None) -> dict:
+    """One more poll attempt, same state.
+
+    ``retry_after`` is Stripe's own answer to "when": a 429 carries it, and the
+    driver's backoff has no way to know about it otherwise. Stamped on the row
+    as a floor the driver sleeps to; the driver caps it, so a silly header
+    cannot park a workflow.
+    """
+    fields: dict = {"attempts": int(row.get("attempts") or 0) + 1}
+    if retry_after and retry_after > 0:
+        fields["next_poll_after"] = (datetime.now(timezone.utc) + timedelta(seconds=float(retry_after))).isoformat()
+    return await repo.patch(row["workflow_id"], fields) or row
 
 
 async def _company_project_id(owner_id: str) -> str | None:
@@ -889,7 +953,7 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     # single query and can never disagree with the pointer.
     await repo.patch(row["workflow_id"], {"resource_name": pointer["resource_name"], "env_keys": pointer["env_keys"]})
     done = await repo.transition(row["workflow_id"], from_state="binding", to_state="active")
-    await write_owner_facts(row["owner_id"])
+    await _write_facts(row["owner_id"])
     logger.info(
         "provisioning: workflow %s active provider=%s service=%s keys=%d",
         row["workflow_id"],
@@ -930,7 +994,7 @@ async def _poll_awaited_leg(account_id: str, row: dict) -> dict:
             if e.code == "not_found":
                 return row  # no card on file yet — keep waiting
             if is_transient(e):
-                return await _bump(row)
+                return await _bump(row, e.retry_after)
             return await _fail(row, e.code, e.message)
         moved = await repo.transition(
             row["workflow_id"],
@@ -964,6 +1028,7 @@ async def _stale_if_expired(row: dict) -> dict:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=USER_ACTION_DEADLINE_S)).isoformat()
     if since and since < cutoff:
         moved = await repo.transition(row["workflow_id"], from_state=row["state"], to_state="stale")
+        await _write_facts(row["owner_id"])
         return moved or {**row, "state": "stale"}
     return row
 

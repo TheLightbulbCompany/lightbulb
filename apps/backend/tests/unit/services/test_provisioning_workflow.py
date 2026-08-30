@@ -94,7 +94,8 @@ def cards(monkeypatch):
         # This module only ever reaches them through the module attribute, so
         # the loop is testable before they exist.
         monkeypatch.setattr(mod.provisioning_approvals, name, AsyncMock(return_value="apr_1"), raising=False)
-    monkeypatch.setattr(mod, "write_owner_facts", AsyncMock())
+    # Through the module attribute, which is how every write site reaches it.
+    monkeypatch.setattr(mod.owner_facts, "write_owner_facts", AsyncMock())
 
 
 def _no_network(*a, **k):
@@ -760,7 +761,7 @@ async def test_complete_resource_binds_the_matching_resource_id_only():
     assert land.await_args.kwargs["resource"]["resource_id"] == "res_1"
     assert land.await_args.kwargs["resource"]["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
     assert land.await_args.kwargs["resource"]["level"] == "company"
-    mod.write_owner_facts.assert_awaited_once_with("org_a")
+    mod.owner_facts.write_owner_facts.assert_awaited_once_with("org_a")
 
 
 @pytest.mark.asyncio
@@ -1381,3 +1382,189 @@ async def test_a_removed_namesake_is_never_adopted():
     assert out["state"] == "provisioning"
     create.assert_awaited_once()
     assert patched.await_args_list[0].args[1]["resource_id"] == "res_new"
+
+
+# --- re-asking after an uncertain write -------------------------------------
+
+
+def _parked(**over):
+    """A row for the same (provider, service) pair, parked for review."""
+    return _row(**{"state": "requires_review", "created_at": "2026-08-29T00:00:00+00:00", **over})
+
+
+async def _start():
+    return await mod.start(
+        owner_id="org_a", provider_name="posthog", service_id="svc_analytics", configuration=CONFIG, issue_id=None
+    )
+
+
+def _catalog_reads():
+    return (
+        patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+    )
+
+
+@pytest.mark.parametrize(
+    "parked",
+    [
+        pytest.param(_parked(error_code="uncertain_write"), id="uncertain_write"),
+        pytest.param(_parked(error_code="credentials_not_found", resource_id="res_1"), id="carries a resource_id"),
+        pytest.param(
+            _parked(error_code="ambiguous_provider_connection", account_request_id="acr_1"),
+            id="carries an account_request_id",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_re_ask_after_a_parked_uncertain_write_is_refused(parked):
+    """The resource may ALREADY EXIST and be billing.
+
+    A fresh workflow gets a fresh `resource_name_for`, so the reconcile-by-name
+    read before every create would find nothing and create a second one. The
+    only safe answer is to stop and name the parked workflow.
+    """
+    eligibility, services, providers = _catalog_reads()
+    with (
+        eligibility,
+        services,
+        providers,
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[parked])),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start()
+    assert exc.value.code == "needs_review_first"
+    assert parked["workflow_id"] in exc.value.message
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_parked_row_with_no_write_behind_it_does_not_block_a_re_ask():
+    """`unrenderable_schema` is parked BEFORE anything was created — nothing
+    exists to be created twice, so the owner is not stuck."""
+    eligibility, services, providers = _catalog_reads()
+    with (
+        eligibility,
+        services,
+        providers,
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[_parked(error_code="unrenderable_schema")])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        assert (await _start())["state"] == "awaiting_approval"
+    create.assert_awaited_once()
+
+
+@pytest.mark.parametrize("state", ["cancelled", "rejected"])
+@pytest.mark.asyncio
+async def test_a_cancelled_or_rejected_row_does_not_block_a_re_ask(state):
+    eligibility, services, providers = _catalog_reads()
+    with (
+        eligibility,
+        services,
+        providers,
+        patch.object(
+            mod.repo,
+            "list_for_owner",
+            AsyncMock(return_value=[_parked(state=state, error_code="uncertain_write")]),
+        ),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        await _start()
+    create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_only_the_NEWEST_row_for_the_pair_decides():
+    """An older parked row behind a newer settled one is history, not a fence."""
+    eligibility, services, providers = _catalog_reads()
+    rows = [
+        _parked(workflow_id="pwf_old", error_code="uncertain_write", created_at="2026-08-01T00:00:00+00:00"),
+        _row(workflow_id="pwf_new", state="rejected", created_at="2026-08-28T00:00:00+00:00"),
+    ]
+    with (
+        eligibility,
+        services,
+        providers,
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=rows)),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        await _start()
+    create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_board_failure_while_filing_the_consent_card_fails_the_row():
+    """A row left in `ask` is a row the dedupe above treats as OPEN, so the
+    retry would reuse a workflow nothing is driving. Close it instead."""
+    mod.provisioning_approvals.request_provider_consent.side_effect = httpx.ConnectError("board down")
+    eligibility, services, providers = _catalog_reads()
+    with (
+        eligibility,
+        services,
+        providers,
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row())),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="failed"))) as move,
+    ):
+        with pytest.raises(httpx.ConnectError):
+            await _start()
+    assert move.await_args.kwargs["to_state"] == "failed"
+    assert move.await_args.kwargs["fields"]["error_code"] == "board_unavailable"
+
+
+# --- the facts file follows every stop --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_rewrites_the_owner_facts_file():
+    """Friday reads `provisioning` to decide whether to wait. A stop she never
+    sees is a stop she waits out."""
+    with patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="rejected"))):
+        await mod.on_rejected("pwf_1")
+    mod.owner_facts.write_owner_facts.assert_awaited_once_with("org_a")
+
+
+# --- Retry-After ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_429_stamps_the_retry_after_stripe_asked_for():
+    row = _row(state="provisioning", resource_id="res_1")
+    err = mod.api.TransientProvisioningError("rate_limit", "slow down", http_status=429, retry_after=42)
+    with (
+        patch.object(mod.api, "get_resource", AsyncMock(side_effect=err)),
+        patch.object(mod.repo, "patch", AsyncMock(return_value=row)) as bump,
+    ):
+        await mod.advance(row)
+    fields = bump.await_args[0][1]
+    assert fields["attempts"] == 1
+    stamped = datetime.fromisoformat(fields["next_poll_after"])
+    assert 30 < (stamped - datetime.now(timezone.utc)).total_seconds() <= 42
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_without_a_retry_after_stamps_nothing():
+    row = _row(state="provisioning", resource_id="res_1")
+    err = mod.api.TransientProvisioningError("provisioning_error", "api_error", http_status=500)
+    with (
+        patch.object(mod.api, "get_resource", AsyncMock(side_effect=err)),
+        patch.object(mod.repo, "patch", AsyncMock(return_value=row)) as bump,
+    ):
+        await mod.advance(row)
+    assert "next_poll_after" not in bump.await_args[0][1]
+
+
+# --- the constrained renderer's contract ------------------------------------
+
+
+def test_an_empty_or_malformed_enum_is_not_renderable():
+    """A `select` with no options is a question the owner cannot answer, and a
+    non-list `enum` is not a form we can draw at all — both are `requires_review`,
+    not a half-rendered card."""
+    assert mod._renderable({"properties": {"region": {"enum": ["us", "eu"]}}})
+    assert not mod._renderable({"properties": {"region": {"enum": []}}})
+    assert not mod._renderable({"properties": {"region": {"enum": "us"}}})

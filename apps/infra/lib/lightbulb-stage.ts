@@ -143,8 +143,8 @@ export class LightbulbStage extends cdk.Stage {
       vpc: network.vpc,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
-      alb: network.alb,
-      albHttpListenerArn: network.albHttpListenerArn,
+      alb: network.albV2,
+      albHttpListenerArn: network.albHttpListenerArnV2,
       albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
@@ -166,7 +166,7 @@ export class LightbulbStage extends cdk.Stage {
       rootDomain,
       platformMailDomain,
       vpc: network.vpc,
-      targetGroup: network.targetGroup,
+      targetGroup: network.targetGroupV2,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -272,8 +272,8 @@ export class LightbulbStage extends cdk.Stage {
         platformMailDomain,
         backendService: service.service,
         backendLogGroupName: `/ecs/lightbulb-${env}`,
-        alb: network.alb,
-        targetGroup: network.targetGroup,
+        alb: network.albV2,
+        targetGroup: network.targetGroupV2,
         wsApiId: api.wsApiId,
         cluster: container.cluster,
         efsFileSystem: container.efsFileSystem,

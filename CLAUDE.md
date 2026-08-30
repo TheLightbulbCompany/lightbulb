@@ -89,13 +89,13 @@ every one of these:**
 orphaned (not deleted — just off every dashboard). Do NOT "fix" `LightbulbAI` in
 metric namespaces to match the GitHub org name — they are unrelated identifiers.
 
-**`ManagedBy` — MIGRATED via add-before-remove; step 4 still pending.** The tag
-gates every mutate action on an owner's Bedrock application inference profile
-(`service-stack.ts` → `aws:ResourceTag/ManagedBy`). Steps 1–3 are DONE
-(2026-08-28: all 37 owner profiles across both envs carry `lightbulb-backend`).
-**Step 4 is still pending** — `MANAGED_BY_ACCEPTED` in `service-stack.ts` still
-lists both values, and must not be collapsed until you have re-verified that no
-resource still carries `isol8-backend`. Do not confuse this tag with the
+**`ManagedBy` — migration COMPLETE (all 4 steps).** The tag gates every mutate
+action on an owner's Bedrock application inference profile (`service-stack.ts` →
+`aws:ResourceTag/ManagedBy`). It moved isol8-backend → lightbulb-backend via
+add-before-remove, and the final narrowing shipped: `MANAGED_BY_ACCEPTED` lists
+only `lightbulb-backend`, verified 2026-08-30 against all 64 profiles in both
+envs (zero still tagged `isol8-backend`).
+Do not confuse this tag with the
 CloudWatch `service` dimension, the identical string in a different role.
 
 **Still open (human-gated):** the `isol8.co` Google Workspace retirement + human

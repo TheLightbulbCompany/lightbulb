@@ -70,10 +70,7 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
     "provisioning-workflows": (
         [("workflow_id", "HASH", "S")],
-        {
-            "owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")],
-            "open-sweep-index": [("sweep_key", "HASH", "S"), ("updated_at", "RANGE", "S")],
-        },
+        {"owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")]},
     ),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],

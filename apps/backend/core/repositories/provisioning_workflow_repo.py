@@ -4,7 +4,8 @@ Stripe's Provisioning API has no webhooks and "doesn't define a caller
 idempotency contract for state-changing requests", so this row IS the
 integration's memory: "A browser session, Provider redirect, worker restart, or
 deployment failure must not lose an Account request ID, Resource ID, or
-uncertain write state" (guide) — restated in spec §3.5.
+uncertain write state" (guide) — restated in spec §3.5. Nothing sweeps these
+rows in the background: a workflow moves when somebody reads it.
 
 Fields follow the guide's own Provisioning-workflow record (workflow_id,
 tenant_id, action, account_request_id, resource_id, provider_id, service_ref,
@@ -51,22 +52,10 @@ TERMINAL_STATES = frozenset({"active", "failed", "requires_review", "rejected", 
 # checks for an account_request_id / resource_id as well.
 CANCELLABLE_STATES = frozenset({"ask", "awaiting_approval", "awaiting_user_action", "stale"})
 
-# The sparse GSI's partition value. Present while the workflow is open, REMOVEd
-# the moment it goes terminal, so `list_open` is a Query over exactly the rows
-# the sweep must resume.
-OPEN_SWEEP_KEY = "open"
-
-# The lease is written only by `claim`/`release` (and dropped by a terminal
-# `transition`). A `patch` able to set it could hand one instance a row another
-# is mid-step on, which is the whole thing the lease exists to prevent.
-_PROTECTED_FIELDS = frozenset(
-    {"workflow_id", "owner_id", "state", "sweep_key", "created_at", "lease_owner", "lease_until"}
-)
-
-
-# One Query page. Bounds the sweep's memory, and is what makes the pagination
-# loop exercisable without a megabyte of fixtures.
-_PAGE_SIZE = 100
+# The claim is written only by `claim`/`release` (and dropped by a terminal
+# `transition`). A `patch` able to set it could hand one reader a row another
+# is mid-step on, which is the whole thing the claim exists to prevent.
+_PROTECTED_FIELDS = frozenset({"workflow_id", "owner_id", "state", "created_at", "lease_owner", "lease_until"})
 
 
 def _table():
@@ -93,7 +82,6 @@ async def create(
         "owner_id": owner_id,
         "action": action,
         "state": "ask",
-        "sweep_key": OPEN_SWEEP_KEY,
         "provider_id": provider_id,
         "provider_name": provider_name,
         "service_ref": service_ref,
@@ -124,33 +112,12 @@ async def list_for_owner(owner_id: str) -> list[dict]:
     return resp.get("Items", [])
 
 
-async def list_open() -> list[dict]:
-    """Every non-terminal workflow, PAGINATED: the startup sweep must resume all
-    of them, and a truncated Query would silently strand whatever fell off the
-    end of the first page."""
-    items: list[dict] = []
-    start_key = None
-    while True:
-        kwargs = {
-            "IndexName": "open-sweep-index",
-            "KeyConditionExpression": Key("sweep_key").eq(OPEN_SWEEP_KEY),
-            "Limit": _PAGE_SIZE,
-        }
-        if start_key:
-            kwargs["ExclusiveStartKey"] = start_key
-        resp = await run_in_thread(_table().query, **kwargs)
-        items.extend(resp.get("Items", []))
-        start_key = resp.get("LastEvaluatedKey")
-        if not start_key:
-            return items
-
-
 async def transition(workflow_id: str, *, from_state: str, to_state: str, fields: dict | None = None) -> dict | None:
     """Move the row, conditionally on it still being in ``from_state``.
 
-    ``None`` means someone else moved it first — a sweep racing the live task,
-    or two approvals. The caller must treat that as "not mine any more" and
-    stop, never as a failure to retry.
+    ``None`` means someone else moved it first — two concurrent readers, or two
+    approvals. The caller must treat that as "not mine any more" and stop,
+    never as a failure to retry.
     """
     if to_state not in STATES:
         raise ValueError(f"unknown state: {to_state}")
@@ -166,11 +133,10 @@ async def transition(workflow_id: str, *, from_state: str, to_state: str, fields
         values[f":f{i}"] = value
     expr = "SET " + ", ".join(sets)
     if to_state in TERMINAL_STATES:
-        # Drop out of the sparse sweep index rather than writing a "closed"
-        # value nobody queries, and drop the driver lease with it: nothing
-        # drives a terminal row, so a lingering lease would only make the next
-        # instance wait out a ttl before confirming there is nothing to do.
-        expr += " REMOVE sweep_key, lease_owner, lease_until"
+        # Drop the claim: nothing steps a terminal row, so a lingering one
+        # would only make the next reader wait out a ttl before confirming
+        # there is nothing to do.
+        expr += " REMOVE lease_owner, lease_until"
     try:
         resp = await run_in_thread(
             _table().update_item,
@@ -215,19 +181,19 @@ async def patch(workflow_id: str, fields: dict) -> dict | None:
 
 
 async def claim(workflow_id: str, *, owner: str, ttl_s: int) -> dict | None:
-    """Take, or renew, this row's driver lease. ``None`` when someone else holds it.
+    """Take this row's step claim. ``None`` when someone else holds it.
 
-    Rolling deploys run two backend instances (``maxHealthyPercent: 200``), and
-    one driver step is a READ plus a write, not a single conditional write — so
-    the conditional ``transition`` alone still lets both instances poll Stripe
-    for the same workflow and file the same card. The lease elects one driver
-    per row; the other skips it.
+    One step is a READ plus a write, not a single conditional write — so the
+    conditional ``transition`` alone still lets two concurrent readers (or a
+    rolling deploy's two instances, ``maxHealthyPercent: 200``) poll Stripe for
+    the same workflow and file the same card. The claim elects one stepper per
+    row; the other reports the row as it stands.
 
-    Time-bounded and never released by a crash: an instance that dies mid-step
-    simply lets its lease expire, and the next sweep picks the row up.
+    Time-bounded and never released by a crash: a reader that dies mid-step
+    simply lets its claim expire, and the next read takes the row over.
 
-    ``updated_at`` is deliberately untouched — it is the sweep index's sort key,
-    and renewing a lease is not a change to the workflow.
+    ``updated_at`` is deliberately untouched — taking a claim is not a change
+    to the workflow.
     """
     now = utc_now_iso()
     until = (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
@@ -251,7 +217,7 @@ async def claim(workflow_id: str, *, owner: str, ttl_s: int) -> dict | None:
 
 
 async def release(workflow_id: str, *, owner: str) -> None:
-    """Hand the row back early. Silent when the lease is not ours (or gone):
+    """Hand the row back. Silent when the claim is not ours (or gone):
     releasing what we do not hold is a no-op, never a theft."""
     try:
         await run_in_thread(

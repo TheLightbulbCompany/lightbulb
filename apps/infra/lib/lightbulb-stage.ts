@@ -25,7 +25,7 @@ import { resourcePrefix, tableName } from "./table-names";
 // empty means STRIPE_CONNECT_CLIENT_ID ships as "" and that OAuth flow can't
 // start yet.
 const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
-  dev: "",
+  dev: "ca_VAYlHjvDMa4nm0M4C3uEen6Hk7cfpBBO",
   prod: "",
 };
 

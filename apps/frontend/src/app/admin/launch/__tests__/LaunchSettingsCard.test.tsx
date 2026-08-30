@@ -114,12 +114,12 @@ describe("LaunchSettingsCard", () => {
     render(<LaunchSettingsCard settings={baseSettings} />);
     fireEvent.change(screen.getByLabelText(/comp slots/i), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText(/competition days/i), { target: { value: "30.4" } });
-    fireEvent.change(screen.getByLabelText(/spots per referral/i), { target: { value: "9.6" } });
+    fireEvent.change(screen.getByLabelText(/spots per referral/i), { target: { value: "7.6" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(await screen.findByText(/^saved\.$/i)).toBeInTheDocument();
-    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ comp_slots: 2, competition_days: 30, referral_jump: 10 }));
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ comp_slots: 2, competition_days: 30, referral_jump: 8 }));
   });
 
   it("reads the checkbox and the confirm gate off the saved row, not a derived flag", async () => {

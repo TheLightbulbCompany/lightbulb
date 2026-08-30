@@ -47,6 +47,7 @@ async def test_launch_info_shape(mock_wl, mock_entries, configured, unauthentica
     assert body["pot_cents"] == 100_000 + 42 * 1_000  # pot is driven by signups, not entrants
     assert body["comp_slots"] == 220
     assert body["pot_per_entrant_cents"] == 1_000
+    assert body["referral_jump"] == 10
     assert body["competition_start_at"] > body["drop_at"]
     assert r.headers["cache-control"] == "public, max-age=30"
 

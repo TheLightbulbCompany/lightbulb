@@ -16,6 +16,7 @@ class LaunchInfo(BaseModel):
     pot_cents: int
     comp_slots: int
     pot_per_entrant_cents: int
+    referral_jump: int
 
 
 class ReferralAttributeRequest(BaseModel):

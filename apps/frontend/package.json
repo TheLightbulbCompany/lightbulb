@@ -47,7 +47,6 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@clerk/testing": "^1.13.28",
     "@next/bundle-analyzer": "16.2.12",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.4.0",

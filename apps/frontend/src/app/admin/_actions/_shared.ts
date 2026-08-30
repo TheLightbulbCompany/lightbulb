@@ -30,7 +30,7 @@ export interface ActionResult {
 }
 
 async function adminRequest(
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: object,
 ): Promise<ActionResult> {
@@ -44,7 +44,7 @@ async function adminRequest(
     method,
     path,
     token,
-    body: method === "POST" ? body : undefined,
+    body: method === "POST" || method === "PUT" ? body : undefined,
     idempotent: method !== "GET",
   });
 
@@ -68,6 +68,10 @@ export async function adminGet(path: string): Promise<ActionResult> {
 
 export async function adminPost(path: string, body?: object): Promise<ActionResult> {
   return adminRequest("POST", path, body);
+}
+
+export async function adminPut(path: string, body?: object): Promise<ActionResult> {
+  return adminRequest("PUT", path, body);
 }
 
 export async function adminDelete(path: string): Promise<ActionResult> {

@@ -185,12 +185,20 @@ async def _lookup_provisioning(owner_id: str) -> list[dict]:
             "service": pair[1],
             "state": row.get("state"),
         }
-        # Present once bound: the NAMES of the variables that now exist. Never a
-        # value — the container reads those from its own environment.
-        if row.get("resource_name"):
-            entry["resource_name"] = row["resource_name"]
-        if row.get("env_keys"):
-            entry["env_keys"] = list(row["env_keys"])
+        # `removed` once the owner deprovisioned it. The row stays `active` —
+        # the request WAS fulfilled — so without this the file would keep
+        # advertising variables that no longer exist and Friday would go on
+        # reaching for them.
+        resource_status = row.get("resource_status")
+        if resource_status:
+            entry["resource_status"] = resource_status
+        if resource_status != "removed":
+            # Present once bound: the NAMES of the variables that now exist.
+            # Never a value — the container reads those from its own environment.
+            if row.get("resource_name"):
+                entry["resource_name"] = row["resource_name"]
+            if row.get("env_keys"):
+                entry["env_keys"] = list(row["env_keys"])
         out.append(entry)
     return out
 

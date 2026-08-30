@@ -125,3 +125,51 @@ async def test_a_failed_workflow_read_never_blocks_the_facts_write():
         ws.return_value.write_file.side_effect = _writer(written)
         await mod.write_owner_facts("org_a")
     assert '"provisioning": []' in written["body"]
+
+
+async def test_a_removed_resource_keeps_its_status_but_drops_its_names():
+    """The row stays `active` — the request WAS fulfilled — so without
+    `resource_status` the file would go on advertising variables the owner
+    deprovisioned, and Friday would keep reaching for them."""
+    rows = [
+        {
+            "workflow_id": "pwf_1",
+            "provider_name": "posthog",
+            "service_ref": "svc_analytics",
+            "state": "active",
+            "created_at": "2026-08-02T00:00:00Z",
+            "resource_name": "svc_analytics-abc123",
+            "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
+            "resource_status": "removed",
+        }
+    ]
+    with patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)):
+        entries = await mod._lookup_provisioning("org_a")
+    assert entries == [
+        {
+            "workflow_id": "pwf_1",
+            "provider": "posthog",
+            "service": "svc_analytics",
+            "state": "active",
+            "resource_status": "removed",
+        }
+    ]
+
+
+async def test_a_live_resource_keeps_its_names():
+    rows = [
+        {
+            "workflow_id": "pwf_1",
+            "provider_name": "posthog",
+            "service_ref": "svc_analytics",
+            "state": "active",
+            "created_at": "2026-08-02T00:00:00Z",
+            "resource_name": "svc_analytics-abc123",
+            "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
+        }
+    ]
+    with patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)):
+        entry = (await mod._lookup_provisioning("org_a"))[0]
+    assert entry["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
+    assert entry["resource_name"] == "svc_analytics-abc123"
+    assert "resource_status" not in entry

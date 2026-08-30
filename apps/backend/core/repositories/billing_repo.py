@@ -1283,3 +1283,117 @@ async def get_trial_daily_spend(owner_id: str, date: str) -> int:
     if not item:
         return 0
     return int(item.get("trial_daily_spend_microcents", {}).get(date, 0))
+
+
+# ---------------------------------------------------------------------------
+# Company Stripe account — the owner's own business account on our Connect
+# platform. One binding per owner; status mirrors Connect `account.updated`.
+# Every write is a diff (see _write_changed_fields) so billing/Apple/provider
+# fields can never be rolled back by these setters.
+# ---------------------------------------------------------------------------
+
+_COMPANY_STRIPE_FIELDS = (
+    "company_stripe_account_id",
+    "company_stripe_source",
+    "company_stripe_details_submitted",
+    "company_stripe_charges_enabled",
+    "company_stripe_payouts_enabled",
+    "company_stripe_connected_at",
+    "company_stripe_updated_at",
+)
+
+
+def _is_condition_failure(e: ClientError) -> bool:
+    return e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
+
+
+async def _write_company_stripe(owner_id: str, mutate, *, condition: str, values: dict) -> dict | None:
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+    before = dict(existing)
+    after = dict(existing)
+    mutate(after)
+    after["company_stripe_updated_at"] = utc_now_iso()
+    try:
+        await _write_changed_fields(owner_id, before, after, condition=condition, values=values)
+    except ClientError as e:
+        if _is_condition_failure(e):
+            return None
+        raise
+    return after
+
+
+async def set_company_stripe_account(owner_id: str, *, account_id: str, source: str) -> dict | None:
+    """Bind the company account exactly once. None = no row, or already bound."""
+    if source not in ("created", "connected"):
+        raise ValueError("source must be 'created' or 'connected'")
+    if not account_id:
+        raise ValueError("account_id must be non-empty (it keys a GSI)")
+
+    def mutate(row: dict) -> None:
+        row["company_stripe_account_id"] = account_id
+        row["company_stripe_source"] = source
+        row["company_stripe_details_submitted"] = False
+        row["company_stripe_charges_enabled"] = False
+        row["company_stripe_payouts_enabled"] = False
+        row["company_stripe_connected_at"] = utc_now_iso()
+
+    return await _write_company_stripe(
+        owner_id,
+        mutate,
+        condition="attribute_exists(owner_id) AND attribute_not_exists(company_stripe_account_id)",
+        values={},
+    )
+
+
+async def set_company_stripe_status(
+    owner_id: str,
+    *,
+    account_id: str,
+    details_submitted: bool,
+    charges_enabled: bool,
+    payouts_enabled: bool,
+) -> dict | None:
+    """Mirror Connect's account.updated. None = the row is bound to a different account."""
+
+    def mutate(row: dict) -> None:
+        row["company_stripe_details_submitted"] = bool(details_submitted)
+        row["company_stripe_charges_enabled"] = bool(charges_enabled)
+        row["company_stripe_payouts_enabled"] = bool(payouts_enabled)
+
+    return await _write_company_stripe(
+        owner_id,
+        mutate,
+        condition="company_stripe_account_id = :acct",
+        values={":acct": account_id},
+    )
+
+
+async def clear_company_stripe_account(owner_id: str, *, account_id: str) -> dict | None:
+    """Unbind after deauthorization. Conditioned on the id so a stale event can't clear a rebound row."""
+
+    def mutate(row: dict) -> None:
+        for key in _COMPANY_STRIPE_FIELDS:
+            row.pop(key, None)
+
+    return await _write_company_stripe(
+        owner_id,
+        mutate,
+        condition="company_stripe_account_id = :acct",
+        values={":acct": account_id},
+    )
+
+
+async def get_by_company_stripe_account_id(account_id: str) -> dict | None:
+    if not account_id:
+        return None
+    resp = await run_in_thread(
+        _get_table().query,
+        IndexName="company-stripe-account-index",
+        KeyConditionExpression="company_stripe_account_id = :acct",
+        ExpressionAttributeValues={":acct": account_id},
+        Limit=1,
+    )
+    items = resp.get("Items") or []
+    return items[0] if items else None

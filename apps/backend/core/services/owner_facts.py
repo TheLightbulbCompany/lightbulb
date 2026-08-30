@@ -81,6 +81,10 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         plan = "No billing account yet"
 
     provider_choice, byo_provider = provider_choice_from_row(account)
+    if account.get("company_stripe_account_id"):
+        company_stripe = "connected" if account.get("company_stripe_charges_enabled") else "pending"
+    else:
+        company_stripe = "none"
     return {
         # The container builds its own /u/{owner_id} backend URLs from this,
         # so there is no second source of truth for who it is acting as.
@@ -89,6 +93,7 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         "subscription_status": status,
         "provider": format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
+        "company_stripe": company_stripe,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
         # TRI-STATE with `email_address` below, and load-bearing.
         #

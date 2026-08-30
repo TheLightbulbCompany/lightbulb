@@ -47,14 +47,27 @@ already run** (`core/services/payout_service.py`, Express accounts for
 marketplace payouts; Connect webhook secret + `account.updated` handler in
 `routers/marketplace_purchases.py`). Two doors, one code path:
 
-- **Create**: `POST /v1/accounts` with Standard-style controller properties
-  (`fees.payer=account`, `losses=stripe`, `dashboard=full`), prefilled from
-  the company name and the owner's Clerk email; hosted onboarding via Account
-  Links (`type=account_onboarding`; single-use, minutes TTL, minted on click,
-  never stored or emailed).
-- **Connect existing**: Standard OAuth for an owner who already runs Stripe.
-  (An account already controlled by another platform gets a fresh account —
-  Stripe's 2021 rule.)
+- **Create**: **Accounts v2** — `POST /v2/core/accounts` with the `merchant`
+  configuration (`card_payments` requested), `dashboard: full`, and
+  `defaults.responsibilities = {fees_collector: stripe, losses_collector:
+  stripe}`; prefilled from the company name and the owner's Clerk email;
+  hosted onboarding via v2 account links (`use_case.type =
+  account_onboarding`, `configurations: [merchant]`; single-use, ~10-minute
+  TTL, minted on click, never stored or emailed). Decided 2026-08-28: v2 is GA
+  for all Stripe users (dahlia, 2026-04-22), our dev platform already serves
+  `/v2/core/accounts`, and `stripe` 14.4.1 exposes `StripeClient.v2.core`.
+  v2 also lets the account act as a *customer* later (bill the company's
+  Lightbulb subscription to its own account — Money → Spend, P1+).
+- **Connect existing**: Standard OAuth for an owner who already runs Stripe —
+  v1 by Stripe's own limitations list; v2 endpoints manage the resulting
+  account too. (An account already controlled by another platform gets a
+  fresh account — Stripe's 2021 rule.)
+- Status vocabulary stays the v1 trio (`details_submitted` /
+  `charges_enabled` / `payouts_enabled`), read via v1 endpoints that accept
+  v2 ids, so both doors and the existing `account.updated` webhook share one
+  shape. v2 thin events are optional later. Not on v2: `card_issuing_*` and
+  Treasury — if Stripe Issuing is ever chosen for agent cards, that lives on a
+  v1 Custom account, not this one.
 
 Both yield a Standard account the owner logs into and keeps; **zero Connect
 fees, no application fee**; we read with the platform key + `Stripe-Account`
@@ -71,6 +84,18 @@ date of birth and phone** on the account — onboarding must collect more than
 Friday raises it the first time a task needs money or infrastructure (or in
 the first-run brief on paid plans). The card renders in Inbox, pushes to
 mobile/desktop, and opens in whichever surface the owner is in.
+
+**Trigger split (owner decision 2026-08-28) — applies to every rail:**
+
+| Who | Does what | When |
+|---|---|---|
+| Platform | silently creates what needs no human: the bundle.social team, the Projects project shell, minting Stripe/portal links | on upgrade to paid / on click |
+| Friday (skill) | knows every door and its rules, raises the card, never signs up in the browser, reads `isol8-facts.json` so she never asks twice; does the work once the door is open | when a task needs it; pre-staged as one sentence in the first-run brief when the stated business goal implies selling or posting |
+| Owner | one click per account: Stripe's hosted form, the social portal, a provider's terms | when they're ready |
+
+First run stays "type an idea, watch it become a company" — never a setup
+checklist. Trial owners see the same sentence framed as what upgrading
+unlocks (the paywall inversion in the growth doc).
 
 ### 3.2 Provisioning door (Stripe Projects)
 
@@ -103,7 +128,7 @@ human step, rendered as an approval card:
 
 | Rail | Vendor | Owner step | Notes |
 |---|---|---|---|
-| Social publishing | **Ayrshare Business** (one Lightbulb account, per-owner profiles, hosted OAuth linking page; one Lightbulb X app) | links their networks | ~$12/owner/mo @100, ~$4 @1000 — fence as Growth add-on |
+| Social publishing | **bundle.social** (owner decision 2026-08-28, replaces Ayrshare): one Lightbulb organization, **one team per company created via API**, hosted portal link / hosted connect flow where the owner OAuths their own accounts; 15+ networks (X, LinkedIn, Instagram, Facebook, TikTok, YouTube, Threads, Bluesky, Reddit, Pinterest, Mastodon, Snapchat, Discord, Slack, Google Business); create-post with per-platform overrides + scheduling; post- and account-level analytics (not for X); webhooks (`post.published`, `post.failed`, account connect/disconnect); TypeScript SDK, CLI **and an MCP server** — so Friday can drive it directly | links their networks on the portal | flat: Pro $100/mo (10k posts), Business $400/mo (100k posts), **unlimited social accounts, no per-seat/per-profile fee**; X billed $0.015/post ($0.20 with a link) from prepaid credits — fence X as pass-through. Whether X needs our own app keys is UNVERIFIED (docs don't say) |
 | Formation + EIN + RA | **doola** API (what Naive resells at $349), owner as member | KYC + pays checkout | verify organizer semantics + compliance/bookkeeping API with doola sales |
 | KYC | **Stripe Identity** ($1.50; `related_person` reuses it for Connect) | ID + selfie | |
 | Phone/SMS | **Surge** (sole-prop 10DLC pre-EIN, standard brand after) | none | do not sell "receives any OTP" — VoIP numbers are unreliable for Google/bank OTPs |
@@ -112,7 +137,7 @@ human step, rendered as an approval card:
 | Mail on own domain | SES identity per owner domain on the existing per-owner tenant (`agent_mail_tenant.py`) | none | DKIM/MAIL FROM/DMARC auto-published, zone is ours |
 | Hosted fallback pages | CloudFront SaaS Manager tenants (`<slug>.flickmeon.ai`, `support.<slug>.flickmeon.ai`) | none | |
 | SEO/AEO data | DataForSEO (platform key) | none | P5 |
-| Image/video | fal.ai (platform key) | none | P3 |
+| Content (images/video) | **Compose in the container, zero vendors (decided 2026-08-28):** carousel slides = HTML template screenshotted by the container's Chrome over **Pexels** portrait stills (free API, commercial use, no attribution); wall-of-text reel = Pexels portrait clip + ffmpeg burned caption; green-screen = owner's selfie clip chromakeyed over a clip, captions via Amazon Transcribe ($0.006/min) or whisper.cpp; X/LinkedIn = LLM path; feedback votes → per-company format weights. Marginal cost ≈ $0/post. **Bedrock has NO active text-to-image model** (Nova Canvas Legacy, EOL 2026-09-30; Titan EOL; Stability gen models gone) — so generated imagery is opt-in on the owner's identity via Projects: Gemini 2.5 Flash Image via OpenRouter (~$0.039/img), HeyGen avatars (~$1/min), ElevenLabs voice; gpt-image-1 only for BYO-OpenAI-key owners. Remotion ($0.01/render, $100/mo floor) only if ffmpeg typography becomes the complaint | none (Pexels is platform-keyed, free) | P3 |
 | Enrichment | existing Apollo/Attio/Parallel rails | OAuth | |
 
 Not adopted: merchant-of-record (Paddle/Polar/Lemon Squeezy — 4–5% or no
@@ -123,7 +148,7 @@ IPs).
 
 ### 3.4 Company-level vs agent-level resources
 
-Company-level: Stripe account, domain, PostHog project, Ayrshare profile,
+Company-level: Stripe account, domain, PostHog project, bundle.social team,
 formation, cards. Agent-level: mailbox (`{agent}@{slug}.…`, existing), Google
 account binding (existing `google_accounts`), phone number (optional). State
 this per resource in the Accounts page.
@@ -152,7 +177,7 @@ Backend copies of provider credentials live in Secrets Manager at
   representative and the sole money-approver (mirrors
   `oauth_connector_user_id` for ChatGPT OAuth).
 - **Company name first.** The name-first invariant now also feeds the Stripe
-  account name, PostHog org name and Ayrshare profile. Onboarding brief forces
+  account name, PostHog org name and bundle.social team. Onboarding brief forces
   a real name before the Stripe card.
 - **Exit / wipe.** `account_wipe`, `entitlement_teardown`,
   `owner_secret_sweep` revoke the Connect link and delete *our* credential
@@ -179,7 +204,7 @@ Backend copies of provider credentials live in Secrets Manager at
   Projects-provisioned write token; we query HogQL with the retained OAuth
   token. PostHog's warehouse syncs their Stripe natively and joins to persons,
   so attribution is a HogQL query in *their* PostHog — we build no join.
-- **Social**: Ayrshare per-post/per-profile analytics.
+- **Social**: bundle.social post- and account-level analytics (none for X).
 - **Provider resources**: Projects API list.
 
 ### 4.2 Retained PostHog token
@@ -241,7 +266,7 @@ deletes our credential copies. Money approvals are org-admin-only.
 
 `agent_budget`, `spend_service`, `usage_service`, `trial_cap`, Metronome
 already meter what the company spends on agents. Money → Spend shows earned
-and spent together; Projects per-provider limits and Ayrshare pass-through
+and spent together; Projects per-provider limits and bundle.social/X pass-through
 appear there.
 
 ### 4.7 Redaction and the two PostHogs
@@ -296,8 +321,8 @@ async back-office jobs, one real record per card — on our cream/green brand.
 | Home | rollup | new |
 | Payments / Products / Customers | Connect reads + webhooks | new |
 | Spend | agent_budget / usage / Projects spend | reshape Usage |
-| Content | LLM + fal.ai rail; feedback votes = learning loop | new |
-| Publish | Ayrshare + Paperclip routines | new |
+| Content | LLM copy + Pexels media + Chrome/ffmpeg compositions in the container; feedback votes = learning loop; generated art/avatars opt-in via Projects | new |
+| Publish | bundle.social (team per company; portal link; MCP for Friday) + Paperclip routines | new |
 | SEO & AEO | DataForSEO + Google rail | new (P5) |
 | Ads | `meta_ads` rail (+ Google Ads) | partial |
 | Leads | Attio/Apollo rails | new page |
@@ -322,7 +347,7 @@ async back-office jobs, one real record per card — on our cream/green brand.
 - **P1 Money + Home** — Payments, Products, Customers, Spend, Home.
 - **P2 Knowledge + Support** — Brain UI; Support widget + hosted page +
   inbox; Library feed; redaction widening.
-- **P3 Growth** — Publish (Ayrshare), Content grid (fal.ai), Leads, Blog;
+- **P3 Growth** — Publish (bundle.social), Content grid (in-container compositions over Pexels; Projects opt-ins), Leads, Blog;
   Growth add-on pricing fence.
 - **P4 Company** — Domain & Site, Identity (doola + Stripe Identity), Ads
   (Google Ads rail), mail on own domain.
@@ -334,8 +359,8 @@ preview (P0 fallback = CLI), Meta App Review (Ads).
 
 ## 7. Owner actions (outside the repo)
 
-Send the Projects-for-Platforms preview request · open an Ayrshare Business
-account · register one Lightbulb X developer app · doola partner
+Send the Projects-for-Platforms preview request · open a bundle.social Business
+account (confirm whether X needs our own app keys) · doola partner
 conversation (organizer semantics, compliance API, iFrame tier) · PostHog
 partner registration if the Provisioning API is used for owners without
 Projects · decide Route 53 vs Projects registrars (P4).
@@ -375,8 +400,8 @@ runtime → Paperclip + OpenClaw (in production; theirs is not). Connections →
 Lightbulb MCP. Apps/db/storage/functions/auth/compute/queue/sandbox →
 Projects on the owner's identity; our container is compute. Domains/email/
 phone → §3.3. LLM/audio/voice/images/video/clips → Bedrock/OAuth/BYO have;
-fal.ai P3; skip voice/clips. Browser → real Chrome with owner takeover
-(have, better). Social → Ayrshare. SEO/AEO/app/travel/reviews/places/e-com
+images/video composed in-container over Pexels P3; generated art/avatars/voice via Projects (OpenRouter/HeyGen/ElevenLabs) on request; skip clips. Browser → real Chrome with owner takeover
+(have, better). Social → bundle.social. SEO/AEO/app/travel/reviews/places/e-com
 → DataForSEO for SEO/AEO only. People/company/social data → Apollo/Parallel.
 Cards → §3.3. Trading/x402/wallet → skip. Customer billing → Connect.
 Identity/formation → Stripe Identity + doola. Credits → flat $50 + pass-
@@ -387,8 +412,8 @@ through.
 Stripe: docs.stripe.com/projects, /projects/platform-integration,
 /connect/standard-accounts, /connect/hosted-onboarding, /connect/pricing,
 /cli/login. PostHog: posthog.com/docs/integrate/provisioning, /terms §2.1(b),
-/docs/revenue-analytics/connect-to-customers. Ayrshare:
-ayrshare.com/docs/multiple-users/api-integration-business, /pricing. Route
+/docs/revenue-analytics/connect-to-customers. bundle.social:
+info.bundle.social/llms.txt, bundle.social/pricing. Route
 53: RegisterDomain / TransferDomainToAnotherAwsAccount API docs. doola:
 docs.doola.com/api/introduction. Result: result.dev, docs.result.dev
 (sdk/*), app.result.dev/mcp, ycombinator.com/launches/QkS-…. Naive:

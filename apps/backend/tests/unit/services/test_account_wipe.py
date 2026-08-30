@@ -55,6 +55,10 @@ EXPECTED_ORDER = [
     # path crosses (bedrock_aip.reap_owner_bedrock_resources).
     "metronome",
     "stripe",
+    # Step 8b shares the "stripe" system name with Step 8 above -- one is the
+    # subscription-billing customer delete, the other is the company Stripe
+    # account deauthorize (never a delete; see account_wipe.py's docstring).
+    "stripe",
     "usage_counters",
     "paperclip_row",
     "billing_row",
@@ -111,6 +115,7 @@ def _billing_row(**overrides) -> dict:
         "stripe_customer_id": "cus_abc123",
         "stripe_subscription_id": "sub_abc123",
         "metronome_customer_id": "met_abc123",
+        "company_stripe_account_id": "acct_xyz789",
     }
     defaults.update(overrides)
     return defaults
@@ -177,6 +182,8 @@ def wipe_mocks():
     bedrock_role_delete = AsyncMock(return_value=None)
     metronome_archive = AsyncMock(return_value=None)
     stripe_delete = AsyncMock(return_value=True)
+    company_stripe_deauthorize = AsyncMock(return_value=True)
+    billing_clear_company_stripe = AsyncMock(return_value={})
     usage_delete = AsyncMock(return_value=3)
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
@@ -221,6 +228,8 @@ def wipe_mocks():
         ("core.billing.bedrock_aip.delete_owner_bedrock_role", bedrock_role_delete),
         ("core.services.account_wipe._archive_metronome_customer", metronome_archive),
         ("core.services.account_wipe.delete_stripe_customer", stripe_delete),
+        ("core.services.account_wipe.company_stripe.deauthorize", company_stripe_deauthorize),
+        ("core.services.account_wipe.billing_repo.clear_company_stripe_account", billing_clear_company_stripe),
         ("core.services.account_wipe.usage_repo.delete_all_for_owner", usage_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
@@ -260,6 +269,8 @@ def wipe_mocks():
             bedrock_role_delete=bedrock_role_delete,
             metronome_archive=metronome_archive,
             stripe_delete=stripe_delete,
+            company_stripe_deauthorize=company_stripe_deauthorize,
+            billing_clear_company_stripe=billing_clear_company_stripe,
             usage_delete=usage_delete,
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
@@ -303,6 +314,8 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
     wipe_mocks.metronome_archive.assert_awaited_once_with("met_abc123")
     wipe_mocks.stripe_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.company_stripe_deauthorize.assert_awaited_once_with(account_id="acct_xyz789")
+    wipe_mocks.billing_clear_company_stripe.assert_awaited_once_with(OWNER_ID, account_id="acct_xyz789")
     wipe_mocks.usage_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
@@ -398,8 +411,15 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     assert "ECS API down" in (by_system["ecs_service"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "metronome", "stripe", "usage_counters"):
+    for system in ("efs_workspace_dir", "metronome", "usage_counters"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
+
+    # "stripe" covers two steps (Step 8 delete_stripe_customer, Step 8b
+    # deauthorize_company_account) -- disambiguate by action so both are
+    # independently checked instead of one silently shadowing the other.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "ok"
+    assert stripe_steps["deauthorize_company_account"].status == "ok"
 
     # Clerk — last step — must still have been called despite the earlier failure.
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
@@ -430,14 +450,19 @@ async def test_bootstrap_user_protected_error_recorded_as_failed_step(wipe_mocks
 @pytest.mark.asyncio
 async def test_skips_stripe_when_no_stripe_customer_id(wipe_mocks):
     """(c) trial_local shape: billing row present but no stripe_customer_id
-    -> skipped, and delete_stripe_customer is never called."""
+    -> skipped, and delete_stripe_customer is never called. The sibling
+    company-account step is independent (company_stripe_account_id is still
+    on the row), so it still runs -- two steps share the "stripe" system name,
+    disambiguated here by action."""
     wipe_mocks.billing_get.return_value = _billing_row(stripe_customer_id=None)
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
-    by_system = {s.system: s for s in report.steps}
-    assert by_system["stripe"].status == "skipped"
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "skipped"
     wipe_mocks.stripe_delete.assert_not_awaited()
+    assert stripe_steps["deauthorize_company_account"].status == "ok"
+    by_system = {s.system: s for s in report.steps}
     # Metronome is independent — still ran since metronome_customer_id is present.
     assert by_system["metronome"].status == "ok"
 
@@ -451,7 +476,11 @@ async def test_skips_metronome_when_no_metronome_customer_id(wipe_mocks):
     by_system = {s.system: s for s in report.steps}
     assert by_system["metronome"].status == "skipped"
     wipe_mocks.metronome_archive.assert_not_awaited()
-    assert by_system["stripe"].status == "ok"
+    # Disambiguate by action -- "stripe" covers Step 8 (delete_stripe_customer)
+    # and Step 8b (deauthorize_company_account); both are independent of
+    # metronome_customer_id, and are still on the row here (default fixture).
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -462,9 +491,12 @@ async def test_skips_billing_dependent_steps_when_no_billing_row(wipe_mocks):
 
     by_system = {s.system: s for s in report.steps}
     assert by_system["metronome"].status == "skipped"
-    assert by_system["stripe"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     wipe_mocks.billing_delete.assert_not_awaited()
+    # No billing row -> both "stripe"-system steps skip independently.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "skipped"
+    assert stripe_steps["deauthorize_company_account"].status == "skipped"
     # Non-billing steps still ran normally.
     assert by_system["clerk_user"].status == "ok"
 
@@ -578,6 +610,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.bedrock_role_delete.side_effect = RuntimeError("bedrock role down")
     wipe_mocks.metronome_archive.side_effect = RuntimeError("metronome down")
     wipe_mocks.stripe_delete.side_effect = RuntimeError("stripe down")
+    wipe_mocks.company_stripe_deauthorize.side_effect = RuntimeError("company stripe down")
     wipe_mocks.usage_delete.side_effect = RuntimeError("usage down")
     wipe_mocks.gate_tokens_delete.side_effect = RuntimeError("gate tokens down")
     wipe_mocks.paperclip_row_delete.side_effect = RuntimeError("ddb down")
@@ -630,6 +663,8 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
     wipe_mocks.metronome_archive.assert_not_awaited()
     wipe_mocks.stripe_delete.assert_not_awaited()
+    wipe_mocks.company_stripe_deauthorize.assert_not_awaited()
+    wipe_mocks.billing_clear_company_stripe.assert_not_awaited()
     wipe_mocks.usage_delete.assert_not_awaited()
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
     wipe_mocks.pending_brief_delete.assert_not_awaited()
@@ -668,7 +703,10 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     assert "bedrock_aips" not in by_system
     assert "bedrock_role" not in by_system
     assert by_system["metronome"].status == "skipped"
-    assert by_system["stripe"].status == "skipped"
+    # No billing row -> both "stripe"-system preview steps skip independently.
+    stripe_steps = {s.action: s for s in report.steps if s.system == "stripe"}
+    assert stripe_steps["delete_stripe_customer"].status == "skipped"
+    assert stripe_steps["deauthorize_company_account"].status == "skipped"
     assert by_system["paperclip_row"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     assert by_system["user_row"].status == "skipped"

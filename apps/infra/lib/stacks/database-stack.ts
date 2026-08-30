@@ -150,6 +150,17 @@ export class DatabaseStack extends cdk.Stack {
       },
     });
 
+    // Company Stripe account (the owner's own business account on the same
+    // Connect platform). Webhooks for that account (account.updated, Standard
+    // OAuth deauthorize) identify the account only by its acct_… id, so this
+    // resolves the owning row the same way apple-original-transaction-index
+    // resolves App Store notifications above.
+    this.billingTable.addGlobalSecondaryIndex({
+      indexName: "company-stripe-account-index",
+      partitionKey: { name: "company_stripe_account_id", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     this.usageCountersTable = createTable("UsageCountersTable", "usage-counters", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "period", type: dynamodb.AttributeType.STRING },

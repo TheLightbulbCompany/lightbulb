@@ -8,6 +8,7 @@ import { UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
+import { CompanyStripeSection } from "@/components/settings/CompanyStripeSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
@@ -35,7 +36,13 @@ export default function ConnectionsPage() {
 
 type Banner = { kind: "success" | "error"; message: string } | null;
 
-function oauthReturnBanner(connected: string | null, error: string | null): Banner {
+function oauthReturnBanner(
+  connected: string | null,
+  error: string | null,
+  stripe: string | null,
+  stripeConnect: string | null,
+  stripeError: string | null,
+): Banner {
   if (connected) {
     return { kind: "success", message: `Connected ${connected}.` };
   }
@@ -49,6 +56,17 @@ function oauthReturnBanner(connected: string | null, error: string | null): Bann
             ? "We connected, but couldn't apply the credential. Please try again."
             : "Connection failed. Please try again.";
     return { kind: "error", message };
+  }
+  if (stripeConnect === "connected") {
+    return { kind: "success", message: "Connected your Stripe account." };
+  }
+  if (stripe === "return") {
+    return { kind: "success", message: "Stripe onboarding finished — status updates in a moment." };
+  }
+  // stripe === "refresh" means the hosted onboarding link expired; no banner —
+  // the section's "Finish onboarding" button mints a fresh one.
+  if (stripeError) {
+    return { kind: "error", message: "Couldn't connect Stripe. Please try again." };
   }
   return null;
 }
@@ -83,13 +101,16 @@ function ConnectionsPageInner() {
   useEffect(() => {
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
-    if (!connected && !error) return;
+    const stripe = searchParams.get("stripe");
+    const stripeConnect = searchParams.get("stripe_connect");
+    const stripeError = searchParams.get("stripe_error");
+    if (!connected && !error && !stripe && !stripeConnect && !stripeError) return;
 
     // Reflecting the OAuth-return URL params into a one-shot banner — an
     // external-data→React sync the rule sanctions. We immediately strip the
     // query param below so this only fires once per redirect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setBanner(oauthReturnBanner(connected, error));
+    setBanner(oauthReturnBanner(connected, error, stripe, stripeConnect, stripeError));
     if (connected) void mutate();
     router.replace("/settings/connections");
   }, [searchParams, router, mutate]);
@@ -168,6 +189,10 @@ function ConnectionsPageInner() {
                   <GoogleAccountsSection canManage={canManage} />
                 </div>
               )}
+
+              <div className="mb-4">
+                <CompanyStripeSection canManage={canManage} />
+              </div>
 
               <ConnectionsList canManage={canManage} />
             </div>

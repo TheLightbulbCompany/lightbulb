@@ -342,3 +342,22 @@ describe("DatabaseStack — launch competition tables", () => {
     });
   });
 });
+
+describe("DatabaseStack — billing-accounts table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("billing-accounts has the company-stripe-account-index GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: Match.stringLikeRegexp("billing-accounts$"),
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "company-stripe-account-index",
+          KeySchema: [{ AttributeName: "company_stripe_account_id", KeyType: "HASH" }],
+        }),
+      ]),
+    });
+  });
+});

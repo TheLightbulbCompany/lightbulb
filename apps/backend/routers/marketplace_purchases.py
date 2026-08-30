@@ -15,8 +15,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.repositories import marketplace_repo
+from core.repositories import billing_repo, marketplace_repo
 from core.services import license_service, payout_service
+from core.services.owner_facts import write_owner_facts
 from core.services import webhook_dedup
 from core.services.webhook_dedup import WebhookDedupResult
 from schemas import marketplace as schemas
@@ -184,6 +185,10 @@ async def stripe_webhook(
             await _handle_charge_refunded(obj)
         elif event_type == "account.updated":
             await _handle_account_updated(obj)
+        elif event_type == "account.application.deauthorized":
+            # The connected account id rides on the event envelope, not the
+            # data object (which is the Application).
+            await _handle_account_deauthorized(event.get("account"))
         # Other events (transfer.failed, payout.paid, payout.failed,
         # checkout.session.async_payment_failed) are logged via Stripe;
         # async_payment_failed in particular is a no-op because we never
@@ -414,6 +419,25 @@ async def _handle_account_updated(account: dict) -> None:
     transferred amount, so a new purchase arriving mid-flush still has
     its held balance preserved for the next onboarding/flush event.
     """
+    # Company accounts (the owner's own business account, created by us or
+    # connected via Standard OAuth) mirror their state onto the billing row
+    # and never touch the seller flush. Looked up by account id, not by
+    # metadata: an OAuth-connected account carries no metadata of ours.
+    account_id = account.get("id") or ""
+    company_row = await billing_repo.get_by_company_stripe_account_id(account_id)
+    if company_row is not None:
+        await billing_repo.set_company_stripe_status(
+            company_row["owner_id"],
+            account_id=account_id,
+            details_submitted=bool(account.get("details_submitted")),
+            charges_enabled=bool(account.get("charges_enabled")),
+            payouts_enabled=bool(account.get("payouts_enabled")),
+        )
+        # The container reads `company_stripe` off the facts file; without this
+        # it keeps asking the owner to set up an account that just went live.
+        await write_owner_facts(company_row["owner_id"])
+        return
+
     if not account.get("payouts_enabled"):
         return
     seller_id = (account.get("metadata") or {}).get("seller_id")
@@ -424,6 +448,18 @@ async def _handle_account_updated(account: dict) -> None:
     if not connect_account_id:
         return
     await _flush_seller_held_balance(seller_id=seller_id, connect_account_id=connect_account_id)
+
+
+async def _handle_account_deauthorized(account_id: str | None) -> None:
+    """The owner revoked the platform from their Stripe Dashboard (or we did
+    via /company/stripe/disconnect). Unbind; never delete anything."""
+    if not account_id:
+        return
+    row = await billing_repo.get_by_company_stripe_account_id(account_id)
+    if row is None:
+        return
+    await billing_repo.clear_company_stripe_account(row["owner_id"], account_id=account_id)
+    await write_owner_facts(row["owner_id"])
 
 
 async def _flush_seller_held_balance(

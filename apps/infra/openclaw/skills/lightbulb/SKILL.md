@@ -289,6 +289,41 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.
 
+## Your company's Stripe account
+
+Money for the business (selling a product, taking payments, paying for a
+provider) needs the company's own Stripe account. Check `~/.openclaw/isol8-facts.json`
+for `company_stripe: "connected"`; if it is absent or `"none"`, do not
+improvise a Stripe signup — ask the owner through the platform. `"pending"`
+means the account exists but onboarding is not finished: do not file the
+request again, and do not treat it as connected — say it is still being set
+up.
+
+```bash
+curl -sS -w '\n%{http_code}' -X POST -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"issue_id":"'"$PAPERCLIP_TASK_ID"'","reason":"<one sentence on why>"}' \
+  "$ISOL8_API_URL/api/v1/company/stripe/u/$ISOL8_OWNER_ID/request"
+```
+
+The last line is the HTTP status — 200 filed/connected/no_company, 503
+unreachable (retry next turn), 502 rejected (tell the owner).
+
+If the call returns 503, the board was unreachable — say so to the owner and
+try again on your next turn; never work around it. A 502 is different: the
+board REJECTED the request, so retrying changes nothing — tell the owner what
+it said, verbatim, and move on.
+
+A 200 is not always a card. Read `status` in the body: `filed` means a
+"Set up <company> on Stripe" card is now in the owner's Inbox — say in your
+reply that you asked; `connected` means the company already has its Stripe
+account and there is nothing to ask for; `no_company` means the owner has no
+board yet (the platform is still provisioning it) — tell the owner plainly
+and try again on a later turn. The card is never a gate: keep working on
+everything that does not need money. The owner keeps the account and 100% of
+the revenue; Lightbulb AI takes no fee. Never create the Stripe account in
+the browser yourself.
+
 ## Skills and self-improvement
 
 - The owner browses, enables, and installs skills in the **Skills** tab

@@ -493,8 +493,16 @@ async def test_flush_recovery_rereverses_revoked_transfer_instead_of_booking():
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
+@patch("routers.marketplace_purchases.billing_repo.get_by_company_stripe_account_id")
 def test_flush_skips_purchase_when_fresh_read_shows_transfer(
-    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_listings_table, mock_transfer, client
+    mock_company_lookup,
+    mock_pa_table,
+    mock_purchases_table,
+    mock_dedup,
+    mock_construct,
+    mock_listings_table,
+    mock_transfer,
+    client,
 ):
     """The listing-created-index feeding the flush loop is eventually
     consistent, and Stripe idempotency keys expire after 24h while webhook
@@ -503,6 +511,7 @@ def test_flush_skips_purchase_when_fresh_read_shows_transfer(
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_company_lookup.return_value = None  # seller account, not company
     mock_construct.return_value = {
         "id": "evt_acct_fresh",
         "type": "account.updated",

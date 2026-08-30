@@ -107,6 +107,36 @@ def _create_tables(resource):
             }
         ],
     )
+    # oauth-state: PK state — the PUBLIC Stripe Connect callback consumes it,
+    # so the fuzzer must reach the real "unknown state" branch, not a 5xx.
+    _make(
+        f"{_PREFIX}oauth-state",
+        [{"AttributeName": "state", "KeyType": "HASH"}],
+        [{"AttributeName": "state", "AttributeType": "S"}],
+    )
+    # containers: PK owner_id + gateway-token-index / status-index — the
+    # container hook routes read the owner's hook_token before anything else.
+    _make(
+        f"{_PREFIX}containers",
+        [{"AttributeName": "owner_id", "KeyType": "HASH"}],
+        [
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "gateway_token", "AttributeType": "S"},
+            {"AttributeName": "status", "AttributeType": "S"},
+        ],
+        gsis=[
+            {
+                "IndexName": "gateway-token-index",
+                "KeySchema": [{"AttributeName": "gateway_token", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "status-index",
+                "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+    )
     # marketplace-listings: PK listing_id, SK version (N)
     _make(
         _MARKETPLACE_TABLE,

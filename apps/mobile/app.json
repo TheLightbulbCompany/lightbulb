@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "Lightbulb",
-    "slug": "lightbulb-mobile",
-    "owner": "thelightbulb",
+    "slug": "isol8-mobile",
+    "owner": "thelightbulbcompany",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",

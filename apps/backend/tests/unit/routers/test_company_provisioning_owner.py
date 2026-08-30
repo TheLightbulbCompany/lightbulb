@@ -19,6 +19,8 @@ RES = {
     "env_keys": ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"],
     "dashboard_url": "https://us.posthog.com/project/1",
     "level": "company",
+    "workflow_id": "pwf_1",
+    "project_id": "proj_1",
 }
 
 
@@ -58,14 +60,39 @@ def facts(monkeypatch):
     return writer
 
 
-def test_resources_returns_pointers(client):
-    with patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=("paired", [RES]))):
+def test_resources_returns_an_allowlisted_projection_never_the_stored_pointer(client):
+    """The pointer carries the Stripe `project_id` and a `dashboard_url` slot.
+    Neither is the browser's business, and a blocklist would leak whatever the
+    next writer adds."""
+    with patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=[RES])):
         resp = client.get("/api/v1/company/provisioning/resources")
     assert resp.status_code == 200
     body = resp.json()
     assert set(body.keys()) == {"resources"}
-    assert body["resources"][0]["level"] == "company"
-    assert body["resources"][0]["resource_name"] == "Northwind analytics"
+    row = body["resources"][0]
+    assert row["level"] == "company"
+    assert row["resource_name"] == "Northwind analytics"
+    assert row["workflow_id"] == "pwf_1"
+    assert set(row) == {
+        "resource_id",
+        "provider",
+        "service",
+        "resource_name",
+        "status",
+        "env_keys",
+        "level",
+        "workflow_id",
+    }
+
+
+def test_resources_surfaces_resource_status_when_the_pointer_has_one(client):
+    with patch.object(
+        mod.provisioning_landing,
+        "provisioning_summary",
+        AsyncMock(return_value=[{**RES, "resource_status": "removed"}]),
+    ):
+        resp = client.get("/api/v1/company/provisioning/resources")
+    assert resp.json()["resources"][0]["resource_status"] == "removed"
 
 
 def test_revoke_delegates_to_the_service_and_writes_facts(client, facts):
@@ -489,6 +516,22 @@ def test_information_bounds_its_values_like_a_configuration(client, information)
     ):
         resp = client.post(
             "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": information}
+        )
+    assert resp.status_code == 422
+    submit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("key", ["k" * 200, "two\nlines"])
+def test_information_bounds_its_KEYS_like_a_configuration(client, key):
+    """The names come off a schema WE stored, but the body does not — an
+    oversized or newline-carrying field name is forwarded to the provider
+    verbatim unless it is stopped here."""
+    with (
+        patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
+        patch.object(mod.api, "submit_resource_information", AsyncMock()) as submit,
+    ):
+        resp = client.post(
+            "/api/v1/company/provisioning/workflows/pwf_1/information", json={"information": {key: "growth"}}
         )
     assert resp.status_code == 422
     submit.assert_not_awaited()

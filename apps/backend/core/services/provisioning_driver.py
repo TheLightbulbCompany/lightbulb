@@ -11,7 +11,8 @@ Account request and the Payment profile from the server, and a card approved on
 a phone must resume without waiting for a deploy. They just poll on the slow
 clock, and those ticks spend no step budget — how long an owner may take is the
 state machine's decision, not this module's. The loop stops on
-``TERMINAL_STATES``, on ``MAX_STEPS`` polling steps, or on ``MAX_WALL_S``.
+``TERMINAL_STATES``, on ``MAX_STEPS`` polling steps, on ``MAX_WALL_S``, or on a
+``WorkflowRefused`` — a door that is shut for a reason no retry clears.
 
 A rolling deploy runs two backend instances (``maxHealthyPercent: 200``), so
 every step is taken under a per-row LEASE (``repo.claim``): one driver per
@@ -44,7 +45,7 @@ import httpx
 from core.repositories import provisioning_workflow_repo as repo
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.provisioning_workflow import advance, on_approved, on_rejected, poll_delay
+from core.services.provisioning_workflow import WorkflowRefused, advance, on_approved, on_rejected, poll_delay
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ MAX_STEPS = 400
 # start — a task-anchored bound restarts on every deploy, and an abandoned row
 # outlives deploys by definition.
 MAX_WALL_S = 8 * 24 * 3600
+# Ceiling on ONE sleep between polls, so a Stripe `Retry-After` cannot park a
+# workflow for longer than the slow clock would have taken to look again anyway.
+MAX_POLL_SLEEP_S = 300
 # Renewed at the top of every iteration, so this only has to outlast ONE
 # iteration: the 60s idle sleep plus a worst-case step of two chained Stripe
 # calls at the client's 45s timeout, doubled for headroom. Shorter would let a
@@ -123,6 +127,31 @@ def _too_old(row: dict) -> bool:
     return bool(created_at) and created_at < cutoff
 
 
+def sleep_for(row: dict, slow: bool) -> float:
+    """How long before this row is looked at again.
+
+    Waiting on a human gets the slow clock. A polling row gets its own backoff,
+    floored by any ``next_poll_after`` Stripe asked for (`Retry-After` on a 429)
+    and capped so a bad header cannot strand it. Public so the test can assert
+    the arithmetic without driving a whole loop.
+    """
+    if slow:
+        return float(IDLE_RECONCILE_S)
+    delay = poll_delay(int(row.get("attempts") or 0))
+    return min(max(delay, _seconds_until(row.get("next_poll_after"))), MAX_POLL_SLEEP_S)
+
+
+def _seconds_until(when: str | None) -> float:
+    """Seconds from now to an ISO instant, never negative. An unparseable value
+    is treated as "no floor" — the backoff alone still bounds the poll."""
+    if not when:
+        return 0.0
+    try:
+        return max(0.0, (datetime.fromisoformat(when) - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 async def _park(row: dict, code: str) -> None:
     logger.warning("provisioning: workflow %s parked by the driver (%s)", row["workflow_id"], code)
     await repo.transition(
@@ -168,19 +197,24 @@ async def _drive(workflow_id: str) -> None:
                 row = moved if moved is not None else row
             else:
                 row = await advance(row)
+        except WorkflowRefused as e:
+            # A door the state machine will keep finding shut — the owner
+            # disconnected the company Stripe account, say. Retrying it for
+            # eight days is noise; park it for the human who has to fix it.
+            return await _park(row, e.code)
         except Exception:
             logger.exception("provisioning: step failed for %s", workflow_id)
             # Back off before retrying: a failing step that looped at full
             # speed would burn the whole step budget in milliseconds and park a
             # workflow whose only problem was a blip.
-            await asyncio.sleep(IDLE_RECONCILE_S if slow else poll_delay(int(row.get("attempts") or 0)))
+            await asyncio.sleep(sleep_for(row, slow))
             row = await repo.get(workflow_id)
             continue
         if row is None or row.get("state") != before:
             continue
         # Nothing moved. Waiting on a human gets the slow clock; an in-flight
         # Stripe operation gets the backoff.
-        await asyncio.sleep(IDLE_RECONCILE_S if slow else poll_delay(int(row.get("attempts") or 0)))
+        await asyncio.sleep(sleep_for(row, slow))
 
 
 async def _run(workflow_id: str) -> None:

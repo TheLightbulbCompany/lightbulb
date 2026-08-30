@@ -362,6 +362,9 @@ once it is done.
 **When NOT to ask at all:**
 
 - The owner already said no to this provider+service (`rejected` above).
+- The newest entry for this provider+service is `requires_review`. Something may
+  already have been created and charged for; asking again could create it twice.
+  The door refuses with 409 `needs_review_first` — tell the owner and stop.
 - The owner is on the free tier — every route here answers `402`. Say what a
   subscription would unlock; do not retry.
 - The need is *reading* from a service the owner already uses — that is
@@ -420,11 +423,10 @@ The last line of every call is the HTTP status:
 | `401` | your container token was rejected — a platform fault. Tell the owner; never work around it. |
 | `402` | free tier. Say what a subscription unlocks. **Do not retry.** |
 | `404` | `workflow_not_found` — not yours, or gone. Never guess an id; list your requests instead. |
-| `409` | the door is shut and `code` says why: `invalid_configuration` (fix `configuration` against that row's `configuration_schema` from the catalog and try ONCE more), `service_unavailable` (back to the catalog — that provider+service is not offerable to this owner), `requirements_pending` (the owner has a Stripe card to clear), `not_eligible`, `no_company_stripe_account` (the Stripe section above), `no_company` (the owner's board is not provisioned yet — tell them, try a later turn), `cannot_cancel` (already being created — let it finish). Relay the `message`, move on. |
+| `409` | the door is shut and `code` says why: `invalid_configuration` (fix `configuration` against that row's `configuration_schema` from the catalog and try ONCE more), `service_unavailable` (back to the catalog — that provider+service is not offerable to this owner), `requirements_pending` (the owner has a Stripe card to clear), `not_eligible`, `no_company_stripe_account` (the Stripe section above), `no_company` (the owner's board is not provisioned yet — tell them, try a later turn), `needs_review_first` (an earlier request for the same thing is parked for review and may already have created it — **never** re-ask, tell the owner), `cannot_cancel` (already being created — let it finish). Relay the `message`, move on. |
 | `422` | `invalid_request` — the body itself: a bad `provider`/`service` slug, a value too long, a control character. Fix it and try once. |
-| `429` | too fast — wait until your next turn. |
 | `502` | Stripe or the provider REFUSED. Repeating changes nothing: tell the owner what it said, verbatim. |
-| `503` | Stripe was unreachable. Try again on a later turn, never in a loop. |
+| `503` | Stripe was unreachable — a rate limit arrives here too. Try again on a later turn, never in a loop. |
 
 Once a workflow is `active`, the variables named in `env_keys` are in your
 environment — immediately if you are lucky, otherwise after the container's next

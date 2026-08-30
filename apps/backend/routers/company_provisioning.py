@@ -33,6 +33,7 @@ from core.services.owner_facts import write_owner_facts
 from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
 from core.services.stripe_provisioning import ProvisioningError
 from routers.agent_builder import _require_hook_token
+from routers.company_board import file_card
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -111,11 +112,34 @@ async def _owner_gate(auth: Annotated[AuthContext, Depends(get_current_user)]) -
 Owner = Annotated[str, Depends(_owner_gate)]
 
 
+def _safe_resource(pointer: dict) -> dict:
+    """One provisioned-resource pointer, allowlisted for the browser.
+
+    Never the stored dict: it also carries the Stripe ``project_id``, and a
+    blocklist would leak the next field somebody adds to it. Same rule, same
+    reason, as ``_safe_workflow``.
+    """
+    out = {
+        "resource_id": pointer.get("resource_id"),
+        "provider": pointer.get("provider"),
+        "service": pointer.get("service"),
+        "resource_name": pointer.get("resource_name"),
+        "status": pointer.get("status"),
+        # NAMES only — the values live in Secrets Manager and the container env.
+        "env_keys": [str(k)[:128] for k in (pointer.get("env_keys") or [])[:50]],
+        "level": pointer.get("level"),
+        "workflow_id": pointer.get("workflow_id"),
+    }
+    if pointer.get("resource_status"):
+        out["resource_status"] = pointer["resource_status"]
+    return out
+
+
 @router.get("/resources")
 async def resources(auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
-    _state, rows = await provisioning_landing.provisioning_summary(owner_id)
-    return {"resources": rows}
+    rows = await provisioning_landing.provisioning_summary(owner_id)
+    return {"resources": [_safe_resource(r) for r in rows]}
 
 
 @router.post("/resources/{provider}/{resource_id}/revoke")
@@ -353,13 +377,20 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     _validate(body)
     try:
-        row = await provisioning_workflow.start(
-            owner_id=owner_id,
-            provider_name=body.provider,
-            service_id=body.service,
-            configuration=body.configuration,
-            issue_id=body.issue_id,
-            reason=body.reason,
+        # `start` files the consent card, so a board outage arrives here as a
+        # PaperclipApiError/httpx error. Unmapped it is a 500 the agent reads as
+        # a platform fault; `file_card` splits it into 503 (down, retry) and 502
+        # (refused) and passes every other exception through untouched.
+        row = await file_card(
+            owner_id,
+            provisioning_workflow.start(
+                owner_id=owner_id,
+                provider_name=body.provider,
+                service_id=body.service,
+                configuration=body.configuration,
+                issue_id=body.issue_id,
+                reason=body.reason,
+            ),
         )
     except WorkflowRefused as e:
         raise _refusal(e) from e
@@ -610,6 +641,10 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
     # a renderable schema (`_renderable`) ever reaches an owner, so a nested
     # value is not an answer to any form we filed.
     for key, value in body.information.items():
+        # The key is a field name off a schema WE stored, but the body is not:
+        # bound it exactly like `_validate` bounds a configuration key.
+        if len(key) > _MAX_CONFIG_KEY or _UNSAFE_RE.search(key):
+            raise _invalid("information field names must be short and free of control characters")
         if isinstance(value, str):
             if len(value) > _MAX_CONFIG_VALUE or _UNSAFE_RE.search(value):
                 raise _invalid(f"the value for {key!r} is too long or has control characters")

@@ -8,12 +8,14 @@ URL or a Stripe id reach the container.
 import os
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.repositories import billing_repo  # noqa: E402
+from core.services.paperclip_admin_client import PaperclipApiError  # noqa: E402
 from core.services.provisioning_workflow import WorkflowRefused  # noqa: E402
 from core.services.stripe_provisioning import ProvisioningError, TransientProvisioningError  # noqa: E402
 from main import app  # noqa: E402
@@ -222,6 +224,7 @@ def test_asking_twice_reuses_the_open_workflow_instead_of_refusing(client):
         "invalid_configuration",
         "no_company_stripe_account",
         "no_company",
+        "needs_review_first",
     ],
 )
 def test_refusals_are_409s_the_agent_can_branch_on(client, code):
@@ -247,6 +250,29 @@ def test_stripe_outage_is_a_503_the_agent_can_retry(client):
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "stripe_unavailable"
     assert resp.json()["detail"]["stripe_code"] == "transport_error"
+
+
+def test_an_unreachable_board_is_a_503_not_a_500(client):
+    """`start` files the consent card, so a Paperclip outage surfaces HERE.
+    Unmapped it is a 500 the agent reads as a platform fault it must never work
+    around; 503 tells her to try on a later turn."""
+    with patch.object(mod.provisioning_workflow, "start", AsyncMock(side_effect=httpx.ConnectError("board down"))):
+        resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "posthog", "service": "svc_analytics"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "paperclip_unavailable"
+
+
+def test_a_board_that_refuses_the_card_is_a_502(client):
+    """Retrying a 4xx from the board changes nothing, so it must not be dressed
+    up as an outage."""
+    with patch.object(
+        mod.provisioning_workflow,
+        "start",
+        AsyncMock(side_effect=PaperclipApiError("POST /approvals -> 400", 400, {"error": "bad"})),
+    ):
+        resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "posthog", "service": "svc_analytics"})
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "paperclip_rejected"
 
 
 def test_a_stripe_refusal_is_a_502_not_worth_retrying(client):

@@ -61,6 +61,22 @@ def test_the_failure_table_matches_the_router():
     assert "no_company`" in rows["`409`"]
     assert "invalid_configuration" not in rows["`422`"]
     assert "workflow_not_found" in rows["`404`"]
+    # The router has no 429 door: a Stripe rate limit is transient, so
+    # `_stripe_failure` answers 503. A 429 row sends Friday looking for a
+    # status she will never see.
+    assert "`429`" not in rows
+
+
+def test_a_re_ask_after_an_uncertain_write_is_refused_in_both_places():
+    """The one refusal that must never be worked around: the resource may
+    already exist and be billing. It has to be in the failure table AND in the
+    when-not-to-ask list, because Friday reads the facts file before the door."""
+    section = _section()
+    rows = {line.split("|")[1].strip(): line for line in section.splitlines() if line.startswith("| `4")}
+    assert "needs_review_first" in rows["`409`"]
+    not_to_ask = section.split("**When NOT to ask at all:**", 1)[1].split("**Step 1", 1)[0]
+    assert "requires_review" in not_to_ask
+    assert "needs_review_first" in not_to_ask
 
 
 def test_the_catalog_envelope_and_its_gate_are_named():

@@ -206,6 +206,19 @@ async def _read_catalog(account_id: str, provider_name: str, service_id: str) ->
     return service, provider
 
 
+def schema_reason(e: jsonschema.ValidationError) -> str:
+    """Why a payload failed its schema, with no SUBMITTED VALUE in it.
+
+    `e.message` quotes the offending value ("'mars' is not one of […]"), and
+    both callers relay this to somebody — Friday's transcript, the owner's
+    form — where a provider field could be a credential. So: the path, except
+    for `required`, whose message names a field the SCHEMA declares and
+    nothing the caller sent. `$` alone would tell neither of them which field
+    to fix.
+    """
+    return e.message if e.validator == "required" else f"{e.json_path} is not valid"
+
+
 def schema_is_empty(schema: dict) -> bool:
     """A `needs_information` payload with no fields yet. The provider has not
     published the form — that is a RE-POLL, not a dead end. Treating it as
@@ -311,7 +324,7 @@ async def start(
     try:
         jsonschema.validate(configuration or {}, schema)
     except jsonschema.ValidationError as e:
-        raise WorkflowRefused("invalid_configuration", e.message) from e
+        raise WorkflowRefused("invalid_configuration", f"{schema_reason(e)} for this service") from e
 
     # One open workflow per (provider, service). Two asks in the same turn —
     # or Friday retrying after a timeout — must not open a second card or, once
@@ -438,13 +451,28 @@ async def cancel(workflow_id: str) -> dict | None:
     those are objects on the owner's own Stripe account, and closing our row
     would orphan them (spec §3.6 — a resource is removed explicitly, never by
     forgetting about it).
+
+    The pending QUESTION is cleared with the state. A cancelled row that still
+    says ``awaiting: payment_setup`` is a row every owner route keyed on
+    `awaiting` still treats as live — a withdrawn ask could mint a hosted
+    checkout.
     """
     row = await repo.get(workflow_id)
     if not row:
         raise WorkflowRefused("cannot_cancel", "No such request")
     if row.get("state") not in repo.CANCELLABLE_STATES or row.get("account_request_id") or row.get("resource_id"):
         raise WorkflowRefused("cannot_cancel", "This request has already started — review it instead")
-    return await repo.transition(workflow_id, from_state=row["state"], to_state="cancelled")
+    return await repo.transition(
+        workflow_id,
+        from_state=row["state"],
+        to_state="cancelled",
+        fields={
+            "awaiting": None,
+            "information_target": None,
+            "information_schema": None,
+            "user_action_since": None,
+        },
+    )
 
 
 async def _reauth(row: dict) -> dict:

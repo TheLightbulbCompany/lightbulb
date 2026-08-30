@@ -11,6 +11,7 @@ import * as sesActions from "aws-cdk-lib/aws-ses-actions";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import { LEGACY_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { logGroupPath } from "../table-names";
 
 // =============================================================================
 // SesInboundStack — SES inbound agent-mail receiving (agent-email SES chunk 2).
@@ -476,7 +477,11 @@ export class SesInboundStack extends cdk.Stack {
             }
           : {}),
       },
-      logRetention: logs.RetentionDays.ONE_MONTH,
+      logGroup: new logs.LogGroup(this, "SesIngestFunctionLogs", {
+        logGroupName: logGroupPath(envName, "ses-ingest"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
     });
 
     this.rawBucket.grantRead(this.ingestFunction);
@@ -559,6 +564,16 @@ export class SesInboundStack extends cdk.Stack {
     // RuleSetName deactivates whatever is currently active).
     // -------------------------------------------------------------------------
     const activateRuleSet = new cr.AwsCustomResource(this, "ActivateAgentMailRuleSet", {
+      // Explicit name + role so the helper Lambda carries the lightbulb
+      // prefix instead of the auto-name derived from the old stack name.
+      functionName: `lightbulb-${envName}-ses-rule-set-activate`,
+      role: new iam.Role(this, "ActivateAgentMailRuleSetRole", {
+        roleName: `lightbulb-${envName}-ses-rule-set-activate`,
+        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+        ],
+      }),
       onCreate: {
         service: "SES",
         action: "setActiveReceiptRuleSet",

@@ -6,7 +6,6 @@ import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as events from "aws-cdk-lib/aws-events";
-import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -1192,7 +1191,26 @@ export class ContainerStack extends cdk.Stack {
           clusterArn: [this.cluster.clusterArn],
         },
       },
-      targets: [new targets.CloudWatchLogGroup(ecsTaskEventsLogGroup)],
+      // Raw target instead of targets.CloudWatchLogGroup: the L2 target
+      // ships an AwsCustomResource singleton Lambda (auto-named after the
+      // retired isol8 stack name) just to write the log-group resource
+      // policy. The native AWS::Logs::ResourcePolicy below does the same
+      // thing with no helper function.
+      targets: [{ bind: () => ({ id: "", arn: ecsTaskEventsLogGroup.logGroupArn }) }],
+    });
+
+    new logs.ResourcePolicy(this, "EcsTaskEventsLogPolicy", {
+      resourcePolicyName: `lightbulb-${props.environment}-ecs-task-events`,
+      policyStatements: [
+        new iam.PolicyStatement({
+          actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+          principals: [
+            new iam.ServicePrincipal("events.amazonaws.com"),
+            new iam.ServicePrincipal("delivery.logs.amazonaws.com"),
+          ],
+          resources: [ecsTaskEventsLogGroup.logGroupArn],
+        }),
+      ],
     });
 
   }

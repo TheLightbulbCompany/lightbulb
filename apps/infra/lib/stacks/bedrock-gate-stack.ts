@@ -10,7 +10,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { alertTopicArn, legacyTablePrefix, tablePrefix } from "../table-names";
+import { alertTopicArn, legacyTablePrefix, logGroupPath, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -184,7 +184,11 @@ export class BedrockGateStack extends cdk.Stack {
           DEDUP_TTL_SECONDS: "1296000",
           // AWS_REGION is auto-set by the Lambda runtime (reserved key).
         },
-        logRetention: logs.RetentionDays.ONE_MONTH,
+        logGroup: new logs.LogGroup(this, `GateFnLogs${idSuffix}`, {
+          logGroupName: logGroupPath(gateEnv, "bedrock-gate"),
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
       });
       fns[gateEnv] = fn;
 

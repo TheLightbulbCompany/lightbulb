@@ -11,7 +11,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as cr from "aws-cdk-lib/custom-resources";
-import { alertTopicArn, bothTableArns, legacyTablePrefix, tablePrefix } from "../table-names";
+import { alertTopicArn, bothTableArns, legacyTablePrefix, logGroupPath, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -120,6 +120,16 @@ export class BedrockMeterStack extends cdk.Stack {
       imageDataDeliveryEnabled: false,
     };
     const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfig", {
+      // Explicit name + role so the helper Lambda carries the lightbulb
+      // prefix instead of the auto-name derived from the old stack name.
+      functionName: "lightbulb-bedrock-logging-config",
+      role: new iam.Role(this, "BedrockLoggingConfigRole", {
+        roleName: "lightbulb-bedrock-logging-config",
+        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+        ],
+      }),
       onCreate: {
         service: "Bedrock",
         action: "putModelInvocationLoggingConfiguration",
@@ -269,7 +279,11 @@ export class BedrockMeterStack extends cdk.Stack {
           // of the per-owner IAM role name the kill deletes its policy from.
           METER_ENV: meterEnv,
         },
-        logRetention: logs.RetentionDays.ONE_MONTH,
+        logGroup: new logs.LogGroup(this, `MeterFnLogs${idSuffix}`, {
+          logGroupName: logGroupPath(meterEnv, "bedrock-meter"),
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
       });
       fns[meterEnv] = fn;
 

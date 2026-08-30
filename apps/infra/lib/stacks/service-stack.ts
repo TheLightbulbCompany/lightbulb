@@ -1245,6 +1245,10 @@ export class ServiceStack extends cdk.Stack {
     // Upload the connector template. Exclude the dir's README so the bucket
     // holds ONLY the template; `prune` (default true) keeps it to that object.
     new s3deploy.BucketDeployment(this, "CfnTemplateDeployment", {
+      // Any explicit memoryLimit changes the BucketDeployment singleton's
+      // uuid -> new logical id -> the helper Lambda is recreated under the
+      // lightbulb stack name instead of the retired isol8 auto-name.
+      memoryLimit: 128,
       destinationBucket: cfnTemplatesBucket,
       sources: [
         s3deploy.Source.asset(path.join(__dirname, "..", "..", "aws"), {

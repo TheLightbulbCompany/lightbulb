@@ -38,11 +38,48 @@ export function isProviderConsentApproval(
   return approval?.payload?.isol8_action === PROVIDER_CONSENT_ACTION;
 }
 
+/** The rest of P0b's rail. Each is a different human decision — connect the
+ *  provider account, answer the provider's form, put a card on file — so each
+ *  is its own card with its own marker. */
+const PROVIDER_CONNECT_ACTION = "provider_connect";
+const PROVIDER_INFORMATION_ACTION = "provider_information";
+const PAYMENT_SETUP_ACTION = "payment_setup";
+
+export function isProviderConnectApproval(
+  approval?: { payload?: Record<string, unknown> | null } | null,
+): boolean {
+  return approval?.payload?.isol8_action === PROVIDER_CONNECT_ACTION;
+}
+
+export function isProviderInformationApproval(
+  approval?: { payload?: Record<string, unknown> | null } | null,
+): boolean {
+  return approval?.payload?.isol8_action === PROVIDER_INFORMATION_ACTION;
+}
+
+export function isPaymentSetupApproval(
+  approval?: { payload?: Record<string, unknown> | null } | null,
+): boolean {
+  return approval?.payload?.isol8_action === PAYMENT_SETUP_ACTION;
+}
+
 /** Row label per marker — beats a growing ternary chain over the predicates. */
 const ACTION_LABEL: Record<string, string> = {
   [COMPANY_STRIPE_ACTION]: "Connect Stripe",
   [PROVIDER_CONSENT_ACTION]: "Approve provider",
+  [PROVIDER_CONNECT_ACTION]: "Connect provider",
+  [PROVIDER_INFORMATION_ACTION]: "Provider needs info",
+  [PAYMENT_SETUP_ACTION]: "Add a card",
 };
+
+/** One string field off an untrusted, agent-authored payload. */
+export function payloadString(
+  payload: Record<string, unknown> | null | undefined,
+  key: string,
+): string {
+  const value = payload?.[key];
+  return typeof value === "string" ? value : "";
+}
 
 function firstNonEmptyString(...values: unknown[]): string | null {
   for (const value of values) {

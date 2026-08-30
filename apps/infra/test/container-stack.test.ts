@@ -662,7 +662,7 @@ describe("ContainerStack — dev", () => {
 
   test("creates the OwnerBedrockBasePolicy managed policy (EFS/logs/ssm)", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "isol8-dev-owner-bedrock-base",
+      ManagedPolicyName: "lightbulb-dev-owner-bedrock-base",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -675,7 +675,7 @@ describe("ContainerStack — dev", () => {
 
   test("creates the OwnerBedrockBoundary permissions-boundary policy", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "isol8-dev-owner-bedrock-boundary",
+      ManagedPolicyName: "lightbulb-dev-owner-bedrock-boundary",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -704,7 +704,7 @@ describe("ContainerStack — dev", () => {
 
     const policies = template.findResources("AWS::IAM::ManagedPolicy");
     const boundary = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "isol8-dev-owner-bedrock-boundary",
+      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
     ) as any;
     expect(boundary).toBeDefined();
 
@@ -729,7 +729,7 @@ describe("ContainerStack — dev", () => {
     // (no founder carve-out) and the broad AssumeRole ceiling must be gone.
     const policies = template.findResources("AWS::IAM::ManagedPolicy");
     const boundary = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "isol8-dev-owner-bedrock-boundary",
+      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
     ) as any;
     expect(boundary).toBeDefined();
 

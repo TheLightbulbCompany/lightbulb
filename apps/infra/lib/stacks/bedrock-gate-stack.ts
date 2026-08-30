@@ -142,7 +142,7 @@ export class BedrockGateStack extends cdk.Stack {
       // keys off (`?"isol8-{env}-bedrock-gate"`). No CREATE-collision risk: this
       // is a greenfield stack and the name never changes.
       const fn = new lambda.Function(this, `GateFn${idSuffix}`, {
-        functionName: `isol8-${gateEnv}-bedrock-gate`,
+        functionName: `lightbulb-${gateEnv}-bedrock-gate`,
         runtime: lambda.Runtime.NODEJS_20_X,
         architecture: lambda.Architecture.ARM_64,
         handler: "handler.handler",

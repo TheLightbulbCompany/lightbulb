@@ -90,9 +90,9 @@ def manager(mock_settings, mock_ecs_client):
 
 def test_build_kwargs_overrides_task_role(manager, mock_ecs_client):
     kwargs = manager._build_register_kwargs_from_base(
-        "fsap-user", task_role_arn="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+        "fsap-user", task_role_arn="arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_abc"
     )
-    assert kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+    assert kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_abc"
 
 
 def test_build_kwargs_defaults_to_base_role_when_none(manager, mock_ecs_client):
@@ -117,10 +117,10 @@ def test_build_kwargs_marks_backend_config_lock_protocol(manager, mock_ecs_clien
 
 def test_register_task_definition_passes_owner_role(manager, mock_ecs_client):
     manager._register_task_definition(
-        "fsap-user", task_role_arn="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+        "fsap-user", task_role_arn="arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_abc"
     )
     reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-    assert reg_kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+    assert reg_kwargs["taskRoleArn"] == "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_abc"
 
 
 class TestBedrockProvisionMint:
@@ -131,7 +131,7 @@ class TestBedrockProvisionMint:
             "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
             "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
         }
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_abc"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_abc"
 
         ensure_aips = AsyncMock(return_value=arns)
         ensure_role = AsyncMock(return_value=role_arn)
@@ -182,7 +182,7 @@ class TestBedrockProvisionMint:
             "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
             "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
         }
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_new"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_new"
 
         # In-memory container_repo that mirrors the real contract: update_fields
         # NO-OPS (returns None, writes nothing) when the row is absent; upsert
@@ -276,7 +276,7 @@ class TestBedrockProvisionMint:
             "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
             "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
         }
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-org_rev"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-org_rev"
         ensure_aips = AsyncMock(return_value=arns)
         ensure_role = AsyncMock(return_value=role_arn)
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", ensure_aips)
@@ -319,7 +319,7 @@ class TestNonBedrockProvisionMint:
 
     @pytest.mark.asyncio
     async def test_chatgpt_oauth_mints_owner_role_shell_no_aips(self, manager, monkeypatch):
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_oauth"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_oauth"
 
         ensure_aips = AsyncMock()
         ensure_role = AsyncMock(return_value=role_arn)
@@ -351,7 +351,7 @@ class TestNonBedrockProvisionMint:
 
     @pytest.mark.asyncio
     async def test_byo_key_mints_owner_role_shell_no_aips(self, manager, monkeypatch):
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_byo"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_byo"
 
         ensure_aips = AsyncMock()
         ensure_role = AsyncMock(return_value=role_arn)
@@ -381,7 +381,7 @@ class TestNonBedrockProvisionMint:
         """A non-Bedrock owner whose service exists but is scaled to zero
         restarts on the freshly minted per-owner role (the in-memory mint), never
         falling back to the shared base task role."""
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_oauth"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_oauth"
 
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock())
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", AsyncMock(return_value=role_arn))
@@ -433,7 +433,7 @@ class TestTrialProvisionMint:
     @pytest.mark.asyncio
     async def test_trial_mints_only_sonnet_and_keeps_the_bedrock_grant(self, manager, monkeypatch):
         arns = self._trial_arns()
-        role_arn = "arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_trial"
+        role_arn = "arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_trial"
 
         ensure_aips = AsyncMock(return_value=arns)
         ensure_role = AsyncMock(return_value=role_arn)
@@ -471,7 +471,7 @@ class TestTrialProvisionMint:
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=arns))
         monkeypatch.setattr(
             "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-            AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_trial"),
+            AsyncMock(return_value="arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_trial"),
         )
         monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
         monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
@@ -493,7 +493,7 @@ class TestTrialProvisionMint:
         re-provision must not silently restore it — same C6 guard the paid path
         has, and on the free tier it is the ONLY thing stopping spend."""
         arns = self._trial_arns()
-        ensure_role = AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-user_capped")
+        ensure_role = AsyncMock(return_value="arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-user_capped")
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=arns))
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", ensure_role)
         monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
@@ -535,7 +535,7 @@ class TestBedrockGateTokenProvision:
         monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value=self._ARNS))
         monkeypatch.setattr(
             "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-            AsyncMock(return_value="arn:aws:iam::123456789:role/isol8-dev-owner-bedrock-x"),
+            AsyncMock(return_value="arn:aws:iam::123456789:role/lightbulb-dev-owner-bedrock-x"),
         )
         monkeypatch.setattr("core.containers.ecs_manager.put_metric", MagicMock())
         mint = AsyncMock(return_value="GATE_TOKEN_ABC")
@@ -654,7 +654,7 @@ def wired_bedrock_aip(monkeypatch):
     import core.billing.bedrock_aip as mod
 
     account = "877352799272"
-    role_arn = f"arn:aws:iam::{account}:role/isol8-dev-owner-bedrock-x"
+    role_arn = f"arn:aws:iam::{account}:role/lightbulb-dev-owner-bedrock-x"
 
     def _create(**kwargs):
         profile_id = kwargs["modelSource"]["copyFrom"].split(":inference-profile/")[1]

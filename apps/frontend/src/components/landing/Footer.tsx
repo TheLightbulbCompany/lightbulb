@@ -24,6 +24,11 @@ export function Footer() {
               <Link href="/marketplace">Marketplace</Link>
               <Link href="/docs">Docs</Link>
               <Link href="/#pricing">Pricing</Link>
+              {/* API route 302s to the DMG — must be a hard navigation, not a client <Link>. */}
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+              <a href="/api/download/desktop" title="macOS · Apple Silicon">
+                Download for Mac
+              </a>
             </div>
             <div className="ld-footer-col">
               <span>Company</span>

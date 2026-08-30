@@ -406,7 +406,7 @@ describe("ContainerStack — dev", () => {
     // Nothing else pins that, so this assertion stays even though the Stripe
     // CLI it was originally written for is gone.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
+      Family: "lightbulb-dev-openclaw",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "openclaw",

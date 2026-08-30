@@ -282,16 +282,24 @@ _MAX_STEPS_PER_READ = 5
 
 
 async def _stepped(rows: list[dict]) -> list[dict]:
-    """Move each non-terminal row one step, newest first, up to the cap. The
-    rest come back exactly as stored — the next read takes them."""
+    """Move the OLDEST open rows one step each, up to the cap, and hand the
+    list back in the order it came in.
+
+    Oldest first because `rows` arrives NEWEST first: with more open rows than
+    the cap, taking them in presentation order would step the same recent few
+    on every read and starve the old ones forever — and an old open row is
+    precisely the one nothing else is going to move.
+    """
     budget = _MAX_STEPS_PER_READ
-    out = []
-    for row in rows:
-        if budget and row.get("state") not in workflow_repo.TERMINAL_STATES:
-            budget -= 1
-            row = await provisioning_workflow.advance_on_read(row["workflow_id"]) or row
-        out.append(row)
-    return out
+    moved: dict[str, dict] = {}
+    for row in reversed(rows):
+        if not budget:
+            break
+        if row.get("state") in workflow_repo.TERMINAL_STATES:
+            continue
+        budget -= 1
+        moved[row["workflow_id"]] = await provisioning_workflow.advance_on_read(row["workflow_id"]) or row
+    return [moved.get(row["workflow_id"], row) for row in rows]
 
 
 async def _owned(owner_id: str, workflow_id: str) -> dict:
@@ -477,9 +485,10 @@ async def container_cancel_request(owner_id: str, workflow_id: str, request: Req
 # so each one is minted for THIS click and returned once.
 #
 # Order on every route: the gate (`Owner`), then ownership, then state, then
-# the body, then the side effect. Each one that hands work back to the state
-# machine ends with `advance_on_read`, because the click IS the clock — nothing
-# else will move the row until somebody reads it again.
+# the body, then the side effect. None of them steps the workflow: the click's
+# own transition IS its step, and the next READ — the Settings page reloading,
+# Friday checking back — takes the one after it. Stepping here too would spend
+# a second Stripe call inside a click that already made one.
 # ---------------------------------------------------------------------------
 
 # $1,000 per interval. Not Stripe's ceiling — ours, so a fat-fingered limit
@@ -552,9 +561,9 @@ async def _stamp_removed(workflow_id: str | None) -> None:
 async def _resumed(row: dict, awaiting: str) -> None:
     """The owner came back to a `stale` row.
 
-    Un-stale it BEFORE the step, or the step polls a `stale` row for another
-    seven days. `user_action_since` restarts with it — the days measure how
-    long they have been away, and they are demonstrably back.
+    Un-stale it, or the next read polls a `stale` row for another seven days.
+    `user_action_since` restarts with it — the days measure how long they have
+    been away, and they are demonstrably back.
     """
     if row.get("state") == "stale":
         await workflow_repo.transition(
@@ -612,8 +621,7 @@ async def approve_workflow(
         raise _refusal(e) from e
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
-    stepped = await provisioning_workflow.advance_on_read(workflow_id)
-    return _safe_workflow(stepped or moved or row)
+    return _safe_workflow(moved or row)
 
 
 @router.post("/workflows/{workflow_id}/reject")
@@ -712,8 +720,7 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
             "user_action_since": None,
         },
     )
-    stepped = await provisioning_workflow.advance_on_read(workflow_id)
-    return _safe_workflow(stepped or moved or {**row, "state": to_state})
+    return _safe_workflow(moved or {**row, "state": to_state})
 
 
 @router.post("/workflows/{workflow_id}/payment-link")
@@ -741,7 +748,6 @@ async def payment_link(workflow_id: str, owner_id: Owner):
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await _resumed(row, "payment_setup")
-    await provisioning_workflow.advance_on_read(workflow_id)
     # `complete` is the answer when a card is already on file — no URL, and the
     # payment-profile poll on the next read is what moves the row on from here.
     return {"checkout_session_url": result.get("checkout_session_url"), "status": result.get("status")}
@@ -787,10 +793,9 @@ async def connect_link(workflow_id: str, owner_id: Owner):
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await _resumed(row, "provider_connect")
-    await provisioning_workflow.advance_on_read(workflow_id)
     if request_.get("status") != "pending_auth" or not request_.get("redirect_url"):
         # `complete`, `requested` or `needs_information`: there is no browser
-        # step to take right now, and the step above is what moves the row.
+        # step to take right now, and the next read is what moves the row.
         raise _conflict("no_redirect_available", "This provider connection does not need a browser step right now")
     return {"redirect_url": request_["redirect_url"]}
 

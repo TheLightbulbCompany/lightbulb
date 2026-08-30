@@ -52,11 +52,16 @@ DEADLINE_S = 900  # 15 minutes, then requires_review with the ids kept.
 # are allowed to think about it over a weekend.
 USER_ACTION_DEADLINE_S = 7 * 24 * 3600
 
-# How long one reader may hold a row while it takes its step. Only has to
-# outlast a single ``advance`` — two chained Stripe calls at the client's 45s
-# timeout — so a reader that dies mid-step blocks the next one for a minute at
-# most. Renewed by nothing: a read takes ONE step and hands the row back.
-READ_LEASE_S = 60
+# How long one reader may hold a row while it takes its step. Sized to the
+# WORST step, not the average: `connecting_provider` can chain six Stripe calls
+# (`list_provider_connections`, `list_projects`, `create_project`,
+# `create_account_request`, `list_resources`, `create_resource`), each bounded
+# at `stripe_provisioning.TIMEOUT_S + 5` = 50s. Under that, a live step would
+# lose its claim mid-way and a second reader would create the resource twice —
+# which costs money, where an over-long claim only costs a reader its turn.
+# Not renewable (see `repo.claim`), so a reader that dies mid-step blocks the
+# row for five minutes at most.
+READ_LEASE_S = 300
 
 # Which process holds a claim. The pid matters: a rolling deploy can put two
 # workers on one host, and `HOSTNAME` is the Fargate task id in ECS.
@@ -1132,7 +1137,10 @@ async def advance_on_read(workflow_id: str) -> dict:
         await repo.release(workflow_id, owner=INSTANCE_ID)
         return claimed
     try:
-        # ponytail: one Stripe call (<=45 s) may run inside a read; bound it, split it if reads get slow.
+        # ponytail: the caller's real bound is API Gateway's 30s integration
+        # timeout (api-stack.ts), which a six-call step can exceed. A 504 there
+        # is harmless — the step runs on to completion server-side and the
+        # claim stops the retry re-entering it. Split the step if reads get slow.
         row = await advance(claimed)
     except WorkflowRefused as e:
         # A door the state machine will keep finding shut — the owner

@@ -149,18 +149,22 @@ async def test_transition_rejects_an_unknown_state(workflows_table):
 
 
 @pytest.mark.asyncio
-async def test_claim_takes_an_unheld_row_and_renews_its_own_lease(workflows_table):
-    """The per-row claim: two readers can arrive at once (and a rolling deploy
-    runs two backend instances), so a reader claims before every step."""
+async def test_claim_takes_an_unheld_row_and_is_not_renewable(workflows_table):
+    """The per-row claim: two readers can arrive at once, so a reader claims
+    before every step.
+
+    NOT renewable, even by the holder. The backend runs `desiredCount: 1`, so
+    every reader in the process shares one owner string — a renewal clause
+    would hand the row to the SECOND concurrent read of the same process and
+    both would create the resource.
+    """
     from core.repositories import provisioning_workflow_repo as repo
 
     row = await _new()
     held = await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
     assert held["lease_owner"] == "host-a:1"
     assert held["lease_until"] > held["created_at"]
-    # The holder may renew as often as it likes.
-    again = await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60)
-    assert again["lease_owner"] == "host-a:1"
+    assert await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60) is None
 
 
 @pytest.mark.asyncio
@@ -170,6 +174,19 @@ async def test_claim_refuses_a_row_another_instance_holds(workflows_table):
     row = await _new()
     assert await repo.claim(row["workflow_id"], owner="host-a:1", ttl_s=60) is not None
     assert await repo.claim(row["workflow_id"], owner="host-b:2", ttl_s=60) is None
+
+
+@pytest.mark.asyncio
+async def test_two_reads_in_one_process_cannot_both_step_a_row(workflows_table):
+    """The double-create guard, end to end: same owner string, two reads. The
+    second is refused until the first hands the row back."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    assert await repo.claim(row["workflow_id"], owner="task-1:42", ttl_s=300) is not None
+    assert await repo.claim(row["workflow_id"], owner="task-1:42", ttl_s=300) is None
+    await repo.release(row["workflow_id"], owner="task-1:42")
+    assert await repo.claim(row["workflow_id"], owner="task-1:42", ttl_s=300) is not None
 
 
 @pytest.mark.asyncio

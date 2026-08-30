@@ -189,6 +189,12 @@ async def claim(workflow_id: str, *, owner: str, ttl_s: int) -> dict | None:
     the same workflow and file the same card. The claim elects one stepper per
     row; the other reports the row as it stands.
 
+    There is deliberately NO renewal clause. The backend runs
+    ``desiredCount: 1``, so every reader in a process shares one ``owner``
+    string — an ``OR #lo = :me`` would hand the row to the second concurrent
+    read of the same process, which is exactly the double-create this exists to
+    stop. A holder that wants the row again waits out the ttl like anyone else.
+
     Time-bounded and never released by a crash: a reader that dies mid-step
     simply lets its claim expire, and the next read takes the row over.
 
@@ -202,9 +208,7 @@ async def claim(workflow_id: str, *, owner: str, ttl_s: int) -> dict | None:
             _table().update_item,
             Key={"workflow_id": workflow_id},
             UpdateExpression="SET #lo = :me, #lu = :until",
-            ConditionExpression=(
-                "attribute_exists(workflow_id) AND (attribute_not_exists(#lu) OR #lu < :now OR #lo = :me)"
-            ),
+            ConditionExpression=("attribute_exists(workflow_id) AND (attribute_not_exists(#lu) OR #lu < :now)"),
             ExpressionAttributeNames={"#lo": "lease_owner", "#lu": "lease_until"},
             ExpressionAttributeValues={":me": owner, ":until": until, ":now": now},
             ReturnValues="ALL_NEW",

@@ -621,7 +621,7 @@ export class ServiceStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ["rds-data:ExecuteStatement"],
         resources: [
-          `arn:aws:rds:${this.region}:${this.account}:cluster:isol8-${env}-paperclip-db`,
+          `arn:aws:rds:${this.region}:${this.account}:cluster:lightbulb-${env}-paperclip-db`,
         ],
       }),
     );
@@ -631,7 +631,7 @@ export class ServiceStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb-${env}-paperclip-db-credentials-*`,
         ],
       }),
     );

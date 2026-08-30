@@ -21,7 +21,7 @@ async def test_parses_formatted_records_and_caches_secret_arn(monkeypatch):
     paperclip_sql._secret_arn_cache.clear()
     sm = MagicMock()
     sm.get_paginator.return_value.paginate.return_value = [
-        {"SecretList": [{"Name": "isol8-test-paperclip-db-credentials-abc", "ARN": "arn:secret:1"}]}
+        {"SecretList": [{"Name": "lightbulb-test-paperclip-db-credentials-abc", "ARN": "arn:secret:1"}]}
     ]
     rds = MagicMock()
     rds.execute_statement.return_value = {"formattedRecords": '[{"n": 2, "name": "Isol8"}]'}
@@ -36,7 +36,7 @@ async def test_parses_formatted_records_and_caches_secret_arn(monkeypatch):
     assert rows2 == rows
     assert sm.get_paginator.call_count == 1  # cached after the first lookup
     kwargs = rds.execute_statement.call_args.kwargs
-    assert kwargs["resourceArn"].endswith(":cluster:isol8-test-paperclip-db")
+    assert kwargs["resourceArn"].endswith(":cluster:lightbulb-test-paperclip-db")
     assert kwargs["secretArn"] == "arn:secret:1"
     assert kwargs["database"] == "paperclip"
     assert kwargs["formatRecordsAs"] == "JSON"

@@ -82,7 +82,7 @@ export interface PaperclipStackProps extends cdk.StackProps {
    * PGPASSWORD, and that property only exists on the concrete base class
    * `DatabaseClusterBase` exposed by `rds.DatabaseCluster`.
    */
-  paperclipDbCluster: rds.DatabaseCluster;
+  paperclipDbCluster: rds.DatabaseClusterFromSnapshot;
   paperclipDbSecurityGroup: ec2.ISecurityGroup;
   /**
    * Pass the secret *name* (not an ISecret) to avoid CDK auto-granting
@@ -254,7 +254,7 @@ export class PaperclipStack extends cdk.Stack {
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip_better_auth_secret-*`,
           // Aurora's master secret is named "isol8-${env}-paperclip-db-credentials"
           // (see database-stack.ts), generated under the AWS-managed prefix.
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb-${env}-paperclip-db-credentials-*`,
         ],
       }),
     );
@@ -655,7 +655,7 @@ export class PaperclipStack extends cdk.Stack {
         sid: "PaperclipMigrateExecutionSecretsRead",
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb-${env}-paperclip-db-credentials-*`,
         ],
       }),
     );

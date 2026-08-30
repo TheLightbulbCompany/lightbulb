@@ -162,7 +162,7 @@ def classify_join_requests(rows: list[dict]) -> list[Finding]:
 
 def _secret_arn(session, env: str) -> str:
     sm = session.client("secretsmanager", region_name=REGION)
-    needle = f"isol8-{env}-paperclip-db-credentials"
+    needle = f"lightbulb-{env}-paperclip-db-credentials"
     for page in sm.get_paginator("list_secrets").paginate():
         for s in page.get("SecretList", []):
             if needle in s["Name"]:
@@ -173,7 +173,7 @@ def _secret_arn(session, env: str) -> str:
 def _aurora(session, env: str):
     return (
         session.client("rds-data", region_name=REGION),
-        f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db",
+        f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:lightbulb-{env}-paperclip-db",
         _secret_arn(session, env),
     )
 

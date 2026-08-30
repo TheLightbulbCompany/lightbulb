@@ -172,6 +172,56 @@ describe("ProvisionedResourcesFacet", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("offers Withdraw on an ask nothing was created for, and refreshes after", async () => {
+    const onChanged = vi.fn();
+    post.mockResolvedValue({ state: "cancelled" });
+    render(
+      <ProvisionedResourcesFacet
+        provider="posthog"
+        resources={[]}
+        workflows={[
+          { workflow_id: "pwf_1", state: "awaiting_approval", provider: "posthog", service: "svc_analytics" },
+        ]}
+        canManage
+        onChanged={onChanged}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/company/provisioning/workflows/pwf_1/cancel", {}),
+    );
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it("offers no Withdraw once the request has started, or to a non-admin", () => {
+    const started: ProvisioningWorkflow[] = [
+      { workflow_id: "pwf_1", state: "provisioning", provider: "posthog", service: "svc_analytics" },
+    ];
+    const { unmount } = renderFacet({ resources: [], workflows: started });
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+    unmount();
+    renderFacet({
+      canManage: false,
+      resources: [],
+      workflows: [
+        { workflow_id: "pwf_1", state: "awaiting_approval", provider: "posthog", service: "svc_analytics" },
+      ],
+    });
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+  });
+
+  it("says why a withdrawal was refused rather than pretending it worked", async () => {
+    post.mockRejectedValue(
+      Object.assign(new Error("This request has already started — review it instead"), { status: 409 }),
+    );
+    renderFacet({
+      resources: [],
+      workflows: [{ workflow_id: "pwf_1", state: "stale", provider: "posthog", service: "svc_analytics" }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+  });
+
   it("renders nothing at all when the provider has neither resources nor open work", () => {
     const { container } = renderFacet({ resources: [], workflows: [] });
     expect(container).toBeEmptyDOMElement();

@@ -209,11 +209,12 @@ async def _write_provider_resources(owner_id: str, provider: str, resources: lis
 async def record_provider_resource(owner_id: str, provider: str, resource: dict) -> list[dict]:
     """Upsert one provisioned resource pointer. Idempotent per ``resource_id``.
 
-    Read-modify-write of a per-(owner, provider) list. The only writer is the
-    container's `landed` post, and one agent cannot land two resources for the
-    same provider at once, so a lost update needs two backend instances serving
-    the same owner mid-deploy — at which point Friday's next `landed` restores
-    the missing pointer.
+    Read-modify-write of a per-(owner, provider) list. The only writer is
+    ``provisioning_workflow._bind``, and each workflow binds under its own
+    driver lease, so a lost update needs two DIFFERENT workflows for the same
+    provider to bind in the same instant. Accepted: the losing pointer is a
+    credential still present in Secrets Manager and in the container's env, and
+    the workflow row keeps its own ``resource_name``/``env_keys`` copy.
     """
     resource_id = resource.get("resource_id")
     if not resource_id:

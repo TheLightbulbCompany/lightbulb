@@ -493,7 +493,13 @@ async def lifespan(app: FastAPI):
             # exactly the workflows it just swept in to take over.
             from core.services.provisioning_driver import cancel_all
 
-            await cancel_all()
+            # Bounded on its own: a driver task wedged in a Stripe read would
+            # otherwise eat the whole 20s drain budget and take the handoff
+            # steps below down with it. A lease left behind expires by itself.
+            try:
+                await asyncio.wait_for(cancel_all(), 5)
+            except asyncio.TimeoutError:
+                logger.warning("Provisioning drivers did not stop in 5s; their leases will expire on their own")
             system_health.BACKGROUND_TASKS.clear()
             # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
             request_worker_stop()
@@ -971,7 +977,8 @@ from routers import company_stripe  # noqa: E402
 
 app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
 
-# Provisioning rail — container-authed: pairing + consent cards, landed credentials.
+# Provisioning rail (Stripe Projects) — Friday's ask routes, the owner's
+# approvals, and the provisioned-resource surface in Settings.
 from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])

@@ -158,7 +158,9 @@ snapshot on the workflow row. Stripe's "Provisioning workflow" = a
    issue_id, reason}` (or the owner, from Connections, later). Backend:
    `GET /eligibility` — `is_eligible=false` → `failed` with a safe message;
    `requirements` non-empty → a **Finish Stripe setup** card (hosted
-   onboarding link, §3.1). Re-read the account catalog
+   onboarding link, §3.1). *P0b ships no card here: P0a's card short-circuits
+   once an account exists, so the refusal (409 `requirements_pending`, with the
+   list) names the Settings → Connections path instead.* Re-read the account catalog
    (`catalog/services?provider_name=`), reject unavailable services, validate
    `configuration` against `configuration_schema`, snapshot provider, service
    (`service_id` → `service_ref`), configuration, `pricing.paid_pricing`,

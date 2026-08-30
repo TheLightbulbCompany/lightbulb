@@ -121,6 +121,9 @@ export class ContainerStack extends cdk.Stack {
     // (CPUUtilization, MemoryUtilization) for the backend service alarms
     // and custom EMF metrics for everything else.
     this.cluster = new ecs.Cluster(this, "Cluster", {
+      // Explicit so the physical name stops embedding the old stack name; changing
+      // it replaces the cluster, which is why the fleet is re-provisioned around it.
+      clusterName: `lightbulb-${props.environment}-container`,
       vpc: props.vpc,
       containerInsights: false,
       // Associates FARGATE + FARGATE_SPOT capacity providers so the backend
@@ -310,7 +313,7 @@ export class ContainerStack extends cdk.Stack {
     // the non-Bedrock grants in IaC (auditable); only the per-owner-varying
     // scoped-Bedrock inline policy lives in backend code.
     this.ownerBedrockBasePolicy = new iam.ManagedPolicy(this, "OwnerBedrockBasePolicy", {
-      managedPolicyName: `isol8-${props.environment}-owner-bedrock-base`,
+      managedPolicyName: `lightbulb-${props.environment}-owner-bedrock-base`,
       statements: [
         new iam.PolicyStatement({
           sid: "EfsClientAccess",
@@ -348,7 +351,7 @@ export class ContainerStack extends cdk.Stack {
     // profiles + the 9 FM ARNs) + EFS + logs + ssm. A backend that can
     // CreateRole+PutRolePolicy cannot escalate a per-owner role past this.
     this.ownerBedrockBoundary = new iam.ManagedPolicy(this, "OwnerBedrockBoundary", {
-      managedPolicyName: `isol8-${props.environment}-owner-bedrock-boundary`,
+      managedPolicyName: `lightbulb-${props.environment}-owner-bedrock-boundary`,
       statements: [
         new iam.PolicyStatement({
           sid: "BoundaryBedrockInvoke",

@@ -24,14 +24,14 @@ describe("AgentMailOutboundStack", () => {
   test("creates the SES configuration set every agent-mail send is stamped with", () => {
     template.resourceCountIs("AWS::SES::ConfigurationSet", 1);
     template.hasResourceProperties("AWS::SES::ConfigurationSet", {
-      Name: "isol8-dev-agent-mail",
+      Name: "lightbulb-dev-agent-mail",
     });
   });
 
   test("wires COMPLAINT events to EventBridge on that configuration set", () => {
     template.resourceCountIs("AWS::SES::ConfigurationSetEventDestination", 1);
     template.hasResourceProperties("AWS::SES::ConfigurationSetEventDestination", {
-      ConfigurationSetName: "isol8-dev-agent-mail",
+      ConfigurationSetName: "lightbulb-dev-agent-mail",
       EventDestination: Match.objectLike({
         MatchingEventTypes: ["COMPLAINT"],
         EventBridgeDestination: Match.objectLike({
@@ -74,7 +74,7 @@ describe("AgentMailOutboundStack", () => {
         detail: {
           mail: {
             tags: {
-              "ses:configuration-set": ["isol8-dev-agent-mail"],
+              "ses:configuration-set": ["lightbulb-dev-agent-mail"],
             },
           },
         },
@@ -114,7 +114,7 @@ describe("AgentMailOutboundStack", () => {
   test("prod env names its configuration set and endpoint distinctly from dev", () => {
     const prodTemplate = buildStack("prod");
     prodTemplate.hasResourceProperties("AWS::SES::ConfigurationSet", {
-      Name: "isol8-prod-agent-mail",
+      Name: "lightbulb-prod-agent-mail",
     });
     prodTemplate.hasResourceProperties("AWS::Events::ApiDestination", {
       InvocationEndpoint: `https://api.${ROOT_DOMAIN}/api/v1/webhooks/ses-events`,

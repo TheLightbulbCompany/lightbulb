@@ -2,11 +2,14 @@
 ``lightbulb`` skill.
 
 The skill is what Friday actually reads, so its rules are as much a part of
-this rail as the routes are. This test pins only the claims a wrong edit would
-turn into a leak or a dead end: the three container routes, the names-only
-rule, the never-sign-up-manually rule, the two-rails distinction, and the
-absence of any Stripe CLI command (the CLI rail was removed — the container
-has no `stripe` binary and no project of its own).
+this rail as the routes are. This pins only the claims a wrong edit would turn
+into a leak or a dead end: the three container routes, the names-only rule, the
+never-sign-up-manually rule, the two-rails distinction, the refusal codes on the
+status that actually carries them, and the absence of any Stripe CLI command
+(the CLI rail was removed — the container has no `stripe` binary).
+
+Prose is matched against a WHITESPACE-FLATTENED copy, so re-wrapping a
+paragraph does not fail a test; only changing the words does.
 """
 
 from pathlib import Path
@@ -21,28 +24,54 @@ def _section() -> str:
     return "\n## " + text.split(HEADING, 1)[1].split("\n## ", 1)[0]
 
 
+def _flat() -> str:
+    return " ".join(_section().split())
+
+
 def test_the_three_container_routes_are_documented():
-    section = _section()
+    flat = _flat()
     base = "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID"
-    assert f"{base}/catalog?q=" in section
-    assert f'{base}/requests"' in section
-    assert f'{base}/requests/<workflow_id>"' in section
+    assert f"{base}/catalog?q=" in flat
+    assert f'{base}/requests"' in flat
+    assert f'{base}/requests/<workflow_id>"' in flat
 
 
 def test_credentials_are_names_only():
-    section = _section()
-    assert "env_keys" in section
-    assert "never the value" in section
+    flat = _flat()
+    assert "env_keys" in flat
+    assert "never the value" in flat
 
 
 def test_the_never_sign_up_manually_rule_is_present():
-    assert "Never tell the owner to sign up for something manually" in _section()
+    assert "Never tell the owner to sign up for something manually" in _flat()
 
 
 def test_the_two_rails_are_distinguished():
-    section = _section()
-    assert "Two rails, and they are not the same thing." in section
-    assert "OAuth" in section
+    flat = _flat()
+    assert "Two rails, and they are not the same thing." in flat
+    assert "OAuth" in flat
+
+
+def test_the_failure_table_matches_the_router():
+    # `invalid_configuration` is a WorkflowRefused, so it arrives as a 409 —
+    # putting it on the 422 row sends Friday to fix the wrong thing.
+    rows = {line.split("|")[1].strip(): line for line in _section().splitlines() if line.startswith("| `4")}
+    assert "invalid_configuration" in rows["`409`"]
+    assert "service_unavailable" in rows["`409`"]
+    assert "no_company`" in rows["`409`"]
+    assert "invalid_configuration" not in rows["`422`"]
+    assert "workflow_not_found" in rows["`404`"]
+
+
+def test_the_catalog_envelope_and_its_gate_are_named():
+    flat = _flat()
+    assert "`{services, eligible, requirements}`" in flat
+    assert "do not POST anything" in flat
+
+
+def test_the_ask_state_has_an_exit():
+    # The one dead end: nothing was filed, and `reused: true` keeps pointing at it.
+    assert "| `ask` |" in _section()
 
 
 def test_the_section_carries_no_stripe_cli_command():

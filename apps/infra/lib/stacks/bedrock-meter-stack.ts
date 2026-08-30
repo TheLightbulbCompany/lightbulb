@@ -119,7 +119,13 @@ export class BedrockMeterStack extends cdk.Stack {
       embeddingDataDeliveryEnabled: true,
       imageDataDeliveryEnabled: false,
     };
-    const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfig", {
+    // "V2" because naming the provider function changed this resource's
+    // ServiceToken, which CloudFormation refuses to modify in place — the
+    // resource must be replaced via a new logical id. Safe: the physical id is
+    // stable, so CFN skips the old resource's Delete (the destructive
+    // deleteModelInvocationLoggingConfiguration never fires) and onCreate
+    // re-puts the same logging config.
+    const loggingConfigCr = new cr.AwsCustomResource(this, "BedrockLoggingConfigV2", {
       // Explicit name + role so the helper Lambda carries the lightbulb
       // prefix instead of the auto-name derived from the old stack name.
       functionName: "lightbulb-bedrock-logging-config",

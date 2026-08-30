@@ -563,7 +563,11 @@ export class SesInboundStack extends cdk.Stack {
     // the active rule set entirely (empty params — SES semantics: omitting
     // RuleSetName deactivates whatever is currently active).
     // -------------------------------------------------------------------------
-    const activateRuleSet = new cr.AwsCustomResource(this, "ActivateAgentMailRuleSet", {
+    // "V2" for the same ServiceToken-replacement reason as BedrockLoggingConfigV2
+    // (bedrock-meter-stack.ts): the named provider changed the service token, and
+    // the stable physical id means the old resource's Delete (which would
+    // DEACTIVATE the inbound rule set) is skipped on replacement.
+    const activateRuleSet = new cr.AwsCustomResource(this, "ActivateAgentMailRuleSetV2", {
       // Explicit name + role so the helper Lambda carries the lightbulb
       // prefix instead of the auto-name derived from the old stack name.
       functionName: `lightbulb-${envName}-ses-rule-set-activate`,

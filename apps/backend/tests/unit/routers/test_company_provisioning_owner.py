@@ -262,14 +262,14 @@ def test_workflows_list_is_owner_scoped_newest_first_and_safe(client):
     # `_safe_workflow` is an allowlist — the row's ids and the approval
     # snapshot never reach the browser.
     assert "project_id" not in rows[0] and "approval" not in rows[0]
-    # Both rows are open, so the page load moves both — newest first.
-    assert [c.args[0] for c in step.await_args_list] == ["pwf_1", "pwf_0"]
+    # Both rows are open, so the page load moves both — OLDEST first.
+    assert [c.args[0] for c in step.await_args_list] == ["pwf_0", "pwf_1"]
 
 
 # --- approve ---------------------------------------------------------------
 
 
-def test_approve_honours_an_edited_limit_records_the_signer_and_steps(client):
+def test_approve_honours_an_edited_limit_records_the_signer_and_takes_no_step(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -288,7 +288,9 @@ def test_approve_honours_an_edited_limit_records_the_signer_and_steps(client):
     assert resp.status_code == 200 and resp.json()["state"] == "connecting_provider"
     assert approved.await_args.kwargs["usage_limit"]["max_amount"] == 2500
     assert approved.await_args.kwargs["approved_by"] == "user_admin"
-    step.assert_awaited_once_with("pwf_1")
+    # A click is not a read: its own transition IS the step, and the next
+    # read takes the one after it.
+    step.assert_not_awaited()
 
 
 def test_approve_ignores_an_edited_limit_once_a_payment_profile_exists(client):
@@ -465,7 +467,9 @@ def test_information_submits_to_the_resource_endpoint_for_that_target(client):
     # The answered question's schema and the owner's clock go with it.
     assert move.await_args.kwargs["fields"]["information_schema"] is None
     assert move.await_args.kwargs["fields"]["user_action_since"] is None
-    step.assert_awaited_once_with("pwf_1")
+    # A click is not a read: its own transition IS the step, and the next
+    # read takes the one after it.
+    step.assert_not_awaited()
 
 
 def test_information_submits_to_the_account_request_endpoint_for_that_target(client):
@@ -590,7 +594,9 @@ def test_payment_link_is_minted_on_click_and_never_stored(client):
     # Nothing bearer-like is written to the row.
     for call in [*patched.await_args_list, *move.await_args_list]:
         assert "checkout.stripe.com" not in str(call)
-    step.assert_awaited_once_with("pwf_1")
+    # A click is not a read: its own transition IS the step, and the next
+    # read takes the one after it.
+    step.assert_not_awaited()
 
 
 def test_payment_link_falls_back_to_the_default_limit(client):
@@ -636,7 +642,7 @@ def test_a_withdrawn_request_can_never_mint_a_link(client, path, code):
     read.assert_not_awaited()
 
 
-def test_payment_link_un_stales_the_row_so_the_step_is_not_a_no_op(client):
+def test_payment_link_un_stales_the_row_so_the_next_read_is_not_a_no_op(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**PAYING, "state": "stale"})),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -687,7 +693,9 @@ def test_connect_link_reuses_a_live_account_request(client):
     # Minted per click: the URL never reaches the row.
     for call in patched.await_args_list:
         assert "provider.example" not in str(call)
-    step.assert_awaited_once_with("pwf_1")
+    # A click is not a read: its own transition IS the step, and the next
+    # read takes the one after it.
+    step.assert_not_awaited()
 
 
 def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
@@ -738,9 +746,9 @@ def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
     created.assert_awaited_once()
 
 
-def test_connect_link_un_stales_the_row_so_the_step_is_not_a_no_op(client):
+def test_connect_link_un_stales_the_row_so_the_next_read_is_not_a_no_op(client):
     """The driver stops on `stale` by design, so the click must move the row
-    back — and restart the seven days — before stepping, or nothing happens."""
+    back — and restart the seven days — or the next read finds it `stale`."""
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "state": "stale"})),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
@@ -772,10 +780,10 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_redirect_available"
-    # A `complete` request is not one to replace — and the step is what moves
-    # the row on from it.
+    # A `complete` request is not one to replace — and the next READ is what
+    # moves the row on from it.
     created.assert_not_awaited()
-    step.assert_awaited_once_with("pwf_1")
+    step.assert_not_awaited()
 
 
 def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
@@ -953,3 +961,19 @@ def test_remove_keeps_our_copy_when_the_provider_refuses(client, facts):
     assert resp.status_code == 502 and resp.json()["detail"]["code"] == "stripe_error"
     revoked.assert_not_awaited()
     facts.assert_not_awaited()
+
+
+def test_a_list_read_steps_the_five_oldest_open_rows_and_starves_none(client):
+    """More open rows than the cap. Taking them newest-first would step the
+    same recent five on every read and leave the oldest — the ones nothing else
+    is going to move — parked forever."""
+    rows = [{**WF, "workflow_id": f"pwf_{i}", "created_at": f"2026-08-{i + 10:02d}"} for i in range(7)]
+    rows.reverse()  # the repo hands them back newest first, and so does the route
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=rows)),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
+    ):
+        resp = client.get("/api/v1/company/provisioning/workflows")
+    assert [c.args[0] for c in step.await_args_list] == ["pwf_0", "pwf_1", "pwf_2", "pwf_3", "pwf_4"]
+    # Presentation order is untouched by which rows were stepped.
+    assert [r["workflow_id"] for r in resp.json()["workflows"]] == [f"pwf_{i}" for i in range(6, -1, -1)]

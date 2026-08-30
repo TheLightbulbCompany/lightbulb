@@ -321,6 +321,7 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+
     // Paperclip companies — maps Isol8 user_id → their Paperclip company
     // record + encrypted credentials. GSI by-status-purge-at lets the
     // cleanup cron find disabled rows past their grace window. Per the

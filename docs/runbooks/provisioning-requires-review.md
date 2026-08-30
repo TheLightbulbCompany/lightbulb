@@ -1,15 +1,17 @@
 # provisioning — clearing a `requires_review` workflow
 
 A provisioning workflow (`lightbulb-{env}-provisioning-workflows`) in
-`requires_review` is a row **a human has to decide about**. Nothing retries it:
-`requires_review` is terminal, so a read steps right over it, the owner's
-Connections card says "this one needs a look from Lightbulb", and Friday is told
-to stop asking (`GET …/requests/{id}` returns the state and the door refuses a
-re-ask with 409 `needs_review_first`).
+`requires_review` is a row **a human has to decide about**. Nothing retries it,
+and nothing ever will: `requires_review` is TERMINAL, so reading the row does
+not advance it. The owner's Connections card says "this one needs a look from
+Lightbulb", and Friday is told to stop asking (`GET …/requests/{id}` returns the
+state and the door refuses a re-ask with 409 `needs_review_first`).
 
-Nothing runs in the background on this rail at all — a workflow advances one
-step each time somebody READS it (Friday's status route, the owner's page loads
-and clicks), so a parked row is simply re-read on the owner's next page load.
+Nothing runs in the background on this rail at all — an OPEN workflow advances
+one step each time somebody READS it (Friday's status route, the owner's page
+loads and clicks). A parked row is not open, so it sits exactly as it is until
+you move it out of `requires_review` in step 3 below. Until then, no read, no
+restart and no deploy will touch it.
 
 The reason it is not automatic: Stripe's Provisioning API has **no caller
 idempotency contract**, so a state-changing POST whose answer we never saw may

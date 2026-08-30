@@ -110,3 +110,77 @@ async def test_retrieve_status_shape():
         retrieve.return_value = {"details_submitted": True, "charges_enabled": True, "payouts_enabled": False}
         status = await company_stripe.retrieve_status(account_id="acct_x")
     assert status == {"details_submitted": True, "charges_enabled": True, "payouts_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_developer_configuration_is_off_by_default(monkeypatch):
+    """The field is "Unknown field" for our platform today (probed 2026-08-29),
+    so sending it would break every company-account create."""
+    from core.services import company_stripe as mod
+
+    assert mod.settings.STRIPE_PROJECTS_DEVELOPER_CONFIG is False
+    client = MagicMock()
+    client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
+    with patch.object(mod, "_client", return_value=client):
+        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="Northwind")
+    params = client.v2.core.accounts.create.call_args.args[0]
+    assert "developer" not in params["configuration"]
+    assert "include" not in params
+    assert params["configuration"]["merchant"]["capabilities"]["card_payments"]["requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_developer_configuration_matches_the_guide_shape_when_enabled(monkeypatch):
+    from core.services import company_stripe as mod
+
+    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", True)
+    client = MagicMock()
+    client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
+    with patch.object(mod, "_client", return_value=client):
+        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="Northwind")
+    params = client.v2.core.accounts.create.call_args.args[0]
+    # Verbatim from the guide's "Create the connected account" example.
+    assert params["configuration"]["developer"] == {"capabilities": {"projects": {"requested": True}}}
+    assert params["include"] == ["configuration.developer", "requirements", "identity"]
+    # We keep dashboard: full — the owner logs into their own Stripe (spec §3.1);
+    # the guide's example uses "none" because Forge's tenants never do.
+    assert params["dashboard"] == "full"
+    assert params["configuration"]["merchant"]["capabilities"]["card_payments"]["requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_onboarding_configurations_follow_the_flag(monkeypatch):
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v2.core.account_links.create = MagicMock(return_value=SimpleNamespace(url="https://x"))
+    with patch.object(mod, "_client", return_value=client):
+        await mod.create_company_onboarding_link(account_id="acct_1")
+        body = client.v2.core.account_links.create.call_args.args[0]
+        assert body["use_case"]["account_onboarding"]["configurations"] == ["merchant"]
+
+        monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", True)
+        await mod.create_company_onboarding_link(account_id="acct_1")
+        body = client.v2.core.account_links.create.call_args.args[0]
+        assert body["use_case"]["account_onboarding"]["configurations"] == ["merchant", "developer"]
+
+
+@pytest.mark.asyncio
+async def test_accounts_v2_version_is_pinned_only_when_configured(monkeypatch):
+    """The guide pins that call with -H "Stripe-Version: {{ACCOUNTS_V2_VERSION}}"
+    and says to confirm the version during onboarding. Empty ⇒ SDK default."""
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
+    with patch.object(mod, "_client", return_value=client):
+        monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "")
+        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
+        options = client.v2.core.accounts.create.call_args.kwargs["options"]
+        assert "stripe_version" not in options
+        assert options["idempotency_key"].startswith("company_account_create:")
+
+        monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "2026-08-26.dahlia")
+        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
+        options = client.v2.core.accounts.create.call_args.kwargs["options"]
+        assert options["stripe_version"] == "2026-08-26.dahlia"

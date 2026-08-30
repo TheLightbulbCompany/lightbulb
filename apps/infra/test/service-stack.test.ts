@@ -189,6 +189,22 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }));
   });
 
+  test("Stripe developer configuration defaults off, and the Accounts v2 version pin defaults empty, when no prop threads a value", () => {
+    // configuration.developer is an Unknown field for our platform today
+    // (probed 2026-08-29) — sending it would break every company-account
+    // create, so a stack that forgets to set the prop must stay off.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROJECTS_DEVELOPER_CONFIG", Value: "false" }),
+            Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {
     const backendTaskDefs = Object.values(
       template.findResources("AWS::ECS::TaskDefinition", {

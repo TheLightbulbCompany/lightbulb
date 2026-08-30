@@ -41,6 +41,34 @@ ACCOUNT_DEFAULTS = {
 }
 MERCHANT_CONFIGURATION = {"merchant": {"capabilities": {"card_payments": {"requested": True}}}}
 
+# Verbatim from the guide's "Create the connected account" example. `include`
+# is what makes the developer configuration and requirements come back on the
+# create response instead of a second retrieve.
+DEVELOPER_CONFIGURATION = {"developer": {"capabilities": {"projects": {"requested": True}}}}
+DEVELOPER_INCLUDE = ["configuration.developer", "requirements", "identity"]
+
+
+def account_configuration() -> dict:
+    if not settings.STRIPE_PROJECTS_DEVELOPER_CONFIG:
+        return dict(MERCHANT_CONFIGURATION)
+    return {**MERCHANT_CONFIGURATION, **DEVELOPER_CONFIGURATION}
+
+
+def onboarding_configurations() -> list[str]:
+    """A return to `return_url` proves only that the browser came back — "it
+    doesn't prove that the projects capability is active" (guide). The
+    workflow's eligibility read is the truth."""
+    return ["merchant", "developer"] if settings.STRIPE_PROJECTS_DEVELOPER_CONFIG else ["merchant"]
+
+
+def accounts_v2_options(**extra) -> dict:
+    """Per-request options for the Accounts v2 calls. Pins `Stripe-Version`
+    only when configured, so an unset value keeps the SDK default."""
+    options = dict(extra)
+    if settings.STRIPE_ACCOUNTS_V2_VERSION:
+        options["stripe_version"] = settings.STRIPE_ACCOUNTS_V2_VERSION
+    return options
+
 
 def _client() -> StripeClient:
     return StripeClient(settings.STRIPE_SECRET_KEY)
@@ -77,17 +105,19 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
         "display_name": company_name,
         "dashboard": "full",
         "identity": {"country": "us"},
-        "configuration": MERCHANT_CONFIGURATION,
+        "configuration": account_configuration(),
         "defaults": ACCOUNT_DEFAULTS,
         "metadata": {"owner_id": owner_id, "kind": "company"},
     }
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
         params["contact_email"] = email
+    if settings.STRIPE_PROJECTS_DEVELOPER_CONFIG:
+        params["include"] = list(DEVELOPER_INCLUDE)
     account = await asyncio.to_thread(
         client.v2.core.accounts.create,
         params,
-        options={"idempotency_key": f"company_account_create:{uuid.uuid4()}"},
+        options=accounts_v2_options(idempotency_key=f"company_account_create:{uuid.uuid4()}"),
     )
     return account.id
 
@@ -102,12 +132,13 @@ async def create_company_onboarding_link(*, account_id: str) -> str:
             "use_case": {
                 "type": "account_onboarding",
                 "account_onboarding": {
-                    "configurations": ["merchant"],
+                    "configurations": onboarding_configurations(),
                     "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
                     "return_url": settings.STRIPE_COMPANY_RETURN_URL,
                 },
             },
         },
+        options=accounts_v2_options(),
     )
     return link.url
 

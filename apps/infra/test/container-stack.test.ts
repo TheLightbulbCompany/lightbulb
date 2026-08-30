@@ -241,7 +241,7 @@ describe("ContainerStack — dev", () => {
             Condition: Match.objectLike({
               StringLike: {
                 "token.actions.githubusercontent.com:sub":
-                  "repo:LightbulbAI/lightbulb:*",
+                  "repo:TheLightbulbCompany/lightbulb:*",
               },
               StringEquals: {
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",

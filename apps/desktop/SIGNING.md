@@ -47,26 +47,26 @@ From the repo root:
 
 ```bash
 # 1. The base64-encoded .p12 from step 2 (still on clipboard).
-pbpaste | gh secret set APPLE_CERTIFICATE --repo LightbulbAI/lightbulb
+pbpaste | gh secret set APPLE_CERTIFICATE --repo TheLightbulbCompany/lightbulb
 
 # 2. The password you set when exporting the .p12 in step 1.
-gh secret set APPLE_CERTIFICATE_PASSWORD --repo LightbulbAI/lightbulb --body 'YOUR-P12-EXPORT-PASSWORD'
+gh secret set APPLE_CERTIFICATE_PASSWORD --repo TheLightbulbCompany/lightbulb --body 'YOUR-P12-EXPORT-PASSWORD'
 
 # 3. Your Apple ID email.
-gh secret set APPLE_ID --repo LightbulbAI/lightbulb --body 'you@example.com'
+gh secret set APPLE_ID --repo TheLightbulbCompany/lightbulb --body 'you@example.com'
 
 # 4. The app-specific password from step 3.
-gh secret set APPLE_PASSWORD --repo LightbulbAI/lightbulb --body 'xxxx-xxxx-xxxx-xxxx'
+gh secret set APPLE_PASSWORD --repo TheLightbulbCompany/lightbulb --body 'xxxx-xxxx-xxxx-xxxx'
 
 # 5. The Apple Developer team ID (already known — embedded in
 #    tauri.conf.json's signingIdentity).
-gh secret set APPLE_TEAM_ID --repo LightbulbAI/lightbulb --body 'WZX4U3C22Y'
+gh secret set APPLE_TEAM_ID --repo TheLightbulbCompany/lightbulb --body 'WZX4U3C22Y'
 ```
 
 Verify the secrets landed:
 
 ```bash
-gh secret list --repo LightbulbAI/lightbulb | grep -E "^APPLE_"
+gh secret list --repo TheLightbulbCompany/lightbulb | grep -E "^APPLE_"
 # Expect: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID,
 # APPLE_PASSWORD, APPLE_TEAM_ID — five rows.
 ```

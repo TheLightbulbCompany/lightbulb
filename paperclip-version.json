@@ -1,5 +1,5 @@
 {
-  "upstream": "ghcr.io/lightbulbai/paperclip@sha256:34ec708a8e84937beb43a3a8c5067d34e50baf86f8897959c51d4fed300fec70",
+  "upstream": "ghcr.io/thelightbulbcompany/paperclip@sha256:34ec708a8e84937beb43a3a8c5067d34e50baf86f8897959c51d4fed300fec70",
   "upstreamCommit": "987520f978a6112b8b5030e937f510f64c2e57c2",
   "upstreamCreated": "2026-08-24T04:57:43Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/paperclip-extended",

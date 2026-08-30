@@ -513,7 +513,7 @@ export class ContainerStack extends cdk.Stack {
         roleName: "lightbulb-openclaw-image-builder",
         assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
           StringLike: {
-            "token.actions.githubusercontent.com:sub": "repo:LightbulbAI/lightbulb:*",
+            "token.actions.githubusercontent.com:sub": "repo:TheLightbulbCompany/lightbulb:*",
           },
           StringEquals: {
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",

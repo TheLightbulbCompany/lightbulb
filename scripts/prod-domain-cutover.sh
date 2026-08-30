@@ -88,7 +88,7 @@ cat <<'MANUAL'
                 NEXT_PUBLIC_API_URL_PROD            -> https://api.flickmeon.ai/api/v1
                 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD -> the NEW pk_live_
               Update BOTH, then re-run the prod deploy so a build picks them up.
-              (Confirm with `gh secret list --repo LightbulbAI/lightbulb`: the _DEV twins
+              (Confirm with `gh secret list --repo TheLightbulbCompany/lightbulb`: the _DEV twins
                were updated on the dev flip, so their timestamps show the pattern.)
               Missing NEXT_PUBLIC_API_URL_PROD = the prod app calls a dead host.
 

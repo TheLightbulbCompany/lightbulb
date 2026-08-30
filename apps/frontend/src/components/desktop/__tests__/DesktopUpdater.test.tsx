@@ -52,7 +52,7 @@ describe("DesktopUpdater webview-driven flow", () => {
       version: "0.2.0",
       notes: "release notes",
       pub_date: "2026-05-15T00:00:00Z",
-      url: "https://github.com/LightbulbAI/lightbulb/releases/download/desktop-dev-v0.2.0/Isol8_0.2.0_aarch64.app.tar.gz",
+      url: "https://github.com/TheLightbulbCompany/lightbulb/releases/download/desktop-dev-v0.2.0/Isol8_0.2.0_aarch64.app.tar.gz",
       signature: "untrusted comment: ...",
     };
 

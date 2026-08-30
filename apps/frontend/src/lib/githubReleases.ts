@@ -4,7 +4,7 @@
  *
  * Both `/api/download/desktop` and `/api/desktop/update/[target]/[current_version]`
  * resolve to the same pipeline:
- *   1. List LightbulbAI/lightbulb releases
+ *   1. List TheLightbulbCompany/lightbulb releases
  *   2. Filter to the env-appropriate tag prefix (dev hosts → `desktop-dev-v*`,
  *      everything else → `desktop-v*`)
  *   3. Pick the HIGHEST-VERSION release, not the most-recently-published
@@ -13,14 +13,14 @@
  *
  * The repo is PRIVATE: listing releases and fetching assets both require
  * `GITHUB_RELEASES_TOKEN` (fine-grained PAT with contents: read on
- * LightbulbAI/lightbulb). `browser_download_url` 404s without a logged-in browser
+ * TheLightbulbCompany/lightbulb). `browser_download_url` 404s without a logged-in browser
  * session, so clients are never sent there — instead we resolve the
  * asset's API URL to the short-lived signed URL GitHub issues behind it
  * (`resolveAssetLocation`) and redirect at download time. Draft releases
  * are filtered explicitly since the token sees them.
  */
 
-export const LIGHTBULB_REPO = "LightbulbAI/lightbulb";
+export const LIGHTBULB_REPO = "TheLightbulbCompany/lightbulb";
 
 const PROD_TAG_PREFIX = "desktop-v";
 const DEV_TAG_PREFIX = "desktop-dev-v";

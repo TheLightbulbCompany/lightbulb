@@ -251,8 +251,8 @@ a different test account for import/Teams flows.
 ### CI/CD Monitoring
 
 ```bash
-gh run watch <run-id> --repo LightbulbAI/lightbulb --exit-status
-gh run view <run-id> --repo LightbulbAI/lightbulb --json status,jobs
+gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status
+gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 
 **Deployment methods:**
@@ -291,7 +291,7 @@ loses its gate.
 ⚠️ **Why not GitHub Environments** (the route `cdk-pipelines-github`'s README documents as
 its "Manual Approval Step"): required reviewers and wait timers are **Enterprise-only for
 private repos**. This org is on **Team**, and the API confirms it —
-`PUT /repos/LightbulbAI/lightbulb/environments/prod` with `reviewers` or `wait_timer` returns
+`PUT /repos/TheLightbulbCompany/lightbulb/environments/prod` with `reviewers` or `wait_timer` returns
 **422 "Please ensure the billing plan supports…"**. The `dev`/`prod` environments exist
 with `protection_rules: []`; pointing jobs at them gates nothing. Do not re-attempt this
 without an Enterprise upgrade (isol8 #2016 tried it and was closed).

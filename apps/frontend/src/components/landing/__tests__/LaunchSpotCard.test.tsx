@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiPost, FakeApiError } = vi.hoisted(() => {
+const { api, apiPost, apiGet, replayState, FakeApiError } = vi.hoisted(() => {
   class FakeApiError extends Error {
     constructor(
       public readonly status: number,
@@ -11,12 +11,16 @@ const { apiPost, FakeApiError } = vi.hoisted(() => {
       super(message ?? `API ${status}`);
     }
   }
-  return { apiPost: vi.fn(), FakeApiError };
+  const apiPost = vi.fn();
+  const apiGet = vi.fn();
+  // One stable object, like the real useApi's memoized client.
+  const api = { get: apiGet, post: apiPost, put: vi.fn(), patch: vi.fn(), del: vi.fn() };
+  return { api, apiPost, apiGet, replayState: { replaying: false }, FakeApiError };
 });
 
 vi.mock("@/lib/api", () => ({
   ApiError: FakeApiError,
-  useApi: () => ({ get: vi.fn(), post: apiPost, put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
+  useApi: () => api,
 }));
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -25,7 +29,7 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 // test file — here it is inert so the card's own idea form is what's on trial.
 vi.mock("@/hooks/useLandingBriefReplay", () => ({
   LANDING_BRIEF_STORAGE_KEY: "isol8_landing_brief_v1",
-  useLandingBriefReplay: () => ({ replaying: false, orgDraftVersion: 0 }),
+  useLandingBriefReplay: () => ({ replaying: replayState.replaying, orgDraftVersion: 0 }),
 }));
 
 import type { LaunchInfo, LaunchMe } from "@/lib/launch";
@@ -74,6 +78,8 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
 describe("LaunchSpotCard", () => {
   beforeEach(() => {
     apiPost.mockReset();
+    apiGet.mockReset();
+    replayState.replaying = false;
     window.sessionStorage.clear();
     window.localStorage.clear();
   });
@@ -154,6 +160,39 @@ describe("LaunchSpotCard", () => {
     expect(alert).toHaveTextContent("input must be at least 3 characters");
     expect(alert).not.toHaveTextContent("Value error,");
     expect(screen.getByLabelText("Your idea")).toBeInTheDocument();
+  });
+
+  it("reconciles from /launch/me when the replay settles without landing", async () => {
+    // Stash present at mount -> the card optimistically shows it as the idea
+    // while the replay is in flight.
+    window.sessionStorage.setItem(
+      "isol8_landing_brief_v1",
+      JSON.stringify({ path: "new", input: "Stashed idea", detail: "" }),
+    );
+    replayState.replaying = true;
+    apiGet.mockResolvedValue(me({ idea_full: null }));
+    const { rerender } = render(<LaunchSpotCard me={me()} info={info} />);
+    expect(screen.getByText("Stashed idea")).toBeInTheDocument();
+
+    // The POST failed; the hook restored the stash and settled false. The
+    // server has no brief -> back to the empty prompt, no phantom saved view.
+    replayState.replaying = false;
+    rerender(<LaunchSpotCard me={me()} info={info} />);
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/launch/me"));
+    expect(
+      await screen.findByText("Drop your idea now — Friday starts on it the second doors open."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Stashed idea")).not.toBeInTheDocument();
+
+    // Same settle, but the refetched row DOES carry a brief -> the real
+    // saved view, backed by the server response.
+    replayState.replaying = true;
+    rerender(<LaunchSpotCard me={me()} info={info} />);
+    apiGet.mockResolvedValue(me({ idea_full: "Server idea" }));
+    replayState.replaying = false;
+    rerender(<LaunchSpotCard me={me()} info={info} />);
+    expect(await screen.findByText("Server idea")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
   });
 
   it("an already_submitted refusal is not rendered as saved", async () => {

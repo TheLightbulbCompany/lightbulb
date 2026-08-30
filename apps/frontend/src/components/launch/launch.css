@@ -3,8 +3,10 @@
    src/app/globals.css (--midnight, --midnight-muted, --brass, --err,
    --cream, --cream-deeper, --edge) — not the landing-only ones (--ink,
    --mute, --gold, --danger, --forest live under .ld-page's scope) — because
-   this stylesheet is also loaded outside .ld-page, by the in-app held card
-   at components/chat/LaunchHeldCard.tsx. Lives beside its components —
+   this stylesheet was built to
+   work outside .ld-page (the since-deleted in-chat held card loaded it
+   there), and global tokens keep it portable to any future non-landing
+   surface. Lives beside its components —
    landing.css is brand-owned and is never edited from here. */
 
 .lc-stats {

@@ -93,6 +93,32 @@ export function LaunchSpotCard({ me, info }: { me: LaunchMe; info: LaunchInfo })
     if (replaying && stashedIdea) setIdea(stashedIdea);
   }, [replaying, stashedIdea]);
 
+  // `replaying` settles true→false only when the replay POST did NOT land
+  // (the hook restored the stash). The optimistic peek above may now be
+  // showing a phantom "Your idea" — reconcile from the server: idea_full
+  // present → the real saved view; absent → back to the empty prompt, and
+  // the restored stash gets its normal peek/replay cycle on the next visit.
+  // The saved-idea view is only ever backed by a server response or a
+  // successful save, never by the peek alone once replay has settled.
+  const prevReplaying = React.useRef(false);
+  React.useEffect(() => {
+    const settled = prevReplaying.current && !replaying;
+    prevReplaying.current = replaying;
+    if (!settled) return;
+    let alive = true;
+    api
+      .get("/launch/me")
+      .then((raw) => {
+        if (alive) setIdea((raw as LaunchMe).idea_full ?? null);
+      })
+      .catch(() => {
+        /* unreachable server — keep the current view; next visit reconciles */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [replaying, api]);
+
   // Mirror of the backend BriefBody rules: blank is the "you pick" flow,
   // non-blank must be >= 3 chars after strip (422 otherwise).
   const trimmed = draft.trim();

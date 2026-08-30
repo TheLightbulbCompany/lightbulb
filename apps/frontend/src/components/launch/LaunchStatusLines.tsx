@@ -7,8 +7,8 @@ import { useCountdown } from "./useCountdown";
 
 /**
  * Pre-drop status: waitlist position, countdown to the drop, the idea
- * teaser, and the referral link. Shared between the in-app held card
- * (`components/chat/LaunchHeldCard`) and `/launch`'s `MyLaunchCard` before
+ * teaser, and the referral link. Shared between the landing hero's spot card
+ * (`components/landing/LaunchSpotCard`) and `/launch`'s `MyLaunchCard` before
  * doors open — same account, same facts, two surfaces.
  */
 export function LaunchStatusLines({

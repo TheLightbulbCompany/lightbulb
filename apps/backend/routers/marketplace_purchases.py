@@ -5,9 +5,11 @@ listings into their existing OpenClaw container via the deploy endpoint
 in marketplace_listings. There is no CLI installer.
 """
 
+import asyncio
 import calendar
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Annotated
 
 import stripe
@@ -16,7 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, marketplace_repo
-from core.services import license_service, payout_service
+from core.services import license_service, payout_service, rollup_service
 from core.services.owner_facts import write_owner_facts
 from core.services import webhook_dedup
 from core.services.webhook_dedup import WebhookDedupResult
@@ -24,6 +26,11 @@ from schemas import marketplace as schemas
 
 
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace-purchases"])
+
+# Fire-and-forget rollup refreshes spawned by the money-event webhook branch.
+# The loop holds tasks weakly, so without a strong reference here a refresh
+# could be garbage-collected mid-flight. Discard-on-done keeps the set small.
+_rollup_refresh_tasks: set[asyncio.Task] = set()
 
 
 def _validate_return_url(url: str, field: str) -> str:
@@ -189,7 +196,35 @@ async def stripe_webhook(
             # The connected account id rides on the event envelope, not the
             # data object (which is the Application).
             await _handle_account_deauthorized(event.get("account"))
-        # Other events (transfer.failed, payout.paid, payout.failed,
+        elif event_type in (
+            "payment_intent.succeeded",
+            "charge.succeeded",
+            "invoice.paid",
+            "customer.created",
+            "payout.paid",
+            "payout.failed",
+        ):
+            # Money motion on a COMPANY account (the owner's own business
+            # account) marks the owner-day rollup dirty: recompute today,
+            # fire-and-forget — the webhook 200s regardless, and the hourly
+            # rollup pass in update_service is the backstop. Same
+            # company-vs-seller discrimination as account.updated above.
+            #
+            # invoice.paid collision: the platform billing endpoint
+            # (/billing/webhooks/stripe) also handles invoice.paid — a
+            # DIFFERENT Stripe endpoint registration, and the source-prefixed
+            # dedup key above ("stripe-marketplace:") keeps the two from
+            # swallowing each other's processing.
+            #
+            # Non-company accounts (sellers) fall through to the ack below,
+            # exactly as these events did before this branch existed.
+            company_row = await billing_repo.get_by_company_stripe_account_id(event.get("account") or "")
+            if company_row is not None:
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                task = asyncio.create_task(rollup_service.refresh_owner_day(company_row["owner_id"], today))
+                _rollup_refresh_tasks.add(task)
+                task.add_done_callback(_rollup_refresh_tasks.discard)
+        # Other events (transfer.failed,
         # checkout.session.async_payment_failed) are logged via Stripe;
         # async_payment_failed in particular is a no-op because we never
         # granted the license in the first place (gated above).

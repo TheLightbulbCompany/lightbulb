@@ -118,9 +118,21 @@ describe("useConnections", () => {
       const { result } = renderHook(() => useConnections(), { wrapper });
       await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-      await expect(
-        act(() => result.current.startOAuth("cloudflare")),
-      ).rejects.toThrow("Couldn't open your browser. Try again.");
+      // Capture the rejection inside act — `.rejects` on an act-wrapped
+      // promise is racy under React 19's async act (the act promise can
+      // resolve before the callback rejection lands, leaving an unhandled
+      // late assertion in CI).
+      let err: unknown = null;
+      await act(async () => {
+        err = await result.current.startOAuth("cloudflare").then(
+          () => null,
+          (e) => e,
+        );
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe(
+        "Couldn't open your browser. Try again.",
+      );
       // No waiting state: only the initial /connections GET and the
       // authorize GET happened — no poll re-fetches of /connections.
       expect(fetchMock).toHaveBeenCalledTimes(2);

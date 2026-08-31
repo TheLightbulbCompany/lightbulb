@@ -54,8 +54,9 @@ MAX_STARTER_CREDITS_CENTS = 100_000  # $1,000 — matches _TOP_UP_MAX_CENTS
 
 # Bumped whenever the Checkout Session request body shape changes — see
 # _checkout_idempotency_key. v2 = top-level `metadata` + the optional credits
-# line item + conditional allow_promotion_codes.
-_CHECKOUT_BODY_VERSION = 2
+# line item + conditional allow_promotion_codes. v3 = the launch winner
+# `discounts` pre-apply (which also drops allow_promotion_codes when present).
+_CHECKOUT_BODY_VERSION = 3
 
 
 def normalize_starter_credits(credits_cents: int | None) -> int | None:
@@ -482,6 +483,14 @@ async def _build_subscription_checkout(
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
+    # Launch competition: an unpaid WINNER's checkout gets the free-month
+    # coupon pre-applied server-side (no code to type). Lazy import — the
+    # launch modules import nothing from here, but keep the checkout path's
+    # import surface flat. Never raises (returns None on any failure).
+    from core.services.launch_close import winner_checkout_discount
+
+    discounts = await winner_checkout_discount(owner_id)
+
     subscription_data: dict = {"metadata": metadata}
 
     kwargs: dict = dict(
@@ -520,6 +529,12 @@ async def _build_subscription_checkout(
         # Omitted entirely for web callers so their session shape — and
         # therefore their idempotency body-compare — is untouched.
         kwargs["origin_context"] = origin_context
+    if discounts:
+        kwargs["discounts"] = discounts
+        # Stripe refuses a session that sets both `discounts` and
+        # `allow_promotion_codes` — and the coupon is 100% off, so there is
+        # nothing left for a promo code to do.
+        kwargs.pop("allow_promotion_codes", None)
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
     return session

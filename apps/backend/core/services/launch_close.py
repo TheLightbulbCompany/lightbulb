@@ -78,6 +78,44 @@ async def _attach_coupon(billing: dict, coupon: str) -> bool:
     return True
 
 
+async def _ensure_restricted_coupon(auth: AuthContext) -> str:
+    """The free-month coupon id, guaranteed to carry the applies_to product
+    restriction. A stored coupon WITHOUT it is a stale v1 mint (dev/prod
+    settings rows can carry one) — attaching or pre-applying it would zero
+    the bundled credits line item, so it is replaced with a fresh restricted
+    mint (``force=True``: the nonce bumps and the product id rides the
+    idempotency key, so Stripe can never replay the old coupon). Stripe
+    verification failures surface as StripeMintError (router → 502)."""
+    coupon = launch_phase.coupon_id()
+    if coupon:
+        try:
+            stored = await run_in_thread(stripe.Coupon.retrieve, coupon, expand=["applies_to"])
+        except stripe.StripeError as e:
+            logger.error("launch_close: coupon verification failed for %s: %s", coupon, e)
+            raise launch_settings.StripeMintError() from None
+        if (stored.get("applies_to") or {}).get("products"):
+            return coupon
+        logger.warning("launch_close: stored coupon %s lacks applies_to — re-minting restricted", coupon)
+    await launch_settings.create_stripe_coupon(auth, force=bool(coupon))
+    return (await launch_settings.effective())["stripe_coupon_id"]
+
+
+async def mark_winner_coupon_consumed(owner_id: str) -> None:
+    """Called by handle_checkout_session when a completed session carried the
+    winner discount (the ``launch_winner_coupon`` metadata marker): stamp
+    ``coupon_attached_at`` on the sheet row so a forced close rerun does not
+    attach a SECOND free month to the subscription the checkout just minted.
+    Best-effort — never raises on the webhook path."""
+    try:
+        user = await user_repo.get(owner_id)
+        email = ((user or {}).get("email") or "").strip().lower()
+        if not email:
+            return
+        await launch_waitlist_repo.update_fields(email, {"coupon_attached_at": utc_now_iso()})
+    except Exception:  # noqa: BLE001 — a launch stamp must never fail the billing webhook
+        logger.warning("launch_close: coupon-consumed stamp failed for %s", owner_id, exc_info=True)
+
+
 async def close(auth: AuthContext, *, force: bool = False) -> dict:
     row = await launch_settings.effective()
     already_closed = bool(row.get("closed_at"))
@@ -145,13 +183,13 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
         await launch_settings.record_close_state({"final_roster_count": roster_count, "final_pot_cents": final_pot})
 
-    # (e) The coupon: mint if missing (idempotent — see create_stripe_coupon),
-    # then attach to every PAYING winner's subscription. Attach failures are
-    # logged and counted, never fatal — rerun with force to converge.
-    coupon = launch_phase.coupon_id()
-    if not coupon:
-        await launch_settings.create_stripe_coupon(auth)
-        coupon = (await launch_settings.effective())["stripe_coupon_id"]
+    # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
+    # missing; force a re-mint over a stale coupon that predates the
+    # applies_to restriction — an unrestricted 100%-off coupon would also
+    # zero the bundled starter-credits line item at checkout), then attach to
+    # every PAYING winner's subscription. Attach failures are logged and
+    # counted, never fatal — rerun with force to converge.
+    coupon = await _ensure_restricted_coupon(auth)
     coupons_attached = 0
     coupon_failures = 0
     for r in winners:
@@ -162,6 +200,16 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             if await _attach_coupon(billing, coupon):
                 await launch_waitlist_repo.update_fields(r["email"], {"coupon_attached_at": utc_now_iso()})
                 coupons_attached += 1
+            else:
+                # A "paying" winner with no stripe_subscription_id on the row
+                # (Apple-rail or legacy shape) — nothing to attach to. Count
+                # it so the admin SEES it; the row stays unstamped, so a
+                # forced rerun retries once the sub id exists.
+                coupon_failures += 1
+                logger.error(
+                    "launch_close: paying winner %s has no stripe_subscription_id — coupon not attached",
+                    r.get("user_id"),
+                )
         except Exception:  # noqa: BLE001 — one bad subscription must not abort the rest of the close
             coupon_failures += 1
             logger.exception("launch_close: coupon attach failed for %s", r.get("user_id"))

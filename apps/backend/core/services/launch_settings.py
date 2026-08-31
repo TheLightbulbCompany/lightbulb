@@ -207,35 +207,48 @@ async def record_close_state(fields: dict) -> dict:
 
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:
     """Mint the launch free-month coupon: 100% off, ``duration="once"``,
-    redeemable through ``COUPON_REDEEM_BY``. There are NO promotion codes —
-    the coupon is attached server-side (to paying winners' subscriptions by
-    the close action, and pre-applied at checkout for unpaid winners), never
-    typed by a customer. Refuses a second mint unless ``force`` — orphaning
-    the first coupon in Stripe is an admin decision, never an accident.
+    redeemable through ``COUPON_REDEEM_BY``, and RESTRICTED to the flat
+    (Starter) subscription product via ``applies_to.products`` — the free
+    month is a Starter month, never a discount on the bundled starter-credits
+    line item (a 100%-off coupon on the whole session would zero up to
+    $1,000 of credits the webhook still grants in full). The product id is
+    resolved from ``STRIPE_FLAT_PRICE_ID`` at mint time. There are NO
+    promotion codes — the coupon is attached server-side (to paying winners'
+    subscriptions by the close action, and pre-applied at checkout for
+    unpaid winners), never typed by a customer. Refuses a second mint unless
+    ``force`` — orphaning the first coupon in Stripe is an admin decision,
+    never an accident (the close action forces a re-mint itself when the
+    stored coupon predates the applies_to restriction).
 
-    The Stripe call is a pure function of ``(env, nonce)``: a non-``force``
-    mint always computes ``nonce = max(stored_nonce, 1)`` — either a genuine
-    first mint or a retry of one that failed before the id was persisted —
-    so byte-identical params land on the same idempotency key and Stripe
-    hands back the cached coupon. ``force`` bumps the nonce for a genuinely
-    fresh coupon."""
+    The Stripe call is a pure function of ``(env, product, nonce)``: a
+    non-``force`` mint always computes ``nonce = max(stored_nonce, 1)`` —
+    either a genuine first mint or a retry of one that failed before the id
+    was persisted — so byte-identical params land on the same idempotency
+    key and Stripe hands back the cached coupon. ``force`` bumps the nonce
+    for a genuinely fresh coupon; the product id riding the key means the
+    restricted mint can never replay a cached UNrestricted v1 coupon."""
     row = await effective()
     if row["stripe_coupon_id"] and not force:
         raise CouponAlreadyConfigured()
     if COUPON_REDEEM_BY <= datetime.now(timezone.utc):
         # Stripe rejects a past `redeem_by` outright; say why instead of 502ing.
         raise SettingsInvalid({"stripe_coupon_id": "the coupon redeem-by instant (Oct 31 ET) is already past"})
+    if not settings.STRIPE_FLAT_PRICE_ID:
+        raise SettingsInvalid({"stripe_coupon_id": "STRIPE_FLAT_PRICE_ID is not configured for this env"})
 
     nonce = row["mint_nonce"] + 1 if force else max(row["mint_nonce"], 1)
     env = settings.ENVIRONMENT
     try:
+        price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_FLAT_PRICE_ID)
+        product = price["product"]
         coupon = await run_in_thread(
             stripe.Coupon.create,
             percent_off=100,
             duration="once",
             name="Lightbulb launch free month",
             redeem_by=int(COUPON_REDEEM_BY.timestamp()),
-            idempotency_key=f"launch-coupon:{env}:{nonce}",
+            applies_to={"products": [product]},
+            idempotency_key=f"launch-coupon:{env}:{product}:{nonce}",
         )
     except stripe.StripeError as e:
         # Logged here, once, with whatever Stripe said — never the API key

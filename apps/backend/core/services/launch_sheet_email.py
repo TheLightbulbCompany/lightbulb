@@ -139,10 +139,12 @@ async def send_winner_paid_email(*, to_email: str, first_name: str | None) -> st
 
 
 async def send_winner_unpaid_email(*, to_email: str, first_name: str | None) -> str | None:
-    """Winner not yet subscribed: the coupon pre-applies at checkout."""
+    """Winner not yet subscribed: the coupon pre-applies at checkout. The
+    free month is a STARTER month — the coupon is product-restricted, so the
+    copy says so."""
     return await _send_winner(
         to_email,
         first_name,
-        "Your free month is waiting — subscribe and it's applied automatically at checkout.",
-        "You made the top of the launch competition sheet, so your first month of Lightbulb is on us.",
+        "Your first month of Starter is free — applied automatically at checkout.",
+        "You made the top of the launch competition sheet, so your first month of Lightbulb Starter is on us.",
     )

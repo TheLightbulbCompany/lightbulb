@@ -1300,6 +1300,16 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     """
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
+    # Launch competition: a completed session that carried the winner
+    # free-month discount just CONSUMED the coupon — stamp the sheet row so
+    # a forced close rerun cannot attach a second free month to the
+    # subscription this checkout minted. Before the credit-funding early
+    # return below, because most winner checkouts carry no credits at all.
+    # Best-effort — never raises.
+    if session_metadata.get("launch_winner_coupon") == "true" and session_metadata.get("owner_id"):
+        from core.services.launch_close import mark_winner_coupon_consumed
+
+        await mark_winner_coupon_consumed(session_metadata["owner_id"])
     # Two session shapes fund credits here:
     #   - purpose=credit_top_up      → the standalone top-up Checkout
     #                                  (mode=payment), amount in `amount_cents`

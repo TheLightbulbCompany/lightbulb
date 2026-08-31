@@ -484,12 +484,23 @@ async def _build_subscription_checkout(
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
     # Launch competition: an unpaid WINNER's checkout gets the free-month
-    # coupon pre-applied server-side (no code to type). Lazy import — the
-    # launch modules import nothing from here, but keep the checkout path's
-    # import surface flat. Never raises (returns None on any failure).
-    from core.services.launch_close import winner_checkout_discount
+    # coupon pre-applied server-side (no code to type) — but ONLY on a
+    # session selling the flat (Starter) plan: the coupon is product-
+    # restricted to it (free month = Starter month), so an Ultra session
+    # gets no discount rather than a Stripe applicability error. Lazy
+    # import — the launch modules import nothing from here. Never raises
+    # (returns None on any failure).
+    discounts = None
+    if any(item.get("price") == settings.STRIPE_FLAT_PRICE_ID for item in line_items):
+        from core.services.launch_close import winner_checkout_discount
 
-    discounts = await winner_checkout_discount(owner_id)
+        discounts = await winner_checkout_discount(owner_id)
+    if discounts:
+        # The marker rides BOTH metadata targets (session + subscription) so
+        # handle_checkout_session can stamp the sheet row the moment the
+        # coupon is consumed — without it a forced close rerun would attach
+        # a second free month to the subscription this checkout mints.
+        metadata = {**metadata, "launch_winner_coupon": "true"}
 
     subscription_data: dict = {"metadata": metadata}
 

@@ -116,6 +116,10 @@ class _Harness:
         name = getattr(fn, "__name__", str(fn))
         self.stripe_calls.append((name, args, kwargs))
         if name == "retrieve":
+            if str(args[0]).startswith("coup"):
+                # Coupon.retrieve — restricted by default; the stale-coupon
+                # test overrides this.
+                return {"id": args[0], "applies_to": {"products": ["prod_flat"]}}
             return {"id": args[0], "discount": None, "discounts": []}
         return SimpleNamespace(id="sub_modified")
 
@@ -264,12 +268,84 @@ async def test_close_mints_the_coupon_when_missing():
 
     with _Harness(rows, {}, settings_row={"stripe_coupon_id": ""}) as h:
 
-        async def _mint(auth):
+        async def _mint(auth, force=False):
+            assert force is False  # nothing to replace — a plain first mint
             h.settings_row["stripe_coupon_id"] = "coup_minted"
 
         h.mint.side_effect = _mint
         await launch_close.close(ADMIN)
     h.mint.assert_awaited_once()
+
+
+async def test_close_re_mints_a_stale_unrestricted_coupon():
+    """A v1 coupon minted without applies_to survives on the settings row —
+    attaching it would zero bundled credits, so close() force-mints a fresh
+    restricted coupon and attaches THAT."""
+    rows = [_row("a@x.com", 1)]
+    billing = {"user_a": PAYING}
+
+    with _Harness(rows, billing) as h:
+        real = h._stripe
+
+        async def _unrestricted(fn, *args, **kwargs):
+            if getattr(fn, "__name__", "") == "retrieve" and str(args[0]) == "coup_1":
+                return {"id": "coup_1"}  # no applies_to — stale v1 mint
+            return await real(fn, *args, **kwargs)
+
+        async def _mint(auth, force=False):
+            assert force is True  # a deliberate replacement, never an accident
+            h.settings_row["stripe_coupon_id"] = "coup_v2"
+
+        h.mint.side_effect = _mint
+        with patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=_unrestricted)):
+            await launch_close.close(ADMIN)
+    h.mint.assert_awaited_once()
+    modifies = [c for c in h.stripe_calls if c[0] == "modify"]
+    assert modifies and modifies[0][2]["discounts"] == [{"coupon": "coup_v2"}]
+
+
+async def test_close_coupon_verification_failure_is_a_mint_error():
+    import stripe as stripe_mod
+
+    from core.services import launch_settings
+
+    rows = [_row("a@x.com", 1)]
+    with _Harness(rows, {}) as h:
+        real = h._stripe
+
+        async def _flaky(fn, *args, **kwargs):
+            if getattr(fn, "__name__", "") == "retrieve" and str(args[0]).startswith("coup"):
+                raise stripe_mod.StripeError("stripe down")
+            return await real(fn, *args, **kwargs)
+
+        with patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=_flaky)):
+            with pytest.raises(launch_settings.StripeMintError):
+                await launch_close.close(ADMIN)
+
+
+async def test_a_paying_winner_with_no_subscription_id_counts_as_a_coupon_failure():
+    rows = [_row("a@x.com", 1)]
+    billing = {"user_a": {"subscription_status": "active"}}  # paying shape, no sub id
+    with _Harness(rows, billing) as h:
+        result = await launch_close.close(ADMIN)
+    assert result["coupon_failures"] == 1 and result["coupons_attached"] == 0
+    assert "coupon_attached_at" not in h.rows["a@x.com"]  # unstamped -> forced rerun retries
+
+
+async def test_mark_winner_coupon_consumed_stamps_the_sheet_row():
+    update = AsyncMock()
+    with (
+        patch("core.services.launch_close.user_repo.get", AsyncMock(return_value={"email": "A@x.com"})),
+        patch("core.services.launch_close.launch_waitlist_repo.update_fields", update),
+    ):
+        await launch_close.mark_winner_coupon_consumed("user_a")
+    email, fields = update.await_args.args
+    assert email == "a@x.com" and "coupon_attached_at" in fields
+
+
+async def test_mark_winner_coupon_consumed_never_raises():
+    with patch("core.services.launch_close.user_repo.get", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        await launch_close.mark_winner_coupon_consumed("user_a")
 
 
 async def test_close_ties_break_by_raw_position():
@@ -404,7 +480,7 @@ async def test_winner_discount_never_raises():
 # ---------------------------------------------------------------------------
 
 
-async def _build_checkout_captured(discount):
+async def _build_checkout_captured(discount, *, price="price_flat"):
     from unittest.mock import MagicMock
 
     from core.services import billing_service
@@ -415,34 +491,51 @@ async def _build_checkout_captured(discount):
         captured.update(kwargs)
         return MagicMock(id="cs_1", url="https://checkout.stripe.com/x")
 
+    lookup = AsyncMock(return_value=discount)
     with (
         patch.object(billing_service.stripe.checkout.Session, "create", fake_create),
+        patch.object(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
         patch.object(
             billing_service.billing_repo,
             "get_by_owner_id",
             AsyncMock(return_value={"owner_id": "user_a", "stripe_customer_id": "cus_1"}),
         ),
-        patch("core.services.launch_close.winner_checkout_discount", AsyncMock(return_value=discount)),
+        patch("core.services.launch_close.winner_checkout_discount", lookup),
     ):
         await billing_service._build_subscription_checkout(
             owner_id="user_a",
-            line_items=[{"price": "price_flat", "quantity": 1}],
+            line_items=[{"price": price, "quantity": 1}],
             metadata={"owner_id": "user_a"},
             success_url="https://x/ok",
             cancel_url="https://x/no",
             idempotency_key="k1",
         )
-    return captured
+    return captured, lookup
 
 
 async def test_checkout_pre_applies_the_winner_coupon_and_drops_promo_codes():
-    captured = await _build_checkout_captured([{"coupon": "coup_1"}])
+    captured, _ = await _build_checkout_captured([{"coupon": "coup_1"}])
     assert captured["discounts"] == [{"coupon": "coup_1"}]
     # Stripe refuses discounts + allow_promotion_codes together.
     assert "allow_promotion_codes" not in captured
+    # The consumed-marker rides BOTH metadata targets so the checkout webhook
+    # can stamp the sheet row (no second free month on a forced rerun).
+    assert captured["metadata"]["launch_winner_coupon"] == "true"
+    assert captured["subscription_data"]["metadata"]["launch_winner_coupon"] == "true"
 
 
 async def test_checkout_untouched_for_a_non_winner():
-    captured = await _build_checkout_captured(None)
+    captured, _ = await _build_checkout_captured(None)
     assert "discounts" not in captured
     assert captured["allow_promotion_codes"] is True
+    assert "launch_winner_coupon" not in captured["metadata"]
+
+
+async def test_ultra_checkout_gets_no_discount_even_for_a_winner():
+    """The coupon is product-restricted to Starter — an Ultra session gets no
+    discount at all (the lookup is never even consulted), rather than a
+    Stripe applicability error. Free month = Starter month."""
+    captured, lookup = await _build_checkout_captured([{"coupon": "coup_1"}], price="price_ultra")
+    assert "discounts" not in captured
+    assert captured["allow_promotion_codes"] is True
+    lookup.assert_not_awaited()

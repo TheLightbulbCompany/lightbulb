@@ -249,6 +249,8 @@ async def _mint(row, *, force=False, coupon_id="coupon_new"):
     with (
         patch.object(ls, "effective", AsyncMock(return_value=row)),
         patch.object(ls, "_clear_caches"),
+        patch.object(ls.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
+        patch("stripe.Price.retrieve", return_value={"product": "prod_flat"}),
         patch("stripe.Coupon.create", return_value=SimpleNamespace(id=coupon_id)) as coupon_create,
         patch.object(ls.launch_settings_repo, "put", put_mock),
     ):
@@ -268,7 +270,10 @@ async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by():
     kwargs = coupon_create.call_args.kwargs
     assert kwargs["percent_off"] == 100 and kwargs["duration"] == "once"
     assert kwargs["redeem_by"] == int(ls.COUPON_REDEEM_BY.timestamp())
-    assert kwargs["idempotency_key"] == f"launch-coupon:{ls.settings.ENVIRONMENT}:1"
+    # Product-restricted: the free month discounts the Starter subscription
+    # line ONLY — never the bundled starter-credits line item.
+    assert kwargs["applies_to"] == {"products": ["prod_flat"]}
+    assert kwargs["idempotency_key"] == f"launch-coupon:{ls.settings.ENVIRONMENT}:prod_flat:1"
     written = put_mock.call_args.args[0]
     assert written["mint_nonce"] == 1
     assert written["stripe_coupon_id"] == "coupon_new"
@@ -279,7 +284,7 @@ async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by():
 async def test_create_stripe_coupon_force_bumps_the_nonce():
     row = _effective_row(stripe_coupon_id="coupon_old", mint_nonce=1)
     _, coupon_create, put_mock = await _mint(row, force=True)
-    assert coupon_create.call_args.kwargs["idempotency_key"].endswith(":2")
+    assert coupon_create.call_args.kwargs["idempotency_key"].endswith(":prod_flat:2")
     assert put_mock.call_args.args[0]["mint_nonce"] == 2
 
 
@@ -294,9 +299,20 @@ async def test_create_stripe_coupon_retry_after_a_partial_failure_is_byte_identi
     assert retry_put.call_args.args[0]["mint_nonce"] == 1
 
 
+async def test_create_stripe_coupon_requires_the_flat_price_id():
+    with (
+        patch.object(ls, "effective", AsyncMock(return_value=_effective_row())),
+        patch.object(ls.settings, "STRIPE_FLAT_PRICE_ID", ""),
+    ):
+        with pytest.raises(ls.SettingsInvalid):
+            await ls.create_stripe_coupon(ADMIN)
+
+
 async def test_create_stripe_coupon_stripe_error_raises_without_leaking_the_message():
     with (
         patch.object(ls, "effective", AsyncMock(return_value=_effective_row())),
+        patch.object(ls.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
+        patch("stripe.Price.retrieve", return_value={"product": "prod_flat"}),
         patch("stripe.Coupon.create", side_effect=stripe.StripeError("card blocked: super secret detail")),
         patch.object(ls.launch_settings_repo, "put", AsyncMock()) as put_mock,
         patch.object(ls, "_clear_caches") as clear,

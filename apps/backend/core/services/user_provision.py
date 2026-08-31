@@ -27,7 +27,7 @@ from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
-from core.services import clerk_admin, launch_hold, wake_policy
+from core.services import clerk_admin, wake_policy
 from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_CRON,
     NIGHTLY_CEO_ROUTINE_DESCRIPTION,
@@ -132,11 +132,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          poll on a running container seeded nothing).
     """
     owner_id = auth.org_id if auth.is_org_context else auth.user_id
-
-    # Launch Competition pre-drop hold, BEFORE ensure_personal_trial_default —
-    # a held owner must not get the 3-day trial clock stamped before the drop.
-    if await launch_hold.pre_drop_gate(owner_id) is not None:
-        return
 
     # Auto-default a brand-new personal owner into a card-less trial_local
     # BEFORE the gate is evaluated, so the gate (which treats trial_local as

@@ -3,9 +3,10 @@
 POST /api/v1/onboarding/brief is INTAKE ONLY: it records the funnel answer
 under the owner id (put-if-absent, ``PaperclipRepo.put_pending_brief``) and
 returns. It needs auth and nothing else — no Teams context, no Paperclip, no
-owner row. For an owner with no container row yet (held on the launch
-waitlist), a resubmit OVERWRITES the pending item instead of refusing — this
-is the same route the landing card's "edit your idea" view re-POSTs to.
+owner row. For an owner with no container row yet, a resubmit OVERWRITES
+the pending item instead of refusing — this is the same route the landing
+card's "edit your idea" view re-POSTs to (accepted permanent funnel
+behavior: the pre-container brief upsert).
 
 FULFILMENT — the generation-fenced ``funnel_state: not_started -> submitted``
 claim, the company goal + project seed, staging BRIEF.md into Friday's
@@ -144,17 +145,17 @@ async def submit_brief(
     if not landed:
         # A brief is already pending for this company. Normally that's a
         # peer member or a double-tap and the refusal below is correct -- but
-        # the launch-waitlist landing card re-POSTs this same route to let a
-        # HELD owner (launch_pending, no container yet) edit their stashed
-        # idea before the drop, and that must actually overwrite. Owners with
-        # a container are on the ordinary onboarding path, where this item is
-        # a one-shot claim ticket for the drain -- leave their refusal as-is.
+        # the landing card re-POSTs this same route to let a PRE-CONTAINER
+        # owner edit their stashed idea, and that must actually overwrite.
+        # Owners with a container are on the ordinary onboarding path, where
+        # this item is a one-shot claim ticket for the drain -- leave their
+        # refusal as-is.
         try:
-            held = await container_repo.get_by_owner_id(owner_id) is None
+            pre_container = await container_repo.get_by_owner_id(owner_id) is None
         except Exception:  # noqa: BLE001 — an unreadable container row must not change behavior
             logger.warning("onboarding brief: container read failed for %s", owner_id, exc_info=True)
-            held = False
-        if held:
+            pre_container = False
+        if pre_container:
             landed = await repo.put_pending_brief(
                 owner_id,
                 path=body.path,

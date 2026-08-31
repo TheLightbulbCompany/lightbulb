@@ -320,5 +320,42 @@ describe("BrainPanel", () => {
       expect(screen.getByText("main")).toBeInTheDocument();
       expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
     });
+
+    it("initialTab='dreams' seeds the Dreams tab active on mount (old ?panel=dreams links)", () => {
+      treeState.files = [MAIN_DIR, FACTS];
+      render(<BrainPanel initialTab="dreams" />);
+      expect(screen.getByRole("tab", { name: "Dreams" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+      expect(screen.queryByText("main")).not.toBeInTheDocument();
+    });
+
+    it("guards a dirty editor on tab switch — declining discard keeps Notes and the draft (review finding 1)", () => {
+      treeState.files = [FACTS];
+      fileState.file = FACTS_INFO;
+      render(<BrainPanel initialPath="main/facts.md" />);
+      const textarea = screen.getByDisplayValue("The sky is green.");
+      fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
+
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+
+      expect(confirmSpy).toHaveBeenCalled();
+      expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
+      // Notes stayed mounted throughout — the draft was never unmounted/reset.
+      expect(screen.getByDisplayValue("The sky is actually blue — DRAFT")).toBeInTheDocument();
+    });
+
+    it("guards a dirty editor on tab switch — accepting discard switches to Dreams (review finding 1)", () => {
+      treeState.files = [FACTS];
+      fileState.file = FACTS_INFO;
+      render(<BrainPanel initialPath="main/facts.md" />);
+      const textarea = screen.getByDisplayValue("The sky is green.");
+      fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
+
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+
+      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+    });
   });
 });

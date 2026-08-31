@@ -148,7 +148,12 @@ export function TeamsPanelRouter({
   }
 
   if (panel === "brain") {
-    return <BrainPanel initialPath={panelParams?.path ?? null} />;
+    return (
+      <BrainPanel
+        initialPath={panelParams?.path ?? null}
+        initialTab={panelParams?.tab === "dreams" ? "dreams" : null}
+      />
+    );
   }
 
   const Cmp = PANELS[panel];

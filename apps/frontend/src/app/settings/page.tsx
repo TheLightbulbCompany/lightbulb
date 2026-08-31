@@ -703,7 +703,11 @@ function SettingsPageInner() {
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
     initialPanelParam !== null &&
-    initialPanelParam in PANELS &&
+    // hasOwnProperty, not `in` — `in` walks the prototype chain, so
+    // ?panel=constructor would otherwise pass validation and read
+    // Object.prototype.constructor out of PANELS (panelRegistry.ts's
+    // hasOwnKey guards the identical case for the workspace's own registry).
+    Object.prototype.hasOwnProperty.call(PANELS, initialPanelParam) &&
     (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
       ? (initialPanelParam as Panel)
       : "profile";

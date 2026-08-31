@@ -55,7 +55,12 @@ function migrateRetiredPanelId(
   if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
-      return { id: target, teamsKey: target.slice("teams-".length) };
+      // Hardening: every existing bare teams-* alias is already
+      // contentComponent "teams", so this is a no-op for them today — but
+      // stating it explicitly (rather than relying on the `component ??
+      // contentComponent` fallback below) means a bare id retired FROM a
+      // control panel straight into teams- would still flip correctly.
+      return { id: target, teamsKey: target.slice("teams-".length), component: "teams" };
     }
     return null;
   }

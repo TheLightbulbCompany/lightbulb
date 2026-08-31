@@ -169,4 +169,12 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     // The channel-status panel mounts (its stub marker is present).
     expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
   });
+
+  // --- Trust boundary: `in` walks the prototype chain, hasOwnProperty doesn't ---
+  it("falls back to Profile for a prototype-chain key like ?panel=constructor (review finding 8)", () => {
+    nav.panel = "constructor";
+    const { container } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+    expect(screen.queryByTestId("channels-status-panel")).not.toBeInTheDocument();
+  });
 });

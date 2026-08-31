@@ -39,10 +39,16 @@ function formatDate(timestamp: number): string {
 export interface BrainPanelProps {
   /** ?path deep link (registry-durable) — selects a page on mount. */
   initialPath?: string | null;
+  /** Seeds which tab is active on mount (e.g. the retired ?panel=dreams alias
+   *  landing on Dreams instead of silently defaulting to Notes). One-time
+   *  seed only — unlike initialPath there is no re-apply-on-prop-change sync,
+   *  since a re-focus of an already-open panel has no reason to yank the
+   *  owner back to a specific tab. */
+  initialTab?: BrainTab | null;
 }
 
-export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
-  const [tab, setTab] = React.useState<BrainTab>("notes");
+export function BrainPanel({ initialPath, initialTab }: BrainPanelProps = {}) {
+  const [tab, setTab] = React.useState<BrainTab>(initialTab === "dreams" ? "dreams" : "notes");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialPath ?? null);
   const [editorDirty, setEditorDirty] = React.useState(false);
 
@@ -175,13 +181,25 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
       <PanelTabs
         tabs={BRAIN_TABS}
         value={tab}
-        onValueChange={(v) => setTab(v as BrainTab)}
+        // Same discard-guard handleSelect already uses for a tree click — a
+        // tab switch unmounts the Notes branch (FileContentViewer's draft
+        // lives in its own component state, only the dirty flag is lifted),
+        // so without this an unsaved edit is silently destroyed.
+        onValueChange={(v) => {
+          if (confirmDiscardIfDirty()) setTab(v as BrainTab);
+        }}
+        // `pill`, not the default `underline`: Dreams renders its own
+        // scene/diary/advanced rail directly under this bar (embedded=true
+        // drops its p-6 + header, but not that rail) — an underline here
+        // would compete with it, which is exactly what PanelTabs' own
+        // variant doc calls out this component for.
+        variant="pill"
         ariaLabel="Brain sections"
       />
 
       {tab === "dreams" ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <DreamsPanel />
+          <DreamsPanel embedded />
         </div>
       ) : (
         <>

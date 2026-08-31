@@ -38,6 +38,7 @@ description: >
   - Skills / self-learning .. apps/backend/core/containers/config.py (skills.workshop block);
                               apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
   - Company wiki ............ apps/backend/core/containers/config.py (memory_plugin_entries — memory-wiki shared global vault)
+  - Brain panel ............. apps/frontend/src/components/teams/panels/BrainPanel.tsx (Notes/Dreams tabs); apps/frontend/src/components/control/panels/DreamsPanel.tsx (embedded prop)
   - Browser live view ....... apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx + WorkspaceHeader.tsx (Chrome button);
                               apps/backend/routers/browser_view.py (VNC relay); apps/infra/lib/stacks/container-stack.ts (Xvnc/matchbox/websockify boot);
                               core/containers/config.py (browser.headless=false + executablePath — the agent drives real /usr/bin/google-chrome)
@@ -95,8 +96,9 @@ exists.
 | Surface | Where | What it is |
 |---|---|---|
 | Chat | flickmeon.ai/chat | Talk to any agent; upload files; browse the workspace |
-| Control Panel | flickmeon.ai/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Dreams, Skill Proposals |
+| Control Panel | flickmeon.ai/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Skill Proposals |
 | Teams | flickmeon.ai/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `flickmeon.ai/teams` is a 404, so never send the owner there |
+| Brain | flickmeon.ai/chat (Teams panel, Knowledge) | Browse and edit the company wiki in place — a file tree + editor over the same vault `wiki_search`/`wiki_get`/`wiki_apply` read and write. Two tabs: **Notes** (the vault itself) and **Dreams** (memory-core dreaming status/diary/advanced — folded in here, no longer its own Control Panel tab). Files the owner drops onto it land in `wiki/inbox/`, so you'll notice them on your next wiki check — tell them that instead of "upload it to me in chat" when they want to hand you a document to remember |
 | Marketplace | flickmeon.ai/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | flickmeon.ai/settings | Account, billing, connections |
 | Desktop app | flickmeon.ai/api/download/desktop (also linked from the landing-page footer, "Download for Mac") | Signed macOS DMG (Apple Silicon); the desktop app embeds the same web workspace |

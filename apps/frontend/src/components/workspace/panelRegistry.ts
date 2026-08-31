@@ -168,6 +168,11 @@ export function describePanel(
       // ?path mirrors the file-viewer grammar: a deep link selects a wiki
       // page; in-panel selection clicks never write it back.
       if (teamsKey === "brain" && params.path) p.path = params.path;
+      // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
+      // an old ?panel=dreams link should land ON the Dreams tab, not silently
+      // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
+      // fresh ?panel=teams-brain link is untouched.
+      if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;

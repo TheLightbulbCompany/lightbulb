@@ -22,13 +22,13 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("dreams")).toBe("teams-brain");
   });
 
-  it("describes a retired ?panel=dreams as the Brain panel — the control key is dropped, not just aliased", () => {
+  it("describes a retired ?panel=dreams as the Brain panel, landing ON the Dreams tab (review finding 3)", () => {
     const d = describePanel("dreams", {});
     expect(d).toEqual({
       panelId: "teams-brain",
       component: "teams",
       title: "Brain",
-      params: { teamsKey: "brain" },
+      params: { teamsKey: "brain", tab: "dreams" },
     });
   });
 

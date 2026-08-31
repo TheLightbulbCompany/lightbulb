@@ -38,7 +38,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo
 from core.repositories import provisioning_workflow_repo as repo
-from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api
+from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api, work_products
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.provisioning_landing import land_credentials
@@ -959,6 +959,18 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
         "project_id": project_id,
     }
     await land_credentials(owner_id=row["owner_id"], resource=pointer, env=env)
+    # Best-effort receipt on the originating issue; `register` skips (debug
+    # log, None) when the row carries no issue_id and never raises — a missing
+    # receipt must not fail the rail.
+    await work_products.register(
+        row["owner_id"],
+        type="artifact",
+        provider=row["provider_name"],
+        title=f"Provisioned {row['service_ref']}",
+        issue_id=row.get("issue_id"),
+        external_id=row["resource_id"],
+        metadata={"workflow_id": row["workflow_id"], "level": "company"},
+    )
     # Stamp the NAMES onto the workflow row too, so the facts file stays a
     # single query and can never disagree with the pointer.
     await repo.patch(row["workflow_id"], {"resource_name": pointer["resource_name"], "env_keys": pointer["env_keys"]})

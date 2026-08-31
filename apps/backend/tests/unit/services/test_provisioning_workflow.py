@@ -123,6 +123,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(mod.api, "payment_profile", AsyncMock(side_effect=ProvisioningError("not_found", "no profile")))
     monkeypatch.setattr(mod.api, "list_projects", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.api, "list_resources", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod.work_products, "register", AsyncMock(return_value="wp_1"))
 
 
 # --- start ------------------------------------------------------------------
@@ -762,6 +763,15 @@ async def test_complete_resource_binds_the_matching_resource_id_only():
     assert land.await_args.kwargs["resource"]["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
     assert land.await_args.kwargs["resource"]["level"] == "company"
     mod.owner_facts.write_owner_facts.assert_awaited_once_with("org_a")
+    # The work-product receipt rides the bind, scoped to the originating issue.
+    receipt = mod.work_products.register.await_args
+    assert receipt.args == ("org_a",)
+    assert receipt.kwargs["type"] == "artifact"
+    assert receipt.kwargs["provider"] == "posthog"
+    assert receipt.kwargs["title"] == "Provisioned svc_analytics"
+    assert receipt.kwargs["issue_id"] == "iss_1"
+    assert receipt.kwargs["external_id"] == "res_1"
+    assert receipt.kwargs["metadata"] == {"workflow_id": "pwf_1", "level": "company"}
 
 
 @pytest.mark.asyncio

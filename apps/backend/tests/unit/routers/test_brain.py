@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from fastapi.testclient import TestClient
 
 from core.auth import AuthContext
 from core.config import settings
@@ -421,3 +422,136 @@ class TestBrainUpload:
         assert result["uploaded"][0]["path"] == "inbox/evil.md"
         assert (workspace._mount / USER_ID / "wiki" / "inbox" / "evil.md").exists()
         assert not (workspace._mount / "evil.md").exists()
+
+
+# ===========================================================================
+# Upload hardening — T3 review round 1
+# ===========================================================================
+
+
+class TestBrainUploadHardening:
+    @pytest.mark.asyncio
+    async def test_upload_rejects_dot_filename_400_and_writes_nothing(self, workspace):
+        """T3 review F1: a lone '.' must never land on wiki/inbox itself."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload(".", b"x")], auth=_auth())
+        assert exc.value.status_code == 400
+        inbox = workspace._mount / USER_ID / "wiki" / "inbox"
+        # The bug: os.replace(tmp, inbox) turned the directory into a file.
+        # Rejected before any fs work runs, so inbox/ isn't even created yet.
+        assert not inbox.exists()
+
+        # And the drop-zone survives to serve a normal upload right after —
+        # the original bug bricked every later upload once `inbox` became a file.
+        result = await upload_brain_files(files=[_upload("notes.md", b"hello")], auth=_auth())
+        assert result["uploaded"][0]["path"] == "inbox/notes.md"
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_dotdot_filename_400(self, workspace):
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload("..", b"x")], auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_empty_filename_400(self, workspace):
+        """An empty original name falls back to '_sanitize_filename's "upload"
+        default today — this covers the case where sanitization itself could
+        ever yield an empty string (e.g. an all-unsafe-char name reduced to
+        nothing)."""
+        from routers.brain import _validate_upload_filename
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_upload_filename("")
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_oversize_filename_400_not_500(self, workspace):
+        """T3 review F2/M2: a 300-byte filename must 400, never ENAMETOOLONG-500."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        long_name = ("a" * 297) + ".md"  # 300 bytes total
+        assert len(long_name.encode("utf-8")) == 300
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload(long_name, b"x")], auth=_auth())
+        assert exc.value.status_code == 400
+        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / long_name).exists()
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_trailing_newline_filename(self, workspace):
+        """T3 review F4: a trailing '\\n' survives `_sanitize_filename` (its
+        regex uses '$', which matches before a trailing newline) — reject it
+        explicitly rather than let it into a filename and a log line."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload("notes.md\n", b"x")], auth=_auth())
+        assert exc.value.status_code == 400
+        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md\n").exists()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_name_uploads_both_survive_with_distinct_names(self, workspace):
+        """T3 review M3 (controller ruling): concurrent uploads of the same
+        filename must never race the dedupe probe — both survive with
+        distinct names and intact bytes, serialized under the one inbox-wide
+        lock (_locked_inbox_upload), never the previous outside-any-lock
+        probe-then-write shape that let both resolve to "notes.md" and one
+        payload silently vanish."""
+        import asyncio
+
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+
+        async def _do_upload(payload: bytes) -> dict:
+            r = await upload_brain_files(files=[_upload("notes.md", payload)], auth=_auth())
+            return r["uploaded"][0]
+
+        results = await asyncio.gather(_do_upload(b"AAA"), _do_upload(b"BBB"))
+
+        paths = sorted(u["path"] for u in results)
+        assert paths == ["inbox/notes-1.md", "inbox/notes.md"]
+        inbox = workspace._mount / USER_ID / "wiki" / "inbox"
+        contents = {(inbox / "notes.md").read_bytes(), (inbox / "notes-1.md").read_bytes()}
+        assert contents == {b"AAA", b"BBB"}
+
+
+class TestBrainUploadHttp:
+    """One real end-to-end request through the FastAPI app (T3 review F8) —
+    proves the route is mounted at /api/v1/container/brain/upload, that
+    File(...) binds the `files` field, and that auth is wired, none of which
+    the direct-handler-call tests above can prove by themselves."""
+
+    @pytest.fixture()
+    def client(self, workspace):
+        from core.auth import get_current_user
+        from main import app
+
+        async def _override():
+            return _auth()
+
+        app.dependency_overrides[get_current_user] = _override
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+    def test_upload_via_real_multipart_request(self, client, workspace):
+        workspace.ensure_user_dir(USER_ID)
+        response = client.post(
+            "/api/v1/container/brain/upload",
+            headers={"Authorization": "Bearer test"},
+            files=[("files", ("notes.md", b"hello", "text/markdown"))],
+        )
+        assert response.status_code == 200
+        assert response.json() == {"uploaded": [{"filename": "notes.md", "path": "inbox/notes.md", "size": 5}]}
+        on_disk = workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md"
+        assert on_disk.read_bytes() == b"hello"

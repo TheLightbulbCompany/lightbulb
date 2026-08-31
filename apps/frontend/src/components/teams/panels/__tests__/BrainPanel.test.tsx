@@ -200,6 +200,65 @@ describe("BrainPanel", () => {
     await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
   });
 
+  it("ignores a second drop while an upload is already in flight (T3 review F7)", async () => {
+    treeState.files = [FACTS];
+    let resolveUpload: (v: { uploaded: never[] }) => void = () => {};
+    uploadBrainFiles.mockImplementation(
+      () => new Promise((resolve) => { resolveUpload = resolve; }),
+    );
+    render(<BrainPanel />);
+    const pane = screen.getByTestId("brain-tree-pane");
+    const file1 = new File(["a"], "a.md");
+    const file2 = new File(["b"], "b.md");
+
+    fireEvent.drop(pane, { dataTransfer: { files: [file1] } });
+    await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalledTimes(1));
+
+    // A second drop while the first is still pending must not fire a second
+    // concurrent request — that is the client-side half of the T3 review's
+    // M3 collision race.
+    fireEvent.drop(pane, { dataTransfer: { files: [file2] } });
+    expect(uploadBrainFiles).toHaveBeenCalledTimes(1);
+
+    resolveUpload({ uploaded: [] });
+    await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
+  });
+
+  it("disables the upload input while an upload is in flight (T3 review item 6)", async () => {
+    treeState.files = [FACTS];
+    let resolveUpload: (v: { uploaded: never[] }) => void = () => {};
+    uploadBrainFiles.mockImplementation(
+      () => new Promise((resolve) => { resolveUpload = resolve; }),
+    );
+    render(<BrainPanel />);
+    const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
+    const file = new File(["a"], "a.md");
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(input.disabled).toBe(true));
+
+    resolveUpload({ uploaded: [] });
+    await waitFor(() => expect(input.disabled).toBe(false));
+  });
+
+  it("accepts a drop onto the empty vault and uploads (empty-vault ruling)", async () => {
+    treeState.files = [];
+    render(<BrainPanel />);
+    const zone = screen.getByTestId("brain-empty-drop-zone");
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    fireEvent.drop(zone, { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalledWith([file]));
+  });
+
+  it("opens the file picker from the empty vault's 'or drop files here' link", () => {
+    treeState.files = [];
+    render(<BrainPanel />);
+    const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, "click");
+    fireEvent.click(screen.getByRole("button", { name: /or drop files here/i }));
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
   it("follows a second ?path deep link on an already-mounted panel (M2)", () => {
     treeState.files = [FACTS];
     fileState.file = FACTS_INFO;

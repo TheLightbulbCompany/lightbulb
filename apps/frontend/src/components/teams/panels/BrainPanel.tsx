@@ -56,9 +56,13 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
   // Owner drop-zone: dropped/picked files land in wiki/inbox/ so the agents
   // notice new material next time they check. Best-effort per drop — a
   // partial failure (e.g. one oversized file) still refreshes the tree so
-  // whatever DID land shows up immediately.
+  // whatever DID land shows up immediately. Guarded against re-entry so a
+  // second drop/pick mid-upload never starts a concurrent request (T3
+  // review F7) — the drag/input handlers below also skip while `uploading`
+  // so the drop-zone visibly goes inert, not just functionally.
   const handleUpload = React.useCallback(
     async (fileList: FileList | null) => {
+      if (uploading) return;
       if (!fileList || fileList.length === 0) return;
       setUploading(true);
       try {
@@ -71,7 +75,7 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
       }
       void refresh();
     },
-    [uploadBrainFiles, refresh],
+    [uploading, uploadBrainFiles, refresh],
   );
 
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
@@ -152,6 +156,19 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
         }
       />
 
+      {/* Hoisted so both the empty-state and the tree-pane's picker button
+          share the same file input — only one of those branches is ever
+          mounted at a time. Disabled mid-upload (T3 review item 6/F7). */}
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        className="sr-only"
+        aria-label="Upload files to the brain inbox"
+        disabled={uploading}
+        onChange={(e) => void handleUpload(e.target.files)}
+      />
+
       {treeError ? (
         <PanelEmptyState
           icon={TriangleAlert}
@@ -160,12 +177,42 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
           action={{ label: "Retry", onClick: () => void refresh() }}
         />
       ) : isEmpty ? (
-        <PanelEmptyState
-          icon={BookOpen}
-          headline="No pages yet."
-          supporting="Your company's brain fills as your agents learn."
-          action={{ label: "Ask Friday", onClick: () => openChatPanel(DEFAULT_AGENT_SENTINEL) }}
-        />
+        // Day 0 for every owner is an empty vault (no agent has written yet),
+        // so this is the likeliest place for the owner's very first drop —
+        // it needs the same drag/drop + picker affordance as the populated
+        // tree pane, not just the "Ask Friday" chip.
+        <div
+          data-testid="brain-empty-drop-zone"
+          className={`flex-1 min-h-0 flex flex-col items-center justify-center rounded-sm border border-dashed transition-colors ${
+            dragOver ? "border-[var(--midnight-muted)] bg-cream-deeper" : "border-transparent"
+          }`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (uploading) return;
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            void handleUpload(e.dataTransfer.files);
+          }}
+        >
+          <PanelEmptyState
+            icon={BookOpen}
+            headline="No pages yet."
+            supporting="Your company's brain fills as your agents learn."
+            action={{ label: "Ask Friday", onClick: () => openChatPanel(DEFAULT_AGENT_SENTINEL) }}
+          />
+          <button
+            type="button"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={uploading}
+            className="text-xs text-[var(--midnight-muted)] underline hover:text-[var(--midnight)] disabled:opacity-50"
+          >
+            {uploading ? "Uploading…" : "or drop files here"}
+          </button>
+        </div>
       ) : (
         <div className="flex flex-1 min-h-0 rounded-sm border border-[var(--edge)] bg-cream overflow-hidden">
           <div
@@ -175,6 +222,7 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
             }`}
             onDragOver={(e) => {
               e.preventDefault();
+              if (uploading) return;
               setDragOver(true);
             }}
             onDragLeave={() => setDragOver(false)}
@@ -195,14 +243,6 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
               />
             </div>
             <div className="shrink-0 border-t border-[var(--edge)] p-2">
-              <input
-                ref={uploadInputRef}
-                type="file"
-                multiple
-                className="sr-only"
-                aria-label="Upload files to the brain inbox"
-                onChange={(e) => void handleUpload(e.target.files)}
-              />
               <button
                 type="button"
                 onClick={() => uploadInputRef.current?.click()}

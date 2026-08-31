@@ -21,6 +21,7 @@ import asyncio
 import fcntl
 import logging
 import os
+import re
 from pathlib import Path
 from typing import List
 
@@ -128,6 +129,36 @@ class BrainWriteRequest(BaseModel):
     content: str
 
 
+def _write_bytes_atomic(workspace, owner_id: str, resolved: Path, data: bytes) -> dict:
+    """Tempfile + os.replace + chown at an already-resolved path; returns fresh stat.
+
+    No locking of its own — the caller is responsible for serializing access
+    to ``resolved`` (the per-file page-edit lock in ``_locked_write``, or the
+    inbox-wide upload lock in ``_locked_inbox_upload``). The container's
+    memory-wiki plugin reads these pages, so the swap must be atomic — never
+    an in-place write. The tmp name is dot-prefixed so it can never collide
+    with genuine agent-written vault content (same reasoning as the
+    ``.lb-lock`` sidecar); a crash-orphaned one stays visible in the tree by
+    design — the owner can see and delete it.
+    """
+    tmp = resolved.with_name(f".{resolved.name}.tmp")
+    try:
+        tmp.write_bytes(data)
+        # chown to uid 1000 (parents included) so the container can still
+        # read/write the page after the owner's edit.
+        workspace._chown_for_access_point(tmp, owner_id)
+        os.replace(tmp, resolved)
+    except OSError as exc:
+        raise WorkspaceError(
+            f"Failed to write {resolved!r} for {owner_id}: {exc}",
+            user_id=owner_id,
+        ) from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+    stat = resolved.stat()
+    return {"size": stat.st_size, "modified_at": stat.st_mtime}
+
+
 def _locked_write(workspace, owner_id: str, full_path: str, content: str | bytes) -> dict:
     """Two-layer-locked atomic EFS write (see module docstring); returns fresh stat.
 
@@ -141,29 +172,8 @@ def _locked_write(workspace, owner_id: str, full_path: str, content: str | bytes
         lock_fd = open_lock_fd(str(resolved.parent), lock_path)
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-            # Tempfile + os.replace: the container's plugin reads these pages,
-            # so the swap must be atomic — never an in-place write.
-            # Dot-prefixed so the swap file can never collide with genuine
-            # agent-written vault content (same reasoning as the .lb-lock
-            # sidecar); a crash-orphaned one stays visible in the tree by
-            # design — the owner can see and delete it.
-            tmp = resolved.with_name(f".{resolved.name}.tmp")
-            try:
-                data = content.encode("utf-8") if isinstance(content, str) else content
-                tmp.write_bytes(data)
-                # chown to uid 1000 (parents included) so the container can
-                # still read/write the page after the owner's edit.
-                workspace._chown_for_access_point(tmp, owner_id)
-                os.replace(tmp, resolved)
-            except OSError as exc:
-                raise WorkspaceError(
-                    f"Failed to write {full_path!r} for {owner_id}: {exc}",
-                    user_id=owner_id,
-                ) from exc
-            finally:
-                tmp.unlink(missing_ok=True)
-            stat = resolved.stat()
-            return {"size": stat.st_size, "modified_at": stat.st_mtime}
+            data = content.encode("utf-8") if isinstance(content, str) else content
+            return _write_bytes_atomic(workspace, owner_id, resolved, data)
         finally:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
@@ -208,6 +218,81 @@ def _dedupe_filename(dir_path: Path, name: str) -> str:
     return candidate
 
 
+MAX_UPLOAD_FILENAME_BYTES = 200
+_FILENAME_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+# The inbox-wide upload lock sidecar — deliberately ONE lock for the whole
+# inbox, not per-filename (see _locked_inbox_upload).
+_INBOX_LOCK_NAME = ".inbox-upload.lb-lock"
+
+
+def _validate_upload_filename(name: str) -> None:
+    """Reject a sanitized filename BEFORE any filesystem work touches it.
+
+    ``_sanitize_filename`` still lets three shapes through that break the
+    drop-zone (T3 review round 1):
+    - F1: an empty or all-dot name (``"."``/``".."``) — ``"."`` joined onto
+      ``inbox/`` collapses to the inbox directory itself under pathlib's own
+      join rules, so the write lands ON the directory and bricks every later
+      upload once ``os.replace`` turns it into a regular file.
+    - F2: a name long enough to blow ``NAME_MAX`` inside the lock sidecar
+      path, which raises a bare ``OSError``/``ENAMETOOLONG`` — an unhandled
+      500 instead of a clean 400.
+    - F4: a trailing control character (``\\n`` included) — ``$`` in
+      ``SAFE_FILENAME_RE`` matches just before a trailing newline, so it
+      survives sanitization and lands in the filename and the access log.
+    """
+    if not name or set(name) <= {"."}:
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
+    if _FILENAME_CONTROL_CHAR_RE.search(name):
+        raise HTTPException(status_code=400, detail="Filename contains control characters")
+    if len(name.encode("utf-8")) > MAX_UPLOAD_FILENAME_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Filename exceeds {MAX_UPLOAD_FILENAME_BYTES} bytes",
+        )
+
+
+def _locked_inbox_upload(workspace, owner_id: str, safe_name: str, data: bytes) -> dict:
+    """Dedupe-probe + atomic write for one uploaded file under a SINGLE
+    inbox-wide lock (T3 review M3 — controller ruling).
+
+    The previous shape ran the dedupe stat OUTSIDE any lock, so two in-flight
+    uploads of "notes.md" could both observe no collision and both resolve to
+    "notes.md" — the loser's bytes silently vanish on the second
+    ``os.replace``. Serializing probe+write under one lock per owner (not the
+    per-file page-edit lock, which only fences a name already decided) closes
+    that window: whichever upload gets the lock first commits its name before
+    the next one even runs its probe.
+
+    ponytail: one lock guards the WHOLE inbox, so two uploads with unrelated
+    filenames also serialize. Uploads are rare — move to per-name locks if
+    concurrent-upload throughput ever becomes a real bottleneck.
+    """
+    wiki_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE
+    inbox_dir = wiki_dir / "inbox"
+    lock_path = str(wiki_dir / _INBOX_LOCK_NAME)
+    with get_file_lock(lock_path):
+        # open_lock_fd creates wiki_dir (holding the sidecar) if missing.
+        lock_fd = open_lock_fd(str(wiki_dir), lock_path)
+        try:
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            name = _dedupe_filename(inbox_dir, safe_name)
+            full_path = _guard_brain_path(workspace, owner_id, f"inbox/{name}")
+            resolved = workspace._resolve_user_file(owner_id, full_path)
+            resolved_inbox = inbox_dir.resolve(strict=False)
+            # Belt-and-suspenders on top of _validate_upload_filename: the
+            # write target must be a plain file strictly inside inbox/, never
+            # the directory itself.
+            if resolved.parent != resolved_inbox or resolved == resolved_inbox:
+                raise HTTPException(status_code=400, detail=f"Invalid filename: {safe_name!r}")
+            stat_result = _write_bytes_atomic(workspace, owner_id, resolved, data)
+            return {"name": name, **stat_result}
+        finally:
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+
 @router.post("/brain/upload")
 async def upload_brain_files(
     files: List[UploadFile] = File(..., description="Files to drop into the vault inbox"),
@@ -218,7 +303,8 @@ async def upload_brain_files(
     Same caps/shape as POST /container/files (routers/container_files.py):
     10 files per request, 10MB each. A same-named collision gets a `-1`
     (`-2`, ...) suffix rather than overwriting — dropping the same filename
-    twice never loses the first copy.
+    twice never loses the first copy (serialized under one inbox-wide lock,
+    see _locked_inbox_upload).
     """
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(
@@ -228,26 +314,26 @@ async def upload_brain_files(
 
     owner_id = resolve_owner_id(auth)
     workspace = get_workspace()
-    inbox_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE / "inbox"
 
     uploaded = []
     for f in files:
-        data = await f.read()
+        # Bounded read: a crafted part with no declared size never inflates
+        # past the cap we're about to enforce anyway (T3 review F5).
+        data = await f.read(MAX_FILE_SIZE + 1)
         if len(data) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
                 detail=f"File '{f.filename}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit.",
             )
         safe_name = _sanitize_filename(f.filename or "upload")
-        name = _dedupe_filename(inbox_dir, safe_name)
-        full_path = _guard_brain_path(workspace, owner_id, f"inbox/{name}")
+        _validate_upload_filename(safe_name)
         try:
-            result = await asyncio.to_thread(_locked_write, workspace, owner_id, full_path, data)
+            result = await asyncio.to_thread(_locked_inbox_upload, workspace, owner_id, safe_name, data)
         except WorkspaceError:
             logger.exception("Failed to upload brain file for owner %s", owner_id)
             raise HTTPException(status_code=500, detail="Failed to upload file")
-        uploaded.append({"filename": name, "path": f"inbox/{name}", "size": result["size"]})
-        logger.info("Uploaded %s (%d bytes) for owner %s", full_path, len(data), owner_id)
+        uploaded.append({"filename": result["name"], "path": f"inbox/{result['name']}", "size": result["size"]})
+        logger.info("Uploaded inbox/%s (%d bytes) for owner %s", result["name"], len(data), owner_id)
 
     return {"uploaded": uploaded}
 

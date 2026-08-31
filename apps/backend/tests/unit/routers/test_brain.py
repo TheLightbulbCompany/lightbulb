@@ -147,15 +147,56 @@ class TestBrainTree:
         assert isinstance(entry["modified_at"], float)
 
     @pytest.mark.asyncio
-    async def test_tree_hides_lock_sidecars(self, workspace, wiki_root):
-        """Per-file write-lock sidecars are plumbing, not owner content."""
+    async def test_tree_hides_only_our_lock_sidecars(self, workspace, wiki_root):
+        """Only `.{name}.lb-lock` FILES are hidden — agent-written *.lock
+        content and directories that happen to share the suffix stay visible."""
         from routers.brain import list_brain_tree
 
-        (wiki_root / "main" / "index.md.lock").write_text("", encoding="utf-8")
+        (wiki_root / "main" / ".index.md.lb-lock").write_text("", encoding="utf-8")
+        (wiki_root / "main" / "report.md.lock").write_text("agent data", encoding="utf-8")
+        weird_dir = wiki_root / "main" / "weird.lb-lock"
+        weird_dir.mkdir()
+        (weird_dir / "child.md").write_text("x", encoding="utf-8")
+
         tree = await list_brain_tree(auth=_auth())
         paths = {f["path"] for f in tree["files"]}
         assert "main/index.md" in paths
-        assert "main/index.md.lock" not in paths
+        assert "main/.index.md.lb-lock" not in paths
+        assert "main/report.md.lock" in paths  # real vault content
+        assert "main/weird.lb-lock" in paths  # a dir, never filtered
+        assert "main/weird.lb-lock/child.md" in paths  # no orphaned children
+
+    @pytest.mark.asyncio
+    async def test_tree_skips_symlink_escaping_user_root(self, workspace, wiki_root, tmp_path):
+        """A symlink resolving outside the user root is dropped; the rest lists."""
+        import os
+
+        from routers.brain import list_brain_tree
+
+        outside = tmp_path / "outside-user-root.txt"
+        outside.write_text("secret", encoding="utf-8")
+        os.symlink(outside, wiki_root / "main" / "escape.txt")
+
+        tree = await list_brain_tree(auth=_auth())
+        paths = {f["path"] for f in tree["files"]}
+        assert "main/escape.txt" not in paths
+        assert "main/index.md" in paths
+        assert "main/topics/agents.md" in paths
+
+    @pytest.mark.asyncio
+    async def test_tree_skips_dangling_symlink(self, workspace, wiki_root):
+        """A dangling symlink skips that entry — never empties the whole tree."""
+        import os
+
+        from routers.brain import list_brain_tree
+
+        os.symlink("never-existed.md", wiki_root / "main" / "dangling.md")
+
+        tree = await list_brain_tree(auth=_auth())
+        paths = {f["path"] for f in tree["files"]}
+        assert "main/dangling.md" not in paths
+        assert "main/index.md" in paths
+        assert "main/topics/agents.md" in paths
 
 
 # ===========================================================================
@@ -215,14 +256,25 @@ class TestBrainFileRoundTrip:
         assert chown.called
 
     @pytest.mark.asyncio
-    async def test_write_takes_per_file_lock_sidecar(self, workspace):
-        """The two-layer lock leaves its {file}.lock sidecar beside the file."""
+    async def test_write_takes_per_file_lock_sidecar(self, workspace, monkeypatch):
+        """The write acquires the fcntl sidecar lock (spied), on `.{name}.lb-lock`."""
+        import routers.brain as brain_mod
         from routers.brain import BrainWriteRequest, write_brain_file
 
+        real_open_lock_fd = brain_mod.open_lock_fd
+        acquired: list[str] = []
+
+        def spy(lock_dir, lock_path):
+            acquired.append(lock_path)
+            return real_open_lock_fd(lock_dir, lock_path)
+
+        monkeypatch.setattr(brain_mod, "open_lock_fd", spy)
         workspace.ensure_user_dir(USER_ID)
         body = BrainWriteRequest(path="main/note.md", content="x")
         await write_brain_file(body=body, auth=_auth())
-        assert (workspace._mount / USER_ID / "wiki" / "main" / "note.md.lock").exists()
+        assert len(acquired) == 1
+        assert acquired[0].endswith("/wiki/main/.note.md.lb-lock")
+        assert (workspace._mount / USER_ID / "wiki" / "main" / ".note.md.lb-lock").exists()
 
 
 # ===========================================================================
@@ -257,11 +309,16 @@ class TestBrainDelete:
         assert res.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_delete_removes_lock_sidecar(self, workspace, wiki_root):
-        """Deleting a note also reclaims its write-lock sidecar."""
+    async def test_delete_removes_only_its_own_lock_sidecar(self, workspace, wiki_root):
+        """Deleting a note reclaims `.{name}.lb-lock` — never an agent-written
+        `{name}.lock`, which is real vault content."""
         from routers.brain import delete_brain_file
 
-        sidecar = wiki_root / "main" / "index.md.lock"
+        sidecar = wiki_root / "main" / ".index.md.lb-lock"
         sidecar.write_text("", encoding="utf-8")
+        agent_lock = wiki_root / "main" / "index.md.lock"
+        agent_lock.write_text("agent data", encoding="utf-8")
+
         await delete_brain_file(path="main/index.md", auth=_auth())
         assert not sidecar.exists()
+        assert agent_lock.read_text() == "agent data"

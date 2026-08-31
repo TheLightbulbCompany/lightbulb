@@ -6,16 +6,22 @@ pinned to the ``wiki`` subtree with the same guard machinery
 ``routers/workspace_files.py`` uses for agent workspaces.
 
 Lock-vs-plugin note: writes take the repo's two-layer lock (per-file
-in-process ``threading.Lock`` + ``fcntl.lockf`` on a ``{file}.lock`` sidecar —
-see ``core/services/efs_file_lock.py``), which serializes BACKEND writers.
-The container's wiki_apply does NOT take this sidecar, so a same-second
-owner-vs-agent collision is last-writer-wins on the inode swap — accepted
-for v1.
+in-process ``threading.Lock`` + ``fcntl.lockf`` on a dot-prefixed
+``.{name}.lb-lock`` sidecar — see ``core/services/efs_file_lock.py``), which
+serializes BACKEND writers, and land via tempfile + ``os.replace`` so readers
+(the container's memory-wiki plugin included) never see a torn page. The
+plugin's wiki_apply does NOT take our sidecar, so a same-second owner-vs-agent
+collision is last-writer-wins on the inode swap — accepted for v1. The wiki
+subtree pin is checked pre-write; the only actor that could swap a symlink in
+after the guard is the container itself, which already owns the entire user
+root — no trust boundary is crossed.
 """
 
 import asyncio
 import fcntl
 import logging
+import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -36,7 +42,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 BRAIN_SUBTREE = "wiki"
-_LOCK_SUFFIX = ".lock"
+# Dot-prefixed + distinctive so it can never collide with agent-written vault
+# content (a plain `{file}.lock` did — an agent's report.md.lock is real data).
+_LOCK_SUFFIX = ".lb-lock"
+
+
+def _lock_sidecar_path(resolved: Path) -> Path:
+    """The write-lock sidecar beside a vault file: ``.{name}.lb-lock``."""
+    return resolved.parent / f".{resolved.name}{_LOCK_SUFFIX}"
 
 
 def _guard_brain_path(workspace, owner_id: str, path: str) -> str:
@@ -64,7 +77,9 @@ def _strip_wiki_prefix(entries: list[dict]) -> list[dict]:
     prefix = f"{BRAIN_SUBTREE}/"
     out = []
     for entry in entries:
-        if entry["name"].endswith(_LOCK_SUFFIX):
+        # Hide ONLY our own sidecars: files (never dirs, whose children would
+        # orphan) named exactly `.{something}.lb-lock`.
+        if entry["type"] == "file" and entry["name"].startswith(".") and entry["name"].endswith(_LOCK_SUFFIX):
             continue
         p = entry["path"]
         out.append({**entry, "path": p[len(prefix) :] if p.startswith(prefix) else p})
@@ -112,16 +127,30 @@ class BrainWriteRequest(BaseModel):
 
 
 def _locked_write(workspace, owner_id: str, full_path: str, content: str) -> dict:
-    """Two-layer-locked EFS write (see module docstring); returns fresh stat."""
+    """Two-layer-locked atomic EFS write (see module docstring); returns fresh stat."""
     resolved = workspace._resolve_user_file(owner_id, full_path)
-    lock_path = f"{resolved}{_LOCK_SUFFIX}"
+    lock_path = str(_lock_sidecar_path(resolved))
     with get_file_lock(lock_path):
+        # open_lock_fd creates the parent dirs alongside the sidecar.
         lock_fd = open_lock_fd(str(resolved.parent), lock_path)
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-            # write_file creates parents and chowns to uid 1000 so the
-            # container can still read/write the page after the owner's edit.
-            workspace.write_file(owner_id, full_path, content)
+            # Tempfile + os.replace: the container's plugin reads these pages,
+            # so the swap must be atomic — never an in-place write.
+            tmp = resolved.with_name(resolved.name + ".tmp")
+            try:
+                tmp.write_text(content, encoding="utf-8")
+                # chown to uid 1000 (parents included) so the container can
+                # still read/write the page after the owner's edit.
+                workspace._chown_for_access_point(tmp, owner_id)
+                os.replace(tmp, resolved)
+            except OSError as exc:
+                raise WorkspaceError(
+                    f"Failed to write {full_path!r} for {owner_id}: {exc}",
+                    user_id=owner_id,
+                ) from exc
+            finally:
+                tmp.unlink(missing_ok=True)
             stat = resolved.stat()
             return {"size": stat.st_size, "modified_at": stat.st_mtime}
         finally:
@@ -155,12 +184,12 @@ async def write_brain_file(
 
 
 def _locked_delete(workspace, owner_id: str, full_path: str) -> None:
-    """Locked unlink of a wiki page plus its lock sidecar."""
+    """Locked unlink of a wiki page plus its own lock sidecar (never vault content)."""
     resolved = workspace._resolve_user_file(owner_id, full_path)
-    lock_path = f"{resolved}{_LOCK_SUFFIX}"
-    with get_file_lock(lock_path):
+    sidecar = _lock_sidecar_path(resolved)
+    with get_file_lock(str(sidecar)):
         workspace.delete_file(owner_id, full_path)
-        resolved.with_name(resolved.name + _LOCK_SUFFIX).unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
 
 
 @router.delete("/brain/file", status_code=204)

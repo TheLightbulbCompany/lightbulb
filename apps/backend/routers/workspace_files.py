@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# NOTE: _validate_relative_path, _ensure_within_subtree and _collect_recursive
+# are imported by routers/brain.py — its security posture depends on these.
 def _validate_relative_path(path: str) -> None:
     """Reject empty paths, absolute paths, dot-only paths, and any segment equal to '..'.
 

@@ -7,20 +7,17 @@
 // FileContentViewer (editor, dirty tracking, scoped Cmd+S come free).
 
 import * as React from "react";
-import { Trash2 } from "lucide-react";
-import { PanelMasthead } from "@/components/teams/shell";
+import { useSWRConfig } from "swr";
+import { BookOpen, Trash2, TriangleAlert } from "lucide-react";
+import { PanelMasthead, PanelEmptyState } from "@/components/teams/shell";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
 import { useBrainTree, useBrainFile, useBrainMutations } from "@/hooks/useBrainFiles";
+import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { openChatPanel } from "@/components/workspace/workspaceController";
 import { DEFAULT_AGENT_SENTINEL } from "@/components/workspace/panelRegistry";
 import { notifyApiError } from "@/lib/notify";
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatBytes } from "@/lib/utils";
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString();
@@ -35,9 +32,20 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialPath ?? null);
   const [editorDirty, setEditorDirty] = React.useState(false);
 
-  const { files, isLoading: treeLoading, refresh } = useBrainTree();
-  const { file, isLoading: fileLoading, error: fileError } = useBrainFile(selectedPath);
+  // A second `?path=` deep link into an already-open panel focuses it rather
+  // than remounting (workspaceController's addOrFocus/updateParameters), so
+  // the seed-only useState above never sees the new value on its own. Re-apply
+  // it here — same prev-prop-compare idiom as InboxPage.tsx's `?tab` handling.
+  const [prevInitialPath, setPrevInitialPath] = React.useState(initialPath);
+  if (initialPath !== prevInitialPath) {
+    setPrevInitialPath(initialPath);
+    if (initialPath) setSelectedPath(initialPath);
+  }
+
+  const { files, isLoading: treeLoading, error: treeError, refresh } = useBrainTree();
+  const { file, isLoading: fileLoading, error: fileError, key: fileKey } = useBrainFile(selectedPath);
   const { saveBrainFile, deleteBrainFile } = useBrainMutations();
+  const { mutate: mutateCache } = useSWRConfig();
 
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
     if (!editorDirty) return true;
@@ -56,11 +64,21 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
   const handleSave = React.useCallback(
     async (content: string) => {
       if (!selectedPath) return;
-      await saveBrainFile(selectedPath, content);
-      // Pick up the fresh size/modified time — the audit trail owners see.
+      const fresh = await saveBrainFile(selectedPath, content);
+      // The audit line (size · modified) must go fresh the instant the owner's
+      // own edit lands — merge the PUT's fresh stat straight into the file's
+      // own SWR cache entry (no refetch) instead of waiting on the next read.
+      if (fileKey) {
+        void mutateCache(
+          fileKey,
+          (current?: FileInfo) =>
+            current ? { ...current, size: fresh.size, modified_at: fresh.modified_at, content } : current,
+          false,
+        );
+      }
       void refresh();
     },
-    [selectedPath, saveBrainFile, refresh],
+    [selectedPath, saveBrainFile, refresh, fileKey, mutateCache],
   );
 
   const handleDelete = React.useCallback(async () => {
@@ -73,10 +91,14 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
       return;
     }
     setSelectedPath(null);
+    // The deleted file's content never clears from FileContentViewer's own
+    // dirty-diff state (its sync effect only runs for a non-null file), so
+    // without this a stale "unsaved changes" prompt fires on the next click.
+    setEditorDirty(false);
     void refresh();
   }, [selectedPath, deleteBrainFile, refresh]);
 
-  const isEmpty = !treeLoading && files.length === 0;
+  const isEmpty = !treeLoading && !treeError && files.length === 0;
 
   return (
     <div className="editorial-page h-full min-h-0 w-full p-4 sm:p-5 lg:p-6 flex flex-col gap-4">
@@ -85,7 +107,7 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
         title="Brain"
         meta={
           selectedPath && file
-            ? `${formatFileSize(file.size)} · ${formatDate(file.modified_at)}`
+            ? `${formatBytes(file.size)} · ${formatDate(file.modified_at)}`
             : undefined
         }
         actions={
@@ -103,19 +125,20 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
         }
       />
 
-      {isEmpty ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-          <p className="text-sm text-[var(--midnight-muted)]">
-            Your company&apos;s brain fills as your agents learn.
-          </p>
-          <button
-            type="button"
-            onClick={() => openChatPanel(DEFAULT_AGENT_SENTINEL)}
-            className="rounded-full bg-[var(--midnight)] px-4 py-1.5 text-sm text-cream hover:bg-[var(--midnight-soft)] transition-colors"
-          >
-            Ask Friday
-          </button>
-        </div>
+      {treeError ? (
+        <PanelEmptyState
+          icon={TriangleAlert}
+          headline="Couldn't load your brain."
+          supporting="Something went wrong reaching your company's memory."
+          action={{ label: "Retry", onClick: () => void refresh() }}
+        />
+      ) : isEmpty ? (
+        <PanelEmptyState
+          icon={BookOpen}
+          headline="No pages yet."
+          supporting="Your company's brain fills as your agents learn."
+          action={{ label: "Ask Friday", onClick: () => openChatPanel(DEFAULT_AGENT_SENTINEL) }}
+        />
       ) : (
         <div className="flex flex-1 min-h-0 rounded-sm border border-[var(--edge)] bg-cream overflow-hidden">
           <div className="w-64 shrink-0 border-r border-[var(--edge)] min-h-0 overflow-y-auto">

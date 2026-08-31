@@ -42,6 +42,9 @@ export function useBrainFile(filePath: string | null) {
     file: data ?? null,
     error,
     isLoading,
+    // Exposed so a caller (BrainPanel, after a save) can mutate this exact
+    // SWR cache entry via useSWRConfig() without re-deriving the query string.
+    key,
   };
 }
 

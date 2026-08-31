@@ -446,6 +446,11 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
     carries the flat path's provider_choice so a config change bypasses the
     cached response naturally.
 
+    The launch winner discount is NOT part of ``extra``: it is read inside
+    ``_build_subscription_checkout`` (the callers don't know it), which
+    suffixes the key it is handed. Same reason as ``_BODY_VERSION`` below —
+    a different body needs a different key.
+
     ``_BODY_VERSION`` exists because Stripe compares the REQUEST BODY against a
     stored idempotency key and rejects a mismatch rather than replaying. Any
     change to the session kwargs — the top-level ``metadata`` this file now
@@ -501,6 +506,16 @@ async def _build_subscription_checkout(
         # coupon is consumed — without it a forced close rerun would attach
         # a second free month to the subscription this checkout mints.
         metadata = {**metadata, "launch_winner_coupon": "true"}
+        # Winner state rides the IDEMPOTENCY KEY too, because it changes the
+        # request BODY (`discounts`, and `allow_promotion_codes` dropped
+        # below). An owner who opened an undiscounted session and was then
+        # flagged a winner inside the same 5-minute bucket would otherwise
+        # retry the same key with a different body — Stripe rejects that
+        # instead of replaying it, so the discounted session simply fails
+        # until the bucket rolls (and the same in reverse, once the coupon is
+        # consumed). Suffixed ONLY when discounted, so every non-winner key
+        # stays byte-identical to what it has always been.
+        idempotency_key = f"{idempotency_key}:win"
 
     subscription_data: dict = {"metadata": metadata}
 

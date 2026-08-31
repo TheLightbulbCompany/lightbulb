@@ -104,6 +104,19 @@ _PAID_SUBSCRIPTION_STATUSES = ("trialing", "active")
 # trial shape over it.
 _CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_required"})
 
+# A Checkout Session Stripe has actually SETTLED — the precondition for every
+# irreversible thing handle_checkout_session does off a session (granting
+# credits, stamping the launch winner's coupon as consumed).
+#   - "paid"               : card cleared synchronously.
+#   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
+#                            shape of the launch winner's free Starter month —
+#                            still a completed purchase.
+# Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
+# checkout.session.completed immediately and async_payment_succeeded (or
+# _failed) later, so nothing may be granted or stamped until that second
+# event arrives on this same handler.
+_SETTLED_PAYMENT_STATUSES = ("paid", "no_payment_required")
+
 
 def _within_guard_window(started_at: str | None) -> bool:
     if not started_at:
@@ -1302,13 +1315,21 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     """
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
-    # Launch competition: a completed session that carried the winner
-    # free-month discount just CONSUMED the coupon — stamp the sheet row so
-    # a forced close rerun cannot attach a second free month to the
-    # subscription this checkout minted. Before the credit-funding early
-    # return below, because most winner checkouts carry no credits at all.
+    # Launch competition: a SETTLED session that carried the winner free-month
+    # discount just CONSUMED the coupon — stamp the sheet row so a forced
+    # close rerun cannot attach a second free month to the subscription this
+    # checkout minted. Before the credit-funding early return below, because
+    # most winner checkouts carry no credits at all. The settled check is
+    # load-bearing, not defensive: a delayed-payment session fires
+    # checkout.session.completed while the payment can still FAIL, and
+    # stamping there burns the winner's free month without ever giving it to
+    # them. async_payment_succeeded lands back here and stamps it then.
     # Best-effort — never raises.
-    if session_metadata.get("launch_winner_coupon") == "true" and session_metadata.get("owner_id"):
+    if (
+        session_metadata.get("launch_winner_coupon") == "true"
+        and session_metadata.get("owner_id")
+        and session.get("payment_status") in _SETTLED_PAYMENT_STATUSES
+    ):
         from core.services.launch_close import mark_winner_coupon_consumed
 
         await mark_winner_coupon_consumed(session_metadata["owner_id"])
@@ -1330,17 +1351,10 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     if not is_credit_funding:
         return Response(status_code=200)
 
-    # Only grant when Stripe has actually collected payment.
-    #   - "paid"               : card cleared synchronously.
-    #   - "no_payment_required": 100%-off coupon → $0 charge → still a
-    #                            valid grant (we absorb it).
-    #   - "unpaid"             : delayed method (ACH etc.) — Stripe fires
-    #                            checkout.session.completed immediately,
-    #                            then async_payment_succeeded (or _failed)
-    #                            later. Wait for the async event so a
-    #                            failed ACH never leaves free credits.
+    # Only grant when Stripe has actually collected payment — a failed ACH
+    # must never leave free credits behind (see _SETTLED_PAYMENT_STATUSES).
     payment_status = session.get("payment_status")
-    if payment_status not in ("paid", "no_payment_required"):
+    if payment_status not in _SETTLED_PAYMENT_STATUSES:
         put_metric("credit.top_up.deferred", dimensions={"payment_status": payment_status or "unknown"})
         logger.info(
             "Credit top-up deferred for session %s — payment_status=%s",

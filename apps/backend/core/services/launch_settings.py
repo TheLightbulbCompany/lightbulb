@@ -175,7 +175,11 @@ def _clear_caches() -> None:
 # admin settings PUT is a full replace, so these are carried forward from the
 # stored row on every save rather than trusted from the payload. Without the
 # carry-forward a settings save after the close would silently blank the
-# frozen pot/roster (or reset the coupon idempotency nonce).
+# frozen pot/roster (or reset the coupon idempotency nonce). The still-unset
+# ones carry forward as None and are DROPPED by `launch_settings_repo.put`
+# rather than written as DynamoDB NULLs — see the comment there; a persisted
+# NULL made the attribute exist and killed the pot freeze's write-once
+# condition.
 _SERVER_MANAGED_FIELDS = (
     "mint_nonce",
     "stripe_coupon_id",
@@ -198,18 +202,26 @@ async def update(auth: AuthContext, payload: dict) -> dict:
         row[field] = current[field]
     saved = await launch_settings_repo.put({**row, "updated_by": auth.user_id})
     _clear_caches()
-    return to_admin(saved)
+    # DEFAULTS ⊕ saved, like `effective()`: the put drops the still-unset
+    # close-state fields rather than storing NULLs, and the admin form expects
+    # the whole shape back.
+    return to_admin({**DEFAULTS, **saved})
 
 
-async def record_close_state(fields: dict, *, condition: str | None = None) -> bool:
+async def record_close_state(
+    fields: dict, *, condition: str | None = None, condition_values: dict | None = None
+) -> bool:
     """Atomic partial write of the server-managed close-state fields
     (``closed_at``, the pot freeze, the async-close bookkeeping) — a single
     UpdateExpression SET of ONLY the supplied fields (no read), used by
     ``core.services.launch_close`` only. The admin PUT carries these fields
     forward (``_SERVER_MANAGED_FIELDS``), so neither writer can clobber the
-    other. ``condition`` makes the write conditional (write-once fields —
-    the pot freeze); a lost condition returns False and writes nothing."""
-    wrote = await launch_settings_repo.update_fields(fields, condition=condition)
+    other. ``condition`` (+ ``condition_values`` for any placeholders it
+    names) makes the write conditional (write-once fields — the pot freeze);
+    a lost condition returns False and writes nothing. CALLERS MUST CHECK the
+    return of a conditional write: a discarded freeze that nobody looked at is
+    exactly how the pot stayed unset through every close."""
+    wrote = await launch_settings_repo.update_fields(fields, condition=condition, condition_values=condition_values)
     _clear_caches()
     return wrote
 

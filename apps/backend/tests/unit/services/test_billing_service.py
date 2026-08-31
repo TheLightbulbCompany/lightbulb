@@ -1301,3 +1301,65 @@ class TestCreditTopUpProvisionsOnDemand:
             await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
 
         ensure.assert_not_awaited()
+
+
+class TestLaunchWinnerIdempotencyKey:
+    """The winner free-month discount changes the Checkout request BODY, so it
+    has to change the idempotency KEY. Stripe compares the body against a
+    stored key and REJECTS a mismatch instead of replaying it — so an owner
+    who crosses the winner boundary inside one 5-minute bucket would have
+    their replacement session fail outright until the bucket rolled.
+    """
+
+    # Frozen so the 5-minute bucket cannot roll between two calls and fake a
+    # difference (or hide a sameness).
+    NOW = 1_800_000_000.0
+
+    @classmethod
+    async def _key_for(cls, *, winner: bool) -> str:
+        created = MagicMock(return_value=MagicMock(id="cs_1"))
+        with (
+            patch("core.services.billing_service.time.time", return_value=cls.NOW),
+            patch.object(
+                billing_service.billing_repo,
+                "get_by_owner_id",
+                new=AsyncMock(return_value={"stripe_customer_id": "cus_1"}),
+            ),
+            patch.object(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
+            patch(
+                "core.services.launch_close.winner_checkout_discount",
+                new=AsyncMock(return_value=[{"coupon": "coup_1"}] if winner else None),
+            ),
+            patch("stripe.checkout.Session.create", new=created),
+        ):
+            await billing_service._build_subscription_checkout(
+                owner_id="u_1",
+                line_items=[{"price": "price_flat", "quantity": 1}],
+                metadata={"owner_id": "u_1"},
+                success_url="https://x/ok",
+                cancel_url="https://x/no",
+                idempotency_key=billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_"),
+            )
+        return created.call_args.kwargs["idempotency_key"]
+
+    @pytest.mark.asyncio
+    async def test_becoming_a_winner_changes_the_key(self):
+        """Opened an undiscounted session, then the close flagged them: the
+        replacement session carries `discounts` and drops
+        `allow_promotion_codes` — a different body needs a different key."""
+        assert await self._key_for(winner=False) != await self._key_for(winner=True)
+
+    @pytest.mark.asyncio
+    async def test_consuming_the_coupon_changes_the_key_back(self):
+        """The reverse transition (coupon already consumed → no discount) is
+        the same failure, so it gets the same treatment."""
+        assert await self._key_for(winner=True) != await self._key_for(winner=False)
+
+    @pytest.mark.asyncio
+    async def test_a_non_winner_key_is_untouched(self):
+        """No suffix on the ordinary path: every non-winner key stays exactly
+        what it has always been, so this fix costs no wasted buckets."""
+        key = await self._key_for(winner=False)
+        with patch("core.services.billing_service.time.time", return_value=self.NOW):
+            unchanged = billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_")
+        assert key == unchanged

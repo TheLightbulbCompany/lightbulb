@@ -370,7 +370,7 @@ export function ChatLayout({
                   />
                 )}
               />
-              {/* CompanyNav (Dashboard / Inbox / Work / Company) plus the
+              {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the
                   marketplace block (GallerySection) — Browse + Publish buttons
                   that open the MarketplaceDrawer. The drawer (mounted on the
                   chat page) owns the install + auto-select flow now. */}

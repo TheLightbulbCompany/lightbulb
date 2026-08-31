@@ -25,8 +25,13 @@ export type NavItem = {
 
 export type NavSection = { label: string; items: NavItem[] };
 
+// Panels hidden from non-admin org members. Lives with the nav config because
+// the Settings nav is the surface that filters on it (the retired control
+// sidebar was the original home).
+export const ADMIN_ONLY_PANELS = new Set(["usage"]);
+
 // Six intent-ordered groups (design.md §5). The relocated Control config panels
-// (Usage, Model & Providers, MCP servers, the ENGINE ROOM trio, Channel Status)
+// (Usage, Model & Credits, MCP servers, the ENGINE ROOM trio, Channel Status)
 // live here alongside the original Account-group panels.
 export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   {
@@ -48,7 +53,7 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     items: [
       // LLMPanel verbatim — it already embeds CreditsSection + ModelRoutingCard,
       // so there is NO separate Credits row.
-      { id: "providers", name: "Model & Providers", icon: "providers", panel: "providers" },
+      { id: "providers", name: "Model & Credits", icon: "providers", panel: "providers" },
     ],
   },
   {

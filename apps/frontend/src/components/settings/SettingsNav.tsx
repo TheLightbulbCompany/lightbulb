@@ -4,8 +4,8 @@ import React from "react";
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
-import { ADMIN_ONLY_PANELS } from "@/components/control/ControlSidebar";
 import {
+  ADMIN_ONLY_PANELS,
   NavIcon,
   type NavItem,
   type NavSection,

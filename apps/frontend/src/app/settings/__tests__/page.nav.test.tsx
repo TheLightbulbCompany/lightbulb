@@ -76,8 +76,8 @@ describe("Settings nav — 6 intent-ordered groups", () => {
 
   it("renders the six group headers in order", () => {
     const { container } = render(<SettingsPage />);
-    // Scope to the section-label nodes only — a nav *item* like
-    // "Model & Providers" would otherwise collide with the header text.
+    // Scope to the section-label nodes only so a nav *item* whose name
+    // echoes a group header can never collide with the header text.
     const labels = Array.from(
       container.querySelectorAll(".settings-nav-section-label"),
     ).map((el) => el.textContent?.toUpperCase());
@@ -118,11 +118,11 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).queryByText("Usage")).not.toBeInTheDocument();
   });
 
-  // --- Model & Providers (LLMPanel, MODEL & PROVIDERS) ---
-  it("registers the Model & Providers row and renders LLMPanel on select", () => {
+  // --- Model & Credits (LLMPanel, MODEL & PROVIDERS group) ---
+  it("registers the Model & Credits row and renders LLMPanel on select", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    const row = within(navEl).getByText("Model & Providers");
+    const row = within(navEl).getByText("Model & Credits");
     expect(row).toBeInTheDocument();
     // No separate Credits row — CreditsSection is embedded inside LLMPanel.
     expect(within(navEl).queryByText("Credits")).not.toBeInTheDocument();

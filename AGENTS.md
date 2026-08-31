@@ -591,8 +591,8 @@ touching. The load-bearing structure:
 - `components/teams/` — Teams Inbox (panels routed by `TeamsPanelRouter.tsx`
   via `PANEL_LOADERS`/`DETAIL_LOADERS`; shared types in `shared/types.ts`;
   ported-from-upstream-Paperclip modules carry a header saying so).
-- `components/control/` — control panels (`ControlPanelRouter.tsx` routes;
-  `ControlSidebar.NAV_ITEMS` is the live, sidebar-visible set).
+- `components/control/` — control panels (`ControlPanelRouter.tsx` routes; the
+  live nav sets are `settings-nav-config.tsx` + `CompanyNav`'s `COMPANY_SECTIONS`).
 - the rest of `components/` (`admin`, `agents`, `blog`, `channels`, `desktop`,
   `getstarted`, `landing`, `legal`, `marketplace`, `notifications`,
   `onboarding`, `settings`, `support`, `ui`) — what their names say; `ui/` is

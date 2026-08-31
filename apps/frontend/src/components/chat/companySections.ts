@@ -1,0 +1,74 @@
+// The sidebar IA as data, lifted out of CompanyNav.tsx so the ⌘K palette can
+// derive its nav actions from the same declaration without an import cycle
+// (CompanyNav → InlineTeamsPanel → CommandPaletteProvider → CommandPalette →
+// commandPaletteActions). Panel keys are the literal `teams-*` grammar
+// (`TEAMS_PANEL_PREFIX` + list key) — importing the prefix constant from
+// InlineTeamsPanel would re-enter that cycle; CompanyNav's no-dead-ends test
+// resolves every key through panelRegistry, so a typo fails there.
+
+import {
+  LayoutDashboard,
+  Inbox,
+  ListTodo,
+  Repeat,
+  Target,
+  FolderKanban,
+  Network,
+  History,
+  Images,
+  Search,
+  BookOpen,
+} from "lucide-react";
+import type { ComponentType, SVGProps } from "react";
+
+// One icon prop type for every consumer of the section list (sidebar renders
+// with `size`, the ⌘K palette with className/style) — lucide icons satisfy it.
+export type CompanyNavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
+
+export type CompanySectionItem = {
+  panel: string;
+  label: string;
+  Icon: CompanyNavIcon;
+};
+
+// Spec §5.1 IA. An item appears here ONLY when its tab is live;
+// Money/Growth/Operations groups arrive with their tabs (P1+).
+// Every panel renders inline via InlineTeamsPanel (TeamsPanelRouter maps each
+// key). `agents` and `settings` are intentionally excluded — agents are the
+// roster, settings is the Settings home.
+export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem[] }[] = [
+  {
+    label: null,
+    items: [
+      { panel: "teams-dashboard", label: "Home", Icon: LayoutDashboard },
+      { panel: "teams-search", label: "Search", Icon: Search },
+      { panel: "teams-inbox", label: "Inbox", Icon: Inbox },
+    ],
+  },
+  {
+    label: "Work",
+    items: [
+      { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+      { panel: "teams-routines", label: "Automations", Icon: Repeat },
+      { panel: "teams-goals", label: "Goals", Icon: Target },
+      { panel: "teams-projects", label: "Projects", Icon: FolderKanban },
+    ],
+  },
+  {
+    label: "Knowledge",
+    items: [
+      // Brain first: what the company knows is read before what it produced.
+      { panel: "teams-brain", label: "Brain", Icon: BookOpen },
+      // Library is the spec's noun for the work-products gallery; the panel
+      // key stays `teams-artifacts` (mobile builds these URLs as strings).
+      { panel: "teams-artifacts", label: "Library", Icon: Images },
+    ],
+  },
+  {
+    label: "Company",
+    items: [
+      { panel: "teams-org-chart", label: "Org chart", Icon: Network },
+      { panel: "teams-activity", label: "Activity", Icon: History },
+    ],
+  },
+];

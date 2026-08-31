@@ -188,7 +188,7 @@ export function ArtifactsPanel() {
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
       <div className="flex items-center justify-between gap-3">
-        <PanelMasthead overline="Company" title="Artifacts" />
+        <PanelMasthead overline="Knowledge" title="Library" />
         {hasItems ? <SortControl sort={sort} onChange={setSort} /> : null}
       </div>
 

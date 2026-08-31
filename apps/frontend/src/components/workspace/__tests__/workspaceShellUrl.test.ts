@@ -35,9 +35,13 @@ function makeFakeApi() {
     activeChange.forEach((h) => h({ panel }));
   }
   class FakePanel {
+    title: string | undefined;
     api = {
       setActive: vi.fn(() => {
         fire(this);
+      }),
+      setTitle: vi.fn((t: string) => {
+        this.title = t;
       }),
       updateParameters: vi.fn(),
     };
@@ -48,8 +52,9 @@ function makeFakeApi() {
   }
   const api = {
     getPanel: (id: string) => panels.get(id),
-    addPanel: vi.fn((opts: { id: string; params?: Record<string, string> }) => {
+    addPanel: vi.fn((opts: { id: string; params?: Record<string, string>; title?: string }) => {
       const p = new FakePanel(opts.id, opts.params ?? {});
+      p.title = opts.title;
       panels.set(opts.id, p);
       fire(p);
       return p;

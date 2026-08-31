@@ -24,10 +24,10 @@ import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
-import { ADMIN_ONLY_PANELS } from "@/components/control/ControlSidebar";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
+  ADMIN_ONLY_PANELS,
   SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
@@ -685,13 +685,11 @@ export default function SettingsPage() {
 
 function SettingsPageInner() {
   // The Settings consolidation: 6-group nav + the config panels relocated from
-  // the Control tab (Usage, Model & Providers, MCP servers, the ENGINE ROOM
+  // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM
   // trio, Channel Status).
   const navSections = SETTINGS_NAV_SECTIONS;
 
   // Personal owners are admins; org members are admins only with org:admin.
-  // Reused (not re-derived) from ControlSidebar so the Settings gate matches
-  // the Control surface exactly.
   const isAdmin = useIsWorkspaceAdmin();
 
   // ?panel=<key> preselects the tab. Used by deep links from the chat banners

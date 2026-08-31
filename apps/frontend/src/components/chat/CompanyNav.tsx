@@ -1,60 +1,11 @@
 "use client";
 
-import {
-  LayoutDashboard,
-  Inbox,
-  ListTodo,
-  Repeat,
-  Target,
-  FolderKanban,
-  Network,
-  History,
-  Images,
-  Search,
-  BookOpen,
-} from "lucide-react";
-import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
+// The section declaration lives in companySections.ts (data-only) so the ⌘K
+// palette can derive from it without an import cycle; re-exported here as the
+// canonical home consumers import.
+import { COMPANY_SECTIONS } from "./companySections";
 
-type Item = {
-  panel: string;
-  label: string;
-  Icon: React.ComponentType<{ size?: number }>;
-};
-
-// Grouped to mirror upstream Paperclip's sidebar: an unlabeled top block, then
-// "Work", then "Company". Every panel renders inline via InlineTeamsPanel
-// (TeamsPanelRouter maps each key). `agents` and `settings` are intentionally
-// excluded — agents are the roster, settings is the Settings home.
-const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
-  {
-    label: null,
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}dashboard`, label: "Dashboard", Icon: LayoutDashboard },
-      { panel: `${TEAMS_PANEL_PREFIX}search`, label: "Search", Icon: Search },
-      { panel: `${TEAMS_PANEL_PREFIX}inbox`, label: "Inbox", Icon: Inbox },
-    ],
-  },
-  {
-    label: "Work",
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}issues`, label: "Tasks", Icon: ListTodo },
-      { panel: `${TEAMS_PANEL_PREFIX}routines`, label: "Automations", Icon: Repeat },
-      { panel: `${TEAMS_PANEL_PREFIX}goals`, label: "Goals", Icon: Target },
-      { panel: `${TEAMS_PANEL_PREFIX}projects`, label: "Projects", Icon: FolderKanban },
-    ],
-  },
-  {
-    label: "Company",
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
-      // Brain re-homes to a "Knowledge" section when this branch rebases over
-      // the IA-shell work (companySections.ts); until then Company is the fit.
-      { panel: `${TEAMS_PANEL_PREFIX}brain`, label: "Brain", Icon: BookOpen },
-      { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Artifacts", Icon: Images },
-      { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
-    ],
-  },
-];
+export { COMPANY_SECTIONS };
 
 export function CompanyNav({
   activePanel,

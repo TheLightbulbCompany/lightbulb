@@ -41,16 +41,16 @@ export const ONE_SHOT_PARAMS = ["new", "newIssue", "action"] as const;
 export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provider"] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
-  dashboard: "Dashboard",
+  dashboard: "Home",
   agents: "Agents",
-  "org-chart": "Org Chart",
+  "org-chart": "Org chart",
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
   goals: "Goals",
   projects: "Projects",
   activity: "Activity",
-  artifacts: "Artifacts",
+  artifacts: "Library",
   brain: "Brain",
   search: "Search",
   settings: "Team Settings",
@@ -74,7 +74,7 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
   usage: "Usage",
   agents: "Agents",
   skills: "Skills",
-  llm: "Models & Providers",
+  llm: "Model & Credits",
   integrations: "Integrations",
   "skill-proposals": "Skill Proposals",
 };

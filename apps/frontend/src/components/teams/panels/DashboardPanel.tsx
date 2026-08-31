@@ -247,7 +247,7 @@ export function DashboardPanel() {
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
         overline="Operations"
-        title="Dashboard"
+        title="Home"
         meta="Last 14 days"
       />
 

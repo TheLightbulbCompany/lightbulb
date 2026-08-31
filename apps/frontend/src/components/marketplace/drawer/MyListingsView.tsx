@@ -180,7 +180,7 @@ export function MyListingsView() {
         const r = (await post("/marketplace/payouts/onboard")) as { onboarding_url: string };
         // Web: navigates away. Desktop: opens the system browser (the webview
         // must not navigate to Stripe onboarding); status refreshes on return.
-        openAuthUrl(r.onboarding_url);
+        await openAuthUrl(r.onboarding_url);
       }
     } finally {
       setBusy(false);

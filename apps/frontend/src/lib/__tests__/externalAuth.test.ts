@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BROWSER_OPEN_FAILED_MSG,
   externalLinkClick,
   isTauri,
   openAuthUrl,
@@ -9,8 +10,7 @@ import {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-function installTauri() {
-  const invoke = vi.fn();
+function installTauri(invoke = vi.fn().mockResolvedValue(undefined)) {
   (window as any).__TAURI__ = { core: { invoke } };
   return invoke;
 }
@@ -26,12 +26,19 @@ describe("externalAuth", () => {
     expect(isTauri()).toBe(true);
   });
 
-  it("openAuthUrl opens via the shell plugin under Tauri and reports it", () => {
+  it("openAuthUrl opens via the shell plugin under Tauri and reports it", async () => {
     const invoke = installTauri();
-    expect(openAuthUrl("https://provider.test/oauth")).toBe(true);
+    await expect(openAuthUrl("https://provider.test/oauth")).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith("plugin:shell|open", {
       path: "https://provider.test/oauth",
     });
+  });
+
+  it("openAuthUrl rejects with user-facing copy when the shell open fails", async () => {
+    installTauri(vi.fn().mockRejectedValue("forbidden"));
+    await expect(openAuthUrl("https://provider.test/oauth")).rejects.toThrow(
+      BROWSER_OPEN_FAILED_MSG,
+    );
   });
 
   it("externalLinkClick hijacks the anchor only under Tauri", () => {
@@ -67,5 +74,23 @@ describe("externalAuth", () => {
       timeoutMs: 10,
     });
     expect(ok).toBe(false);
+  });
+
+  it("pollUntil stops checking once the signal aborts", async () => {
+    const ac = new AbortController();
+    let calls = 0;
+    const promise = pollUntil(
+      async () => {
+        calls += 1;
+        return false;
+      },
+      { intervalMs: 1, timeoutMs: 5000, signal: ac.signal },
+    );
+    // Let one check run, then abort — no further checks may fire.
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort();
+    const settled = calls;
+    await expect(promise).resolves.toBe(false);
+    expect(calls).toBeLessThanOrEqual(settled + 1);
   });
 });

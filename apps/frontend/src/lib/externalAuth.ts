@@ -22,21 +22,39 @@ export function isTauri(): boolean {
   );
 }
 
-/** Open `url` in the system browser. Tauri only — callers gate on isTauri(). */
-export function openExternalUrl(url: string): void {
-  void (window as any).__TAURI__.core.invoke("plugin:shell|open", { path: url });
+/** User-facing copy when the shell-open invoke itself fails. */
+export const BROWSER_OPEN_FAILED_MSG =
+  "Couldn't open your browser. Try again.";
+
+/**
+ * Open `url` in the system browser. Tauri only — callers gate on isTauri().
+ * Rejects with a user-facing Error when the shell plugin refuses, so a caller
+ * never proceeds (poll, approve, …) on an open the owner never saw.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    await (window as any).__TAURI__.core.invoke("plugin:shell|open", {
+      path: url,
+    });
+  } catch {
+    // Tauri invoke rejects with a plain string — wrap it so callers get an
+    // Error with copy fit for notifyApiError/toasts.
+    throw new Error(BROWSER_OPEN_FAILED_MSG);
+  }
 }
 
 /**
  * Hand the user to an external authorize/onboarding URL.
  *
- * Returns true when the URL opened in the system browser (Tauri) — the caller
- * stays mounted and should poll its status endpoint for completion. Returns
- * false on the web, where the same-window navigation discards the React tree.
+ * Resolves true when the URL opened in the system browser (Tauri) — the
+ * caller stays mounted and should poll its status endpoint for completion.
+ * Resolves false on the web, where the same-window navigation discards the
+ * React tree. Rejects (Tauri only) when the browser could not be opened —
+ * callers must surface that instead of entering a waiting state.
  */
-export function openAuthUrl(url: string): boolean {
+export async function openAuthUrl(url: string): Promise<boolean> {
   if (isTauri()) {
-    openExternalUrl(url);
+    await openExternalUrl(url);
     return true;
   }
   window.location.href = url;
@@ -54,26 +72,33 @@ export function externalLinkClick(
 ): void {
   if (isTauri()) {
     e.preventDefault();
-    openExternalUrl(url);
+    // Anchor context — nowhere structured to surface a failure; the URL is
+    // also rendered as text beside these links, so a rare shell failure
+    // degrades to "type it yourself".
+    void openExternalUrl(url).catch(() => {});
   }
 }
 
 /**
- * Poll `check` every `intervalMs` until it returns true or `timeoutMs`
- * elapses. Resolves true iff the check passed; check errors are treated as
- * "not yet" (transient status-fetch failures must not end the wait).
+ * Poll `check` every `intervalMs` until it returns true, `timeoutMs` elapses,
+ * or `signal` aborts. Resolves true iff the check passed; check errors are
+ * treated as "not yet" (transient status-fetch failures must not end the
+ * wait). Callers pass an unmount-tied AbortSignal so an abandoned wait stops
+ * issuing status GETs.
  */
-// ponytail: bounded poll, no cancel affordance — the wait self-clears at the
-// timeout; add an AbortSignal if a flow ever needs a Dismiss button.
+// ponytail: abort is observed at loop edges, so a fetch already in flight
+// finishes and cancellation lags by up to one interval — fine at 3s.
 export async function pollUntil(
   check: () => Promise<boolean>,
   {
     intervalMs = 3000,
     timeoutMs = 180_000,
-  }: { intervalMs?: number; timeoutMs?: number } = {},
+    signal,
+  }: { intervalMs?: number; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    if (signal?.aborted) return false;
     try {
       if (await check()) return true;
     } catch {

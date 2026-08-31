@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError } from "@/lib/notify";
@@ -30,6 +30,11 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   );
   const [busy, setBusy] = useState(false);
 
+  // Stops the desktop grant-poll when this section unmounts — an abandoned
+  // wait must not keep issuing status GETs for up to the poll timeout.
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => pollAbortRef.current?.abort(), []);
+
   async function run(fn: () => Promise<void>) {
     setBusy(true);
     try {
@@ -53,12 +58,16 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
     // user-activation constraint, so fetch the URL first, open it in the
     // SYSTEM browser, then poll our own status until Stripe's side lands
     // (any field changing — account bound, details submitted, charges on).
+    // A failed open throws out of run() → error toast, no poll.
     if (isTauri()) {
       void run(async () => {
-        openExternalUrl(await fetchUrl());
+        await openExternalUrl(await fetchUrl());
         const before = JSON.stringify(data ?? null);
+        const ac = new AbortController();
+        pollAbortRef.current = ac;
         await pollUntil(
           async () => JSON.stringify((await mutate()) ?? null) !== before,
+          { signal: ac.signal },
         );
       });
       return;

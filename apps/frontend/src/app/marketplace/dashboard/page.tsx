@@ -34,7 +34,7 @@ export default function Dashboard() {
       if (body.onboarding_url) {
         // Web: navigates away. Desktop: opens the system browser (the webview
         // must not navigate to Stripe onboarding); status refreshes on return.
-        openAuthUrl(body.onboarding_url);
+        await openAuthUrl(body.onboarding_url);
       } else {
         setOnboardError("missing onboarding_url in response");
       }

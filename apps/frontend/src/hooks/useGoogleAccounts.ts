@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import useSWR from "swr";
 
 import { ApiError, useApi } from "@/lib/api";
@@ -54,6 +54,11 @@ export function useGoogleAccounts() {
     () => api.get("/google/accounts") as Promise<GoogleAccountsResponse>,
   );
 
+  // Stops the desktop grant-poll when this hook unmounts — an abandoned wait
+  // must not keep issuing /google/accounts GETs for up to the poll timeout.
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => pollAbortRef.current?.abort(), []);
+
   const disconnectAccount = useCallback(
     async (email: string): Promise<void> => {
       // Disconnect ONE account by email. The shared /connections provider row
@@ -105,11 +110,19 @@ export function useGoogleAccounts() {
     // full-page navigation discards this tree. In the desktop app the consent
     // screen opens in the SYSTEM browser (Google blocks embedded webviews),
     // so this tree stays mounted: poll the accounts list until the new grant
-    // lands, then resolve so the caller's busy state clears.
+    // lands, then resolve so the caller's busy state clears. A failed browser
+    // open REJECTS here (openAuthUrl throws) so the caller shows the error
+    // instead of a waiting state.
     const before = data?.accounts.length ?? 0;
-    if (openAuthUrl(r.authorize_url)) {
+    if (await openAuthUrl(r.authorize_url)) {
+      const ac = new AbortController();
+      pollAbortRef.current = ac;
+      // ponytail: length-growth can't detect a re-consent of an already
+      // connected account (a no-op grant) — that wait self-clears at the
+      // poll timeout; compare account emails if it ever matters.
       await pollUntil(
         async () => ((await mutate())?.accounts.length ?? 0) > before,
+        { signal: ac.signal },
       );
     }
   }, [api, data, mutate]);

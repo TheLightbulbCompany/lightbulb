@@ -83,7 +83,8 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     // user-activation constraint, so mint the URL first and open it in the
     // SYSTEM browser — the webview must never navigate to a provider's
     // authorize page (embedded-webview blocks + a callback the webview never
-    // sees).
+    // sees). The open is AWAITED and throws on failure, so a hand-off the
+    // owner never saw is never approved — run()'s catch surfaces the error.
     if (isTauri()) {
       void run(async () => {
         const url = await fetchUrl();
@@ -91,7 +92,7 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
           notifyError(NO_URL_MSG);
           return;
         }
-        openExternalUrl(url);
+        await openExternalUrl(url);
         if (thenApprove) await approve(approval.id);
       });
       return;

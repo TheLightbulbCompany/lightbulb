@@ -199,8 +199,18 @@ async def account_id_for(owner_id: str) -> str:
 
 
 async def _read_catalog(account_id: str, provider_name: str, service_id: str) -> tuple[dict, dict]:
-    services = await api.catalog_services(account_id, provider_name=provider_name)  # catalog partition in the client
-    service = next((s for s in services if s.get("service_id") == service_id), None)
+    # Unfiltered read + local match: the wire `provider_name` is mixed-case
+    # ("Sentry", "Shopify") while our request bodies are lowercase slugs
+    # (validated — the value becomes a Secrets Manager name component), and
+    # Stripe's provider_name filter is case-sensitive, so filtering by the
+    # slug returned nothing and every capitalized provider was unfilable
+    # (found live on dev 2026-08-31). ~30 rows; one paginated read either way.
+    services = await api.catalog_services(account_id)  # catalog partition in the client
+    want = (provider_name or "").lower()
+    service = next(
+        (s for s in services if (s.get("provider_name") or "").lower() == want and s.get("service_id") == service_id),
+        None,
+    )
     if service is None:
         raise WorkflowRefused("service_unavailable", f"{provider_name}/{service_id} is not in your catalog")
     if service.get("availability") not in _AVAILABLE:

@@ -215,11 +215,17 @@ async def request(
         raise err from e
     if isinstance(result, dict):
         return result
-    # StripeClient.raw_request returns a StripeResponse whose `data` attribute
-    # is the raw JSON body as text; dict(result) TypeErrors on it (seen live
-    # on dev the first time this client made a real call).
-    body_text = getattr(result, "data", None)
-    return json.loads(body_text) if isinstance(body_text, (str, bytes)) else dict(result)
+    # StripeClient.raw_request returns a StripeResponse: `.data` is the body
+    # ALREADY parsed (json.loads with OrderedDict pairs), `.body` is the raw
+    # text. The first unwrap attempt fed `.data` to json.loads as if it were
+    # text and fell through to dict(result), which TypeErrors — seen live on
+    # dev twice. Return the parsed dict; keep the text branch for safety.
+    data = getattr(result, "data", None)
+    if isinstance(data, dict):
+        return dict(data)
+    if isinstance(data, (str, bytes)):
+        return json.loads(data)
+    return dict(result)
 
 
 async def paginate(account_id: str, path: str, *, params: dict | None = None, limit_pages: int = 20) -> list[dict]:

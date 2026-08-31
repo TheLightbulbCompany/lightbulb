@@ -5,12 +5,12 @@ import { pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
   title: "Lightbulb Launch Competition",
-  description: "Build a business with your own AI company and compete for the pot on revenue lift.",
+  description: "Build a business with your own AI company — the first 200 on the sheet get a month free, and the biggest revenue lift wins.",
   path: "/launch",
 });
 
 export default function Page() {
-  // useSearchParams (inside the waitlist form / card) needs a Suspense boundary for static rendering.
+  // useSearchParams (inside the sheet card) needs a Suspense boundary for static rendering.
   return (
     <Suspense fallback={null}>
       <LaunchPage />

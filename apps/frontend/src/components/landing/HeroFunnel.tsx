@@ -75,7 +75,7 @@ export function HeroFunnel() {
   // Launch sheet open: the same funnel, framed as joining the launch. The
   // stash → /sign-up flow is unchanged — the sheet itself is joined
   // in-product, after onboarding.
-  const launchFraming = launch?.phase === "waitlist" || launch?.phase === "activation";
+  const launchFraming = launch?.phase === "open";
 
   return (
     <section className="ld-funnel" id="start">

@@ -115,12 +115,12 @@ describe("HeroFunnel", () => {
 
 describe("HeroFunnel launch framing", () => {
   const launchInfo = {
-    phase: "waitlist",
-    drop_at: "2026-09-18T16:00:00+00:00",
-    competition_start_at: "2026-09-25T16:00:00+00:00",
-    competition_end_at: "2026-10-25T16:00:00+00:00",
+    phase: "open",
+    sheet_closes_at: "2026-09-30T16:00:00+00:00",
+    competition_start_at: "2026-10-01T16:00:00+00:00",
+    competition_end_at: "2026-12-01T16:00:00+00:00",
     signups: 1234,
-    comp_slots: 220,
+    comp_slots: 200,
     referral_jump: 10,
   };
 

@@ -5,11 +5,31 @@ import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 
 const REASON_COPY: Record<string, string> = {
-  no_subscription: "Redeem your code or subscribe to join — the free month is the competition month.",
-  not_activated: "Finish onboarding first — Friday's first run has to complete.",
-  phase_waitlist: "Entries open on drop day.",
-  phase_ended: "The competition has ended.",
+  not_onboarded: "Finish onboarding first — Friday's first run has to complete.",
+  closed: "The sheet has closed.",
+  org_not_supported: "Switch to your personal workspace to join.",
+  no_email: "We couldn't find an email on your account — contact support.",
 };
+
+/** POST /launch/join refusals arrive two ways: 409s carry
+ * `{detail: {reason: "…"}}`, 400s a plain-string detail, 429 a rate limit.
+ * Shared with the in-chat join banner. */
+export function joinErrorCopy(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) return "Too many tries — wait a minute and try again.";
+    if (err.body && typeof err.body === "object" && "detail" in err.body) {
+      const detail = (err.body as { detail: unknown }).detail;
+      const reason =
+        typeof detail === "string"
+          ? detail
+          : detail && typeof detail === "object" && "reason" in detail
+            ? String((detail as { reason: unknown }).reason)
+            : "";
+      if (REASON_COPY[reason]) return REASON_COPY[reason];
+    }
+  }
+  return "Couldn't join — try again.";
+}
 
 export function JoinForm({ onJoined }: { onJoined: () => void }) {
   const api = useApi();
@@ -27,8 +47,7 @@ export function JoinForm({ onJoined }: { onJoined: () => void }) {
       capture("launch_joined", { public: isPublic });
       onJoined();
     } catch (err) {
-      const reason = err instanceof ApiError && typeof err.body === "object" && err.body && "detail" in err.body ? String((err.body as { detail: unknown }).detail) : "";
-      setError(REASON_COPY[reason] ?? "Couldn't join — try again.");
+      setError(joinErrorCopy(err));
     } finally {
       setBusy(false);
     }

@@ -78,15 +78,14 @@ async def test_join_is_rate_limited_per_ip(configured, async_client):
     assert r.status_code == 429 and r.headers["retry-after"] == "60"
 
 
-async def test_join_refused_for_an_org_member(configured, async_client_org_member):
-    r = await async_client_org_member.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
-
-
 @patch("routers.launch.launch_service.join_sheet", AsyncMock(return_value={"joined": True}))
-async def test_join_allowed_for_an_org_admin(configured, async_client_org_admin):
-    r = await async_client_org_admin.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 200
+async def test_join_refused_for_every_org_actor(configured, async_client_org_member, async_client_org_admin):
+    """Org contexts can't join at all — admin or member. The sheet row keys
+    to the personal email/user_id while org billing keys by org_id, so every
+    money leg would silently miss an org actor."""
+    for client in (async_client_org_member, async_client_org_admin):
+        r = await client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
+        assert r.status_code == 409 and r.json()["detail"] == {"reason": "org_not_supported"}
 
 
 async def test_enter_route_is_gone(configured, async_client):

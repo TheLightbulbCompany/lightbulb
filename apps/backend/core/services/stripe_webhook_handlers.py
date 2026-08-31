@@ -1386,14 +1386,17 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     # internal coupon charges nothing but still funds the full balance
     # (the coupon is us absorbing the cost). Bundled sessions disable
     # promotion codes outright, so this only applies to standalone top-ups.
-    from core.billing.metronome_funding import grant_prepaid_credits
+    from core.billing.metronome_funding import grant_prepaid_credits_and_refresh_gate
 
     # Session id as the Metronome Idempotency-Key: one completed Checkout
     # grants exactly once, however many times Stripe redelivers (or fires
-    # completed + async_payment_succeeded back-to-back). A failure here
+    # completed + async_payment_succeeded back-to-back). A grant failure
     # re-raises so the webhook 500s and Stripe redelivers — paid-for
-    # credits must never be silently dropped.
-    await grant_prepaid_credits(
+    # credits must never be silently dropped. The helper follows the grant
+    # with the restore-only fast-gate refresh (best-effort, positive-balance
+    # only, so a Metronome read lag can never re-revoke the owner who just
+    # paid).
+    await grant_prepaid_credits_and_refresh_gate(
         owner_id,
         int(amount_cents_str),
         idempotency_key=f"checkout-{session['id']}",
@@ -1408,18 +1411,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
             # later checkout. Don't fail the webhook into redelivery (the
             # grant above would replay harmlessly, but the noise is real).
             logger.exception("Failed to persist auto-charge opt-in for owner %s", owner_id)
-
-    # Restore-only refresh (same contract as the one-click top-up path):
-    # act only on a confirmed-positive balance so a Metronome read lag can
-    # never re-revoke the owner who just paid.
-    try:
-        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
-
-        balance_uc = await read_net_balance_microcents(owner_id)
-        if balance_uc is not None and balance_uc > 0:
-            await apply_fresh_balance(owner_id, balance_uc)
-    except Exception:
-        logger.warning("Post-checkout balance refresh failed for owner %s", owner_id, exc_info=True)
 
     put_metric("credit.top_up.granted", dimensions={"source": "checkout"})
     return Response(status_code=200)

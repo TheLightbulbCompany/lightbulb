@@ -136,10 +136,13 @@ async def join(
     delivered, and 409 {"reason": "closed"} once the sheet is no longer open.
     Idempotent: joining twice returns the existing membership."""
     _rate_limit(request, "join")
-    # One sheet row per owner: an org member joining would create the org's
-    # row under their own identity instead of the org's.
-    if auth.is_org_context and not auth.is_org_admin:
-        raise HTTPException(status_code=403, detail="org_admin_required")
+    # Org contexts can't join AT ALL: the sheet row keys to the personal
+    # email/user_id while org billing keys by org_id, so every money leg
+    # (the close's paying lookup, the coupon attach, milestone grants,
+    # referral counting) would silently miss an org actor. Personal
+    # competition only. Attribution and /launch/me stay readable for them.
+    if auth.is_org_context:
+        raise HTTPException(status_code=409, detail={"reason": "org_not_supported"})
     try:
         return await launch_service.join_sheet(auth, s, display_name=body.display_name, public=body.public)
     except launch_service.LaunchRefused as e:

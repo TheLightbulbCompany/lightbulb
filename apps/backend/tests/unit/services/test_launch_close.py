@@ -74,10 +74,10 @@ class _Harness:
                 "core.services.launch_close.launch_settings.record_close_state", side_effect=self._record_close_state
             ),
             patch("core.services.launch_close.launch_settings.create_stripe_coupon", AsyncMock()),
-            patch("core.services.launch_close.launch_phase.schedule", return_value=_sched(self.comp_slots)),
+            patch("core.services.launch_close.launch_phase.schedule", side_effect=lambda: _sched(self.comp_slots)),
             patch(
                 "core.services.launch_close.launch_phase.constants",
-                return_value={
+                side_effect=lambda: {
                     "comp_slots": self.comp_slots,
                     "pot_front_cents": 100_000,
                     "pot_per_entrant_cents": 1_000,
@@ -180,7 +180,10 @@ async def test_close_refuses_when_already_closed_unless_forced():
         with pytest.raises(launch_close.AlreadyClosed):
             await launch_close.close(ADMIN)
         result = await launch_close.close(ADMIN, force=True)
-    assert result["winners"] == 1
+    # closed_at was already stamped, so the winner set is immutable — a force
+    # rerun NEVER flags new winners, even for a row that would have won.
+    assert result["winners"] == 0
+    assert "winner" not in h.rows["a@x.com"]
     # The original closed_at is preserved — force never re-stamps it.
     assert h.settings_row["closed_at"] == "2026-09-30T16:00:00+00:00"
 
@@ -207,6 +210,31 @@ async def test_close_rerun_retries_a_failed_email():
         await launch_close.close(ADMIN, force=True)
     assert h.rows["a@x.com"]["winner_email_sent_at"]
     assert h.sent == [("unpaid", "a@x.com")]
+
+
+async def test_force_rerun_never_reruns_winner_flagging_or_the_pot_freeze():
+    """Ruling: once closed, force = convergence ONLY. A comp_slots edit (or a
+    referral landing late) between close and rerun must not grow the winner
+    set, and the frozen pot keeps its first-write values."""
+    rows = [_row("a@x.com", 1), _row("b@x.com", 2), _row("c@x.com", 3)]
+    with _Harness(rows, {}, comp_slots=1) as h:
+        await launch_close.close(ADMIN)
+        assert h.rows["a@x.com"]["winner"] is True and "winner" not in h.rows["b@x.com"]
+        first_pot = h.settings_row["final_pot_cents"]
+        first_roster = h.settings_row["final_roster_count"]
+        pot_writes = len([w for w in h.close_state_writes if "final_pot_cents" in w])
+
+        h.comp_slots = 3  # admin edits slots after the close
+        result = await launch_close.close(ADMIN, force=True)
+
+        assert result["winners"] == 1  # the set never grows
+        assert "winner" not in h.rows["b@x.com"] and "winner" not in h.rows["c@x.com"]
+        assert h.settings_row["final_pot_cents"] == first_pot
+        assert h.settings_row["final_roster_count"] == first_roster
+        # (d) ran exactly once — the rerun wrote no pot state at all.
+        assert len([w for w in h.close_state_writes if "final_pot_cents" in w]) == pot_writes == 1
+        # ...and eligibility was not recomputed either (c is first-close only).
+        assert "compete_eligible" not in h.rows["c@x.com"] or h.rows["c@x.com"]["compete_eligible"] is False
 
 
 async def test_close_mints_the_coupon_when_missing():
@@ -258,6 +286,39 @@ async def test_a_coupon_attach_failure_does_not_abort_the_close():
     assert len(h.sent) == 2  # emails still went out
 
 
+async def _attach(retrieved_sub):
+    calls = []
+
+    async def _stripe(fn, *args, **kwargs):
+        calls.append((getattr(fn, "__name__", ""), args, kwargs))
+        if getattr(fn, "__name__", "") == "retrieve":
+            return retrieved_sub
+        return {}
+
+    with patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=_stripe)):
+        done = await launch_close._attach_coupon({"stripe_subscription_id": "sub_1"}, "coup_1")
+    return done, [c for c in calls if c[0] == "modify"]
+
+
+async def test_attach_skips_when_our_coupon_is_already_on_the_sub():
+    done, modifies = await _attach({"discounts": [{"id": "di_1", "coupon": {"id": "coup_1"}}]})
+    assert done is True and modifies == []
+
+
+async def test_attach_stacks_alongside_an_unrelated_discount():
+    """A legacy free-month coupon on the sub must NOT eat the winner's month —
+    ours is added alongside it, not skipped."""
+    done, modifies = await _attach({"discounts": [{"id": "di_legacy", "coupon": {"id": "coup_old"}}]})
+    assert done is True and len(modifies) == 1
+    assert modifies[0][2]["discounts"] == [{"discount": "di_legacy"}, {"coupon": "coup_1"}]
+
+
+async def test_attach_handles_the_legacy_single_discount_shape():
+    done, modifies = await _attach({"discounts": [], "discount": {"id": "di_old", "coupon": {"id": "coup_old"}}})
+    assert done is True
+    assert modifies[0][2]["discounts"] == [{"discount": "di_old"}, {"coupon": "coup_1"}]
+
+
 # ---------------------------------------------------------------------------
 # winner_checkout_discount — the unpaid-winner checkout pre-apply
 # ---------------------------------------------------------------------------
@@ -290,6 +351,21 @@ async def test_winner_discount_absent_otherwise(row):
     p = _discount_patches(row)
     with p[0], p[1], p[2], p[3]:
         assert await launch_close.winner_checkout_discount("user_a") is None
+
+
+async def test_winner_discount_absent_once_the_coupon_redeem_by_has_passed():
+    """A flagged winner subscribing after Oct 31 gets a NORMAL full-price
+    checkout — an expired coupon on Session.create is an uncaught Stripe
+    InvalidRequestError (500), not a discount."""
+    from datetime import timedelta
+
+    p = _discount_patches(_row("a@x.com", 1, winner=True))
+    with p[0], p[1], p[2], p[3]:
+        with patch(
+            "core.services.launch_settings.COUPON_REDEEM_BY",
+            datetime.now(timezone.utc) - timedelta(days=1),
+        ):
+            assert await launch_close.winner_checkout_discount("user_a") is None
 
 
 async def test_winner_discount_never_raises():

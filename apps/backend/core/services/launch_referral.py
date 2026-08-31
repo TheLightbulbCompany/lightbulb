@@ -47,25 +47,17 @@ async def _email_for_owner(owner_id: str) -> str | None:
 
 
 async def _grant_credits(owner_id: str, amount_cents: int, idempotency_key: str) -> bool:
-    """The checkout webhook's two-ledger grant sequence: Metronome commit,
-    then the restore-only fast-gate refresh so a blocked owner is re-armed
-    the moment the credits land. False ⇒ the owner has no Metronome ledger
-    yet (FundingError) — the caller stamps ``pending_grant``. Any other
-    failure propagates so nothing is stamped and the next event retries."""
-    from core.billing.metronome_funding import FundingError, grant_prepaid_credits
+    """The shared two-ledger grant sequence (see
+    ``metronome_funding.grant_prepaid_credits_and_refresh_gate``). False ⇒
+    the owner has no Metronome ledger yet (FundingError) — the caller stamps
+    ``pending_grant``. Any other failure propagates so nothing is stamped and
+    the next event retries."""
+    from core.billing.metronome_funding import FundingError, grant_prepaid_credits_and_refresh_gate
 
     try:
-        await grant_prepaid_credits(owner_id, amount_cents, idempotency_key=idempotency_key)
+        await grant_prepaid_credits_and_refresh_gate(owner_id, amount_cents, idempotency_key=idempotency_key)
     except FundingError:
         return False
-    try:
-        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
-
-        balance_uc = await read_net_balance_microcents(owner_id)
-        if balance_uc is not None and balance_uc > 0:
-            await apply_fresh_balance(owner_id, balance_uc)
-    except Exception:  # noqa: BLE001 — the grant landed; the lazy gate refresh will catch up
-        logger.warning("launch_referral: post-grant balance refresh failed for %s", owner_id, exc_info=True)
     return True
 
 

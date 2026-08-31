@@ -18,6 +18,7 @@ converges: done work is skipped, missed work is retried.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import stripe
 
@@ -41,21 +42,35 @@ class AlreadyClosed(Exception):
     """``closed_at`` is already stamped and the caller didn't pass ``force``."""
 
 
+def _discount_coupon_id(d) -> str | None:
+    if not isinstance(d, dict):
+        return None
+    c = d.get("coupon")
+    return c.get("id") if isinstance(c, dict) else c
+
+
 async def _attach_coupon(billing: dict, coupon: str) -> bool:
     """Attach the free-month coupon to a paying winner's live subscription.
-    Skips (True — nothing left to do) when the subscription already carries a
-    discount; a Stripe failure propagates so the row is NOT stamped and a
-    rerun retries."""
+    True = ours is on the subscription (attached now, or already there) —
+    the caller stamps the row. An UNRELATED existing discount (e.g. a legacy
+    referral free month) does not count as done: ours is added ALONGSIDE it
+    (Stripe's discounts array stacks), or the winner's month would be
+    silently eaten by whatever was already there. A Stripe failure
+    propagates so the row is NOT stamped and a rerun retries."""
     sub_id = billing.get("stripe_subscription_id")
     if not sub_id:
         return False
-    sub = await run_in_thread(stripe.Subscription.retrieve, sub_id)
-    if sub.get("discount") or sub.get("discounts"):
+    sub = await run_in_thread(stripe.Subscription.retrieve, sub_id, expand=["discounts"])
+    existing = list(sub.get("discounts") or [])
+    if not existing and sub.get("discount"):
+        existing = [sub["discount"]]  # legacy single-discount shape
+    if any(_discount_coupon_id(d) == coupon for d in existing):
         return True
+    keep = [{"discount": d["id"] if isinstance(d, dict) else d} for d in existing]
     await run_in_thread(
         stripe.Subscription.modify,
         sub_id,
-        discounts=[{"coupon": coupon}],
+        discounts=[*keep, {"coupon": coupon}],
         # Stable per subscription: however many times the close is rerun, one
         # subscription gets the coupon attached exactly once.
         idempotency_key=f"launch-close-coupon:{sub_id}",
@@ -65,7 +80,8 @@ async def _attach_coupon(billing: dict, coupon: str) -> bool:
 
 async def close(auth: AuthContext, *, force: bool = False) -> dict:
     row = await launch_settings.effective()
-    if row.get("closed_at") and not force:
+    already_closed = bool(row.get("closed_at"))
+    if already_closed and not force:
         raise AlreadyClosed()
     s = launch_phase.schedule()
     if s is None:
@@ -74,39 +90,53 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     # (a) Stamp closed_at FIRST — the phase leaves "open" immediately (the
     # settings caches are cleared by the write), so joins refuse and referral
     # jumps freeze before the roster below is ordered.
-    if not row.get("closed_at"):
+    if not already_closed:
         await launch_settings.record_close_state({"closed_at": utc_now_iso()})
 
     sheet = [r for r in await launch_waitlist_repo.list_all() if r.get("joined_at")]
     jump = launch_phase.constants()["referral_jump"]
 
-    # (b) Winners: the top comp_slots by effective position, ties by raw
-    # position (earlier signup wins). Deterministic across reruns — jumps are
-    # frozen by (a).
-    ordered = sorted(sheet, key=lambda r: (launch_service.effective_position(r, jump), int(r["position"])))
-    winners = ordered[: s.comp_slots]
-    winner_emails = {r["email"] for r in winners}
-    for r in winners:
-        if not r.get("winner"):
+    paying: dict[str, dict] = {}
+    if already_closed:
+        # Force rerun = CONVERGENCE ONLY. The winner set and the frozen pot
+        # are immutable after the first close — a later comp_slots edit or a
+        # billing change must never reshuffle who won or what the pot froze
+        # at. Only (e) coupon attaches and (f) emails are retried, off the
+        # per-row stamps; billing is read for winners only (variant + sub id).
+        winners = [r for r in sheet if r.get("winner")]
+        for r in winners:
+            uid = r.get("user_id")
+            billing = (await billing_repo.get_by_owner_id(uid)) if uid else None
+            if is_paid_subscription(billing):
+                paying[r["email"]] = billing or {}
+        roster_count = row.get("final_roster_count")
+        final_pot = row.get("final_pot_cents")
+    else:
+        # (b) Winners: the top comp_slots by effective position, ties by raw
+        # position (earlier signup wins). Jumps are frozen by (a).
+        ordered = sorted(sheet, key=lambda r: (launch_service.effective_position(r, jump), int(r["position"])))
+        winners = ordered[: s.comp_slots]
+        winner_emails = {r["email"] for r in winners}
+        for r in winners:
             await launch_waitlist_repo.update_fields(r["email"], {"winner": True})
 
-    # (c) Eligibility: winners ∪ paying subscribers compete; unpaid
-    # non-winners are out. "Paying" is a real Stripe subscription
-    # (is_paid_subscription — trial_local is not paying).
-    paying: dict[str, dict] = {}
-    for r in sheet:
-        uid = r.get("user_id")
-        billing = (await billing_repo.get_by_owner_id(uid)) if uid else None
-        if is_paid_subscription(billing):
-            paying[r["email"]] = billing or {}
-        eligible = r["email"] in winner_emails or r["email"] in paying
-        await launch_waitlist_repo.update_fields(r["email"], {"compete_eligible": eligible})
+        # (c) Eligibility: winners ∪ paying subscribers compete; unpaid
+        # non-winners are out. "Paying" is a real Stripe subscription
+        # (is_paid_subscription — trial_local is not paying).
+        for r in sheet:
+            uid = r.get("user_id")
+            billing = (await billing_repo.get_by_owner_id(uid)) if uid else None
+            if is_paid_subscription(billing):
+                paying[r["email"]] = billing or {}
+            eligible = r["email"] in winner_emails or r["email"] in paying
+            await launch_waitlist_repo.update_fields(r["email"], {"compete_eligible": eligible})
 
-    # (d) Freeze the pot: front + per-entrant × final roster.
-    roster_count = sum(1 for r in sheet if r["email"] in winner_emails or r["email"] in paying)
-    c = launch_phase.constants()
-    final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
-    await launch_settings.record_close_state({"final_roster_count": roster_count, "final_pot_cents": final_pot})
+        # (d) Freeze the pot: front + per-entrant × final roster. First write
+        # only — these values are immutable once stamped.
+        roster_count = sum(1 for r in sheet if r["email"] in winner_emails or r["email"] in paying)
+        c = launch_phase.constants()
+        final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
+        await launch_settings.record_close_state({"final_roster_count": roster_count, "final_pot_cents": final_pot})
 
     # (e) The coupon: mint if missing (idempotent — see create_stripe_coupon),
     # then attach to every PAYING winner's subscription. Attach failures are
@@ -168,6 +198,11 @@ async def winner_checkout_discount(owner_id: str) -> list[dict] | None:
     launch read must never break checkout."""
     try:
         if launch_phase.schedule() is None:
+            return None
+        if launch_settings.COUPON_REDEEM_BY <= datetime.now(timezone.utc):
+            # An expired coupon on a Checkout Session is a Stripe
+            # InvalidRequestError at Session.create — a winner subscribing
+            # after the redeem-by instant gets a normal full-price checkout.
             return None
         coupon = launch_phase.coupon_id()
         if not coupon:

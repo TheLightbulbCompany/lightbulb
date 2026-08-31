@@ -211,6 +211,37 @@ async def grant_prepaid_credits(
     )
 
 
+async def grant_prepaid_credits_and_refresh_gate(
+    owner_id: str,
+    amount_cents: int,
+    *,
+    idempotency_key: str,
+) -> None:
+    """THE two-ledger grant sequence: ``grant_prepaid_credits`` (Metronome,
+    the source of record), then the restore-only fast-gate refresh so a
+    blocked/revoked owner is re-armed the moment the credits land instead of
+    waiting out the gate's staleness window. Shared by the checkout webhook
+    (``handle_checkout_session``) and the launch referral milestones
+    (``launch_referral``).
+
+    Grant errors PROPAGATE — each caller decides what a failed grant means
+    (the webhook 500s into Stripe redelivery; the milestone path stamps
+    ``pending_grant`` on ``FundingError``). The refresh is best-effort: it
+    acts only on a confirmed-positive balance so a Metronome read lag can
+    never re-revoke the owner whose money just landed, and a refresh failure
+    only defers to the gate's own lazy refresh."""
+    await grant_prepaid_credits(owner_id, amount_cents, idempotency_key=idempotency_key)
+    try:
+        # Lazy: core.services.metronome_gate sits a layer above core.billing.
+        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
+
+        balance_uc = await read_net_balance_microcents(owner_id)
+        if balance_uc is not None and balance_uc > 0:
+            await apply_fresh_balance(owner_id, balance_uc)
+    except Exception:  # noqa: BLE001 — the grant landed; the gate's lazy refresh catches up
+        logger.warning("Post-grant balance refresh failed for owner %s", owner_id, exc_info=True)
+
+
 async def _grant_ungated_commit(
     client: MetronomeClient,
     *,

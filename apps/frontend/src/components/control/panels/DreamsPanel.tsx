@@ -18,7 +18,16 @@ type SubTab = "scene" | "diary" | "advanced";
 const PHASE_ORDER: DreamPhaseKey[] = ["light", "rem", "deep"];
 const PHASE_LABEL: Record<DreamPhaseKey, string> = { light: "Light", rem: "REM", deep: "Deep" };
 
-export function DreamsPanel() {
+export interface DreamsPanelProps {
+  /** True when mounted inside another panel (Brain's Dreams tab) instead of
+   *  standalone — suppresses the redundant "Dreams" heading (the host already
+   *  titles the surface) and this component's own page padding (the host
+   *  already pads). Defaults false so every other/future standalone mount is
+   *  unchanged. Does not touch the scene/diary/advanced body below it. */
+  embedded?: boolean;
+}
+
+export function DreamsPanel({ embedded = false }: DreamsPanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("scene");
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
 
@@ -43,7 +52,7 @@ export function DreamsPanel() {
   }
   if (error && !data) {
     return (
-      <div className="p-6 space-y-3">
+      <div className={embedded ? "space-y-3" : "p-6 space-y-3"}>
         <p className="text-sm text-destructive">Failed to load dreams: {error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw size={16} className="mr-1.5" /> Retry
@@ -55,12 +64,14 @@ export function DreamsPanel() {
   const dreaming = data?.dreaming;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className={embedded ? "space-y-6" : "p-6 space-y-6"}>
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Moon size={20} className="text-[var(--midnight-muted)]" />
-          <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Dreams</h2>
-        </div>
+        {!embedded && (
+          <div className="flex items-center gap-2">
+            <Moon size={20} className="text-[var(--midnight-muted)]" />
+            <h2 className="font-editorial-serif text-title text-[var(--midnight)]">Dreams</h2>
+          </div>
+        )}
         {agents.length > 1 && (
           <select
             className="text-sm border rounded-md px-2 py-1 bg-cream-deep"

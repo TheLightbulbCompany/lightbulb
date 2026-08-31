@@ -42,13 +42,25 @@ function hasOwnKey(obj: object, key: string): boolean {
 // migrated here too. Two id shapes show up in practice: teams-* aliases are
 // bare panel ids (panelId === registry key), non-teams aliases (credits→llm)
 // are control-panel ids carrying the `control:` prefix.
+//
+// `dreams`→`teams-brain` is a THIRD shape: a `control:`-prefixed persisted id
+// whose alias target crosses into the teams- namespace (Dreams folded into
+// Brain as a tab). That must flip `contentComponent` from "control" to
+// "teams" too — the two are different top-level React components
+// (ControlDockPanel vs TeamsDockPanel) keyed off different param shapes
+// (controlKey vs teamsKey) — so `component` is signalled back to the caller.
 function migrateRetiredPanelId(
   id: string,
-): { id: string; teamsKey?: string; controlKey?: string } | null {
+): { id: string; teamsKey?: string; controlKey?: string; component?: "teams"; tab?: string } | null {
   if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
-      return { id: target, teamsKey: target.slice("teams-".length) };
+      // Hardening: every existing bare teams-* alias is already
+      // contentComponent "teams", so this is a no-op for them today — but
+      // stating it explicitly (rather than relying on the `component ??
+      // contentComponent` fallback below) means a bare id retired FROM a
+      // control panel straight into teams- would still flip correctly.
+      return { id: target, teamsKey: target.slice("teams-".length), component: "teams" };
     }
     return null;
   }
@@ -56,6 +68,19 @@ function migrateRetiredPanelId(
     const key = id.slice("control:".length);
     if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
       const target = RETIRED_PANEL_ALIASES[key];
+      if (target.startsWith("teams-")) {
+        // dreams -> teams-brain must reopen ON the Dreams tab, not silently
+        // default to Notes — mirror describePanel's synthesis for the URL
+        // channel (panelRegistry.ts:175), checked on the ORIGINAL retired
+        // key so a persisted teams-brain panel (never `control:dreams`) is
+        // untouched.
+        return {
+          id: target,
+          teamsKey: target.slice("teams-".length),
+          component: "teams",
+          ...(key === "dreams" ? { tab: "dreams" } : {}),
+        };
+      }
       return { id: `control:${target}`, controlKey: target };
     }
   }
@@ -202,10 +227,24 @@ export function sanitizeLayout(
       if (params) {
         if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
         if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
+        // Applied AFTER the PERSIST_ONLY_STRIP pass above (which deletes any
+        // stored `tab`), so this is the one case a restored layout is
+        // allowed to carry a tab — it's a one-time migration synthesis, not
+        // persisted view state.
+        if (migration.tab !== undefined) params.tab = migration.tab;
+        // Crossing control -> teams drops the stale controlKey — teams-brain
+        // takes only teamsKey, and a leftover controlKey would just be dead
+        // weight in the persisted params.
+        if (migration.component === "teams") delete params.controlKey;
       }
     }
 
-    panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
+    panels[finalId] = {
+      ...state,
+      id: finalId,
+      contentComponent: migration?.component ?? component,
+      params,
+    };
   }
 
   let grid = raw.grid;

@@ -34,6 +34,7 @@ from routers import (
     apple_iap,
     automations,
     billing,
+    brain,
     browser_view,
     channels,
     config,
@@ -856,6 +857,9 @@ app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
+
+# Brain — owner surface over the memory-wiki vault (EFS wiki/)
+app.include_router(brain.router, prefix="/api/v1/container", tags=["container"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])

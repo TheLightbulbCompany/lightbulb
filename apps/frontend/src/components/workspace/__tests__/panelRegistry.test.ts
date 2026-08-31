@@ -17,6 +17,19 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
+    // Dreams folded into Brain as a tab — the standalone control panel key
+    // retires by alias, same as credits→llm.
+    expect(resolvePanelAlias("dreams")).toBe("teams-brain");
+  });
+
+  it("describes a retired ?panel=dreams as the Brain panel, landing ON the Dreams tab (review finding 3)", () => {
+    const d = describePanel("dreams", {});
+    expect(d).toEqual({
+      panelId: "teams-brain",
+      component: "teams",
+      title: "Brain",
+      params: { teamsKey: "brain", tab: "dreams" },
+    });
   });
 
   it("builds deterministic chat panel ids", () => {
@@ -120,6 +133,23 @@ describe("panelRegistry", () => {
       agent: "a-1",
     });
     expect(describePanel("file-viewer", {})?.params).toEqual({});
+  });
+
+  it("describes the brain panel with a durable ?path deep link", () => {
+    expect(describePanel("teams-brain", {})).toEqual({
+      panelId: "teams-brain",
+      component: "teams",
+      title: "Brain",
+      params: { teamsKey: "brain" },
+    });
+    // ?path mirrors the file-viewer grammar: deep links select a page;
+    // in-panel selection clicks never write it back.
+    expect(describePanel("teams-brain", { path: "main/facts.md" })?.params).toEqual({
+      teamsKey: "brain",
+      path: "main/facts.md",
+    });
+    expect(durableParamsFor("teams-brain")).toEqual(["panel", "path"]);
+    expect(clearablePanelParamKeys("teams-brain")).toEqual(["path"]);
   });
 
   it("teams-inbox accepts a ?tab deep link as a durable param", () => {

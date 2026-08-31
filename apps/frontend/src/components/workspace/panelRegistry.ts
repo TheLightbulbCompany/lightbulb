@@ -25,6 +25,10 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
+  // Dreams folded into the Brain panel as its second tab (Notes | Dreams) —
+  // the standalone control-panel surface is gone, so old deep links and
+  // persisted layouts land on Brain instead.
+  dreams: "teams-brain",
 };
 
 // One-shot intents: copied to the target panel's open params, immediately
@@ -47,6 +51,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   projects: "Projects",
   activity: "Activity",
   artifacts: "Artifacts",
+  brain: "Brain",
   search: "Search",
   settings: "Team Settings",
 };
@@ -71,7 +76,6 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
   skills: "Skills",
   llm: "Models & Providers",
   integrations: "Integrations",
-  dreams: "Dreams",
   "skill-proposals": "Skill Proposals",
 };
 
@@ -161,6 +165,14 @@ export function describePanel(
       // ?tab deep links (bookmarks predating the URL-sync removal still carry
       // them) select the inbox band; tab clicks never write it back.
       if (teamsKey === "inbox" && params.tab) p.tab = params.tab;
+      // ?path mirrors the file-viewer grammar: a deep link selects a wiki
+      // page; in-panel selection clicks never write it back.
+      if (teamsKey === "brain" && params.path) p.path = params.path;
+      // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
+      // an old ?panel=dreams link should land ON the Dreams tab, not silently
+      // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
+      // fresh ?panel=teams-brain link is untouched.
+      if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
@@ -190,6 +202,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === "teams-issues") return ["panel", "agent"];
   if (panelId === "teams-inbox") return ["panel", "tab"];
+  if (panelId === "teams-brain") return ["panel", "path"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -203,6 +216,7 @@ export function durableParamsFor(panelId: string): string[] {
 export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-issues") return ["agent"];
   if (panelId === "teams-inbox") return ["tab"];
+  if (panelId === "teams-brain") return ["path"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

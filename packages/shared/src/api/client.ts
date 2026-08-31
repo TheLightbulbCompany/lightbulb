@@ -231,6 +231,9 @@ export function createAuthenticatedFetch(config: ApiClientConfig) {
         throw new ApiError(response.status, body, message, requestId);
       }
 
+      // A 204 carries no body — parsing it as JSON would reject a call that
+      // succeeded (the brain DELETE route is a true 204).
+      if (response.status === 204) return null;
       return response.json();
     };
 

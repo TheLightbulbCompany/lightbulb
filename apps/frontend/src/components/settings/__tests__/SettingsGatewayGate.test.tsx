@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 // The gate wraps /settings in the GatewayProvider so the gateway-bound config
-// panels (Skills, Skill Proposals, Dreams, Channel Status, MCP, LLM health dot)
+// panels (Skills, Skill Proposals, Channel Status, MCP, LLM health dot)
 // can mount.
 
 // Stub GatewayProvider so the test never opens a real WebSocket; we only assert

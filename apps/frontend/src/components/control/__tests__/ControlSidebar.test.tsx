@@ -28,6 +28,12 @@ describe("ControlSidebar", () => {
     expect(screen.getByText("Channels")).toBeInTheDocument();
   });
 
+  it("no longer lists Dreams — it folded into the Brain panel as a tab", () => {
+    mockMembership.mockReturnValue(null);
+    render(<ControlSidebar activePanel="overview" />);
+    expect(screen.queryByText("Dreams")).not.toBeInTheDocument();
+  });
+
   it("hides Usage from non-admin org members", () => {
     mockMembership.mockReturnValue({ role: "org:member" });
     render(<ControlSidebar activePanel="overview" />);

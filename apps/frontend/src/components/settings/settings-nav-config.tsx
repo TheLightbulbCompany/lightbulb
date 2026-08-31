@@ -68,7 +68,8 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     items: [
       { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
       { id: "skill-proposals", name: "Skill Proposals", icon: "skill-proposals", panel: "skill-proposals" },
-      { id: "dreams", name: "Dreams / Memory", icon: "dreams", panel: "dreams" },
+      // Dreams / Memory folded into the Brain panel (its second tab) — no
+      // longer a Settings surface.
       // Read-only channel health. `channel-status` is DISTINCT from the WIRING
       // `channels` org-bots tab — they are two surfaces, no key collision.
       { id: "channel-status", name: "Channel Status", icon: "channel-status", panel: "channel-status" },
@@ -168,12 +169,6 @@ export function NavIcon({ icon }: { icon: string }) {
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <polyline points="14 2 14 8 20 8" />
           <path d="m9 15 2 2 4-4" />
-        </svg>
-      );
-    case "dreams":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />
         </svg>
       );
     case "channel-status":

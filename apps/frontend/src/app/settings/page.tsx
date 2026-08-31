@@ -23,7 +23,6 @@ import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
-import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
 import { ADMIN_ONLY_PANELS } from "@/components/control/ControlSidebar";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -54,7 +53,6 @@ type Panel =
   | "desktop"
   | "skills"
   | "skill-proposals"
-  | "dreams"
   | "channel-status"
   | "marketplace";
 
@@ -666,7 +664,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
   "skill-proposals": SkillProposalsPanel,
-  dreams: DreamsPanel,
   "channel-status": ChannelsStatusPanel,
   marketplace: MarketplacePanel,
 };
@@ -706,7 +703,11 @@ function SettingsPageInner() {
   const initialPanelParam = searchParams.get("panel");
   const initialPanel: Panel =
     initialPanelParam !== null &&
-    initialPanelParam in PANELS &&
+    // hasOwnProperty, not `in` — `in` walks the prototype chain, so
+    // ?panel=constructor would otherwise pass validation and read
+    // Object.prototype.constructor out of PANELS (panelRegistry.ts's
+    // hasOwnKey guards the identical case for the workspace's own registry).
+    Object.prototype.hasOwnProperty.call(PANELS, initialPanelParam) &&
     (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
       ? (initialPanelParam as Panel)
       : "profile";

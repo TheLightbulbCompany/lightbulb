@@ -38,7 +38,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   usage: () => import("./panels/UsagePanel").then((m) => m.UsagePanel),
   skills: () => import("./panels/SkillsTab").then((m) => m.SkillsTab),
   integrations: () => import("./panels/IntegrationsPanel").then((m) => m.IntegrationsPanel),
-  dreams: () => import("./panels/DreamsPanel").then((m) => m.DreamsPanel),
   "skill-proposals": () => import("./panels/SkillProposalsPanel").then((m) => m.SkillProposalsPanel),
 };
 

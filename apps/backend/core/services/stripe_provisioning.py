@@ -30,6 +30,7 @@ and catalog worked, and nothing in this rail depends on them.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from urllib.parse import urlencode, urlsplit
 
@@ -212,7 +213,13 @@ async def request(
             err.request_id,
         )
         raise err from e
-    return result if isinstance(result, dict) else dict(result)
+    if isinstance(result, dict):
+        return result
+    # StripeClient.raw_request returns a StripeResponse whose `data` attribute
+    # is the raw JSON body as text; dict(result) TypeErrors on it (seen live
+    # on dev the first time this client made a real call).
+    body_text = getattr(result, "data", None)
+    return json.loads(body_text) if isinstance(body_text, (str, bytes)) else dict(result)
 
 
 async def paginate(account_id: str, path: str, *, params: dict | None = None, limit_pages: int = 20) -> list[dict]:

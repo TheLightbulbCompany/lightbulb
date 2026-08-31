@@ -386,3 +386,17 @@ async def test_deep_link_can_select_the_catalog_partition():
     with patch.object(mod, "_raw", raw):
         await mod.create_deep_link("acct_1", provider="prvdr_1", catalog="testing")
     assert raw.call_args.args[3]["catalog"] == "testing"
+
+
+@pytest.mark.asyncio
+async def test_request_unwraps_stripe_response_body():
+    """StripeClient.raw_request returns a StripeResponse, not a dict — its
+    `data` attribute is the raw JSON body. dict() on it raises TypeError,
+    which 500'd the first live catalog call on dev."""
+
+    class _StripeResponse:
+        data = '{"is_eligible": true, "requirements": []}'
+
+    with patch.object(mod, "_raw", return_value=_StripeResponse()):
+        out = await mod.request("acct_x", "get", "/v2/provisioning/eligibility")
+    assert out == {"is_eligible": True, "requirements": []}

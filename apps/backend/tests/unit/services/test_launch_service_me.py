@@ -18,6 +18,16 @@ ACTIVATED = {"bootstrap_state": "delivered", "bootstrap_delivered_at": "2026-09-
 NOT_ACTIVATED = {"bootstrap_state": "sent", "bootstrap_delivered_at": None}
 
 
+@pytest.fixture(autouse=True)
+def container_row(monkeypatch):
+    """me() reads the container row for the held predicate. Default every test
+    to "has a container" (held False) so pre-existing behavior stands; the
+    held tests flip return_value/side_effect."""
+    mock = AsyncMock(return_value={"owner_id": "user_1"})
+    monkeypatch.setattr(launch_service.container_repo, "get_by_owner_id", mock)
+    return mock
+
+
 @pytest.mark.parametrize(
     "sched,billing,onboarding,expected",
     [
@@ -50,7 +60,10 @@ async def test_resolve_email_prefers_users_row_then_jwt():
         assert await launch_service.resolve_email(AuthContext(user_id="u1")) is None
 
 
-async def test_me_lazily_creates_row_claims_user_and_composes():
+async def test_me_held_lazily_creates_row_claims_user_and_composes(container_row):
+    # Pre-drop waitlist phase + no container row = held: the ONE case where
+    # /launch/me self-heals waitlist membership (join-on-read).
+    container_row.return_value = None
     auth = AuthContext(user_id="user_1", email="me@x.com")
     row = {
         "email": "me@x.com",
@@ -73,12 +86,14 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         wl.join = AsyncMock(return_value=row)
         wl.claim_user = AsyncMock()
-        body = await launch_service.me(auth, _sched(-1))
+        body = await launch_service.me(auth, _sched(+5))
     wl.join.assert_awaited_once_with("me@x.com", referred_by=None, source="signup")
     wl.claim_user.assert_awaited_once_with("me@x.com", "user_1")
+    assert body["held"] is True
     # referral_jump defaults to 10 (settings row unavailable -> DEFAULTS, see
     # the autouse `_launch_settings_read_defaults` fixture): 300 - 10*2 = 280.
     assert body["waitlist"] == {
@@ -94,7 +109,7 @@ async def test_me_lazily_creates_row_claims_user_and_composes():
         "free_months_banked": 1,
     }
     assert body["activated"] is True and body["activated_at"] == ACTIVATED["bootstrap_delivered_at"]
-    assert body["entry"] is None and body["can_join"] is True and body["reason"] is None
+    assert body["entry"] is None and body["can_join"] is False and body["reason"] == "phase_waitlist"
     assert body["joined"] is False and body["has_key"] is False and body["idea"] is None
 
 
@@ -121,8 +136,9 @@ async def test_me_in_comp_window_is_computed_on_the_effective_position():
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
-        wl.join = AsyncMock(return_value=row)
+        wl.get = AsyncMock(return_value=row)
         wl.claim_user = AsyncMock()
         body = await launch_service.me(auth, _sched(-1))
     assert body["waitlist"]["effective_position"] == 210
@@ -159,6 +175,7 @@ async def test_me_without_email_has_no_waitlist_block():
             AsyncMock(return_value=NOT_ACTIVATED),
         ),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(auth, _sched(-1))
     assert body["waitlist"] is None and body["can_join"] is False and body["reason"] == "no_subscription"
@@ -178,6 +195,7 @@ async def test_me_reports_joined_has_key_from_the_entry_row():
             "core.services.launch_service.readiness_state.resolve_onboarding_state", AsyncMock(return_value=ACTIVATED)
         ),
         patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
     ):
         body = await launch_service.me(auth, _sched(-1))
     assert body["joined"] is True and body["has_key"] is True
@@ -201,6 +219,9 @@ async def test_me_idea_is_the_pending_briefs_input_truncated_to_140_chars():
         )
         body = await launch_service.me(auth, _sched(-1))
     assert body["idea"] == long_input[:140] and len(body["idea"]) == 140
+    # idea_full is the SAME row, untruncated -- the landing card's held-owner
+    # edit view needs the whole stashed idea, not the 140-char teaser.
+    assert body["idea_full"] == long_input
 
 
 async def test_me_idea_is_none_when_no_pending_brief_or_on_a_read_failure():
@@ -218,7 +239,113 @@ async def test_me_idea_is_none_when_no_pending_brief_or_on_a_read_failure():
         MockRepo.return_value.get_pending_brief = AsyncMock(return_value=None)
         body = await launch_service.me(auth, _sched(-1))
         assert body["idea"] is None
+        assert body["idea_full"] is None
 
         MockRepo.return_value.get_pending_brief = AsyncMock(side_effect=RuntimeError("boom"))
         body = await launch_service.me(auth, _sched(-1))
         assert body["idea"] is None
+        assert body["idea_full"] is None
+
+
+async def test_me_with_a_container_is_not_held_and_reads_without_joining(container_row):
+    # Waitlist phase, but the owner has a container (an existing owner):
+    # held is False, /launch/me never mints a waitlist row -- it reads the
+    # existing one so it still displays.
+    auth = AuthContext(user_id="user_1", email="me@x.com")
+    row = {
+        "email": "me@x.com",
+        "position": 300,
+        "referral_code": "ABCD2345",
+        "referrals_signed_up": 0,
+        "referrals_paid": 0,
+        "free_months_banked": 0,
+    }
+    with (
+        patch("core.services.launch_service.launch_waitlist_repo") as wl,
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=ACTIVATED),
+        ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
+    ):
+        wl.get = AsyncMock(return_value=row)
+        wl.join = AsyncMock()
+        wl.claim_user = AsyncMock()
+        body = await launch_service.me(auth, _sched(+5))
+    assert body["held"] is False
+    wl.get.assert_awaited_once_with("me@x.com")
+    wl.join.assert_not_awaited()
+    # Claim still runs on the read path: the webhook writes email-only rows,
+    # and this stamp is the only writer of user_id (admin-sheet columns).
+    wl.claim_user.assert_awaited_once_with("me@x.com", "user_1")
+    assert body["waitlist"]["position"] == 300
+    # No waitlist row at all (never signed up pre-drop): the block is None.
+    with (
+        patch("core.services.launch_service.launch_waitlist_repo") as wl,
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=ACTIVATED),
+        ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
+    ):
+        wl.get = AsyncMock(return_value=None)
+        wl.join = AsyncMock()
+        wl.claim_user = AsyncMock()
+        body = await launch_service.me(auth, _sched(+5))
+    assert body["held"] is False and body["waitlist"] is None
+    wl.join.assert_not_awaited()
+    wl.claim_user.assert_not_awaited()
+
+
+async def test_me_container_read_failure_fails_toward_not_held(container_row):
+    # An unreadable container row must never mis-hold an owner: held False,
+    # read-only waitlist path (the funnel, never the card).
+    container_row.side_effect = RuntimeError("dynamo down")
+    auth = AuthContext(user_id="user_1", email="me@x.com")
+    with (
+        patch("core.services.launch_service.launch_waitlist_repo") as wl,
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=NOT_ACTIVATED),
+        ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
+    ):
+        wl.get = AsyncMock(return_value=None)
+        wl.join = AsyncMock()
+        wl.claim_user = AsyncMock()
+        body = await launch_service.me(auth, _sched(+5))
+    assert body["held"] is False
+    wl.join.assert_not_awaited()
+    wl.claim_user.assert_not_awaited()
+
+
+async def test_me_is_never_held_after_the_drop(container_row):
+    # Post-drop, even with no container row (a fresh post-drop signup mid-
+    # provision), held is False -- the hold is a pre-drop concept only.
+    container_row.return_value = None
+    auth = AuthContext(user_id="user_1")
+    with (
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
+        patch(
+            "core.services.launch_service.readiness_state.resolve_onboarding_state",
+            AsyncMock(return_value=NOT_ACTIVATED),
+        ),
+        patch("core.services.launch_service._pending_idea", AsyncMock(return_value=None)),
+        patch("core.services.launch_service._pending_idea_full", AsyncMock(return_value=None)),
+    ):
+        body = await launch_service.me(auth, _sched(-1))
+    assert body["held"] is False

@@ -7,11 +7,21 @@ import { useCountdown } from "./useCountdown";
 
 /**
  * Pre-drop status: waitlist position, countdown to the drop, the idea
- * teaser, and the referral link. Shared between the in-app held card
- * (`components/chat/LaunchHeldCard`) and `/launch`'s `MyLaunchCard` before
+ * teaser, and the referral link. Shared between the landing hero's spot card
+ * (`components/landing/LaunchSpotCard`) and `/launch`'s `MyLaunchCard` before
  * doors open — same account, same facts, two surfaces.
  */
-export function LaunchStatusLines({ me, dropAt }: { me: LaunchMe; dropAt: string }) {
+export function LaunchStatusLines({
+  me,
+  dropAt,
+  showIdea = true,
+}: {
+  me: LaunchMe;
+  dropAt: string;
+  /** Off on the landing spot card, which renders the full idea (with its
+   * edit form) itself — the truncated teaser would duplicate it. */
+  showIdea?: boolean;
+}) {
   const countdown = useCountdown(dropAt) ?? "—";
   return (
     <div>
@@ -27,7 +37,9 @@ export function LaunchStatusLines({ me, dropAt }: { me: LaunchMe; dropAt: string
         </>
       ) : null}
       <p className="lc-fine">{countdown} until the drop</p>
-      {me.idea ? <p className="lc-fine">Your idea: {me.idea}</p> : <p className="lc-fine">Add your idea on drop day.</p>}
+      {/* No fallback line when the idea is absent — the landing spot card is
+          where an idea gets added, any time before the drop. */}
+      {showIdea && me.idea ? <p className="lc-fine">Your idea: {me.idea}</p> : null}
       {me.waitlist ? (
         <div style={{ marginTop: 16 }}>
           <ReferralLink code={me.waitlist.referral_code} link={me.waitlist.referral_link} />

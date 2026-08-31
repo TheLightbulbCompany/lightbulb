@@ -2,36 +2,18 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { BACKEND_URL } from "@/lib/api";
-import { formatMoney, type LaunchInfo } from "@/lib/launch";
+import { formatMoney } from "@/lib/launch";
+import { useLaunchInfo } from "./useLaunchInfo";
 
 /**
  * The landing hero's quiet pointer to the open launch competition — mounted
  * by `HeroFunnel.tsx` directly under the eyebrow. Reads the public `GET
- * /launch` (no auth, same route `LaunchPage`/`fetchLaunchInfo` use), but
- * fetches directly rather than through `fetchLaunchInfo` so a non-200 of any
- * kind (feature off, transient error) degrades the same way: render nothing,
- * never a broken pill on the hero. State starts `null` and only resolves
- * inside an effect, so there is nothing to mismatch between server and
- * client render.
+ * /launch` via `useLaunchInfo`, which degrades any non-200 (feature off,
+ * transient error) to `null`: render nothing, never a broken pill on the
+ * hero.
  */
 export function LaunchHeroPill() {
-  const [info, setInfo] = React.useState<LaunchInfo | null>(null);
-
-  React.useEffect(() => {
-    let alive = true;
-    fetch(`${BACKEND_URL}/launch`)
-      .then((res) => (res.ok ? (res.json() as Promise<LaunchInfo>) : null))
-      .then((i) => {
-        if (alive) setInfo(i);
-      })
-      .catch(() => {
-        if (alive) setInfo(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const info = useLaunchInfo();
 
   if (!info) return null;
 

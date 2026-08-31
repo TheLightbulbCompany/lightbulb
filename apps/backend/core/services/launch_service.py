@@ -19,7 +19,7 @@ from botocore.exceptions import ClientError
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo, user_repo
+from core.repositories import billing_repo, container_repo, launch_entries_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
 
@@ -123,13 +123,54 @@ async def _pending_idea(owner_id: str) -> str | None:
     return text[:140] if text else None
 
 
+async def _pending_idea_full(owner_id: str) -> str | None:
+    """Untruncated pending-brief text, or None -- same degrade-to-None
+    posture as ``_pending_idea``, and a separate read of the same tiny row
+    rather than sharing one: ``/launch/me`` is on-demand, not the 3s
+    container-status poll, so the extra GetItem isn't worth coupling the two
+    fields together for. This is what lets the landing card's held-owner
+    "edit your idea" view prefill the full text, not just the 140-char
+    teaser."""
+    try:
+        item = await _paperclip_repo().get_pending_brief(owner_id)
+    except Exception:  # noqa: BLE001 — a degraded read must not break /launch/me
+        logger.info("launch_service: pending-brief read failed for owner %s", owner_id, exc_info=True)
+        return None
+    return (item or {}).get("input") or None
+
+
 async def me(auth: AuthContext, s: Schedule) -> dict:
     owner_id = resolve_owner_id(auth)
     email = await resolve_email(auth)
+    # Held = pre-drop waitlist phase + no container row: the SAME predicate
+    # launch_hold.pre_drop_gate and the onboarding-brief upsert retry apply
+    # (three sites, one definition). A failed container read counts as "has a
+    # container" -- fail toward the ordinary funnel, never toward the card.
+    try:
+        has_container = await container_repo.get_by_owner_id(owner_id) is not None
+    except Exception:  # noqa: BLE001 -- a degraded read must not mis-hold an owner
+        logger.warning("launch_service: container read failed for %s; not held", owner_id, exc_info=True)
+        has_container = True
+    held = phase(s) == "waitlist" and not has_container
     waitlist: dict | None = None
+    row: dict | None = None
     if email:
-        row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
-        await launch_waitlist_repo.claim_user(email, auth.user_id)
+        # Join-on-read is for HELD owners only -- their /launch/me is what
+        # self-heals waitlist membership before the drop. Everyone else gets
+        # a plain read so an existing row still displays without minting a
+        # waitlist row for every signed-in caller.
+        if held:
+            row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
+        else:
+            row = await launch_waitlist_repo.get(email)
+        if row is not None:
+            # Claim is not join: the user.created webhook writes email-only
+            # rows and this stamp is the ONLY writer of user_id (the admin
+            # sheet's activated/top-slot columns read it), so it runs on the
+            # read path too. claim_user's conditional write (row must exist,
+            # user_id must not) never creates rows.
+            await launch_waitlist_repo.claim_user(email, auth.user_id)
+    if row is not None:
         referral_jump = launch_phase.constants()["referral_jump"]
         position = row["position"]
         eff = effective_position(row, referral_jump)
@@ -151,6 +192,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     ok, reason = can_join(s=s, billing=billing, onboarding=onboarding)
     return {
         "phase": phase(s),
+        "held": held,
         "waitlist": waitlist,
         "activated": onboarding.get("bootstrap_state") == "delivered",
         "activated_at": onboarding.get("bootstrap_delivered_at"),
@@ -160,6 +202,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "can_join": ok,
         "reason": reason,
         "idea": await _pending_idea(owner_id),
+        "idea_full": await _pending_idea_full(owner_id),
     }
 
 

@@ -2166,6 +2166,7 @@ class PaperclipRepo:
         detail: Optional[str],
         brief_text: Optional[str],
         submitted_by: str,
+        overwrite: bool = False,
     ) -> bool:
         """Record a funnel answer that can't be fulfilled yet.
 
@@ -2185,6 +2186,13 @@ class PaperclipRepo:
         ``brief_text`` is precomputed at intake (rather than at drain time) so
         the phrasing the user submitted is what Friday eventually opens with,
         even if the brief-building code changes between the two.
+
+        ``overwrite=True`` skips the put-if-absent guard entirely and
+        replaces whatever is there, ``pending`` included -- for the landing
+        card's "edit your idea while held" flow (routers/onboarding.py),
+        which the caller only takes for an owner it has confirmed has no
+        container row yet, so there is no in-flight fulfilment claim on this
+        item to clobber. Never pass this for a container-having owner.
         """
         item = {
             "user_id": _pending_brief_key(owner_id),
@@ -2207,6 +2215,9 @@ class PaperclipRepo:
             item["brief_text"] = brief_text
 
         table = self._table()
+        if overwrite:
+            await run_in_thread(table.put_item, Item=item)
+            return True
         try:
             await run_in_thread(
                 table.put_item,

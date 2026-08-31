@@ -43,12 +43,20 @@ def client(monkeypatch):
     nudge = MagicMock()
     monkeypatch.setattr(onboarding_mod, "publish_status_changed", nudge)
 
+    # Defaults to "has a container" -- the ordinary onboarding path -- so
+    # existing already-submitted tests exercise the SAME refusal they always
+    # have without touching real DDB. The held-owner upsert tests below
+    # override this to None.
+    get_container = AsyncMock(return_value={"owner_id": "x"})
+    monkeypatch.setattr(onboarding_mod.container_repo, "get_by_owner_id", get_container)
+
     app.dependency_overrides[get_current_user] = _personal_auth
     with TestClient(app) as c:
         c.repo = repo
         c.put = repo.put_pending_brief
         c.reconcile = reconcile
         c.nudge = nudge
+        c.get_container = get_container
         yield c
     app.dependency_overrides.clear()
 
@@ -179,3 +187,52 @@ def test_too_short_input_still_rejected(client):
 
     assert resp.status_code == 422
     client.put.assert_not_awaited()
+
+
+# --- editing a stashed idea while held on the launch waitlist -----------------
+
+
+def test_held_owner_resubmit_upserts_the_pending_brief(client):
+    """No container row yet (held) + a brief already pending == the landing
+    card's "edit your idea" flow re-POSTing this route. That must actually
+    replace the stored text, not bounce off as already_submitted."""
+    client.get_container.return_value = None  # no container -- held
+    client.put.side_effect = [False, True]  # first put loses the guard, retry overwrites
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "A better idea"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "staged"}
+    assert client.put.await_count == 2
+    retry_kwargs = client.put.await_args_list[1].kwargs
+    assert retry_kwargs["overwrite"] is True
+    assert retry_kwargs["user_input"] == "A better idea"
+    client.nudge.assert_called_once_with("user_abc")
+
+
+def test_owner_with_a_container_never_gets_the_upsert_retry(client):
+    """The ordinary onboarding path is untouched: a container row present
+    means this item is a one-shot claim ticket for the drain, so a second
+    submit still refuses -- no overwrite attempt at all."""
+    client.get_container.return_value = {"owner_id": "user_abc"}  # has a container
+    client.put.return_value = False
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "A better idea"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "already_submitted"}
+    client.put.assert_awaited_once()  # no retry
+    client.nudge.assert_not_called()
+
+
+def test_container_read_failure_keeps_the_original_refusal(client):
+    """An unreadable container row must not flip a real onboarding owner into
+    the held/overwrite branch -- degrade toward the existing refusal."""
+    client.get_container.side_effect = RuntimeError("boom")
+    client.put.return_value = False
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "A better idea"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "already_submitted"}
+    client.put.assert_awaited_once()

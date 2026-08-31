@@ -1424,3 +1424,23 @@ async def get_by_company_stripe_account_id(account_id: str) -> dict | None:
     )
     items = resp.get("Items") or []
     return items[0] if items else None
+
+
+async def list_company_stripe_owners() -> list[str]:
+    """Owner ids with a bound company Stripe account (the rollup pass input).
+
+    # ponytail: scan is fine at fleet size; GSI when >1k owners.
+    """
+    table = _get_table()
+    owners: list[str] = []
+    kwargs: dict = {
+        "FilterExpression": Attr("company_stripe_account_id").exists(),
+        "ProjectionExpression": "owner_id",
+    }
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        owners.extend(item["owner_id"] for item in page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return owners
+        kwargs["ExclusiveStartKey"] = last

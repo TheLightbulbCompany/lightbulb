@@ -350,6 +350,7 @@ async def test_run_scheduled_worker_applies_due_task_refreshes_sequentially(monk
     monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
+    monkeypatch.setattr(update_service, "_rollup_pass", AsyncMock())
     monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
 
     with pytest.raises(_StopLoop):
@@ -387,6 +388,7 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    monkeypatch.setattr(update_service, "_rollup_pass", AsyncMock())
     recover = AsyncMock()
     monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", recover)
     monkeypatch.setattr(
@@ -454,6 +456,7 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    monkeypatch.setattr(update_service, "_rollup_pass", AsyncMock())
     monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     monkeypatch.setattr(
         update_service.update_repo,
@@ -468,6 +471,55 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
 
     assert retry_calls == 2, "retry pass runs every loop iteration"
     assert purge_calls == 1, "purge pass runs only on first iteration"
+
+
+async def test_run_scheduled_worker_rollup_pass_hourly_cadence(monkeypatch):
+    """Rollup pass runs on the first iteration, is skipped within the hour,
+    and runs again once the hour has elapsed."""
+    rollup_calls = 0
+
+    async def fake_rollup():
+        nonlocal rollup_calls
+        rollup_calls += 1
+
+    class _StopLoop(Exception):
+        pass
+
+    wait_count = 0
+
+    async def fake_wait(*_args, **_kwargs):
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count >= 3:
+            raise _StopLoop()
+
+    interval = update_service._ROLLUP_PASS_INTERVAL_SECONDS
+    # Iter 1: sentinel 0.0 -> runs, stamps t0. Iter 2: +60s -> skipped.
+    # Iter 3: +interval+60s -> runs again.
+    monotonic_values = iter([1000.0, 1060.0, 1000.0 + interval + 60.0])
+
+    def fake_monotonic():
+        try:
+            return next(monotonic_values)
+        except StopIteration:
+            return 1000.0 + interval + 120.0
+
+    monkeypatch.setattr(update_service, "_rollup_pass", fake_rollup)
+    monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
+    monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
+    monkeypatch.setattr(
+        update_service.update_repo,
+        "get_due_scheduled",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(update_service.asyncio, "wait_for", fake_wait)
+    monkeypatch.setattr(update_service.time, "monotonic", fake_monotonic)
+
+    with pytest.raises(_StopLoop):
+        await update_service.run_scheduled_worker()
+
+    assert rollup_calls == 2, "rollup pass: first iteration + after the hour elapsed"
 
 
 # ----------------------------------------------------------------------

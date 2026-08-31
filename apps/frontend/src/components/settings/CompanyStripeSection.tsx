@@ -22,12 +22,29 @@ type CompanyStripeStatus = {
 
 const STATUS_PATH = "/company/stripe/status";
 
-export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
+/**
+ * The company Stripe ACCOUNT status (Connect OAuth; backend-only credential).
+ * Shared between the grant block below and StripeSection's same-account
+ * hint — one SWR key, so both callers dedupe to a single request.
+ */
+export function useCompanyStripeStatus() {
   const api = useApi();
-  const { data, error, mutate, isLoading } = useSWR<CompanyStripeStatus>(
+  return useSWR<CompanyStripeStatus>(
     STATUS_PATH,
     (p: string) => api.get(p) as Promise<CompanyStripeStatus>,
   );
+}
+
+/**
+ * The "Company account" grant inside the consolidated Stripe section
+ * (StripeSection): the company's OWN Stripe account. Identity — revenue
+ * lands here, and providers are provisioned on it. Its credential is
+ * backend-only and entirely separate from the agent-tools MCP token;
+ * nothing here shares or derives one from the other.
+ */
+export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
+  const api = useApi();
+  const { data, error, mutate, isLoading } = useCompanyStripeStatus();
   const [busy, setBusy] = useState(false);
 
   // Stops the desktop grant-poll when this section unmounts — an abandoned
@@ -101,99 +118,119 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   const connectStart = async () => (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
 
   return (
-    <section className="settings-card" data-testid="company-stripe">
-      <div className="settings-card-header">
-        <h2 className="settings-card-title">Stripe</h2>
-        <p className="settings-card-desc">
-          Your company&apos;s own Stripe account. You keep the account, the Dashboard and 100% of your
-          revenue — Lightbulb AI takes no fee.
-        </p>
-      </div>
+    <div
+      className="flex items-start gap-3 rounded-md border border-[var(--edge)] bg-cream p-4"
+      data-testid="company-stripe"
+    >
+      <span
+        className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${
+          bound ? "bg-[var(--ok)]" : "bg-[var(--midnight-faint)]"
+        }`}
+        aria-hidden="true"
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div>
+          <h3 className="text-sm font-medium text-midnight">Company account</h3>
+          <p className="text-xs text-[var(--midnight-muted)]">
+            {isLoading && !error ? (
+              "Loading…"
+            ) : bound && data ? (
+              <>
+                Connected as <span className="font-mono text-midnight">{data.account_id}</span>
+              </>
+            ) : (
+              "Not connected"
+            )}
+          </p>
+          <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
+            Your identity on Stripe — payments land here, and services we set up for you are created
+            on this account. You keep the account, the Dashboard and 100% of your revenue —
+            Lightbulb AI takes no fee.
+          </p>
+        </div>
 
-      {error && !data && (
-        <p className="text-sm text-[var(--err)]">Couldn&apos;t load Stripe status. Refresh to try again.</p>
-      )}
+        {error && !data && (
+          <p className="text-sm text-[var(--err)]">Couldn&apos;t load Stripe status. Refresh to try again.</p>
+        )}
 
-      {!error && isLoading && <p className="text-sm text-[var(--midnight-muted)]">Loading…</p>}
+        {!error && !isLoading && !bound && (
+          <div className="flex flex-wrap gap-2">
+            {canManage ? (
+              <>
+                <button
+                  type="button"
+                  className="settings-btn-save"
+                  disabled={busy}
+                  onClick={() => openWith(async () => (await createLink()).onboarding_url)}
+                >
+                  Set up Stripe
+                </button>
+                {connectConfigured && (
+                  <button
+                    type="button"
+                    className="settings-btn-outline"
+                    disabled={busy}
+                    onClick={() => openWith(async () => (await connectStart()).authorize_url)}
+                  >
+                    Connect existing Stripe
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-[var(--midnight-muted)]">A workspace admin sets up Stripe.</p>
+            )}
+          </div>
+        )}
 
-      {!error && !isLoading && !bound && (
-        <div className="flex flex-wrap gap-2">
-          {canManage ? (
-            <>
-              <button
-                type="button"
-                className="settings-btn-save"
-                disabled={busy}
-                onClick={() => openWith(async () => (await createLink()).onboarding_url)}
-              >
-                Set up Stripe
-              </button>
-              {connectConfigured && (
+        {!isLoading && bound && data && (
+          <div className="flex flex-col gap-2">
+            <dl className="text-sm text-[var(--midnight-muted)]">
+              <div className="flex gap-2"><dt>Source</dt><dd>{data.source === "connected" ? "Connected existing account" : "Created by Lightbulb AI"}</dd></div>
+              <div className="flex gap-2">
+                <dt>Status</dt>
+                <dd>
+                  {data.charges_enabled ? "Charges enabled" : data.details_submitted ? "Under review" : "Onboarding incomplete"}
+                  {data.payouts_enabled ? " · Payouts enabled" : ""}
+                </dd>
+              </div>
+            </dl>
+            <div className="flex flex-wrap gap-2">
+              {data.dashboard_url && (
+                <a className="settings-btn-outline" href={data.dashboard_url} target="_blank" rel="noopener noreferrer">
+                  Open Stripe Dashboard
+                </a>
+              )}
+              {canManage && data.source === "created" && !data.charges_enabled && (
+                <button
+                  type="button"
+                  className="settings-btn-save"
+                  disabled={busy}
+                  onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
+                >
+                  Finish onboarding
+                </button>
+              )}
+              {canManage && (
                 <button
                   type="button"
                   className="settings-btn-outline"
-                  disabled={busy}
-                  onClick={() => openWith(async () => (await connectStart()).authorize_url)}
+                  disabled={busy || !connectConfigured}
+                  title={connectConfigured ? undefined : "Not available until Stripe Connect is configured"}
+                  onClick={() => run(async () => { await api.post("/company/stripe/disconnect", {}); })}
                 >
-                  Connect existing Stripe
+                  Disconnect
                 </button>
               )}
-            </>
-          ) : (
-            <p className="text-sm text-[var(--midnight-muted)]">A workspace admin sets up Stripe.</p>
-          )}
-        </div>
-      )}
-
-      {!isLoading && bound && data && (
-        <div className="flex flex-col gap-2">
-          <dl className="text-sm text-[var(--midnight-muted)]">
-            <div className="flex gap-2"><dt>Account</dt><dd className="font-mono text-[var(--midnight)]">{data.account_id}</dd></div>
-            <div className="flex gap-2"><dt>Source</dt><dd>{data.source === "connected" ? "Connected existing account" : "Created by Lightbulb AI"}</dd></div>
-            <div className="flex gap-2">
-              <dt>Status</dt>
-              <dd>
-                {data.charges_enabled ? "Charges enabled" : data.details_submitted ? "Under review" : "Onboarding incomplete"}
-                {data.payouts_enabled ? " · Payouts enabled" : ""}
-              </dd>
             </div>
-          </dl>
-          <div className="flex flex-wrap gap-2">
-            {data.dashboard_url && (
-              <a className="settings-btn-outline" href={data.dashboard_url} target="_blank" rel="noopener noreferrer">
-                Open Stripe Dashboard
-              </a>
-            )}
-            {canManage && data.source === "created" && !data.charges_enabled && (
-              <button
-                type="button"
-                className="settings-btn-save"
-                disabled={busy}
-                onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
-              >
-                Finish onboarding
-              </button>
-            )}
-            {canManage && (
-              <button
-                type="button"
-                className="settings-btn-outline"
-                disabled={busy || !connectConfigured}
-                title={connectConfigured ? undefined : "Not available until Stripe Connect is configured"}
-                onClick={() => run(async () => { await api.post("/company/stripe/disconnect", {}); })}
-              >
-                Disconnect
-              </button>
-            )}
           </div>
-        </div>
-      )}
+        )}
 
-      {busy && isTauri() && (
-        <p className="text-sm text-[var(--midnight-muted)]" role="status">
-          Finish in your browser — this page updates automatically.
-        </p>
-      )}
-    </section>
+        {busy && isTauri() && (
+          <p className="text-sm text-[var(--midnight-muted)]" role="status">
+            Finish in your browser — this page updates automatically.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

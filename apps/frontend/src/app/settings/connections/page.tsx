@@ -8,7 +8,7 @@ import { UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
-import { CompanyStripeSection } from "@/components/settings/CompanyStripeSection";
+import { StripeSection } from "@/components/settings/StripeSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
@@ -190,11 +190,14 @@ function ConnectionsPageInner() {
                 </div>
               )}
 
+              {/* Stripe is ONE brand with TWO separate grants (company account
+                  + agent tools), so it gets a consolidated section here and is
+                  excluded from the generic list below. */}
               <div className="mb-4">
-                <CompanyStripeSection canManage={canManage} />
+                <StripeSection canManage={canManage} />
               </div>
 
-              <ConnectionsList canManage={canManage} />
+              <ConnectionsList canManage={canManage} exclude={["stripe"]} />
             </div>
           </main>
         </div>

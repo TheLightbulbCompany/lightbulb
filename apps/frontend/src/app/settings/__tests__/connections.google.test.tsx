@@ -15,7 +15,7 @@ vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true 
 vi.mock("@/hooks/useConnections", () => ({
   useConnections: () => ({ connections, mutate: vi.fn() }),
 }));
-vi.mock("@/components/settings/CompanyStripeSection", () => ({ CompanyStripeSection: () => <div /> }));
+vi.mock("@/components/settings/StripeSection", () => ({ StripeSection: () => <div /> }));
 vi.mock("@/components/settings/ConnectionsList", () => ({
   ConnectionsList: () => <div data-testid="connections-list" />,
 }));

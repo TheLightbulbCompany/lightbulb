@@ -20,6 +20,7 @@ async def test_worker_exits_cleanly_on_stop_without_cancel(monkeypatch):
     # without hitting real DynamoDB (mirrors the worker tests in
     # test_update_service.py).
     monkeypatch.setattr(us, "_paperclip_purge_pass", AsyncMock(), raising=False)
+    monkeypatch.setattr(us, "_rollup_pass", AsyncMock(), raising=False)
     monkeypatch.setattr(us.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
 
     us.reset_worker_stop()

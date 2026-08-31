@@ -349,6 +349,11 @@ class Provider(BaseModel):
     acquisition: Acquisition
     actor: Actor
     refresh_owner: RefreshOwner
+    # Opt-in override for actor-refresh providers: retain the exchanged
+    # credential in Secrets Manager anyway, for backend-side reads (posthog:
+    # HogQL rollups). Non-actor providers retain regardless — see
+    # routers.connections._retains_secret.
+    retain_secret: bool = False
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None

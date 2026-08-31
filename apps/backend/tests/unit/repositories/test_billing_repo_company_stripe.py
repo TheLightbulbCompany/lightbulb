@@ -116,6 +116,16 @@ async def test_set_company_stripe_project_id_stores_once(billing_table):
 
 
 @pytest.mark.asyncio
+async def test_list_company_stripe_owners_only_bound_rows(billing_table):
+    from core.repositories import billing_repo
+
+    billing_table.put_item(Item={"owner_id": "org_unbound", "owner_type": "org", "plan": "flat"})
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
+
+    assert await billing_repo.list_company_stripe_owners() == ["org_a"]
+
+
+@pytest.mark.asyncio
 async def test_clearing_the_company_account_drops_the_project_pointer(billing_table):
     """Deauthorization unbinds everything company-Stripe, the Project included:
     a pointer into an account we can no longer reach is worse than none."""

@@ -52,8 +52,12 @@ def _retains_secret(p: registry.Provider) -> bool:
     and self-refreshes the token (e.g. gog), so the backend stores nothing
     durable and the container EFS keyring is the sole custodian. Every other
     provider is backend-custodian: the secret is retained so it can be
-    re-injected (marketplace slot-fill, reconnect)."""
-    return p.refresh_owner != "actor"
+    re-injected (marketplace slot-fill, reconnect). ``retain_secret: true``
+    opts an actor-refresh provider back in — posthog, so the backend can run
+    its own HogQL reads (owner-day rollups) without touching the container's
+    MCP copy. Disconnect deletes the retained secret unconditionally
+    (``_disconnect_teardown``), so the flag needs no teardown wiring."""
+    return p.refresh_owner != "actor" or p.retain_secret
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:

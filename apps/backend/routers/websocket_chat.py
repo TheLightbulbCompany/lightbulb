@@ -387,7 +387,8 @@ def require_ws_internal_caller(
             "rejecting /ws/* calls until the secret is configured"
         )
         raise HTTPException(status_code=503, detail="WebSocket gateway not configured")
-    if not x_isol8_ws_internal or not hmac.compare_digest(x_isol8_ws_internal, secret):
+    # Compare bytes, not str: compare_digest raises TypeError on non-ASCII str.
+    if not x_isol8_ws_internal or not hmac.compare_digest(x_isol8_ws_internal.encode("utf-8"), secret.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 

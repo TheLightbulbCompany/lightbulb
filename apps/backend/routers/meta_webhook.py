@@ -154,7 +154,7 @@ async def _signature_valid(body: bytes, header: str | None) -> bool:
         if not secret:
             continue
         expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expected, provided):
+        if hmac.compare_digest(expected.encode("utf-8"), provided.encode("utf-8")):
             return True
     return False
 
@@ -202,7 +202,10 @@ async def verify_meta_subscription(request: Request) -> Response:
     if not settings.META_WEBHOOK_VERIFY_TOKEN:
         raise HTTPException(status_code=503, detail="meta_webhook_not_configured")
     params = request.query_params
-    if not hmac.compare_digest(params.get("hub.verify_token", ""), settings.META_WEBHOOK_VERIFY_TOKEN):
+    # Compare bytes, not str: compare_digest raises TypeError on non-ASCII str.
+    if not hmac.compare_digest(
+        params.get("hub.verify_token", "").encode("utf-8"), settings.META_WEBHOOK_VERIFY_TOKEN.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="invalid_verify_token")
     return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
 

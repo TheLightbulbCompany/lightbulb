@@ -60,7 +60,7 @@ def verify_svix_signature(*, secret: str, body: bytes, headers: dict) -> bool:
     for token in tokens:
         if token.startswith("v1,"):
             candidate = token[3:]
-            if hmac.compare_digest(expected_b64, candidate):
+            if hmac.compare_digest(expected_b64.encode("utf-8"), candidate.encode("utf-8")):
                 return True
 
     return False

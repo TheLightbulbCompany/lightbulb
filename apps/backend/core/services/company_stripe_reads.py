@@ -67,7 +67,7 @@ def _read_day(account_id: str, day: str) -> dict:
 async def day_money(owner_id: str, day: str) -> dict | None:
     """``{"revenue_microcents": int, "signups": int}`` for the owner's
     connected account on ``day`` (UTC); ``None`` when no company account is
-    bound or the read fails."""
+    bound or the Stripe read fails (the billing_repo read raises through)."""
     row = await billing_repo.get_by_owner_id(owner_id)
     account_id = (row or {}).get("company_stripe_account_id")
     if not account_id:

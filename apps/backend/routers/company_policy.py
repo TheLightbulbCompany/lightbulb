@@ -75,7 +75,7 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
 
     # 1. Cancel open provisioning workflows (pure DDB; never deprovisions).
     cancelled, _open = await account_wipe.cancel_open_workflows(owner_id)
-    revoked.append(f"provisioning_workflows:{cancelled}")
+    revoked.append(f"workflows_cancelled:{cancelled}")
 
     # 2. Delete our Secrets Manager copies: every projects/* credential the
     # Provisioning rail landed, plus the retained posthog token (delete

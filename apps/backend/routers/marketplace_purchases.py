@@ -25,6 +25,8 @@ from core.services.webhook_dedup import WebhookDedupResult
 from schemas import marketplace as schemas
 
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace-purchases"])
 
 # Fire-and-forget rollup refreshes spawned by the money-event webhook branch.
@@ -223,7 +225,15 @@ async def stripe_webhook(
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 task = asyncio.create_task(rollup_service.refresh_owner_day(company_row["owner_id"], today))
                 _rollup_refresh_tasks.add(task)
-                task.add_done_callback(_rollup_refresh_tasks.discard)
+
+                def _rollup_done(t: asyncio.Task, owner_id: str = company_row["owner_id"], day: str = today) -> None:
+                    _rollup_refresh_tasks.discard(t)
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.warning(
+                            "rollup refresh failed owner_id=%s day=%s", owner_id, day, exc_info=t.exception()
+                        )
+
+                task.add_done_callback(_rollup_done)
         # Other events (transfer.failed,
         # checkout.session.async_payment_failed) are logged via Stripe;
         # async_payment_failed in particular is a no-op because we never

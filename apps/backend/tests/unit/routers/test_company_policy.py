@@ -115,7 +115,7 @@ def _revoke_mocks():
     return manager, cancel, sdelete, deauth
 
 
-def test_revoke_all_composes_each_primitive_once_in_order(client):
+def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
     manager, cancel, sdelete, deauth = _revoke_mocks()
     rows = [
         {"provider": "projects/stripe"},
@@ -123,19 +123,22 @@ def test_revoke_all_composes_each_primitive_once_in_order(client):
         {"provider": "projects/posthog"},
     ]
     billing_row = {"owner_id": "org_a", "company_stripe_account_id": "acct_1"}
+    clear = AsyncMock(return_value=billing_row)
+    manager.attach_mock(clear, "clear")
+    manager.attach_mock(facts, "facts")
     with (
         patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
         patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)),
         patch.object(mod.integration_secret_store, "delete", sdelete),
         patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value=billing_row)),
         patch.object(mod.company_stripe, "deauthorize", deauth),
-        patch.object(billing_repo, "clear_company_stripe_account", AsyncMock(return_value=billing_row)) as clear,
+        patch.object(billing_repo, "clear_company_stripe_account", clear),
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
     assert resp.json() == {
         "revoked": [
-            "provisioning_workflows:1",
+            "workflows_cancelled:1",
             "secret:projects/stripe",
             "secret:projects/posthog",
             "secret:posthog",
@@ -145,9 +148,19 @@ def test_revoke_all_composes_each_primitive_once_in_order(client):
     cancel.assert_awaited_once_with("org_a")
     deauth.assert_awaited_once_with(account_id="acct_1")
     clear.assert_awaited_once_with("org_a", account_id="acct_1")
+    facts.assert_awaited_once_with("org_a")
     assert sdelete.await_count == 3
-    # Order: workflows closed first, then our secret copies, then Stripe.
-    assert [name for name, _, _ in manager.mock_calls] == ["cancel", "sdelete", "sdelete", "sdelete", "deauth"]
+    # Order: workflows closed first, then our secret copies, then Stripe
+    # (deauthorize → unbind → facts rewrite).
+    assert [name for name, _, _ in manager.mock_calls] == [
+        "cancel",
+        "sdelete",
+        "sdelete",
+        "sdelete",
+        "deauth",
+        "clear",
+        "facts",
+    ]
 
 
 def test_revoke_all_skips_stripe_when_unbound(client):
@@ -161,7 +174,7 @@ def test_revoke_all_skips_stripe_when_unbound(client):
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
-    assert resp.json() == {"revoked": ["provisioning_workflows:1", "secret:posthog"]}
+    assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"]}
     deauth.assert_not_awaited()
 
 

@@ -963,6 +963,12 @@ from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
 
+# Capability policy + revoke-all (the P0d slice — row + surface only;
+# enforcement in the rails is P1).
+from routers import company_policy  # noqa: E402
+
+app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
+
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
 

@@ -1444,3 +1444,46 @@ async def list_company_stripe_owners() -> list[str]:
         if not last:
             return owners
         kwargs["ExclusiveStartKey"] = last
+
+
+# --- Capability policy (the P0d slice) -------------------------------------
+# `capability_policy` is a map of capability -> bool ("does this capability
+# require owner approval?"). An ABSENT key means True — fail-closed — so only
+# explicitly-set keys are ever persisted; defaults are filled on read.
+
+CAPABILITY_POLICY_KEYS = ("money_moves", "outreach", "publishing", "provisioning")
+
+
+def _fill_capability_policy(stored: dict | None) -> dict[str, bool]:
+    stored = stored or {}
+    return {k: bool(stored.get(k, True)) for k in CAPABILITY_POLICY_KEYS}
+
+
+async def get_capability_policy(owner_id: str) -> dict[str, bool]:
+    row = await get_by_owner_id(owner_id) or {}
+    return _fill_capability_policy(row.get("capability_policy"))
+
+
+async def set_capability_policy(owner_id: str, updates: dict[str, bool]) -> dict[str, bool] | None:
+    """Merge ``updates`` over the stored map and write it. Raises ValueError on
+    an unknown key; ``None`` = no billing row. Returns the filled map."""
+    unknown = set(updates) - set(CAPABILITY_POLICY_KEYS)
+    if unknown:
+        raise ValueError(f"unknown capability keys: {sorted(unknown)}")
+    row = await get_by_owner_id(owner_id)
+    if row is None:
+        return None
+    merged = {**(row.get("capability_policy") or {}), **{k: bool(v) for k, v in updates.items()}}
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET capability_policy = :p",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":p": merged},
+        )
+    except ClientError as e:
+        if _is_condition_failure(e):
+            return None
+        raise
+    return _fill_capability_policy(merged)

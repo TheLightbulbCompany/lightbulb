@@ -213,7 +213,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
             />
           )}
         />
-        {/* CompanyNav (Dashboard / Inbox / Work / Company) plus the marketplace
+        {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the marketplace
             block (GallerySection). */}
         <CompanyNav
           activePanel={companyActivePanel}

@@ -20,15 +20,16 @@ type Item = {
   Icon: React.ComponentType<{ size?: number }>;
 };
 
-// Grouped to mirror upstream Paperclip's sidebar: an unlabeled top block, then
-// "Work", then "Company". Every panel renders inline via InlineTeamsPanel
-// (TeamsPanelRouter maps each key). `agents` and `settings` are intentionally
-// excluded — agents are the roster, settings is the Settings home.
-const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
+// Spec §5.1 IA. An item appears here ONLY when its tab is live;
+// Money/Growth/Operations groups arrive with their tabs (P1+).
+// Every panel renders inline via InlineTeamsPanel (TeamsPanelRouter maps each
+// key). `agents` and `settings` are intentionally excluded — agents are the
+// roster, settings is the Settings home.
+export const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
   {
     label: null,
     items: [
-      { panel: `${TEAMS_PANEL_PREFIX}dashboard`, label: "Dashboard", Icon: LayoutDashboard },
+      { panel: `${TEAMS_PANEL_PREFIX}dashboard`, label: "Home", Icon: LayoutDashboard },
       { panel: `${TEAMS_PANEL_PREFIX}search`, label: "Search", Icon: Search },
       { panel: `${TEAMS_PANEL_PREFIX}inbox`, label: "Inbox", Icon: Inbox },
     ],
@@ -43,10 +44,17 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     ],
   },
   {
+    label: "Knowledge",
+    items: [
+      // Library is the spec's noun for the work-products gallery; the panel
+      // key stays `teams-artifacts` (mobile builds these URLs as strings).
+      { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Library", Icon: Images },
+    ],
+  },
+  {
     label: "Company",
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
-      { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Artifacts", Icon: Images },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
     ],
   },

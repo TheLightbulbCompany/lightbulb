@@ -843,3 +843,28 @@ def test_register_staged_agent_under_claim_uses_given_package(
     assert catalog.deploy_from_artifact.await_args.kwargs["slice_"]["cron_jobs"] == [{"name": "Daily digest"}]
     assert mock_claim.await_args.kwargs["listing_id"] == "import:import-abcdef123456"
     mock_release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hook_token_non_ascii_bearer_is_401_not_500():
+    """Mirror of the agent_mail case: Starlette decodes headers as latin-1, so a
+    garbage Authorization value reaches the guard as non-ASCII str; compare_digest
+    on str then raises TypeError and the route 500s. Seen live 2026-08-31 when a
+    container agent's curl mangled the token — must be a clean 401."""
+    from unittest.mock import AsyncMock, patch
+
+    from fastapi import HTTPException
+
+    from routers import agent_builder
+
+    class _Req:
+        headers = {"Authorization": "Bearer ünïcode"}
+
+    with patch.object(
+        agent_builder.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_a", "hook_token": "tok"}),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await agent_builder._require_hook_token("org_a", _Req())
+    assert exc.value.status_code == 401

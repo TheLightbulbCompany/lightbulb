@@ -138,7 +138,7 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     for token in tokens:
         if token.startswith("v1,"):
             candidate = token[3:]
-            if hmac.compare_digest(expected_b64, candidate):
+            if hmac.compare_digest(expected_b64.encode("utf-8"), candidate.encode("utf-8")):
                 return
 
     put_metric("webhook.clerk.sig_fail")

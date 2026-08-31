@@ -133,7 +133,8 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
 
     # 3. Timing-safe compare
     expected = container.get("hook_token") or ""
-    if not expected or not hmac.compare_digest(presented, expected):
+    # Compare bytes, not str: compare_digest raises TypeError on non-ASCII str.
+    if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid_token")
 
     # 3b. Always-on entitlement — webhooks are a paid feature. Trial owners'

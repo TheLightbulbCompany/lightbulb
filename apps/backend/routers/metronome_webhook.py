@@ -78,7 +78,8 @@ def _verify_signature(*, secret: str, date_header: str, body: bytes, signature: 
         return False
     msg = date_header.encode("utf-8") + b"\n" + body
     expected = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    # Compare bytes, not str: compare_digest raises TypeError on non-ASCII str.
+    return hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8"))
 
 
 def _parse_timestamp(value: object) -> datetime | None:

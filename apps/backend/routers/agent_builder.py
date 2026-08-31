@@ -113,7 +113,9 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
     presented = auth[len("Bearer ") :]
     container = await container_repo.get_by_owner_id(owner_id)
     expected = (container or {}).get("hook_token") or ""
-    if not expected or not hmac.compare_digest(presented, expected):
+    # Compare bytes, not str: hmac.compare_digest raises TypeError on non-ASCII
+    # str, turning a garbage header into a 500 at the trust boundary.
+    if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid hook token")
     return container
 

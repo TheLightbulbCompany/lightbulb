@@ -180,12 +180,34 @@ async def test_close_refuses_when_already_closed_unless_forced():
         with pytest.raises(launch_close.AlreadyClosed):
             await launch_close.close(ADMIN)
         result = await launch_close.close(ADMIN, force=True)
-    # closed_at was already stamped, so the winner set is immutable — a force
-    # rerun NEVER flags new winners, even for a row that would have won.
-    assert result["winners"] == 0
-    assert "winner" not in h.rows["a@x.com"]
+    # closed_at was stamped but final_pot_cents never landed — the previous
+    # close crashed mid-sequence. A force rerun is the RECOVERY path: it
+    # completes winner flagging and the pot freeze (deterministic, since
+    # closed_at froze joins and referral counting at stamp time).
+    assert result["winners"] == 1
+    assert h.rows["a@x.com"]["winner"] is True
+    assert h.settings_row["final_pot_cents"] is not None
     # The original closed_at is preserved — force never re-stamps it.
     assert h.settings_row["closed_at"] == "2026-09-30T16:00:00+00:00"
+
+
+async def test_force_rerun_after_a_complete_close_is_convergence_only():
+    rows = [_row("a@x.com", 1)]
+    with _Harness(
+        rows,
+        {},
+        settings_row={
+            "closed_at": "2026-09-30T16:00:00+00:00",
+            "final_pot_cents": 100000,
+            "final_roster_count": 0,
+        },
+    ) as h:
+        result = await launch_close.close(ADMIN, force=True)
+    # The sequence completed once (final_pot_cents set): winners and the pot
+    # are immutable — no new flags, no pot rewrite.
+    assert result["winners"] == 0
+    assert "winner" not in h.rows["a@x.com"]
+    assert h.settings_row["final_pot_cents"] == 100000
 
 
 async def test_close_rerun_converges_and_skips_done_work():

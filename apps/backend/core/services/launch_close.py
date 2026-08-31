@@ -97,7 +97,14 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     jump = launch_phase.constants()["referral_jump"]
 
     paying: dict[str, dict] = {}
-    if already_closed:
+    # final_pot_cents is stamped strictly AFTER winner flagging completes, so
+    # a None here means the (b)-(d) sequence from the last attempt never
+    # finished (a crash, possibly mid-loop with a partial winner set). In
+    # that case the recovery path is simply to run the full sequence again —
+    # it is deterministic post-close (closed_at freezes joins and referral
+    # counting the moment it stamps). `is not None`: pot_front_cents=0 with
+    # zero entrants legitimately freezes the pot at 0.
+    if already_closed and row.get("final_pot_cents") is not None:
         # Force rerun = CONVERGENCE ONLY. The winner set and the frozen pot
         # are immutable after the first close — a later comp_slots edit or a
         # billing change must never reshuffle who won or what the pot froze

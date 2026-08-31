@@ -48,6 +48,12 @@ export function useBrainFile(filePath: string | null) {
   };
 }
 
+export interface UploadedBrainFile {
+  filename: string;
+  path: string;
+  size: number;
+}
+
 export function useBrainMutations() {
   const api = useApi();
   return React.useMemo(
@@ -60,6 +66,14 @@ export function useBrainMutations() {
         }>,
       deleteBrainFile: (path: string) =>
         api.del(`/container/brain/file?path=${encodeURIComponent(path)}`),
+      // Owner drop-zone: lands files under wiki/inbox/ (routers/brain.py).
+      uploadBrainFiles: (files: File[]) => {
+        const formData = new FormData();
+        for (const file of files) formData.append("files", file);
+        return api.upload("/container/brain/upload", formData) as Promise<{
+          uploaded: UploadedBrainFile[];
+        }>;
+      },
     }),
     [api],
   );

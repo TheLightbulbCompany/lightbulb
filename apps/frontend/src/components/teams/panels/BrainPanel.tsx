@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import { useSWRConfig } from "swr";
-import { BookOpen, Trash2, TriangleAlert } from "lucide-react";
+import { BookOpen, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { PanelMasthead, PanelEmptyState } from "@/components/teams/shell";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
@@ -46,8 +46,33 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
 
   const { files, isLoading: treeLoading, error: treeError, refresh } = useBrainTree();
   const { file, isLoading: fileLoading, error: fileError, key: fileKey } = useBrainFile(selectedPath);
-  const { saveBrainFile, deleteBrainFile } = useBrainMutations();
+  const { saveBrainFile, deleteBrainFile, uploadBrainFiles } = useBrainMutations();
   const { mutate: mutateCache } = useSWRConfig();
+
+  const uploadInputRef = React.useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = React.useState(false);
+  const [uploading, setUploading] = React.useState(false);
+
+  // Owner drop-zone: dropped/picked files land in wiki/inbox/ so the agents
+  // notice new material next time they check. Best-effort per drop — a
+  // partial failure (e.g. one oversized file) still refreshes the tree so
+  // whatever DID land shows up immediately.
+  const handleUpload = React.useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList || fileList.length === 0) return;
+      setUploading(true);
+      try {
+        await uploadBrainFiles(Array.from(fileList));
+      } catch (err) {
+        notifyApiError(err, "Couldn't upload files");
+      } finally {
+        setUploading(false);
+        if (uploadInputRef.current) uploadInputRef.current.value = "";
+      }
+      void refresh();
+    },
+    [uploadBrainFiles, refresh],
+  );
 
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
     if (!editorDirty) return true;
@@ -143,15 +168,51 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
         />
       ) : (
         <div className="flex flex-1 min-h-0 rounded-sm border border-[var(--edge)] bg-cream overflow-hidden">
-          <div className="w-64 shrink-0 border-r border-[var(--edge)] min-h-0 overflow-y-auto">
-            <FileTree
-              files={files}
-              selectedPath={selectedPath}
-              onSelect={handleSelect}
-              onRefresh={() => void refresh()}
-              isLoading={treeLoading}
-              emptyMessage="No pages yet."
-            />
+          <div
+            data-testid="brain-tree-pane"
+            className={`w-64 shrink-0 border-r border-[var(--edge)] min-h-0 flex flex-col transition-colors ${
+              dragOver ? "bg-cream-deeper" : ""
+            }`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              void handleUpload(e.dataTransfer.files);
+            }}
+          >
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <FileTree
+                files={files}
+                selectedPath={selectedPath}
+                onSelect={handleSelect}
+                onRefresh={() => void refresh()}
+                isLoading={treeLoading}
+                emptyMessage="No pages yet."
+              />
+            </div>
+            <div className="shrink-0 border-t border-[var(--edge)] p-2">
+              <input
+                ref={uploadInputRef}
+                type="file"
+                multiple
+                className="sr-only"
+                aria-label="Upload files to the brain inbox"
+                onChange={(e) => void handleUpload(e.target.files)}
+              />
+              <button
+                type="button"
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={uploading}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs rounded-sm border border-dashed border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors disabled:opacity-50"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {uploading ? "Uploading…" : "Drop files or click to add"}
+              </button>
+            </div>
           </div>
           <div className="flex-1 min-h-0 min-w-0">
             <FileContentViewer

@@ -17,11 +17,12 @@ const useBrainFileSpy = vi.fn((path: string | null) => {
 });
 const saveBrainFile = vi.fn().mockResolvedValue({ path: "x", size: 1, modified_at: 1 });
 const deleteBrainFile = vi.fn().mockResolvedValue(null);
+const uploadBrainFiles = vi.fn().mockResolvedValue({ uploaded: [] });
 
 vi.mock("@/hooks/useBrainFiles", () => ({
   useBrainTree: () => treeState,
   useBrainFile: (path: string | null) => useBrainFileSpy(path),
-  useBrainMutations: () => ({ saveBrainFile, deleteBrainFile }),
+  useBrainMutations: () => ({ saveBrainFile, deleteBrainFile, uploadBrainFiles }),
 }));
 
 const openChatPanel = vi.fn();
@@ -76,6 +77,8 @@ beforeEach(() => {
   useBrainFileSpy.mockClear();
   saveBrainFile.mockClear();
   deleteBrainFile.mockClear();
+  uploadBrainFiles.mockClear();
+  uploadBrainFiles.mockResolvedValue({ uploaded: [] });
   openChatPanel.mockClear();
   globalMutate.mockClear();
 });
@@ -164,6 +167,37 @@ describe("BrainPanel", () => {
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
     expect(treeState.refresh).toHaveBeenCalled();
+  });
+
+  it("uploads dropped files onto the tree pane and refreshes the tree", async () => {
+    treeState.files = [FACTS];
+    render(<BrainPanel />);
+    const pane = screen.getByTestId("brain-tree-pane");
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    fireEvent.drop(pane, { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalledWith([file]));
+    await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
+  });
+
+  it("uploads files picked via the file input on the tree pane", async () => {
+    treeState.files = [FACTS];
+    render(<BrainPanel />);
+    const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalledWith([file]));
+    await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
+  });
+
+  it("shows an error toast and still refreshes when an upload fails", async () => {
+    treeState.files = [FACTS];
+    uploadBrainFiles.mockRejectedValueOnce(new Error("too big"));
+    render(<BrainPanel />);
+    const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalled());
+    await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
   });
 
   it("follows a second ?path deep link on an already-mounted panel (M2)", () => {

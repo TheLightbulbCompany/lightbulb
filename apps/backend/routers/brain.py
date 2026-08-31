@@ -22,14 +22,16 @@ import fcntl
 import logging
 import os
 from pathlib import Path
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 from core.services.efs_file_lock import get_file_lock, open_lock_fd
+from routers.container_files import MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, _sanitize_filename
 from routers.workspace_files import (
     MAX_WRITE_SIZE,
     _collect_recursive,
@@ -126,8 +128,12 @@ class BrainWriteRequest(BaseModel):
     content: str
 
 
-def _locked_write(workspace, owner_id: str, full_path: str, content: str) -> dict:
-    """Two-layer-locked atomic EFS write (see module docstring); returns fresh stat."""
+def _locked_write(workspace, owner_id: str, full_path: str, content: str | bytes) -> dict:
+    """Two-layer-locked atomic EFS write (see module docstring); returns fresh stat.
+
+    Accepts ``str`` (page edits) or ``bytes`` (uploads) — same lock/tempfile/
+    chown discipline either way.
+    """
     resolved = workspace._resolve_user_file(owner_id, full_path)
     lock_path = str(_lock_sidecar_path(resolved))
     with get_file_lock(lock_path):
@@ -143,7 +149,8 @@ def _locked_write(workspace, owner_id: str, full_path: str, content: str) -> dic
             # design — the owner can see and delete it.
             tmp = resolved.with_name(f".{resolved.name}.tmp")
             try:
-                tmp.write_text(content, encoding="utf-8")
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                tmp.write_bytes(data)
                 # chown to uid 1000 (parents included) so the container can
                 # still read/write the page after the owner's edit.
                 workspace._chown_for_access_point(tmp, owner_id)
@@ -185,6 +192,64 @@ async def write_brain_file(
         raise HTTPException(status_code=500, detail="Failed to write brain file")
     logger.info("Wrote brain file %s for owner %s", full_path, owner_id)
     return {"path": body.path, **result}
+
+
+def _dedupe_filename(dir_path: Path, name: str) -> str:
+    """If ``name`` already exists in ``dir_path``, append ``-1``, ``-2``, ... before the extension."""
+    if not (dir_path / name).exists():
+        return name
+    stem, dot, ext = name.rpartition(".")
+    base, suffix = (stem, f".{ext}") if dot else (name, "")
+    counter = 1
+    candidate = f"{base}-{counter}{suffix}"
+    while (dir_path / candidate).exists():
+        counter += 1
+        candidate = f"{base}-{counter}{suffix}"
+    return candidate
+
+
+@router.post("/brain/upload")
+async def upload_brain_files(
+    files: List[UploadFile] = File(..., description="Files to drop into the vault inbox"),
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Owner drop-zone: land files under wiki/inbox/ so agents notice new material.
+
+    Same caps/shape as POST /container/files (routers/container_files.py):
+    10 files per request, 10MB each. A same-named collision gets a `-1`
+    (`-2`, ...) suffix rather than overwriting — dropping the same filename
+    twice never loses the first copy.
+    """
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {MAX_FILES_PER_REQUEST} per request.",
+        )
+
+    owner_id = resolve_owner_id(auth)
+    workspace = get_workspace()
+    inbox_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE / "inbox"
+
+    uploaded = []
+    for f in files:
+        data = await f.read()
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{f.filename}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit.",
+            )
+        safe_name = _sanitize_filename(f.filename or "upload")
+        name = _dedupe_filename(inbox_dir, safe_name)
+        full_path = _guard_brain_path(workspace, owner_id, f"inbox/{name}")
+        try:
+            result = await asyncio.to_thread(_locked_write, workspace, owner_id, full_path, data)
+        except WorkspaceError:
+            logger.exception("Failed to upload brain file for owner %s", owner_id)
+            raise HTTPException(status_code=500, detail="Failed to upload file")
+        uploaded.append({"filename": name, "path": f"inbox/{name}", "size": result["size"]})
+        logger.info("Uploaded %s (%d bytes) for owner %s", full_path, len(data), owner_id)
+
+    return {"uploaded": uploaded}
 
 
 def _locked_delete(workspace, owner_id: str, full_path: str) -> None:

@@ -7,7 +7,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { useBrainTree, useBrainFile, useBrainMutations } from "../useBrainFiles";
 
-const api = { get: vi.fn(), put: vi.fn(), del: vi.fn() };
+const api = { get: vi.fn(), put: vi.fn(), del: vi.fn(), upload: vi.fn() };
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 
 // Fresh SWR cache per test — no cross-test cache bleed.
@@ -67,5 +67,15 @@ describe("useBrainMutations", () => {
     const { result } = renderHook(() => useBrainMutations(), { wrapper });
     await result.current.deleteBrainFile("main/a b.md");
     expect(api.del).toHaveBeenCalledWith("/container/brain/file?path=main%2Fa%20b.md");
+  });
+
+  it("uploads via multipart POST /container/brain/upload with a `files` field per file", async () => {
+    api.upload.mockResolvedValue({ uploaded: [{ filename: "a.md", path: "inbox/a.md", size: 1 }] });
+    const { result } = renderHook(() => useBrainMutations(), { wrapper });
+    const file = new File(["x"], "a.md", { type: "text/markdown" });
+    await result.current.uploadBrainFiles([file]);
+    expect(api.upload).toHaveBeenCalledWith("/container/brain/upload", expect.any(FormData));
+    const formData = api.upload.mock.calls[0][1] as FormData;
+    expect(formData.getAll("files")).toEqual([file]);
   });
 });

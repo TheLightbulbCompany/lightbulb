@@ -1,10 +1,11 @@
 """Tests for the brain routes — owner surface over the memory-wiki vault (wiki/)."""
 
+import io
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from core.auth import AuthContext
 from core.config import settings
@@ -16,6 +17,11 @@ USER_ID = "user_test_abc"
 def _auth(owner_id: str = USER_ID) -> AuthContext:
     """Build a minimal AuthContext for direct handler calls (personal mode)."""
     return AuthContext(user_id=owner_id)
+
+
+def _upload(name: str, data: bytes) -> UploadFile:
+    """Build an UploadFile for a direct handler call (no TestClient/multipart)."""
+    return UploadFile(io.BytesIO(data), filename=name)
 
 
 @pytest.fixture(autouse=True)
@@ -322,3 +328,96 @@ class TestBrainDelete:
         await delete_brain_file(path="main/index.md", auth=_auth())
         assert not sidecar.exists()
         assert agent_lock.read_text() == "agent data"
+
+
+# ===========================================================================
+# Upload (drop-zone)
+# ===========================================================================
+
+
+class TestBrainUpload:
+    @pytest.mark.asyncio
+    async def test_upload_lands_under_wiki_inbox(self, workspace):
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        result = await upload_brain_files(files=[_upload("notes.md", b"hello")], auth=_auth())
+        assert result["uploaded"] == [{"filename": "notes.md", "path": "inbox/notes.md", "size": 5}]
+        on_disk = workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md"
+        assert on_disk.read_bytes() == b"hello"
+
+    @pytest.mark.asyncio
+    async def test_upload_collision_gets_dash_one_suffix(self, workspace, wiki_root):
+        from routers.brain import upload_brain_files
+
+        (wiki_root / "inbox").mkdir()
+        (wiki_root / "inbox" / "notes.md").write_text("existing", encoding="utf-8")
+
+        result = await upload_brain_files(files=[_upload("notes.md", b"new")], auth=_auth())
+
+        assert result["uploaded"][0]["path"] == "inbox/notes-1.md"
+        assert (wiki_root / "inbox" / "notes.md").read_text() == "existing"
+        assert (wiki_root / "inbox" / "notes-1.md").read_bytes() == b"new"
+
+    @pytest.mark.asyncio
+    async def test_upload_second_collision_gets_dash_two_suffix(self, workspace, wiki_root):
+        from routers.brain import upload_brain_files
+
+        (wiki_root / "inbox").mkdir()
+        (wiki_root / "inbox" / "notes.md").write_text("a", encoding="utf-8")
+        (wiki_root / "inbox" / "notes-1.md").write_text("b", encoding="utf-8")
+
+        result = await upload_brain_files(files=[_upload("notes.md", b"new")], auth=_auth())
+
+        assert result["uploaded"][0]["path"] == "inbox/notes-2.md"
+
+    @pytest.mark.asyncio
+    async def test_upload_multiple_files_in_one_request(self, workspace):
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        result = await upload_brain_files(files=[_upload("a.md", b"1"), _upload("b.md", b"22")], auth=_auth())
+        paths = {u["path"] for u in result["uploaded"]}
+        assert paths == {"inbox/a.md", "inbox/b.md"}
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_too_many_files(self, workspace):
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        files = [_upload(f"f{i}.md", b"x") for i in range(11)]
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=files, auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_oversize_file(self, workspace):
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        big = b"a" * (10 * 1024 * 1024 + 1)
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload("big.md", big)], auth=_auth())
+        assert exc.value.status_code == 400
+        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / "big.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_upload_chown_called(self, workspace):
+        """The container (uid 1000) must be able to read owner-dropped files."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        with patch.object(Workspace, "_chown_for_access_point") as chown:
+            await upload_brain_files(files=[_upload("a.md", b"x")], auth=_auth())
+        assert chown.called
+
+    @pytest.mark.asyncio
+    async def test_upload_sanitizes_traversal_in_filename(self, workspace):
+        """A path-y filename is reduced to its basename — no escaping inbox/."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        result = await upload_brain_files(files=[_upload("../../evil.md", b"x")], auth=_auth())
+        assert result["uploaded"][0]["path"] == "inbox/evil.md"
+        assert (workspace._mount / USER_ID / "wiki" / "inbox" / "evil.md").exists()
+        assert not (workspace._mount / "evil.md").exists()

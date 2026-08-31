@@ -421,32 +421,38 @@ async fn connection_loop(
     }
 }
 
-/// Run the role:"node" connect handshake as a client-first/relay flow.
+/// Run the role:"node" connect handshake as a SERVER-first/relay flow.
 ///
-/// Post-Task-14 the backend is a pure relay: backend used to synthesize a
-/// hello-ok itself from a stub EFS keypair, but that path was deleted when
-/// per-user EFS device keys went away. The real handshake is now upstream
-/// container -> backend -> Tauri-mac, with the Mac signing its own slot's
-/// challenge from the Keychain Mac-slot key.
+/// The backend is a pure relay and starts the upstream handshake ITSELF the
+/// moment our WebSocket opens (`_kick_off_node_connect`, gated on
+/// clientId ∈ {node-host, openclaw-macos}). So we send nothing until the
+/// container's challenge lands.
 ///
 /// Wire flow:
-///   1. We send the wake-up `connect` req (frame 1, no `device`). This kicks
-///      backend's `handle_node_connect` into opening the upstream socket.
-///   2. Backend forwards the upstream container's `connect.challenge` DOWN
+///   1. Backend forwards the upstream container's `connect.challenge` DOWN
 ///      to us via Management API.
-///   3. We sign the challenge nonce (v3 payload, base64url Ed25519
+///   2. We sign the challenge nonce (v3 payload, base64url Ed25519
 ///      signature, raw 32-byte pubkey base64url) and send a SIGNED `connect`
-///      req (frame 2). Backend's $default handler routes it via
-///      `submit_signed_connect` to the awaiting `NodeUpstreamConnection`.
-///   4. Backend forwards the signed connect upstream; upstream returns
-///      hello-ok; backend rewrites the res.id to match our wake-up req.id
-///      and pushes it down.
-///   5. We resolve on res(ok:true) for the wake-up id and continue into
-///      steady-state node-invoke handling.
+///      req. Backend's $default handler routes it via `submit_signed_connect`
+///      to the awaiting `NodeUpstreamConnection`.
+///   3. Backend forwards the signed connect upstream; upstream returns
+///      hello-ok; backend rewrites the res.id to our signed req.id and
+///      pushes it down.
+///   4. We resolve on res(ok:true) and continue into steady-state
+///      node-invoke handling.
 ///
-/// 30s overall handshake timeout (one budget covering the wake-up + the
-/// challenge round-trip — neither leg has a deterministic latency floor
-/// because both involve Management API pushes).
+/// **The signed connect must be the FIRST AND ONLY `connect` frame we send.**
+/// The relay's `$default` handler forwards *any* node-role connect frame
+/// upstream verbatim as if it were the signed reply
+/// (`routers/websocket_chat.py`). This client used to open with a deviceless
+/// "wake-up" connect — a relic of the pre-`$connect` trigger — which raced the
+/// real signed frame, usually won, and made the container answer
+/// `NOT_PAIRED / DEVICE_IDENTITY_REQUIRED`. Measured on the owner's prod
+/// install 2026-08-31: 282 of 286 handshakes over 19 hours, i.e. local tools
+/// never connect. Do not reintroduce a frame without `params.device`.
+///
+/// 30s overall handshake timeout (the challenge and the hello-ok both ride
+/// Management API pushes, so neither leg has a deterministic latency floor).
 async fn perform_handshake<R, W>(
     ws_read: &mut R,
     ws_write: &mut W,
@@ -466,53 +472,10 @@ where
     let scopes: Vec<String> = Vec::new();
     let platform = std::env::consts::OS; // "macos"
 
-    // Step 1: wake-up `connect`. No device — backend uses this to spawn
-    // handle_node_connect, then races the upstream challenge back down to us.
-    let wakeup_id = Uuid::new_v4().to_string();
-    let wakeup_msg = json!({
-        "type": "req",
-        "id": wakeup_id,
-        "method": "connect",
-        "params": {
-            "minProtocol": 4,
-            "maxProtocol": 4,
-            "client": {
-                "id": CLIENT_ID,
-                "displayName": display_name,
-                "version": "1.0.0",
-                "platform": platform,
-                "mode": CLIENT_MODE,
-                "instanceId": Uuid::new_v4().to_string(),
-            },
-            "role": ROLE,
-            "scopes": scopes,
-            "caps": ["system"],
-            // Mac-native commands only — mirror of DESKTOP_MAC_COMMANDS in
-            // apps/backend/core/services/desktop_pair.py. system.run* and
-            // file/dir/browser/exec-approvals belong to the openclaw CLI
-            // node-host subprocess, not this Tauri-mac process.
-            "commands": [
-                "system.notify",
-                "screen.snapshot",
-                "device.info",
-                "device.status",
-                "device.health",
-                "device.permissions",
-            ],
-            "pathEnv": std::env::var("PATH").unwrap_or_default(),
-            "auth": {},
-        },
-    });
-    ws_write
-        .send(Message::Text(wakeup_msg.to_string().into()))
-        .await
-        .map_err(|e| format!("write wake-up connect: {}", e))?;
-
-    // Steps 2-5: read frames until we see hello-ok for our wake-up id, or
-    // we run out of budget. On the way we expect exactly one
-    // `connect.challenge` event — when it lands, sign and send the signed
-    // connect (frame 2). Any other intermediate frames (ticks, etc.) are
-    // ignored.
+    // Read frames until we see hello-ok for our signed connect, or we run
+    // out of budget. On the way we expect exactly one `connect.challenge`
+    // event — when it lands, sign and send the signed connect. Any other
+    // intermediate frames (ticks, etc.) are ignored.
     let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     let mut signed_connect_id: Option<String> = None;
     loop {
@@ -553,7 +516,13 @@ where
                 platform,
                 &scopes,
                 &signed_id,
-            )?;
+            )
+            // Loud on purpose. A connect frame with no `device` is
+            // indistinguishable from a legacy wake-up on the wire and gets
+            // rejected as NOT_PAIRED with no hint of why — so if we cannot
+            // build a signed one we say so and let the socket fail, rather
+            // than sending an unsigned frame that "almost" works.
+            .map_err(|e| format!("cannot sign device identity ({e}) — not sending an unsigned connect"))?;
             signed_connect_id = Some(signed_id);
             ws_write
                 .send(Message::Text(signed.to_string().into()))
@@ -562,15 +531,15 @@ where
             continue;
         }
 
-        // res → either the wake-up's hello-ok (id rewritten by backend) or,
-        // less likely, an error res for the signed connect.
+        // res → the hello-ok (or a rejection) for our signed connect. The
+        // backend rewrites the container's res.id to our signed req.id
+        // (`NodeUpstreamConnection.signed_req_id`), so this is the only id
+        // we can match on.
         if frame.get("type").and_then(|v| v.as_str()) != Some("res") {
             continue;
         }
         let id = frame.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let is_wakeup = id == wakeup_id;
-        let is_signed = signed_connect_id.as_deref() == Some(id);
-        if !is_wakeup && !is_signed {
+        if signed_connect_id.as_deref() != Some(id) {
             // res for some other req we didn't send — ignore.
             continue;
         }
@@ -955,6 +924,55 @@ mod handshake_tests {
         assert!(!pk.contains('='));
         assert!(!pk.contains('+'));
         assert!(!pk.contains('/'));
+    }
+
+    /// The handshake must put EXACTLY ONE `connect` frame on the wire, and it
+    /// must carry `params.device`.
+    ///
+    /// The relay's `$default` handler forwards any node-role connect frame
+    /// upstream verbatim as the signed reply
+    /// (apps/backend/routers/websocket_chat.py), so a second, deviceless
+    /// "wake-up" frame races the signed one, wins, and the container answers
+    /// `NOT_PAIRED / DEVICE_IDENTITY_REQUIRED` — 282 of 286 handshakes on the
+    /// owner's prod install 2026-08-31, i.e. local tools never connect.
+    #[tokio::test]
+    async fn handshake_sends_only_the_signed_connect() {
+        let identity = crate::keychain::generate_keypair();
+        let challenge = json!({
+            "type": "event",
+            "event": "connect.challenge",
+            "payload": {"nonce": "nonce-1", "ts": 1_788_145_946_538i64},
+        })
+        .to_string();
+
+        // Challenge, then EOF. We only care about what got written.
+        let mut reads = futures_util::stream::iter(vec![Ok::<_, tokio_tungstenite::tungstenite::Error>(
+            Message::Text(challenge.into()),
+        )]);
+        let mut writes: Vec<Message> = Vec::new();
+
+        let res = perform_handshake(
+            &mut reads,
+            &mut writes,
+            "Test Mac",
+            &identity,
+            Some("gw-token"),
+        )
+        .await;
+        assert!(res.is_err(), "stream ends before hello-ok, so this must fail");
+
+        assert_eq!(writes.len(), 1, "exactly one frame: the signed connect");
+        let Message::Text(sent) = &writes[0] else {
+            panic!("expected a text frame");
+        };
+        let frame: Value = serde_json::from_str(sent).unwrap();
+        assert_eq!(frame.pointer("/method").unwrap(), "connect");
+        assert_eq!(frame.pointer("/params/role").unwrap(), "node");
+        let device_id = frame
+            .pointer("/params/device/id")
+            .and_then(|v| v.as_str())
+            .expect("connect frame MUST carry params.device.id");
+        assert_eq!(device_id, derive_device_id(&identity.public_key_pem).unwrap());
     }
 
     // --- with_fresh_token ---

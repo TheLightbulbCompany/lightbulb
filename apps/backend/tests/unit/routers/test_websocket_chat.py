@@ -897,3 +897,78 @@ class TestOperatorRelayRouting:
         assert response.status_code == 200
         # Torn down despite the row being gone.
         mock_td.assert_awaited_once_with("conn-op")
+
+    # --- node-role connect: signed frames only ---------------------------
+    #
+    # Regression guard for the "Local tools: connection failing" loop
+    # (owner's prod Mac, 2026-08-31). `submit_signed_connect` forwards
+    # whatever it is handed upstream verbatim, so a deviceless "wake-up"
+    # connect from an older desktop build races the real signed frame,
+    # wins, and the container answers NOT_PAIRED / DEVICE_IDENTITY_REQUIRED.
+    # 282 of 286 handshakes over 19 hours.
+
+    @pytest.mark.asyncio
+    async def test_deviceless_node_connect_is_dropped_not_relayed(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """A node-role connect with no params.device must never reach
+        submit_signed_connect — it would be forwarded upstream as the signed
+        reply and rejected as DEVICE_IDENTITY_REQUIRED."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "u1",
+            "org_id": None,
+            "connection_type": "node",
+        }
+
+        with (
+            patch("routers.websocket_chat.is_node_connection", return_value=True),
+            patch("routers.websocket_chat.submit_node_signed_connect") as mock_submit,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-node-1"},
+                    json={
+                        "type": "req",
+                        "id": "wake-1",
+                        "method": "connect",
+                        "params": {"role": "node", "client": {"id": "openclaw-macos"}},
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_signed_node_connect_is_relayed(self, test_app, mock_connection_service, mock_management_api):
+        """A connect carrying params.device.id IS the signed reply and must be
+        routed into the pending handshake."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "u1",
+            "org_id": None,
+            "connection_type": "node",
+        }
+        body = {
+            "type": "req",
+            "id": "signed-1",
+            "method": "connect",
+            "params": {
+                "role": "node",
+                "client": {"id": "openclaw-macos"},
+                "device": {"id": "6b2a24f1", "publicKey": "pk", "signature": "sig"},
+            },
+        }
+
+        with (
+            patch("routers.websocket_chat.is_node_connection", return_value=True),
+            patch("routers.websocket_chat.submit_node_signed_connect") as mock_submit,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-node-1"},
+                    json=body,
+                )
+
+        assert response.status_code == 200
+        mock_submit.assert_called_once_with("conn-node-1", body)

@@ -28,6 +28,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   activity: () => import("./panels/ActivityPanel").then((m) => m.ActivityPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
+  brain: () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
 };
@@ -64,6 +65,10 @@ const IssuesPanel = dynamic(
 );
 const InboxPanel = dynamic(
   () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
+  { loading: PanelSkeleton },
+);
+const BrainPanel = dynamic(
+  () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   { loading: PanelSkeleton },
 );
 
@@ -140,6 +145,10 @@ export function TeamsPanelRouter({
         initialTab={panelParams?.tab ?? null}
       />
     );
+  }
+
+  if (panel === "brain") {
+    return <BrainPanel initialPath={panelParams?.path ?? null} />;
   }
 
   const Cmp = PANELS[panel];

@@ -14,6 +14,7 @@ const ALL_LABELS = [
   "Goals",
   "Projects",
   "Org chart",
+  "Brain",
   "Artifacts",
   "Activity",
 ];
@@ -36,6 +37,8 @@ describe("CompanyNav", () => {
     // Label is "Tasks"; the panel key stayed `teams-issues`.
     fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
+    fireEvent.click(screen.getByText("Brain"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-brain");
   });
   it("marks the active item with the midnight accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);

@@ -122,6 +122,23 @@ describe("panelRegistry", () => {
     expect(describePanel("file-viewer", {})?.params).toEqual({});
   });
 
+  it("describes the brain panel with a durable ?path deep link", () => {
+    expect(describePanel("teams-brain", {})).toEqual({
+      panelId: "teams-brain",
+      component: "teams",
+      title: "Brain",
+      params: { teamsKey: "brain" },
+    });
+    // ?path mirrors the file-viewer grammar: deep links select a page;
+    // in-panel selection clicks never write it back.
+    expect(describePanel("teams-brain", { path: "main/facts.md" })?.params).toEqual({
+      teamsKey: "brain",
+      path: "main/facts.md",
+    });
+    expect(durableParamsFor("teams-brain")).toEqual(["panel", "path"]);
+    expect(clearablePanelParamKeys("teams-brain")).toEqual(["path"]);
+  });
+
   it("teams-inbox accepts a ?tab deep link as a durable param", () => {
     expect(describePanel("teams-inbox", { tab: "approvals" })?.params).toEqual({
       teamsKey: "inbox",

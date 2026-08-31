@@ -47,6 +47,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   projects: "Projects",
   activity: "Activity",
   artifacts: "Artifacts",
+  brain: "Brain",
   search: "Search",
   settings: "Team Settings",
 };
@@ -161,6 +162,9 @@ export function describePanel(
       // ?tab deep links (bookmarks predating the URL-sync removal still carry
       // them) select the inbox band; tab clicks never write it back.
       if (teamsKey === "inbox" && params.tab) p.tab = params.tab;
+      // ?path mirrors the file-viewer grammar: a deep link selects a wiki
+      // page; in-panel selection clicks never write it back.
+      if (teamsKey === "brain" && params.path) p.path = params.path;
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
@@ -190,6 +194,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === "teams-issues") return ["panel", "agent"];
   if (panelId === "teams-inbox") return ["panel", "tab"];
+  if (panelId === "teams-brain") return ["panel", "path"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -203,6 +208,7 @@ export function durableParamsFor(panelId: string): string[] {
 export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-issues") return ["agent"];
   if (panelId === "teams-inbox") return ["tab"];
+  if (panelId === "teams-brain") return ["path"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

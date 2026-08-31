@@ -11,6 +11,7 @@ import {
   History,
   Images,
   Search,
+  BookOpen,
 } from "lucide-react";
 import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
 
@@ -46,6 +47,9 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     label: "Company",
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
+      // Brain re-homes to a "Knowledge" section when this branch rebases over
+      // the IA-shell work (companySections.ts); until then Company is the fit.
+      { panel: `${TEAMS_PANEL_PREFIX}brain`, label: "Brain", Icon: BookOpen },
       { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Artifacts", Icon: Images },
       { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
     ],

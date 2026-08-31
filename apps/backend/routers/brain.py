@@ -137,7 +137,11 @@ def _locked_write(workspace, owner_id: str, full_path: str, content: str) -> dic
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
             # Tempfile + os.replace: the container's plugin reads these pages,
             # so the swap must be atomic — never an in-place write.
-            tmp = resolved.with_name(resolved.name + ".tmp")
+            # Dot-prefixed so the swap file can never collide with genuine
+            # agent-written vault content (same reasoning as the .lb-lock
+            # sidecar); a crash-orphaned one stays visible in the tree by
+            # design — the owner can see and delete it.
+            tmp = resolved.with_name(f".{resolved.name}.tmp")
             try:
                 tmp.write_text(content, encoding="utf-8")
                 # chown to uid 1000 (parents included) so the container can

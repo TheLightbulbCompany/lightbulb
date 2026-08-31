@@ -134,7 +134,7 @@ async def _compute(s: launch_phase.Schedule) -> dict:
 
     return {
         "generated_at": utc_now_iso(),
-        "settings": launch_settings.to_public(settings_row),
+        "settings": launch_settings.to_admin(settings_row),
         "enabled": settings_row["enabled"],
         "phase": launch_phase.phase(s),
         "schedule": {
@@ -216,7 +216,7 @@ async def compute() -> tuple[dict, str, list[dict]]:
         # has nothing to compute, but the admin console still needs the
         # settings row + enabled flag so it can render the settings card and
         # let an admin turn the feature on, instead of the page going blank.
-        settings_row = launch_settings.to_public(await launch_settings.effective())
+        settings_row = launch_settings.to_admin(await launch_settings.effective())
         return (
             {"settings": settings_row, "enabled": False},
             env.UNAVAILABLE,
@@ -232,7 +232,7 @@ async def compute() -> tuple[dict, str, list[dict]]:
         # `read_source`'s `data=None` would take away the one control that can
         # turn the competition back off. Same two keys as the disabled branch.
         row = await launch_settings.effective()
-        return {"settings": launch_settings.to_public(row), "enabled": row["enabled"]}, state, errors
+        return {"settings": launch_settings.to_admin(row), "enabled": row["enabled"]}, state, errors
     result = (data, state, errors)
     _cache["launch"] = (time.monotonic(), result)
     return result

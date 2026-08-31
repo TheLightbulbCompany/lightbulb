@@ -62,7 +62,7 @@ async def get_launch_settings(_auth: AuthContext = Depends(require_platform_admi
     Never audited — a read has nothing to log."""
     from core.services import launch_settings
 
-    return launch_settings.to_public(await launch_settings.effective())
+    return launch_settings.to_admin(await launch_settings.effective())
 
 
 @router.put("/launch/settings")

@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user
-from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
+from core.repositories import billing_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_revenue, launch_service
 from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
@@ -74,21 +74,16 @@ def _rate_limit(request: Request, surface: str) -> None:
 
 @router.get("", response_model=LaunchInfo, operation_id="launch_info")
 async def launch_info(response: Response, s: Schedule = Depends(require_launch)) -> dict:
+    # NO pot fields here, or in any other public payload — the pot is
+    # admin-only (schemas.launch.LaunchInfo is the enforced shape).
     async def _build() -> dict:
-        signups = await launch_waitlist_repo.count()
-        competing = await launch_entries_repo.count()
-        on_board = await launch_entries_repo.count_with_key()
         return {
             "phase": launch_phase.phase(s),
-            "drop_at": s.drop_at.isoformat(),
+            "sheet_closes_at": s.sheet_closes_at.isoformat(),
             "competition_start_at": s.competition_start_at.isoformat(),
             "competition_end_at": s.competition_end_at.isoformat(),
-            "signups": signups,
-            "competing": competing,
-            "on_board": on_board,
-            "pot_cents": launch_phase.pot_cents(signups),
+            "signups": await launch_waitlist_repo.count(),
             "comp_slots": s.comp_slots,
-            "pot_per_entrant_cents": launch_phase.constants()["pot_per_entrant_cents"],
             "referral_jump": launch_phase.constants()["referral_jump"],
         }
 

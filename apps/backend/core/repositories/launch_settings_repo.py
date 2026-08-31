@@ -1,8 +1,8 @@
 """launch-settings table — a single row (``id="settings"``) holding the Launch
-Competition's human inputs: the two dates, the pot constants, comp slots, and
-the Stripe free-month coupon/promo ids. Edited from the admin console
-(``core.services.launch_settings``); read by ``core.services.launch_phase``
-through a 30-second in-process cache.
+Competition's human inputs (the three dates, the pot constants, comp slots)
+plus the server-managed close state and the Stripe free-month coupon id.
+Edited from the admin console (``core.services.launch_settings``); read by
+``core.services.launch_phase`` through a 30-second in-process cache.
 
 ``DEFAULTS`` is the row's shape before any admin has ever saved it (feature
 off — see ``launch_phase.schedule()``'s None contract).
@@ -19,32 +19,35 @@ from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
 _ID = "settings"
 _INT_FIELDS = (
     "comp_slots",
-    "competition_days",
     "pot_front_cents",
     "pot_per_entrant_cents",
     "referral_jump",
     "mint_nonce",
+    "final_pot_cents",
+    "final_roster_count",
 )
 
 DEFAULTS: dict = {
     "enabled": False,
-    "drop_at": None,
+    "sheet_closes_at": None,
     "competition_start_at": None,
-    "comp_slots": 220,
-    "competition_days": 30,
+    "competition_end_at": None,
+    "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
-    # Waitlist queue-jump: each referral moves the referrer up this many
-    # spots (see launch_service.effective_position). Admin-editable, ≥ 0.
+    # Sheet queue-jump: each counted referral (referee subscribed) moves the
+    # referrer up this many spots (see launch_service.effective_position).
     "referral_jump": 10,
+    # Close state — written by core.services.launch_close, never by the admin
+    # settings PUT (carried forward server-side like the coupon fields).
+    "closed_at": None,
+    "final_pot_cents": None,
+    "final_roster_count": None,
     "stripe_coupon_id": "",
-    "stripe_promotion_code_id": "",
-    "stripe_promotion_code": "",
-    # Server-only — never exposed via `launch_settings.to_public` or the
-    # admin PUT schema. Bumped by `create_stripe_coupon` on every successful
-    # mint so coupon/promo idempotency keys (and the promo code itself) are a
-    # pure function of the row instead of a fresh random value per call —
-    # see the fix-round note in `core/services/launch_settings.py`.
+    # Server-only — never exposed via the admin PUT schema. Bumped by
+    # `create_stripe_coupon` on every forced re-mint so the coupon idempotency
+    # key is a pure function of the row instead of a fresh random value per
+    # call — see the note in `core/services/launch_settings.py`.
     "mint_nonce": 0,
 }
 

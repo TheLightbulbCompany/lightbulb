@@ -13,11 +13,11 @@ beforeEach(() => {
   vi.mocked(useFilteredCommandResults).mockReturnValue({ agents: [], issues: [], projects: [] });
 });
 
-test("renders 'Navigate' group with all 13 actions on open with empty query", () => {
+test("renders 'Navigate' group with the IA nav actions on open with empty query", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   expect(screen.getByText("Navigate")).toBeInTheDocument();
   expect(screen.getByText("Inbox")).toBeInTheDocument();
-  expect(screen.getByText("Dashboard")).toBeInTheDocument();
+  expect(screen.getByText("Home")).toBeInTheDocument();
   expect(screen.getByText("Org chart")).toBeInTheDocument();
   expect(screen.getByText("Settings")).toBeInTheDocument();
 });
@@ -27,24 +27,24 @@ test("typing in search filters nav actions", () => {
   const input = screen.getByPlaceholderText(/search agents/i);
   fireEvent.change(input, { target: { value: "inbo" } });
   expect(screen.getByText("Inbox")).toBeInTheDocument();
-  expect(screen.queryByText("Dashboard")).not.toBeInTheDocument();
+  expect(screen.queryByText("Home")).not.toBeInTheDocument();
 });
 
 test("ArrowDown moves selection to next row", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "ArrowDown" });
-  // Inbox is item 1 (after Dashboard at 0)
-  const inboxRow = screen.getByText("Inbox").closest("[data-cmd-row]")!;
-  expect(inboxRow).toHaveAttribute("aria-selected", "true");
+  // Search is item 1 (after Home at 0)
+  const searchRow = screen.getByText("Search").closest("[data-cmd-row]")!;
+  expect(searchRow).toHaveAttribute("aria-selected", "true");
 });
 
 test("ArrowUp at top stays at 0", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "ArrowUp" });
-  const dashboardRow = screen.getByText("Dashboard").closest("[data-cmd-row]")!;
-  expect(dashboardRow).toHaveAttribute("aria-selected", "true");
+  const homeRow = screen.getByText("Home").closest("[data-cmd-row]")!;
+  expect(homeRow).toHaveAttribute("aria-selected", "true");
 });
 
 test("Enter on selected row pushes the canonical URL + closes dialog", () => {
@@ -99,8 +99,9 @@ test("dynamic issues render with identifier as sublabel", () => {
     projects: [],
   });
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  // "Issues" appears as both nav row + group header.
-  expect(screen.getAllByText("Issues").length).toBeGreaterThanOrEqual(2);
+  // The nav row is "Tasks" (IA label); "Issues" is the dynamic-results group header.
+  expect(screen.getByText("Tasks")).toBeInTheDocument();
+  expect(screen.getAllByText("Issues").length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText("Fix bug")).toBeInTheDocument();
   expect(screen.getByText("PAP-42")).toBeInTheDocument();
 });

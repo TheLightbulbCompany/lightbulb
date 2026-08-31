@@ -38,6 +38,20 @@ export interface LaunchEntry {
   refresh_error: string | null;
 }
 
+/** The board-attachment projection carried on /launch/me for JOINED rows —
+ * a subset of `LaunchEntry`, so a reload mid-competition shows the connected
+ * state instead of inviting a key re-paste. */
+export interface LaunchMeEntry {
+  has_key: boolean;
+  public: boolean;
+  entered_at: string | null;
+  delta_cents: number | null;
+  refreshed_at: string | null;
+  refresh_error: string | null;
+  /** Only on the fuller connect-stripe response (`LaunchEntry`). */
+  currency?: string | null;
+}
+
 /** `GET /launch/me` (auth) — the caller's sheet status. `position` and the
  * referral fields are null until they explicitly joined; `compete_eligible`
  * is false when not joined and true for joined rows pre-close. */
@@ -55,6 +69,8 @@ export interface LaunchMe {
   compete_eligible: boolean;
   /** Friday's first run delivered — the join precondition. */
   onboarded: boolean;
+  /** The board attachment; null until joined AND connected. */
+  entry: LaunchMeEntry | null;
 }
 
 export const LAUNCH_REF_KEY = "launch_ref";

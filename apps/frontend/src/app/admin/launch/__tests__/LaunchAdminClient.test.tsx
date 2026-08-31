@@ -165,6 +165,25 @@ describe("LaunchAdminClient", () => {
     expect(closeLaunchSheet).toHaveBeenLastCalledWith(true);
   });
 
+  it("a 422 renders the field errors, never [object Object]", async () => {
+    const user = userEvent.setup();
+    closeLaunchSheet.mockResolvedValue({
+      ok: false,
+      status: 422,
+      error: "http_422",
+      data: { detail: { errors: { sheet_closes_at: "must be in the past", comp_slots: "must be at least 1" } } },
+    });
+    render(<LaunchAdminClient data={data} />);
+    await user.click(screen.getByRole("button", { name: /close the sheet/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.type(within(dialog).getByLabelText(/type close to confirm/i), "close");
+    await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
+    expect(
+      await screen.findByText(/Close failed \(422\): sheet_closes_at: must be in the past; comp_slots: must be at least 1/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/object Object/)).not.toBeInTheDocument();
+  });
+
   it("a 409 already_closed surfaces as an error, not a silent no-op", async () => {
     const user = userEvent.setup();
     closeLaunchSheet.mockResolvedValue({ ok: false, status: 409, error: "already_closed" });

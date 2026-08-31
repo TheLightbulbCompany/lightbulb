@@ -111,7 +111,19 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
     if (r.ok) {
       setCloseResult(r.data as LaunchCloseResult);
     } else {
-      setCloseError(`Close failed (${r.status}): ${r.error ?? JSON.stringify(r.data)}`);
+      // A 422 rides {"detail": {"errors": {field: msg}}} (the settings card's
+      // envelope); a 409/502 detail is a plain string surfaced via r.error.
+      const detail = (r.data as { detail?: unknown } | undefined)?.detail;
+      const errors =
+        detail && typeof detail === "object" && "errors" in detail
+          ? (detail as { errors?: Record<string, string> }).errors
+          : null;
+      const msg = errors
+        ? Object.entries(errors)
+            .map(([field, m]) => `${field}: ${m}`)
+            .join("; ")
+        : (r.error ?? JSON.stringify(r.data ?? ""));
+      setCloseError(`Close failed (${r.status}): ${msg}`);
     }
     router.refresh();
   };

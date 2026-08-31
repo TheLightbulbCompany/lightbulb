@@ -83,6 +83,10 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
     joined = bool(row and row.get("joined_at"))
     referral_jump = launch_phase.constants()["referral_jump"]
+    # The board attachment, so a reload during the competition shows the
+    # connected state instead of inviting a key re-paste. Read for joined
+    # rows only — the entry can't exist otherwise.
+    entry = await launch_entries_repo.get(owner_id) if joined else None
     return {
         "phase": phase(s),
         "joined": joined,
@@ -95,6 +99,16 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "winner": bool(row and row.get("winner")),
         "compete_eligible": bool(row.get("compete_eligible", True)) if joined else False,
         "onboarded": onboarding.get("bootstrap_state") == "delivered",
+        "entry": {
+            "has_key": bool(entry.get("has_key", False)),
+            "public": bool(entry.get("public", True)),
+            "entered_at": entry.get("entered_at"),
+            "delta_cents": int(entry.get("delta_cents", 0)),
+            "refreshed_at": entry.get("refreshed_at"),
+            "refresh_error": entry.get("refresh_error"),
+        }
+        if entry
+        else None,
     }
 
 

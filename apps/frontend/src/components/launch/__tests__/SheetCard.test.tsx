@@ -51,6 +51,7 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  entry: null,
   ...over,
 });
 
@@ -156,6 +157,31 @@ describe("SheetCard", () => {
     await screen.findByText(/You're #17/);
     expect(post).not.toHaveBeenCalled();
     expect(localStorage.getItem(LAUNCH_REF_KEY)).toBe("K7QX2MPP");
+  });
+
+  it("a reload mid-competition seeds board state from me.entry — lift + toggle, no connect invite", async () => {
+    get.mockResolvedValue(joined({
+      phase: "competition",
+      entry: { has_key: true, public: true, entered_at: "t", delta_cents: 5000, refreshed_at: "t", refresh_error: null },
+    }));
+    patch.mockResolvedValue({ public: false });
+    mount(info({ phase: "competition" }));
+    expect(await screen.findByText(/Lift so far/)).toBeInTheDocument();
+    expect(screen.getByText("$50")).toBeInTheDocument();
+    expect(screen.queryByText(/Connect a read-only Stripe key/)).not.toBeInTheDocument();
+    const checkbox = screen.getByLabelText(/show my name on the board/i);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/launch/entry", { public: false }));
+  });
+
+  it("a refresh_error on me.entry re-offers the connect form", async () => {
+    get.mockResolvedValue(joined({
+      phase: "competition",
+      entry: { has_key: true, public: true, entered_at: "t", delta_cents: 0, refreshed_at: "t", refresh_error: "stripe_auth" },
+    }));
+    mount(info({ phase: "competition" }));
+    expect(await screen.findByText(/stripe_auth/)).toBeInTheDocument();
+    expect(screen.getByTestId("connect-stripe-form")).toBeInTheDocument();
   });
 
   it("the public toggle appears only once an entry is known, and PATCHes /launch/entry", async () => {

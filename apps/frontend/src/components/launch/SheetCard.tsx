@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
-import { formatMoney, type LaunchEntry, type LaunchInfo, type LaunchMe } from "@/lib/launch";
+import { formatMoney, type LaunchInfo, type LaunchMe, type LaunchMeEntry } from "@/lib/launch";
 import { ConnectStripeForm } from "./ConnectStripeForm";
 import { JoinForm } from "./JoinForm";
 import { ReferralLink } from "./ReferralLink";
@@ -18,27 +18,27 @@ import { useReferralAttribution } from "./useReferralAttribution";
  * during the competition the revenue-board attachment (Stripe connect +
  * public toggle).
  *
- * The board attachment (`LaunchEntry`) has no read route — POST
- * /launch/connect-stripe's response is its only surface — so board state is
- * session-local: the connect form always renders until a connect succeeds
- * (reconnecting is an idempotent key replace), and the public toggle appears
- * once an entry is in hand.
+ * Board state comes from `me.entry` (the /launch/me projection) and is
+ * updated in-session by POST /launch/connect-stripe's fuller response; the
+ * public toggle appears once an entry is in hand.
  */
 export function SheetCard({ info }: { info: LaunchInfo }) {
   const api = useApi();
   useLaunchRef(); // side effect: persists `?ref=` on `/launch?ref=CODE` too
   const { data: me, mutate } = useSWR<LaunchMe>("/launch/me", (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, me);
-  const [entry, setEntry] = React.useState<LaunchEntry | null>(null);
+  const [entry, setEntry] = React.useState<LaunchMeEntry | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicError, setPublicError] = React.useState<string | null>(null);
+  // An in-session connect/toggle wins; otherwise /launch/me's projection.
+  const boardEntry = entry ?? me?.entry ?? null;
 
   const togglePublic = async (checked: boolean) => {
     setPublicBusy(true);
     setPublicError(null);
     try {
       await api.patch("/launch/entry", { public: checked });
-      setEntry((e) => (e ? { ...e, public: checked } : e));
+      if (boardEntry) setEntry({ ...boardEntry, public: checked });
     } catch {
       setPublicError("Couldn't update that — try again.");
     } finally {
@@ -118,12 +118,12 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
 
       {info.phase === "competition" && me.compete_eligible ? (
         <div style={{ marginTop: 16 }}>
-          {entry ? (
+          {boardEntry ? (
             <>
               <label className="lc-check">
                 <input
                   type="checkbox"
-                  checked={entry.public}
+                  checked={boardEntry.public}
                   disabled={publicBusy}
                   onChange={(e) => togglePublic(e.target.checked)}
                 />
@@ -132,14 +132,14 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
               {publicError ? <p role="alert" className="lc-alert">{publicError}</p> : null}
             </>
           ) : null}
-          {entry?.refresh_error ? (
+          {boardEntry?.refresh_error ? (
             <div style={{ marginTop: 16 }}>
-              <p className="lc-alert">Couldn&apos;t refresh ({entry.refresh_error}) — reconnect with a fresh key.</p>
+              <p className="lc-alert">Couldn&apos;t refresh ({boardEntry.refresh_error}) — reconnect with a fresh key.</p>
               <ConnectStripeForm onConnected={setEntry} />
             </div>
-          ) : entry?.has_key ? (
+          ) : boardEntry?.has_key ? (
             <p className="lc-fine" style={{ marginTop: 16 }}>
-              Lift so far: <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--midnight)" }}>{formatMoney(entry.delta_cents, entry.currency ?? "usd")}</span>
+              Lift so far: <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--midnight)" }}>{formatMoney(boardEntry.delta_cents ?? 0, boardEntry.currency ?? "usd")}</span>
             </p>
           ) : (
             <div>

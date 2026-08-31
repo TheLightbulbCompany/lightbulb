@@ -14,6 +14,7 @@ import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
+import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -489,6 +490,7 @@ export function ChatLayout({
           <div className="main-content">
             <TrialBanner />
             <OutOfCreditsBanner />
+            <LaunchJoinBanner />
             {showSubscriptionSuccess && (
               <div className="subscription-banner">
                 <CheckCircle size={16} />

@@ -1,64 +1,11 @@
 "use client";
 
-import {
-  LayoutDashboard,
-  Inbox,
-  ListTodo,
-  Repeat,
-  Target,
-  FolderKanban,
-  Network,
-  History,
-  Images,
-  Search,
-} from "lucide-react";
-import { TEAMS_PANEL_PREFIX } from "./InlineTeamsPanel";
+// The section declaration lives in companySections.ts (data-only) so the ⌘K
+// palette can derive from it without an import cycle; re-exported here as the
+// canonical home consumers import.
+import { COMPANY_SECTIONS } from "./companySections";
 
-type Item = {
-  panel: string;
-  label: string;
-  Icon: React.ComponentType<{ size?: number }>;
-};
-
-// Spec §5.1 IA. An item appears here ONLY when its tab is live;
-// Money/Growth/Operations groups arrive with their tabs (P1+).
-// Every panel renders inline via InlineTeamsPanel (TeamsPanelRouter maps each
-// key). `agents` and `settings` are intentionally excluded — agents are the
-// roster, settings is the Settings home.
-export const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
-  {
-    label: null,
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}dashboard`, label: "Home", Icon: LayoutDashboard },
-      { panel: `${TEAMS_PANEL_PREFIX}search`, label: "Search", Icon: Search },
-      { panel: `${TEAMS_PANEL_PREFIX}inbox`, label: "Inbox", Icon: Inbox },
-    ],
-  },
-  {
-    label: "Work",
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}issues`, label: "Tasks", Icon: ListTodo },
-      { panel: `${TEAMS_PANEL_PREFIX}routines`, label: "Automations", Icon: Repeat },
-      { panel: `${TEAMS_PANEL_PREFIX}goals`, label: "Goals", Icon: Target },
-      { panel: `${TEAMS_PANEL_PREFIX}projects`, label: "Projects", Icon: FolderKanban },
-    ],
-  },
-  {
-    label: "Knowledge",
-    items: [
-      // Library is the spec's noun for the work-products gallery; the panel
-      // key stays `teams-artifacts` (mobile builds these URLs as strings).
-      { panel: `${TEAMS_PANEL_PREFIX}artifacts`, label: "Library", Icon: Images },
-    ],
-  },
-  {
-    label: "Company",
-    items: [
-      { panel: `${TEAMS_PANEL_PREFIX}org-chart`, label: "Org chart", Icon: Network },
-      { panel: `${TEAMS_PANEL_PREFIX}activity`, label: "Activity", Icon: History },
-    ],
-  },
-];
+export { COMPANY_SECTIONS };
 
 export function CompanyNav({
   activePanel,

@@ -1,0 +1,74 @@
+// NAV_ACTIONS derives from the sidebar IA (COMPANY_SECTIONS) — the palette
+// covers exactly what the sidebar shows, plus the roster and settings — and
+// filterNavActions matches labels and keyword aliases.
+
+import { describe, test, expect } from "vitest";
+import { NAV_ACTIONS, filterNavActions } from "../commandPaletteActions";
+import { COMPANY_SECTIONS } from "@/components/chat/CompanyNav";
+
+const byId = Object.fromEntries(NAV_ACTIONS.map((a) => [a.id, a]));
+
+describe("NAV_ACTIONS derives from the sidebar IA", () => {
+  test("every sidebar item appears with its section-derived path", () => {
+    for (const section of COMPANY_SECTIONS) {
+      for (const item of section.items) {
+        const key = item.panel.replace(/^teams-/, "");
+        const action = byId[`go-${key}`];
+        expect(action, `missing palette action for ${item.panel}`).toBeDefined();
+        expect(action?.label).toBe(item.label);
+        expect(action?.path).toBe(`/chat?panel=teams-${key}`);
+      }
+    }
+  });
+
+  test("Home, Library and Tasks carry the sidebar labels", () => {
+    expect(byId["go-dashboard"]?.label).toBe("Home");
+    expect(byId["go-artifacts"]?.label).toBe("Library");
+    expect(byId["go-issues"]?.label).toBe("Tasks");
+  });
+
+  test("the two non-sidebar extras survive: roster + settings", () => {
+    expect(byId["go-agents"]?.path).toBe("/chat?panel=teams-agents");
+    expect(byId["go-settings"]?.path).toBe("/chat?panel=teams-settings");
+  });
+
+  test("nothing beyond the sidebar set + the two extras", () => {
+    const sidebarCount = COMPANY_SECTIONS.flatMap((s) => s.items).length;
+    expect(NAV_ACTIONS).toHaveLength(sidebarCount + 2);
+  });
+
+  test("old labels survive as keyword aliases", () => {
+    expect(filterNavActions("dashboard").map((a) => a.id)).toContain("go-dashboard");
+    expect(filterNavActions("artifacts").map((a) => a.id)).toContain("go-artifacts");
+    expect(filterNavActions("issues").map((a) => a.id)).toContain("go-issues");
+  });
+});
+
+describe("filterNavActions", () => {
+  test("empty query returns every action", () => {
+    expect(filterNavActions("")).toHaveLength(NAV_ACTIONS.length);
+    expect(filterNavActions("   ")).toHaveLength(NAV_ACTIONS.length);
+  });
+
+  test("substring matches label (case-insensitive)", () => {
+    const result = filterNavActions("INBO");
+    expect(result.map((a) => a.id)).toEqual(["go-inbox"]);
+  });
+
+  test("matches by keyword alias", () => {
+    const result = filterNavActions("schedule");
+    expect(result.map((a) => a.id)).toContain("go-routines");
+    expect(filterNavActions("hierarchy").map((a) => a.id)).toEqual(["go-org-chart"]);
+  });
+
+  test("the retired Members / Skills / Costs actions are gone", () => {
+    const ids = NAV_ACTIONS.map((a) => a.id);
+    expect(ids).not.toContain("go-members"); // #1022
+    expect(ids).not.toContain("go-skills"); // #1175 — Teams skills panel retired
+    expect(ids).not.toContain("go-costs"); // #1236 — spend moved to the usage surfaces
+  });
+
+  test("returns empty when no match", () => {
+    expect(filterNavActions("xyzzy")).toHaveLength(0);
+  });
+});

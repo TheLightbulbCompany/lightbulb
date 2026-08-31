@@ -1,36 +1,44 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
-// Static "Go to" entries that route between Teams panels. Paths are the
-// canonical in-shell `/chat?panel=teams-*` URLs (there is no standalone
-// `/teams` route tree).
+// "Go to" entries DERIVED from the sidebar IA (COMPANY_SECTIONS) — the
+// palette covers exactly what the sidebar shows, plus the roster and
+// settings. Paths are the canonical in-shell `/chat?panel=teams-*` URLs
+// (there is no standalone `/teams` route tree).
 
 import { teamsPanelUrl } from "@/lib/shellNav";
-import {
-  LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,
-  FolderOpen, History, Settings, Network,
-} from "lucide-react";
-import type { ComponentType, SVGProps } from "react";
+import { COMPANY_SECTIONS, type CompanyNavIcon } from "@/components/chat/companySections";
+import { Bot, Settings } from "lucide-react";
 
 export interface CommandPaletteAction {
   id: string;
   label: string;
   path: string;
-  Icon: ComponentType<SVGProps<SVGSVGElement>>;
+  Icon: CompanyNavIcon;
   keywords?: string[];
 }
 
+// Search aliases by teams-* list key: retired labels ("dashboard",
+// "artifacts", "issues", "approvals") so muscle memory survives the renames,
+// plus the still-applicable synonyms the palette always had.
+const KEYWORDS: Record<string, string[]> = {
+  dashboard: ["dashboard"],
+  inbox: ["mine", "issues", "approvals"],
+  issues: ["issues", "tickets"],
+  routines: ["cron", "schedule", "routines"],
+  artifacts: ["artifacts"],
+  "org-chart": ["network", "hierarchy"],
+  activity: ["events", "log"],
+};
+
 export const NAV_ACTIONS: CommandPaletteAction[] = [
-  { id: "go-dashboard", label: "Dashboard", path: teamsPanelUrl("dashboard"), Icon: LayoutDashboard },
-  { id: "go-inbox", label: "Inbox", path: teamsPanelUrl("inbox"), Icon: Inbox, keywords: ["mine", "issues"] },
+  ...COMPANY_SECTIONS.flatMap((section) =>
+    section.items.map(({ panel, label, Icon }) => {
+      const key = panel.replace(/^teams-/, "");
+      return { id: `go-${key}`, label, path: teamsPanelUrl(key), Icon, keywords: KEYWORDS[key] };
+    }),
+  ),
+  // The two non-sidebar surfaces: the agent roster and the Settings home.
   { id: "go-agents", label: "Agents", path: teamsPanelUrl("agents"), Icon: Bot, keywords: ["bot"] },
-  { id: "go-org-chart", label: "Org chart", path: teamsPanelUrl("org-chart"), Icon: Network, keywords: ["network", "hierarchy"] },
-  { id: "go-issues", label: "Issues", path: teamsPanelUrl("issues"), Icon: CircleDot, keywords: ["tasks", "tickets"] },
-  // Approvals fold into the inbox "Needs attention" band — same target.
-  { id: "go-approvals", label: "Approvals", path: teamsPanelUrl("inbox"), Icon: ClipboardCheck },
-  { id: "go-routines", label: "Automations", path: teamsPanelUrl("routines"), Icon: Repeat, keywords: ["cron", "schedule", "routines"] },
-  { id: "go-goals", label: "Goals", path: teamsPanelUrl("goals"), Icon: Target },
-  { id: "go-projects", label: "Projects", path: teamsPanelUrl("projects"), Icon: FolderOpen },
-  { id: "go-activity", label: "Activity", path: teamsPanelUrl("activity"), Icon: History, keywords: ["events", "log"] },
   { id: "go-settings", label: "Settings", path: teamsPanelUrl("settings"), Icon: Settings },
 ];
 

@@ -5,7 +5,7 @@ import pytest
 
 from core.services import launch_service
 
-DROP = datetime.now(timezone.utc) - timedelta(days=1)
+CLOSES = datetime.now(timezone.utc) + timedelta(days=10)
 
 
 @pytest.fixture(autouse=True)
@@ -21,23 +21,41 @@ def _fresh_state():
 
 @pytest.fixture
 def configured(launch_schedule):
-    with launch_schedule(DROP):
+    with launch_schedule(CLOSES):
         yield
 
 
 # --- POST /join -------------------------------------------------------------
 
 
-@patch("routers.launch.launch_service.join", AsyncMock(return_value={"display_name": "Ada", "has_key": False}))
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(return_value={"joined": True, "position": 7}))
 async def test_join_ok(configured, async_client):
     r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 200 and r.json()["display_name"] == "Ada"
+    assert r.status_code == 200 and r.json()["joined"] is True
 
 
-@patch("routers.launch.launch_service.join", AsyncMock(side_effect=launch_service.LaunchRefused("not_activated")))
-async def test_join_refused_maps_to_400_reason(configured, async_client):
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("not_onboarded")))
+async def test_join_not_onboarded_is_409_with_a_reason(configured, async_client):
     r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
-    assert r.status_code == 400 and r.json()["detail"] == "not_activated"
+    assert r.status_code == 409 and r.json()["detail"] == {"reason": "not_onboarded"}
+
+
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("closed")))
+async def test_join_closed_is_409_with_a_reason(configured, async_client):
+    r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
+    assert r.status_code == 409 and r.json()["detail"] == {"reason": "closed"}
+
+
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(side_effect=launch_service.LaunchRefused("no_email")))
+async def test_other_refusals_stay_400(configured, async_client):
+    r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
+    assert r.status_code == 400 and r.json()["detail"] == "no_email"
+
+
+async def test_join_404s_when_the_feature_is_off(launch_schedule, async_client):
+    with launch_schedule():
+        r = await async_client.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
+    assert r.status_code == 404
 
 
 async def test_join_validates_body(configured, async_client):
@@ -51,7 +69,7 @@ async def test_join_rejects_a_whitespace_only_display_name(configured, async_cli
     assert r.status_code == 422
 
 
-@patch("routers.launch.launch_service.join", AsyncMock(return_value={"display_name": "Ada"}))
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(return_value={"joined": True}))
 async def test_join_is_rate_limited_per_ip(configured, async_client):
     body = {"display_name": "Ada", "public": True}
     for _ in range(10):
@@ -65,7 +83,7 @@ async def test_join_refused_for_an_org_member(configured, async_client_org_membe
     assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
 
 
-@patch("routers.launch.launch_service.join", AsyncMock(return_value={"display_name": "Ada"}))
+@patch("routers.launch.launch_service.join_sheet", AsyncMock(return_value={"joined": True}))
 async def test_join_allowed_for_an_org_admin(configured, async_client_org_admin):
     r = await async_client_org_admin.post("/api/v1/launch/join", json={"display_name": "Ada", "public": True})
     assert r.status_code == 200
@@ -76,118 +94,3 @@ async def test_enter_route_is_gone(configured, async_client):
         "/api/v1/launch/enter", json={"display_name": "Ada", "stripe_key": "rk_test_" + "x" * 20, "public": True}
     )
     assert r.status_code in (404, 405)
-
-
-# --- POST /connect-stripe ----------------------------------------------------
-
-
-@patch("routers.launch.launch_service.connect_stripe", AsyncMock(return_value={"has_key": True}))
-async def test_connect_stripe_ok(configured, async_client):
-    r = await async_client.post("/api/v1/launch/connect-stripe", json={"stripe_key": "rk_test_" + "x" * 20})
-    assert r.status_code == 200 and r.json()["has_key"] is True
-
-
-@patch("routers.launch.launch_service.connect_stripe", AsyncMock(side_effect=launch_service.LaunchRefused("no_entry")))
-async def test_connect_stripe_refused_maps_to_400_and_never_echoes_key(configured, async_client):
-    key = "rk_test_" + "s3cr3t" * 4
-    r = await async_client.post("/api/v1/launch/connect-stripe", json={"stripe_key": key})
-    assert r.status_code == 400 and r.json()["detail"] == "no_entry"
-    assert key not in r.text
-
-
-async def test_connect_stripe_validates_body(configured, async_client):
-    r = await async_client.post("/api/v1/launch/connect-stripe", json={"stripe_key": "short"})
-    assert r.status_code == 422
-
-
-@patch("routers.launch.launch_service.connect_stripe", AsyncMock(return_value={"has_key": True}))
-async def test_connect_stripe_is_rate_limited_per_ip(configured, async_client):
-    body = {"stripe_key": "rk_test_" + "x" * 20}
-    for _ in range(10):
-        assert (await async_client.post("/api/v1/launch/connect-stripe", json=body)).status_code == 200
-    r = await async_client.post("/api/v1/launch/connect-stripe", json=body)
-    assert r.status_code == 429 and r.headers["retry-after"] == "60"
-
-
-async def test_connect_stripe_refused_for_an_org_member(configured, async_client_org_member):
-    r = await async_client_org_member.post("/api/v1/launch/connect-stripe", json={"stripe_key": "rk_test_" + "x" * 20})
-    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
-
-
-@patch("routers.launch.launch_service.connect_stripe", AsyncMock(return_value={"has_key": True}))
-async def test_connect_stripe_allowed_for_an_org_admin(configured, async_client_org_admin):
-    r = await async_client_org_admin.post("/api/v1/launch/connect-stripe", json={"stripe_key": "rk_test_" + "x" * 20})
-    assert r.status_code == 200
-
-
-# --- PATCH /entry -------------------------------------------------------------
-
-
-@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"display_name": "Ada", "public": False}))
-async def test_set_public_ok(configured, async_client):
-    r = await async_client.patch("/api/v1/launch/entry", json={"public": False})
-    assert r.status_code == 200 and r.json()["public"] is False
-
-
-@patch("routers.launch.launch_service.set_public", AsyncMock(side_effect=launch_service.LaunchRefused("no_entry")))
-async def test_set_public_refused_maps_to_400_reason(configured, async_client):
-    r = await async_client.patch("/api/v1/launch/entry", json={"public": True})
-    assert r.status_code == 400 and r.json()["detail"] == "no_entry"
-
-
-async def test_set_public_refused_for_an_org_member(configured, async_client_org_member):
-    r = await async_client_org_member.patch("/api/v1/launch/entry", json={"public": True})
-    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
-
-
-@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"public": True}))
-async def test_set_public_allowed_for_an_org_admin(configured, async_client_org_admin):
-    r = await async_client_org_admin.patch("/api/v1/launch/entry", json={"public": True})
-    assert r.status_code == 200
-
-
-@patch("routers.launch.launch_service.set_public", AsyncMock(return_value={"public": True}))
-async def test_set_public_is_rate_limited_per_ip(configured, async_client):
-    body = {"public": True}
-    for _ in range(10):
-        assert (await async_client.patch("/api/v1/launch/entry", json=body)).status_code == 200
-    r = await async_client.patch("/api/v1/launch/entry", json=body)
-    assert r.status_code == 429 and r.headers["retry-after"] == "60"
-
-
-# --- leaderboard / me (unaffected by the split, still exercised here) -------
-
-
-@patch(
-    "routers.launch.launch_service.leaderboard",
-    AsyncMock(
-        return_value={
-            "competing": 2,
-            # 2 keyed entrants but only 1 public row — a private keyed entrant is
-            # counted here and absent from rows (launch_service.rank filters them).
-            "on_board": 2,
-            "rows": [{"rank": 1, "display_name": "A", "delta_cents": 5, "pct": None, "currency": "usd"}],
-        }
-    ),
-)
-async def test_leaderboard_public_cached(configured, unauthenticated_async_client):
-    r = await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
-    body = r.json()
-    assert r.status_code == 200 and body["rows"][0]["rank"] == 1
-    assert body["competing"] == 2 and body["on_board"] == 2
-    assert len(body["rows"]) == 1 and body["on_board"] > len(body["rows"])  # private entrant stays off the board
-    assert r.headers["cache-control"] == "public, max-age=60"
-
-
-@patch("routers.launch.launch_revenue.maybe_revalidate")
-@patch("routers.launch.launch_service.leaderboard", AsyncMock(return_value={"competing": 0, "on_board": 0, "rows": []}))
-async def test_leaderboard_read_triggers_revalidate(reval, configured, unauthenticated_async_client):
-    await unauthenticated_async_client.get("/api/v1/launch/leaderboard")
-    reval.assert_called_once()
-
-
-@patch("routers.launch.launch_revenue.maybe_revalidate")
-@patch("routers.launch.launch_service.me", AsyncMock(return_value={"waitlist": None}))
-async def test_me_read_triggers_revalidate(reval, configured, async_client):
-    await async_client.get("/api/v1/launch/me")
-    reval.assert_called_once()

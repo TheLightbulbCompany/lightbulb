@@ -1,16 +1,16 @@
-"""Unauthenticated /launch route. Sign-up IS the waitlist now — no email form."""
+"""Unauthenticated /launch route — the public competition-sheet payload."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-DROP = datetime.now(timezone.utc) + timedelta(days=10)
+CLOSES = datetime.now(timezone.utc) + timedelta(days=10)
 
 
 @pytest.fixture
 def configured(launch_schedule):
-    with launch_schedule(DROP):
+    with launch_schedule(CLOSES):
         yield
 
 
@@ -31,25 +31,37 @@ async def test_launch_info_404_when_unset(launch_schedule, unauthenticated_async
     assert r.status_code == 404
 
 
-@patch("routers.launch.launch_entries_repo")
 @patch("routers.launch.launch_waitlist_repo")
-async def test_launch_info_shape(mock_wl, mock_entries, configured, unauthenticated_async_client):
+async def test_launch_info_shape_and_no_pot_keys(mock_wl, configured, unauthenticated_async_client):
     mock_wl.count = AsyncMock(return_value=42)
-    mock_entries.count = AsyncMock(return_value=3)
-    mock_entries.count_with_key = AsyncMock(return_value=1)
     r = await unauthenticated_async_client.get("/api/v1/launch")
     assert r.status_code == 200
     body = r.json()
-    assert body["phase"] == "waitlist"
+    assert set(body) == {
+        "phase",
+        "sheet_closes_at",
+        "competition_start_at",
+        "competition_end_at",
+        "signups",
+        "comp_slots",
+        "referral_jump",
+    }
+    # The pot is admin-only — NO pot key may ever appear in a public payload.
+    assert not any("pot" in k for k in body)
+    assert body["phase"] == "open"
     assert body["signups"] == 42
-    assert body["competing"] == 3
-    assert body["on_board"] == 1  # count_with_key() — entries with a stored Stripe key
-    assert body["pot_cents"] == 100_000 + 42 * 1_000  # pot is driven by signups, not entrants
-    assert body["comp_slots"] == 220
-    assert body["pot_per_entrant_cents"] == 1_000
+    assert body["comp_slots"] == 200
     assert body["referral_jump"] == 10
-    assert body["competition_start_at"] > body["drop_at"]
+    assert body["competition_end_at"] > body["competition_start_at"] > body["sheet_closes_at"]
     assert r.headers["cache-control"] == "public, max-age=30"
+
+
+@patch("routers.launch.launch_waitlist_repo")
+async def test_launch_info_reports_closed_after_an_early_close(mock_wl, launch_schedule, unauthenticated_async_client):
+    mock_wl.count = AsyncMock(return_value=42)
+    with launch_schedule(CLOSES, closed_at=datetime.now(timezone.utc) - timedelta(hours=1)):
+        r = await unauthenticated_async_client.get("/api/v1/launch")
+    assert r.status_code == 200 and r.json()["phase"] == "closed"
 
 
 async def test_waitlist_post_route_is_gone(configured, unauthenticated_async_client):
@@ -57,17 +69,11 @@ async def test_waitlist_post_route_is_gone(configured, unauthenticated_async_cli
     assert r.status_code in (404, 405)
 
 
-@patch("routers.launch.launch_entries_repo")
 @patch("routers.launch.launch_waitlist_repo")
-async def test_launch_info_is_served_from_the_cache_within_the_ttl(
-    mock_wl, mock_entries, configured, unauthenticated_async_client
-):
-    """The public read is a full table scan and the client controls Cache-Control."""
+async def test_launch_info_is_served_from_the_cache_within_the_ttl(mock_wl, configured, unauthenticated_async_client):
+    """The public read is a table scan and the client controls Cache-Control."""
     mock_wl.count = AsyncMock(return_value=42)
-    mock_entries.count = AsyncMock(return_value=3)
-    mock_entries.count_with_key = AsyncMock(return_value=1)
     first = await unauthenticated_async_client.get("/api/v1/launch")
-    mock_entries.count = AsyncMock(side_effect=AssertionError("should be cached"))
-    mock_entries.count_with_key = AsyncMock(side_effect=AssertionError("should be cached"))
+    mock_wl.count = AsyncMock(side_effect=AssertionError("should be cached"))
     second = await unauthenticated_async_client.get("/api/v1/launch")
     assert second.status_code == 200 and second.json() == first.json()

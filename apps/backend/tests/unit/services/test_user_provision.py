@@ -2162,31 +2162,3 @@ async def test_org_members_never_provision_a_metronome_customer(_mock_ensure_met
         await ensure_user_ready(_org_member_auth())
 
     _mock_ensure_metronome_customer.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Launch Competition pre-drop hold (Task 2 of the addendum) — held owners
-# must return BEFORE ensure_personal_trial_default, so a held account never
-# gets its 3-day trial clock stamped before the drop.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ensure_user_ready_returns_before_trial_default_when_held(_stub_trial_default):
-    """A launch_hold.pre_drop_gate hit short-circuits ensure_user_ready
-    before ensure_personal_trial_default is ever awaited."""
-    from core.services.provision_gate import Gate
-
-    fake_gate = Gate(
-        code="launch_pending",
-        title="You're on the list",
-        message="Doors open soon.",
-        action_label="See your spot",
-        action_href="/launch",
-        action_admin_only=False,
-        owner_role="admin",
-    )
-    with patch("core.services.user_provision.launch_hold.pre_drop_gate", new=AsyncMock(return_value=fake_gate)):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
-
-    _stub_trial_default.assert_not_awaited()

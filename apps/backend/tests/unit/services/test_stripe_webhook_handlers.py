@@ -1877,13 +1877,19 @@ async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_contain
     assert "conversion_started_at" not in fields
 
 
-class TestInvoicePaidDelegatesToLaunchReferral:
-    async def test_invoice_paid_calls_launch_referral(self):
-        event = {
-            "id": "evt_i",
-            "type": "invoice.paid",
-            "data": {"object": {"id": "in_1", "customer": "cus_1", "amount_paid": 5000}},
-        }
-        with patch("core.services.launch_referral.on_invoice_paid", new_callable=AsyncMock) as hook:
-            await handlers.handle_invoice_paid(event, MagicMock())
-        hook.assert_awaited_once_with(event["data"]["object"])
+class TestSubscriptionActivationDelegatesToLaunchReferral:
+    """The launch referral hook rides the entering-live transition of
+    handle_subscription_state (invoice.paid is no longer handled at all)."""
+
+    async def test_entering_live_calls_the_launch_hook(self, mock_repo):
+        with patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "trial_local", "active")
+        hook.assert_awaited_once_with("org_x")
+
+    async def test_a_live_to_live_event_does_not_call_the_hook(self, mock_repo):
+        with patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "active", "active")
+        hook.assert_not_awaited()
+
+    async def test_invoice_paid_is_not_a_handled_event(self):
+        assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS

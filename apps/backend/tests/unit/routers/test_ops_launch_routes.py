@@ -95,7 +95,7 @@ async def test_ops_launch_settings_get_returns_defaults_when_no_row(admin_client
     with patch("core.repositories.launch_settings_repo.get", AsyncMock(return_value=None)):
         r = await admin_client.get("/api/v1/ops/launch/settings")
     assert r.status_code == 200
-    # mint_nonce is server-only — to_public strips it from every read, GET included.
+    # mint_nonce is server-only — to_admin strips it from every read, GET included.
     assert r.json() == {k: v for k, v in launch_settings.DEFAULTS.items() if k != "mint_nonce"}
 
 
@@ -106,10 +106,10 @@ async def test_ops_launch_settings_get_requires_admin(async_client):
 
 _FULL_PUT_BODY = {
     "enabled": True,
-    "drop_at": "2026-09-18T00:00:00-04:00",
-    "competition_start_at": "2026-09-21T00:00:00-04:00",
-    "comp_slots": 220,
-    "competition_days": 30,
+    "sheet_closes_at": "2026-09-30T12:00:00-04:00",
+    "competition_start_at": "2026-10-01T00:00:00-04:00",
+    "competition_end_at": "2026-12-01T00:00:00-05:00",
+    "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
     "referral_jump": 10,
@@ -119,7 +119,7 @@ _FULL_PUT_BODY = {
 async def test_ops_launch_settings_put_422_on_invalid_payload(admin_client, audited):
     r = await admin_client.put(
         "/api/v1/ops/launch/settings",
-        json={**_FULL_PUT_BODY, "drop_at": None, "competition_start_at": None},
+        json={**_FULL_PUT_BODY, "sheet_closes_at": None, "competition_start_at": None},
     )
     assert r.status_code == 422
     # FastAPI's default HTTPException envelope — the codebase's one 422
@@ -130,15 +130,13 @@ async def test_ops_launch_settings_put_422_on_invalid_payload(admin_client, audi
 async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_caches(admin_client, audited):
     saved_row = {
         "enabled": True,
-        "drop_at": "2026-09-18T00:00:00-04:00",
-        "competition_start_at": "2026-09-21T00:00:00-04:00",
-        "comp_slots": 220,
-        "competition_days": 30,
+        "sheet_closes_at": "2026-09-30T12:00:00-04:00",
+        "competition_start_at": "2026-10-01T00:00:00-04:00",
+        "competition_end_at": "2026-12-01T00:00:00-05:00",
+        "comp_slots": 200,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
         "stripe_coupon_id": "",
-        "stripe_promotion_code_id": "",
-        "stripe_promotion_code": "",
         "updated_at": "2026-08-29T00:00:00+00:00",
         "updated_by": "user_admin",
     }
@@ -152,7 +150,7 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
         r = await admin_client.put("/api/v1/ops/launch/settings", json=_FULL_PUT_BODY)
     assert r.status_code == 200
     body = r.json()
-    assert body["enabled"] is True and "updated_by" not in body
+    assert body["enabled"] is True and "mint_nonce" not in body
     invalidate.assert_called_once()
     clear_response_cache.assert_called_once()
     clear_ops_cache.assert_called_once()
@@ -164,7 +162,7 @@ async def test_ops_launch_settings_put_rejects_a_partial_body(admin_client, audi
     is a 422, never a silent reset of the dates it left out."""
     r = await admin_client.put(
         "/api/v1/ops/launch/settings",
-        json={k: v for k, v in _FULL_PUT_BODY.items() if k != "drop_at"},
+        json={k: v for k, v in _FULL_PUT_BODY.items() if k != "sheet_closes_at"},
     )
     assert r.status_code == 422
 
@@ -178,9 +176,8 @@ async def test_ops_launch_settings_put_422_without_referral_jump(admin_client, a
 
 
 async def test_ops_launch_settings_put_audits_exactly_the_eight_editable_fields(admin_client, audited):
-    """The audit body is the parsed model — the three server-managed stripe_*
-    ids are not on it, so an admin save no longer logs empty coupon defaults
-    that it never wrote."""
+    """The audit body is the parsed model — the server-managed coupon and
+    close-state fields are not on it."""
     with (
         patch("core.repositories.launch_settings_repo.get", AsyncMock(return_value=None)),
         patch("core.repositories.launch_settings_repo.put", AsyncMock(side_effect=lambda item: item)),
@@ -211,14 +208,14 @@ async def test_ops_launch_stripe_coupon_conflict_already_configured(admin_client
     assert r.status_code == 409 and r.json()["detail"] == "already_configured"
 
 
-async def test_ops_launch_stripe_coupon_missing_start_date_422(admin_client, audited):
+async def test_ops_launch_stripe_coupon_invalid_settings_422(admin_client, audited):
     with patch(
         "core.services.launch_settings.create_stripe_coupon",
-        AsyncMock(side_effect=launch_settings.SettingsInvalid({"competition_start_at": "must be set"})),
+        AsyncMock(side_effect=launch_settings.SettingsInvalid({"stripe_coupon_id": "redeem-by past"})),
     ):
         r = await admin_client.post("/api/v1/ops/launch/settings/stripe-coupon", json={})
     assert r.status_code == 422
-    assert "competition_start_at" in r.json()["detail"]["errors"]
+    assert "stripe_coupon_id" in r.json()["detail"]["errors"]
 
 
 async def test_ops_launch_stripe_coupon_stripe_error_502_no_message_leak(admin_client, audited):
@@ -232,23 +229,62 @@ async def test_ops_launch_stripe_coupon_stripe_error_502_no_message_leak(admin_c
 
 
 async def test_ops_launch_stripe_coupon_force_flag_reaches_the_service(admin_client, audited):
-    mock = AsyncMock(
-        return_value={
-            "stripe_coupon_id": "coupon_1",
-            "stripe_promotion_code_id": "promo_1",
-            "stripe_promotion_code": "LIGHTBULB-ABC123",
-        }
-    )
+    mock = AsyncMock(return_value={"stripe_coupon_id": "coupon_1"})
     with patch("core.services.launch_settings.create_stripe_coupon", mock):
         r = await admin_client.post("/api/v1/ops/launch/settings/stripe-coupon", json={"force": True})
     assert r.status_code == 200
-    body = r.json()
-    assert body["stripe_coupon_id"] == "coupon_1"
-    assert body["stripe_promotion_code_id"] == "promo_1"
-    assert body["stripe_promotion_code"] == "LIGHTBULB-ABC123"
+    assert r.json()["stripe_coupon_id"] == "coupon_1"  # (+ the audit decorator's status field)
     assert mock.call_args.kwargs["force"] is True
 
 
 async def test_ops_launch_stripe_coupon_requires_admin(async_client):
     r = await async_client.post("/api/v1/ops/launch/settings/stripe-coupon", json={})
+    assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# POST /ops/launch/close
+# ---------------------------------------------------------------------------
+
+
+async def test_ops_launch_close_delegates_audits_and_clears_caches(admin_client, audited):
+    result = {"closed_at": "t", "winners": 2, "final_pot_cents": 103_000}
+    with (
+        patch("core.services.launch_close.close", AsyncMock(return_value=result)) as close,
+        patch("core.services.ops.launch.clear_cache") as clear_ops,
+        patch("routers.launch.clear_response_cache") as clear_public,
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/close", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["winners"] == 2 and body["final_pot_cents"] == 103_000
+    assert close.call_args.kwargs["force"] is False
+    clear_ops.assert_called_once()
+    clear_public.assert_called_once()
+    audited.assert_awaited_once()
+
+
+async def test_ops_launch_close_already_closed_409(admin_client, audited):
+    from core.services import launch_close
+
+    with patch("core.services.launch_close.close", AsyncMock(side_effect=launch_close.AlreadyClosed())):
+        r = await admin_client.post("/api/v1/ops/launch/close", json={})
+    assert r.status_code == 409 and r.json()["detail"] == "already_closed"
+
+
+async def test_ops_launch_close_force_reaches_the_service(admin_client, audited):
+    with patch("core.services.launch_close.close", AsyncMock(return_value={})) as close:
+        r = await admin_client.post("/api/v1/ops/launch/close", json={"force": True})
+    assert r.status_code == 200
+    assert close.call_args.kwargs["force"] is True
+
+
+async def test_ops_launch_close_stripe_mint_failure_502(admin_client, audited):
+    with patch("core.services.launch_close.close", AsyncMock(side_effect=launch_settings.StripeMintError())):
+        r = await admin_client.post("/api/v1/ops/launch/close", json={})
+    assert r.status_code == 502 and r.json()["detail"] == "stripe_error"
+
+
+async def test_ops_launch_close_requires_admin(async_client):
+    r = await async_client.post("/api/v1/ops/launch/close", json={})
     assert r.status_code in (401, 403)

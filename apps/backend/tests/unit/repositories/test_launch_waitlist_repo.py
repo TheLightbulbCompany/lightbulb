@@ -94,22 +94,42 @@ async def test_claim_user_sets_once(table):
     assert (await table.get("a@example.com"))["user_id"] == "user_1"
 
 
-async def test_mark_rewarded_is_cas(table):
-    await table.join("a@example.com", referred_by=None, source="waitlist")
-    assert await table.mark_rewarded("a@example.com") is True
-    assert await table.mark_rewarded("a@example.com") is False
+async def test_mark_joined_is_cas(table):
+    await table.join("a@example.com", referred_by=None, source="sheet")
+    assert await table.mark_joined("a@example.com") is True
+    assert await table.mark_joined("a@example.com") is False
+    assert (await table.get("a@example.com"))["joined_at"]
 
 
-async def test_add_counter_floors_at_zero(table):
-    await table.join("a@example.com", referred_by=None, source="waitlist")
-    assert await table.add_counter("a@example.com", "free_months_banked", 2) == 2
-    assert await table.add_counter("a@example.com", "free_months_banked", -1) == 1
-    assert await table.add_counter("a@example.com", "free_months_banked", -5) is None  # refused
-    assert (await table.get("a@example.com"))["free_months_banked"] == 1  # unchanged
+async def test_mark_joined_never_mints_a_row(table):
+    assert await table.mark_joined("nobody@example.com") is False
+    assert await table.get("nobody@example.com") is None
+
+
+async def test_mark_referral_counted_is_cas(table):
+    await table.join("a@example.com", referred_by=None, source="signup")
+    assert await table.mark_referral_counted("a@example.com") is True
+    assert await table.mark_referral_counted("a@example.com") is False
+
+
+async def test_update_fields_sets_on_existing_row_only(table):
+    await table.join("a@example.com", referred_by=None, source="sheet")
+    await table.update_fields("a@example.com", {"winner": True, "compete_eligible": False, "display_name": "Acme"})
+    row = await table.get("a@example.com")
+    assert row["winner"] is True and row["compete_eligible"] is False and row["display_name"] == "Acme"
+    # No row: silently a no-op, never a mint.
+    await table.update_fields("nobody@example.com", {"winner": True})
+    assert await table.get("nobody@example.com") is None
+
+
+async def test_add_counter_increments_and_returns_the_new_value(table):
+    await table.join("a@example.com", referred_by=None, source="sheet")
+    assert await table.add_counter("a@example.com", "referrals_subscribed", 1) == 1
+    assert await table.add_counter("a@example.com", "referrals_subscribed", 1) == 2
 
 
 async def test_add_counter_never_mints_a_row(table):
-    assert await table.add_counter("nobody@example.com", "free_months_banked", 1) is None
+    assert await table.add_counter("nobody@example.com", "referrals_subscribed", 1) is None
     assert await table.get("nobody@example.com") is None
 
 
@@ -123,19 +143,3 @@ async def test_list_all_excludes_counter_row(table):
 def test_normalize_email_rejects_garbage(table):
     with pytest.raises(ValueError):
         table.normalize_email("not-an-email")
-
-
-async def test_mark_pot_counted_is_cas(table):
-    await table.join("a@example.com", referred_by=None, source="signup")
-    assert await table.mark_pot_counted("a@example.com") is True
-    assert await table.mark_pot_counted("a@example.com") is False
-
-
-async def test_count_pot_counted(table):
-    await table.join("a@example.com", referred_by=None, source="signup")
-    await table.join("b@example.com", referred_by=None, source="signup")
-    await table.join("c@example.com", referred_by=None, source="signup")
-    assert await table.count_pot_counted() == 0
-    await table.mark_pot_counted("a@example.com")
-    await table.mark_pot_counted("b@example.com")
-    assert await table.count_pot_counted() == 2

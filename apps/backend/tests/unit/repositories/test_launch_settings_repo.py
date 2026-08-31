@@ -43,9 +43,9 @@ def test_get_sync_returns_none_when_no_row_saved_yet(repo):
 
 
 async def test_put_then_get_round_trips(repo):
-    row = dict(repo.DEFAULTS, enabled=True, drop_at="2026-09-18T00:00:00-04:00", updated_by="user_admin")
+    row = dict(repo.DEFAULTS, enabled=True, sheet_closes_at="2026-09-30T12:00:00-04:00", updated_by="user_admin")
     saved = await repo.put(row)
-    assert saved["enabled"] is True and saved["drop_at"] == "2026-09-18T00:00:00-04:00"
+    assert saved["enabled"] is True and saved["sheet_closes_at"] == "2026-09-30T12:00:00-04:00"
     assert saved["updated_by"] == "user_admin"
     assert "id" not in saved  # the partition key is an implementation detail, not part of the row
 
@@ -80,7 +80,7 @@ async def test_put_is_a_full_replace(repo):
     await repo.put(second)
 
     fetched = await repo.get()
-    assert fetched["stripe_coupon_id"] == "" and fetched["comp_slots"] == 220
+    assert fetched["stripe_coupon_id"] == "" and fetched["comp_slots"] == 200
 
 
 async def test_put_always_writes_to_the_singleton_id(repo):
@@ -92,11 +92,11 @@ async def test_put_always_writes_to_the_singleton_id(repo):
 
 async def test_get_returns_python_ints_not_dynamodb_decimals(repo):
     """DynamoDB's low-level deserializer hands every numeric attribute back
-    as Decimal regardless of what type was put — regression coverage for the
-    launch_phase.schedule() TypeError this caused at timedelta(days=Decimal(...))."""
-    await repo.put(dict(repo.DEFAULTS, comp_slots=220, competition_days=30))
+    as Decimal regardless of what type was put — regression coverage for a
+    launch_phase.schedule() TypeError on Decimal arithmetic."""
+    await repo.put(dict(repo.DEFAULTS, comp_slots=200))
     fetched = await repo.get()
-    for field in ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents"):
+    for field in ("comp_slots", "pot_front_cents", "pot_per_entrant_cents"):
         assert type(fetched[field]) is int, f"{field} came back as {type(fetched[field])}"
     assert type(fetched["enabled"]) is bool
 
@@ -104,33 +104,33 @@ async def test_get_returns_python_ints_not_dynamodb_decimals(repo):
 def test_get_sync_returns_python_ints_not_dynamodb_decimals(repo):
     import asyncio
 
-    asyncio.run(repo.put(dict(repo.DEFAULTS, comp_slots=220, competition_days=30)))
+    asyncio.run(repo.put(dict(repo.DEFAULTS, comp_slots=200)))
     fetched = repo.get_sync()
-    for field in ("comp_slots", "competition_days", "pot_front_cents", "pot_per_entrant_cents"):
+    for field in ("comp_slots", "pot_front_cents", "pot_per_entrant_cents"):
         assert type(fetched[field]) is int, f"{field} came back as {type(fetched[field])}"
 
 
 async def test_schedule_reads_a_real_saved_row_with_int_typed_fields(repo):
     """End-to-end: put a valid enabled row through moto, invalidate the
     launch_phase cache, and confirm schedule() derives a real Schedule with
-    Python-int fields (not Decimals) and the right derived math."""
-    from datetime import timedelta
-
+    Python-int fields (not Decimals)."""
     from core.services import launch_phase
+    from core.services.launch_phase import parse_iso
 
     row = dict(
         repo.DEFAULTS,
         enabled=True,
-        drop_at="2026-09-18T00:00:00-04:00",
-        competition_start_at="2026-09-21T00:00:00-04:00",
+        sheet_closes_at="2026-09-30T12:00:00-04:00",
+        competition_start_at="2026-10-01T00:00:00-04:00",
+        competition_end_at="2026-12-01T00:00:00-05:00",
     )
     await repo.put(row)
     launch_phase.invalidate()
     try:
         s = launch_phase.schedule()
         assert s is not None
-        assert type(s.comp_slots) is int and type(s.competition_days) is int
-        assert s.competition_end_at == s.competition_start_at + timedelta(days=30)
+        assert type(s.comp_slots) is int
+        assert s.competition_end_at == parse_iso("2026-12-01T00:00:00-05:00")
     finally:
         launch_phase.invalidate()
 

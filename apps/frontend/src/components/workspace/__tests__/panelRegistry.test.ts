@@ -65,9 +65,17 @@ describe("panelRegistry", () => {
     expect(d).toEqual({
       panelId: "control:llm",
       component: "control",
-      title: "Models & Providers",
+      title: "Model & Credits",
       params: { controlKey: "llm" },
     });
+  });
+
+  it("one label per panel — dock titles match the sidebar's IA labels", () => {
+    // Clicking "Library" in the sidebar must not open a tab titled "Artifacts";
+    // the llm panel converges on mobile's name, "Model & Credits".
+    expect(describePanel("teams-dashboard", {})?.title).toBe("Home");
+    expect(describePanel("teams-artifacts", {})?.title).toBe("Library");
+    expect(describePanel("llm", {})?.title).toBe("Model & Credits");
   });
 
   it("describes chat panels with renderer always", () => {

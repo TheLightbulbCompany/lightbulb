@@ -688,7 +688,7 @@ export default function SettingsPage() {
 
 function SettingsPageInner() {
   // The Settings consolidation: 6-group nav + the config panels relocated from
-  // the Control tab (Usage, Model & Providers, MCP servers, the ENGINE ROOM
+  // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM
   // trio, Channel Status).
   const navSections = SETTINGS_NAV_SECTIONS;
 

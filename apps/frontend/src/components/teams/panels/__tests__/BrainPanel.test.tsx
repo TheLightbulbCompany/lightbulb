@@ -44,6 +44,13 @@ vi.mock("@/components/chat/LobsterGraphView", () => ({
   LobsterGraphView: () => null,
 }));
 
+// The Dreams tab renders DreamsPanel's body verbatim (folded in from its
+// retired standalone control panel) — stub it so this suite never opens the
+// gateway RPCs DreamsPanel itself makes.
+vi.mock("@/components/control/panels/DreamsPanel", () => ({
+  DreamsPanel: () => <div data-testid="dreams-panel-body">DreamsPanel</div>,
+}));
+
 import { BrainPanel } from "../BrainPanel";
 import { DEFAULT_AGENT_SENTINEL } from "@/components/workspace/panelRegistry";
 
@@ -268,5 +275,50 @@ describe("BrainPanel", () => {
     // remounting — simulate that by rerendering with a new initialPath prop.
     rerender(<BrainPanel initialPath="main/icp.md" />);
     expect(useBrainFileSpy).toHaveBeenLastCalledWith("main/icp.md");
+  });
+
+  describe("Notes | Dreams tabs", () => {
+    it("renders a Notes | Dreams tab bar, defaulting to Notes (the vault tree shows)", () => {
+      treeState.files = [MAIN_DIR, FACTS];
+      render(<BrainPanel />);
+      const notesTab = screen.getByRole("tab", { name: "Notes" });
+      expect(notesTab).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Dreams" })).toBeInTheDocument();
+      expect(screen.getByText("main")).toBeInTheDocument();
+    });
+
+    it("mounts the DreamsPanel body on the Dreams tab and hides the Notes tree", () => {
+      treeState.files = [MAIN_DIR, FACTS];
+      render(<BrainPanel />);
+      // Radix activates a tab on mousedown, not on the synthetic click event.
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+      expect(screen.queryByText("main")).not.toBeInTheDocument();
+    });
+
+    it("hides the Notes-only masthead meta/actions (size · modified, Delete) on the Dreams tab", () => {
+      treeState.files = [FACTS];
+      fileState.file = FACTS_INFO;
+      render(<BrainPanel initialPath="main/facts.md" />);
+      expect(screen.getByTestId("panel-masthead-meta")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+
+      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+      expect(screen.queryByTestId("panel-masthead-meta")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+    });
+
+    it("switching back to Notes restores the vault tree", () => {
+      treeState.files = [MAIN_DIR, FACTS];
+      render(<BrainPanel />);
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Notes" }));
+      expect(screen.getByText("main")).toBeInTheDocument();
+      expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
+    });
   });
 });

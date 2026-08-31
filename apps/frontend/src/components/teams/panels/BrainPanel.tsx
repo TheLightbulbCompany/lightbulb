@@ -5,19 +5,32 @@
 // trust a brain they can audit: every page shows its size and modified time,
 // and a wrong fact is fixed by editing it in place. Reuses FileTree +
 // FileContentViewer (editor, dirty tracking, scoped Cmd+S come free).
+//
+// Two tabs: Notes (the vault above) and Dreams (the memory-core dreaming
+// status/diary/advanced surface, folded in from its retired standalone
+// control panel — see RETIRED_PANEL_ALIASES's `dreams` entry). Dreams
+// renders DreamsPanel's body verbatim; its file is untouched, only its
+// registration moved.
 
 import * as React from "react";
 import { useSWRConfig } from "swr";
 import { BookOpen, Trash2, TriangleAlert, Upload } from "lucide-react";
-import { PanelMasthead, PanelEmptyState } from "@/components/teams/shell";
+import { PanelMasthead, PanelEmptyState, PanelTabs } from "@/components/teams/shell";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
+import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { useBrainTree, useBrainFile, useBrainMutations } from "@/hooks/useBrainFiles";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { openChatPanel } from "@/components/workspace/workspaceController";
 import { DEFAULT_AGENT_SENTINEL } from "@/components/workspace/panelRegistry";
 import { notifyApiError } from "@/lib/notify";
 import { formatBytes } from "@/lib/utils";
+
+type BrainTab = "notes" | "dreams";
+const BRAIN_TABS = [
+  { value: "notes", label: "Notes" },
+  { value: "dreams", label: "Dreams" },
+];
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString();
@@ -29,6 +42,7 @@ export interface BrainPanelProps {
 }
 
 export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
+  const [tab, setTab] = React.useState<BrainTab>("notes");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialPath ?? null);
   const [editorDirty, setEditorDirty] = React.useState(false);
 
@@ -136,13 +150,15 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
       <PanelMasthead
         overline="Knowledge"
         title="Brain"
+        // Meta (size · modified) and the Delete action are Notes-specific —
+        // the audit line describes a wiki page, which Dreams has none of.
         meta={
-          selectedPath && file
+          tab === "notes" && selectedPath && file
             ? `${formatBytes(file.size)} · ${formatDate(file.modified_at)}`
             : undefined
         }
         actions={
-          selectedPath ? (
+          tab === "notes" && selectedPath ? (
             <button
               type="button"
               onClick={handleDelete}
@@ -156,114 +172,129 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
         }
       />
 
-      {/* Hoisted so both the empty-state and the tree-pane's picker button
-          share the same file input — only one of those branches is ever
-          mounted at a time. Disabled mid-upload (T3 review item 6/F7). */}
-      <input
-        ref={uploadInputRef}
-        type="file"
-        multiple
-        className="sr-only"
-        aria-label="Upload files to the brain inbox"
-        disabled={uploading}
-        onChange={(e) => void handleUpload(e.target.files)}
+      <PanelTabs
+        tabs={BRAIN_TABS}
+        value={tab}
+        onValueChange={(v) => setTab(v as BrainTab)}
+        ariaLabel="Brain sections"
       />
 
-      {treeError ? (
-        <PanelEmptyState
-          icon={TriangleAlert}
-          headline="Couldn't load your brain."
-          supporting="Something went wrong reaching your company's memory."
-          action={{ label: "Retry", onClick: () => void refresh() }}
-        />
-      ) : isEmpty ? (
-        // Day 0 for every owner is an empty vault (no agent has written yet),
-        // so this is the likeliest place for the owner's very first drop —
-        // it needs the same drag/drop + picker affordance as the populated
-        // tree pane, not just the "Ask Friday" chip.
-        <div
-          data-testid="brain-empty-drop-zone"
-          className={`flex-1 min-h-0 flex flex-col items-center justify-center rounded-sm border border-dashed transition-colors ${
-            dragOver ? "border-[var(--midnight-muted)] bg-cream-deeper" : "border-transparent"
-          }`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            if (uploading) return;
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            void handleUpload(e.dataTransfer.files);
-          }}
-        >
-          <PanelEmptyState
-            icon={BookOpen}
-            headline="No pages yet."
-            supporting="Your company's brain fills as your agents learn."
-            action={{ label: "Ask Friday", onClick: () => openChatPanel(DEFAULT_AGENT_SENTINEL) }}
-          />
-          <button
-            type="button"
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={uploading}
-            className="text-xs text-[var(--midnight-muted)] underline hover:text-[var(--midnight)] disabled:opacity-50"
-          >
-            {uploading ? "Uploading…" : "or drop files here"}
-          </button>
+      {tab === "dreams" ? (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <DreamsPanel />
         </div>
       ) : (
-        <div className="flex flex-1 min-h-0 rounded-sm border border-[var(--edge)] bg-cream overflow-hidden">
-          <div
-            data-testid="brain-tree-pane"
-            className={`w-64 shrink-0 border-r border-[var(--edge)] min-h-0 flex flex-col transition-colors ${
-              dragOver ? "bg-cream-deeper" : ""
-            }`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              if (uploading) return;
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              void handleUpload(e.dataTransfer.files);
-            }}
-          >
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              <FileTree
-                files={files}
-                selectedPath={selectedPath}
-                onSelect={handleSelect}
-                onRefresh={() => void refresh()}
-                isLoading={treeLoading}
-                emptyMessage="No pages yet."
+        <>
+          {/* Hoisted so both the empty-state and the tree-pane's picker button
+              share the same file input — only one of those branches is ever
+              mounted at a time. Disabled mid-upload (T3 review item 6/F7). */}
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            className="sr-only"
+            aria-label="Upload files to the brain inbox"
+            disabled={uploading}
+            onChange={(e) => void handleUpload(e.target.files)}
+          />
+
+          {treeError ? (
+            <PanelEmptyState
+              icon={TriangleAlert}
+              headline="Couldn't load your brain."
+              supporting="Something went wrong reaching your company's memory."
+              action={{ label: "Retry", onClick: () => void refresh() }}
+            />
+          ) : isEmpty ? (
+            // Day 0 for every owner is an empty vault (no agent has written yet),
+            // so this is the likeliest place for the owner's very first drop —
+            // it needs the same drag/drop + picker affordance as the populated
+            // tree pane, not just the "Ask Friday" chip.
+            <div
+              data-testid="brain-empty-drop-zone"
+              className={`flex-1 min-h-0 flex flex-col items-center justify-center rounded-sm border border-dashed transition-colors ${
+                dragOver ? "border-[var(--midnight-muted)] bg-cream-deeper" : "border-transparent"
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (uploading) return;
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                void handleUpload(e.dataTransfer.files);
+              }}
+            >
+              <PanelEmptyState
+                icon={BookOpen}
+                headline="No pages yet."
+                supporting="Your company's brain fills as your agents learn."
+                action={{ label: "Ask Friday", onClick: () => openChatPanel(DEFAULT_AGENT_SENTINEL) }}
               />
-            </div>
-            <div className="shrink-0 border-t border-[var(--edge)] p-2">
               <button
                 type="button"
                 onClick={() => uploadInputRef.current?.click()}
                 disabled={uploading}
-                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs rounded-sm border border-dashed border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors disabled:opacity-50"
+                className="text-xs text-[var(--midnight-muted)] underline hover:text-[var(--midnight)] disabled:opacity-50"
               >
-                <Upload className="h-3.5 w-3.5" />
-                {uploading ? "Uploading…" : "Drop files or click to add"}
+                {uploading ? "Uploading…" : "or drop files here"}
               </button>
             </div>
-          </div>
-          <div className="flex-1 min-h-0 min-w-0">
-            <FileContentViewer
-              file={file}
-              isLoading={fileLoading}
-              error={fileError ?? null}
-              onSave={selectedPath ? handleSave : undefined}
-              onDirtyChange={setEditorDirty}
-            />
-          </div>
-        </div>
+          ) : (
+            <div className="flex flex-1 min-h-0 rounded-sm border border-[var(--edge)] bg-cream overflow-hidden">
+              <div
+                data-testid="brain-tree-pane"
+                className={`w-64 shrink-0 border-r border-[var(--edge)] min-h-0 flex flex-col transition-colors ${
+                  dragOver ? "bg-cream-deeper" : ""
+                }`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (uploading) return;
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  void handleUpload(e.dataTransfer.files);
+                }}
+              >
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <FileTree
+                    files={files}
+                    selectedPath={selectedPath}
+                    onSelect={handleSelect}
+                    onRefresh={() => void refresh()}
+                    isLoading={treeLoading}
+                    emptyMessage="No pages yet."
+                  />
+                </div>
+                <div className="shrink-0 border-t border-[var(--edge)] p-2">
+                  <button
+                    type="button"
+                    onClick={() => uploadInputRef.current?.click()}
+                    disabled={uploading}
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs rounded-sm border border-dashed border-[var(--edge)] text-[var(--midnight-muted)] hover:text-[var(--midnight)] hover:bg-[var(--cream-deep)] transition-colors disabled:opacity-50"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    {uploading ? "Uploading…" : "Drop files or click to add"}
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 min-w-0">
+                <FileContentViewer
+                  file={file}
+                  isLoading={fileLoading}
+                  error={fileError ?? null}
+                  onSave={selectedPath ? handleSave : undefined}
+                  onDirtyChange={setEditorDirty}
+                />
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

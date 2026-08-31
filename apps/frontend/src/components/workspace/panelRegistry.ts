@@ -25,6 +25,10 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
+  // Dreams folded into the Brain panel as its second tab (Notes | Dreams) —
+  // the standalone control-panel surface is gone, so old deep links and
+  // persisted layouts land on Brain instead.
+  dreams: "teams-brain",
 };
 
 // One-shot intents: copied to the target panel's open params, immediately
@@ -72,7 +76,6 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
   skills: "Skills",
   llm: "Models & Providers",
   integrations: "Integrations",
-  dreams: "Dreams",
   "skill-proposals": "Skill Proposals",
 };
 

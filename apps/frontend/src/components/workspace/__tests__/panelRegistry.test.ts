@@ -17,6 +17,19 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
+    // Dreams folded into Brain as a tab — the standalone control panel key
+    // retires by alias, same as credits→llm.
+    expect(resolvePanelAlias("dreams")).toBe("teams-brain");
+  });
+
+  it("describes a retired ?panel=dreams as the Brain panel — the control key is dropped, not just aliased", () => {
+    const d = describePanel("dreams", {});
+    expect(d).toEqual({
+      panelId: "teams-brain",
+      component: "teams",
+      title: "Brain",
+      params: { teamsKey: "brain" },
+    });
   });
 
   it("builds deterministic chat panel ids", () => {

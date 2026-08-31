@@ -26,6 +26,9 @@ describe("parseCommand", () => {
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
+    // Dreams folded into Brain as a tab — an old ?panel=dreams deep link
+    // must open the Brain panel, not 404 into "missing".
+    expect(parseCommand("?panel=dreams")?.descriptor.panelId).toBe("teams-brain");
   });
 
   it("defines /chat?agent= as open-or-focus that agent's chat (deploy-success link)", () => {

@@ -42,9 +42,16 @@ function hasOwnKey(obj: object, key: string): boolean {
 // migrated here too. Two id shapes show up in practice: teams-* aliases are
 // bare panel ids (panelId === registry key), non-teams aliases (credits→llm)
 // are control-panel ids carrying the `control:` prefix.
+//
+// `dreams`→`teams-brain` is a THIRD shape: a `control:`-prefixed persisted id
+// whose alias target crosses into the teams- namespace (Dreams folded into
+// Brain as a tab). That must flip `contentComponent` from "control" to
+// "teams" too — the two are different top-level React components
+// (ControlDockPanel vs TeamsDockPanel) keyed off different param shapes
+// (controlKey vs teamsKey) — so `component` is signalled back to the caller.
 function migrateRetiredPanelId(
   id: string,
-): { id: string; teamsKey?: string; controlKey?: string } | null {
+): { id: string; teamsKey?: string; controlKey?: string; component?: "teams" } | null {
   if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
@@ -56,6 +63,9 @@ function migrateRetiredPanelId(
     const key = id.slice("control:".length);
     if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
       const target = RETIRED_PANEL_ALIASES[key];
+      if (target.startsWith("teams-")) {
+        return { id: target, teamsKey: target.slice("teams-".length), component: "teams" };
+      }
       return { id: `control:${target}`, controlKey: target };
     }
   }
@@ -202,10 +212,19 @@ export function sanitizeLayout(
       if (params) {
         if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
         if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
+        // Crossing control -> teams drops the stale controlKey — teams-brain
+        // takes only teamsKey, and a leftover controlKey would just be dead
+        // weight in the persisted params.
+        if (migration.component === "teams") delete params.controlKey;
       }
     }
 
-    panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
+    panels[finalId] = {
+      ...state,
+      id: finalId,
+      contentComponent: migration?.component ?? component,
+      params,
+    };
   }
 
   let grid = raw.grid;

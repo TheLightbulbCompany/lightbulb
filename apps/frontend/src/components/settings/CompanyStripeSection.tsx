@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
+import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -29,6 +30,11 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   );
   const [busy, setBusy] = useState(false);
 
+  // Stops the desktop grant-poll when this section unmounts — an abandoned
+  // wait must not keep issuing status GETs for up to the poll timeout.
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => pollAbortRef.current?.abort(), []);
+
   async function run(fn: () => Promise<void>) {
     setBusy(true);
     try {
@@ -47,6 +53,25 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
    * first `await` is outside the user-activation window and Safari refuses.
    */
   function openWith(fetchUrl: () => Promise<string>) {
+    // Desktop (Tauri): WKWebView blocks window.open, so the two-phase tab
+    // dance would always read as "popup blocked". The shell plugin has no
+    // user-activation constraint, so fetch the URL first, open it in the
+    // SYSTEM browser, then poll our own status until Stripe's side lands
+    // (any field changing — account bound, details submitted, charges on).
+    // A failed open throws out of run() → error toast, no poll.
+    if (isTauri()) {
+      void run(async () => {
+        await openExternalUrl(await fetchUrl());
+        const before = JSON.stringify(data ?? null);
+        const ac = new AbortController();
+        pollAbortRef.current = ac;
+        await pollUntil(
+          async () => JSON.stringify((await mutate()) ?? null) !== before,
+          { signal: ac.signal },
+        );
+      });
+      return;
+    }
     const w = openPendingTab();
     if (!w) {
       notifyError(POPUP_BLOCKED_MSG);
@@ -162,6 +187,12 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
             )}
           </div>
         </div>
+      )}
+
+      {busy && isTauri() && (
+        <p className="text-sm text-[var(--midnight-muted)]" role="status">
+          Finish in your browser — this page updates automatically.
+        </p>
       )}
     </section>
   );

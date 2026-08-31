@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
+import { externalLinkClick } from "@/lib/externalAuth";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import {
   commitProviderChoice,
@@ -327,6 +328,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
               href={state.verificationUri}
               target="_blank"
               rel="noreferrer"
+              onClick={(e) => externalLinkClick(e, state.verificationUri)}
               className="text-[var(--midnight)] underline underline-offset-2 hover:text-[var(--midnight)]"
             >
               {state.verificationUri}

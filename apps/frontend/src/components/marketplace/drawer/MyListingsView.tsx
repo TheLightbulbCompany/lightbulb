@@ -5,6 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 
 import { myListings } from "@/lib/marketplace/api";
 import { useApi } from "@/lib/api";
+import { openAuthUrl } from "@/lib/externalAuth";
 import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
@@ -177,7 +178,9 @@ export function MyListingsView() {
         // keeping useApi().post's standard 2-arg shape elsewhere.
         const post = api.post as unknown as (endpoint: string) => Promise<unknown>;
         const r = (await post("/marketplace/payouts/onboard")) as { onboarding_url: string };
-        window.location.href = r.onboarding_url;
+        // Web: navigates away. Desktop: opens the system browser (the webview
+        // must not navigate to Stripe onboarding); status refreshes on return.
+        await openAuthUrl(r.onboarding_url);
       }
     } finally {
       setBusy(false);

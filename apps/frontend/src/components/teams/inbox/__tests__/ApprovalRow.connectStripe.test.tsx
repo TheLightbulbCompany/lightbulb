@@ -96,6 +96,50 @@ describe("ApprovalRow company_stripe", () => {
     expect(approve).not.toHaveBeenCalled();
   });
 
+  it("desktop (Tauri): does NOT approve when the system-browser open fails", async () => {
+    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
+    const invoke = vi.fn().mockRejectedValue("forbidden");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI__ = { core: { invoke } };
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      render(<ApprovalRow approval={A} />);
+      fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalled());
+      // The failed open surfaces as an error and the hand-off is NOT treated
+      // as seen: no approval is recorded for a page the owner never got.
+      await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+      expect(approve).not.toHaveBeenCalled();
+      // The two-phase web tab dance must not have run.
+      expect(openSpy).not.toHaveBeenCalled();
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).__TAURI__;
+    }
+  });
+
+  it("desktop (Tauri): approves only after the system browser opened", async () => {
+    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI__ = { core: { invoke } };
+    try {
+      render(<ApprovalRow approval={A} />);
+      fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("plugin:shell|open", {
+          path: "https://connect.stripe.com/setup/x",
+        }),
+      );
+      await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).__TAURI__;
+    }
+  });
+
   it("Connect existing navigates the tab to the authorize URL", async () => {
     get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
     const tab = fakeTab();

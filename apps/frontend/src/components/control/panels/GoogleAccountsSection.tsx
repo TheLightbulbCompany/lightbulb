@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ApiError, useGoogleAccounts } from "@/hooks/useGoogleAccounts";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { notifyApiError } from "@/lib/notify";
+import { isTauri } from "@/lib/externalAuth";
 
 interface GoogleAccountsSectionProps {
   /** Org admins may manage accounts/assignments; non-admins see read-only. */
@@ -265,9 +266,13 @@ function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
     setBusy(true);
     try {
       await connectAnother();
-      // On success the browser navigates away; nothing else runs.
+      // Web: the browser has navigated away by now. Desktop (Tauri): the
+      // consent screen opened in the system browser and connectAnother
+      // resolved after polling for the new grant — clear busy so the button
+      // comes back either way.
     } catch (e) {
       notifyApiError(e, errorMessage(e));
+    } finally {
       setBusy(false);
     }
   };
@@ -279,7 +284,11 @@ function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
       disabled={busy || !canManage}
       onClick={onClick}
     >
-      {busy ? "Redirecting…" : "Connect another account"}
+      {busy
+        ? isTauri()
+          ? "Finish in your browser…"
+          : "Redirecting…"
+        : "Connect another account"}
     </Button>
   );
 }

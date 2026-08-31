@@ -98,4 +98,76 @@ describe("useConnections", () => {
   it("re-exports ApiError for callers that switch on status", () => {
     expect(new ApiError(403, null).status).toBe(403);
   });
+
+  describe("desktop (Tauri)", () => {
+    afterEach(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).__TAURI__;
+    });
+
+    it("startOAuth rejects — and never enters the poll — when the browser can't be opened", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ connections: [] }))
+        .mockResolvedValueOnce(jsonResponse({ authorize_url: "https://provider.test/oauth" }));
+      global.fetch = fetchMock;
+      const invoke = vi.fn().mockRejectedValue("forbidden");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__TAURI__ = { core: { invoke } };
+
+      const { result } = renderHook(() => useConnections(), { wrapper });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      // Capture the rejection inside act — `.rejects` on an act-wrapped
+      // promise is racy under React 19's async act (the act promise can
+      // resolve before the callback rejection lands, leaving an unhandled
+      // late assertion in CI).
+      let err: unknown = null;
+      await act(async () => {
+        err = await result.current.startOAuth("cloudflare").then(
+          () => null,
+          (e) => e,
+        );
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe(
+        "Couldn't open your browser. Try again.",
+      );
+      // No waiting state: only the initial /connections GET and the
+      // authorize GET happened — no poll re-fetches of /connections.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("startOAuth opens the system browser and resolves once the grant lands", async () => {
+      const disconnected = {
+        connections: [
+          { provider: "cloudflare", display_name: "Cloudflare", acquisition: "direct_oauth", status: "disconnected" },
+        ],
+      };
+      const connected = {
+        connections: [
+          { provider: "cloudflare", display_name: "Cloudflare", acquisition: "direct_oauth", status: "connected" },
+        ],
+      };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(disconnected))
+        .mockResolvedValueOnce(jsonResponse({ authorize_url: "https://provider.test/oauth" }))
+        // first poll re-fetch of /connections → already connected
+        .mockResolvedValue(jsonResponse(connected));
+      global.fetch = fetchMock;
+      const invoke = vi.fn().mockResolvedValue(undefined);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__TAURI__ = { core: { invoke } };
+
+      const { result } = renderHook(() => useConnections(), { wrapper });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(() => result.current.startOAuth("cloudflare"));
+      expect(invoke).toHaveBeenCalledWith("plugin:shell|open", {
+        path: "https://provider.test/oauth",
+      });
+      expect(result.current.connections[0].status).toBe("connected");
+    });
+  });
 });

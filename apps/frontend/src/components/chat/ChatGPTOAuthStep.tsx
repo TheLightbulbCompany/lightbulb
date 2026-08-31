@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useChatGPTOAuth, type OAuthState } from "@/hooks/useChatGPTOAuth";
 import { replaceSearchParams } from "@/lib/shellNav";
+import { externalLinkClick } from "@/lib/externalAuth";
 
 type Props = {
   onComplete: () => void;
@@ -68,6 +69,7 @@ function DeviceCodePanel({
             href={state.verificationUri}
             target="_blank"
             rel="noreferrer"
+            onClick={(e) => externalLinkClick(e, state.verificationUri)}
             className="text-primary underline"
           >
             {state.verificationUri}

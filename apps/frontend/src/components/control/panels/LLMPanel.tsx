@@ -5,6 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { KeyRound, Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
+import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
@@ -201,6 +202,7 @@ function CodingHarnessBlock() {
               href={state.verificationUri}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => externalLinkClick(e, state.verificationUri)}
               className="underline"
             >
               {state.verificationUri}

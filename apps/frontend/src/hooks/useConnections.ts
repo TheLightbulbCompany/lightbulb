@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import useSWR from "swr";
 
 import { ApiError, useApi } from "@/lib/api";
+import { openAuthUrl, pollUntil } from "@/lib/externalAuth";
 
 /**
  * Third-party integration ("Connection") for the settings panel.
@@ -137,6 +138,11 @@ export function useConnections() {
     () => api.get("/connections") as Promise<ConnectionsResponse>,
   );
 
+  // Stops the desktop grant-poll when this hook unmounts — an abandoned wait
+  // must not keep issuing /connections GETs for up to the poll timeout.
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => pollAbortRef.current?.abort(), []);
+
   const connectPaste = useCallback(
     async (provider: string, token: string): Promise<void> => {
       // Paste-key providers only. 422 → token failed validation,
@@ -153,13 +159,33 @@ export function useConnections() {
       const r = (await api.get(
         `/connections/${encodeURIComponent(provider)}/authorize`,
       )) as AuthorizeResponse;
-      // Hand the browser to the provider's consent screen. It redirects
-      // back to /settings/connections?connected=… (or ?error=…), which the
-      // page handles on return. No state to clean up here — the full-page
-      // navigation discards this React tree.
-      window.location.href = r.authorize_url;
+      // Hand the browser to the provider's consent screen. On the web it
+      // redirects back to /settings/connections?connected=… (or ?error=…) and
+      // the full-page navigation discards this React tree. In the desktop app
+      // the consent screen opens in the SYSTEM browser (the webview must not
+      // navigate there — Google blocks embedded webviews and the callback
+      // would complete in a session the webview never sees), so this tree
+      // stays mounted: poll the same /connections status the panel renders
+      // until the grant lands, then resolve so the caller's busy state clears.
+      // A failed browser open REJECTS here (openAuthUrl throws) so the caller
+      // shows the error instead of a waiting state.
+      if (await openAuthUrl(r.authorize_url)) {
+        const ac = new AbortController();
+        pollAbortRef.current = ac;
+        await pollUntil(
+          async () => {
+            const d = await mutate();
+            return (
+              d?.connections.some(
+                (c) => c.provider === provider && c.status === "connected",
+              ) ?? false
+            );
+          },
+          { signal: ac.signal },
+        );
+      }
     },
-    [api],
+    [api, mutate],
   );
 
   const disconnect = useCallback(

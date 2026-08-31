@@ -350,7 +350,11 @@ describe("ObservabilityStack", () => {
   // The company Stripe create door is live in prod and owner-accepted, but
   // was otherwise silent — this is how we learn when a real owner first
   // mints a company Stripe account through it.
-  test("P16 pages when a company Stripe account is minted", () => {
+  // WARNS rather than pages, on purpose: minting a company Stripe account is a
+  // desirable business event that recurs on every future success, and an alarm
+  // that pages on success is how a team learns to ignore pages. The topic is
+  // asserted so that intent cannot be flipped back silently.
+  test("P16 warns (does not page) when a company Stripe account is minted", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "lightbulb-dev-P16-company-stripe-account-created",
       Namespace: "LightbulbAI",
@@ -358,6 +362,7 @@ describe("ObservabilityStack", () => {
       Threshold: 0,
       ComparisonOperator: "GreaterThanThreshold",
       TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
     });
   });
 

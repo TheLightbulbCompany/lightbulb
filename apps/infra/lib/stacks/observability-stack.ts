@@ -664,7 +664,13 @@ export class ObservabilityStack extends cdk.Stack {
     // actually minted and bound in that request (not the idempotent
     // early-return when one already exists, and not an account adopted
     // after losing a concurrent create race) — see routers/company_stripe.py.
-    // Any occurrence is worth knowing about promptly, same as P4/P5/P11.
+    //
+    // WARN, not page, and deliberately so: an owner minting their company
+    // Stripe account is a DESIRABLE business event. It is worth knowing about
+    // promptly while the door is new and unverified, but it fires again on
+    // every future success, and an alarm that pages on success is how a team
+    // learns to ignore pages. P4/P5/P11 page because the event they catch is
+    // one nobody wants; this one is the opposite.
     this.createAlarm({
       id: "P16",
       name: "company-stripe-account-created",
@@ -674,7 +680,7 @@ export class ObservabilityStack extends cdk.Stack {
       periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
+      severity: "warn",
       description:
         "A company Stripe Express account was minted via the live " +
         "create door - first real usage signal, not an outage.",

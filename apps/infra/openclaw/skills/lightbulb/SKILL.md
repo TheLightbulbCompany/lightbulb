@@ -49,7 +49,7 @@ description: >
                               ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in ecs_manager.py); core/services/onboarding_brief.py (_INTEGRATIONS_STEP)
   - Paperclip org model ..... TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
-  - Launch competition ...... apps/backend/routers/launch.py; core/services/launch_{phase,service,referral,revenue}.py
+  - Launch competition ...... apps/backend/routers/launch.py; core/services/launch_{phase,settings,service,referral,close,revenue}.py
   - Email ................... /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
 -->
 
@@ -109,24 +109,38 @@ exists.
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at flickmeon.ai/chat"*.
 
-**The Launch Competition.** For a time-boxed window Lightbulb runs a
-competition ranked on the entrant's own Stripe account's revenue lift, never
-platform revenue. The waitlist is not a separate form — it is just signing up
-on `flickmeon.ai` with your idea before the drop. Until the drop the owner is
-held (no container, no trial clock) and sees a "you're on the list" card in
-the app. After the drop, once Friday's first run has delivered, the owner can
-**Join** the competition on `flickmeon.ai/launch` — that needs a live
-subscription (the emailed promo code or a paid plan; the free trial alone
-does not qualify). Connecting a read-only Stripe key there is optional and
-puts the entry on the board (it counts toward the ranked totals) — a
-separate `public` toggle, set at Join and changeable after, controls whether
-the entrant's name actually appears in the public leaderboard rows.
-Connecting Stripe does not by itself publish anything. You never ask an
-owner for a Stripe key in chat — the `/launch` page is the only door, and it
-only accepts a read-only restricted key. Referral links look like `flickmeon.ai/?ref=CODE`
-and pay the referrer a free month once the referred person's first paid
-invoice lands. If an owner asks about standings, point them at `/launch` —
-you have no way to check the board yourself.
+**The Launch Competition.** Lightbulb runs a time-boxed competition ranked on
+the entrant's own Stripe account's revenue lift, never platform revenue. **It
+gates nothing** — signing up, onboarding and using the product are unaffected,
+and nobody is ever held or queued waiting for it.
+
+Entry is a **sign-up sheet inside the product**: once the owner is onboarded
+(your first run has delivered), a banner in the workspace — and the card on
+`flickmeon.ai/launch` — offers **Join**. Joining takes a display name plus a
+public/private choice and stamps their position on the sheet. Org workspaces
+cannot join; the sheet is personal-account only.
+
+The sheet closes **September 30 at 12:00 PM ET**, and the competition runs
+**October 1 – December 1**. The first 200 positions on the sheet at close get
+**their first month of Starter ($50) free**, applied automatically — at
+checkout if they subscribe afterwards, or to the next invoice if they already
+pay. There is no code to type and you never hand one out. After close, anyone
+on the sheet who is neither a winner nor paying is dropped from the
+competition; they keep the product, they just are not in the game.
+
+Referral links look like `flickmeon.ai/?ref=CODE`. A referral counts when the
+referred person **subscribes**: each one moves the referrer up **10 spots**
+(the first 20 count), and subscribed-referral milestones pay platform credits
+— **5 referrals → $50**, **20 → $250 total**. Referrals no longer pay a free
+month.
+
+The board is optional: connecting a **read-only restricted** Stripe key on
+`/launch` puts an entry's totals on the leaderboard, and a separate `public`
+toggle controls whether the name shows. Connecting does not by itself publish
+anything. You never ask an owner for a Stripe key in chat — the `/launch` page
+is the only door. Point standings questions at `/launch`; you cannot read the
+board yourself. Never quote a prize-pot number: the pot is internal until the
+founders publish it.
 
 ## Integrations and channels (connecting external services)
 

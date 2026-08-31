@@ -28,6 +28,10 @@ from core.services.desktop_pair import (
     pair_desktop_devices,
     revoke_desktop_device,
 )
+from core.services.desktop_pair_live import (
+    push_desktop_pairing_live,
+    push_desktop_revoke_live,
+)
 from core.services.node_proxy import force_close_device
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
@@ -116,6 +120,21 @@ async def post_pair(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Push the pairing into the RUNNING container's live trust store. Since the
+    # OpenClaw 8.x image the gateway only reads the paired.json files at boot
+    # (one-time SQLite import), so without this a pair against a running
+    # container is inert until the next container roll and the desktop loops on
+    # NOT_PAIRED. push_desktop_pairing_live never raises and skips cleanly when
+    # no container is running; the extra try/except is belt-and-braces so no
+    # future bug in the push can fail an already-committed pair.
+    try:
+        await push_desktop_pairing_live(
+            owner_id=owner_id,
+            device_ids={result.device_id_mac, result.device_id_cli},
+        )
+    except Exception:  # noqa: BLE001 — the pair is already committed; live push is best-effort
+        pass
+
     return PairResponse(
         gatewayUrl=result.gateway_url,
         gatewayToken=result.gateway_token,
@@ -139,3 +158,11 @@ async def delete_device(
         workspace=_workspace_adapter(owner_id),
         force_close_device=force_close_device,
     )
+    # Evict from the RUNNING gateway's SQLite trust store too. The boot
+    # import is add-only (existing SQLite rows win), so the JSON removal
+    # above alone never evicts the device — not even at the next container
+    # boot. Best-effort; never raises.
+    try:
+        await push_desktop_revoke_live(owner_id=owner_id, device_id=device_id)
+    except Exception:  # noqa: BLE001 — the revoke is already committed; eviction is best-effort
+        pass

@@ -707,3 +707,89 @@ async def test_reconnect_leaves_an_owner_chosen_name_alone(mock_ecs, mock_pool, 
         management_api=MagicMock(),
     )
     assert params["client"]["displayName"] == "Alice's studio box | Lightbulb Desktop"
+
+
+# ---------------------------------------------------------------------------
+# Live-pairing hooks: NOT_PAIRED self-heal + node-surface approval.
+# The 8.x gateway trust store is SQLite seeded from paired.json only at boot,
+# so these hooks are what make /desktop/pair work against a RUNNING container.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_not_paired_rejection_triggers_gated_self_heal(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """A NOT_PAIRED handshake rejection approves the pending pairing request
+    (gated inside heal_desktop_device_not_paired) and still propagates."""
+    mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected"))
+    mock_upstream.rejection_error = {
+        "code": "NOT_PAIRED",
+        "details": {"requestId": "req-77", "deviceId": "abc123def456"},
+    }
+
+    with patch(
+        "core.services.node_proxy.heal_desktop_device_not_paired",
+        AsyncMock(return_value=True),
+    ) as heal:
+        with pytest.raises(RuntimeError):
+            await handle_node_connect(
+                owner_id="org_123",
+                user_id="user_alice",
+                connection_id="conn_1",
+                connect_params={"role": "node", "client": {"id": "node-host"}},
+                management_api=MagicMock(),
+            )
+
+    heal.assert_awaited_once_with(
+        owner_id="org_123",
+        ip="10.0.1.1",
+        gateway_token="tok123",
+        device_id="abc123def456",
+        request_id="req-77",
+    )
+    # Rolled back + closed like any other failed handshake.
+    assert "conn_1" not in _node_upstreams
+    mock_upstream.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_pairing_rejection_does_not_self_heal(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected"))
+    mock_upstream.rejection_error = {"code": "AUTH_FAILED"}
+
+    with patch("core.services.node_proxy.heal_desktop_device_not_paired", AsyncMock()) as heal:
+        with pytest.raises(RuntimeError):
+            await handle_node_connect(
+                owner_id="org_123",
+                user_id="user_alice",
+                connection_id="conn_1",
+                connect_params={"role": "node", "client": {"id": "node-host"}},
+                management_api=MagicMock(),
+            )
+
+    heal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_connect_approves_pending_node_surface(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher
+):
+    """After a successful node handshake the pending command surface (the 8.x
+    gateway's second pairing gate) is approved for the connected device."""
+    with patch(
+        "core.services.node_proxy.approve_pending_node_surface",
+        AsyncMock(return_value=True),
+    ) as approve:
+        await handle_node_connect(
+            owner_id="org_123",
+            user_id="user_alice",
+            connection_id="conn_1",
+            connect_params={"role": "node", "client": {"id": "node-host"}},
+            management_api=MagicMock(),
+        )
+
+    approve.assert_awaited_once_with(
+        owner_id="org_123",
+        ip="10.0.1.1",
+        gateway_token="tok123",
+        device_id="abc123def456",
+    )

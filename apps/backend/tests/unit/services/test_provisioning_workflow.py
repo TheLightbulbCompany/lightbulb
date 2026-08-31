@@ -1788,3 +1788,16 @@ async def test_start_matches_mixed_case_wire_provider_names():
     assert service["service_id"] == "developer"
     # unfiltered read — no provider_name kwarg reaches the client
     assert cs.await_args.kwargs.get("provider_name") is None
+
+
+@pytest.mark.asyncio
+async def test_read_catalog_none_provider_refuses_cleanly():
+    """Schemathesis found a 500: a fuzzed/malformed workflow row can reach
+    _read_catalog with provider_name=None; .lower() on it crashed. Must be a
+    clean service_unavailable refusal."""
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+    ):
+        with pytest.raises(mod.WorkflowRefused):
+            await mod._read_catalog("acct_1", None, "analytics")

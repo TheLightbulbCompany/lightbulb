@@ -206,7 +206,7 @@ async def _read_catalog(account_id: str, provider_name: str, service_id: str) ->
     # slug returned nothing and every capitalized provider was unfilable
     # (found live on dev 2026-08-31). ~30 rows; one paginated read either way.
     services = await api.catalog_services(account_id)  # catalog partition in the client
-    want = provider_name.lower()
+    want = (provider_name or "").lower()
     service = next(
         (s for s in services if (s.get("provider_name") or "").lower() == want and s.get("service_id") == service_id),
         None,

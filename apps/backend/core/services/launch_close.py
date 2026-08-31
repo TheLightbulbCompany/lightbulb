@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 import stripe
 
 from core.auth import AuthContext
+from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import billing_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_service, launch_settings
@@ -49,23 +50,37 @@ def _discount_coupon_id(d) -> str | None:
     return c.get("id") if isinstance(c, dict) else c
 
 
-async def _attach_coupon(billing: dict, coupon: str) -> bool:
+async def _attach_coupon(billing: dict, coupon: str) -> str:
     """Attach the free-month coupon to a paying winner's live subscription.
-    True = ours is on the subscription (attached now, or already there) —
-    the caller stamps the row. An UNRELATED existing discount (e.g. a legacy
-    referral free month) does not count as done: ours is added ALONGSIDE it
-    (Stripe's discounts array stacks), or the winner's month would be
-    silently eaten by whatever was already there. A Stripe failure
+
+    Returns one of:
+      - ``"attached"`` — ours is on the subscription (attached now, or
+        already there); the caller stamps the row.
+      - ``"no_sub"`` — no ``stripe_subscription_id`` on the billing row
+        (Apple-rail/legacy shape); a visible failure, retried on force.
+      - ``"nonflat"`` — the subscription does not carry the flat (Starter)
+        price, so the product-restricted coupon would apply NOTHING (Stripe
+        attaches it without erroring and discounts $0). Skipped: the winner
+        keeps the unpaid-style entitlement instead of a lie.
+
+    An UNRELATED existing discount (e.g. a legacy referral free month) does
+    not count as done: ours is added ALONGSIDE it (Stripe's discounts array
+    stacks), or the winner's month would be silently eaten. A Stripe failure
     propagates so the row is NOT stamped and a rerun retries."""
     sub_id = billing.get("stripe_subscription_id")
     if not sub_id:
-        return False
+        return "no_sub"
     sub = await run_in_thread(stripe.Subscription.retrieve, sub_id, expand=["discounts"])
+    from core.services.billing_service import subscription_item_on_price
+
+    items = (sub.get("items") or {}).get("data") or []
+    if not subscription_item_on_price(items, settings.STRIPE_FLAT_PRICE_ID):
+        return "nonflat"
     existing = list(sub.get("discounts") or [])
     if not existing and sub.get("discount"):
         existing = [sub["discount"]]  # legacy single-discount shape
     if any(_discount_coupon_id(d) == coupon for d in existing):
-        return True
+        return "attached"
     keep = [{"discount": d["id"] if isinstance(d, dict) else d} for d in existing]
     await run_in_thread(
         stripe.Subscription.modify,
@@ -75,7 +90,7 @@ async def _attach_coupon(billing: dict, coupon: str) -> bool:
         # subscription gets the coupon attached exactly once.
         idempotency_key=f"launch-close-coupon:{sub_id}",
     )
-    return True
+    return "attached"
 
 
 async def _ensure_restricted_coupon(auth: AuthContext) -> str:
@@ -192,27 +207,44 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     coupon = await _ensure_restricted_coupon(auth)
     coupons_attached = 0
     coupon_failures = 0
+    coupon_skipped_nonflat = 0
+    nonflat_winners: set[str] = set()
     for r in winners:
         billing = paying.get(r["email"])
         if not billing or r.get("coupon_attached_at"):
             continue
         try:
-            if await _attach_coupon(billing, coupon):
-                await launch_waitlist_repo.update_fields(r["email"], {"coupon_attached_at": utc_now_iso()})
-                coupons_attached += 1
-            else:
-                # A "paying" winner with no stripe_subscription_id on the row
-                # (Apple-rail or legacy shape) — nothing to attach to. Count
-                # it so the admin SEES it; the row stays unstamped, so a
-                # forced rerun retries once the sub id exists.
-                coupon_failures += 1
-                logger.error(
-                    "launch_close: paying winner %s has no stripe_subscription_id — coupon not attached",
-                    r.get("user_id"),
-                )
+            outcome = await _attach_coupon(billing, coupon)
         except Exception:  # noqa: BLE001 — one bad subscription must not abort the rest of the close
             coupon_failures += 1
             logger.exception("launch_close: coupon attach failed for %s", r.get("user_id"))
+            continue
+        if outcome == "attached":
+            await launch_waitlist_repo.update_fields(r["email"], {"coupon_attached_at": utc_now_iso()})
+            coupons_attached += 1
+        elif outcome == "nonflat":
+            # A paying winner NOT on the flat plan (Ultra): the restricted
+            # coupon would discount $0 — attaching + stamping would be a
+            # lie ("next invoice is $0"). Skip; they keep the winner flag,
+            # get the unpaid-variant email below, and a future Starter
+            # checkout pre-applies the discount.
+            coupon_skipped_nonflat += 1
+            nonflat_winners.add(r["email"])
+            logger.info(
+                "launch_close: paying winner %s is not on the flat plan — coupon not attached "
+                "(free month = Starter month)",
+                r.get("user_id"),
+            )
+        else:  # "no_sub"
+            # A "paying" winner with no stripe_subscription_id on the row
+            # (Apple-rail or legacy shape) — nothing to attach to. Count it
+            # so the admin SEES it; the row stays unstamped, so a forced
+            # rerun retries once the sub id exists.
+            coupon_failures += 1
+            logger.error(
+                "launch_close: paying winner %s has no stripe_subscription_id — coupon not attached",
+                r.get("user_id"),
+            )
 
     # (f) Winner emails — paid vs unpaid variant, stamped per row only on a
     # confirmed send so a rerun retries the misses.
@@ -221,7 +253,12 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     for r in winners:
         if r.get("winner_email_sent_at"):
             continue
-        send = send_winner_paid_email if r["email"] in paying else send_winner_unpaid_email
+        # Paid variant only when the coupon actually lands on their sub — a
+        # nonflat paying winner gets the unpaid variant, whose copy ("first
+        # month of Starter is free, applied automatically at checkout") is
+        # literally accurate for them.
+        is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
+        send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
         message_id = await send(to_email=r["email"], first_name=None)
         if message_id:
             await launch_waitlist_repo.update_fields(r["email"], {"winner_email_sent_at": utc_now_iso()})
@@ -238,6 +275,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         "final_pot_cents": final_pot,
         "coupons_attached": coupons_attached,
         "coupon_failures": coupon_failures,
+        "coupon_skipped_nonflat": coupon_skipped_nonflat,
         "emails_sent": emails_sent,
         "email_failures": email_failures,
     }
